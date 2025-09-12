@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Link } from "react-router-dom";
 import Header from "@/components/Header";
 
 const PaperDetail = () => {
@@ -188,9 +189,9 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                     <div className="flex items-center space-x-3">
                       <Trophy className="w-5 h-5 text-yellow-600" />
                       <span className="font-semibold">SOTA for </span>
-                      <button className="text-primary hover:underline font-semibold">
+                      <Link to="/benchmark/wider-face-easy" className="text-primary hover:underline font-semibold">
                         Face Detection on WIDER Face (Easy)
-                      </button>
+                      </Link>
                     </div>
                     <button className="text-primary text-sm hover:underline">
                       →| Get a GitHub badge
@@ -221,9 +222,11 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                         <td className="py-4 px-4 font-semibold">0.991</td>
                         <td className="py-4 px-4 font-semibold"># 1</td>
                         <td className="py-4 px-4">
-                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                            See all
-                          </Button>
+                          <Link to="/benchmark/fddb">
+                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                              See all
+                            </Button>
+                          </Link>
                         </td>
                       </tr>
                       <tr className="border-b border-border hover:bg-muted/20">
@@ -234,9 +237,11 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                         <td className="py-4 px-4 font-semibold">0.960</td>
                         <td className="py-4 px-4 font-semibold"># 1</td>
                         <td className="py-4 px-4">
-                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                            See all
-                          </Button>
+                          <Link to="/benchmark/wider-face-easy">
+                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                              See all
+                            </Button>
+                          </Link>
                         </td>
                       </tr>
                       <tr className="border-b border-border hover:bg-muted/20">
@@ -247,9 +252,11 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                         <td className="py-4 px-4 font-semibold">0.900</td>
                         <td className="py-4 px-4 font-semibold"># 1</td>
                         <td className="py-4 px-4">
-                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                            See all
-                          </Button>
+                          <Link to="/benchmark/wider-face-hard">
+                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                              See all
+                            </Button>
+                          </Link>
                         </td>
                       </tr>
                       <tr className="hover:bg-muted/20">
@@ -260,9 +267,11 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                         <td className="py-4 px-4 font-semibold">0.953</td>
                         <td className="py-4 px-4 font-semibold"># 1</td>
                         <td className="py-4 px-4">
-                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                            See all
-                          </Button>
+                          <Link to="/benchmark/wider-face-medium">
+                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                              See all
+                            </Button>
+                          </Link>
                         </td>
                       </tr>
                     </tbody>
