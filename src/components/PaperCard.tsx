@@ -24,6 +24,7 @@ interface PaperCardProps {
   thumbnail?: string;
   category: string;
   isUpvoted?: boolean;
+  githubStars?: number;
 }
 
 const PaperCard = ({
