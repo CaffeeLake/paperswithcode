@@ -157,6 +157,14 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                 <span>PDF</span>
               </Button>
               <Button variant="outline" className="flex items-center space-x-2">
+                <ExternalLink className="w-4 h-4" />
+                <span>Project page</span>
+              </Button>
+              <Button variant="outline" className="flex items-center space-x-2">
+                <ExternalLink className="w-4 h-4" />
+                <span>Github</span>
+              </Button>
+              <Button variant="outline" className="flex items-center space-x-2">
                 <Bookmark className="w-4 h-4" />
                 <span>Save</span>
               </Button>
