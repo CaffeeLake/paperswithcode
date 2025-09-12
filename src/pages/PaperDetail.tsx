@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark } from "lucide-react";
+import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -147,7 +147,7 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
             </Card>
 
             {/* Actions */}
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-4 mb-12">
               <Button variant="outline" className="flex items-center space-x-2">
                 <ExternalLink className="w-4 h-4" />
                 <span>View on arXiv</span>
@@ -169,6 +169,107 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                 <span>Save</span>
               </Button>
             </div>
+
+            {/* Evaluation Results */}
+            <Card className="mb-8">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-xl font-semibold">Evaluation results from the paper</CardTitle>
+                  <Button variant="ghost" size="sm" className="flex items-center space-x-1 text-muted-foreground">
+                    <Edit className="w-4 h-4" />
+                    <span>Edit</span>
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* SOTA Badge */}
+                <div className="bg-muted/30 rounded-lg p-4 mb-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <Trophy className="w-5 h-5 text-yellow-600" />
+                      <span className="font-semibold">SOTA for </span>
+                      <button className="text-primary hover:underline font-semibold">
+                        Face Detection on WIDER Face (Easy)
+                      </button>
+                    </div>
+                    <button className="text-primary text-sm hover:underline">
+                      →| Get a GitHub badge
+                    </button>
+                  </div>
+                </div>
+
+                {/* Evaluation Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Task</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric name</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric value</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Global rank</th>
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Compare</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b border-border hover:bg-muted/20">
+                        <td className="py-4 px-4">Face Detection</td>
+                        <td className="py-4 px-4">FDDB</td>
+                        <td className="py-4 px-4 font-medium">DSFD</td>
+                        <td className="py-4 px-4">AP</td>
+                        <td className="py-4 px-4 font-semibold">0.991</td>
+                        <td className="py-4 px-4 font-semibold"># 1</td>
+                        <td className="py-4 px-4">
+                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                            See all
+                          </Button>
+                        </td>
+                      </tr>
+                      <tr className="border-b border-border hover:bg-muted/20">
+                        <td className="py-4 px-4">Face Detection</td>
+                        <td className="py-4 px-4">WIDER Face (Easy)</td>
+                        <td className="py-4 px-4 font-medium">DSFD</td>
+                        <td className="py-4 px-4">AP</td>
+                        <td className="py-4 px-4 font-semibold">0.960</td>
+                        <td className="py-4 px-4 font-semibold"># 1</td>
+                        <td className="py-4 px-4">
+                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                            See all
+                          </Button>
+                        </td>
+                      </tr>
+                      <tr className="border-b border-border hover:bg-muted/20">
+                        <td className="py-4 px-4">Face Detection</td>
+                        <td className="py-4 px-4">WIDER Face (Hard)</td>
+                        <td className="py-4 px-4 font-medium">DSFD</td>
+                        <td className="py-4 px-4">AP</td>
+                        <td className="py-4 px-4 font-semibold">0.900</td>
+                        <td className="py-4 px-4 font-semibold"># 1</td>
+                        <td className="py-4 px-4">
+                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                            See all
+                          </Button>
+                        </td>
+                      </tr>
+                      <tr className="hover:bg-muted/20">
+                        <td className="py-4 px-4">Face Detection</td>
+                        <td className="py-4 px-4">WIDER Face (Medium)</td>
+                        <td className="py-4 px-4 font-medium">DSFD</td>
+                        <td className="py-4 px-4">AP</td>
+                        <td className="py-4 px-4 font-semibold">0.953</td>
+                        <td className="py-4 px-4 font-semibold"># 1</td>
+                        <td className="py-4 px-4">
+                          <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
+                            See all
+                          </Button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Sidebar */}
