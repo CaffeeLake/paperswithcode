@@ -31,8 +31,16 @@ const Header = () => {
                   Papers
                 </Button>
               </Link>
-              <Button variant="ghost" className="text-sm font-medium">Datasets</Button>
-              <Button variant="ghost" className="text-sm font-medium">Tasks</Button>
+              <Link to="/tasks">
+                <Button 
+                  variant="ghost" 
+                  className={`text-sm font-medium ${
+                    location.pathname === '/tasks' ? 'text-primary' : ''
+                  }`}
+                >
+                  Tasks
+                </Button>
+              </Link>
               <Button variant="ghost" className="text-sm font-medium">Leaderboards</Button>
               <Button variant="ghost" className="text-sm font-medium">Community</Button>
             </nav>
