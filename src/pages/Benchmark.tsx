@@ -1,9 +1,10 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Dot } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Header from "@/components/Header";
-import { ArrowLeft, Trophy, Calendar } from "lucide-react";
+import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, CheckCircle } from "lucide-react";
 import { useParams, Link } from "react-router-dom";
 
 // Sample data for different benchmarks
@@ -12,52 +13,360 @@ const benchmarkData = {
     name: "Face Detection on WIDER Face (Easy)",
     metric: "Average Precision (AP)",
     allData: [
-      { year: 2015, value: 61.3, model: "MTCNN", isSOTA: false },
-      { year: 2016, value: 78.2, model: "HR", isSOTA: false },
-      { year: 2017, value: 92.1, model: "S3FD", isSOTA: true },
-      { year: 2018, value: 94.3, model: "PyramidBox", isSOTA: true },
-      { year: 2019, value: 96.0, model: "DSFD", isSOTA: true },
-      { year: 2020, value: 96.8, model: "RetinaFace", isSOTA: true },
-      { year: 2021, value: 97.2, model: "SCRFD", isSOTA: true }
+      { 
+        year: 2015, 
+        value: 61.3, 
+        model: "MTCNN", 
+        isSOTA: false,
+        paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
+        paperUrl: "/paper/mtcnn-2015",
+        codeUrl: "https://github.com/kpzhang93/MTCNN_face_detection_alignment",
+        hasCode: true,
+        isVerified: false,
+        tags: ["CNN", "Multi-task"]
+      },
+      { 
+        year: 2016, 
+        value: 78.2, 
+        model: "HR", 
+        isSOTA: false,
+        paperTitle: "Finding Tiny Faces",
+        paperUrl: "/paper/hr-2016",
+        codeUrl: "https://github.com/peiyunh/tiny",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Scale", "Resolution"]
+      },
+      { 
+        year: 2017, 
+        value: 92.1, 
+        model: "S3FD", 
+        isSOTA: true,
+        paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
+        paperUrl: "/paper/s3fd-2017",
+        codeUrl: "https://github.com/sfzhang15/SFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Single Shot", "Scale-invariant"]
+      },
+      { 
+        year: 2018, 
+        value: 94.3, 
+        model: "PyramidBox", 
+        isSOTA: true,
+        paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
+        paperUrl: "/paper/pyramidbox-2018",
+        codeUrl: "https://github.com/EricZgw/PyramidBox",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Context", "Pyramid"]
+      },
+      { 
+        year: 2019, 
+        value: 96.0, 
+        model: "DSFD", 
+        isSOTA: true,
+        paperTitle: "DSFD: Dual Shot Face Detector",
+        paperUrl: "/paper/dsfd-2019",
+        codeUrl: "https://github.com/TencentYoutuResearch/FaceDetection-DSFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Dual Shot", "Feature Enhancement"]
+      },
+      { 
+        year: 2020, 
+        value: 96.8, 
+        model: "RetinaFace", 
+        isSOTA: true,
+        paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
+        paperUrl: "/paper/retinaface-2020",
+        codeUrl: "https://github.com/deepinsight/insightface",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Multi-level", "Landmarks"]
+      },
+      { 
+        year: 2021, 
+        value: 97.2, 
+        model: "SCRFD", 
+        isSOTA: true,
+        paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
+        paperUrl: "/paper/scrfd-2021",
+        codeUrl: "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Efficient", "Redistribution"]
+      }
     ]
   },
   "wider-face-medium": {
     name: "Face Detection on WIDER Face (Medium)",
     metric: "Average Precision (AP)",
     allData: [
-      { year: 2015, value: 59.8, model: "MTCNN", isSOTA: false },
-      { year: 2016, value: 75.1, model: "HR", isSOTA: false },
-      { year: 2017, value: 90.8, model: "S3FD", isSOTA: true },
-      { year: 2018, value: 93.4, model: "PyramidBox", isSOTA: true },
-      { year: 2019, value: 95.3, model: "DSFD", isSOTA: true },
-      { year: 2020, value: 95.9, model: "RetinaFace", isSOTA: true },
-      { year: 2021, value: 96.4, model: "SCRFD", isSOTA: true }
+      { 
+        year: 2015, 
+        value: 59.8, 
+        model: "MTCNN", 
+        isSOTA: false,
+        paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
+        paperUrl: "/paper/mtcnn-2015",
+        codeUrl: "https://github.com/kpzhang93/MTCNN_face_detection_alignment",
+        hasCode: true,
+        isVerified: false,
+        tags: ["CNN", "Multi-task"]
+      },
+      { 
+        year: 2016, 
+        value: 75.1, 
+        model: "HR", 
+        isSOTA: false,
+        paperTitle: "Finding Tiny Faces",
+        paperUrl: "/paper/hr-2016",
+        codeUrl: "https://github.com/peiyunh/tiny",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Scale", "Resolution"]
+      },
+      { 
+        year: 2017, 
+        value: 90.8, 
+        model: "S3FD", 
+        isSOTA: true,
+        paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
+        paperUrl: "/paper/s3fd-2017",
+        codeUrl: "https://github.com/sfzhang15/SFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Single Shot", "Scale-invariant"]
+      },
+      { 
+        year: 2018, 
+        value: 93.4, 
+        model: "PyramidBox", 
+        isSOTA: true,
+        paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
+        paperUrl: "/paper/pyramidbox-2018",
+        codeUrl: "https://github.com/EricZgw/PyramidBox",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Context", "Pyramid"]
+      },
+      { 
+        year: 2019, 
+        value: 95.3, 
+        model: "DSFD", 
+        isSOTA: true,
+        paperTitle: "DSFD: Dual Shot Face Detector",
+        paperUrl: "/paper/dsfd-2019",
+        codeUrl: "https://github.com/TencentYoutuResearch/FaceDetection-DSFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Dual Shot", "Feature Enhancement"]
+      },
+      { 
+        year: 2020, 
+        value: 95.9, 
+        model: "RetinaFace", 
+        isSOTA: true,
+        paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
+        paperUrl: "/paper/retinaface-2020",
+        codeUrl: "https://github.com/deepinsight/insightface",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Multi-level", "Landmarks"]
+      },
+      { 
+        year: 2021, 
+        value: 96.4, 
+        model: "SCRFD", 
+        isSOTA: true,
+        paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
+        paperUrl: "/paper/scrfd-2021",
+        codeUrl: "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Efficient", "Redistribution"]
+      }
     ]
   },
   "wider-face-hard": {
     name: "Face Detection on WIDER Face (Hard)",
     metric: "Average Precision (AP)",
     allData: [
-      { year: 2015, value: 32.1, model: "MTCNN", isSOTA: false },
-      { year: 2016, value: 61.2, model: "HR", isSOTA: false },
-      { year: 2017, value: 84.1, model: "S3FD", isSOTA: true },
-      { year: 2018, value: 88.8, model: "PyramidBox", isSOTA: true },
-      { year: 2019, value: 90.0, model: "DSFD", isSOTA: true },
-      { year: 2020, value: 91.4, model: "RetinaFace", isSOTA: true },
-      { year: 2021, value: 92.2, model: "SCRFD", isSOTA: true }
+      { 
+        year: 2015, 
+        value: 32.1, 
+        model: "MTCNN", 
+        isSOTA: false,
+        paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
+        paperUrl: "/paper/mtcnn-2015",
+        codeUrl: "https://github.com/kpzhang93/MTCNN_face_detection_alignment",
+        hasCode: true,
+        isVerified: false,
+        tags: ["CNN", "Multi-task"]
+      },
+      { 
+        year: 2016, 
+        value: 61.2, 
+        model: "HR", 
+        isSOTA: false,
+        paperTitle: "Finding Tiny Faces",
+        paperUrl: "/paper/hr-2016",
+        codeUrl: "https://github.com/peiyunh/tiny",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Scale", "Resolution"]
+      },
+      { 
+        year: 2017, 
+        value: 84.1, 
+        model: "S3FD", 
+        isSOTA: true,
+        paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
+        paperUrl: "/paper/s3fd-2017",
+        codeUrl: "https://github.com/kpzhang93/SFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Single Shot", "Scale-invariant"]
+      },
+      { 
+        year: 2018, 
+        value: 88.8, 
+        model: "PyramidBox", 
+        isSOTA: true,
+        paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
+        paperUrl: "/paper/pyramidbox-2018",
+        codeUrl: "https://github.com/EricZgw/PyramidBox",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Context", "Pyramid"]
+      },
+      { 
+        year: 2019, 
+        value: 90.0, 
+        model: "DSFD", 
+        isSOTA: true,
+        paperTitle: "DSFD: Dual Shot Face Detector",
+        paperUrl: "/paper/dsfd-2019",
+        codeUrl: "https://github.com/TencentYoutuResearch/FaceDetection-DSFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Dual Shot", "Feature Enhancement"]
+      },
+      { 
+        year: 2020, 
+        value: 91.4, 
+        model: "RetinaFace", 
+        isSOTA: true,
+        paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
+        paperUrl: "/paper/retinaface-2020",
+        codeUrl: "https://github.com/deepinsight/insightface",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Multi-level", "Landmarks"]
+      },
+      { 
+        year: 2021, 
+        value: 92.2, 
+        model: "SCRFD", 
+        isSOTA: true,
+        paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
+        paperUrl: "/paper/scrfd-2021",
+        codeUrl: "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Efficient", "Redistribution"]
+      }
     ]
   },
   "fddb": {
     name: "Face Detection on FDDB",
     metric: "Average Precision (AP)",
     allData: [
-      { year: 2015, value: 84.2, model: "MTCNN", isSOTA: false },
-      { year: 2016, value: 87.5, model: "HR", isSOTA: false },
-      { year: 2017, value: 93.7, model: "S3FD", isSOTA: true },
-      { year: 2018, value: 96.6, model: "PyramidBox", isSOTA: true },
-      { year: 2019, value: 99.1, model: "DSFD", isSOTA: true },
-      { year: 2020, value: 99.3, model: "RetinaFace", isSOTA: true },
-      { year: 2021, value: 99.5, model: "SCRFD", isSOTA: true }
+      { 
+        year: 2015, 
+        value: 84.2, 
+        model: "MTCNN", 
+        isSOTA: false,
+        paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
+        paperUrl: "/paper/mtcnn-2015",
+        codeUrl: "https://github.com/kpzhang93/MTCNN_face_detection_alignment",
+        hasCode: true,
+        isVerified: false,
+        tags: ["CNN", "Multi-task"]
+      },
+      { 
+        year: 2016, 
+        value: 87.5, 
+        model: "HR", 
+        isSOTA: false,
+        paperTitle: "Finding Tiny Faces",
+        paperUrl: "/paper/hr-2016",
+        codeUrl: "https://github.com/peiyunh/tiny",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Scale", "Resolution"]
+      },
+      { 
+        year: 2017, 
+        value: 93.7, 
+        model: "S3FD", 
+        isSOTA: true,
+        paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
+        paperUrl: "/paper/s3fd-2017",
+        codeUrl: "https://github.com/sfzhang15/SFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Single Shot", "Scale-invariant"]
+      },
+      { 
+        year: 2018, 
+        value: 96.6, 
+        model: "PyramidBox", 
+        isSOTA: true,
+        paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
+        paperUrl: "/paper/pyramidbox-2018",
+        codeUrl: "https://github.com/EricZgw/PyramidBox",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Context", "Pyramid"]
+      },
+      { 
+        year: 2019, 
+        value: 99.1, 
+        model: "DSFD", 
+        isSOTA: true,
+        paperTitle: "DSFD: Dual Shot Face Detector",
+        paperUrl: "/paper/dsfd-2019",
+        codeUrl: "https://github.com/TencentYoutuResearch/FaceDetection-DSFD",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Dual Shot", "Feature Enhancement"]
+      },
+      { 
+        year: 2020, 
+        value: 99.3, 
+        model: "RetinaFace", 
+        isSOTA: true,
+        paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
+        paperUrl: "/paper/retinaface-2020",
+        codeUrl: "https://github.com/deepinsight/insightface",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Multi-level", "Landmarks"]
+      },
+      { 
+        year: 2021, 
+        value: 99.5, 
+        model: "SCRFD", 
+        isSOTA: true,
+        paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
+        paperUrl: "/paper/scrfd-2021",
+        codeUrl: "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Efficient", "Redistribution"]
+      }
     ]
   }
 };
@@ -203,30 +512,81 @@ const Benchmark = () => {
         {/* Current Rankings Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Current Top Models</CardTitle>
+            <CardTitle>Leaderboard</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {sotaData
-                .sort((a, b) => b.value - a.value)
-                .slice(0, 5)
-                .map((model, index) => (
-                  <div key={model.model} className="flex items-center justify-between p-4 rounded-lg border border-border">
-                    <div className="flex items-center space-x-4">
-                      <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary/10 text-primary font-semibold">
-                        {index + 1}
-                      </div>
-                      <div>
-                        <h3 className="font-semibold">{model.model}</h3>
-                        <p className="text-sm text-muted-foreground">Published {model.year}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-2xl font-bold text-primary">{model.value}</div>
-                      <p className="text-sm text-muted-foreground">{data.metric}</p>
-                    </div>
-                  </div>
-                ))}
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">{data.metric}</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Paper</th>
+                    <th className="text-center py-3 px-2 font-medium text-muted-foreground">Code</th>
+                    <th className="text-center py-3 px-2 font-medium text-muted-foreground">Result</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Year</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Tags</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.allData
+                    .sort((a, b) => b.value - a.value)
+                    .map((model, index) => (
+                      <tr key={model.model} className="border-b border-border hover:bg-muted/20">
+                        <td className="py-4 px-2">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-muted text-sm font-medium">
+                            {index + 1}
+                          </div>
+                        </td>
+                        <td className="py-4 px-4">
+                          <div className="font-semibold">{model.model}</div>
+                        </td>
+                        <td className="py-4 px-4">
+                          <div className="font-semibold text-lg">{model.value}</div>
+                        </td>
+                        <td className="py-4 px-4">
+                          <Link 
+                            to={model.paperUrl} 
+                            className="text-primary hover:underline text-sm max-w-xs block truncate"
+                            title={model.paperTitle}
+                          >
+                            {model.paperTitle}
+                          </Link>
+                        </td>
+                        <td className="py-4 px-2 text-center">
+                          {model.hasCode && (
+                            <a 
+                              href={model.codeUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-muted hover:bg-muted/80 transition-colors"
+                            >
+                              <Github className="w-4 h-4" />
+                            </a>
+                          )}
+                        </td>
+                        <td className="py-4 px-2 text-center">
+                          {model.isVerified && (
+                            <CheckCircle className="w-5 h-5 text-green-600 mx-auto" />
+                          )}
+                        </td>
+                        <td className="py-4 px-4 text-muted-foreground">
+                          {model.year}
+                        </td>
+                        <td className="py-4 px-4">
+                          <div className="flex flex-wrap gap-1">
+                            {model.tags.map((tag, tagIndex) => (
+                              <Badge key={tagIndex} variant="secondary" className="text-xs">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
             </div>
           </CardContent>
         </Card>
