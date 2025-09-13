@@ -2,6 +2,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import Header from "@/components/Header";
 import { BarChart, Layers, Users, FileText, Twitter } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const taskCategories = [
   {
@@ -10,6 +11,7 @@ const taskCategories = [
       {
         id: 1,
         name: "Semantic Segmentation", 
+        slug: "semantic-segmentation",
         icon: "🎯",
         leaderboards: 59,
         papers: 910
@@ -17,6 +19,7 @@ const taskCategories = [
       {
         id: 2,
         name: "Image Classification",
+        slug: "image-classification",
         icon: "🖼️", 
         leaderboards: 127,
         papers: 769
@@ -24,6 +27,7 @@ const taskCategories = [
       {
         id: 3,
         name: "Object Detection",
+        slug: "object-detection",
         icon: "🔍",
         leaderboards: 58, 
         papers: 644
@@ -31,13 +35,15 @@ const taskCategories = [
       {
         id: 4,
         name: "Image Generation",
+        slug: "image-generation", 
         icon: "🎨",
         leaderboards: 92,
         papers: 318
       },
       {
         id: 5,
-        name: "Denoising", 
+        name: "Denoising",
+        slug: "denoising",
         icon: "✨",
         leaderboards: 16,
         papers: 300
@@ -51,13 +57,15 @@ const taskCategories = [
       {
         id: 6,
         name: "Machine Translation",
+        slug: "machine-translation",
         icon: "🔄",
         leaderboards: 44,
         papers: 601
       },
       {
         id: 7,
-        name: "Language Modelling", 
+        name: "Language Modelling",
+        slug: "language-modelling", 
         icon: "📝",
         leaderboards: 11,
         papers: 562
@@ -65,6 +73,7 @@ const taskCategories = [
       {
         id: 8,
         name: "Question Answering",
+        slug: "question-answering",
         icon: "❓",
         leaderboards: 51,
         papers: 522
@@ -72,6 +81,7 @@ const taskCategories = [
       {
         id: 9,
         name: "Sentiment Analysis",
+        slug: "sentiment-analysis",
         icon: "😊",
         leaderboards: 37,
         papers: 372
@@ -79,6 +89,7 @@ const taskCategories = [
       {
         id: 10,
         name: "Text Generation",
+        slug: "text-generation",
         icon: "📄", 
         leaderboards: 33,
         papers: 225
@@ -134,24 +145,26 @@ const Tasks = () => {
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-6">
               {category.tasks.map((task) => (
-                <Card key={task.id} className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card">
-                  <div className="flex items-start space-x-3 mb-4">
-                    <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">
-                      {task.icon}
+                <Link key={task.id} to={`/tasks/${task.slug}`}>
+                  <Card className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card h-full">
+                    <div className="flex items-start space-x-3 mb-4">
+                      <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">
+                        {task.icon}
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-base leading-tight">{task.name}</h3>
+                      </div>
                     </div>
-                    <div className="flex-1">
-                      <h3 className="font-semibold text-base leading-tight">{task.name}</h3>
+                    
+                    <div className="space-y-2 text-sm text-muted-foreground">
+                      <div className="flex items-center space-x-1">
+                        <BarChart className="w-3 h-3" />
+                        <span>{task.leaderboards} leaderboards</span>
+                      </div>
+                      <div>{task.papers} papers with code</div>
                     </div>
-                  </div>
-                  
-                  <div className="space-y-2 text-sm text-muted-foreground">
-                    <div className="flex items-center space-x-1">
-                      <BarChart className="w-3 h-3" />
-                      <span>{task.leaderboards} leaderboards</span>
-                    </div>
-                    <div>{task.papers} papers with code</div>
-                  </div>
-                </Card>
+                  </Card>
+                </Link>
               ))}
             </div>
 
