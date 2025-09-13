@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import PaperDetail from "./pages/PaperDetail";
 import Tasks from "./pages/Tasks";
+import Methods from "./pages/Methods";
 import Benchmark from "./pages/Benchmark";
 import NotFound from "./pages/NotFound";
 
@@ -21,6 +22,7 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/paper/:id" element={<PaperDetail />} />
           <Route path="/tasks" element={<Tasks />} />
+          <Route path="/methods" element={<Methods />} />
           <Route path="/benchmark/:benchmark" element={<Benchmark />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

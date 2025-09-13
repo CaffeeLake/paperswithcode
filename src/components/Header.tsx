@@ -41,8 +41,16 @@ const Header = () => {
                   Tasks
                 </Button>
               </Link>
-              <Button variant="ghost" className="text-sm font-medium">Leaderboards</Button>
-              <Button variant="ghost" className="text-sm font-medium">Community</Button>
+              <Link to="/methods">
+                <Button 
+                  variant="ghost" 
+                  className={`text-sm font-medium ${
+                    location.pathname === '/methods' ? 'text-primary' : ''
+                  }`}
+                >
+                  Methods
+                </Button>
+              </Link>
             </nav>
           </div>
 
