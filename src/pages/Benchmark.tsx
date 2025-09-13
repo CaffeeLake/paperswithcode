@@ -3,9 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import Header from "@/components/Header";
 import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, CheckCircle } from "lucide-react";
 import { useParams, Link } from "react-router-dom";
+import { useState } from "react";
 
 // Sample data for different benchmarks
 const benchmarkData = {
@@ -376,14 +378,19 @@ const CustomDot = (props: any) => {
   if (payload?.isSOTA) {
     return (
       <g>
-        <Dot cx={cx} cy={cy} r={4} fill="#10B981" stroke="#10B981" strokeWidth={2} />
-        <text x={cx} y={cy - 15} textAnchor="middle" className="fill-foreground text-xs font-medium">
+        <Dot cx={cx} cy={cy} r={5} fill="#0EA5E9" stroke="#0EA5E9" strokeWidth={2} />
+        <text x={cx} y={cy - 20} textAnchor="middle" className="fill-foreground text-xs font-medium">
           {payload.model}
         </text>
       </g>
     );
   }
-  return <Dot cx={cx} cy={cy} r={2} fill="#94A3B8" />;
+  return <Dot cx={cx} cy={cy} r={3} fill="#9CA3AF" stroke="#9CA3AF" strokeWidth={1} />;
+};
+
+const formatXAxisTick = (value: number) => {
+  const date = new Date(value, 0, 1);
+  return date.getFullYear().toString().slice(-2);
 };
 
 const Benchmark = () => {
@@ -391,12 +398,24 @@ const Benchmark = () => {
   const currentBenchmark = benchmark || "wider-face-easy";
   const data = benchmarkData[currentBenchmark as keyof typeof benchmarkData];
   
+  const [selectedMetric, setSelectedMetric] = useState("Average Precision (AP)");
+  const [selectedModels, setSelectedModels] = useState("all");
+  const [viewBy, setViewBy] = useState("date");
+  
   if (!data) {
     return <div>Benchmark not found</div>;
   }
 
-  const sotaData = data.allData.filter(item => item.isSOTA);
-  const allDataWithGaps = data.allData.map(item => ({
+  const metrics = ["Average Precision (AP)", "F1-Score", "Recall"];
+  const modelOptions = ["all", "sota-only", "recent"];
+  
+  const filteredData = data.allData.filter(item => {
+    if (selectedModels === "sota-only") return item.isSOTA;
+    if (selectedModels === "recent") return item.year >= 2019;
+    return true;
+  });
+
+  const allDataWithGaps = filteredData.map(item => ({
     ...item,
     sotaValue: item.isSOTA ? item.value : null
   }));
@@ -456,15 +475,47 @@ const Benchmark = () => {
         <Card className="mb-8">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>{data.metric} Progress Over Time</span>
+              <span>Leaderboard</span>
               <div className="flex items-center space-x-4 text-sm">
                 <div className="flex items-center space-x-2">
-                  <div className="w-3 h-3 bg-muted rounded-full"></div>
-                  <span className="text-muted-foreground">Other models</span>
+                  <span className="text-muted-foreground">View</span>
+                  <Select value={selectedMetric} onValueChange={setSelectedMetric}>
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {metrics.map((metric) => (
+                        <SelectItem key={metric} value={metric}>
+                          {metric}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <div className="w-3 h-3 bg-primary rounded-full"></div>
-                  <span className="text-muted-foreground">State-of-the-art models</span>
+                  <span className="text-muted-foreground">by</span>
+                  <Select value={viewBy} onValueChange={setViewBy}>
+                    <SelectTrigger className="w-20">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="date">Date</SelectItem>
+                      <SelectItem value="model">Model</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-muted-foreground">for</span>
+                  <Select value={selectedModels} onValueChange={setSelectedModels}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All models</SelectItem>
+                      <SelectItem value="sota-only">SOTA only</SelectItem>
+                      <SelectItem value="recent">Recent models</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardTitle>
@@ -472,19 +523,29 @@ const Benchmark = () => {
           <CardContent>
             <div className="h-96">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={allDataWithGaps} margin={{ top: 40, right: 30, left: 20, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <LineChart data={allDataWithGaps} margin={{ top: 40, right: 30, left: 20, bottom: 40 }}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted/30" />
                   <XAxis 
                     dataKey="year" 
                     type="number"
                     scale="linear"
-                    domain={['dataMin - 1', 'dataMax + 1']}
-                    className="text-muted-foreground"
+                    domain={['dataMin - 0.5', 'dataMax + 0.5']}
+                    tickFormatter={formatXAxisTick}
+                    className="text-muted-foreground text-xs"
+                    axisLine={false}
+                    tickLine={false}
                   />
                   <YAxis 
                     domain={[30, 100]}
-                    className="text-muted-foreground"
-                    label={{ value: data.metric.toUpperCase(), angle: -90, position: 'insideLeft' }}
+                    className="text-muted-foreground text-xs"
+                    label={{ 
+                      value: selectedMetric.toUpperCase(), 
+                      angle: -90, 
+                      position: 'insideLeft',
+                      style: { textAnchor: 'middle' }
+                    }}
+                    axisLine={false}
+                    tickLine={false}
                   />
                   
                   {/* All points */}
@@ -493,18 +554,32 @@ const Benchmark = () => {
                     stroke="transparent"
                     strokeWidth={0}
                     dot={<CustomDot />}
+                    activeDot={false}
                   />
                   
                   {/* SOTA line */}
                   <Line
                     dataKey="sotaValue"
-                    stroke="#10B981"
+                    stroke="#0EA5E9"
                     strokeWidth={3}
                     dot={false}
                     connectNulls={false}
+                    activeDot={{ r: 6, fill: "#0EA5E9" }}
                   />
                 </LineChart>
               </ResponsiveContainer>
+            </div>
+            
+            {/* Legend */}
+            <div className="flex items-center justify-center space-x-6 mt-4 text-sm">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-muted rounded-full"></div>
+                <span className="text-muted-foreground">Other models</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-sky-500 rounded-full"></div>
+                <span className="text-muted-foreground">Models with highest {selectedMetric}</span>
+              </div>
             </div>
           </CardContent>
         </Card>
