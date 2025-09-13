@@ -370,6 +370,198 @@ const benchmarkData = {
         tags: ["Efficient", "Redistribution"]
       }
     ]
+  },
+  "coco-test-dev": {
+    name: "Object Detection on COCO test-dev",
+    metric: "Average Precision (AP)",
+    allData: [
+      { 
+        year: 2017, 
+        value: 39.1, 
+        model: "Mask R-CNN", 
+        isSOTA: false,
+        paperTitle: "Mask R-CNN",
+        paperUrl: "/paper/mask-rcnn",
+        codeUrl: "https://github.com/facebookresearch/maskrcnn-benchmark",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Two-stage", "Instance Segmentation"]
+      },
+      { 
+        year: 2019, 
+        value: 48.4, 
+        model: "EfficientDet-D7", 
+        isSOTA: false,
+        paperTitle: "EfficientDet: Scalable and Efficient Object Detection",
+        paperUrl: "/paper/efficientdet",
+        codeUrl: "https://github.com/google/automl/tree/master/efficientdet",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Efficient", "Compound Scaling"]
+      },
+      { 
+        year: 2021, 
+        value: 57.1, 
+        model: "Cascade Eff-B7 NAS-FPN", 
+        isSOTA: true,
+        paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
+        paperUrl: "/paper/simple-copy-paste",
+        codeUrl: "https://github.com/google-research/deeplab2",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Data Augmentation", "Copy-Paste", "NAS-FPN"]
+      }
+    ]
+  },
+  "coco-minival": {
+    name: "Object Detection on COCO minival",
+    metric: "Average Precision (AP)",
+    allData: [
+      { 
+        year: 2017, 
+        value: 37.1, 
+        model: "Mask R-CNN", 
+        isSOTA: false,
+        paperTitle: "Mask R-CNN",
+        paperUrl: "/paper/mask-rcnn",
+        codeUrl: "https://github.com/facebookresearch/maskrcnn-benchmark",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Two-stage", "Instance Segmentation"]
+      },
+      { 
+        year: 2021, 
+        value: 55.2, 
+        model: "Cascade Eff-B7 NAS-FPN", 
+        isSOTA: true,
+        paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
+        paperUrl: "/paper/simple-copy-paste",
+        codeUrl: "https://github.com/google-research/deeplab2",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Data Augmentation", "Copy-Paste", "NAS-FPN"]
+      }
+    ]
+  },
+  "pascal-voc-2007": {
+    name: "Object Detection on PASCAL VOC 2007",
+    metric: "Mean Average Precision (mAP)",
+    allData: [
+      { 
+        year: 2016, 
+        value: 73.2, 
+        model: "SSD", 
+        isSOTA: false,
+        paperTitle: "SSD: Single Shot MultiBox Detector",
+        paperUrl: "/paper/ssd",
+        codeUrl: "https://github.com/weiliu89/caffe/tree/ssd",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Single Shot", "MultiBox"]
+      },
+      { 
+        year: 2021, 
+        value: 89.4, 
+        model: "Cascade Eff-B7 NAS-FPN", 
+        isSOTA: true,
+        paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
+        paperUrl: "/paper/simple-copy-paste",
+        codeUrl: "https://github.com/google-research/deeplab2",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Data Augmentation", "Copy-Paste", "NAS-FPN"]
+      }
+    ]
+  },
+  "kitti-cars-easy": {
+    name: "3D Object Detection on KITTI Cars Easy",
+    metric: "Average Precision (AP)",
+    allData: [
+      { 
+        year: 2019, 
+        value: 88.4, 
+        model: "PointRCNN", 
+        isSOTA: false,
+        paperTitle: "PointRCNN: 3D Object Detection from Raw Point Cloud",
+        paperUrl: "/paper/pointrcnn",
+        codeUrl: "https://github.com/sshaoshuai/PointRCNN",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Point Cloud", "3D Detection"]
+      },
+      { 
+        year: 2021, 
+        value: 92.8, 
+        model: "Patches", 
+        isSOTA: true,
+        paperTitle: "Patch Refinement -- Localized 3D Object Detection",
+        paperUrl: "/paper/patch-refinement",
+        codeUrl: "https://github.com/filipstoklasa/patches",
+        hasCode: true,
+        isVerified: true,
+        tags: ["3D Detection", "Patch Refinement", "Localized"]
+      }
+    ]
+  },
+  "crowdhuman-full-body": {
+    name: "Object Detection on CrowdHuman (Full Body)",
+    metric: "Average Precision (AP)",
+    allData: [
+      { 
+        year: 2019, 
+        value: 84.9, 
+        model: "Faster R-CNN", 
+        isSOTA: false,
+        paperTitle: "Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks",
+        paperUrl: "/paper/faster-rcnn",
+        codeUrl: "https://github.com/rbgirshick/py-faster-rcnn",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Two-stage", "Region Proposal"]
+      },
+      { 
+        year: 2021, 
+        value: 91.4, 
+        model: "IterDet (Faster RCNN, ResNet50, 2 iterations)", 
+        isSOTA: true,
+        paperTitle: "IterDet: Iterative Scheme for ObjectDetection in Crowded Environments",
+        paperUrl: "/paper/iterdet",
+        codeUrl: "https://github.com/yuantn/IterDet",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Iterative", "Crowded Scenes", "ResNet50"]
+      }
+    ]
+  },
+  "imagenet": {
+    name: "Image Classification on ImageNet",
+    metric: "Top-1 Accuracy (%)",
+    allData: [
+      { 
+        year: 2015, 
+        value: 76.3, 
+        model: "ResNet-152", 
+        isSOTA: false,
+        paperTitle: "Deep Residual Learning for Image Recognition",
+        paperUrl: "/paper/resnet",
+        codeUrl: "https://github.com/KaimingHe/deep-residual-networks",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Residual", "Deep Learning"]
+      },
+      { 
+        year: 2020, 
+        value: 88.5, 
+        model: "Vision Transformer (ViT-H/14)", 
+        isSOTA: true,
+        paperTitle: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
+        paperUrl: "/paper/vision-transformer",
+        codeUrl: "https://github.com/google-research/vision_transformer",
+        hasCode: true,
+        isVerified: true,
+        tags: ["Vision Transformer", "Attention", "Self-Attention"]
+      }
+    ]
   }
 };
 
