@@ -96,6 +96,20 @@ const taskCategories = [
       }
     ],
     totalTasks: 285
+  },
+  {
+    name: "Robotics",
+    tasks: [
+      {
+        id: 11,
+        name: "Vision Language Action Models",
+        slug: "vision-language-action-models",
+        icon: "🤖",
+        leaderboards: 12,
+        papers: 85
+      }
+    ],
+    totalTasks: 12
   }
 ];
 
