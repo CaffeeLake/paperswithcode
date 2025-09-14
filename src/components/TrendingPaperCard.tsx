@@ -1,6 +1,7 @@
 import { ChevronUp, Github, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
 
 interface Author {
@@ -20,6 +21,7 @@ interface TrendingPaperCardProps {
   category: string;
   isUpvoted: boolean;
   githubStars: number;
+  tags: string[];
 }
 
 const formatStars = (stars: number) => {
@@ -39,6 +41,7 @@ const TrendingPaperCard = ({
   upvotes,
   isUpvoted,
   githubStars,
+  tags,
 }: TrendingPaperCardProps) => {
   return (
     <div className="flex gap-6 p-6 bg-card rounded-lg border hover:shadow-md transition-shadow">
@@ -63,6 +66,15 @@ const TrendingPaperCard = ({
         <p className="text-sm text-muted-foreground mb-4 leading-relaxed line-clamp-3">
           {abstract}
         </p>
+
+        {/* Tags */}
+        <div className="flex flex-wrap gap-2 mb-4">
+          {tags.map((tag, index) => (
+            <Badge key={index} variant="secondary" className="text-xs">
+              {tag}
+            </Badge>
+          ))}
+        </div>
 
         <div className="flex items-center gap-4 mb-3">
           {/* Authors */}

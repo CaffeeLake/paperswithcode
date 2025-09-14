@@ -27,6 +27,7 @@ const mockPapers = [
     category: "Computer Vision",
     isUpvoted: false,
     githubStars: 486,
+    tags: ["vision-language-action models", "model compression", "multi-modal learning"],
   },
   {
     id: "2",
@@ -45,6 +46,7 @@ const mockPapers = [
     category: "Computer Vision",
     isUpvoted: true,
     githubStars: 159,
+    tags: ["video generation", "multi-modal conditioning", "human-centric"],
   },
   {
     id: "3",
@@ -64,6 +66,7 @@ const mockPapers = [
     category: "Reinforcement Learning",
     isUpvoted: false,
     githubStars: 11100,
+    tags: ["reasoning", "multi-agent systems", "large language models"],
   },
   {
     id: "4",
@@ -81,6 +84,7 @@ const mockPapers = [
     category: "Speech Processing",
     isUpvoted: false,
     githubStars: 56000,
+    tags: ["fine-tuning", "large language models", "efficient training"],
   },
 ];
 
