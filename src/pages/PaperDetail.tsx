@@ -128,9 +128,11 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
               <div className="mb-6">
                 <div className="flex flex-wrap gap-2">
                   {paper.tags.map((tag, index) => (
-                    <Badge key={index} variant="secondary" className="text-xs">
-                      {tag}
-                    </Badge>
+                    <Link key={index} to={`/tasks/${tag.toLowerCase().replace(/\s+/g, '-')}`}>
+                      <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
+                        {tag}
+                      </Badge>
+                    </Link>
                   ))}
                 </div>
               </div>

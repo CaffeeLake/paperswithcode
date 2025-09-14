@@ -70,9 +70,11 @@ const TrendingPaperCard = ({
         {/* Tags */}
         <div className="flex flex-wrap gap-2 mb-4">
           {tags.map((tag, index) => (
-            <Badge key={index} variant="secondary" className="text-xs">
-              {tag}
-            </Badge>
+            <Link key={index} to={`/tasks/${tag.toLowerCase().replace(/\s+/g, '-')}`}>
+              <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
+                {tag}
+              </Badge>
+            </Link>
           ))}
         </div>
 
