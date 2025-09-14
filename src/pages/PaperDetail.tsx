@@ -38,6 +38,7 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
     badge: "+423",
     category: "Machine Learning",
     paperOfTheDay: true,
+    tags: ["reinforcement learning", "distributed computing", "large language models", "collective intelligence"],
   };
 
   return (
@@ -121,6 +122,17 @@ Post-training language models (LMs) with reinforcement learning (RL) can enhance
                     </span>
                   ))}
                 </span>
+              </div>
+
+              {/* Tags */}
+              <div className="mb-6">
+                <div className="flex flex-wrap gap-2">
+                  {paper.tags.map((tag, index) => (
+                    <Badge key={index} variant="secondary" className="text-xs">
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
               </div>
             </div>
 
