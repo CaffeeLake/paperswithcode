@@ -755,4 +755,4 @@ def build_task_hierarchy_from_evaluation_tables():
 - **Personalization**: Recommend papers based on HF activity and following
 - **Seamless Workflow**: Direct links to HF models, datasets, and spaces
 
-This schema design provides a robust foundation for the Nexus backend while maintaining compatibility with the existing frontend and the original PapersWithCode data structure, enhanced with modern Hugging Face ecosystem integration.
+This schema design provides a robust foundation for the PapersWithCode backend while maintaining compatibility with the existing frontend and the original PapersWithCode data structure, enhanced with modern Hugging Face ecosystem integration.
