@@ -1,4 +1,4 @@
-# AI Paper Nexus Backend Implementation Plan
+# PapersWithCode Backend Implementation Plan
 
 ## Executive Summary
 
@@ -7,7 +7,7 @@ Transform the current frontend-only application with hardcoded data into a full-
 ## Project Structure
 
 ```
-ai-paper-nexus/
+paperswithcode/
 ├── frontend/          # Existing React app (moved)
 │   ├── src/
 │   ├── package.json
@@ -106,7 +106,7 @@ Based on PapersWithCode API client analysis:
 
 ### Option 1: Monorepo (Recommended)
 ```
-ai-paper-nexus/
+paperswithcode/
 ├── frontend/     # React app
 ├── backend/      # FastAPI app
 └── database/     # Schema & migrations
@@ -119,9 +119,9 @@ ai-paper-nexus/
 
 ### Option 2: Separate Repositories
 ```
-ai-paper-nexus-frontend/  # React repo
-ai-paper-nexus-backend/   # FastAPI repo
-ai-paper-nexus-db/        # Schema repo
+paperswithcode-frontend/  # React repo
+paperswithcode-backend/   # FastAPI repo
+paperswithcode-db/        # Schema repo
 ```
 
 **Advantages**:

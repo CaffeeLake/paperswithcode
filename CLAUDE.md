@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Paper Nexus is a complete recreation of PapersWithCode built with modern web technologies. The project uses the original PapersWithCode data dump (2.2GB papers + 236MB evaluation tables) to recreate the full functionality of the original platform.
+PapersWithCode is a complete recreation of PapersWithCode built with modern web technologies. The project uses the original PapersWithCode data dump (2.2GB papers + 236MB evaluation tables) to recreate the full functionality of the original platform.
 
 **Tech Stack**: React 18 + TypeScript + Vite + shadcn/ui + Tailwind CSS + TanStack Query + React Router v6
 

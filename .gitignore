@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Data
+data/
+
+# Extracted data
+extracted_data/
