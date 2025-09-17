@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""
+Development server runner for the PapersWithCode FastAPI backend.
+
+This script provides an easy way to run the development server with proper
+configuration and environment setup.
+"""
+
+import os
+import sys
+import uvicorn
+from pathlib import Path
+
+# Add the project root to the Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from backend.config import get_settings
+
+
+def main():
+    """Run the development server."""
+    settings = get_settings()
+    
+    print("🚀 Starting PapersWithCode FastAPI Development Server")
+    print(f"📊 Database: {settings.database_url}")
+    print(f"🌍 Environment: {settings.environment}")
+    print(f"🔧 Host: {settings.host}:{settings.port}")
+    print(f"📚 API Docs: http://{settings.host}:{settings.port}/docs")
+    print("-" * 50)
+    
+    # Run the server
+    uvicorn.run(
+        "backend.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.is_development,
+        log_level=settings.log_level.lower(),
+        access_log=True,
+        reload_dirs=[str(project_root / "backend")] if settings.is_development else None
+    )
+
+
+if __name__ == "__main__":
+    main()

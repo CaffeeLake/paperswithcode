@@ -28,3 +28,10 @@ data/
 
 # Extracted data
 extracted_data/
+
+# Environment variables
+*.env
+
+# Pycache
+__pycache__/
+*.pyc

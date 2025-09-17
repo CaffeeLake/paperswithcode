@@ -4,7 +4,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Project Overview
 
-PapersWithCode.ai is a complete recreation of PapersWithCode.com built with modern web technologies. The project consists of a React frontend and a PostgreSQL database backend, using the original PapersWithCode data dump (2.2GB papers + 236MB evaluation tables).
+PapersWithCode.ai is a complete recreation of PapersWithCode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database. The original PapersWithCode data dump (2.2GB papers + 236MB evaluation tables) was used to populate the database, alongside a CRON job which updates the data on a daily basis using the Arxiv API.
 
 **Tech Stack**:
 - **Frontend**: React 18 + TypeScript + Vite + shadcn/ui + Tailwind CSS + TanStack Query + React Router v6

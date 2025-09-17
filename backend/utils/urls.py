@@ -1,0 +1,270 @@
+"""
+URL construction utilities for papers and ArXiv integration.
+
+This module provides functions to construct URLs for ArXiv papers,
+PDFs, and our own platform URLs, following the patterns described
+in the DATABASE_SCHEMA_UML.md documentation.
+"""
+
+from typing import Optional
+from urllib.parse import urljoin
+
+from ..config import get_settings
+
+
+def get_arxiv_abs_url(arxiv_id: str, version: Optional[str] = None) -> Optional[str]:
+    """
+    Construct ArXiv abstract URL from ArXiv ID and version.
+    Handles both modern (1805.10616) and legacy (cs.DS/0610046) formats.
+
+    Args:
+        arxiv_id: Base ArXiv ID (e.g., "1805.10616")
+        version: Version string (e.g., "v2", "v3") - if None, returns latest version URL
+
+    Returns:
+        ArXiv abstract URL or None if arxiv_id is invalid
+    """
+    if not arxiv_id:
+        return None
+
+    settings = get_settings()
+    
+    if version and version != 'v1':
+        return f"{settings.arxiv_base_url}/abs/{arxiv_id}{version}"
+    else:
+        # No version returns latest version (ArXiv default behavior)
+        return f"{settings.arxiv_base_url}/abs/{arxiv_id}"
+
+
+def get_arxiv_pdf_url(arxiv_id: str, version: Optional[str] = None) -> Optional[str]:
+    """
+    Construct ArXiv PDF URL from ArXiv ID and version.
+    Handles both modern and legacy formats.
+
+    Args:
+        arxiv_id: Base ArXiv ID (e.g., "1805.10616")
+        version: Version string (e.g., "v2", "v3") - if None, returns latest version URL
+
+    Returns:
+        ArXiv PDF URL or None if arxiv_id is invalid
+    """
+    if not arxiv_id:
+        return None
+
+    settings = get_settings()
+    
+    if version and version != 'v1':
+        return f"{settings.arxiv_base_url}/pdf/{arxiv_id}{version}.pdf"
+    else:
+        # No version returns latest version (ArXiv default behavior)
+        return f"{settings.arxiv_base_url}/pdf/{arxiv_id}.pdf"
+
+
+def get_paper_url(paper_id: int, arxiv_id: Optional[str] = None, domain: Optional[str] = None) -> str:
+    """
+    Construct your platform's paper URL.
+    Prefer ArXiv ID for clean URLs, fallback to database ID.
+
+    Args:
+        paper_id: Database paper ID
+        arxiv_id: ArXiv ID if available
+        domain: Domain to use (defaults to app_domain from settings)
+
+    Returns:
+        Platform paper URL
+    """
+    settings = get_settings()
+    domain = domain or settings.app_domain
+    
+    if arxiv_id:
+        # Clean URL: paperswithcode.ai/papers/1805.10616
+        return f"https://{domain}/papers/{arxiv_id}"
+    else:
+        # Fallback for non-ArXiv papers: paperswithcode.ai/papers/12345
+        return f"https://{domain}/papers/{paper_id}"
+
+
+def get_paper_version_url(arxiv_id: str, version: str, domain: Optional[str] = None) -> str:
+    """
+    Construct URL for a specific paper version.
+
+    Args:
+        arxiv_id: ArXiv ID
+        version: Version string (e.g., "v2")
+        domain: Domain to use (defaults to app_domain from settings)
+
+    Returns:
+        Platform paper version URL
+    """
+    settings = get_settings()
+    domain = domain or settings.app_domain
+    
+    return f"https://{domain}/papers/{arxiv_id}/v/{version}"
+
+
+def get_paper_versions_url(arxiv_id: str, domain: Optional[str] = None) -> str:
+    """
+    Construct URL for paper versions page.
+
+    Args:
+        arxiv_id: ArXiv ID
+        domain: Domain to use (defaults to app_domain from settings)
+
+    Returns:
+        Platform paper versions URL
+    """
+    settings = get_settings()
+    domain = domain or settings.app_domain
+    
+    return f"https://{domain}/papers/{arxiv_id}/versions"
+
+
+def get_paper_comparison_url(arxiv_id: str, from_version: str, to_version: str, domain: Optional[str] = None) -> str:
+    """
+    Construct URL for paper version comparison.
+
+    Args:
+        arxiv_id: ArXiv ID
+        from_version: Source version
+        to_version: Target version
+        domain: Domain to use (defaults to app_domain from settings)
+
+    Returns:
+        Platform paper comparison URL
+    """
+    settings = get_settings()
+    domain = domain or settings.app_domain
+    
+    return f"https://{domain}/papers/{arxiv_id}/compare/{from_version}/{to_version}"
+
+
+def get_paper_slug_from_title(title: str) -> str:
+    """
+    Alternative: Generate URL-friendly slug from paper title.
+    For even cleaner URLs like: paperswithcode.ai/papers/dynamic-network-model-from-partial
+
+    Args:
+        title: Paper title
+
+    Returns:
+        URL-friendly slug
+    """
+    import re
+    
+    slug = re.sub(r'[^\w\s-]', '', title.lower())
+    slug = re.sub(r'[-\s]+', '-', slug)
+    return slug.strip('-')
+
+
+def validate_arxiv_id(arxiv_id: str) -> bool:
+    """
+    Validate ArXiv ID format.
+    Supports both modern (1805.10616) and legacy (cs.DS/0610046) formats.
+
+    Args:
+        arxiv_id: ArXiv ID to validate
+
+    Returns:
+        True if valid ArXiv ID format
+    """
+    import re
+    
+    if not arxiv_id:
+        return False
+    
+    # Modern format: YYMM.NNNN (e.g., 1805.10616)
+    modern_pattern = r'^\d{4}\.\d{4,5}$'
+    
+    # Legacy format: subject-class/YYMMnnn (e.g., cs.DS/0610046)
+    legacy_pattern = r'^[a-z-]+(\.[A-Z]{2})?\/\d{7}$'
+    
+    return bool(re.match(modern_pattern, arxiv_id) or re.match(legacy_pattern, arxiv_id))
+
+
+def validate_version(version: str) -> bool:
+    """
+    Validate ArXiv version format.
+
+    Args:
+        version: Version string to validate (e.g., "v1", "v2", "v10")
+
+    Returns:
+        True if valid version format
+    """
+    import re
+    
+    if not version:
+        return False
+    
+    # Version format: v followed by one or more digits
+    version_pattern = r'^v\d+$'
+    
+    return bool(re.match(version_pattern, version))
+
+
+# Utility functions for URL parsing
+
+def parse_arxiv_url(url: str) -> Optional[tuple[str, Optional[str]]]:
+    """
+    Parse ArXiv URL to extract ArXiv ID and version.
+
+    Args:
+        url: ArXiv URL (abs or pdf)
+
+    Returns:
+        Tuple of (arxiv_id, version) or None if invalid URL
+    """
+    import re
+    
+    if not url:
+        return None
+    
+    # Pattern for ArXiv URLs with optional version
+    # Examples:
+    # https://arxiv.org/abs/1805.10616
+    # https://arxiv.org/abs/1805.10616v2
+    # https://arxiv.org/pdf/1805.10616v2.pdf
+    arxiv_pattern = r'arxiv\.org/(?:abs|pdf)/([^v\s]+)(v\d+)?(?:\.pdf)?'
+    
+    match = re.search(arxiv_pattern, url)
+    if match:
+        arxiv_id = match.group(1)
+        version = match.group(2) if match.group(2) else None
+        
+        if validate_arxiv_id(arxiv_id):
+            return arxiv_id, version
+    
+    return None
+
+
+def extract_arxiv_id_from_text(text: str) -> Optional[str]:
+    """
+    Extract ArXiv ID from free text (useful for parsing paper metadata).
+
+    Args:
+        text: Text that might contain an ArXiv ID
+
+    Returns:
+        ArXiv ID if found, None otherwise
+    """
+    import re
+    
+    if not text:
+        return None
+    
+    # Look for ArXiv ID patterns in text
+    patterns = [
+        r'arXiv:(\d{4}\.\d{4,5})',  # arXiv:1805.10616
+        r'arxiv:(\d{4}\.\d{4,5})',  # arxiv:1805.10616 (lowercase)
+        r'(\d{4}\.\d{4,5})',        # 1805.10616 (standalone)
+        r'arXiv:([a-z-]+(?:\.[A-Z]{2})?\/\d{7})',  # arXiv:cs.DS/0610046 (legacy)
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            arxiv_id = match.group(1)
+            if validate_arxiv_id(arxiv_id):
+                return arxiv_id
+    
+    return None
