@@ -17,7 +17,7 @@ git clone <...>
 cd paperswithcode
 ```
 
-[Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`.
+[Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`. The hooks can then be installed using `pre-commit install`.
 
 ## How to run
 
@@ -32,5 +32,5 @@ The backend (written in Python) can be run as follows:
 
 ```bash
 cd backend
-uv run 
+uv run
 ```
