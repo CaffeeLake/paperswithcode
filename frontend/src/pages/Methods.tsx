@@ -15,7 +15,7 @@ const methodCategories = [
         papersWithCode: 8337
       },
       {
-        id: "stochastic-optimization", 
+        id: "stochastic-optimization",
         name: "Stochastic Optimization",
         icon: "📈",
         methodCount: 32,
@@ -23,7 +23,7 @@ const methodCategories = [
       },
       {
         id: "attention",
-        name: "Attention", 
+        name: "Attention",
         icon: "🎯",
         methodCount: 31,
         papersWithCode: 4702
@@ -45,7 +45,7 @@ const methodCategories = [
     ]
   },
   {
-    name: "Computer Vision", 
+    name: "Computer Vision",
     methods: [
       {
         id: "convolutional-neural-networks",
@@ -70,7 +70,7 @@ const methodCategories = [
       },
       {
         id: "object-detection-models",
-        name: "Object Detection Models", 
+        name: "Object Detection Models",
         icon: "👁️",
         methodCount: 34,
         papersWithCode: 833
@@ -90,7 +90,7 @@ const Methods = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       {/* Hero Section */}
       <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white py-16">
         <div className="container mx-auto px-4 text-center">
@@ -111,7 +111,7 @@ const Methods = () => {
         {methodCategories.map((category) => (
           <div key={category.name} className="mb-12">
             <h2 className="text-3xl font-bold mb-6">{category.name}</h2>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
               {category.methods.map((method) => (
                 <Card key={method.id} className="hover:shadow-lg transition-shadow cursor-pointer">
@@ -120,7 +120,7 @@ const Methods = () => {
                       <div className="text-3xl">{method.icon}</div>
                       <h3 className="text-lg font-semibold leading-tight">{method.name}</h3>
                     </div>
-                    
+
                     <div className="space-y-1 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">
                         <span className="text-primary">🔬</span>
@@ -134,7 +134,7 @@ const Methods = () => {
                 </Card>
               ))}
             </div>
-            
+
             <div className="mt-6">
               <Button variant="link" className="text-primary hover:underline">
                 ▶ See all {category.methods.length > 5 ? '52' : category.methods.length} categories

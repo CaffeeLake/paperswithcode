@@ -72,7 +72,7 @@ curl "http://localhost:8000/api/v1/papers/search?q=drone&limit=5"
 
 **Example results**:
 - Papers with 7 citations appear first
-- Papers with 1-3 citations appear next  
+- Papers with 1-3 citations appear next
 - Papers with 0 citations appear last
 
 ## 🚀 **Recommended Workflow**

@@ -12,7 +12,7 @@ This directory contains GitHub Actions workflows for managing the PapersWithCode
 
 **Manual Trigger**: Can be triggered manually with optional parameters:
 - `start_date`: Custom start date (YYYY-MM-DD)
-- `end_date`: Custom end date (YYYY-MM-DD)  
+- `end_date`: Custom end date (YYYY-MM-DD)
 - `dry_run`: Fetch papers without inserting them
 
 **What it does**:
@@ -25,7 +25,7 @@ This directory contains GitHub Actions workflows for managing the PapersWithCode
 
 **Purpose**: Test database functionality on code changes.
 
-**Triggers**: 
+**Triggers**:
 - Push to main/develop branches (when database files change)
 - Pull requests to main branch
 - Manual trigger

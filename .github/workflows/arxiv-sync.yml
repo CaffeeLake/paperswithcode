@@ -4,7 +4,7 @@ on:
   # Run daily at 6:00 AM UTC
   schedule:
     - cron: '0 6 * * *'
-  
+
   # Allow manual triggering
   workflow_dispatch:
     inputs:
@@ -25,7 +25,7 @@ on:
 jobs:
   sync-arxiv:
     runs-on: ubuntu-latest
-    
+
     services:
       postgres:
         image: postgres:15
@@ -40,24 +40,24 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
-    
+
     - name: Install uv
       uses: astral-sh/setup-uv@v3
       with:
         version: "latest"
-    
+
     - name: Install dependencies
       run: uv sync
-    
+
     - name: Set up database schema
       env:
         PGPASSWORD: postgres
@@ -67,10 +67,10 @@ jobs:
           echo "Waiting for PostgreSQL..."
           sleep 2
         done
-        
+
         # Create the database schema
         psql -h localhost -p 5432 -U postgres -d paperswithcode -f backend/database/setup_database.sql
-    
+
     - name: Test database connection
       env:
         DB_HOST: localhost
@@ -90,7 +90,7 @@ jobs:
             print('❌ Database connection failed')
             exit(1)
         "
-    
+
     - name: Run ArXiv sync
       env:
         DB_HOST: localhost
@@ -101,22 +101,22 @@ jobs:
       run: |
         # Prepare sync command
         SYNC_CMD="uv run python backend/database/arxiv_sync.py"
-        
+
         # Add date parameters if provided
         if [ -n "${{ github.event.inputs.start_date }}" ]; then
           SYNC_CMD="$SYNC_CMD --start-date ${{ github.event.inputs.start_date }}"
         fi
-        
+
         if [ -n "${{ github.event.inputs.end_date }}" ]; then
           SYNC_CMD="$SYNC_CMD --end-date ${{ github.event.inputs.end_date }}"
         fi
-        
+
         # Add database connection parameters
         SYNC_CMD="$SYNC_CMD --host localhost --database paperswithcode --user postgres --password postgres"
-        
+
         echo "Running: $SYNC_CMD"
         $SYNC_CMD
-    
+
     - name: Generate sync report
       if: always()
       env:
@@ -129,35 +129,35 @@ jobs:
         uv run python -c "
         from backend.database.db_connection import PapersDatabase, DatabaseConfig
         from datetime import date, timedelta
-        
+
         config = DatabaseConfig.from_env()
         db = PapersDatabase(config)
-        
+
         print('📊 Sync Report')
         print('=' * 50)
         print(f'Total papers: {db.get_paper_count():,}')
         print(f'Latest paper date: {db.get_latest_paper_date()}')
-        
+
         # Get recent additions (last 7 days)
         recent_query = '''
             SELECT DATE(created_at) as date, COUNT(*) as count
-            FROM papers 
+            FROM papers
             WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
             GROUP BY DATE(created_at)
             ORDER BY date DESC;
         '''
         recent_papers = db.execute_query(recent_query)
-        
+
         if recent_papers:
             print('\n📅 Recent additions (last 7 days):')
             for row in recent_papers:
                 print(f'  {row[\"date\"]}: {row[\"count\"]} papers')
         else:
             print('\n📅 No papers added in the last 7 days')
-        
+
         db.disconnect()
         "
-    
+
     - name: Upload logs
       if: always()
       uses: actions/upload-artifact@v4

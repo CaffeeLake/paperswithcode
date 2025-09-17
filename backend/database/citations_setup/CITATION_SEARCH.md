@@ -19,7 +19,7 @@ The enhanced search functionality uses citation counts as an importance metric t
 The search algorithm now uses a multi-tier approach with citation-based ranking:
 
 1. **Exact title matches** (highest priority) - sorted by citation count
-2. **Title contains query** (medium priority) - sorted by citation count  
+2. **Title contains query** (medium priority) - sorted by citation count
 3. **Full-text search** (lowest priority) - sorted by combined relevance + citation importance
 
 ### 3. Semantic Scholar Integration
@@ -65,7 +65,7 @@ curl -X POST "http://localhost:8000/papers/update-citations?limit=50"
 ### New Fields in `papers` Table
 
 ```sql
-ALTER TABLE papers 
+ALTER TABLE papers
 ADD COLUMN citation_count INTEGER DEFAULT 0,
 ADD COLUMN semantic_scholar_id VARCHAR(100),
 ADD COLUMN citation_updated_at TIMESTAMP WITH TIME ZONE;
@@ -145,7 +145,7 @@ For full-text search results, the ranking combines:
 
 ```sql
 ORDER BY (
-    ts_rank(to_tsvector('english', title || ' ' || abstract), query) + 
+    ts_rank(to_tsvector('english', title || ' ' || abstract), query) +
     (log(greatest(citation_count, 1)) / 10.0)
 ) DESC
 ```

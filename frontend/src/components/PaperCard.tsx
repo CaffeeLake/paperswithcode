@@ -48,7 +48,7 @@ const PaperCard = ({
   };
 
   return (
-    <Card 
+    <Card
       className="group transition-all duration-200 hover:shadow-paper-hover hover:-translate-y-1 cursor-pointer"
       onClick={handleCardClick}
     >
@@ -86,7 +86,7 @@ const PaperCard = ({
               {authors.slice(0, 5).map((author, index) => (
                 <Avatar key={index} className="w-6 h-6 border-2 border-background">
                   <AvatarImage src={author.avatar} />
-                  <AvatarFallback 
+                  <AvatarFallback
                     className="text-xs text-white font-medium"
                     style={{ backgroundColor: author.color }}
                   >

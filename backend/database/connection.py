@@ -19,12 +19,12 @@ class DatabaseManager:
     """
     Database manager for SQLAlchemy integration.
     """
-    
+
     def __init__(self):
         self.settings = get_settings()
         self._engine: Engine = None
         self._session_local: sessionmaker = None
-    
+
     @property
     def engine(self) -> Engine:
         """Get the SQLAlchemy engine."""
@@ -36,33 +36,31 @@ class DatabaseManager:
                 max_overflow=20,
                 pool_pre_ping=True,
                 pool_recycle=300,
-                echo=self.settings.is_development  # Log SQL queries in development
+                echo=self.settings.is_development,  # Log SQL queries in development
             )
         return self._engine
-    
+
     @property
     def session_local(self) -> sessionmaker:
         """Get the session factory."""
         if self._session_local is None:
             self._session_local = sessionmaker(
-                autocommit=False,
-                autoflush=False,
-                bind=self.engine
+                autocommit=False, autoflush=False, bind=self.engine
             )
         return self._session_local
-    
+
     def create_tables(self):
         """Create all database tables."""
         Base.metadata.create_all(bind=self.engine)
-    
+
     def drop_tables(self):
         """Drop all database tables (use with caution!)."""
         Base.metadata.drop_all(bind=self.engine)
-    
+
     def get_session(self) -> Generator[Session, None, None]:
         """
         Get a database session.
-        
+
         This is a generator function that yields a SQLAlchemy session
         and ensures proper cleanup.
         """
@@ -80,7 +78,7 @@ db_manager = DatabaseManager()
 def get_database_session() -> Generator[Session, None, None]:
     """
     FastAPI dependency for getting database sessions.
-    
+
     Usage in FastAPI endpoints:
     ```python
     @app.get("/papers/")
@@ -108,6 +106,7 @@ def drop_tables():
 
 # Utility functions for testing and development
 
+
 def reset_database():
     """Reset the database (drop and recreate all tables)."""
     print("⚠️  Resetting database...")
@@ -126,10 +125,10 @@ def init_database():
 if __name__ == "__main__":
     # For testing the database connection
     import sys
-    
+
     if len(sys.argv) > 1:
         command = sys.argv[1]
-        
+
         if command == "init":
             init_database()
         elif command == "reset":
@@ -138,6 +137,7 @@ if __name__ == "__main__":
             print("🔍 Testing database connection...")
             try:
                 from sqlalchemy import text
+
                 engine = get_engine()
                 with engine.connect() as conn:
                     result = conn.execute(text("SELECT 1"))

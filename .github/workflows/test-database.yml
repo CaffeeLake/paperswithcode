@@ -7,20 +7,20 @@ on:
       - 'backend/database/**'
       - 'pyproject.toml'
       - '.github/workflows/test-database.yml'
-  
+
   pull_request:
     branches: [ main ]
     paths:
       - 'backend/database/**'
       - 'pyproject.toml'
       - '.github/workflows/test-database.yml'
-  
+
   workflow_dispatch:
 
 jobs:
   test-database:
     runs-on: ubuntu-latest
-    
+
     services:
       postgres:
         image: postgres:15
@@ -35,24 +35,24 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
-    
+
     - name: Install uv
       uses: astral-sh/setup-uv@v3
       with:
         version: "latest"
-    
+
     - name: Install dependencies
       run: uv sync
-    
+
     - name: Set up database schema
       env:
         PGPASSWORD: postgres
@@ -62,10 +62,10 @@ jobs:
           echo "Waiting for PostgreSQL..."
           sleep 2
         done
-        
+
         # Create the database schema
         psql -h localhost -p 5432 -U postgres -d paperswithcode -f backend/database/setup_database.sql
-    
+
     - name: Test Database Connection Class
       env:
         DB_HOST: localhost
@@ -76,7 +76,7 @@ jobs:
       run: |
         echo "🧪 Testing Database Connection Class..."
         uv run python backend/database/db_connection.py
-    
+
     - name: Test ArXiv Sync (Limited)
       env:
         DB_HOST: localhost
@@ -88,7 +88,7 @@ jobs:
         echo "🧪 Testing ArXiv Sync with limited date range..."
         # Test with a single day to avoid long running tests
         uv run python backend/database/arxiv_sync.py --start-date 2025-09-01 --end-date 2025-09-01 --host localhost --database paperswithcode --user postgres --password postgres
-    
+
     - name: Test Full Test Suite
       env:
         DB_HOST: localhost
@@ -99,21 +99,21 @@ jobs:
       run: |
         echo "🧪 Running Full Test Suite..."
         uv run python backend/database/test_arxiv_sync.py
-    
+
     - name: Verify Database State
       env:
         PGPASSWORD: postgres
       run: |
         echo "🔍 Verifying database state..."
         psql -h localhost -p 5432 -U postgres -d paperswithcode -c "
-        SELECT 
+        SELECT
           COUNT(*) as total_papers,
           COUNT(DISTINCT arxiv_id) as unique_papers,
           MIN(date_published) as oldest_paper,
           MAX(date_published) as newest_paper
         FROM papers;
         "
-    
+
     - name: Test Database Queries
       env:
         DB_HOST: localhost
@@ -125,27 +125,27 @@ jobs:
         echo "🔍 Testing database queries..."
         uv run python -c "
         from backend.database.db_connection import PapersDatabase, DatabaseConfig
-        
+
         config = DatabaseConfig.from_env()
         db = PapersDatabase(config)
-        
+
         # Test various database methods
         print(f'📊 Total papers: {db.get_paper_count()}')
         print(f'📅 Latest date: {db.get_latest_paper_date()}')
-        
+
         # Test search (if we have papers)
         if db.get_paper_count() > 0:
             results = db.search_papers('neural', limit=3)
             print(f'🔍 Search results: {len(results)} papers found')
-            
+
             # Test version distribution
             versions = db.get_version_distribution()
             print(f'📈 Version distribution: {len(versions)} versions')
-        
+
         db.disconnect()
         print('✅ All database tests passed!')
         "
-    
+
     - name: Upload test artifacts
       if: always()
       uses: actions/upload-artifact@v4

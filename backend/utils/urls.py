@@ -7,7 +7,6 @@ in the DATABASE_SCHEMA_UML.md documentation.
 """
 
 from typing import Optional
-from urllib.parse import urljoin
 
 from ..config import get_settings
 
@@ -28,8 +27,8 @@ def get_arxiv_abs_url(arxiv_id: str, version: Optional[str] = None) -> Optional[
         return None
 
     settings = get_settings()
-    
-    if version and version != 'v1':
+
+    if version and version != "v1":
         return f"{settings.arxiv_base_url}/abs/{arxiv_id}{version}"
     else:
         # No version returns latest version (ArXiv default behavior)
@@ -52,15 +51,17 @@ def get_arxiv_pdf_url(arxiv_id: str, version: Optional[str] = None) -> Optional[
         return None
 
     settings = get_settings()
-    
-    if version and version != 'v1':
+
+    if version and version != "v1":
         return f"{settings.arxiv_base_url}/pdf/{arxiv_id}{version}.pdf"
     else:
         # No version returns latest version (ArXiv default behavior)
         return f"{settings.arxiv_base_url}/pdf/{arxiv_id}.pdf"
 
 
-def get_paper_url(paper_id: int, arxiv_id: Optional[str] = None, domain: Optional[str] = None) -> str:
+def get_paper_url(
+    paper_id: int, arxiv_id: Optional[str] = None, domain: Optional[str] = None
+) -> str:
     """
     Construct your platform's paper URL.
     Prefer ArXiv ID for clean URLs, fallback to database ID.
@@ -75,7 +76,7 @@ def get_paper_url(paper_id: int, arxiv_id: Optional[str] = None, domain: Optiona
     """
     settings = get_settings()
     domain = domain or settings.app_domain
-    
+
     if arxiv_id:
         # Clean URL: paperswithcode.ai/papers/1805.10616
         return f"https://{domain}/papers/{arxiv_id}"
@@ -84,7 +85,9 @@ def get_paper_url(paper_id: int, arxiv_id: Optional[str] = None, domain: Optiona
         return f"https://{domain}/papers/{paper_id}"
 
 
-def get_paper_version_url(arxiv_id: str, version: str, domain: Optional[str] = None) -> str:
+def get_paper_version_url(
+    arxiv_id: str, version: str, domain: Optional[str] = None
+) -> str:
     """
     Construct URL for a specific paper version.
 
@@ -98,7 +101,7 @@ def get_paper_version_url(arxiv_id: str, version: str, domain: Optional[str] = N
     """
     settings = get_settings()
     domain = domain or settings.app_domain
-    
+
     return f"https://{domain}/papers/{arxiv_id}/v/{version}"
 
 
@@ -115,11 +118,13 @@ def get_paper_versions_url(arxiv_id: str, domain: Optional[str] = None) -> str:
     """
     settings = get_settings()
     domain = domain or settings.app_domain
-    
+
     return f"https://{domain}/papers/{arxiv_id}/versions"
 
 
-def get_paper_comparison_url(arxiv_id: str, from_version: str, to_version: str, domain: Optional[str] = None) -> str:
+def get_paper_comparison_url(
+    arxiv_id: str, from_version: str, to_version: str, domain: Optional[str] = None
+) -> str:
     """
     Construct URL for paper version comparison.
 
@@ -134,7 +139,7 @@ def get_paper_comparison_url(arxiv_id: str, from_version: str, to_version: str, 
     """
     settings = get_settings()
     domain = domain or settings.app_domain
-    
+
     return f"https://{domain}/papers/{arxiv_id}/compare/{from_version}/{to_version}"
 
 
@@ -150,10 +155,10 @@ def get_paper_slug_from_title(title: str) -> str:
         URL-friendly slug
     """
     import re
-    
-    slug = re.sub(r'[^\w\s-]', '', title.lower())
-    slug = re.sub(r'[-\s]+', '-', slug)
-    return slug.strip('-')
+
+    slug = re.sub(r"[^\w\s-]", "", title.lower())
+    slug = re.sub(r"[-\s]+", "-", slug)
+    return slug.strip("-")
 
 
 def validate_arxiv_id(arxiv_id: str) -> bool:
@@ -168,17 +173,19 @@ def validate_arxiv_id(arxiv_id: str) -> bool:
         True if valid ArXiv ID format
     """
     import re
-    
+
     if not arxiv_id:
         return False
-    
+
     # Modern format: YYMM.NNNN (e.g., 1805.10616)
-    modern_pattern = r'^\d{4}\.\d{4,5}$'
-    
+    modern_pattern = r"^\d{4}\.\d{4,5}$"
+
     # Legacy format: subject-class/YYMMnnn (e.g., cs.DS/0610046)
-    legacy_pattern = r'^[a-z-]+(\.[A-Z]{2})?\/\d{7}$'
-    
-    return bool(re.match(modern_pattern, arxiv_id) or re.match(legacy_pattern, arxiv_id))
+    legacy_pattern = r"^[a-z-]+(\.[A-Z]{2})?\/\d{7}$"
+
+    return bool(
+        re.match(modern_pattern, arxiv_id) or re.match(legacy_pattern, arxiv_id)
+    )
 
 
 def validate_version(version: str) -> bool:
@@ -192,17 +199,18 @@ def validate_version(version: str) -> bool:
         True if valid version format
     """
     import re
-    
+
     if not version:
         return False
-    
+
     # Version format: v followed by one or more digits
-    version_pattern = r'^v\d+$'
-    
+    version_pattern = r"^v\d+$"
+
     return bool(re.match(version_pattern, version))
 
 
 # Utility functions for URL parsing
+
 
 def parse_arxiv_url(url: str) -> Optional[tuple[str, Optional[str]]]:
     """
@@ -215,25 +223,25 @@ def parse_arxiv_url(url: str) -> Optional[tuple[str, Optional[str]]]:
         Tuple of (arxiv_id, version) or None if invalid URL
     """
     import re
-    
+
     if not url:
         return None
-    
+
     # Pattern for ArXiv URLs with optional version
     # Examples:
     # https://arxiv.org/abs/1805.10616
     # https://arxiv.org/abs/1805.10616v2
     # https://arxiv.org/pdf/1805.10616v2.pdf
-    arxiv_pattern = r'arxiv\.org/(?:abs|pdf)/([^v\s]+)(v\d+)?(?:\.pdf)?'
-    
+    arxiv_pattern = r"arxiv\.org/(?:abs|pdf)/([^v\s]+)(v\d+)?(?:\.pdf)?"
+
     match = re.search(arxiv_pattern, url)
     if match:
         arxiv_id = match.group(1)
         version = match.group(2) if match.group(2) else None
-        
+
         if validate_arxiv_id(arxiv_id):
             return arxiv_id, version
-    
+
     return None
 
 
@@ -248,23 +256,23 @@ def extract_arxiv_id_from_text(text: str) -> Optional[str]:
         ArXiv ID if found, None otherwise
     """
     import re
-    
+
     if not text:
         return None
-    
+
     # Look for ArXiv ID patterns in text
     patterns = [
-        r'arXiv:(\d{4}\.\d{4,5})',  # arXiv:1805.10616
-        r'arxiv:(\d{4}\.\d{4,5})',  # arxiv:1805.10616 (lowercase)
-        r'(\d{4}\.\d{4,5})',        # 1805.10616 (standalone)
-        r'arXiv:([a-z-]+(?:\.[A-Z]{2})?\/\d{7})',  # arXiv:cs.DS/0610046 (legacy)
+        r"arXiv:(\d{4}\.\d{4,5})",  # arXiv:1805.10616
+        r"arxiv:(\d{4}\.\d{4,5})",  # arxiv:1805.10616 (lowercase)
+        r"(\d{4}\.\d{4,5})",  # 1805.10616 (standalone)
+        r"arXiv:([a-z-]+(?:\.[A-Z]{2})?\/\d{7})",  # arXiv:cs.DS/0610046 (legacy)
     ]
-    
+
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             arxiv_id = match.group(1)
             if validate_arxiv_id(arxiv_id):
                 return arxiv_id
-    
+
     return None

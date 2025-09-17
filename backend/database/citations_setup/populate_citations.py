@@ -18,10 +18,10 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(backend_dir))
 
 # Set environment variable to help with relative imports
-os.environ.setdefault('PYTHONPATH', str(backend_dir))
+os.environ.setdefault("PYTHONPATH", str(backend_dir))
 
-from backend.database.connection import get_database_session
-from backend.services.semantic_scholar_service import SemanticScholarService
+from backend.database.connection import get_database_session  # noqa: E402
+from backend.services.semantic_scholar_service import SemanticScholarService  # noqa: E402
 
 # Semantic Scholar API key
 SEMANTIC_SCHOLAR_API_KEY = "6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa"
@@ -30,67 +30,68 @@ SEMANTIC_SCHOLAR_API_KEY = "6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa"
 async def populate_citations(limit: int = 50):
     """
     Populate citation counts for papers in the database.
-    
+
     Args:
         limit: Maximum number of papers to update
     """
     print(f"🚀 Starting citation count population for up to {limit} papers...")
-    
+
     # Get database session
     db = next(get_database_session())
-    
+
     try:
         service = SemanticScholarService(db, api_key=SEMANTIC_SCHOLAR_API_KEY)
-        
+
         print("📊 Updating citation counts from Semantic Scholar API...")
-        print(f"🔑 Using API key for higher rate limits (1 req/sec)")
+        print("🔑 Using API key for higher rate limits (1 req/sec)")
         updated_count = await service.batch_update_citation_counts(limit)
-        
+
         print(f"✅ Successfully updated citation counts for {updated_count} papers!")
-        
+
         if updated_count > 0:
             print("\n📈 Citation update summary:")
             print(f"  - Papers processed: {updated_count}")
-            print(f"  - Rate limit respected: Yes")
-            print(f"  - Database updated: Yes")
-        
+            print("  - Rate limit respected: Yes")
+            print("  - Database updated: Yes")
+
     except Exception as e:
         print(f"❌ Error populating citations: {e}")
         return False
     finally:
         db.close()
-    
+
     return True
 
 
 async def main():
     """Main function."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Populate citation counts for papers")
     parser.add_argument(
-        "--limit", 
-        type=int, 
-        default=50, 
-        help="Maximum number of papers to update (default: 50)"
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of papers to update (default: 50)",
     )
-    
+
     args = parser.parse_args()
-    
+
     print("📚 Citation Count Population Tool")
     print("=" * 40)
-    
+
     # Check if httpx is available
-    try:
-        import httpx
+    import importlib.util
+
+    if importlib.util.find_spec("httpx") is not None:
         print("✅ httpx is available")
-    except ImportError:
+    else:
         print("❌ httpx is not installed. Run: uv add httpx")
         sys.exit(1)
-    
+
     # Run the population
     success = await populate_citations(args.limit)
-    
+
     if success:
         print("\n🎉 Citation population completed successfully!")
         print("\nNext steps:")

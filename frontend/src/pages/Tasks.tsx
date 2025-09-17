@@ -10,7 +10,7 @@ const taskCategories = [
     tasks: [
       {
         id: 1,
-        name: "Semantic Segmentation", 
+        name: "Semantic Segmentation",
         slug: "semantic-segmentation",
         icon: "🎯",
         leaderboards: 59,
@@ -20,7 +20,7 @@ const taskCategories = [
         id: 2,
         name: "Image Classification",
         slug: "image-classification",
-        icon: "🖼️", 
+        icon: "🖼️",
         leaderboards: 127,
         papers: 769
       },
@@ -29,13 +29,13 @@ const taskCategories = [
         name: "Object Detection",
         slug: "object-detection",
         icon: "🔍",
-        leaderboards: 58, 
+        leaderboards: 58,
         papers: 644
       },
       {
         id: 4,
         name: "Image Generation",
-        slug: "image-generation", 
+        slug: "image-generation",
         icon: "🎨",
         leaderboards: 92,
         papers: 318
@@ -65,7 +65,7 @@ const taskCategories = [
       {
         id: 7,
         name: "Language Modelling",
-        slug: "language-modelling", 
+        slug: "language-modelling",
         icon: "📝",
         leaderboards: 11,
         papers: 562
@@ -90,7 +90,7 @@ const taskCategories = [
         id: 10,
         name: "Text Generation",
         slug: "text-generation",
-        icon: "📄", 
+        icon: "📄",
         leaderboards: 33,
         papers: 225
       }
@@ -117,12 +117,12 @@ const Tasks = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       <main className="container mx-auto px-4 py-8">
         {/* Header Section */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold mb-4">Browse State-of-the-Art</h1>
-          
+
           <div className="flex items-center space-x-4 text-muted-foreground mb-4">
             <div className="flex items-center space-x-1">
               <BarChart className="w-4 h-4" />
@@ -156,7 +156,7 @@ const Tasks = () => {
         {taskCategories.map((category, categoryIndex) => (
           <div key={category.name} className="mb-12">
             <h2 className="text-2xl font-semibold mb-6">{category.name}</h2>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-6">
               {category.tasks.map((task) => (
                 <Link key={task.id} to={`/tasks/${task.slug}`}>
@@ -169,7 +169,7 @@ const Tasks = () => {
                         <h3 className="font-semibold text-base leading-tight">{task.name}</h3>
                       </div>
                     </div>
-                    
+
                     <div className="space-y-2 text-sm text-muted-foreground">
                       <div className="flex items-center space-x-1">
                         <BarChart className="w-3 h-3" />

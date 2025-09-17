@@ -62,7 +62,7 @@ const TrendingPaperCard = ({
             {title}
           </h3>
         </Link>
-        
+
         <p className="text-sm text-muted-foreground mb-4 leading-relaxed line-clamp-3">
           {abstract}
         </p>
@@ -84,7 +84,7 @@ const TrendingPaperCard = ({
             <div className="flex items-center space-x-1">
               {authors.slice(0, 4).map((author, index) => (
                 <Avatar key={index} className="w-6 h-6">
-                  <AvatarFallback 
+                  <AvatarFallback
                     className="text-xs text-white"
                     style={{ backgroundColor: author.color }}
                   >

@@ -6,7 +6,7 @@ import { Link, useLocation } from "react-router-dom";
 
 const Header = () => {
   const location = useLocation();
-  
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 shadow-header">
       <div className="container mx-auto px-4">
@@ -19,11 +19,11 @@ const Header = () => {
               </div>
               <span className="text-xl font-semibold">AI Papers</span>
             </Link>
-            
+
             <nav className="hidden md:flex items-center space-x-6">
               <Link to="/">
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   className={`text-sm font-medium ${
                     location.pathname === '/' ? 'text-primary' : ''
                   }`}
@@ -32,8 +32,8 @@ const Header = () => {
                 </Button>
               </Link>
               <Link to="/tasks">
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   className={`text-sm font-medium ${
                     location.pathname === '/tasks' ? 'text-primary' : ''
                   }`}
@@ -42,8 +42,8 @@ const Header = () => {
                 </Button>
               </Link>
               <Link to="/methods">
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   className={`text-sm font-medium ${
                     location.pathname === '/methods' ? 'text-primary' : ''
                   }`}

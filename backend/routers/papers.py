@@ -18,22 +18,34 @@ from ..utils.urls import validate_arxiv_id, validate_version
 router = APIRouter()
 
 
-@router.get("/papers/", response_model=Papers, summary="Get papers with pagination and filtering")
+@router.get(
+    "/papers/",
+    response_model=Papers,
+    summary="Get papers with pagination and filtering",
+)
 async def get_papers(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
-    page_size: Optional[int] = Query(None, ge=1, le=500, description="Number of papers per page"),
+    page_size: Optional[int] = Query(
+        None, ge=1, le=500, description="Number of papers per page"
+    ),
     search: Optional[str] = Query(None, description="Search term for title/abstract"),
-    published_after: Optional[str] = Query(None, description="Filter papers published after this date (YYYY-MM-DD)"),
-    published_before: Optional[str] = Query(None, description="Filter papers published before this date (YYYY-MM-DD)"),
+    published_after: Optional[str] = Query(
+        None, description="Filter papers published after this date (YYYY-MM-DD)"
+    ),
+    published_before: Optional[str] = Query(
+        None, description="Filter papers published before this date (YYYY-MM-DD)"
+    ),
     conference: Optional[str] = Query(None, description="Filter by conference"),
-    latest_only: bool = Query(True, description="Whether to only include latest versions of papers"),
+    latest_only: bool = Query(
+        True, description="Whether to only include latest versions of papers"
+    ),
     order_by: str = Query("date_published", description="Field to order by"),
     order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
-    db: Session = Depends(get_database_session)
+    db: Session = Depends(get_database_session),
 ):
     """
     Get a paginated list of papers with optional filtering and searching.
-    
+
     This endpoint provides comprehensive paper listing functionality with:
     - Pagination support
     - Full-text search in titles and abstracts
@@ -53,29 +65,35 @@ async def get_papers(
             conference=conference,
             latest_only=latest_only,
             order_by=order_by,
-            order_dir=order_dir
+            order_dir=order_dir,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/search", response_model=List[PaperSummary], summary="Search papers with citation-based ranking")
+@router.get(
+    "/papers/search",
+    response_model=List[PaperSummary],
+    summary="Search papers with citation-based ranking",
+)
 async def search_papers(
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
-    enhanced: bool = Query(False, description="Use enhanced search with Semantic Scholar integration"),
-    db: Session = Depends(get_database_session)
+    enhanced: bool = Query(
+        False, description="Use enhanced search with Semantic Scholar integration"
+    ),
+    db: Session = Depends(get_database_session),
 ):
     """
     Full-text search for papers in titles and abstracts with citation-based ranking.
-    
+
     Uses PostgreSQL's full-text search capabilities combined with citation counts
     to rank papers by both relevance and importance. When enhanced=true, also
     queries Semantic Scholar API for highly cited papers.
-    
+
     Returns paper summaries ordered by:
     1. Exact title matches (sorted by citation count)
-    2. Title contains query (sorted by citation count)  
+    2. Title contains query (sorted by citation count)
     3. Full-text matches (sorted by relevance + citation importance)
     """
     try:
@@ -88,14 +106,16 @@ async def search_papers(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/recent", response_model=List[PaperSummary], summary="Get recent papers")
+@router.get(
+    "/papers/recent", response_model=List[PaperSummary], summary="Get recent papers"
+)
 async def get_recent_papers(
     limit: int = Query(10, ge=1, le=100, description="Maximum number of papers"),
-    db: Session = Depends(get_database_session)
+    db: Session = Depends(get_database_session),
 ):
     """
     Get recently published papers.
-    
+
     Returns the most recently published papers (latest versions only)
     ordered by publication date.
     """
@@ -107,12 +127,10 @@ async def get_recent_papers(
 
 
 @router.get("/papers/stats", summary="Get paper statistics")
-async def get_paper_stats(
-    db: Session = Depends(get_database_session)
-):
+async def get_paper_stats(db: Session = Depends(get_database_session)):
     """
     Get statistics about the papers in the database.
-    
+
     Returns information about:
     - Total number of papers
     - Papers by publication year
@@ -126,14 +144,16 @@ async def get_paper_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/{paper_id}", response_model=Paper, summary="Get paper by database ID")
+@router.get(
+    "/papers/{paper_id}", response_model=Paper, summary="Get paper by database ID"
+)
 async def get_paper_by_id(
     paper_id: int = Path(..., description="Database paper ID"),
-    db: Session = Depends(get_database_session)
+    db: Session = Depends(get_database_session),
 ):
     """
     Get a specific paper by its database ID.
-    
+
     Returns complete paper information including:
     - Full metadata
     - Author list
@@ -150,18 +170,23 @@ async def get_paper_by_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/arxiv/{arxiv_id}", response_model=Paper, summary="Get paper by ArXiv ID")
+@router.get(
+    "/papers/arxiv/{arxiv_id}", response_model=Paper, summary="Get paper by ArXiv ID"
+)
 async def get_paper_by_arxiv_id(
     arxiv_id: str = Path(..., description="ArXiv ID (e.g., '1805.10616')"),
-    version: Optional[str] = Query(None, description="Specific version (e.g., 'v2'). If not provided, returns latest version"),
-    db: Session = Depends(get_database_session)
+    version: Optional[str] = Query(
+        None,
+        description="Specific version (e.g., 'v2'). If not provided, returns latest version",
+    ),
+    db: Session = Depends(get_database_session),
 ):
     """
     Get a specific paper by its ArXiv ID and optional version.
-    
+
     If no version is specified, returns the latest version of the paper.
     If a specific version is requested, returns that exact version.
-    
+
     The ArXiv ID should be in the format:
     - Modern: 1805.10616
     - Legacy: cs.DS/0610046
@@ -169,17 +194,16 @@ async def get_paper_by_arxiv_id(
     # Validate ArXiv ID format
     if not validate_arxiv_id(arxiv_id):
         raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid ArXiv ID format: {arxiv_id}"
+            status_code=400, detail=f"Invalid ArXiv ID format: {arxiv_id}"
         )
-    
+
     # Validate version format if provided
     if version and not validate_version(version):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid version format: {version}. Expected format: v1, v2, etc."
+            detail=f"Invalid version format: {version}. Expected format: v1, v2, etc.",
         )
-    
+
     try:
         service = PaperService(db)
         return service.get_paper_by_arxiv_id(arxiv_id, version)
@@ -189,14 +213,18 @@ async def get_paper_by_arxiv_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/arxiv/{arxiv_id}/versions", response_model=PaperVersions, summary="Get all versions of a paper")
+@router.get(
+    "/papers/arxiv/{arxiv_id}/versions",
+    response_model=PaperVersions,
+    summary="Get all versions of a paper",
+)
 async def get_paper_versions(
     arxiv_id: str = Path(..., description="ArXiv ID"),
-    db: Session = Depends(get_database_session)
+    db: Session = Depends(get_database_session),
 ):
     """
     Get all versions of a paper by ArXiv ID.
-    
+
     Returns information about all available versions including:
     - Version identifiers
     - Publication dates
@@ -206,10 +234,9 @@ async def get_paper_versions(
     """
     if not validate_arxiv_id(arxiv_id):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid ArXiv ID format: {arxiv_id}"
+            status_code=400, detail=f"Invalid ArXiv ID format: {arxiv_id}"
         )
-    
+
     try:
         service = PaperService(db)
         return service.get_paper_versions(arxiv_id)
@@ -219,18 +246,20 @@ async def get_paper_versions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/papers/arxiv/{arxiv_id}/versions/{from_version}/compare/{to_version}", 
-           response_model=VersionComparison, 
-           summary="Compare two versions of a paper")
+@router.get(
+    "/papers/arxiv/{arxiv_id}/versions/{from_version}/compare/{to_version}",
+    response_model=VersionComparison,
+    summary="Compare two versions of a paper",
+)
 async def compare_paper_versions(
     arxiv_id: str = Path(..., description="ArXiv ID"),
     from_version: str = Path(..., description="Source version (e.g., 'v1')"),
     to_version: str = Path(..., description="Target version (e.g., 'v2')"),
-    db: Session = Depends(get_database_session)
+    db: Session = Depends(get_database_session),
 ):
     """
     Compare two versions of a paper to see what changed.
-    
+
     Returns comparison information including:
     - Whether the title changed
     - Whether the abstract changed
@@ -239,22 +268,19 @@ async def compare_paper_versions(
     """
     if not validate_arxiv_id(arxiv_id):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid ArXiv ID format: {arxiv_id}"
+            status_code=400, detail=f"Invalid ArXiv ID format: {arxiv_id}"
         )
-    
+
     if not validate_version(from_version):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid source version format: {from_version}"
+            status_code=400, detail=f"Invalid source version format: {from_version}"
         )
-    
+
     if not validate_version(to_version):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid target version format: {to_version}"
+            status_code=400, detail=f"Invalid target version format: {to_version}"
         )
-    
+
     try:
         service = PaperService(db)
         return service.compare_paper_versions(arxiv_id, from_version, to_version)
@@ -264,18 +290,22 @@ async def compare_paper_versions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/papers/update-citations", summary="Update citation counts from Semantic Scholar")
+@router.post(
+    "/papers/update-citations", summary="Update citation counts from Semantic Scholar"
+)
 async def update_citation_counts(
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of papers to update"),
-    db: Session = Depends(get_database_session)
+    limit: int = Query(
+        100, ge=1, le=1000, description="Maximum number of papers to update"
+    ),
+    db: Session = Depends(get_database_session),
 ):
     """
     Update citation counts for papers using the Semantic Scholar API.
-    
+
     This endpoint fetches citation counts from Semantic Scholar and updates
     the database. It prioritizes papers that haven't been updated recently
     or don't have citation data yet.
-    
+
     Returns statistics about the update process.
     """
     try:
@@ -288,14 +318,18 @@ async def update_citation_counts(
 
 # Legacy compatibility endpoints (matching original PapersWithCode API)
 
-@router.get("/papers", response_model=Papers, summary="Legacy: Get papers (compatibility endpoint)")
+
+@router.get(
+    "/papers",
+    response_model=Papers,
+    summary="Legacy: Get papers (compatibility endpoint)",
+)
 async def get_papers_legacy(
-    page: int = Query(1, ge=1),
-    db: Session = Depends(get_database_session)
+    page: int = Query(1, ge=1), db: Session = Depends(get_database_session)
 ):
     """
     Legacy compatibility endpoint matching the original PapersWithCode API.
-    
+
     This endpoint provides basic pagination without advanced filtering options
     to maintain compatibility with existing clients.
     """

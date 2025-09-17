@@ -20,7 +20,7 @@ echo ""
 # Current paper count
 echo "📊 Current database status:"
 sudo -u postgres psql -d paperswithcode -c "
-SELECT 
+SELECT
     COUNT(*) as total_papers,
     MIN(date_published) as earliest_paper,
     MAX(date_published) as latest_paper
@@ -34,7 +34,7 @@ if [ -d "$LOG_DIR" ]; then
     echo "📋 Recent log files:"
     ls -lt "$LOG_DIR"/*.log 2>/dev/null | head -3 || echo "No log files found"
     echo ""
-    
+
     # Show last few lines of most recent log
     LATEST_LOG=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -1)
     if [ -n "$LATEST_LOG" ]; then

@@ -15,10 +15,10 @@ const benchmarkData = {
     name: "Face Detection on WIDER Face (Easy)",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2015, 
-        value: 61.3, 
-        model: "MTCNN", 
+      {
+        year: 2015,
+        value: 61.3,
+        model: "MTCNN",
         isSOTA: false,
         paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
         paperUrl: "/paper/mtcnn-2015",
@@ -27,10 +27,10 @@ const benchmarkData = {
         isVerified: false,
         tags: ["CNN", "Multi-task"]
       },
-      { 
-        year: 2016, 
-        value: 78.2, 
-        model: "HR", 
+      {
+        year: 2016,
+        value: 78.2,
+        model: "HR",
         isSOTA: false,
         paperTitle: "Finding Tiny Faces",
         paperUrl: "/paper/hr-2016",
@@ -39,10 +39,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Scale", "Resolution"]
       },
-      { 
-        year: 2017, 
-        value: 92.1, 
-        model: "S3FD", 
+      {
+        year: 2017,
+        value: 92.1,
+        model: "S3FD",
         isSOTA: true,
         paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
         paperUrl: "/paper/s3fd-2017",
@@ -51,10 +51,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Single Shot", "Scale-invariant"]
       },
-      { 
-        year: 2018, 
-        value: 94.3, 
-        model: "PyramidBox", 
+      {
+        year: 2018,
+        value: 94.3,
+        model: "PyramidBox",
         isSOTA: true,
         paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
         paperUrl: "/paper/pyramidbox-2018",
@@ -63,10 +63,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Context", "Pyramid"]
       },
-      { 
-        year: 2019, 
-        value: 96.0, 
-        model: "DSFD", 
+      {
+        year: 2019,
+        value: 96.0,
+        model: "DSFD",
         isSOTA: true,
         paperTitle: "DSFD: Dual Shot Face Detector",
         paperUrl: "/paper/dsfd-2019",
@@ -75,10 +75,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Dual Shot", "Feature Enhancement"]
       },
-      { 
-        year: 2020, 
-        value: 96.8, 
-        model: "RetinaFace", 
+      {
+        year: 2020,
+        value: 96.8,
+        model: "RetinaFace",
         isSOTA: true,
         paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
         paperUrl: "/paper/retinaface-2020",
@@ -87,10 +87,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Multi-level", "Landmarks"]
       },
-      { 
-        year: 2021, 
-        value: 97.2, 
-        model: "SCRFD", 
+      {
+        year: 2021,
+        value: 97.2,
+        model: "SCRFD",
         isSOTA: true,
         paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
         paperUrl: "/paper/scrfd-2021",
@@ -105,10 +105,10 @@ const benchmarkData = {
     name: "Face Detection on WIDER Face (Medium)",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2015, 
-        value: 59.8, 
-        model: "MTCNN", 
+      {
+        year: 2015,
+        value: 59.8,
+        model: "MTCNN",
         isSOTA: false,
         paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
         paperUrl: "/paper/mtcnn-2015",
@@ -117,10 +117,10 @@ const benchmarkData = {
         isVerified: false,
         tags: ["CNN", "Multi-task"]
       },
-      { 
-        year: 2016, 
-        value: 75.1, 
-        model: "HR", 
+      {
+        year: 2016,
+        value: 75.1,
+        model: "HR",
         isSOTA: false,
         paperTitle: "Finding Tiny Faces",
         paperUrl: "/paper/hr-2016",
@@ -129,10 +129,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Scale", "Resolution"]
       },
-      { 
-        year: 2017, 
-        value: 90.8, 
-        model: "S3FD", 
+      {
+        year: 2017,
+        value: 90.8,
+        model: "S3FD",
         isSOTA: true,
         paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
         paperUrl: "/paper/s3fd-2017",
@@ -141,10 +141,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Single Shot", "Scale-invariant"]
       },
-      { 
-        year: 2018, 
-        value: 93.4, 
-        model: "PyramidBox", 
+      {
+        year: 2018,
+        value: 93.4,
+        model: "PyramidBox",
         isSOTA: true,
         paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
         paperUrl: "/paper/pyramidbox-2018",
@@ -153,10 +153,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Context", "Pyramid"]
       },
-      { 
-        year: 2019, 
-        value: 95.3, 
-        model: "DSFD", 
+      {
+        year: 2019,
+        value: 95.3,
+        model: "DSFD",
         isSOTA: true,
         paperTitle: "DSFD: Dual Shot Face Detector",
         paperUrl: "/paper/dsfd-2019",
@@ -165,10 +165,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Dual Shot", "Feature Enhancement"]
       },
-      { 
-        year: 2020, 
-        value: 95.9, 
-        model: "RetinaFace", 
+      {
+        year: 2020,
+        value: 95.9,
+        model: "RetinaFace",
         isSOTA: true,
         paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
         paperUrl: "/paper/retinaface-2020",
@@ -177,10 +177,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Multi-level", "Landmarks"]
       },
-      { 
-        year: 2021, 
-        value: 96.4, 
-        model: "SCRFD", 
+      {
+        year: 2021,
+        value: 96.4,
+        model: "SCRFD",
         isSOTA: true,
         paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
         paperUrl: "/paper/scrfd-2021",
@@ -195,10 +195,10 @@ const benchmarkData = {
     name: "Face Detection on WIDER Face (Hard)",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2015, 
-        value: 32.1, 
-        model: "MTCNN", 
+      {
+        year: 2015,
+        value: 32.1,
+        model: "MTCNN",
         isSOTA: false,
         paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
         paperUrl: "/paper/mtcnn-2015",
@@ -207,10 +207,10 @@ const benchmarkData = {
         isVerified: false,
         tags: ["CNN", "Multi-task"]
       },
-      { 
-        year: 2016, 
-        value: 61.2, 
-        model: "HR", 
+      {
+        year: 2016,
+        value: 61.2,
+        model: "HR",
         isSOTA: false,
         paperTitle: "Finding Tiny Faces",
         paperUrl: "/paper/hr-2016",
@@ -219,10 +219,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Scale", "Resolution"]
       },
-      { 
-        year: 2017, 
-        value: 84.1, 
-        model: "S3FD", 
+      {
+        year: 2017,
+        value: 84.1,
+        model: "S3FD",
         isSOTA: true,
         paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
         paperUrl: "/paper/s3fd-2017",
@@ -231,10 +231,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Single Shot", "Scale-invariant"]
       },
-      { 
-        year: 2018, 
-        value: 88.8, 
-        model: "PyramidBox", 
+      {
+        year: 2018,
+        value: 88.8,
+        model: "PyramidBox",
         isSOTA: true,
         paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
         paperUrl: "/paper/pyramidbox-2018",
@@ -243,10 +243,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Context", "Pyramid"]
       },
-      { 
-        year: 2019, 
-        value: 90.0, 
-        model: "DSFD", 
+      {
+        year: 2019,
+        value: 90.0,
+        model: "DSFD",
         isSOTA: true,
         paperTitle: "DSFD: Dual Shot Face Detector",
         paperUrl: "/paper/dsfd-2019",
@@ -255,10 +255,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Dual Shot", "Feature Enhancement"]
       },
-      { 
-        year: 2020, 
-        value: 91.4, 
-        model: "RetinaFace", 
+      {
+        year: 2020,
+        value: 91.4,
+        model: "RetinaFace",
         isSOTA: true,
         paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
         paperUrl: "/paper/retinaface-2020",
@@ -267,10 +267,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Multi-level", "Landmarks"]
       },
-      { 
-        year: 2021, 
-        value: 92.2, 
-        model: "SCRFD", 
+      {
+        year: 2021,
+        value: 92.2,
+        model: "SCRFD",
         isSOTA: true,
         paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
         paperUrl: "/paper/scrfd-2021",
@@ -285,10 +285,10 @@ const benchmarkData = {
     name: "Face Detection on FDDB",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2015, 
-        value: 84.2, 
-        model: "MTCNN", 
+      {
+        year: 2015,
+        value: 84.2,
+        model: "MTCNN",
         isSOTA: false,
         paperTitle: "Joint Face Detection and Alignment using Multi-task CNN",
         paperUrl: "/paper/mtcnn-2015",
@@ -297,10 +297,10 @@ const benchmarkData = {
         isVerified: false,
         tags: ["CNN", "Multi-task"]
       },
-      { 
-        year: 2016, 
-        value: 87.5, 
-        model: "HR", 
+      {
+        year: 2016,
+        value: 87.5,
+        model: "HR",
         isSOTA: false,
         paperTitle: "Finding Tiny Faces",
         paperUrl: "/paper/hr-2016",
@@ -309,10 +309,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Scale", "Resolution"]
       },
-      { 
-        year: 2017, 
-        value: 93.7, 
-        model: "S3FD", 
+      {
+        year: 2017,
+        value: 93.7,
+        model: "S3FD",
         isSOTA: true,
         paperTitle: "S3FD: Single Shot Scale-invariant Face Detector",
         paperUrl: "/paper/s3fd-2017",
@@ -321,10 +321,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Single Shot", "Scale-invariant"]
       },
-      { 
-        year: 2018, 
-        value: 96.6, 
-        model: "PyramidBox", 
+      {
+        year: 2018,
+        value: 96.6,
+        model: "PyramidBox",
         isSOTA: true,
         paperTitle: "PyramidBox: A Context-assisted Single Shot Face Detector",
         paperUrl: "/paper/pyramidbox-2018",
@@ -333,10 +333,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Context", "Pyramid"]
       },
-      { 
-        year: 2019, 
-        value: 99.1, 
-        model: "DSFD", 
+      {
+        year: 2019,
+        value: 99.1,
+        model: "DSFD",
         isSOTA: true,
         paperTitle: "DSFD: Dual Shot Face Detector",
         paperUrl: "/paper/dsfd-2019",
@@ -345,10 +345,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Dual Shot", "Feature Enhancement"]
       },
-      { 
-        year: 2020, 
-        value: 99.3, 
-        model: "RetinaFace", 
+      {
+        year: 2020,
+        value: 99.3,
+        model: "RetinaFace",
         isSOTA: true,
         paperTitle: "RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild",
         paperUrl: "/paper/retinaface-2020",
@@ -357,10 +357,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Multi-level", "Landmarks"]
       },
-      { 
-        year: 2021, 
-        value: 99.5, 
-        model: "SCRFD", 
+      {
+        year: 2021,
+        value: 99.5,
+        model: "SCRFD",
         isSOTA: true,
         paperTitle: "Sample and Computation Redistribution for Efficient Face Detection",
         paperUrl: "/paper/scrfd-2021",
@@ -375,10 +375,10 @@ const benchmarkData = {
     name: "Object Detection on COCO test-dev",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2017, 
-        value: 39.1, 
-        model: "Mask R-CNN", 
+      {
+        year: 2017,
+        value: 39.1,
+        model: "Mask R-CNN",
         isSOTA: false,
         paperTitle: "Mask R-CNN",
         paperUrl: "/paper/mask-rcnn",
@@ -387,10 +387,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Two-stage", "Instance Segmentation"]
       },
-      { 
-        year: 2019, 
-        value: 48.4, 
-        model: "EfficientDet-D7", 
+      {
+        year: 2019,
+        value: 48.4,
+        model: "EfficientDet-D7",
         isSOTA: false,
         paperTitle: "EfficientDet: Scalable and Efficient Object Detection",
         paperUrl: "/paper/efficientdet",
@@ -399,10 +399,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Efficient", "Compound Scaling"]
       },
-      { 
-        year: 2021, 
-        value: 57.1, 
-        model: "Cascade Eff-B7 NAS-FPN", 
+      {
+        year: 2021,
+        value: 57.1,
+        model: "Cascade Eff-B7 NAS-FPN",
         isSOTA: true,
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
         paperUrl: "/paper/simple-copy-paste",
@@ -417,10 +417,10 @@ const benchmarkData = {
     name: "Object Detection on COCO minival",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2017, 
-        value: 37.1, 
-        model: "Mask R-CNN", 
+      {
+        year: 2017,
+        value: 37.1,
+        model: "Mask R-CNN",
         isSOTA: false,
         paperTitle: "Mask R-CNN",
         paperUrl: "/paper/mask-rcnn",
@@ -429,10 +429,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Two-stage", "Instance Segmentation"]
       },
-      { 
-        year: 2021, 
-        value: 55.2, 
-        model: "Cascade Eff-B7 NAS-FPN", 
+      {
+        year: 2021,
+        value: 55.2,
+        model: "Cascade Eff-B7 NAS-FPN",
         isSOTA: true,
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
         paperUrl: "/paper/simple-copy-paste",
@@ -447,10 +447,10 @@ const benchmarkData = {
     name: "Object Detection on PASCAL VOC 2007",
     metric: "Mean Average Precision (mAP)",
     allData: [
-      { 
-        year: 2016, 
-        value: 73.2, 
-        model: "SSD", 
+      {
+        year: 2016,
+        value: 73.2,
+        model: "SSD",
         isSOTA: false,
         paperTitle: "SSD: Single Shot MultiBox Detector",
         paperUrl: "/paper/ssd",
@@ -459,10 +459,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Single Shot", "MultiBox"]
       },
-      { 
-        year: 2021, 
-        value: 89.4, 
-        model: "Cascade Eff-B7 NAS-FPN", 
+      {
+        year: 2021,
+        value: 89.4,
+        model: "Cascade Eff-B7 NAS-FPN",
         isSOTA: true,
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
         paperUrl: "/paper/simple-copy-paste",
@@ -477,10 +477,10 @@ const benchmarkData = {
     name: "3D Object Detection on KITTI Cars Easy",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2019, 
-        value: 88.4, 
-        model: "PointRCNN", 
+      {
+        year: 2019,
+        value: 88.4,
+        model: "PointRCNN",
         isSOTA: false,
         paperTitle: "PointRCNN: 3D Object Detection from Raw Point Cloud",
         paperUrl: "/paper/pointrcnn",
@@ -489,10 +489,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Point Cloud", "3D Detection"]
       },
-      { 
-        year: 2021, 
-        value: 92.8, 
-        model: "Patches", 
+      {
+        year: 2021,
+        value: 92.8,
+        model: "Patches",
         isSOTA: true,
         paperTitle: "Patch Refinement -- Localized 3D Object Detection",
         paperUrl: "/paper/patch-refinement",
@@ -507,10 +507,10 @@ const benchmarkData = {
     name: "Object Detection on CrowdHuman (Full Body)",
     metric: "Average Precision (AP)",
     allData: [
-      { 
-        year: 2019, 
-        value: 84.9, 
-        model: "Faster R-CNN", 
+      {
+        year: 2019,
+        value: 84.9,
+        model: "Faster R-CNN",
         isSOTA: false,
         paperTitle: "Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks",
         paperUrl: "/paper/faster-rcnn",
@@ -519,10 +519,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Two-stage", "Region Proposal"]
       },
-      { 
-        year: 2021, 
-        value: 91.4, 
-        model: "IterDet (Faster RCNN, ResNet50, 2 iterations)", 
+      {
+        year: 2021,
+        value: 91.4,
+        model: "IterDet (Faster RCNN, ResNet50, 2 iterations)",
         isSOTA: true,
         paperTitle: "IterDet: Iterative Scheme for ObjectDetection in Crowded Environments",
         paperUrl: "/paper/iterdet",
@@ -537,10 +537,10 @@ const benchmarkData = {
     name: "Image Classification on ImageNet",
     metric: "Top-1 Accuracy (%)",
     allData: [
-      { 
-        year: 2015, 
-        value: 76.3, 
-        model: "ResNet-152", 
+      {
+        year: 2015,
+        value: 76.3,
+        model: "ResNet-152",
         isSOTA: false,
         paperTitle: "Deep Residual Learning for Image Recognition",
         paperUrl: "/paper/resnet",
@@ -549,10 +549,10 @@ const benchmarkData = {
         isVerified: true,
         tags: ["Residual", "Deep Learning"]
       },
-      { 
-        year: 2020, 
-        value: 88.5, 
-        model: "Vision Transformer (ViT-H/14)", 
+      {
+        year: 2020,
+        value: 88.5,
+        model: "Vision Transformer (ViT-H/14)",
         isSOTA: true,
         paperTitle: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
         paperUrl: "/paper/vision-transformer",
@@ -589,18 +589,18 @@ const Benchmark = () => {
   const { benchmark } = useParams();
   const currentBenchmark = benchmark || "wider-face-easy";
   const data = benchmarkData[currentBenchmark as keyof typeof benchmarkData];
-  
+
   const [selectedMetric, setSelectedMetric] = useState("Average Precision (AP)");
   const [selectedModels, setSelectedModels] = useState("all");
   const [viewBy, setViewBy] = useState("date");
-  
+
   if (!data) {
     return <div>Benchmark not found</div>;
   }
 
   const metrics = ["Average Precision (AP)", "F1-Score", "Recall"];
   const modelOptions = ["all", "sota-only", "recent"];
-  
+
   const filteredData = data.allData.filter(item => {
     if (selectedModels === "sota-only") return item.isSOTA;
     if (selectedModels === "recent") return item.year >= 2019;
@@ -611,11 +611,11 @@ const Benchmark = () => {
     ...item,
     sotaValue: item.isSOTA ? item.value : null
   }));
-  
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       <main className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <div className="flex items-center space-x-2 text-sm text-muted-foreground mb-6">
@@ -633,7 +633,7 @@ const Benchmark = () => {
             <Trophy className="w-6 h-6 text-yellow-600" />
             <h1 className="text-3xl font-bold">{data.name}</h1>
           </div>
-          
+
           <div className="flex items-center space-x-4 text-sm text-muted-foreground">
             <Badge variant="secondary" className="bg-primary/10 text-primary">
               State-of-the-Art Leaderboard
@@ -717,8 +717,8 @@ const Benchmark = () => {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={allDataWithGaps} margin={{ top: 40, right: 30, left: 20, bottom: 40 }}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted/30" />
-                  <XAxis 
-                    dataKey="year" 
+                  <XAxis
+                    dataKey="year"
                     type="number"
                     scale="linear"
                     domain={['dataMin - 0.5', 'dataMax + 0.5']}
@@ -727,19 +727,19 @@ const Benchmark = () => {
                     axisLine={false}
                     tickLine={false}
                   />
-                  <YAxis 
+                  <YAxis
                     domain={[30, 100]}
                     className="text-muted-foreground text-xs"
-                    label={{ 
-                      value: selectedMetric.toUpperCase(), 
-                      angle: -90, 
+                    label={{
+                      value: selectedMetric.toUpperCase(),
+                      angle: -90,
                       position: 'insideLeft',
                       style: { textAnchor: 'middle' }
                     }}
                     axisLine={false}
                     tickLine={false}
                   />
-                  
+
                   {/* All points */}
                   <Line
                     dataKey="value"
@@ -748,7 +748,7 @@ const Benchmark = () => {
                     dot={<CustomDot />}
                     activeDot={false}
                   />
-                  
+
                   {/* SOTA line */}
                   <Line
                     dataKey="sotaValue"
@@ -761,7 +761,7 @@ const Benchmark = () => {
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            
+
             {/* Legend */}
             <div className="flex items-center justify-center space-x-6 mt-4 text-sm">
               <div className="flex items-center space-x-2">
@@ -813,8 +813,8 @@ const Benchmark = () => {
                           <div className="font-semibold text-lg">{model.value}</div>
                         </td>
                         <td className="py-4 px-4">
-                          <Link 
-                            to={model.paperUrl} 
+                          <Link
+                            to={model.paperUrl}
                             className="text-primary hover:underline text-sm max-w-xs block truncate"
                             title={model.paperTitle}
                           >
@@ -823,9 +823,9 @@ const Benchmark = () => {
                         </td>
                         <td className="py-4 px-2 text-center">
                           {model.hasCode && (
-                            <a 
-                              href={model.codeUrl} 
-                              target="_blank" 
+                            <a
+                              href={model.codeUrl}
+                              target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-muted hover:bg-muted/80 transition-colors"
                             >

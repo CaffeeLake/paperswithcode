@@ -26,7 +26,7 @@ const taskData = {
         benchmark: "coco-test-dev"
       },
       {
-        trend: "up", 
+        trend: "up",
         dataset: "COCO minival",
         bestModel: "Cascade Eff-B7 NAS-FPN (1280, self-training Copy Paste, single-scale)",
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
@@ -38,7 +38,7 @@ const taskData = {
         trend: "up",
         dataset: "PASCAL VOC 2007",
         bestModel: "Cascade Eff-B7 NAS-FPN (Copy Paste pre-training, single-scale)",
-        paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation", 
+        paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
         paperLink: "/paper/simple-copy-paste",
         hasCode: true,
         benchmark: "pascal-voc-2007"
@@ -64,7 +64,7 @@ const taskData = {
     ]
   },
   "image-classification": {
-    title: "Image Classification", 
+    title: "Image Classification",
     categories: ["Computer Vision"],
     papersWithCode: 2341,
     benchmarks: 15,
@@ -77,7 +77,7 @@ const taskData = {
         dataset: "ImageNet",
         bestModel: "Vision Transformer (ViT-H/14)",
         paperTitle: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
-        paperLink: "/paper/vision-transformer", 
+        paperLink: "/paper/vision-transformer",
         hasCode: true,
         benchmark: "imagenet"
       }
@@ -109,8 +109,8 @@ const TaskDetail = () => {
         <div
           key={i}
           className={`w-1 bg-teal-500 rounded-sm ${
-            trend === 'up' 
-              ? 'h-' + Math.max(2, (i + 1) * 1.2) 
+            trend === 'up'
+              ? 'h-' + Math.max(2, (i + 1) * 1.2)
               : 'h-' + Math.max(2, (6 - i) * 1.2)
           }`}
           style={{ height: `${Math.max(8, (i + 1) * 3)}px` }}
@@ -122,7 +122,7 @@ const TaskDetail = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       {/* Hero Section */}
       <div className="container mx-auto px-4 py-8">
         <div className="flex items-start gap-8">
@@ -130,7 +130,7 @@ const TaskDetail = () => {
           <div className="w-48 h-32 bg-gradient-to-br from-blue-100 to-blue-200 rounded-lg flex items-center justify-center">
             <span className="text-4xl">🎯</span>
           </div>
-          
+
           {/* Task Info */}
           <div className="flex-1">
             <div className="flex items-center justify-between mb-4">
@@ -139,7 +139,7 @@ const TaskDetail = () => {
                 ✏️ Edit Task
               </Button>
             </div>
-            
+
             <div className="flex items-center gap-2 mb-4 text-teal-600">
               {task.categories.map((category, index) => (
                 <span key={category}>
@@ -148,7 +148,7 @@ const TaskDetail = () => {
                 </span>
               ))}
             </div>
-            
+
             <div className="flex items-center gap-6 text-lg">
               <span><strong>{task.papersWithCode.toLocaleString()}</strong> papers with code</span>
               <span><strong>{task.benchmarks}</strong> benchmarks</span>
@@ -165,7 +165,7 @@ const TaskDetail = () => {
             ✏️ Edit
           </Button>
         </div>
-        
+
         <div className="prose max-w-none mb-6">
           <p className="text-muted-foreground leading-relaxed mb-4">
             {task.description}

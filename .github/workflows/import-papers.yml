@@ -11,18 +11,18 @@ on:
           - 'papers-with-abstracts.json'
           - 'custom-upload'
         default: 'papers-with-abstracts.json'
-      
+
       limit:
         description: 'Limit number of papers (for testing)'
         required: false
         type: number
-      
+
       batch_size:
         description: 'Batch size for processing'
         required: false
         type: number
         default: 1000
-      
+
       force_reimport:
         description: 'Force reimport (clear existing data)'
         required: false
@@ -32,7 +32,7 @@ on:
 jobs:
   import-papers:
     runs-on: ubuntu-latest
-    
+
     services:
       postgres:
         image: postgres:15
@@ -47,26 +47,26 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         lfs: true  # Enable Git LFS for large data files
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
-    
+
     - name: Install uv
       uses: astral-sh/setup-uv@v3
       with:
         version: "latest"
-    
+
     - name: Install dependencies
       run: uv sync
-    
+
     - name: Set up database schema
       env:
         PGPASSWORD: postgres
@@ -76,10 +76,10 @@ jobs:
           echo "Waiting for PostgreSQL..."
           sleep 2
         done
-        
+
         # Create the database schema
         psql -h localhost -p 5432 -U postgres -d paperswithcode -f backend/database/setup_database.sql
-    
+
     - name: Clear existing data (if force reimport)
       if: ${{ github.event.inputs.force_reimport == 'true' }}
       env:
@@ -88,7 +88,7 @@ jobs:
         echo "⚠️ Clearing existing papers data..."
         psql -h localhost -p 5432 -U postgres -d paperswithcode -c "TRUNCATE TABLE papers RESTART IDENTITY CASCADE;"
         echo "✅ Data cleared"
-    
+
     - name: Check data file
       run: |
         if [ "${{ github.event.inputs.data_source }}" = "papers-with-abstracts.json" ]; then
@@ -102,7 +102,7 @@ jobs:
             exit 1
           fi
         fi
-    
+
     - name: Import papers data
       env:
         DB_HOST: localhost
@@ -113,26 +113,26 @@ jobs:
       run: |
         # Prepare import command
         IMPORT_CMD="uv run python backend/database/import_papers.py"
-        
+
         # Add data source
         if [ "${{ github.event.inputs.data_source }}" = "papers-with-abstracts.json" ]; then
           IMPORT_CMD="$IMPORT_CMD --json-file data/papers-with-abstracts.json"
         fi
-        
+
         # Add limit if specified
         if [ -n "${{ github.event.inputs.limit }}" ]; then
           IMPORT_CMD="$IMPORT_CMD --limit ${{ github.event.inputs.limit }}"
         fi
-        
+
         # Add batch size
         IMPORT_CMD="$IMPORT_CMD --batch-size ${{ github.event.inputs.batch_size }}"
-        
+
         # Add database connection parameters
         IMPORT_CMD="$IMPORT_CMD --host localhost --database paperswithcode --user postgres --password postgres"
-        
+
         echo "Running: $IMPORT_CMD"
         $IMPORT_CMD
-    
+
     - name: Generate import report
       env:
         DB_HOST: localhost
@@ -143,38 +143,38 @@ jobs:
       run: |
         uv run python -c "
         from backend.database.db_connection import PapersDatabase, DatabaseConfig
-        
+
         config = DatabaseConfig.from_env()
         db = PapersDatabase(config)
-        
+
         print('📊 Import Report')
         print('=' * 50)
         print(f'Total papers: {db.get_paper_count():,}')
         print(f'Latest paper date: {db.get_latest_paper_date()}')
         print(f'Earliest paper date: {db.execute_single(\"SELECT MIN(date_published) as min_date FROM papers;\")[\"min_date\"]}')
-        
+
         # Version distribution
         versions = db.get_version_distribution()
         print(f'\n📈 Version distribution (top 5):')
         for v in versions[:5]:
             print(f'  {v[\"version\"]}: {v[\"count\"]:,} papers ({v[\"percentage\"]}%)')
-        
+
         # Recent papers by year
         recent_years = db.execute_query('''
             SELECT EXTRACT(YEAR FROM date_published) as year, COUNT(*) as count
-            FROM papers 
+            FROM papers
             WHERE date_published >= '2020-01-01'
             GROUP BY EXTRACT(YEAR FROM date_published)
             ORDER BY year DESC;
         ''')
-        
+
         print(f'\n📅 Papers by year (2020+):')
         for row in recent_years:
             print(f'  {int(row[\"year\"])}: {row[\"count\"]:,} papers')
-        
+
         db.disconnect()
         "
-    
+
     - name: Upload import logs
       if: always()
       uses: actions/upload-artifact@v4

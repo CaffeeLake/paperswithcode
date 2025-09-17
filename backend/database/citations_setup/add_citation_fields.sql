@@ -2,7 +2,7 @@
 -- Run this script if you already have a papers table without citation fields
 
 -- Add citation-related columns
-ALTER TABLE papers 
+ALTER TABLE papers
 ADD COLUMN IF NOT EXISTS citation_count INTEGER DEFAULT 0,
 ADD COLUMN IF NOT EXISTS semantic_scholar_id VARCHAR(100),
 ADD COLUMN IF NOT EXISTS citation_updated_at TIMESTAMP WITH TIME ZONE;
