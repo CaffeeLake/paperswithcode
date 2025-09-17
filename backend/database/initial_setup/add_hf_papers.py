@@ -29,7 +29,9 @@ from typing import List, Set, Dict, Optional, Any
 # Add the backend directory to the path
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-from database.db_connection import PapersDatabase, DatabaseConfig
+from sqlalchemy.orm import Session
+from database.connection import get_database_session
+from services.paper_service import PaperService
 
 def load_hf_dataset() -> pd.DataFrame:
     """Load the Hugging Face community science dataset."""
@@ -60,23 +62,33 @@ def load_hf_dataset() -> pd.DataFrame:
 def get_missing_arxiv_ids(df: pd.DataFrame) -> Set[str]:
     """Get ArXiv IDs that are missing from our database."""
     
-    db = PapersDatabase()
+    # Get database session and create PaperService
+    db_session_gen = get_database_session()
+    db_session = next(db_session_gen)
     
     try:
-        if not db.test_connection():
-            raise Exception("Database connection failed")
+        paper_service = PaperService(db_session)
+        
+        # Test connection by getting paper stats
+        try:
+            stats = paper_service.get_paper_stats()
+            print(f"✅ Database connection successful! Current papers: {stats['total_papers']:,}")
+        except Exception as e:
+            raise Exception(f"Database connection failed: {e}")
         
         # Get all ArXiv IDs from HF dataset
         hf_arxiv_ids = set(df['arxiv_id'].dropna().astype(str))
         print(f"Found {len(hf_arxiv_ids)} ArXiv IDs in HF dataset")
         
         # Check which ones are missing from our database
+        # Use raw SQL query through the session for efficiency
         arxiv_ids_list = list(hf_arxiv_ids)
-        placeholders = ','.join(['%s'] * len(arxiv_ids_list))
+        placeholders = ','.join([f"'{arxiv_id}'" for arxiv_id in arxiv_ids_list])
         query = f"SELECT DISTINCT arxiv_id FROM papers WHERE arxiv_id IN ({placeholders})"
         
-        results = db.execute_query(query, arxiv_ids_list)
-        found_arxiv_ids = {row['arxiv_id'] for row in results}
+        from sqlalchemy import text
+        result = db_session.execute(text(query))
+        found_arxiv_ids = {row.arxiv_id for row in result.fetchall()}
         
         missing_ids = hf_arxiv_ids - found_arxiv_ids
         
@@ -93,7 +105,7 @@ def get_missing_arxiv_ids(df: pd.DataFrame) -> Set[str]:
         print(f"Error checking database: {e}")
         return set()
     finally:
-        db.disconnect()
+        db_session.close()
 
 def fetch_arxiv_paper_details(arxiv_id: str, retry_count: int = 3) -> Optional[Dict[str, Any]]:
     """Fetch paper details from ArXiv API by ArXiv ID with retry logic."""
@@ -231,11 +243,18 @@ def process_batch(batch_ids: List[str], hf_info: Dict, batch_start: int) -> Dict
     
     batch_results = {'attempted': 0, 'successful': 0, 'failed': 0, 'skipped': 0}
     
-    db = PapersDatabase()
+    # Get database session and create PaperService
+    db_session_gen = get_database_session()
+    db_session = next(db_session_gen)
     
     try:
-        if not db.test_connection():
-            raise Exception("Database connection failed")
+        paper_service = PaperService(db_session)
+        
+        # Test connection
+        try:
+            stats = paper_service.get_paper_stats()
+        except Exception as e:
+            raise Exception(f"Database connection failed: {e}")
         
         for i, arxiv_id in enumerate(batch_ids, 1):
             batch_results['attempted'] += 1
@@ -257,6 +276,10 @@ def process_batch(batch_ids: List[str], hf_info: Dict, batch_start: int) -> Dict
                 if 'conference_name' in hf_paper_info and hf_paper_info['conference_name']:
                     paper_data['conference'] = hf_paper_info['conference_name']
                 
+                # Add required fields for PaperService
+                paper_data['citation_count'] = 0
+                paper_data['semantic_scholar_id'] = None
+                
             elif hf_paper_info:
                 # Fallback to HF data if ArXiv fetch failed
                 print(f"    Using HF data: {hf_paper_info.get('title', 'No title')[:50]}...")
@@ -273,17 +296,16 @@ def process_batch(batch_ids: List[str], hf_info: Dict, batch_start: int) -> Dict
                     'conference': hf_paper_info.get('conference_name'),
                     'conference_url_abs': None,
                     'conference_url_pdf': None,
-                    'primary_category': None,
-                    'all_categories': [],
-                    'authors': []
+                    'citation_count': 0,
+                    'semantic_scholar_id': None
                 }
             else:
                 print(f"    No data found for {arxiv_id}")
                 batch_results['failed'] += 1
                 continue
             
-            # Insert into database
-            paper_id = db.insert_paper(paper_data)
+            # Insert into database using PaperService
+            paper_id = paper_service.add_paper(paper_data)
             if paper_id:
                 batch_results['successful'] += 1
             else:
@@ -300,7 +322,7 @@ def process_batch(batch_ids: List[str], hf_info: Dict, batch_start: int) -> Dict
         print(f"Error processing batch: {e}")
         return batch_results
     finally:
-        db.disconnect()
+        db_session.close()
 
 def main():
     """Main function to add missing papers from HF dataset."""

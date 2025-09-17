@@ -14,10 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import Settings, get_settings
-from .database.connection import get_database_session
-from .models.database import Paper as DBPaper
-from .models.api import Paper, Papers
-from .services.paper_service import PaperService
 from .utils.exceptions import PaperNotFoundError, DatabaseError
 
 

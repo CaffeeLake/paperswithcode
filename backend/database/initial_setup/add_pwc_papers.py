@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Import papers from papers-with-abstracts.json into PostgreSQL database.
-Refactored to use the centralized Database class.
+Refactored to use PaperService for consistent database operations.
 """
 
 import json
@@ -13,7 +13,9 @@ import argparse
 import re
 import ijson
 
-from backend.database.db_connection import PapersDatabase, DatabaseConfig
+from sqlalchemy.orm import Session
+from backend.database.connection import get_database_session
+from backend.services.paper_service import PaperService
 
 
 def load_papers_data_streaming(file_path: str) -> Generator[Dict[str, Any], None, None]:
@@ -99,7 +101,7 @@ def extract_arxiv_id_and_version(arxiv_url: str) -> tuple[str, str]:
 
 
 def prepare_paper_data(paper: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Prepare paper data for database insertion."""
+    """Prepare paper data for database insertion using PaperService format."""
     # Parse the date
     paper_date = parse_date(paper.get('date'))
     
@@ -125,17 +127,19 @@ def prepare_paper_data(paper: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         'proceeding': paper.get('proceeding'),
         'conference': paper.get('conference'),
         'conference_url_abs': paper.get('conference_url_abs'),
-        'conference_url_pdf': paper.get('conference_url_pdf')
+        'conference_url_pdf': paper.get('conference_url_pdf'),
+        'citation_count': 0,  # Default citation count
+        'semantic_scholar_id': None  # No Semantic Scholar ID initially
     }
 
 
 def import_papers(
     papers_data: List[Dict[str, Any]],
-    db: PapersDatabase,
+    paper_service: PaperService,
     batch_size: int = 1000,
     limit: Optional[int] = None
 ) -> None:
-    """Import papers data into the database."""
+    """Import papers data into the database using PaperService."""
 
     imported_count = 0
     skipped_count = 0
@@ -146,29 +150,28 @@ def import_papers(
         print(f"Limiting import to first {limit} papers")
 
     try:
-        for i, paper in enumerate(papers_data):
-            # Prepare paper data
+        # Prepare all paper data
+        prepared_papers = []
+        for paper in papers_data:
             paper_data = prepare_paper_data(paper)
-            if not paper_data:
-                skipped_count += 1
-                continue
-
-            # Insert paper (the database class handles duplicates)
-            paper_id = db.insert_paper(paper_data)
-
-            if paper_id is None:
-                skipped_count += 1
+            if paper_data:
+                prepared_papers.append(paper_data)
             else:
-                imported_count += 1
+                skipped_count += 1
 
-            # Progress reporting
-            if (i + 1) % batch_size == 0:
-                print(f"Processed {i + 1} papers... (imported: {imported_count}, skipped: {skipped_count})")
+        # Use batch import from PaperService
+        print(f"Starting batch import of {len(prepared_papers)} papers...")
+        stats = paper_service.add_papers_batch(prepared_papers, batch_size)
+        
+        imported_count = stats['added']
+        skipped_count += stats['skipped']
+        error_count = stats['errors']
 
         print(f"\nImport completed!")
         print(f"Total papers processed: {len(papers_data)}")
         print(f"Successfully imported: {imported_count}")
         print(f"Skipped: {skipped_count}")
+        print(f"Errors: {error_count}")
 
     except Exception as e:
         print(f"Error during import: {e}")
@@ -176,17 +179,12 @@ def import_papers(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Import papers data into PostgreSQL")
+    parser = argparse.ArgumentParser(description="Import papers data into PostgreSQL using PaperService")
     parser.add_argument(
         "--json-file",
         default="data/papers-with-abstracts.json",
         help="Path to the papers JSON file"
     )
-    parser.add_argument("--host", default="localhost", help="Database host")
-    parser.add_argument("--database", default="paperswithcode", help="Database name")
-    parser.add_argument("--user", help="Database user (defaults to current user)")
-    parser.add_argument("--password", help="Database password (or set POSTGRES_PASSWORD env var)")
-    parser.add_argument("--port", type=int, default=5432, help="Database port")
     parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for progress reporting")
     parser.add_argument("--limit", type=int, help="Limit number of papers to import (for testing)")
 
@@ -200,32 +198,33 @@ def main():
     # Load papers data
     papers_data = load_papers_data(args.json_file, args.limit)
 
-    # Create database config and connection
-    db_config = DatabaseConfig(
-        host=args.host,
-        port=args.port,
-        database=args.database,
-        user=args.user,
-        password=args.password
-    )
-    
-    db = PapersDatabase(db_config)
-
     try:
-        # Test connection
-        if not db.test_connection():
-            print("Error: Could not connect to database")
-            sys.exit(1)
+        # Get database session and create PaperService
+        db_session_gen = get_database_session()
+        db_session = next(db_session_gen)
         
-        # Import papers
-        import_papers(papers_data, db, args.batch_size, args.limit)
+        try:
+            paper_service = PaperService(db_session)
+            
+            # Test connection by getting paper stats
+            try:
+                stats = paper_service.get_paper_stats()
+                print(f"✅ Database connection successful!")
+                print(f"📊 Current papers in database: {stats['total_papers']:,}")
+                print()
+            except Exception as e:
+                print(f"❌ Database connection failed: {e}")
+                sys.exit(1)
+            
+            # Import papers
+            import_papers(papers_data, paper_service, args.batch_size, args.limit)
+            
+        finally:
+            db_session.close()
         
     except Exception as e:
         print(f"Import failed: {e}")
         sys.exit(1)
-    finally:
-        db.disconnect()
-        print("Database connection closed.")
 
 
 if __name__ == "__main__":
