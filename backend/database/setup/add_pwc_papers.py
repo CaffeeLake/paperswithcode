@@ -8,25 +8,49 @@ import json
 import os
 import sys
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Generator
 import argparse
 import re
+import ijson
 
-# Add the backend directory to the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from database.db_connection import PapersDatabase, DatabaseConfig
+from backend.database.db_connection import PapersDatabase, DatabaseConfig
 
 
-def load_papers_data(file_path: str) -> List[Dict[str, Any]]:
-    """Load papers data from JSON file."""
+def load_papers_data_streaming(file_path: str) -> Generator[Dict[str, Any], None, None]:
+    """Load papers data from JSON file using streaming parser to avoid memory issues."""
+    print(f"Loading papers data from {file_path} (streaming)...")
+    
+    with open(file_path, 'rb') as file:
+        # Parse JSON array items one by one
+        parser = ijson.items(file, 'item')
+        for paper in parser:
+            yield paper
+
+
+def load_papers_data(file_path: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Load papers data from JSON file with optional limit using streaming approach."""
     print(f"Loading papers data from {file_path}...")
-
-    with open(file_path, 'r', encoding='utf-8') as file:
-        data = json.load(file)
-
-    print(f"Loaded {len(data)} papers")
-    return data
+    
+    papers = []
+    count = 0
+    
+    try:
+        for paper in load_papers_data_streaming(file_path):
+            papers.append(paper)
+            count += 1
+            if limit and count >= limit:
+                break
+                
+            # Progress reporting for large loads
+            if count % 1000 == 0:
+                print(f"Loaded {count} papers...")
+                
+    except Exception as e:
+        print(f"Error loading papers data: {e}")
+        raise
+        
+    print(f"Successfully loaded {len(papers)} papers")
+    return papers
 
 
 def parse_date(date_str: Optional[str]) -> Optional[datetime]:
@@ -174,7 +198,7 @@ def main():
         sys.exit(1)
 
     # Load papers data
-    papers_data = load_papers_data(args.json_file)
+    papers_data = load_papers_data(args.json_file, args.limit)
 
     # Create database config and connection
     db_config = DatabaseConfig(

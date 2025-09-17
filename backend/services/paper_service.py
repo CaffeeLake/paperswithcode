@@ -648,3 +648,103 @@ class PaperService:
         except Exception as e:
             # Fall back to local search if Semantic Scholar fails
             return self.search_papers(query, limit)
+    
+    def add_paper(self, paper_data: Dict[str, Any]) -> Optional[int]:
+        """
+        Add a single paper to the database.
+        
+        Args:
+            paper_data: Dictionary containing paper information with keys:
+                - arxiv_id: ArXiv ID (required)
+                - title: Paper title (required)
+                - abstract: Paper abstract (optional)
+                - version: Version string (default: 'v1')
+                - date_published: Publication date (optional)
+                - conference: Conference name (optional)
+                - conference_url_abs: Conference abstract URL (optional)
+                - conference_url_pdf: Conference PDF URL (optional)
+                - proceeding: Proceeding information (optional)
+                - is_latest_version: Whether this is the latest version (default: True)
+                
+        Returns:
+            Paper ID if successful, None if paper already exists or on error
+        """
+        try:
+            # Check if paper already exists
+            existing = (
+                self.db.query(DBPaper)
+                .filter(
+                    DBPaper.arxiv_id == paper_data['arxiv_id'],
+                    DBPaper.version == paper_data.get('version', 'v1')
+                )
+                .first()
+            )
+            
+            if existing:
+                return None  # Paper already exists
+            
+            # Create new paper
+            db_paper = DBPaper(
+                arxiv_id=paper_data['arxiv_id'],
+                title=paper_data['title'],
+                abstract=paper_data.get('abstract'),
+                version=paper_data.get('version', 'v1'),
+                date_published=paper_data.get('date_published'),
+                conference=paper_data.get('conference'),
+                conference_url_abs=paper_data.get('conference_url_abs'),
+                conference_url_pdf=paper_data.get('conference_url_pdf'),
+                proceeding=paper_data.get('proceeding'),
+                is_latest_version=paper_data.get('is_latest_version', True),
+                citation_count=paper_data.get('citation_count', 0),
+                semantic_scholar_id=paper_data.get('semantic_scholar_id')
+            )
+            
+            self.db.add(db_paper)
+            self.db.commit()
+            self.db.refresh(db_paper)
+            
+            return db_paper.id
+            
+        except Exception as e:
+            self.db.rollback()
+            print(f"Error adding paper {paper_data.get('arxiv_id', 'unknown')}: {e}")
+            return None
+    
+    def add_papers_batch(self, papers_data: List[Dict[str, Any]], batch_size: int = 100) -> Dict[str, int]:
+        """
+        Add multiple papers to the database in batches for better performance.
+        
+        Args:
+            papers_data: List of paper data dictionaries
+            batch_size: Number of papers to process in each batch
+            
+        Returns:
+            Dictionary with statistics: {'added': count, 'skipped': count, 'errors': count}
+        """
+        stats = {'added': 0, 'skipped': 0, 'errors': 0}
+        
+        try:
+            for i in range(0, len(papers_data), batch_size):
+                batch = papers_data[i:i + batch_size]
+                
+                # Process batch
+                for paper_data in batch:
+                    try:
+                        paper_id = self.add_paper(paper_data)
+                        if paper_id:
+                            stats['added'] += 1
+                        else:
+                            stats['skipped'] += 1
+                    except Exception as e:
+                        stats['errors'] += 1
+                        print(f"Error in batch processing: {e}")
+                
+                # Progress report
+                if (i + len(batch)) % (batch_size * 10) == 0:
+                    print(f"Processed {i + len(batch):,} papers... (added: {stats['added']:,}, skipped: {stats['skipped']:,}, errors: {stats['errors']:,})")
+            
+            return stats
+            
+        except Exception as e:
+            print(f"Error in batch processing: {e}")
+            return stats

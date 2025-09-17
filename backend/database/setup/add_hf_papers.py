@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Setup script to add missing papers from the Hugging Face community science dataset 

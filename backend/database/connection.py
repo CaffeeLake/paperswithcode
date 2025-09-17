@@ -137,9 +137,10 @@ if __name__ == "__main__":
         elif command == "test":
             print("🔍 Testing database connection...")
             try:
+                from sqlalchemy import text
                 engine = get_engine()
                 with engine.connect() as conn:
-                    result = conn.execute("SELECT 1")
+                    result = conn.execute(text("SELECT 1"))
                     print("✅ Database connection successful!")
             except Exception as e:
                 print(f"❌ Database connection failed: {e}")
