@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Semantic Scholar API configuration
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1"
 REQUEST_TIMEOUT = 30.0
-RATE_LIMIT_DELAY = 1.0  # Delay between requests to respect rate limits
+RATE_LIMIT_DELAY = 1.0  # Delay between requests to respect rate limits (1 req/sec)
 CITATION_UPDATE_INTERVAL = timedelta(days=7)  # Update citations weekly
 
 

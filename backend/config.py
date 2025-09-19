@@ -52,6 +52,11 @@ class Settings(BaseSettings):
         default="paperswithcode.ai", description="Application domain for URL generation"
     )
 
+    # Semantic Scholar API configuration
+    semantic_scholar_api_key: str = Field(
+        default="", description="Semantic Scholar API key for citation data"
+    )
+
     class Config:
         env_file = ".env"
         env_prefix = "PWC_"

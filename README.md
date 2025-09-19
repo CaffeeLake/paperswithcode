@@ -8,14 +8,25 @@ Based on this initial Lovable design: https://lovable.dev/projects/a4609afe-13e0
 
 ## Project structure
 
-The project consists of a `backend` folder (which implements a FastAPI app which connects to a PostGresSQL database) and a `frontend` folder.
+The project consists of a `backend` folder (which implements a FastAPI app which connects to a [PostGresSQL](https://www.postgresql.org/) database) and a `frontend` folder.
 
 ## Set-up
 
+We use [uv](https://docs.astral.sh/uv/) to handle Python package management. It can be installed like so:
+
 ```bash
-git clone <...>
-cd paperswithcode
+pip install uv
 ```
+
+Next, clone the repo and install the package:
+
+```bash
+git clone https://github.com/NielsRogge/paperswithcode.git
+cd paperswithcode
+uv add paperswithcode
+```
+
+After that, you can use `uv run --env-file backend/keys.env` to run everything.
 
 [Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`. The hooks can then be installed using `pre-commit install`.
 

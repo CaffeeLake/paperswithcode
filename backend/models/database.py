@@ -124,8 +124,7 @@ class Author(Base):
     __tablename__ = "authors"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    first_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    last_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
 
     # Hugging Face integration
     hf_username: Mapped[Optional[str]] = mapped_column(
@@ -153,16 +152,11 @@ class Author(Base):
     __table_args__ = (
         Index("idx_authors_hf_username", "hf_username"),
         Index("idx_authors_hf_id", "hf_id"),
-        Index("idx_authors_name_search", "first_name", "last_name"),
+        Index("idx_authors_name", "name"),
     )
 
-    @property
-    def full_name(self) -> str:
-        """Get the full name of the author."""
-        return f"{self.first_name} {self.last_name}".strip()
-
     def __repr__(self) -> str:
-        return f"<Author(id={self.id}, name='{self.full_name}', hf_username='{self.hf_username}')>"
+        return f"<Author(id={self.id}, name='{self.name}', hf_username='{self.hf_username}')>"
 
 
 class Area(Base):
@@ -451,6 +445,7 @@ class PaperAuthor(Base):
     author_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("authors.id", ondelete="CASCADE"), primary_key=True
     )
+    author_order: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     # Indexes
     __table_args__ = (

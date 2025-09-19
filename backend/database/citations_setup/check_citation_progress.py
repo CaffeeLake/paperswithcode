@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Citation population progress checker.
+Citation Population Status Checker
 
-This script provides detailed statistics about citation data population progress.
+Shows comprehensive statistics about citation data population progress.
+Use --quick for a brief overview or --detailed for full statistics.
 """
 
 import sys
+import argparse
+import time
 from pathlib import Path
 
 # Add the project root and backend directory to the Python path
@@ -18,10 +21,12 @@ from backend.database.connection import get_database_session  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 
-def check_citation_progress():
+def check_citation_progress(detailed=True):
     """Check and display citation population progress."""
-    print("📊 Citation Population Progress Report")
+    print("📊 Citation Population Status")
     print("=" * 50)
+    print(f"📅 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
 
     db = next(get_database_session())
 
@@ -46,20 +51,47 @@ def check_citation_progress():
         max_cites = stats.max_citations or 0
         avg_cites = stats.avg_citations or 0
 
-        print(f"📚 Total papers (latest versions): {total:,}")
-        print(f"🔍 Papers processed by Semantic Scholar: {with_ss_id:,}")
-        print(f"📈 Papers with actual citations: {with_citations:,}")
+        print(f"📚 Total papers: {total:,}")
+        print(f"🔍 Papers processed: {with_ss_id:,}")
+        print(f"📈 Papers with citations: {with_citations:,}")
         print(f"🎯 Highest citation count: {max_cites:,}")
-        print(f"📊 Average citations (for cited papers): {avg_cites:.1f}")
-        print()
+        print(f"📊 Average citations: {avg_cites:.1f}")
 
         # Progress percentages
         processed_pct = (with_ss_id / total * 100) if total > 0 else 0
         cited_pct = (with_citations / total * 100) if total > 0 else 0
 
-        print(f"🔄 Processing progress: {processed_pct:.2f}%")
-        print(f"📈 Papers with citations: {cited_pct:.2f}%")
+        print(f"📈 Progress: {processed_pct:.1f}% complete")
+
+        # Recent activity (last hour)
+        recent = db.execute(
+            text("""
+            SELECT COUNT(*) as recent_count
+            FROM papers
+            WHERE citation_updated_at > NOW() - INTERVAL '1 hour'
+        """)
+        ).scalar()
+
+        print(f"⚡ Last hour: {recent:,} papers processed")
+
+        if recent > 0:
+            rate = recent / 3600  # papers per second
+            remaining = total - with_ss_id
+            hours_left = remaining / (rate * 3600) if rate > 0 else 0
+
+            if hours_left > 0:
+                completion_time = time.time() + (hours_left * 3600)
+                completion_str = time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(completion_time)
+                )
+                print(
+                    f"🔮 Est. completion: {completion_str} ({hours_left / 24:.1f} days)"
+                )
+
         print()
+
+        if not detailed:
+            return
 
         # Top cited papers
         print("🏆 Top 10 Most Cited Papers:")
@@ -174,5 +206,21 @@ def check_citation_progress():
         db.close()
 
 
+def main():
+    """Main function with command line arguments."""
+    parser = argparse.ArgumentParser(description="Check citation population status")
+    parser.add_argument("--quick", action="store_true", help="Show quick overview only")
+    parser.add_argument(
+        "--detailed", action="store_true", help="Show detailed statistics (default)"
+    )
+
+    args = parser.parse_args()
+
+    # Default to detailed unless --quick is specified
+    detailed = not args.quick
+
+    check_citation_progress(detailed=detailed)
+
+
 if __name__ == "__main__":
-    check_citation_progress()
+    main()

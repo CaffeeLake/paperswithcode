@@ -14,16 +14,16 @@ This document provides a comprehensive database schema design for the PapersWith
 │     AUTHORS     │    │      PAPERS      │    │      TASKS      │
 ├─────────────────┤    ├──────────────────┤    ├─────────────────┤
 │ id (PK)         │    │ id (PK)          │    │ id (PK)         │
-│ first_name      │    │ title            │    │ name            │
-│ last_name       │    │ abstract         │    │ description     │
-│ hf_username     │    │ arxiv_id         │    │ slug            │
-│ hf_id           │    │ version          │    │ parent_id (FK)  │
-│ hf_avatar_url   │    │ is_latest_version│    │ area_id (FK)    │
-│ hf_status       │    │ date_published   │    │ level           │
-│ hf_is_pro       │    │ proceeding       │    │ updated_at      │
-│ created_at      │    │ conference       │    └─────────────────┘
-│ updated_at      │    │ conference_url_abs│             │
-└─────────────────┘    │ conference_url_pdf│             │
+│ name            │    │ title            │    │ name            │
+│ hf_username     │    │ abstract         │    │ description     │
+│ hf_id           │    │ arxiv_id         │    │ slug            │
+│ hf_avatar_url   │    │ version          │    │ parent_id (FK)  │
+│ hf_status       │    │ is_latest_version│    │ area_id (FK)    │
+│ hf_is_pro       │    │ date_published   │    │ level           │
+│ created_at      │    │ proceeding       │    │ updated_at      │
+│ updated_at      │    │ conference       │    └─────────────────┘
+└─────────────────┘    │ conference_url_abs│             │
+                       │ conference_url_pdf│             │
                        │ created_at       │              │
                        │ updated_at       │              │
                        └──────────────────┘              │ (Self-referencing)
@@ -409,8 +409,7 @@ const routes = [
 ```sql
 CREATE TABLE authors (
     id BIGSERIAL PRIMARY KEY,
-    first_name VARCHAR(255) NOT NULL,
-    last_name VARCHAR(255) NOT NULL,
+    name VARCHAR(500) NOT NULL,      -- Full author name (e.g., "Geoffrey Hinton", "Yann LeCun")
     hf_username VARCHAR(255) UNIQUE, -- Hugging Face username (e.g., "roadjiang", "yzli")
     hf_id VARCHAR(50) UNIQUE,        -- Hugging Face internal ID from API
     hf_avatar_url VARCHAR(500),      -- Hugging Face avatar URL
@@ -608,7 +607,8 @@ CREATE INDEX idx_tasks_area_id ON tasks(area_id);
 -- Author indexes for Hugging Face integration
 CREATE INDEX idx_authors_hf_username ON authors(hf_username);
 CREATE INDEX idx_authors_hf_id ON authors(hf_id);
-CREATE INDEX idx_authors_name_search ON authors(first_name, last_name);
+CREATE INDEX idx_authors_name ON authors(name);
+CREATE INDEX idx_authors_name_search ON authors USING gin(to_tsvector('english', name));
 
 -- Junction table indexes
 CREATE INDEX idx_paper_authors_paper_id ON paper_authors(paper_id);
@@ -630,24 +630,23 @@ CREATE INDEX idx_project_pages_paper_id ON project_pages(paper_id);
 
 ## Hugging Face Integration Strategy
 
-### Author Name Parsing Logic
-Since the original PapersWithCode data contains full names as strings (e.g., "Shaofei Cai", "Alexander Kirillov"), we need to parse these into first_name and last_name:
+### Author Name Processing Logic
+Since the original PapersWithCode data contains full names as strings (e.g., "Shaofei Cai", "Alexander Kirillov"), we simply clean and normalize them:
 
 ```python
-def parse_author_name(full_name: str) -> tuple[str, str]:
+def clean_author_name(full_name: str) -> str:
     """
-    Parse full name into first_name and last_name.
-    Handles common academic name patterns.
+    Clean and normalize author name.
+    Handles whitespace normalization and basic cleanup.
     """
-    parts = full_name.strip().split()
+    if not full_name or not full_name.strip():
+        return "Unknown Author"
 
-    if len(parts) == 1:
-        return parts[0], ""
-    elif len(parts) == 2:
-        return parts[0], parts[1]
-    else:
-        # For names with middle names/initials, take first as first_name, rest as last_name
-        return parts[0], " ".join(parts[1:])
+    # Clean and normalize the name
+    name = full_name.strip()
+    name = re.sub(r'\s+', ' ', name)  # Normalize whitespace
+
+    return name
 
 def enrich_author_with_hf_data(author_name: str) -> dict:
     """
@@ -661,13 +660,13 @@ def enrich_author_with_hf_data(author_name: str) -> dict:
 ```
 
 ### Hugging Face Data Enrichment Workflow
-1. **Initial Migration**: Parse all author names from PapersWithCode data into first_name/last_name
+1. **Initial Migration**: Clean and normalize all author names from PapersWithCode data
 2. **HF Enrichment**: Query Hugging Face API to find matching authors and populate HF fields
 3. **Ongoing Sync**: Periodically sync with HF API to update author profiles and discover new papers
 
 ### Author Matching Strategy
-- Match by exact full name reconstruction (`first_name + " " + last_name`)
-- Use fuzzy matching for variations (initials, nicknames)
+- Match by exact full name comparison
+- Use fuzzy matching for variations (initials, nicknames, different spellings)
 - Manual review for ambiguous cases
 
 ## Data Migration Strategy

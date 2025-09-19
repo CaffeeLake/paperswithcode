@@ -31,6 +31,7 @@ extracted_data/
 
 # Environment variables
 *.env
+.venv
 
 # Pycache
 __pycache__/

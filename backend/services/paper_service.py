@@ -90,10 +90,7 @@ class PaperService:
                 .join(PaperAuthor)
                 .filter(PaperAuthor.paper_id == db_paper.id)
             )
-            authors = [
-                f"{author.first_name} {author.last_name}".strip()
-                for author in authors_query.all()
-            ]
+            authors = [author.name for author in authors_query.all()]
         except Exception:
             # Authors table doesn't exist yet, use empty list
             authors = []
@@ -142,10 +139,7 @@ class PaperService:
                 .join(PaperAuthor)
                 .filter(PaperAuthor.paper_id == db_paper.id)
             )
-            authors = [
-                f"{author.first_name} {author.last_name}".strip()
-                for author in authors_query.all()
-            ]
+            authors = [author.name for author in authors_query.all()]
         except Exception:
             # Authors table doesn't exist yet, use empty list
             authors = []
