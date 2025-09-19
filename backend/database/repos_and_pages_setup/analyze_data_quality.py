@@ -27,9 +27,9 @@ backend_dir = project_root / "backend"
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(backend_dir))
 
-from backend.database.connection import get_database_session
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from backend.database.connection import get_database_session  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 # Configure logging
 logging.basicConfig(

@@ -35,9 +35,9 @@ backend_dir = project_root / "backend"
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(backend_dir))
 
-from backend.database.connection import get_database_session
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from backend.database.connection import get_database_session  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 # Configure logging
 logging.basicConfig(
@@ -129,7 +129,7 @@ class OfficialRepoPopulator:
             official_entries = []
             for entry in data:
                 if (
-                    entry.get("is_official") == True
+                    entry.get("is_official")
                     and entry.get("paper_arxiv_id")
                     and entry.get("repo_url")
                 ):
@@ -152,7 +152,7 @@ class OfficialRepoPopulator:
                         official_entries.append(processed_entry)
 
             self.stats["json_entries_official"] = len(
-                [e for e in data if e.get("is_official") == True]
+                [e for e in data if e.get("is_official")]
             )
             self.stats["json_entries_with_arxiv"] = len(official_entries)
 
