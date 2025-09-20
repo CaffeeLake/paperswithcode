@@ -196,3 +196,74 @@ class ValidationErrorResponse(BaseModel):
 
     error: str = Field(default="Validation error", description="Error type")
     detail: List[dict] = Field(..., description="Validation error details")
+
+
+# Author models
+
+
+class Author(BaseModel):
+    """
+    Author object matching the original PapersWithCode API specification.
+
+    Represents a research paper author with optional Hugging Face integration.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core author identification
+    id: str = Field(..., description="Author ID")
+    full_name: str = Field(..., description="Author full name", alias="name")
+
+    # Hugging Face integration (our extension)
+    hf_username: Optional[str] = Field(None, description="Hugging Face username")
+    hf_id: Optional[str] = Field(None, description="Hugging Face user ID")
+    hf_avatar_url: Optional[str] = Field(None, description="Hugging Face avatar URL")
+    hf_status: Optional[str] = Field(None, description="Hugging Face account status")
+    hf_is_pro: bool = Field(
+        default=False, description="Whether user has Hugging Face Pro"
+    )
+
+    # Statistics (computed fields)
+    paper_count: int = Field(default=0, description="Number of papers by this author")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
+        return str(v)
+
+
+class Authors(BaseModel):
+    """
+    Object representing a paginated page of authors.
+
+    Matches the original PapersWithCode API pagination structure.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Author] = Field(..., description="List of authors on this page")
+
+
+class AuthorSummary(BaseModel):
+    """
+    Lightweight author summary for list views.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Author ID")
+    full_name: str = Field(..., description="Author full name", alias="name")
+    hf_username: Optional[str] = Field(None, description="Hugging Face username")
+    paper_count: int = Field(default=0, description="Number of papers by this author")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
+        return str(v)

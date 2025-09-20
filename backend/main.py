@@ -54,9 +54,10 @@ def create_app() -> FastAPI:
     )
 
     # Include routers
-    from .routers import papers
+    from .routers import papers, authors
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
+    app.include_router(authors.router, prefix="/api/v1", tags=["authors"])
 
     # Health check endpoint
     @app.get("/health")

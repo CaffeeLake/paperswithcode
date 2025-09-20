@@ -60,7 +60,7 @@ PWC_MAX_PAGE_SIZE=500
 #### Development Mode
 ```bash
 # Using the provided runner script
-python backend/run_server.py
+uv run backend/run_server.py
 
 # Or directly with uvicorn
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
