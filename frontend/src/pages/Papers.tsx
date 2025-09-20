@@ -55,6 +55,7 @@ const transformPaperForUI = (paper: any, index: number) => {
     isUpvoted: Math.random() > 0.7, // Mock upvote status
     githubStars: paper.citation_count * 10 + Math.floor(Math.random() * 1000), // Mock GitHub stars
     tags: ["machine learning", "artificial intelligence", "research"], // Mock tags
+    thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
   };
 };
 

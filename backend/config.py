@@ -63,6 +63,11 @@ class Settings(BaseSettings):
         default="", description="Semantic Scholar API key for citation data"
     )
 
+    # Thumbnail configuration
+    thumbnail_cache_dir: str = Field(
+        default="./thumbnails", description="Directory to cache PDF thumbnails"
+    )
+
     class Config:
         env_file = ".env"
         env_prefix = "PWC_"

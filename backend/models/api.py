@@ -31,6 +31,9 @@ class Paper(BaseModel):
     # URLs - computed from arxiv_id and version
     url_abs: str = Field(..., description="URL to the paper abstract")
     url_pdf: str = Field(..., description="URL to the paper PDF")
+    thumbnail_url: Optional[str] = Field(
+        None, description="URL to the paper thumbnail image"
+    )
 
     # Paper content
     title: str = Field(..., description="Paper title")

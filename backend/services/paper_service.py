@@ -99,12 +99,22 @@ class PaperService:
         url_abs = get_arxiv_abs_url(db_paper.arxiv_id, db_paper.version)
         url_pdf = get_arxiv_pdf_url(db_paper.arxiv_id, db_paper.version)
 
+        # Always provide thumbnail URL for ArXiv papers (on-demand generation)
+        thumbnail_url = None
+        if db_paper.arxiv_id:
+            # Generate thumbnail URL that will trigger on-demand generation
+            # Format: {arxiv_id_with_underscores}_{version}.jpg
+            safe_arxiv_id = db_paper.arxiv_id.replace(".", "_")
+            filename = f"{safe_arxiv_id}_{db_paper.version}.jpg"
+            thumbnail_url = f"/api/thumbnails/{filename}"
+
         # Create the API model
         paper_data = {
             "id": str(db_paper.id),
             "arxiv_id": db_paper.arxiv_id,
             "url_abs": url_abs,
             "url_pdf": url_pdf,
+            "thumbnail_url": thumbnail_url,
             "title": db_paper.title,
             "abstract": db_paper.abstract or "",
             "authors": authors,

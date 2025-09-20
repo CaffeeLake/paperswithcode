@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
+import PaperThumbnail from "@/components/PaperThumbnail";
 
 interface Author {
   name: string;
@@ -54,19 +55,12 @@ const PaperCard = ({
     >
       <CardContent className="p-0">
         {/* Paper Thumbnail */}
-        <div className="aspect-[4/3] bg-gradient-card rounded-t-lg p-4 flex items-center justify-center border-b">
-          {thumbnail ? (
-            <img src={thumbnail} alt={title} className="w-full h-full object-cover rounded" />
-          ) : (
-            <div className="w-full h-full bg-muted rounded flex items-center justify-center">
-              <div className="text-center p-4">
-                <div className="text-xs font-mono text-muted-foreground mb-2">
-                  {category.toUpperCase()}
-                </div>
-                <div className="text-sm font-medium line-clamp-3">{title}</div>
-              </div>
-            </div>
-          )}
+        <div className="aspect-[4/3] bg-gradient-card rounded-t-lg border-b">
+          <PaperThumbnail
+            thumbnailUrl={thumbnail}
+            title={title}
+            className="w-full h-full p-4"
+          />
         </div>
 
         <div className="p-4">

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
+import PaperThumbnail from "@/components/PaperThumbnail";
 
 interface Author {
   name: string;
@@ -22,6 +23,7 @@ interface TrendingPaperCardProps {
   isUpvoted: boolean;
   githubStars: number;
   tags: string[];
+  thumbnailUrl?: string;
 }
 
 const formatStars = (stars: number) => {
@@ -42,14 +44,17 @@ const TrendingPaperCard = ({
   isUpvoted,
   githubStars,
   tags,
+  thumbnailUrl,
 }: TrendingPaperCardProps) => {
   return (
     <div className="flex gap-6 p-6 bg-card rounded-lg border hover:shadow-md transition-shadow">
       {/* Paper Preview */}
       <div className="flex-shrink-0 w-48">
-        <div className="w-full h-32 bg-muted/50 rounded border flex items-center justify-center text-muted-foreground text-sm">
-          Paper Preview
-        </div>
+        <PaperThumbnail
+          thumbnailUrl={thumbnailUrl}
+          title={title}
+          className="w-full h-32"
+        />
         <div className="mt-2 text-xs text-muted-foreground">
           Submitted by <span className="text-primary">@{submittedBy}</span>
         </div>

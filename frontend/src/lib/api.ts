@@ -9,6 +9,7 @@ export interface Paper {
   arxiv_id: string;
   url_abs: string;
   url_pdf: string;
+  thumbnail_url?: string;
   title: string;
   abstract: string;
   authors: string[];
@@ -125,6 +126,25 @@ class ApiClient {
     return this.request<Author>(`/authors/${id}`);
   }
 
+  // Thumbnails API
+  async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
+    const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
+    const response = await fetch(url, { method: 'POST' });
+    if (!response.ok) {
+      throw new Error(`Thumbnail generation failed: ${response.status}`);
+    }
+    return await response.json();
+  }
+
+  async getThumbnailStatus(paperId: string): Promise<{ has_thumbnail: boolean; thumbnail_url?: string; arxiv_id?: string; version?: string }> {
+    const url = `http://167.235.148.241:8000/api/thumbnails/status/${paperId}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Thumbnail status check failed: ${response.status}`);
+    }
+    return await response.json();
+  }
+
   // Health check
   async healthCheck(): Promise<{ status: string; service: string }> {
     const url = `http://167.235.148.241:8000/health`; // Use VPS IP for health check
@@ -145,5 +165,7 @@ export const {
   getPaper,
   getAuthors,
   getAuthor,
+  generateThumbnail,
+  getThumbnailStatus,
   healthCheck,
 } = apiClient;

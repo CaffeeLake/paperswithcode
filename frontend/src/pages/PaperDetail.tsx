@@ -7,10 +7,12 @@ import { Separator } from "@/components/ui/separator";
 import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
 import { usePaper } from "@/hooks/usePapers";
+import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 
 const PaperDetail = () => {
   const { id } = useParams<{ id: string }>();
   const { data: paper, isLoading, error } = usePaper(id || "", !!id);
+  const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(paper?.arxiv_id);
 
   // Generate colors for authors (similar to the original hardcoded approach)
   const getAuthorColor = (index: number) => {
@@ -325,84 +327,135 @@ const PaperDetail = () => {
           {/* Sidebar */}
           <div className="lg:col-span-1">
             <div className="space-y-6">
-              {/* Models citing this paper */}
+              {/* Linked Hugging Face models */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Zap className="w-4 h-4" />
-                    <span>Models citing this paper</span>
-                    <Badge variant="secondary">0</Badge>
+                    <span>Linked Hugging Face models</span>
+                    {paper.arxiv_id && (
+                      <a
+                        href={`https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:opacity-80 transition-opacity"
+                      >
+                        <Badge variant="secondary">
+                          {hfLoading ? '...' :
+                           (hfRepos?.models !== undefined ?
+                            (hfRepos.isLimited ? `${hfRepos.models}+` : hfRepos.models) :
+                            0
+                           )
+                          }
+                        </Badge>
+                      </a>
+                    )}
+                    {!paper.arxiv_id && <Badge variant="secondary">0</Badge>}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">No model linking this paper</p>
+                  <p className="text-sm text-muted-foreground">
+                    {hfLoading ? 'Loading...' :
+                     (hfRepos?.models ?
+                      `${hfRepos.isLimited ? `${hfRepos.models}+` : hfRepos.models} model${hfRepos.models !== 1 ? 's' : ''} linking this paper` :
+                      'No model linking this paper'
+                     )
+                    }
+                  </p>
                   {paper.arxiv_id && (
                     <p className="text-xs text-muted-foreground mt-2">
-                      Cite arxiv.org/abs/{paper.arxiv_id} in a model README.md to link it from this page.
+                      Cite arxiv.org/abs/{paper.arxiv_id} in a model README.md to link it to this page.
                     </p>
                   )}
                 </CardContent>
               </Card>
 
-              {/* Datasets citing this paper */}
+              {/* Linked Hugging Face datasets */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Database className="w-4 h-4" />
-                    <span>Datasets citing this paper</span>
-                    <Badge variant="secondary">0</Badge>
+                    <span>Linked Hugging Face datasets</span>
+                    {paper.arxiv_id && (
+                      <a
+                        href={`https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:opacity-80 transition-opacity"
+                      >
+                        <Badge variant="secondary">
+                          {hfLoading ? '...' :
+                           (hfRepos?.datasets !== undefined ?
+                            (hfRepos.isLimited ? `${hfRepos.datasets}+` : hfRepos.datasets) :
+                            0
+                           )
+                          }
+                        </Badge>
+                      </a>
+                    )}
+                    {!paper.arxiv_id && <Badge variant="secondary">0</Badge>}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">No dataset linking this paper</p>
+                  <p className="text-sm text-muted-foreground">
+                    {hfLoading ? 'Loading...' :
+                     (hfRepos?.datasets ?
+                      `${hfRepos.isLimited ? `${hfRepos.datasets}+` : hfRepos.datasets} dataset${hfRepos.datasets !== 1 ? 's' : ''} linking this paper` :
+                      'No dataset linking this paper'
+                     )
+                    }
+                  </p>
                   {paper.arxiv_id && (
                     <p className="text-xs text-muted-foreground mt-2">
-                      Cite arxiv.org/abs/{paper.arxiv_id} in a dataset README.md to link it from this page.
+                      Cite arxiv.org/abs/{paper.arxiv_id} in a dataset README.md to link it to this page.
                     </p>
                   )}
                 </CardContent>
               </Card>
 
-              {/* Spaces citing this paper */}
+              {/* Linked Hugging Face Spaces */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Zap className="w-4 h-4" />
-                    <span>Spaces citing this paper</span>
-                    <Badge variant="secondary">0</Badge>
+                    <span>Linked Hugging Face Spaces</span>
+                    {paper.arxiv_id && (
+                      <a
+                        href={`https://huggingface.co/spaces?other=arxiv:${paper.arxiv_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:opacity-80 transition-opacity"
+                      >
+                        <Badge variant="secondary">
+                          {hfLoading ? '...' :
+                           (hfRepos?.spaces !== undefined ?
+                            (hfRepos.isLimited ? `${hfRepos.spaces}+` : hfRepos.spaces) :
+                            0
+                           )
+                          }
+                        </Badge>
+                      </a>
+                    )}
+                    {!paper.arxiv_id && <Badge variant="secondary">0</Badge>}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">No Space linking this paper</p>
+                  <p className="text-sm text-muted-foreground">
+                    {hfLoading ? 'Loading..' :
+                     (hfRepos?.spaces ?
+                      `${hfRepos.isLimited ? `${hfRepos.spaces}+` : hfRepos.spaces} Space${hfRepos.spaces !== 1 ? 's' : ''} linking this paper` :
+                      'No Space linking this paper'
+                     )
+                    }
+                  </p>
                   {paper.arxiv_id && (
                     <p className="text-xs text-muted-foreground mt-2">
-                      Cite arxiv.org/abs/{paper.arxiv_id} in a Space README.md to link it from this page.
+                      Cite arxiv.org/abs/{paper.arxiv_id} in a Space README.md to link it to this page.
                     </p>
                   )}
                 </CardContent>
               </Card>
 
-              {/* Collections */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center space-x-2">
-                    <BookOpen className="w-4 h-4" />
-                    <span>Collections including this paper</span>
-                    <Badge variant="secondary">7</Badge>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-2 h-2 bg-paper-blue rounded-full"></div>
-                      <button className="text-sm text-paper-blue hover:underline">
-                        RL reason model
-                      </button>
-                      <Badge variant="outline" className="text-xs">Collection</Badge>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           </div>
         </div>

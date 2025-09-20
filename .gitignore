@@ -36,3 +36,6 @@ extracted_data/
 # Pycache
 __pycache__/
 *.pyc
+
+# Thumbnails
+thumbnails/

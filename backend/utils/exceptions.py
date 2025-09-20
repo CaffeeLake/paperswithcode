@@ -31,3 +31,9 @@ class ArXivError(PapersWithCodeAPIError):
     """Raised when ArXiv-related operations fail."""
 
     pass
+
+
+class ThumbnailGenerationError(PapersWithCodeAPIError):
+    """Raised when thumbnail generation fails."""
+
+    pass
