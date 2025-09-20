@@ -8,7 +8,7 @@ Based on this initial Lovable design: https://lovable.dev/projects/a4609afe-13e0
 
 ## Project structure
 
-The project consists of a `backend` folder (which implements a FastAPI app which connects to a [PostGresSQL](https://www.postgresql.org/) database) and a `frontend` folder.
+The project consists of a `backend` folder (which implements a FastAPI app which connects to a [PostGresSQL](https://www.postgresql.org/) database) and a `frontend` folder. The backend re-implements the [PapersWithCode API](https://github.com/paperswithcode/paperswithcode-client) formerly maintained by Meta.
 
 ## Set-up
 
@@ -31,6 +31,12 @@ After that, you can use `uv run --env-file backend/keys.env` to run everything.
 [Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`. The hooks can then be installed using `pre-commit install`.
 
 ## How to run
+
+The backend (written in Python) can be run as follows:
+
+```bash
+uv run backend/run_server.py
+```
 
 The frontend (written in Javascript) can be run as follows:
 

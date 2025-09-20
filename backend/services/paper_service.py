@@ -10,7 +10,7 @@ This service handles all paper-related operations, including:
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_, func, case
+from sqlalchemy import desc, asc, or_, func
 
 try:
     from ..models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
@@ -441,106 +441,60 @@ class PaperService:
 
     def search_papers(self, query: str, limit: int = 10) -> List[PaperSummary]:
         """
-        Full-text search for papers with citation-based ranking.
+        Fast search for papers with improved ranking that prioritizes exact matches.
 
-        This search implementation uses a multi-tier approach with citation count weighting:
-        1. Exact title matches (highest priority) - sorted by citation count
-        2. Title contains query (medium priority) - sorted by citation count
-        3. Full-text search in title and abstract (lowest priority) - sorted by relevance + citation count
+        Uses ILIKE queries with enhanced ranking:
+        1. Exact title matches (highest priority)
+        2. Title contains query (sorted by citation count)
+        3. Abstract contains query (sorted by citation count)
 
         Args:
             query: Search query
             limit: Maximum number of results
 
         Returns:
-            List of paper summaries ordered by relevance and importance (citation count)
+            List of paper summaries ordered by relevance and citation count
         """
         try:
-            # Use a prioritized search approach with citation-based ranking
-            # Priority 1: Exact title match
-            # Priority 2: Title contains query
-            # Priority 3: Full-text search match
+            from sqlalchemy import case
 
-            # First, try prioritized title-based search with citation ranking
-            title_results = (
+            # Create a ranking score based on match type and citation count
+            # Exact title match gets highest score, then partial matches
+            ranking_score = case(
+                (
+                    DBPaper.title.ilike(query),
+                    1000000 + DBPaper.citation_count,
+                ),  # Exact title match
+                (
+                    DBPaper.title.ilike(f"%{query}%"),
+                    100000 + DBPaper.citation_count,
+                ),  # Title contains
+                (
+                    DBPaper.abstract.ilike(f"%{query}%"),
+                    DBPaper.citation_count,
+                ),  # Abstract contains
+                else_=0,
+            )
+
+            results = (
                 self.db.query(DBPaper)
                 .filter(
                     or_(
-                        DBPaper.title.ilike(query),  # Case-insensitive exact match
-                        DBPaper.title.ilike(f"%{query}%"),  # Contains match
+                        DBPaper.title.ilike(query),  # Exact match
+                        DBPaper.title.ilike(f"%{query}%"),  # Title contains
+                        DBPaper.abstract.ilike(f"%{query}%"),  # Abstract contains
                     )
                 )
                 .filter(DBPaper.is_latest_version)
                 .order_by(
-                    # Prioritize exact matches first, then by citation count and publication date
-                    case((DBPaper.title.ilike(query), 1), else_=2).asc(),
-                    desc(
-                        DBPaper.citation_count
-                    ),  # Higher citation count = higher ranking
-                    desc(DBPaper.date_published),  # More recent papers as tiebreaker
+                    desc(ranking_score),  # Custom ranking score
+                    desc(DBPaper.date_published),  # Date as tiebreaker
                 )
                 .limit(limit)
                 .all()
             )
 
-            # If we have enough title-based results, return them
-            if len(title_results) >= limit:
-                return [
-                    self._convert_db_paper_to_summary(db_paper)
-                    for db_paper in title_results
-                ]
-
-            # Otherwise, supplement with full-text search results
-            title_ids = {paper.id for paper in title_results}
-            remaining_limit = limit - len(title_results)
-
-            if remaining_limit > 0:
-                # Full-text search with combined ranking: text relevance + citation importance
-                fulltext_results = (
-                    self.db.query(DBPaper)
-                    .filter(
-                        func.to_tsvector(
-                            "english",
-                            DBPaper.title + " " + func.coalesce(DBPaper.abstract, ""),
-                        ).op("@@")(func.plainto_tsquery("english", query))
-                    )
-                    .filter(DBPaper.is_latest_version)
-                    .filter(~DBPaper.id.in_(title_ids))  # Exclude already found papers
-                    .order_by(
-                        # Combined ranking: text relevance score + normalized citation score
-                        desc(
-                            func.ts_rank(
-                                func.to_tsvector(
-                                    "english",
-                                    DBPaper.title
-                                    + " "
-                                    + func.coalesce(DBPaper.abstract, ""),
-                                ),
-                                func.plainto_tsquery("english", query),
-                            )
-                            +
-                            # Normalize citation count to 0-1 range and add to relevance score
-                            (func.log(func.greatest(DBPaper.citation_count, 1)) / 10.0)
-                        ),
-                        desc(
-                            DBPaper.citation_count
-                        ),  # Secondary sort by citation count
-                        desc(
-                            DBPaper.date_published
-                        ),  # Tertiary sort by publication date
-                    )
-                    .limit(remaining_limit)
-                    .all()
-                )
-
-                # Combine results: title matches first, then full-text matches
-                all_results = title_results + fulltext_results
-            else:
-                all_results = title_results
-
-            return [
-                self._convert_db_paper_to_summary(db_paper) for db_paper in all_results
-            ]
+            return [self._convert_db_paper_to_summary(db_paper) for db_paper in results]
 
         except Exception as e:
             raise DatabaseError(f"Error searching papers: {str(e)}")

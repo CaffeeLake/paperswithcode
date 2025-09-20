@@ -1,0 +1,48 @@
+import { useQuery } from '@tanstack/react-query';
+import { apiClient, Paper, PaginatedResponse } from '@/lib/api';
+
+interface UsePapersParams {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_dir?: 'asc' | 'desc';
+  published_after?: string;
+  published_before?: string;
+  conference?: string;
+  latest_only?: boolean;
+  enabled?: boolean;
+}
+
+export function usePapers(params: UsePapersParams = {}) {
+  const {
+    page = 1,
+    page_size = 20,
+    search,
+    order_by = 'date_published',
+    order_dir = 'desc',
+    published_after,
+    published_before,
+    conference,
+    latest_only = true,
+    enabled = true,
+  } = params;
+
+  return useQuery<PaginatedResponse<Paper>, Error>({
+    queryKey: ['papers', { page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }],
+    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }),
+    enabled,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function usePaper(id: string, enabled: boolean = true) {
+  return useQuery<Paper, Error>({
+    queryKey: ['paper', id],
+    queryFn: () => apiClient.getPaper(id),
+    enabled: enabled && !!id,
+    staleTime: 10 * 60 * 1000, // 10 minutes
+    refetchOnWindowFocus: false,
+  });
+}

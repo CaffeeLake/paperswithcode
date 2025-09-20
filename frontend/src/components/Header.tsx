@@ -1,8 +1,9 @@
-import { Search, Sparkles, Menu, User } from "lucide-react";
+import { Sparkles, Menu, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Link, useLocation } from "react-router-dom";
+import { ApiStatus } from "@/components/ApiStatus";
+import { PaperSearch } from "@/components/PaperSearch";
 
 const Header = () => {
   const location = useLocation();
@@ -55,18 +56,11 @@ const Header = () => {
           </div>
 
           {/* Search Bar */}
-          <div className="flex-1 max-w-md mx-8">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-              <Input
-                className="pl-10 bg-muted/50 border-0 focus-visible:ring-1 focus-visible:ring-primary"
-                placeholder="Search papers, authors, tasks..."
-              />
-            </div>
-          </div>
+          <PaperSearch />
 
           {/* User Actions */}
           <div className="flex items-center space-x-4">
+            <ApiStatus />
             <Button variant="outline" size="sm">
               + Submit a paper
             </Button>

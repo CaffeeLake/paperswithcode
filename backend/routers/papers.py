@@ -79,17 +79,14 @@ async def get_papers(
 async def search_papers(
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
-    enhanced: bool = Query(
-        False, description="Use enhanced search with Semantic Scholar integration"
-    ),
     db: Session = Depends(get_database_session),
 ):
     """
     Full-text search for papers in titles and abstracts with citation-based ranking.
 
     Uses PostgreSQL's full-text search capabilities combined with citation counts
-    to rank papers by both relevance and importance. When enhanced=true, also
-    queries Semantic Scholar API for highly cited papers.
+    to rank papers by both relevance and importance. Also queries Semantic Scholar
+    API for highly cited papers to provide enhanced search results.
 
     Returns paper summaries ordered by:
     1. Exact title matches (sorted by citation count)
@@ -98,10 +95,7 @@ async def search_papers(
     """
     try:
         service = PaperService(db)
-        if enhanced:
-            return await service.search_papers_with_semantic_scholar(q, limit)
-        else:
-            return service.search_papers(q, limit)
+        return service.search_papers(q, limit)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
