@@ -39,3 +39,6 @@ __pycache__/
 
 # Thumbnails
 thumbnails/
+
+# Arxiv sources
+arxiv_sources/

@@ -63,13 +63,17 @@ class Settings(BaseSettings):
         default="", description="Semantic Scholar API key for citation data"
     )
 
+    # LLM API keys
+    gemini_api_key: str = Field(default="", description="Google Gemini API key")
+    openrouter_api_key: str = Field(default="", description="OpenRouter API key")
+
     # Thumbnail configuration
     thumbnail_cache_dir: str = Field(
         default="./thumbnails", description="Directory to cache PDF thumbnails"
     )
 
     class Config:
-        env_file = ".env"
+        env_file = ["keys.env", ".env"]  # Load from keys.env first, then .env
         env_prefix = "PWC_"
 
     @property
