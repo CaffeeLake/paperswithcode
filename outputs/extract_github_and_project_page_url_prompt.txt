@@ -1,0 +1,156 @@
+You are part of the community science team at Hugging Face, whose goal is to make sure more researchers
+in the field of artificial intelligence (AI) share their new artifacts (such as pre-trained model checkpoints,
+datasets) on the Hugging Face hub, rather than Github, Google Drive or other hosting platforms.
+
+You are assigned the task of extracting the Github repository URL and project page URL from a given paper
+published on Arxiv.
+
+We provide you with:
+- the abstract of the Arxiv paper.
+- the comments of authors/other people on Hugging Face paper pages, which is a platform similar to Arxiv.
+- the text extracted from the first 2 pages of the PDF using `PyPDF2`
+- hyperlinks extracted from the first 2 pages of the PDF using `pdfplumber`
+- the images of the first 2 pages of the PDF.
+
+Each of these resources often include links to the Github repository and/or project page of the paper.
+
+## Extracting Github URL
+
+The Github URL is the URL of the repository where the code is hosted, and always includes github.com.
+If the URL does not include the literal string "github.com", then it is not an appropriate Github URL.
+
+## Extracting project page URL
+
+Some papers also include a project page, which is a web page that provides more information about the paper.
+The project page is also sometimes just referred to "web page", "website" or "demo page".
+Project pages often, but not always, include "github.io" in their URL.
+Note: Hugging Face models, datasets and collections cannot be considered a project page, a Hugging Face Space can be,
+but only if it's explicitly listed as project page.
+
+Use the following JSON schema to return your answer:
+
+```json
+{
+    "github_url": str
+    "project_page_url": str
+}
+```
+
+In case the Github or project page URL is not present, write an empty '' for the respective URL.
+Do not make up URLs for which you don't find evidence.
+
+Abstract of the paper:
+We present Segment Anything Model 2 (SAM 2), a foundation model towards solving promptable visual segmentation in images and videos. We build a data engine, which improves model and data via user interaction, to collect the largest video segmentation dataset to date. Our model is a simple transformer architecture with streaming memory for real-time video processing. SAM 2 trained on our data provides strong performance across a wide range of tasks. In video segmentation, we observe better accuracy, using 3x fewer interactions than prior approaches. In image segmentation, our model is more accurate and 6x faster than the Segment Anything Model (SAM). We believe that our data, model, and insights will serve as a significant milestone for video segmentation and related perception tasks. We are releasing our main model, dataset, as well as code for model training and our demo.
+
+Comments on the Hugging Face paper page:
+Comments at huggingface.co/papers/2408.00714:
+
+No comments were found (due to error).
+
+Text extracted from the first 2 pages of the PDF using `PyPDF2`:
+SAM 2: Segment Anything in Images and Videos
+Nikhila Ravi∗,†,Valentin Gabeur∗,Yuan-Ting Hu∗,Ronghang Hu∗,Chaitanya Ryali∗,Tengyu Ma∗,
+Haitham Khedr∗,Roman Rädle∗,Chloe Rolland ,Laura Gustafson ,Eric Mintun ,Junting Pan ,Kalyan
+Vasudev Alwala ,Nicolas Carion ,Chao-Yuan Wu ,Ross Girshick ,Piotr Dollár†,Christoph Feichtenhofer∗,†
+Meta FAIR
+∗core contributor ,†project lead
+We present Segment Anything Model 2 (SAM 2), a foundation model towards solving promptable
+visual segmentation in images and videos. We build a data engine, which improves model and data
+via user interaction, to collect the largest video segmentation dataset to date. Our model is a simple
+transformer architecture with streaming memory for real-time video processing. SAM 2 trained on
+our data provides strong performance across a wide range of tasks. In video segmentation, we observe
+better accuracy, using 3 ×fewer interactions than prior approaches. In image segmentation, our model
+is more accurate and 6 ×faster than the Segment Anything Model (SAM). We believe that our data,
+model, and insights will serve as a significant milestone for video segmentation and related perception
+tasks. We are releasing our main model, dataset, as well as code for model training and our demo.
+Demo: https://sam2.metademolab.com
+Code: https://github.com/facebookresearch/sam2
+Website: https://ai.meta.com/sam2
+1 Introduction
+Segment Anything (SA) introduced a foundation model for promptable segmentation inimages(Kirillov et al.,
+2023). However an image is only a static snapshot of the real world in which visual segments can exhibit
+complex motion, and with the rapid growth of multimedia content, a significant portion is now recorded
+with a temporal dimension, particularly in videodata. Many important applications in AR/VR, robotics,
+autonomous vehicles, and video editing require temporal localization beyond image-level segmentation. We
+believe a universal visual segmentation system should be applicable to both images andvideos.
+Segmentation in video aims to determine the spatio-temporal extent of entities, which presents unique
+challenges beyond those in images. Entities can undergo significant changes in appearance due to motion,
+deformation, occlusion, lighting changes, and other factors. Videos often have lower quality than images due
+to camera motion, blur, and lower resolution. Further, efficient processing of a large number of frames is a
+key challenge. While SA successfully addresses segmentation in images, existing video segmentation models
+and datasets fall short in providing a comparable capability to “segment anything in videos”.
+We introduce the Segment Anything Model 2 (SAM 2), a unifiedmodel for video and image segmentation (we
+consider an image as a single-frame video). Our work includes a task, model, and dataset (see Fig. 1).
+We focus on the Promptable Visual Segmentation (PVS) taskthat generalizes image segmentation to the
+video domain. The task takes as input points, boxes, or masks on any frame of the video to define a segment of
+interest for which the spatio-temporal mask (i.e., a ‘ masklet’) is to be predicted. Once a masklet is predicted,
+it can be iteratively refined by providing prompts in additional frames.
+Ourmodel(§4) produces segmentation masks of the object of interest, in single images andacross video
+frames. SAM 2 is equipped with a memory that stores information about the object and previous interactions,
+which allows it to generate masklet predictions throughout the video, and also effectively correct these based
+on the stored memory context of the object from previously observed frames. Our streaming architecture is a
+natural generalization of SAM to the video domain, processing video frames one at a time, equipped with a
+memory attention module to attend to the previous memories of the target object. When applied to images,
+the memory is empty and the model behaves like SAM.
+1arXiv:2408.00714v2  [cs.CV]  28 Oct 2024Figure 1We introduce the Segment Anything Model 2 (SAM 2), towards solving the promptable visual segmentation
+task (a) with our foundation model (b), trained on our large-scale SA-V dataset collected through our data engine (c).
+SAM 2 is capable of interactively segmenting regions through prompts (clicks, boxes, or masks) on one or multiple
+video frames by utilizing a streaming memory that stores previous prompts and predictions.
+We employ a data engine (§5) to generate training data by using our model in the loop with annotators to
+interactively annotate new and challenging data. Different from most existing video segmentation datasets,
+our data engine is not restricted to objects of specific categories, but instead targeted to provide training
+data for segmenting anyobject with a valid boundary, including parts and subparts. Compared to existing
+model-assisted approaches, our data engine with SAM 2 in the loop is 8.4 ×faster at comparable quality. Our
+final Segment Anything Video (SA-V) dataset (§5.2) consists of 35.5M masks across 50.9K videos, 53 ×more
+masks than any existing video segmentation dataset. SA-V is challenging with small objects and parts that
+get occluded and re-appear throughout the video. Our SA-V dataset is geographically diverse, and a fairness
+evaluation of SAM 2 indicates minimal performance discrepancy in video segmentation based on perceived
+gender, and little variance among the three perceived age groups we evaluated.
+Our experiments (§6) show that SAM 2 delivers a step-change in the videosegmentation experience. SAM 2
+can produce bettersegmentation accuracy while using 3 ×fewerinteractions than prior approaches. Further,
+SAM 2 outperforms prior work in established videoobject segmentation benchmarks, under multiple evaluation
+settings, anddelivers better performance compared to SAM on imagesegmentation benchmarks, while being
+6×faster. SAM 2 is shown to be effective across a variety of video and image distributions as observed through
+numerous zero-shot benchmarks including 17 for video segmentation and 37 for single-image segmentation.
+We are releasing our work under permissive open licences, including the SA-V dataset (CC by 4.0), the SAM 2
+model checkpoints1, training code (Apache 2.0), and code for our interactive online demo (Apache 2.0).
+2 Related work
+Image segmentation. Segment Anything (Kirillov et al., 2023) introduces a promptable image segmentation
+task where the goal is to output a valid segmentation mask given an input prompt such as a bounding box
+or a point that refers to the object of interest. SAM trained on the SA-1B dataset allows for zero-shot
+segmentation which enabled its adoption to a wide range of applications. Recent work has extended SAM,
+e.g., by introducing a High-Quality output token to train on fine-grained masks (Ke et al., 2024), or improve
+SAM’s efficiency (Xiong et al., 2023; Zhang et al., 2023a; Zhao et al., 2023). More broadly, SAM is used in a
+wide range of applications, including medical imaging (Ma et al., 2024; Deng et al., 2023; Mazurowski et al.,
+2023; Wu et al., 2023a), remote sensing (Chen et al., 2024; Ren et al., 2024), motion segmentation (Xie et al.,
+2024), and camouflaged object detection (Tang et al., 2023).
+1All the results presented in this paper are based on a new version of SAM 2 (improved over our initial release; denoted as
+“SAM 2.1” in https://github.com/facebookresearch/sam2 ), which we will refer to as SAM 2 throughout for brevity.
+2
+
+Hyperlinks extracted from the first 2 pages of the PDF using `pdfplumber`:
+[{'text': '', 'url': 'https://sam2.metademolab.com'}, {'text': '', 'url': 'https://github.com/facebookresearch/sam2'}, {'text': '', 'url': 'https://ai.meta.com/sam2'}, {'text': '', 'url': 'https://github.com/facebookresearch/sam2'}, {'text': '', 'url': 'https://github.com/haochenheheda/LVVIS'}, {'text': '', 'url': 'https://springernature.figshare.com/collections/A_Drosophila_heart_optical_coherence_microscopy_database_for_automatic_video_segmentation/6448813/1'}, {'text': '', 'url': 'https://www.vostdataset.org/'}, {'text': '', 'url': 'https://github.com/mcahny/vps'}, {'text': '', 'url': 'https://cfdb.univ-corse.fr/index.php'}, {'text': '', 'url': 'https://max810.github.io/xmem2-project-page/#pumavos-dataset'}, {'text': '', 'url': 'https://epic-kitchens.github.io/VISOR/'}, {'text': '', 'url': 'https://zenodo.org/records/5777994'}, {'text': '', 'url': 'https://lmb.informatik.uni-freiburg.de/resources/datasets/'}, {'text': '', 'url': 'https://europe.naverlabs.com/research-old2/computer-vision/proxy-virtual-worlds-vkitti-2/'}, {'text': '', 'url': 'https://zenodo.org/records/10527017'}, {'text': '', 'url': 'https://lila.science/datasets/lindenthal-camera-traps/'}, {'text': '', 'url': 'https://lingyihongfd.github.io/lvos.github.io/'}, {'text': '', 'url': 'https://sites.google.com/view/unidentified-video-object'}, {'text': '', 'url': 'https://ego-exo4d-data.org/'}, {'text': '', 'url': 'https://github.com/vipseg-dataset/vipseg-dataset'}, {'text': '', 'url': 'https://figshare.com/s/94e5607718545aeb9a4e'}, {'text': '', 'url': 'https://github.com/facebookresearch/sam2'}, {'text': '', 'url': 'https://www.epa.gov/energy/greenhouse-gas-equivalencies-calculator'}]
+
+First write down your reasoning regarding where to find the Github URL and project page URL's, for the abstract of
+the paper, the comments on the Hugging Face paper page as well as for the first 2 pages of the PDF.
+Reflect on wether the Github URL includes the literal string github.com. Reflect on whether the project
+page URL does include github.io (does not have to be but chance is high), and does NOT include github.com.
+Make sure to always include https:// as the start of the URL, as subsequent systems will parse it.
+
+Format your response in the following markdown format:
+
+## Reasoning
+Include your reasoning here
+
+## Parsing
+```json
+{
+    "github_url": string, // Github URL, if found
+    "project_page_url": string, // project page URL, if found
+}
+```
+
+Generate the output in valid markdown as described above, containing the sections "Reasoning" and "Parsing".
+Make sure to include both the "Reasoning" and "Parsing" sections.
+Make sure the text of the "Parsing" section contains a valid JSON object with closed brackets at the beginning and the end.
+Do note produce training commas as those are not valid JSON.

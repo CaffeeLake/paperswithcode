@@ -1,0 +1,5 @@
+{
+    "_type": "prompt",
+    "input_variables": ["abstract", "paper_page_comments", "pdf_text", "hyperlinks"],
+    "template_path": "extract_github_and_project_page_url.txt"
+}

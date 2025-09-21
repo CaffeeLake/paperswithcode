@@ -7,9 +7,8 @@ import shutil
 import asyncio
 import json
 
-from ..config import get_settings
-
-from ..models import Generator, Message
+from backend.config import get_settings
+from backend.models.generators import Generator, Message
 
 from google import genai
 from google.genai.types import Content, Part, FileData
@@ -106,10 +105,31 @@ class GoogleGenerator(Generator):
                     if is_string_content
                     else [Part(text=text) for text in message.content]
                 )
-                if message.image_url is not None:
+                # Handle image URLs (new multiple images support)
+                if message.image_urls:
+                    # TODO: Implement image handling when media_utils is available
+                    print(
+                        f"Warning: Image URLs provided but media_utils not available: {message.image_urls}"
+                    )
+                    pass
+                elif message.image_url:  # Backward compatibility
                     # TODO: Implement image handling when media_utils is available
                     print(
                         f"Warning: Image URL provided but media_utils not available: {message.image_url}"
+                    )
+                    pass
+
+                # Handle image paths (new multiple images support)
+                if message.image_paths:
+                    # TODO: Implement image handling when media_utils is available
+                    print(
+                        f"Warning: Image paths provided but media_utils not available: {message.image_paths}"
+                    )
+                    pass
+                elif message.image_path:  # Backward compatibility
+                    # TODO: Implement image handling when media_utils is available
+                    print(
+                        f"Warning: Image path provided but media_utils not available: {message.image_path}"
                     )
                     pass
 

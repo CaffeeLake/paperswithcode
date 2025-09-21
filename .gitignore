@@ -42,3 +42,6 @@ thumbnails/
 
 # Arxiv sources
 arxiv_sources/
+
+# Cursor rules
+*.cursor/*
