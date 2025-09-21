@@ -2,7 +2,28 @@
  * API client for PapersWithCode backend
  */
 
-const API_BASE_URL = 'http://167.235.148.241:8000/api/v1';
+const API_BASE_URL = 'http://localhost:8000/api/v1';
+
+export interface Repository {
+  id: string;
+  paper_id: string;
+  url: string;
+  owner?: string;
+  name?: string;
+  num_stars: number;
+  is_official: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProjectPage {
+  id: string;
+  paper_id: string;
+  url: string;
+  is_official: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
 
 export interface Paper {
   id: string;
@@ -22,6 +43,8 @@ export interface Paper {
   is_latest_version: boolean;
   citation_count: number;
   semantic_scholar_id?: string;
+  repositories?: Repository[];
+  project_pages?: ProjectPage[];
 }
 
 export interface Author {
@@ -98,8 +121,61 @@ class ApiClient {
     return this.request<PaginatedResponse<Paper>>(endpoint);
   }
 
-  async getPaper(id: string): Promise<Paper> {
-    return this.request<Paper>(`/papers/${id}`);
+  async getPaper(id: string, includeResources: boolean = true): Promise<Paper> {
+    const endpoint = `/papers/${id}${includeResources ? '?include_resources=true' : ''}`;
+    return this.request<Paper>(endpoint);
+  }
+
+  // Repositories API
+  async getRepositoriesForPaper(paperId: string): Promise<Repository[]> {
+    return this.request<Repository[]>(`/papers/${paperId}/repositories`);
+  }
+
+  async getRepositories(params?: {
+    page?: number;
+    page_size?: number;
+    owner?: string;
+    official_only?: boolean;
+    min_stars?: number;
+    order_by?: string;
+    order_dir?: 'asc' | 'desc';
+  }): Promise<PaginatedResponse<Repository>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.owner) searchParams.append('owner', params.owner);
+    if (params?.official_only) searchParams.append('official_only', params.official_only.toString());
+    if (params?.min_stars) searchParams.append('min_stars', params.min_stars.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+
+    const endpoint = `/repositories/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Repository>>(endpoint);
+  }
+
+  // Project Pages API
+  async getProjectPagesForPaper(paperId: string): Promise<ProjectPage[]> {
+    return this.request<ProjectPage[]>(`/papers/${paperId}/project-pages`);
+  }
+
+  async getProjectPages(params?: {
+    page?: number;
+    page_size?: number;
+    official_only?: boolean;
+    order_by?: string;
+    order_dir?: 'asc' | 'desc';
+  }): Promise<PaginatedResponse<ProjectPage>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.official_only) searchParams.append('official_only', params.official_only.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+
+    const endpoint = `/project-pages/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<ProjectPage>>(endpoint);
   }
 
   // Authors API
@@ -163,6 +239,10 @@ export const apiClient = new ApiClient();
 export const {
   getPapers,
   getPaper,
+  getRepositoriesForPaper,
+  getRepositories,
+  getProjectPagesForPaper,
+  getProjectPages,
   getAuthors,
   getAuthor,
   generateThumbnail,

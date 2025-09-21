@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2 } from "lucide-react";
+import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -8,6 +8,7 @@ import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
 import { usePaper } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
+import PaperResources from "@/components/PaperResources";
 
 const PaperDetail = () => {
   const { id } = useParams<{ id: string }>();
@@ -208,17 +209,33 @@ const PaperDetail = () => {
                   </a>
                 </Button>
               )}
+              {/* Project Pages */}
+              {paper.project_pages && paper.project_pages.length > 0 && (
+                paper.project_pages.map((page, index) => (
+                  <Button key={page.id} variant="outline" className="flex items-center space-x-2" asChild>
+                    <a href={page.url} target="_blank" rel="noopener noreferrer">
+                      <Globe className="w-4 h-4" />
+                      <span>Project page{paper.project_pages!.length > 1 ? ` ${index + 1}` : ''}</span>
+                    </a>
+                  </Button>
+                ))
+              )}
               <Button variant="outline" className="flex items-center space-x-2">
                 <Bookmark className="w-4 h-4" />
                 <span>Save</span>
               </Button>
             </div>
 
+            {/* Code and Tasks */}
+            <PaperResources
+              repositories={paper.repositories}
+            />
+
             {/* Evaluation Results */}
             <Card className="mb-8">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-xl font-semibold">Evaluation results from the paper</CardTitle>
+                  <CardTitle className="text-xl font-semibold">Results from the paper</CardTitle>
                   <Button variant="ghost" size="sm" className="flex items-center space-x-1 text-muted-foreground">
                     <Edit className="w-4 h-4" />
                     <span>Edit</span>

@@ -65,12 +65,13 @@ def create_app() -> FastAPI:
 
     # Include routers
     try:
-        from .routers import papers, authors, thumbnails
+        from .routers import papers, authors, thumbnails, repositories
     except ImportError:
-        from routers import papers, authors, thumbnails
+        from routers import papers, authors, thumbnails, repositories
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     app.include_router(authors.router, prefix="/api/v1", tags=["authors"])
+    app.include_router(repositories.router, prefix="/api/v1", tags=["repositories"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
 
     # Health check endpoint

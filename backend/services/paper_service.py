@@ -70,7 +70,10 @@ class PaperService:
         self.settings = get_settings()
 
     def _convert_db_paper_to_api(
-        self, db_paper: DBPaper, include_full_data: bool = True
+        self,
+        db_paper: DBPaper,
+        include_full_data: bool = True,
+        include_resources: bool = False,
     ) -> Paper:
         """
         Convert database paper model to API paper model.
@@ -78,6 +81,7 @@ class PaperService:
         Args:
             db_paper: Database paper instance
             include_full_data: Whether to include full paper data or just summary
+            include_resources: Whether to include repositories and project pages
 
         Returns:
             API Paper model
@@ -89,6 +93,7 @@ class PaperService:
                 self.db.query(DBAuthor)
                 .join(PaperAuthor)
                 .filter(PaperAuthor.paper_id == db_paper.id)
+                .order_by(PaperAuthor.author_order)
             )
             authors = [author.name for author in authors_query.all()]
         except Exception:
@@ -107,6 +112,29 @@ class PaperService:
             safe_arxiv_id = db_paper.arxiv_id.replace(".", "_")
             filename = f"{safe_arxiv_id}_{db_paper.version}.jpg"
             thumbnail_url = f"/api/thumbnails/{filename}"
+
+        # Get repositories and project pages if requested
+        repositories = None
+        project_pages = None
+
+        if include_resources:
+            try:
+                from .repository_service import RepositoryService
+
+                repo_service = RepositoryService(self.db)
+
+                # Get repositories for this paper
+                repositories = repo_service.get_repositories_for_paper(str(db_paper.id))
+
+                # Get project pages for this paper
+                project_pages = repo_service.get_project_pages_for_paper(
+                    str(db_paper.id)
+                )
+
+            except Exception:
+                # If there's an error fetching resources, just leave them as None
+                repositories = None
+                project_pages = None
 
         # Create the API model
         paper_data = {
@@ -127,6 +155,8 @@ class PaperService:
             "is_latest_version": db_paper.is_latest_version,
             "citation_count": db_paper.citation_count,
             "semantic_scholar_id": db_paper.semantic_scholar_id,
+            "repositories": repositories,
+            "project_pages": project_pages,
         }
 
         return Paper(**paper_data)
@@ -148,6 +178,7 @@ class PaperService:
                 self.db.query(DBAuthor)
                 .join(PaperAuthor)
                 .filter(PaperAuthor.paper_id == db_paper.id)
+                .order_by(PaperAuthor.author_order)
             )
             authors = [author.name for author in authors_query.all()]
         except Exception:
@@ -167,12 +198,13 @@ class PaperService:
             citation_count=db_paper.citation_count,
         )
 
-    def get_paper_by_id(self, paper_id: int) -> Paper:
+    def get_paper_by_id(self, paper_id: int, include_resources: bool = False) -> Paper:
         """
         Get a paper by its database ID.
 
         Args:
             paper_id: Database paper ID
+            include_resources: Whether to include repositories and project pages
 
         Returns:
             API Paper model
@@ -186,7 +218,9 @@ class PaperService:
             if not db_paper:
                 raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
 
-            return self._convert_db_paper_to_api(db_paper)
+            return self._convert_db_paper_to_api(
+                db_paper, include_resources=include_resources
+            )
 
         except Exception as e:
             if isinstance(e, PaperNotFoundError):

@@ -143,6 +143,9 @@ async def get_paper_stats(db: Session = Depends(get_database_session)):
 )
 async def get_paper_by_id(
     paper_id: int = Path(..., description="Database paper ID"),
+    include_resources: bool = Query(
+        False, description="Include repositories and project pages"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -157,7 +160,7 @@ async def get_paper_by_id(
     """
     try:
         service = PaperService(db)
-        return service.get_paper_by_id(paper_id)
+        return service.get_paper_by_id(paper_id, include_resources=include_resources)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

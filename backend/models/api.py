@@ -69,6 +69,14 @@ class Paper(BaseModel):
         None, description="Semantic Scholar paper ID"
     )
 
+    # Associated resources (optional, populated when requested)
+    repositories: Optional[List["Repository"]] = Field(
+        None, description="GitHub repositories associated with this paper"
+    )
+    project_pages: Optional[List["ProjectPage"]] = Field(
+        None, description="Project pages associated with this paper"
+    )
+
     @field_validator("authors", mode="before")
     @classmethod
     def parse_authors(cls, v):
@@ -270,3 +278,123 @@ class AuthorSummary(BaseModel):
     def ensure_string_id(cls, v):
         """Ensure ID is always a string."""
         return str(v)
+
+
+# Repository and Project Page models
+
+
+class Repository(BaseModel):
+    """
+    GitHub repository linked to a paper.
+
+    Represents a code repository associated with a research paper.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core repository identification
+    id: str = Field(..., description="Repository ID")
+    paper_id: str = Field(..., description="Associated paper ID")
+
+    # Repository details
+    url: str = Field(..., description="Full GitHub repository URL")
+    owner: Optional[str] = Field(None, description="GitHub username/organization")
+    name: Optional[str] = Field(None, description="Repository name")
+
+    # Repository metadata
+    num_stars: int = Field(default=0, description="Number of GitHub stars")
+    is_official: bool = Field(
+        default=False,
+        description="Whether this is the official repository by paper authors",
+    )
+
+    # Timestamps
+    created_at: Optional[date] = Field(None, description="Repository creation date")
+    updated_at: Optional[date] = Field(None, description="Repository last update date")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
+        return str(v)
+
+    @field_validator("paper_id", mode="before")
+    @classmethod
+    def ensure_string_paper_id(cls, v):
+        """Ensure paper_id is always a string."""
+        return str(v)
+
+
+class Repositories(BaseModel):
+    """
+    Object representing a paginated page of repositories.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Repository] = Field(
+        ..., description="List of repositories on this page"
+    )
+
+
+class ProjectPage(BaseModel):
+    """
+    Project page showcasing paper work.
+
+    Represents a demo site, project website, or other web resource associated with a paper.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core project page identification
+    id: str = Field(..., description="Project page ID")
+    paper_id: str = Field(..., description="Associated paper ID")
+
+    # Project page details
+    url: str = Field(..., description="Full URL to project page")
+    is_official: bool = Field(
+        default=False,
+        description="Whether this is an official project page by paper authors",
+    )
+
+    # Timestamps
+    created_at: Optional[date] = Field(None, description="Repository creation date")
+    updated_at: Optional[date] = Field(None, description="Repository last update date")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
+        return str(v)
+
+    @field_validator("paper_id", mode="before")
+    @classmethod
+    def ensure_string_paper_id(cls, v):
+        """Ensure paper_id is always a string."""
+        return str(v)
+
+
+class ProjectPages(BaseModel):
+    """
+    Object representing a paginated page of project pages.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[ProjectPage] = Field(
+        ..., description="List of project pages on this page"
+    )
+
+
+# Resolve forward references
+Paper.model_rebuild()

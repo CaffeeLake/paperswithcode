@@ -38,7 +38,26 @@ Based on your database schema, we have the following tables ready for API expans
 **Timeline: 1-2 weeks**
 **Dependencies: Database tables already exist**
 
-#### 1.1 Authors API
+#### 1.1 Repositories & Project Pages API (PRIORITIZED)
+```
+GET  /api/v1/repositories/                           # List repositories
+GET  /api/v1/repositories/{repository_id}            # Get specific repository
+GET  /api/v1/repositories/{owner}                    # List repos by owner
+GET  /api/v1/repositories/{owner}/{name}             # Get specific repository by owner/name
+GET  /api/v1/project-pages/                          # List project pages
+GET  /api/v1/project-pages/{page_id}                 # Get specific project page
+GET  /api/v1/papers/{paper_id}/repositories          # Get repositories for paper
+GET  /api/v1/papers/{paper_id}/project-pages         # Get project pages for paper
+```
+
+**Implementation Details:**
+- **Database Query**: Direct queries on `repositories` and `project_pages` tables
+- **Filtering**: By owner, stars, official status, paper association
+- **Sorting**: By stars, creation date, official status
+- **GitHub Integration**: Support for fetching repository metadata (stars, etc.)
+- **Response Model**: `Repository`, `Repositories`, `ProjectPage`, `ProjectPages`
+
+#### 1.2 Authors API
 ```
 GET  /api/v1/authors/                    # List authors with pagination/filtering
 GET  /api/v1/authors/{author_id}         # Get specific author details
@@ -51,7 +70,11 @@ GET  /api/v1/authors/{author_id}/papers  # Get papers by author
 - **Sorting**: By paper count, recent activity, alphabetical
 - **Response Model**: `Author`, `Authors` (paginated)
 
-#### 1.2 Tasks API
+### Phase 2: Extended Entity Endpoints (Priority: MEDIUM)
+**Timeline: 2-3 weeks**
+**Dependencies: Phase 1 completion**
+
+#### 2.1 Tasks API (MOVED FROM PHASE 1)
 ```
 GET  /api/v1/tasks/                      # List all tasks with hierarchy
 GET  /api/v1/tasks/{task_id}             # Get specific task details
@@ -69,7 +92,7 @@ GET  /api/v1/areas/{area_id}/tasks       # Get tasks in area
 - **Hierarchy**: Support parent-child relationships
 - **Response Model**: `Task`, `Tasks`, `Area`, `Areas`
 
-#### 1.3 Methods API
+#### 2.2 Methods API (MOVED FROM PHASE 1)
 ```
 GET  /api/v1/methods/                    # List all methods
 GET  /api/v1/methods/{method_id}         # Get specific method details
@@ -81,25 +104,7 @@ GET  /api/v1/methods/{method_id}/papers  # Get papers using method
 - **Filtering**: By name, paper count, publication date
 - **Response Model**: `Method`, `Methods`
 
-### Phase 2: Extended Entity Endpoints (Priority: MEDIUM)
-**Timeline: 2-3 weeks**
-**Dependencies: Phase 1 completion**
-
-#### 2.1 Repositories API
-```
-GET  /api/v1/repositories/                           # List repositories
-GET  /api/v1/repositories/{owner}                    # List repos by owner
-GET  /api/v1/repositories/{owner}/{name}             # Get specific repository
-GET  /api/v1/repositories/{owner}/{name}/papers      # Get papers for repository
-```
-
-**Implementation Details:**
-- **Database Query**: Join `repositories` with `paper_repositories` and `papers`
-- **Filtering**: By framework, stars, owner, language
-- **GitHub Integration**: Sync repository metadata
-- **Response Model**: `Repository`, `Repositories`
-
-#### 2.2 Datasets API
+#### 2.3 Datasets API
 ```
 GET  /api/v1/datasets/                               # List datasets
 GET  /api/v1/datasets/{dataset_id}                   # Get specific dataset
@@ -112,7 +117,7 @@ GET  /api/v1/datasets/{dataset_id}/evaluations       # Get evaluation tables
 - **Filtering**: By domain, size, paper count
 - **Response Model**: `Dataset`, `Datasets`
 
-#### 2.3 Conferences API
+#### 2.4 Conferences API
 ```
 GET  /api/v1/conferences/                            # List conferences
 GET  /api/v1/conferences/{conference_id}             # Get specific conference
@@ -400,13 +405,14 @@ def upgrade():
 1. **Review and approve** this expansion plan
 2. **Set up development environment** for API expansion
 3. **Create GitHub issues** for each phase and endpoint
-4. **Begin Phase 1 implementation** with Authors API
+4. **Begin Phase 1 implementation** with Repositories & Project Pages API (PRIORITIZED)
 
 ### Short-term Goals (Month 1)
-1. **Complete Phase 1**: Authors, Tasks, Methods APIs
+1. **Complete Phase 1**: Repositories, Project Pages, and Authors APIs
 2. **Set up monitoring** and logging infrastructure
 3. **Write comprehensive tests** for new endpoints
 4. **Update API documentation** with new endpoints
+5. **Integrate repositories and project pages into frontend paper display**
 
 ### Long-term Goals (Month 2-3)
 1. **Complete Phases 2-3**: All entity endpoints
