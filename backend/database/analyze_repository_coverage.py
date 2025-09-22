@@ -10,17 +10,11 @@ This script connects to the PapersWithCode database and calculates:
 """
 
 import logging
-import sys
-from pathlib import Path
 from typing import Dict, Any
 
-# Add the backend directory to the path so we can import modules
-backend_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(backend_dir))
-
-from sqlalchemy import create_engine, text  # noqa: E402
-from sqlalchemy.orm import sessionmaker  # noqa: E402
-from config import get_settings  # noqa: E402
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from backend.config import get_settings
 
 # Configure logging
 logging.basicConfig(
@@ -266,7 +260,7 @@ def main():
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
-        sys.exit(1)
+        exit(1)
 
 
 if __name__ == "__main__":

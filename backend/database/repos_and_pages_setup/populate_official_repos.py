@@ -20,7 +20,6 @@ This ensures we're adding high-quality, verified paper-repository links to our d
   python populate_official_repos.py --dry-run
 """
 
-import sys
 import json
 import logging
 import re
@@ -29,15 +28,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
-# Add the project root and backend directory to the Python path
-project_root = Path(__file__).parent.parent.parent.parent
-backend_dir = project_root / "backend"
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(backend_dir))
-
-from backend.database.connection import get_database_session  # noqa: E402
-from sqlalchemy import text  # noqa: E402
-from sqlalchemy.orm import Session  # noqa: E402
+from backend.database.connection import get_database_session
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 # Configure logging
 logging.basicConfig(
@@ -52,6 +45,7 @@ class OfficialRepoPopulator:
     """
 
     def __init__(self, dry_run: bool = False, limit: Optional[int] = None):
+        project_root = Path(__file__).parent.parent.parent.parent
         self.json_file_path = (
             project_root / "data" / "links-between-papers-and-code.json"
         )

@@ -6,19 +6,11 @@ Shows comprehensive statistics about citation data population progress.
 Use --quick for a brief overview or --detailed for full statistics.
 """
 
-import sys
 import argparse
 import time
-from pathlib import Path
 
-# Add the project root and backend directory to the Python path
-project_root = Path(__file__).parent.parent.parent.parent  # Go up to project root
-backend_dir = project_root / "backend"
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(backend_dir))
-
-from backend.database.connection import get_database_session  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from backend.database.connection import get_database_session
+from sqlalchemy import text
 
 
 def check_citation_progress(detailed=True):
@@ -59,7 +51,6 @@ def check_citation_progress(detailed=True):
 
         # Progress percentages
         processed_pct = (with_ss_id / total * 100) if total > 0 else 0
-        cited_pct = (with_citations / total * 100) if total > 0 else 0
 
         print(f"📈 Progress: {processed_pct:.1f}% complete")
 

@@ -8,15 +8,10 @@ from the Semantic Scholar API.
 
 import asyncio
 import sys
-from pathlib import Path
 
-# Add the backend directory to the Python path
-backend_dir = Path(__file__).parent
-sys.path.insert(0, str(backend_dir))
-
-from database.connection import get_database_session  # noqa: E402
-from services.paper_service import PaperService  # noqa: E402
-from services.semantic_scholar_service import SemanticScholarService  # noqa: E402
+from backend.database.connection import get_database_session
+from backend.services.paper_service import PaperService
+from backend.services.semantic_scholar_service import SemanticScholarService
 
 
 async def test_semantic_scholar_service():

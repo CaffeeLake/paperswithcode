@@ -6,20 +6,16 @@ This script provides an easy way to run the development server with proper
 configuration and environment setup.
 """
 
-import sys
 import uvicorn
 from pathlib import Path
 
-# Add the project root to the Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-from backend.config import get_settings  # noqa: E402
+from backend.config import get_settings
 
 
 def main():
     """Run the development server."""
     settings = get_settings()
+    project_root = Path(__file__).parent.parent
 
     print("🚀 Starting PapersWithCode FastAPI Development Server")
     print(f"📊 Database: {settings.database_url}")

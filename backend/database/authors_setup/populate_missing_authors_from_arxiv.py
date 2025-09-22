@@ -32,22 +32,15 @@ import time
 import logging
 import re
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from typing import Dict, Any, Optional, List
 import argparse
 import requests
 from dataclasses import dataclass
 
-# Add the project root and backend directory to the Python path
-project_root = Path(__file__).parent.parent.parent.parent
-backend_dir = project_root / "backend"
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(backend_dir))
-
-from backend.database.connection import get_database_session  # noqa: E402
-from backend.models.database import Author as DBAuthor, PaperAuthor  # noqa: E402
-from sqlalchemy import and_, text  # noqa: E402
-from sqlalchemy.orm import Session  # noqa: E402
+from backend.database.connection import get_database_session
+from backend.models.database import Author as DBAuthor, PaperAuthor
+from sqlalchemy import and_, text
+from sqlalchemy.orm import Session
 
 # Configure logging
 logging.basicConfig(

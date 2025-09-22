@@ -10,7 +10,6 @@ Usage:
     PYTHONPATH=/root/python_projects/paperswithcode uv run --env-file backend/keys.env python backend/database/setup/add_hf_papers_sqlalchemy.py [--limit N]
 """
 
-import os
 import sys
 import pandas as pd
 import requests
@@ -22,15 +21,9 @@ from datetime import datetime
 from datasets import load_dataset
 from typing import List, Set, Dict, Optional, Any
 
-# Add the project root to the path
-project_root = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."
-)
-sys.path.insert(0, project_root)
-
-from backend.database.connection import get_database_session  # noqa: E402
-from backend.services.paper_service import PaperService  # noqa: E402
-from backend.models.database import Paper as DBPaper  # noqa: E402
+from backend.database.connection import get_database_session
+from backend.services.paper_service import PaperService
+from backend.models.database import Paper as DBPaper
 
 
 def load_hf_dataset() -> pd.DataFrame:
