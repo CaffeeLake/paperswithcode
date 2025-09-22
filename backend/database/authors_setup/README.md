@@ -264,6 +264,48 @@ Once populated, the PaperService will automatically use the authors data:
 - Author profile pages can be built
 - Hugging Face integration is ready for future enhancement
 
+## ArXiv API Fallback Script
+
+For papers that are missing authors after the main population script, you can use the ArXiv API fallback script:
+
+### populate_missing_authors_from_arxiv.py
+
+This script fetches author information directly from the ArXiv API for papers that don't have authors in the database.
+
+#### Features
+- Fetches author data from ArXiv API for missing papers
+- Handles ArXiv API rate limiting (3 seconds between requests)
+- Parses author names intelligently
+- Provides detailed progress reporting
+- Supports dry-run mode for testing
+
+#### Usage Examples
+
+```bash
+# Test mode (10 papers)
+uv run backend/database/authors_setup/populate_missing_authors_from_arxiv.py --test
+
+# Production mode (all missing papers)
+uv run backend/database/authors_setup/populate_missing_authors_from_arxiv.py --production
+
+# Custom batch
+uv run backend/database/authors_setup/populate_missing_authors_from_arxiv.py --limit 100
+
+# Dry run (no database writes)
+uv run backend/database/authors_setup/populate_missing_authors_from_arxiv.py --dry-run --limit 50
+```
+
+#### Performance Notes
+- ArXiv API has rate limits (3 seconds between requests recommended)
+- Processing 1000 papers takes approximately 50 minutes
+- The script handles network errors and retries gracefully
+- Progress is reported every 10 papers with ETA estimates
+
+#### When to Use
+- After running the main `populate_authors.py` script
+- When you notice papers without authors in the frontend
+- To fill gaps in author coverage from the original JSON data
+
 ## Future Enhancements
 
 The schema supports future features:

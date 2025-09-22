@@ -1,6 +1,11 @@
 """
 This step uses an LLM to get the Github URL and project page URL
 from a given paper, using the comments of the paper page + first 2 pages of the PDF.
+
+You can run it like so:
+```bash
+uv run -m backend.genai_steps.extract_github_and_project_page_url --arxiv_id 2409.18313
+```
 """
 
 import argparse
@@ -169,7 +174,7 @@ async def get_project_github_urls(
 
         # verify the project page URL
         if isinstance(project_page_url, str):
-            is_valid_url = await asyncio.to_thread(verify_url, project_page_url)
+            is_valid_url = await verify_url(project_page_url)
             project_page_url = project_page_url if is_valid_url else ""
             # Update the main response dictionary with potentially modified LLM response
             response = {"github_url": github_url, "project_page_url": project_page_url}

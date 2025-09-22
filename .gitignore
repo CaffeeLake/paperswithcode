@@ -45,3 +45,6 @@ arxiv_sources/
 
 # Cursor rules
 *.cursor/*
+
+# Outputs
+backend/outputs/
