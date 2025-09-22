@@ -8,7 +8,7 @@ This optimized version focuses on speed by:
 4. Skip expensive operations
 
 Usage:
-    uv run backend/database/repos_and_pages_setup/fast_batch_extract.py --limit 1000 --batch-size 50
+    uv run -m backend.database.repos_and_pages_setup.fast_batch_extract --limit 1000 --batch-size 50
 """
 
 import argparse

@@ -5,7 +5,7 @@ This script queries the database for papers missing GitHub repositories or proje
 then uses the extract_github_and_project_page_url.py script to find them using AI.
 
 Usage:
-    uv run backend/database/repos_and_pages_setup/batch_extract_github_and_project_urls.py --limit 100 --batch-size 10
+    uv run -m backend.database.repos_and_pages_setup.batch_extract_github_and_project_urls --limit 100 --batch-size 10
 """
 
 import argparse
