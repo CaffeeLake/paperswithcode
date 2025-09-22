@@ -13,24 +13,11 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-try:
-    from ..database.connection import get_database_session
-    from ..services.thumbnail_service import ThumbnailService
-    from ..services.paper_service import PaperService
-    from ..utils.exceptions import PaperNotFoundError
-    from ..config import get_settings
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from database.connection import get_database_session
-    from services.thumbnail_service import ThumbnailService
-    from services.paper_service import PaperService
-    from utils.exceptions import PaperNotFoundError
-    from config import get_settings
+from backend.database.connection import get_database_session
+from backend.services.thumbnail_service import ThumbnailService
+from backend.services.paper_service import PaperService
+from backend.utils.exceptions import PaperNotFoundError
+from backend.config import get_settings
 
 router = APIRouter(prefix="/thumbnails", tags=["thumbnails"])
 

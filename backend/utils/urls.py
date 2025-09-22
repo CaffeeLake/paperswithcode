@@ -8,7 +8,7 @@ in the DATABASE_SCHEMA_UML.md documentation.
 
 from typing import Optional
 
-from ..config import get_settings
+from backend.config import get_settings
 
 
 def get_arxiv_abs_url(arxiv_id: str, version: Optional[str] = None) -> Optional[str]:

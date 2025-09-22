@@ -9,10 +9,10 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
-from ..database.connection import get_database_session
-from ..models.api import Repository, Repositories, ProjectPage, ProjectPages
-from ..services.repository_service import RepositoryService
-from ..utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.database.connection import get_database_session
+from backend.models.api import Repository, Repositories, ProjectPage, ProjectPages
+from backend.services.repository_service import RepositoryService
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter()
 

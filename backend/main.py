@@ -12,18 +12,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-try:
-    from .config import get_settings
-    from .utils.exceptions import PaperNotFoundError, DatabaseError
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent
-    sys.path.insert(0, str(backend_dir))
-    from config import get_settings
-    from utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.config import get_settings
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 
 @asynccontextmanager
@@ -64,10 +54,7 @@ def create_app() -> FastAPI:
     )
 
     # Include routers
-    try:
-        from .routers import papers, authors, thumbnails, repositories
-    except ImportError:
-        from routers import papers, authors, thumbnails, repositories
+    from backend.routers import papers, authors, thumbnails, repositories
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     app.include_router(authors.router, prefix="/api/v1", tags=["authors"])

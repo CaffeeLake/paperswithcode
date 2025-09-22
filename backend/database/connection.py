@@ -11,8 +11,8 @@ from sqlalchemy import create_engine, Engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 
-from ..config import get_settings
-from ..models.database import Base
+from backend.config import get_settings
+from backend.models.database import Base
 
 
 class DatabaseManager:

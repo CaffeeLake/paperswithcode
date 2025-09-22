@@ -15,18 +15,8 @@ import httpx
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-try:
-    from ..models.database import Paper as DBPaper
-    from ..utils.exceptions import DatabaseError
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from models.database import Paper as DBPaper
-    from utils.exceptions import DatabaseError
+from backend.models.database import Paper as DBPaper
+from backend.utils.exceptions import DatabaseError
 
 # Configure logging
 logger = logging.getLogger(__name__)

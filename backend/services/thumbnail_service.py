@@ -18,18 +18,8 @@ import requests
 from PIL import Image
 from pdf2image import convert_from_bytes
 
-try:
-    from ..config import get_settings
-    from ..utils.exceptions import ThumbnailGenerationError
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from config import get_settings
-    from utils.exceptions import ThumbnailGenerationError
+from backend.config import get_settings
+from backend.utils.exceptions import ThumbnailGenerationError
 
 
 class ThumbnailService:

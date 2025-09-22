@@ -9,11 +9,17 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
-from ..database.connection import get_database_session
-from ..models.api import Paper, Papers, PaperSummary, PaperVersions, VersionComparison
-from ..services.paper_service import PaperService
-from ..utils.exceptions import PaperNotFoundError, DatabaseError
-from ..utils.urls import validate_arxiv_id, validate_version
+from backend.database.connection import get_database_session
+from backend.models.api import (
+    Paper,
+    Papers,
+    PaperSummary,
+    PaperVersions,
+    VersionComparison,
+)
+from backend.services.paper_service import PaperService
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.urls import validate_arxiv_id, validate_version
 
 router = APIRouter()
 

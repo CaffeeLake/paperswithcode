@@ -9,9 +9,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
-from ..models.database import Author as DBAuthor, Paper as DBPaper, PaperAuthor
-from ..models.api import Author, Authors, Papers
-from ..utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.models.database import Author as DBAuthor, Paper as DBPaper, PaperAuthor
+from backend.models.api import Author, Authors, Papers
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 
 class AuthorService:
@@ -233,7 +233,7 @@ class AuthorService:
             db_papers = query.offset(offset).limit(page_size).all()
 
             # Convert to API models
-            from ..services.paper_service import PaperService
+            from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
 

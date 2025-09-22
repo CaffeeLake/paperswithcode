@@ -12,52 +12,23 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, or_, func
 
-try:
-    from ..models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
-    from ..models.api import (
-        Paper,
-        Papers,
-        PaperSummary,
-        PaperVersion,
-        PaperVersions,
-        VersionComparison,
-    )
-    from ..utils.urls import (
-        get_arxiv_abs_url,
-        get_arxiv_pdf_url,
-        get_paper_url,
-    )
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
-    from models.api import (
-        Paper,
-        Papers,
-        PaperSummary,
-        PaperVersion,
-        PaperVersions,
-        VersionComparison,
-    )
-    from utils.urls import get_arxiv_abs_url, get_arxiv_pdf_url, get_paper_url
-try:
-    from ..utils.exceptions import PaperNotFoundError, DatabaseError
-    from ..config import get_settings
-    from .semantic_scholar_service import SemanticScholarService
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
-
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from utils.exceptions import PaperNotFoundError, DatabaseError
-    from config import get_settings
-    from services.semantic_scholar_service import SemanticScholarService
+from backend.models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
+from backend.models.api import (
+    Paper,
+    Papers,
+    PaperSummary,
+    PaperVersion,
+    PaperVersions,
+    VersionComparison,
+)
+from backend.utils.urls import (
+    get_arxiv_abs_url,
+    get_arxiv_pdf_url,
+    get_paper_url,
+)
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.config import get_settings
+from backend.services.semantic_scholar_service import SemanticScholarService
 
 
 class PaperService:

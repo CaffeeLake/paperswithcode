@@ -11,9 +11,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from ..main import create_app
-from ..models.database import Base, Author as DBAuthor, Paper as DBPaper, PaperAuthor
-from ..database.connection import get_database_session
+from backend.main import create_app
+from backend.models.database import (
+    Base,
+    Author as DBAuthor,
+    Paper as DBPaper,
+    PaperAuthor,
+)
+from backend.database.connection import get_database_session
 
 
 # Test database setup

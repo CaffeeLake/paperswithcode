@@ -12,38 +12,19 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc
 
-try:
-    from ..models.database import (
-        Repository as DBRepository,
-        ProjectPage as DBProjectPage,
-    )
-    from ..models.api import (
-        Repository,
-        Repositories,
-        ProjectPage,
-        ProjectPages,
-    )
-except ImportError:
-    # Handle case when running as script
-    import sys
-    from pathlib import Path
+from backend.models.database import (
+    Repository as DBRepository,
+    ProjectPage as DBProjectPage,
+)
+from backend.models.api import (
+    Repository,
+    Repositories,
+    ProjectPage,
+    ProjectPages,
+)
 
-    backend_dir = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_dir))
-    from models.database import Repository as DBRepository, ProjectPage as DBProjectPage
-    from models.api import (
-        Repository,
-        Repositories,
-        ProjectPage,
-        ProjectPages,
-    )
-
-try:
-    from ..utils.exceptions import PaperNotFoundError, DatabaseError
-    from ..config import get_settings
-except ImportError:
-    from utils.exceptions import PaperNotFoundError, DatabaseError
-    from config import get_settings
+from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.config import get_settings
 
 
 class RepositoryService:
