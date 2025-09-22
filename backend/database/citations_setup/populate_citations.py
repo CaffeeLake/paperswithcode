@@ -34,6 +34,7 @@ import os
 import time
 import logging
 import signal
+import psutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -47,9 +48,9 @@ backend_dir = project_root / "backend"
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(backend_dir))
 
-from backend.database.connection import get_database_session
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from backend.database.connection import get_database_session  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 # Configuration
 SEMANTIC_SCHOLAR_API_KEY = os.getenv(
@@ -59,9 +60,9 @@ SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1"
 REQUEST_TIMEOUT = 15.0
 RATE_LIMIT_DELAY = 1.0  # Semantic Scholar limit: 1 req/sec
 MAX_CONCURRENT_REQUESTS = 1  # Single request at a time to respect rate limit
-CONNECTION_POOL_SIZE = 25  # HTTP connection pool size
+CONNECTION_POOL_SIZE = 10  # HTTP connection pool size (reduced for memory efficiency)
 DEFAULT_BATCH_SIZE = (
-    200  # Papers to process in each batch (optimized for better throughput)
+    50  # Papers to process in each batch (reduced to prevent OOM on low-memory systems)
 )
 
 # Configure logging
@@ -98,6 +99,33 @@ class OptimizedCitationPopulator:
             "api_calls": 0,
             "start_time": time.time(),
         }
+        self.process = psutil.Process()
+
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current memory usage statistics."""
+        memory_info = self.process.memory_info()
+        system_memory = psutil.virtual_memory()
+
+        return {
+            "process_memory_mb": memory_info.rss / 1024 / 1024,
+            "system_memory_percent": system_memory.percent,
+            "system_available_mb": system_memory.available / 1024 / 1024,
+        }
+
+    def check_memory_safety(self, batch_size: int) -> tuple[bool, int]:
+        """Check if current memory usage is safe and suggest batch size adjustment."""
+        memory_stats = self.get_memory_usage()
+
+        # If system memory usage > 80% or process using > 2GB, reduce batch size
+        if (
+            memory_stats["system_memory_percent"] > 80
+            or memory_stats["process_memory_mb"] > 2048
+        ):
+            # Reduce batch size by half, minimum 10
+            new_batch_size = max(10, batch_size // 2)
+            return False, new_batch_size
+
+        return True, batch_size
 
     async def create_http_client(self) -> httpx.AsyncClient:
         """Create an optimized HTTP client with connection pooling."""
@@ -399,12 +427,26 @@ class OptimizedCitationPopulator:
             start_time = time.time()
 
             # Process in batches
+            current_batch_size = batch_size
             while total_processed < actual_total:
                 batch_start_time = time.time()
-                current_batch_size = min(batch_size, actual_total - total_processed)
+
+                # Check memory safety and adjust batch size if needed
+                memory_safe, suggested_batch_size = self.check_memory_safety(
+                    current_batch_size
+                )
+                if not memory_safe:
+                    logger.warning(
+                        f"⚠️  Memory usage high, reducing batch size from {current_batch_size} to {suggested_batch_size}"
+                    )
+                    current_batch_size = suggested_batch_size
+
+                actual_batch_size = min(
+                    current_batch_size, actual_total - total_processed
+                )
 
                 # Get prioritized papers for this batch
-                papers = self.get_prioritized_papers(db, current_batch_size)
+                papers = self.get_prioritized_papers(db, actual_batch_size)
 
                 if not papers:
                     print("✅ No more papers to process!")
@@ -416,7 +458,7 @@ class OptimizedCitationPopulator:
                 results = await self.process_paper_batch(papers)
 
                 # Bulk update database
-                updated_count = self.bulk_update_database(db, results)
+                self.bulk_update_database(db, results)
 
                 # Update statistics
                 successful_in_batch = sum(1 for r in results if r.success)
@@ -427,6 +469,9 @@ class OptimizedCitationPopulator:
                 batch_time = time.time() - batch_start_time
                 elapsed_time = time.time() - start_time
                 papers_per_second = len(papers) / batch_time if batch_time > 0 else 0
+
+                # Get current memory usage
+                memory_stats = self.get_memory_usage()
 
                 # Estimate completion time
                 remaining_papers = actual_total - total_processed
@@ -444,6 +489,9 @@ class OptimizedCitationPopulator:
                 print(f"   📈 Total processed: {total_processed:,}/{actual_total:,}")
                 print(f"   ⏰ Elapsed: {elapsed_time / 60:.1f}m")
                 print(f"   🔮 Est. remaining: {estimated_remaining_time / 60:.1f}m")
+                print(
+                    f"   💾 Memory: {memory_stats['process_memory_mb']:.1f}MB process, {memory_stats['system_memory_percent']:.1f}% system"
+                )
                 print()
 
                 # Brief pause between batches (removed for performance)
