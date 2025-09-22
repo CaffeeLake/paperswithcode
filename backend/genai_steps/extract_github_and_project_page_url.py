@@ -75,12 +75,22 @@ responses = [
 ]
 
 
-async def create_user_message(arxiv_id: str, pdf_file_path: str = None) -> Message:
+async def create_user_message(
+    arxiv_id: str, pdf_file_path: str = None, abstract: str = None
+) -> Message:
     """
     Create a user message for the Gemini API in an asynchronous manner.
+
+    Args:
+        arxiv_id: ArXiv ID of the paper
+        pdf_file_path: Path to the PDF file
+        abstract: Optional pre-fetched abstract. If None, will fetch from web.
     """
-    # Get the abstract of the paper
-    abstract = await get_abstract(arxiv_id=arxiv_id)
+    # Get the abstract of the paper (use provided abstract or fetch from web)
+    if abstract is None:
+        abstract = await get_abstract(arxiv_id=arxiv_id)
+    else:
+        print(f"Using provided abstract for {arxiv_id} (length: {len(abstract)} chars)")
 
     # Get the comments of the paper page
     paper_page_comments = await get_comments(arxiv_id)
@@ -118,6 +128,7 @@ async def get_project_github_urls(
     session_id: str,
     github_url: Optional[str] = None,
     use_reasoning: bool = True,
+    abstract: Optional[str] = None,
 ) -> str:
     generator = OpenRouterGenerator()
 
@@ -161,7 +172,7 @@ async def get_project_github_urls(
 
         # Add query
         print("Processing main query...")
-        message = await create_user_message(arxiv_id, pdf_path)
+        message = await create_user_message(arxiv_id, pdf_path, abstract)
         messages.append(message)
 
         response_str, _ = await generator.generate(
@@ -186,13 +197,16 @@ async def get_project_github_urls(
     return reasoning, response
 
 
-async def main(arxiv_id: str, use_reasoning: bool = True):
+async def main(
+    arxiv_id: str, use_reasoning: bool = True, abstract: Optional[str] = None
+):
     async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
         reasoning, response = await get_project_github_urls(
             arxiv_id=arxiv_id,
             pdf_path=pdf_path,
             session_id=None,
             use_reasoning=use_reasoning,
+            abstract=abstract,
         )
 
         print("\n" + "=" * 50)
