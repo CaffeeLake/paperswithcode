@@ -29,7 +29,6 @@ uv run backend/database/authors_setup/populate_missing_authors_from_arxiv.py --d
 
 import sys
 import time
-import logging
 import re
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, Optional, List
@@ -43,10 +42,9 @@ from sqlalchemy import and_, text
 from sqlalchemy.orm import Session
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+from backend.database.logging_config import setup_logging
+
+logger = setup_logging("populate_missing_authors_from_arxiv")
 
 # ArXiv API configuration
 ARXIV_API_BASE_URL = "http://export.arxiv.org/api/query"

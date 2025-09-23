@@ -3,19 +3,31 @@ import base64
 import os
 import aiohttp
 import json
+import asyncio
+import logging
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from backend.models.generators import Generator, Message
+from backend.models.rate_limiting import RateLimitingMixin
 from backend.config import get_settings
 
 
 OPENROUTER_API_KEY = get_settings().openrouter_api_key
 
+# Set up logging
+logger = logging.getLogger(__name__)
 
-class OpenRouterGenerator(Generator):
-    def __init__(self):
+
+class OpenRouterGenerator(RateLimitingMixin, Generator):
+    def __init__(self, requests_per_minute=20, requests_per_day=1000, **kwargs):
+        # Initialize rate limiting with OpenRouter's limits
+        super().__init__(
+            requests_per_minute=requests_per_minute,
+            requests_per_day=requests_per_day,
+            **kwargs,
+        )
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY
         )
@@ -91,15 +103,15 @@ class OpenRouterGenerator(Generator):
 
         return formatted_messages
 
-    async def generate_with_reasoning_http(
+    # Rate limiting methods are now inherited from RateLimitingMixin
+
+    async def _generate_with_reasoning_http_internal(
         self,
         messages,
         schema: Optional[BaseModel] = None,
         reasoning_config: Optional[dict] = None,
     ) -> str:
-        """
-        Generate response using direct HTTP requests to support reasoning tokens.
-        """
+        """Internal HTTP request method without rate limiting (handled by mixin)."""
         formatted_messages = await self.format_messages(messages)
 
         headers = {
@@ -152,11 +164,47 @@ class OpenRouterGenerator(Generator):
                 else:
                     return result["choices"][0]["message"]["content"], self.model_name
 
+    async def generate_with_reasoning_http(
+        self,
+        messages,
+        schema: Optional[BaseModel] = None,
+        reasoning_config: Optional[dict] = None,
+    ) -> str:
+        """Generate response using direct HTTP requests with rate limiting."""
+        return await self._execute_with_rate_limiting(
+            self._generate_with_reasoning_http_internal,
+            messages,
+            schema,
+            reasoning_config,
+        )
+
+    async def _generate_openai_sdk_internal(
+        self, messages, schema: Optional[BaseModel] = None
+    ) -> str:
+        """Internal OpenAI SDK method without rate limiting (handled by mixin)."""
+        formatted_messages = await self.format_messages(messages)
+
+        if schema is not None:
+            completion = await self.client.beta.chat.completions.parse(
+                model=self.model_name,
+                messages=formatted_messages,
+                response_format=schema,
+            )
+            response = completion.choices[0].message.parsed
+        else:
+            completion = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=formatted_messages,
+            )
+            response = completion.choices[0].message.content
+
+        return response, self.model_name
+
     async def generate(
         self, messages, schema: Optional[BaseModel] = None, use_reasoning: bool = True
     ) -> str:
         """
-        Generate response with optional reasoning tokens support.
+        Generate response with optional reasoning tokens support and rate limiting.
         """
         if use_reasoning:
             # Use HTTP method with reasoning support
@@ -165,39 +213,35 @@ class OpenRouterGenerator(Generator):
                 messages, schema, reasoning_config
             )
         else:
-            # Use original OpenAI SDK method
-            messages = await self.format_messages(messages)
+            # Use original OpenAI SDK method with rate limiting
+            return await self._execute_with_rate_limiting(
+                self._generate_openai_sdk_internal, messages, schema
+            )
 
-            if schema is not None:
-                completion = await self.client.beta.chat.completions.parse(
-                    model=self.model_name,
-                    messages=messages,
-                    response_format=schema,
-                )
-                response = completion.choices[0].message.parsed
-
-            else:
-                completion = await self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                )
-                response = completion.choices[0].message.content
-
-            return response, self.model_name
+    # get_rate_limit_status method is now inherited from RateLimitingMixin
 
 
 if __name__ == "__main__":
     import asyncio
 
     async def test_openrouter_generator():
-        """Test the OpenRouter generator."""
-        print("🧪 Testing OpenRouter Generator...")
+        """Test the OpenRouter generator with rate limiting."""
+        print("🧪 Testing OpenRouter Generator with Rate Limiting...")
 
         try:
-            generator = OpenRouterGenerator()
+            # Test with paid tier limits
+            generator = OpenRouterGenerator(
+                requests_per_minute=20, requests_per_day=1000
+            )
+
+            # Show initial rate limit status
+            print("\n📊 Initial Rate Limit Status:")
+            status = generator.get_rate_limit_status()
+            for key, value in status.items():
+                print(f"   {key}: {value}")
 
             # Test text-only message
-            print("\n📝 Testing text-only message...")
+            print("\n📝 Testing text-only message with rate limiting...")
             messages = [
                 Message(
                     role="user",
@@ -205,13 +249,21 @@ if __name__ == "__main__":
                 )
             ]
 
-            response, model_name = await generator.generate(messages)
+            response, model_name = await generator.generate(
+                messages, use_reasoning=False
+            )
 
             print("✅ Text-only test Success!")
             print(f"   Model: {model_name}")
             print(
                 f"   Response: {response[:100]}{'...' if len(response) > 100 else ''}"
             )
+
+            # Show updated rate limit status
+            print("\n📊 Updated Rate Limit Status:")
+            status = generator.get_rate_limit_status()
+            for key, value in status.items():
+                print(f"   {key}: {value}")
 
             # Test image message formatting (without actual API call)
             print("\n🖼️  Testing image message formatting...")
@@ -239,6 +291,10 @@ if __name__ == "__main__":
                 print("✅ Image formatting logic works (file not found as expected)")
             except Exception as format_error:
                 print(f"❌ Image formatting error: {format_error}")
+
+            # Test rate limiting simulation
+            print("\n⏳ Testing rate limiting behavior...")
+            print("   (This would normally trigger rate limiting with real API calls)")
 
         except Exception as e:
             print(f"❌ OpenRouter Generator Failed: {str(e)}")

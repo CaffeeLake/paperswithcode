@@ -1,6 +1,4 @@
 from typing import Optional
-from dataclasses import dataclass
-import re
 import io
 import tempfile
 import shutil
@@ -9,6 +7,7 @@ import json
 
 from backend.config import get_settings
 from backend.models.generators import Generator, Message
+from backend.models.rate_limiting import RateLimitingMixin
 
 from google import genai
 from google.genai.types import Content, Part, FileData
@@ -22,67 +21,21 @@ gemini_roles = {
 
 GEMINI_API_KEY = get_settings().gemini_api_key
 
-
-@dataclass
-class RateLimitInfo:
-    """Information about rate limiting from API response."""
-
-    retry_delay: float  # in seconds
-    quota_metric: str = ""
-    quota_value: str = ""
-
-
 # Global semaphore to limit concurrent API calls
 # Adjust this value based on your API quota
 API_CONCURRENCY_LIMIT = 10
 api_semaphore = asyncio.Semaphore(API_CONCURRENCY_LIMIT)
 
 
-class GoogleGenerator(Generator):
-    def __init__(self):
-        self.client = genai.Client(api_key=GEMINI_API_KEY)
-
-    def _parse_retry_delay(self, error_str: str) -> Optional[RateLimitInfo]:
-        """
-        Parse retry delay from Gemini API error response.
-
-        Args:
-            error_str: The error string from the API
-
-        Returns:
-            RateLimitInfo object with retry delay in seconds, or None if not found
-        """
-        try:
-            # Look for retryDelay in the error string
-            retry_delay_match = re.search(r"'retryDelay':\s*'(\d+)s'", error_str)
-            if retry_delay_match:
-                delay_seconds = int(retry_delay_match.group(1))
-                return RateLimitInfo(retry_delay=delay_seconds)
-
-            # Fallback: look for the delay in a different format
-            retry_delay_match = re.search(r'"retryDelay":\s*"(\d+)s"', error_str)
-            if retry_delay_match:
-                delay_seconds = int(retry_delay_match.group(1))
-                return RateLimitInfo(retry_delay=delay_seconds)
-
-        except (ValueError, AttributeError) as e:
-            print(f"Error parsing retry delay: {e}")
-
-        return None
-
-    def _is_rate_limit_error(self, error: Exception) -> bool:
-        """Check if the error is a rate limit error (429)."""
-        error_str = str(error)
-        return "429" in error_str and "RESOURCE_EXHAUSTED" in error_str
-
-    def _is_service_unavailable_error(self, error: Exception) -> bool:
-        """Check if the error is a service unavailable error (503)."""
-        error_str = str(error)
-        return (
-            "503" in error_str
-            or "Service Unavailable" in error_str
-            or "UNAVAILABLE" in error_str
+class GoogleGenerator(RateLimitingMixin, Generator):
+    def __init__(self, requests_per_minute=60, requests_per_day=1500, **kwargs):
+        # Initialize rate limiting with Gemini's typical limits
+        super().__init__(
+            requests_per_minute=requests_per_minute,
+            requests_per_day=requests_per_day,
+            **kwargs,
         )
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
 
     async def format_messages(
         self, messages: list[Message]
@@ -160,42 +113,14 @@ class GoogleGenerator(Generator):
 
         return contents, uploaded_file_names
 
-    def _parse_retry_delay(self, error_str: str) -> Optional[RateLimitInfo]:
-        """
-        Parse retry delay from Gemini API error response.
-
-        Args:
-            error_str: The error string from the API
-
-        Returns:
-            RateLimitInfo object with retry delay in seconds, or None if not found
-        """
-        try:
-            # Look for retryDelay in the error string
-            retry_delay_match = re.search(r"'retryDelay':\s*'(\d+)s'", error_str)
-            if retry_delay_match:
-                delay_seconds = int(retry_delay_match.group(1))
-                return RateLimitInfo(retry_delay=delay_seconds)
-
-            # Fallback: look for the delay in a different format
-            retry_delay_match = re.search(r'"retryDelay":\s*"(\d+)s"', error_str)
-            if retry_delay_match:
-                delay_seconds = int(retry_delay_match.group(1))
-                return RateLimitInfo(retry_delay=delay_seconds)
-
-        except (ValueError, AttributeError) as e:
-            print(f"Error parsing retry delay: {e}")
-
-        return None
-
-    async def call_gemini_api(
+    async def _call_gemini_api_internal(
         self,
         model_name: str,
         messages: list[Content],
         schema: Optional[BaseModel] = None,
         uploaded_file_names: list[str] = None,
-        max_retries: int = 5,
     ) -> str:
+        """Internal API call method without rate limiting (handled by mixin)."""
         config = None
         if schema is not None:
             config = {
@@ -205,92 +130,42 @@ class GoogleGenerator(Generator):
 
         # Use semaphore to limit concurrent API calls
         async with api_semaphore:
-            retry_count = 0
-            base_delay = 1.0  # Base delay for exponential backoff
+            response = await self.client.aio.models.generate_content(
+                model=model_name,
+                contents=messages,
+                config=config,
+            )
 
-            while retry_count <= max_retries:
-                try:
-                    response = await self.client.aio.models.generate_content(
-                        model=model_name,
-                        contents=messages,
-                        config=config,
-                    )
+            # Log usage metadata
+            if response.usage_metadata:
+                print(
+                    f"Token usage - Prompt: {response.usage_metadata.prompt_token_count}, "
+                    f"Completion: {response.usage_metadata.candidates_token_count}, "
+                    f"Total: {response.usage_metadata.total_token_count}"
+                )
 
-                    # Log usage metadata (removed langfuse dependency)
-                    if response.usage_metadata:
-                        print(
-                            f"Token usage - Prompt: {response.usage_metadata.prompt_token_count}, "
-                            f"Completion: {response.usage_metadata.candidates_token_count}, "
-                            f"Total: {response.usage_metadata.total_token_count}"
-                        )
+            # Clean up the files from Gemini storage
+            if uploaded_file_names:
+                for file_name in uploaded_file_names:
+                    await asyncio.to_thread(self.client.files.delete, name=file_name)
 
-                    # clean up the files from Gemini storage
-                    if uploaded_file_names:
-                        for file_name in uploaded_file_names:
-                            await asyncio.to_thread(
-                                self.client.files.delete, name=file_name
-                            )
+            return response.text
 
-                    return response.text
-
-                except Exception as e:
-                    if self._is_rate_limit_error(e):
-                        retry_info = self._parse_retry_delay(str(e))
-
-                        if retry_info and retry_count < max_retries:
-                            # Use the API-suggested delay, or fall back to exponential backoff
-                            delay = retry_info.retry_delay
-                            print(
-                                f"Rate limit hit for {model_name}. Retrying in {delay} seconds (attempt {retry_count + 1}/{max_retries + 1})"
-                            )
-                            await asyncio.sleep(delay)
-                            retry_count += 1
-                            continue
-                        elif retry_count < max_retries:
-                            # Exponential backoff if no retry delay is provided
-                            delay = base_delay * (2**retry_count)
-                            print(
-                                f"Rate limit hit for {model_name}. Retrying in {delay} seconds (attempt {retry_count + 1}/{max_retries + 1})"
-                            )
-                            await asyncio.sleep(delay)
-                            retry_count += 1
-                            continue
-                        else:
-                            print(
-                                f"Max retries ({max_retries}) exceeded for {model_name} due to rate limiting"
-                            )
-                            raise e
-                    elif self._is_service_unavailable_error(e):
-                        retry_info = self._parse_retry_delay(str(e))
-                        if retry_info and retry_count < max_retries:
-                            # Use the API-suggested delay, or fall back to exponential backoff
-                            delay = retry_info.retry_delay
-                            print(
-                                f"Service Unavailable for {model_name}. Retrying in {delay} seconds (attempt {retry_count + 1}/{max_retries + 1})"
-                            )
-                            await asyncio.sleep(delay)
-                            retry_count += 1
-                            continue
-                        elif retry_count < max_retries:
-                            # Exponential backoff if no retry delay is provided
-                            delay = base_delay * (2**retry_count)
-                            print(
-                                f"Service Unavailable for {model_name}. Retrying in {delay} seconds (attempt {retry_count + 1}/{max_retries + 1})"
-                            )
-                            await asyncio.sleep(delay)
-                            retry_count += 1
-                            continue
-                        else:
-                            print(
-                                f"Max retries ({max_retries}) exceeded for {model_name} due to service unavailability"
-                            )
-                            raise e
-                    else:
-                        # Not a rate limit error, re-raise immediately
-                        raise e
-
-            # This should never be reached, but just in case
-            raise Exception(f"Max retries exceeded for {model_name}")
+    async def call_gemini_api(
+        self,
+        model_name: str,
+        messages: list[Content],
+        schema: Optional[BaseModel] = None,
+        uploaded_file_names: list[str] = None,
+    ) -> str:
+        """Call Gemini API with rate limiting and retry logic."""
+        return await self._execute_with_rate_limiting(
+            self._call_gemini_api_internal,
+            model_name,
+            messages,
+            schema,
+            uploaded_file_names,
+        )
 
     async def chat(
         self,
@@ -383,14 +258,22 @@ if __name__ == "__main__":
     import asyncio
 
     async def test_google_generator():
-        """Test the Google Gemini generator."""
-        print("🧪 Testing Google Gemini Generator...")
+        """Test the Google Gemini generator with rate limiting."""
+        print("🧪 Testing Google Gemini Generator with Rate Limiting...")
         print(
             f"API Key loaded: {'Yes' if GEMINI_API_KEY else 'No'} (length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0})"
         )
 
         try:
-            generator = GoogleGenerator()
+            # Test with typical Gemini limits
+            generator = GoogleGenerator(requests_per_minute=60, requests_per_day=1500)
+
+            # Show initial rate limit status
+            print("\n📊 Initial Rate Limit Status:")
+            status = generator.get_rate_limit_status()
+            for key, value in status.items():
+                print(f"   {key}: {value}")
+
             messages = [
                 Message(
                     role="user",
@@ -405,6 +288,12 @@ if __name__ == "__main__":
             print(
                 f"   Response: {response[:100]}{'...' if len(response) > 100 else ''}"
             )
+
+            # Show updated rate limit status
+            print("\n📊 Updated Rate Limit Status:")
+            status = generator.get_rate_limit_status()
+            for key, value in status.items():
+                print(f"   {key}: {value}")
 
         except Exception as e:
             print(f"❌ Google Generator Failed: {str(e)}")

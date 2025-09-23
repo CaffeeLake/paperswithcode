@@ -32,7 +32,6 @@ import asyncio
 import sys
 import os
 import time
-import logging
 import signal
 import psutil
 from typing import List, Dict, Any, Optional
@@ -42,6 +41,7 @@ from dataclasses import dataclass
 import argparse
 
 from backend.database.connection import get_database_session
+from backend.database.logging_config import setup_logging
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -58,11 +58,7 @@ DEFAULT_BATCH_SIZE = (
     50  # Papers to process in each batch (reduced to prevent OOM on low-memory systems)
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("populate_citations")
 
 
 @dataclass

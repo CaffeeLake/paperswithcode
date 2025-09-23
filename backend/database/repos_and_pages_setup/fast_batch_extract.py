@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import time
 from typing import List, Dict, Any, Optional
-import logging
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -25,12 +24,10 @@ from backend.utils.paper_utils import (
     get_github_and_project_page_urls_from_daily_papers,
     find_github_url,
 )
+from backend.database.logging_config import setup_logging
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging("fast_batch_extract")
 
 
 class FastBatchURLExtractor:
