@@ -4,13 +4,16 @@ from a given paper, using the comments of the paper page + first 2 pages of the 
 
 You can run it like so:
 ```bash
-uv run -m backend.genai_steps.extract_github_and_project_page_url --arxiv_id 2409.18313
+uv run --env-file backend/keys.env -m backend.genai_steps.extract_github_and_project_page_url --arxiv_id 2409.18313
 ```
 """
 
 import argparse
 from typing import Optional
 import asyncio
+import os
+from pathlib import Path
+import logging
 
 from pydantic import BaseModel
 
@@ -25,6 +28,7 @@ from backend.utils.pdf_utils import (
     temp_pdf_download,
     find_project_page_url,
     safe_pdf_to_images_async,
+    cleanup_image_files,
 )
 from backend.utils.paper_utils import (
     get_abstract,
@@ -43,8 +47,69 @@ class Response(BaseModel):
     project_page_url: str
 
 
+# Set up logging
+logger = logging.getLogger(__name__)
+
 # Initialize variables
 template = load_prompt("extract_github_and_project_page_url.json")
+
+
+class FewShotPDFCache:
+    """Cache for few-shot example PDFs to avoid repeated downloads."""
+
+    def __init__(self, cache_dir: str = "backend/few_shot_pdfs_cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self._cached_paths = {}
+
+    async def get_pdf_path(self, idx: int) -> str:
+        """Get cached PDF path, downloading if necessary."""
+        if idx in self._cached_paths:
+            cached_path = self._cached_paths[idx]
+            if os.path.exists(cached_path):
+                logger.debug(f"Using cached PDF for index {idx}: {cached_path}")
+                return cached_path
+
+        # Download and cache the PDF
+        cache_filename = f"few_shot_pdf_{idx}.pdf"
+        cached_path = self.cache_dir / cache_filename
+
+        try:
+            logger.info(f"Downloading few-shot PDF {idx} to cache...")
+            downloaded_path = await asyncio.to_thread(
+                hf_hub_download,
+                repo_id="nielsr/paper-page-assets",
+                filename=f"paper_pdfs_step_1/pdf_{idx}.pdf",
+                repo_type="dataset",
+            )
+
+            # Copy to our cache directory
+            await asyncio.to_thread(
+                lambda: __import__("shutil").copy2(downloaded_path, cached_path)
+            )
+
+            self._cached_paths[idx] = str(cached_path)
+            logger.info(f"Cached few-shot PDF {idx} at: {cached_path}")
+            return str(cached_path)
+
+        except Exception as e:
+            logger.error(f"Failed to download/cache few-shot PDF {idx}: {e}")
+            raise
+
+    def get_cache_info(self) -> dict:
+        """Get information about cached PDFs."""
+        cached_files = list(self.cache_dir.glob("*.pdf"))
+        return {
+            "cache_dir": str(self.cache_dir),
+            "cached_count": len(cached_files),
+            "cached_files": [f.name for f in cached_files],
+            "total_size_mb": sum(f.stat().st_size for f in cached_files)
+            / (1024 * 1024),
+        }
+
+
+# Global PDF cache instance
+pdf_cache = FewShotPDFCache()
 
 
 # add few-shots
@@ -151,55 +216,92 @@ async def get_project_github_urls(
 
     reasoning = ""
     response = {"github_url": github_url, "project_page_url": project_page_url}
+    all_image_paths = []  # Track all image paths for cleanup
+
     if github_url == "":
         print("No Github URL found, trying LLM...")
-        # Add few-shots
+        # Add few-shots using cached PDFs
         messages = []
         for idx, (few_shot_arxiv_id, response_content) in enumerate(
             zip(arxiv_ids, responses)
         ):
-            # Get PDF
-            pdf_file_path = await asyncio.to_thread(
-                hf_hub_download,
-                repo_id="nielsr/paper-page-assets",
-                filename=f"paper_pdfs_step_1/pdf_{idx}.pdf",
-                repo_type="dataset",
-            )
+            # Get cached PDF path
+            pdf_file_path = await pdf_cache.get_pdf_path(idx)
 
             message = await create_user_message(few_shot_arxiv_id, pdf_file_path)
             messages.append(message)
             messages.append(Message(role="assistant", content=response_content))
+
+            # Track image paths for cleanup
+            if hasattr(message, "image_paths") and message.image_paths:
+                all_image_paths.extend(message.image_paths)
 
         # Add query
         print("Processing main query...")
         message = await create_user_message(arxiv_id, pdf_path, abstract)
         messages.append(message)
 
-        response_str, _ = await generator.generate(
-            messages=messages, schema=Response, use_reasoning=use_reasoning
-        )
+        # Track image paths for cleanup
+        if hasattr(message, "image_paths") and message.image_paths:
+            all_image_paths.extend(message.image_paths)
 
-        reasoning = response_str.reasoning
-        project_page_url = response_str.project_page_url
-        github_url = response_str.github_url
+        try:
+            response_str, _ = await generator.generate(
+                messages=messages, schema=Response, use_reasoning=use_reasoning
+            )
 
-        # verify the project page URL
-        if isinstance(project_page_url, str):
-            is_valid_url = await verify_url(project_page_url)
-            project_page_url = project_page_url if is_valid_url else ""
-            # Update the main response dictionary with potentially modified LLM response
-            response = {"github_url": github_url, "project_page_url": project_page_url}
-        else:
-            # Handle case where LLM response wasn't a dict as expected
-            # or if get_section_content returned something else
-            response = {"github_url": "", "project_page_url": ""}
+            reasoning = response_str.reasoning
+            project_page_url = response_str.project_page_url
+            github_url = response_str.github_url
+
+            # verify the project page URL
+            if isinstance(project_page_url, str):
+                is_valid_url = await verify_url(project_page_url)
+                project_page_url = project_page_url if is_valid_url else ""
+                # Update the main response dictionary with potentially modified LLM response
+                response = {
+                    "github_url": github_url,
+                    "project_page_url": project_page_url,
+                }
+            else:
+                # Handle case where LLM response wasn't a dict as expected
+                # or if get_section_content returned something else
+                response = {"github_url": "", "project_page_url": ""}
+        finally:
+            # Clean up all temporary image files
+            if all_image_paths:
+                print(f"Cleaning up {len(all_image_paths)} temporary image files...")
+                cleanup_image_files(all_image_paths)
 
     return reasoning, response
+
+
+async def warm_pdf_cache():
+    """Pre-download all few-shot PDFs to cache."""
+    logger.info("Warming PDF cache with few-shot examples...")
+
+    for idx in range(len(arxiv_ids)):
+        try:
+            await pdf_cache.get_pdf_path(idx)
+        except Exception as e:
+            logger.error(f"Failed to cache PDF {idx}: {e}")
+
+    cache_info = pdf_cache.get_cache_info()
+    logger.info(
+        f"PDF cache ready: {cache_info['cached_count']} files, {cache_info['total_size_mb']:.1f} MB"
+    )
+    return cache_info
 
 
 async def main(
     arxiv_id: str, use_reasoning: bool = True, abstract: Optional[str] = None
 ):
+    # Show cache info
+    cache_info = pdf_cache.get_cache_info()
+    print(
+        f"📋 PDF Cache: {cache_info['cached_count']}/{len(arxiv_ids)} files cached ({cache_info['total_size_mb']:.1f} MB)"
+    )
+
     async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
         reasoning, response = await get_project_github_urls(
             arxiv_id=arxiv_id,
@@ -231,9 +333,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-reasoning", action="store_true", help="Disable reasoning tokens"
     )
+    parser.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help="Pre-download all few-shot PDFs to cache and exit",
+    )
 
     # Parse the arguments
     args = parser.parse_args()
 
-    # Call the main function with the parsed arguments
-    asyncio.run(main(args.arxiv_id, use_reasoning=not args.no_reasoning))
+    if args.warm_cache:
+        # Just warm the cache and exit
+        asyncio.run(warm_pdf_cache())
+    else:
+        # Call the main function with the parsed arguments
+        asyncio.run(main(args.arxiv_id, use_reasoning=not args.no_reasoning))

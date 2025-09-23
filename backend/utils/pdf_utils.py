@@ -172,6 +172,18 @@ async def safe_pdf_to_images_async(pdf_path: str, timeout_seconds: int = 30):
         return []
 
 
+def cleanup_image_files(image_paths: List[str]):
+    """
+    Clean up temporary image files.
+    """
+    for image_path in image_paths:
+        try:
+            os.unlink(image_path)
+            print(f"Cleaned up temporary image: {image_path}")
+        except Exception as e:
+            print(f"Failed to clean up {image_path}: {e}")
+
+
 @asynccontextmanager
 async def temp_pdf_download(arxiv_id: str):
     """
