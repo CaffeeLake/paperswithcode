@@ -29,6 +29,7 @@ from backend.utils.pdf_utils import (
     find_project_page_url,
     safe_pdf_to_images_async,
     cleanup_image_files,
+    extract_first_two_pages_pymupdf,
 )
 from backend.utils.paper_utils import (
     get_abstract,
@@ -303,9 +304,16 @@ async def main(
     )
 
     async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
+        if pdf_path:
+            try:
+                pdf_path_processed = await extract_first_two_pages_pymupdf(pdf_path)
+            except Exception as e:
+                print(f"Failed to extract first two pages: {e}")
+                return None, None
+
         reasoning, response = await get_project_github_urls(
             arxiv_id=arxiv_id,
-            pdf_path=pdf_path,
+            pdf_path=pdf_path_processed,
             session_id=None,
             use_reasoning=use_reasoning,
             abstract=abstract,

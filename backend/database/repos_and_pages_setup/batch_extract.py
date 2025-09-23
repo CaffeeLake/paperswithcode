@@ -29,6 +29,7 @@ import time
 import json
 import hashlib
 import psutil
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -45,7 +46,7 @@ from backend.genai_steps.extract_github_and_project_page_url import (
     get_project_github_urls,
     warm_pdf_cache,
 )
-from backend.utils.pdf_utils import temp_pdf_download
+from backend.utils.pdf_utils import temp_pdf_download, extract_first_two_pages_pymupdf
 from backend.generators.openrouter_generator import OpenRouterGenerator
 from backend.database.logging_config import setup_logging
 
@@ -56,7 +57,10 @@ logger = setup_logging("batch_extract")
 class SemanticCache:
     """Simple semantic caching based on content hashing."""
 
-    def __init__(self, cache_file="backend/ai_extraction_cache.json"):
+    def __init__(
+        self,
+        cache_file="backend/database/repos_and_pages_setup/ai_extraction_cache.json",
+    ):
         self.cache_file = Path(cache_file)
         self.cache = self._load_cache()
 
@@ -318,13 +322,30 @@ class BatchURLExtractor:
                     return "", ""
 
                 try:
+                    # Extract first 2 pages only to improve AI accuracy and reduce processing
+                    logger.debug(f"📄 Extracting first 2 pages for {arxiv_id}")
+                    first_two_pages_path = await extract_first_two_pages_pymupdf(
+                        pdf_path
+                    )
+
                     result = await get_project_github_urls(
                         arxiv_id=arxiv_id,
-                        pdf_path=pdf_path,
+                        pdf_path=first_two_pages_path,
                         session_id=None,
                         use_reasoning=True,
                         abstract=abstract,
                     )
+
+                    # Clean up the temporary first 2 pages file
+                    try:
+                        os.unlink(first_two_pages_path)
+                        logger.debug(
+                            f"🧹 Cleaned up temporary file: {first_two_pages_path}"
+                        )
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"⚠️  Failed to clean up {first_two_pages_path}: {cleanup_error}"
+                        )
 
                     # Handle case where result might be None or not a tuple
                     if result is None:
@@ -362,9 +383,10 @@ class BatchURLExtractor:
         paper_id: int,
         github_url: str,
         project_page_url: str,
+        source: str = "ai_extraction",
         existing_github_url: Optional[str] = None,
     ) -> None:
-        """Save extracted URLs to the database."""
+        """Save extracted URLs to the database with proper source tracking."""
         if self.dry_run:
             logger.debug(
                 f"[DRY RUN] Would save for paper {paper_id}: GitHub={github_url}, Project={project_page_url}"
@@ -375,28 +397,32 @@ class BatchURLExtractor:
             # Insert GitHub repository if found and not already exists
             if github_url and github_url.strip() and not existing_github_url:
                 github_insert = """
-                INSERT INTO repositories (paper_id, url, is_official, created_at, updated_at)
-                VALUES (:paper_id, :url, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                INSERT INTO repositories (paper_id, url, is_official, source, created_at, updated_at)
+                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT DO NOTHING
                 """
                 db.execute(
                     text(github_insert),
-                    {"paper_id": paper_id, "url": github_url.strip()},
+                    {"paper_id": paper_id, "url": github_url.strip(), "source": source},
                 )
-                logger.debug(f"📦 Added GitHub repo: {github_url}")
+                logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
 
             # Insert project page if found
             if project_page_url and project_page_url.strip():
                 project_insert = """
-                INSERT INTO project_pages (paper_id, url, is_official, created_at, updated_at)
-                VALUES (:paper_id, :url, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                INSERT INTO project_pages (paper_id, url, is_official, source, created_at, updated_at)
+                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT DO NOTHING
                 """
                 db.execute(
                     text(project_insert),
-                    {"paper_id": paper_id, "url": project_page_url.strip()},
+                    {
+                        "paper_id": paper_id,
+                        "url": project_page_url.strip(),
+                        "source": source,
+                    },
                 )
-                logger.debug(f"🌐 Added project page: {project_page_url}")
+                logger.debug(f"🌐 Added project page ({source}): {project_page_url}")
 
             db.commit()
 
@@ -425,7 +451,7 @@ class BatchURLExtractor:
                 # Step 1: Try fast methods first
                 github_url, project_page_url = await self.try_fast_methods(paper)
 
-                if github_url or project_page_url:
+                if github_url:
                     self.stats["fast_method_success"] += 1
                     logger.debug(f"⚡ Fast method success for {arxiv_id}")
                     method_used = "fast"
@@ -445,9 +471,21 @@ class BatchURLExtractor:
             # Use existing GitHub URL if available
             final_github_url = existing_github_url or github_url
 
-            # Save results
+            # Save results with appropriate source
+            if method_used == "fast":
+                source = "fast"
+            elif method_used == "ai":
+                source = "ai_extraction"
+            else:  # cached
+                source = "ai_extraction"  # Cached results were originally from AI
+
             self.save_results_to_db(
-                db, paper_id, final_github_url, project_page_url, existing_github_url
+                db,
+                paper_id,
+                final_github_url,
+                project_page_url,
+                source,
+                existing_github_url,
             )
 
             # Update stats

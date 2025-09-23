@@ -6,6 +6,7 @@ import tempfile
 import os
 import re
 
+import fitz
 from PyPDF2 import PdfReader
 from pdf2image import convert_from_path
 import pdfplumber
@@ -241,3 +242,106 @@ async def find_project_page_url(pdf_path: str) -> str:
     text = await asyncio.to_thread(extract_text_from_pdf, pdf_path, num_pages=2)
     match = await safe_regex_search_async(PROJECT_PAGE_URL_PATTERN, text, 5)
     return match.group(0) if match else ""
+
+
+async def extract_first_two_pages_pymupdf_sync(input_path: str) -> str:
+    """
+    Synchronous part of extracting first 2 pages from a PDF file using PyMuPDF.
+    Attempts to clean the input PDF first by re-saving it.
+    """
+    input_doc = None
+    writer_doc = None
+    cleaned_temp_pdf = None
+
+    try:
+        # --- Attempt to clean the input PDF first ---
+        try:
+            initial_doc = fitz.open(input_path)
+            # Create a temporary file for the cleaned version
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix="_cleaned.pdf"
+            ) as temp_clean_file:
+                cleaned_pdf_path = temp_clean_file.name
+            # Save with cleanup options
+            initial_doc.save(cleaned_pdf_path, garbage=4, deflate=True)
+            initial_doc.close()
+            print(f"Attempted to clean PDF, saved to: {cleaned_pdf_path}")
+            # Use the cleaned PDF path as the new input
+            input_path_to_use = cleaned_pdf_path
+            cleaned_temp_pdf = cleaned_pdf_path  # Keep track for cleanup
+        except Exception as clean_e:
+            print(
+                f"Warning: Failed to clean PDF, proceeding with original. Error: {clean_e}"
+            )
+            input_path_to_use = input_path  # Fallback to original if cleaning fails
+        # --------------------------------------------
+
+        # Open the source PDF (either original or cleaned)
+        input_doc = fitz.open(input_path_to_use)
+
+        # Create a new empty PDF document
+        writer_doc = fitz.open()
+
+        # Check if the document has at least one page
+        if len(input_doc) == 0:
+            # Close potentially opened docs before raising
+            if input_doc:
+                input_doc.close()
+            if writer_doc:
+                writer_doc.close()
+            raise ValueError("Input PDF has no pages.")
+
+        # Determine the number of pages to extract (max 2)
+        num_pages_to_extract = min(len(input_doc), 2)
+
+        # Insert the first two pages (or fewer if the doc is shorter)
+        writer_doc.insert_pdf(input_doc, from_page=0, to_page=num_pages_to_extract - 1)
+
+        # Create a temporary file for the final output
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix="_extract.pdf"
+        ) as temp_extract_file:
+            # Write the output to the temporary file
+            # Using garbage collection here too, just in case
+            writer_doc.save(temp_extract_file.name, garbage=4, deflate=True)
+            output_temp_file_path = temp_extract_file.name
+
+        # Close the documents
+        input_doc.close()
+        writer_doc.close()
+
+        print(f"Extracted first {num_pages_to_extract} pages using PyMuPDF.")
+        # Return the path of the temporary file containing the extraction
+        return output_temp_file_path
+
+    except Exception as e:
+        print(f"Error using PyMuPDF to extract pages: {e}")
+        # Clean up documents if they were potentially opened
+        try:
+            if input_doc:
+                input_doc.close()
+            if writer_doc:
+                writer_doc.close()
+        except Exception as cleanup_e:
+            print(f"Error during exception cleanup: {cleanup_e}")
+        raise  # Re-raise the original exception
+
+    finally:
+        # Clean up the intermediate cleaned PDF if it was created
+        if cleaned_temp_pdf and os.path.exists(cleaned_temp_pdf):
+            try:
+                os.unlink(cleaned_temp_pdf)
+                print(f"Cleaned up intermediate file: {cleaned_temp_pdf}")
+            except Exception as final_cleanup_e:
+                print(
+                    f"Error cleaning up intermediate file {cleaned_temp_pdf}: {final_cleanup_e}"
+                )
+
+
+async def extract_first_two_pages_pymupdf(input_path: str) -> str:
+    """
+    Function to extract the first 2 pages from a PDF file using PyMuPDF.
+    Attempts to clean the input PDF first by re-saving it.
+    This version runs synchronous file operations in a separate thread.
+    """
+    return await extract_first_two_pages_pymupdf_sync(input_path)

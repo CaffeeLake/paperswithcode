@@ -26,3 +26,8 @@ async def verify_url(url: str) -> bool:
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         print(f"An error occurred while checking {url}: {e}")
         return False
+
+
+if __name__ == "__main__":
+    result = asyncio.run(verify_url("https://langgpt.ai"))
+    print(result)
