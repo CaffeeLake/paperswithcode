@@ -49,9 +49,7 @@ arxiv_sources/
 # Outputs
 backend/outputs/
 
-# PDF Cache
+# Logs and caches
 backend/few_shot_pdfs_cache/
-
-# AI Extraction Cache
-backend/ai_extraction_cache.json
 backend/database/logs/
+backend/database/repos_and_pages_setup/cache

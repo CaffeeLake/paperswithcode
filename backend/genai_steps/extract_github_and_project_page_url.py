@@ -207,9 +207,9 @@ async def get_project_github_urls(
         project_page_url,
     ) = await get_github_and_project_page_urls_from_daily_papers(arxiv_id)
 
-    if github_url == "":
+    if not github_url:
         github_url = await find_github_url(arxiv_id)
-    if project_page_url == "":
+    if not project_page_url:
         project_page_url = await find_project_page_url(pdf_path)
 
     print("Github URL:", github_url, flush=True)
@@ -219,7 +219,7 @@ async def get_project_github_urls(
     response = {"github_url": github_url, "project_page_url": project_page_url}
     all_image_paths = []  # Track all image paths for cleanup
 
-    if github_url == "":
+    if not github_url:
         print("No Github URL found, trying LLM...")
         # Add few-shots using cached PDFs
         messages = []

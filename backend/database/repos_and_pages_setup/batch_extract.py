@@ -13,6 +13,8 @@ Coordination Modes:
 - fast_complement: Process papers that fast_batch_extract might skip
 - all: Process all papers (original behavior)
 
+Logs can be saved at backend/database/logs.
+
 Usage:
 ```bash
 # AI-focused processing (recommended when running with fast_batch_extract)
@@ -59,7 +61,7 @@ class SemanticCache:
 
     def __init__(
         self,
-        cache_file="backend/database/repos_and_pages_setup/ai_extraction_cache.json",
+        cache_file="backend/database/repos_and_pages_setup/cache/ai_extraction_cache.json",
     ):
         self.cache_file = Path(cache_file)
         self.cache = self._load_cache()
@@ -451,7 +453,7 @@ class BatchURLExtractor:
                 # Step 1: Try fast methods first
                 github_url, project_page_url = await self.try_fast_methods(paper)
 
-                if github_url:
+                if github_url or project_page_url:
                     self.stats["fast_method_success"] += 1
                     logger.debug(f"⚡ Fast method success for {arxiv_id}")
                     method_used = "fast"
