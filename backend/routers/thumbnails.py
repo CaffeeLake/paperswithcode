@@ -82,13 +82,8 @@ async def serve_thumbnail(
         version = parts[-1]  # Last part is version
         arxiv_id = ".".join(arxiv_parts)
 
-        # Construct PDF URL
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-
-        # Generate thumbnail on-demand
-        generated_path = thumbnail_service.generate_thumbnail(
-            arxiv_id, pdf_url, version
-        )
+        # Generate thumbnail on-demand using ArXiv service
+        generated_path = await thumbnail_service.generate_thumbnail(arxiv_id, version)
 
         # Serve the newly generated thumbnail
         return FileResponse(
@@ -153,10 +148,10 @@ async def generate_thumbnail(
             }
 
         # Generate thumbnail in background
-        def generate_in_background():
+        async def generate_in_background():
             try:
-                thumbnail_service.generate_thumbnail(
-                    paper.arxiv_id, paper.url_pdf, paper.version
+                await thumbnail_service.generate_thumbnail(
+                    paper.arxiv_id, paper.version
                 )
             except Exception as e:
                 # Log error but don't fail the request

@@ -20,6 +20,7 @@ from pdf2image import convert_from_bytes
 
 from backend.config import get_settings
 from backend.utils.exceptions import ThumbnailGenerationError
+from backend.services.arxiv_service import ArxivService
 
 
 class ThumbnailService:
@@ -37,6 +38,9 @@ class ThumbnailService:
         self.thumbnail_quality = 85  # JPEG quality
         self.pdf_timeout = 30  # Timeout for PDF downloads in seconds
         self.max_pdf_size = 50 * 1024 * 1024  # 50MB max PDF size
+
+        # ArXiv service for API interactions
+        self.arxiv_service = ArxivService()
 
     def _get_cache_path(self, arxiv_id: str, version: str = "v1") -> Path:
         """
@@ -168,15 +172,12 @@ class ThumbnailService:
         except Exception as e:
             raise ThumbnailGenerationError(f"Failed to save thumbnail: {str(e)}")
 
-    def generate_thumbnail(
-        self, arxiv_id: str, pdf_url: str, version: str = "v1"
-    ) -> Path:
+    async def generate_thumbnail(self, arxiv_id: str, version: str = "v1") -> Path:
         """
-        Generate thumbnail for a paper.
+        Generate thumbnail for a paper using ArXiv service.
 
         Args:
             arxiv_id: ArXiv ID of the paper
-            pdf_url: URL to the PDF file
             version: Paper version
 
         Returns:
@@ -192,8 +193,13 @@ class ThumbnailService:
             return cache_path
 
         try:
-            # Download PDF
-            pdf_content = self._download_pdf(pdf_url)
+            # Download PDF using ArXiv service (handles rate limiting)
+            pdf_content = await self.arxiv_service.download_pdf(arxiv_id, version)
+
+            if pdf_content is None:
+                raise ThumbnailGenerationError(
+                    f"Could not download PDF for ArXiv ID {arxiv_id}"
+                )
 
             # Convert to thumbnail
             thumbnail = self._convert_pdf_to_thumbnail(pdf_content)
