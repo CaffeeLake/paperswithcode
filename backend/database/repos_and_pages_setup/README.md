@@ -29,6 +29,7 @@ The Hugging Face `community-science-merged` dataset contains 5,299 research pape
 - `test_batch_extraction.py` - Test script for the AI batch extraction
 - `analyze_data_quality.py` - Script to analyze data quality and coverage
 - `populate_official_repos.py` - Script to populate official repository flags
+- `populate_github_stars.py` - Script to populate GitHub star counts using GitHub API
 - `DATABASE_ACCESS.md` - Detailed guide on database permissions and troubleshooting
 - `README.md` - This documentation
 
@@ -250,12 +251,49 @@ uv run backend/database/repos_and_pages_setup/batch_extract_github_and_project_u
 - **Error Handling**: Robust error handling with retry logic
 - **Progress Tracking**: Real-time statistics and progress reporting
 
+## GitHub Stars Population
+
+After populating repositories, you can fetch star counts from the GitHub API:
+
+### Prerequisites
+- Ensure `GITHUB_TOKEN` is set in `backend/keys.env` for higher rate limits
+- Repositories table must be populated with `owner` and `name` fields
+
+### Usage
+
+```bash
+# Test mode (10 repositories)
+uv run --env-file backend/keys.env backend/database/repos_and_pages_setup/populate_github_stars.py --test
+
+# Production mode (all repositories without star counts)
+uv run --env-file backend/keys.env backend/database/repos_and_pages_setup/populate_github_stars.py --production
+
+# Custom limit with dry run
+uv run --env-file backend/keys.env backend/database/repos_and_pages_setup/populate_github_stars.py --limit 100 --dry-run
+
+# Force update all repositories (including those with existing star counts)
+uv run --env-file backend/keys.env backend/database/repos_and_pages_setup/populate_github_stars.py --force-update
+```
+
+### Features
+- **GitHub API Integration**: Uses authenticated requests for higher rate limits (5000/hour vs 60/hour)
+- **Rate Limit Handling**: Automatically handles rate limits with intelligent waiting
+- **Batch Processing**: Processes repositories in configurable batches with progress tracking
+- **Error Handling**: Graceful handling of missing repositories, API errors, and network issues
+- **Dry Run Mode**: Test without making database changes
+- **Force Update**: Option to update repositories that already have star counts
+
+### Expected Results
+- Updates `num_stars` field in repositories table
+- Handles ~4000-5000 repositories per hour (with GitHub token)
+- Provides detailed progress and error reporting
+
 ## Next Steps
 
 After populating the basic data, you can enhance it by:
 
 1. **AI Extraction**: Use the batch extraction system for missing URLs
-2. **GitHub Stars**: Use GitHub API to populate `num_stars` field
+2. **GitHub Stars**: ✅ Use GitHub API to populate `num_stars` field (implemented above)
 3. **Official Status**: Mark repositories as official based on author analysis
 4. **Repository Analysis**: Extract additional metadata (language, topics, etc.)
 5. **Project Page Analysis**: Categorize project pages (demo, dataset, etc.)
