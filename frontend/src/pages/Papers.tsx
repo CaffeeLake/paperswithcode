@@ -88,7 +88,7 @@ const Papers = () => {
     page_size: 20,
     search: debouncedSearchTerm || undefined,
     order_by: sortBy,
-    order_dir: 'desc'
+    order_dir: sortBy === 'title' ? 'asc' : 'desc'
   });
 
   const papers = papersResponse?.results || [];
