@@ -686,10 +686,10 @@ def search_papers(query, year=None, limit=20):
         db.close()
 ```
 
-## Remote Access and IP Whitelist Management
+## Remote Access Configuration
 
 ### Overview
-PostgreSQL uses host-based authentication (HBA) to control which IP addresses can connect to the database. For security, we maintain a whitelist of specific IP addresses rather than allowing connections from anywhere.
+PostgreSQL is configured to allow connections from any IP address for ease of development and access. The database uses password authentication (md5) for security.
 
 ### Configuration Files
 - **pg_hba.conf**: Controls client authentication (`/etc/postgresql/16/main/pg_hba.conf`)
@@ -699,141 +699,43 @@ PostgreSQL uses host-based authentication (HBA) to control which IP addresses ca
 The database is configured to:
 - Listen on all interfaces (`listen_addresses = '*'`)
 - Allow `postgres` user from any IP (for admin tasks)
-- Whitelist specific IPs for `paperswithcode_user` (application access)
+- Allow `paperswithcode_user` from any IP address (`0.0.0.0/0`) for both databases
 
-### Adding New IP Addresses
-
-#### Method 1: Add Single IP Address
-```bash
-# Add a specific IP address to the whitelist
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    NEW_IP_ADDRESS/32    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-
-# Reload PostgreSQL to apply changes
-sudo systemctl reload postgresql
-```
-
-#### Method 2: Add IP Range (Office/Network)
-```bash
-# Add an entire subnet (e.g., office network)
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    192.168.1.0/24    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-
-# Reload PostgreSQL
-sudo systemctl reload postgresql
-```
-
-#### Method 3: Interactive Script (Recommended)
-Create a helper script for easier IP management:
+### Connection Details
+You can now connect to the database from any IP address using:
 
 ```bash
-# Create IP management script
-cat > /usr/local/bin/add-db-ip << 'EOF'
-#!/bin/bash
-# PostgreSQL IP Whitelist Management Script
-
-if [ $# -ne 1 ]; then
-    echo "Usage: $0 <IP_ADDRESS>"
-    echo "Example: $0 192.168.1.100"
-    exit 1
-fi
-
-IP_ADDRESS=$1
-
-# Validate IP format (basic check)
-if [[ ! $IP_ADDRESS =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    echo "Error: Invalid IP address format"
-    exit 1
-fi
-
-# Add IP to pg_hba.conf
-echo "Adding IP $IP_ADDRESS to PostgreSQL whitelist..."
-echo "host    paperswithcode    paperswithcode_user    $IP_ADDRESS/32    md5" | sudo tee -a /etc/postgresql/16/main/pg_hba.conf
-
-# Reload PostgreSQL
-echo "Reloading PostgreSQL configuration..."
-sudo systemctl reload postgresql
-
-echo "✅ IP $IP_ADDRESS successfully added to whitelist"
-echo "You can now connect from this IP using:"
-echo "  Host: 167.235.148.241"
-echo "  Port: 5432"
-echo "  Database: paperswithcode"
-echo "  User: paperswithcode_user"
-echo "  Password: paperswithcode123"
-EOF
-
-# Make script executable
-sudo chmod +x /usr/local/bin/add-db-ip
+# Connection parameters
+Host: 167.235.148.241
+Port: 5432
+Database: paperswithcode_hf (or paperswithcode)
+User: paperswithcode_user
+Password: paperswithcode123
 ```
 
-### Viewing Current Whitelist
+### Testing Connection
 ```bash
-# View current IP whitelist
-sudo grep "paperswithcode_user" /etc/postgresql/16/main/pg_hba.conf
-
-# View all authentication rules
-sudo cat /etc/postgresql/16/main/pg_hba.conf | grep -v "^#" | grep -v "^$"
+# Test connection from any location
+PGPASSWORD=paperswithcode123 psql -h 167.235.148.241 -U paperswithcode_user -d paperswithcode_hf -c "SELECT current_user;"
 ```
 
-### Removing IP Addresses
-```bash
-# Remove a specific IP (edit the file manually)
-sudo nano /etc/postgresql/16/main/pg_hba.conf
-
-# Or use sed to remove specific line
-sudo sed -i '/31.31.156.8/d' /etc/postgresql/16/main/pg_hba.conf
-
-# Reload after changes
-sudo systemctl reload postgresql
+### Current pg_hba.conf Configuration
+The current authentication rules allow:
+```
+# Allow paperswithcode_user from any IP address
+host    paperswithcode       paperswithcode_user    0.0.0.0/0    md5
+host    paperswithcode_hf    paperswithcode_user    0.0.0.0/0    md5
 ```
 
-### Common IP Scenarios
+### Security Considerations
 
-#### Home/Office Static IP
-```bash
-# Add your home/office static IP
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    203.0.113.45/32    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-```
+#### Current Security Model
+- **Password Authentication**: Uses md5 password authentication for all connections
+- **Strong Password**: Database uses a secure password (`paperswithcode123`)
+- **Limited User Privileges**: `paperswithcode_user` has limited permissions (not superuser)
+- **Firewall Protection**: Server firewall still provides network-level security
 
-#### VPN IP Range
-```bash
-# Add VPN subnet (e.g., company VPN)
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    10.0.0.0/8    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-```
-
-#### Cloud Provider IP Range
-```bash
-# Add cloud provider subnet (e.g., AWS, GCP)
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    172.16.0.0/12    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-```
-
-### Security Best Practices
-
-#### 1. Principle of Least Privilege
-- Only whitelist IPs that need database access
-- Use specific IP addresses (/32) rather than broad ranges when possible
-- Regularly review and remove unused IP addresses
-
-#### 2. IP Address Documentation
-Keep a record of whitelisted IPs:
-```bash
-# Create IP documentation file
-cat > /etc/postgresql/ip-whitelist.md << 'EOF'
-# PostgreSQL IP Whitelist Documentation
-
-## Current Whitelisted IPs for paperswithcode_user
-
-| IP Address | Description | Added Date | Added By |
-|------------|-------------|------------|----------|
-| 31.31.156.8 | Niels - Home/Office | 2025-09-22 | System Admin |
-
-## Notes
-- All IPs use md5 authentication
-- Changes require `sudo systemctl reload postgresql`
-- Backup pg_hba.conf before major changes
-EOF
-```
-
-#### 3. Backup and Recovery
+#### Backup and Recovery
 ```bash
 # Always backup pg_hba.conf before changes
 sudo cp /etc/postgresql/16/main/pg_hba.conf /etc/postgresql/16/main/pg_hba.conf.backup.$(date +%Y%m%d)
@@ -845,23 +747,16 @@ sudo systemctl reload postgresql
 
 ### Troubleshooting Connection Issues
 
-#### Check if IP is Whitelisted
-```bash
-# Check if your IP is in the whitelist
-YOUR_IP="31.31.156.8"
-sudo grep "$YOUR_IP" /etc/postgresql/16/main/pg_hba.conf
-```
-
 #### Test Connection from Command Line
 ```bash
-# Test connection with specific IP
-PGPASSWORD=paperswithcode123 psql -h 167.235.148.241 -U paperswithcode_user -d paperswithcode -c "SELECT current_user;"
+# Test connection from anywhere
+PGPASSWORD=paperswithcode123 psql -h 167.235.148.241 -U paperswithcode_user -d paperswithcode_hf -c "SELECT current_user;"
 ```
 
 #### Common Error Messages
-- **"no pg_hba.conf entry"**: IP not whitelisted, add it using steps above
 - **"password authentication failed"**: Wrong username/password
 - **"connection refused"**: PostgreSQL not running or firewall blocking
+- **"database does not exist"**: Check database name (paperswithcode_hf vs paperswithcode)
 
 ### Monitoring and Logging
 ```bash
@@ -874,18 +769,17 @@ sudo grep "FATAL" /var/log/postgresql/postgresql-16-main.log | tail -10
 
 ### Quick Reference Commands
 ```bash
-# Add new IP to whitelist
-sudo bash -c 'echo "host    paperswithcode    paperswithcode_user    NEW_IP/32    md5" >> /etc/postgresql/16/main/pg_hba.conf'
-sudo systemctl reload postgresql
-
-# View current whitelist
+# View current authentication rules
 sudo grep "paperswithcode_user" /etc/postgresql/16/main/pg_hba.conf
 
 # Test connection
-PGPASSWORD=paperswithcode123 psql -h 167.235.148.241 -U paperswithcode_user -d paperswithcode -c "SELECT version();"
+PGPASSWORD=paperswithcode123 psql -h 167.235.148.241 -U paperswithcode_user -d paperswithcode_hf -c "SELECT version();"
 
 # Backup configuration
 sudo cp /etc/postgresql/16/main/pg_hba.conf /etc/postgresql/16/main/pg_hba.conf.backup.$(date +%Y%m%d)
+
+# Reload configuration after changes
+sudo systemctl reload postgresql
 ```
 
 ## Best Practices
@@ -896,8 +790,7 @@ sudo cp /etc/postgresql/16/main/pg_hba.conf /etc/postgresql/16/main/pg_hba.conf.
 - The `paperswithcode_user` should have **minimal necessary permissions**
 - Only use `postgres` superuser for **administrative tasks**
 - **Regularly review and audit** database permissions
-- **Maintain IP whitelist** - only allow necessary IP addresses
-- **Document all whitelisted IPs** with purpose and owner
+- **Monitor connection logs** for suspicious activity
 - **Regular security audits** of connection logs and access patterns
 
 ### Development
