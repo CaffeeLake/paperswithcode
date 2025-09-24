@@ -2,7 +2,7 @@
  * API client for PapersWithCode backend
  */
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = 'http://167.235.148.241:8000/api/v1';
 
 export interface Repository {
   id: string;
