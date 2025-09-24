@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import PaperCard from "@/components/PaperCard";
 import TrendingPaperCard from "@/components/TrendingPaperCard";
-import { usePapers } from "@/hooks/usePapers";
+import { useInfinitePapers } from "@/hooks/usePapers";
 import { useState, useEffect } from "react";
+import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useSearchParams } from "react-router-dom";
 
 // Color palette for author avatars
@@ -83,16 +84,55 @@ const Papers = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Fetch papers from API
-  const { data: papersResponse, isLoading, error } = usePapers({
+  // Fetch papers from API with infinite scroll
+  const {
+    data,
+    isLoading,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage
+  } = useInfinitePapers({
     page_size: 20,
     search: debouncedSearchTerm || undefined,
     order_by: sortBy,
     order_dir: sortBy === 'title' ? 'asc' : 'desc'
   });
 
-  const papers = papersResponse?.results || [];
-  const transformedPapers = papers.map(transformPaperForUI);
+  // Flatten all pages into a single array
+  const allPapers = data?.pages.flatMap(page => page.results) || [];
+  const transformedPapers = allPapers.map(transformPaperForUI);
+  const totalCount = data?.pages[0]?.count || 0;
+
+  // Debug logging (temporary)
+  console.log('📊 Papers State:', {
+    totalPages: data?.pages.length || 0,
+    totalPapers: allPapers.length,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    sortBy,
+    searchTerm: debouncedSearchTerm
+  });
+
+  // Intersection observer for infinite scroll
+  const { targetRef, isIntersecting } = useIntersectionObserver({
+    threshold: 0.1,
+    rootMargin: '50px'
+  });
+
+  // Fetch next page when intersection observer triggers
+  useEffect(() => {
+    if (isIntersecting && hasNextPage && !isFetchingNextPage) {
+      console.log('🔄 Fetching next page...', {
+        isIntersecting,
+        hasNextPage,
+        isFetchingNextPage,
+        currentPapers: transformedPapers.length
+      });
+      fetchNextPage();
+    }
+  }, [isIntersecting, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -200,14 +240,51 @@ const Papers = () => {
         {!isLoading && !error && (
           <div className="space-y-6">
             {transformedPapers.length > 0 ? (
-              transformedPapers.map((paper) => (
-                <TrendingPaperCard key={paper.id} {...paper} />
-              ))
+              <>
+                {transformedPapers.map((paper) => (
+                  <TrendingPaperCard key={paper.id} {...paper} />
+                ))}
+
+                {/* Intersection Observer Target */}
+                <div
+                  ref={targetRef}
+                  className="h-32 flex items-center justify-center border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-lg my-4"
+                  style={{ minHeight: '100px' }}
+                >
+                  {isFetchingNextPage && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Loading more papers...</span>
+                    </div>
+                  )}
+                  {hasNextPage && !isFetchingNextPage && (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="text-sm text-muted-foreground text-center">
+                        📜 Scroll here to load more papers automatically<br/>
+                        <span className="text-xs">or click the button below</span>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => fetchNextPage()}
+                        className="text-xs"
+                      >
+                        Load More Papers
+                      </Button>
+                    </div>
+                  )}
+                  {!hasNextPage && (
+                    <div className="text-sm text-muted-foreground">
+                      🎉 All papers loaded!
+                    </div>
+                  )}
+                </div>
+              </>
             ) : (
               <div className="text-center py-12">
                 <p className="text-muted-foreground">No papers found</p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  Search: "{debouncedSearchTerm}" | Papers: {papers.length} | Response: {papersResponse ? 'Yes' : 'No'}
+                  Search: "{debouncedSearchTerm}" | Papers: {allPapers.length} | Total: {totalCount}
                 </p>
               </div>
             )}
@@ -215,9 +292,14 @@ const Papers = () => {
         )}
 
         {/* Pagination Info */}
-        {papersResponse && (
+        {data && (
           <div className="mt-8 text-center text-sm text-muted-foreground">
-            Showing {papersResponse.results.length} of {papersResponse.count} papers
+            Showing {transformedPapers.length} of {totalCount} papers
+            {!hasNextPage && transformedPapers.length > 0 && (
+              <div className="mt-2 text-xs">
+                🎉 You've reached the end! All papers loaded.
+              </div>
+            )}
           </div>
         )}
       </div>

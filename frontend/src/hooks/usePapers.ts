@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery } from '@tanstack/react-query';
 import { apiClient, Paper, PaginatedResponse } from '@/lib/api';
 
 interface UsePapersParams {
@@ -43,6 +43,53 @@ export function usePaper(id: string, enabled: boolean = true) {
     queryFn: () => apiClient.getPaper(id),
     enabled: enabled && !!id,
     staleTime: 10 * 60 * 1000, // 10 minutes
+    refetchOnWindowFocus: false,
+  });
+}
+
+interface UseInfinitePapersParams {
+  page_size?: number;
+  search?: string;
+  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_dir?: 'asc' | 'desc';
+  published_after?: string;
+  published_before?: string;
+  conference?: string;
+  latest_only?: boolean;
+  enabled?: boolean;
+}
+
+export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
+  const {
+    page_size = 20,
+    search,
+    order_by = 'date_published',
+    order_dir = 'desc',
+    published_after,
+    published_before,
+    conference,
+    latest_only = true,
+    enabled = true,
+  } = params;
+
+  return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
+    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }],
+    queryFn: ({ pageParam = 1 }) =>
+      apiClient.getPapers({
+        page: pageParam as number,
+        page_size,
+        search,
+        order_by,
+        order_dir,
+        published_after,
+        published_before,
+        conference,
+        latest_only
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_page,
+    initialPageParam: 1,
+    enabled,
+    staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
   });
 }
