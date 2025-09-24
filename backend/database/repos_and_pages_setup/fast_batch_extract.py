@@ -15,6 +15,8 @@ import argparse
 import asyncio
 import time
 from typing import List, Dict, Any, Optional
+from collections import deque
+from datetime import datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -30,12 +32,48 @@ from backend.database.logging_config import setup_logging
 logger = setup_logging("fast_batch_extract")
 
 
+class HFRateLimiter:
+    """Rate limiter for Hugging Face API calls (5000 requests per 5 minutes)."""
+
+    def __init__(self, max_requests: int = 4500, window_minutes: int = 5):
+        self.max_requests = max_requests  # Slightly under limit for safety
+        self.window_seconds = window_minutes * 60
+        self.requests = deque()
+
+    async def wait_if_needed(self):
+        """Wait if we're approaching the rate limit."""
+        now = datetime.now()
+
+        # Remove requests older than the window
+        while (
+            self.requests
+            and (now - self.requests[0]).total_seconds() > self.window_seconds
+        ):
+            self.requests.popleft()
+
+        # If we're at the limit, wait until the oldest request expires
+        if len(self.requests) >= self.max_requests:
+            oldest_request = self.requests[0]
+            wait_until = oldest_request + timedelta(seconds=self.window_seconds)
+            wait_seconds = (wait_until - now).total_seconds()
+
+            if wait_seconds > 0:
+                logger.info(
+                    f"⏳ Rate limit reached, waiting {wait_seconds:.1f} seconds..."
+                )
+                await asyncio.sleep(wait_seconds + 1)  # Add 1 second buffer
+
+        # Record this request
+        self.requests.append(now)
+
+
 class FastBatchURLExtractor:
     """Fast batch processor focusing on simple methods only."""
 
     def __init__(self, batch_size: int = 50, dry_run: bool = False):
         self.batch_size = batch_size
         self.dry_run = dry_run
+        self.rate_limiter = HFRateLimiter()
         self.stats = {
             "papers_processed": 0,
             "papers_with_github": 0,
@@ -43,6 +81,7 @@ class FastBatchURLExtractor:
             "papers_with_both": 0,
             "papers_with_neither": 0,
             "api_errors": 0,
+            "rate_limit_waits": 0,
             "start_time": time.time(),
         }
 
@@ -106,25 +145,29 @@ class FastBatchURLExtractor:
             # Insert GitHub repository if found and not already exists
             if github_url and github_url.strip() and not existing_github_url:
                 github_insert = """
-                INSERT INTO repositories (paper_id, url, is_official, created_at, updated_at)
-                VALUES (:paper_id, :url, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                INSERT INTO repositories (paper_id, url, is_official, source, created_at, updated_at)
+                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT DO NOTHING
                 """
                 db.execute(
                     text(github_insert),
-                    {"paper_id": paper_id, "url": github_url.strip()},
+                    {"paper_id": paper_id, "url": github_url.strip(), "source": "fast"},
                 )
 
             # Insert project page if found
             if project_page_url and project_page_url.strip():
                 project_insert = """
-                INSERT INTO project_pages (paper_id, url, is_official, created_at, updated_at)
-                VALUES (:paper_id, :url, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                INSERT INTO project_pages (paper_id, url, is_official, source, created_at, updated_at)
+                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT DO NOTHING
                 """
                 db.execute(
                     text(project_insert),
-                    {"paper_id": paper_id, "url": project_page_url.strip()},
+                    {
+                        "paper_id": paper_id,
+                        "url": project_page_url.strip(),
+                        "source": "fast",
+                    },
                 )
 
             db.commit()
@@ -143,6 +186,9 @@ class FastBatchURLExtractor:
         existing_github_url = paper.get("existing_github_url")
 
         try:
+            # Rate limit before HF API call
+            await self.rate_limiter.wait_if_needed()
+
             # Method 1: Try Hugging Face Daily Papers API (fast)
             (
                 github_url,
@@ -198,8 +244,8 @@ class FastBatchURLExtractor:
         """Process a batch of papers concurrently."""
         logger.info(f"🚀 Processing batch of {len(papers)} papers (FAST MODE)")
 
-        # Higher concurrency for simple methods
-        semaphore = asyncio.Semaphore(20)  # 20 concurrent requests
+        # Moderate concurrency to respect HF rate limits
+        semaphore = asyncio.Semaphore(10)  # 10 concurrent requests
 
         async def process_with_semaphore(paper):
             async with semaphore:
@@ -244,12 +290,13 @@ class FastBatchURLExtractor:
             f"❌ Papers with Neither: {self.stats['papers_with_neither']} ({self.stats['papers_with_neither'] / max(1, self.stats['papers_processed']) * 100:.1f}%)"
         )
         print(f"⚠️  API Errors: {self.stats['api_errors']}")
+        print(f"⏳ Rate Limit Waits: {self.stats['rate_limit_waits']}")
 
         if self.stats["papers_processed"] > 0:
             rate = self.stats["papers_processed"] / elapsed
             print(f"⚡ Processing Rate: {rate:.2f} papers/second")
             print(
-                f"📈 Estimated for 510K papers: {510000 / rate / 3600:.1f} hours ({510000 / rate / 3600 / 24:.1f} days)"
+                f"📈 Estimated for 52K papers: {52000 / rate / 3600:.1f} hours ({52000 / rate / 3600 / 24:.1f} days)"
             )
 
         print("=" * 60)
