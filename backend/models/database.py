@@ -323,6 +323,7 @@ class Repository(Base):
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     num_stars: Mapped[int] = mapped_column(Integer, default=0)
     is_official: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(50), default="unknown")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -338,7 +339,11 @@ class Repository(Base):
     # Indexes
     __table_args__ = (
         Index("idx_repositories_paper_id", "paper_id"),
+        Index("idx_repositories_url", "url"),
         Index("idx_repositories_stars", "num_stars"),
+        Index("idx_repositories_owner", "owner"),
+        Index("idx_repositories_name", "name"),
+        Index("idx_repositories_source", "source"),
     )
 
     def __repr__(self) -> str:
@@ -358,6 +363,7 @@ class ProjectPage(Base):
     )
     url: Mapped[str] = mapped_column(String(500), nullable=False)
     is_official: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(50), default="unknown")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -371,7 +377,11 @@ class ProjectPage(Base):
     paper: Mapped[Paper] = relationship("Paper", back_populates="project_pages")
 
     # Indexes
-    __table_args__ = (Index("idx_project_pages_paper_id", "paper_id"),)
+    __table_args__ = (
+        Index("idx_project_pages_paper_id", "paper_id"),
+        Index("idx_project_pages_url", "url"),
+        Index("idx_project_pages_source", "source"),
+    )
 
     def __repr__(self) -> str:
         return f"<ProjectPage(id={self.id}, url='{self.url}', official={self.is_official})>"

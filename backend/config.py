@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Database configuration
     db_host: str = Field(default="localhost", description="Database host")
     db_port: int = Field(default=5432, description="Database port")
-    db_name: str = Field(default="paperswithcode", description="Database name")
+    db_name: str = Field(default="paperswithcode_hf", description="Database name")
     db_user: str = Field(default="nielsrogge", description="Database user")
     db_password: str = Field(default="", description="Database password")
 

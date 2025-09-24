@@ -42,6 +42,7 @@ class RepositoryService:
         owner: Optional[str] = None,
         official_only: bool = False,
         min_stars: Optional[int] = None,
+        source: Optional[str] = None,
         order_by: str = "num_stars",
         order_dir: str = "desc",
     ) -> Repositories:
@@ -54,6 +55,7 @@ class RepositoryService:
             owner: Filter by repository owner
             official_only: Only include official repositories
             min_stars: Minimum number of stars
+            source: Filter by data source (pwc_archive, ai_extraction, manual, etc.)
             order_by: Field to order by
             order_dir: Order direction (asc/desc)
 
@@ -79,6 +81,9 @@ class RepositoryService:
 
             if min_stars is not None:
                 query = query.filter(DBRepository.num_stars >= min_stars)
+
+            if source:
+                query = query.filter(DBRepository.source == source)
 
             # Apply ordering
             order_field = getattr(DBRepository, order_by, DBRepository.num_stars)
@@ -201,6 +206,7 @@ class RepositoryService:
         page: int = 1,
         page_size: Optional[int] = None,
         official_only: bool = False,
+        source: Optional[str] = None,
         order_by: str = "created_at",
         order_dir: str = "desc",
     ) -> ProjectPages:
@@ -211,6 +217,7 @@ class RepositoryService:
             page: Page number (1-based)
             page_size: Number of project pages per page
             official_only: Only include official project pages
+            source: Filter by data source (pwc_archive, ai_extraction, manual, etc.)
             order_by: Field to order by
             order_dir: Order direction (asc/desc)
 
@@ -230,6 +237,9 @@ class RepositoryService:
             # Apply filters
             if official_only:
                 query = query.filter(DBProjectPage.is_official)
+
+            if source:
+                query = query.filter(DBProjectPage.source == source)
 
             # Apply ordering
             order_field = getattr(DBProjectPage, order_by, DBProjectPage.created_at)
@@ -339,6 +349,7 @@ class RepositoryService:
             name=db_repository.name,
             num_stars=db_repository.num_stars,
             is_official=db_repository.is_official,
+            source=db_repository.source,
             created_at=db_repository.created_at.date()
             if db_repository.created_at
             else None,
@@ -362,6 +373,7 @@ class RepositoryService:
             paper_id=str(db_project_page.paper_id),
             url=db_project_page.url,
             is_official=db_project_page.is_official,
+            source=db_project_page.source,
             created_at=db_project_page.created_at.date()
             if db_project_page.created_at
             else None,

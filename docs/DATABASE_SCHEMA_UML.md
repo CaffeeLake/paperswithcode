@@ -495,6 +495,7 @@ CREATE TABLE repositories (
     name VARCHAR(255),
     num_stars INTEGER DEFAULT 0,
     is_official BOOLEAN DEFAULT FALSE,
+    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the repository data (pwc_archive, ai_extraction, manual, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -508,6 +509,7 @@ CREATE TABLE project_pages (
     paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
     url VARCHAR(500) NOT NULL,
     is_official BOOLEAN DEFAULT FALSE, -- Created by the paper authors
+    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the project page data (pwc_archive, ai_extraction, manual, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -622,10 +624,16 @@ CREATE INDEX idx_evaluations_metrics ON evaluations USING gin(metrics);
 
 -- Repository indexes
 CREATE INDEX idx_repositories_paper_id ON repositories(paper_id);
+CREATE INDEX idx_repositories_url ON repositories(url);
 CREATE INDEX idx_repositories_stars ON repositories(num_stars DESC);
+CREATE INDEX idx_repositories_owner ON repositories(owner);
+CREATE INDEX idx_repositories_name ON repositories(name);
+CREATE INDEX idx_repositories_source ON repositories(source);
 
 -- Project page indexes
 CREATE INDEX idx_project_pages_paper_id ON project_pages(paper_id);
+CREATE INDEX idx_project_pages_url ON project_pages(url);
+CREATE INDEX idx_project_pages_source ON project_pages(source);
 ```
 
 ## Hugging Face Integration Strategy

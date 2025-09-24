@@ -12,6 +12,7 @@ export interface Repository {
   name?: string;
   num_stars: number;
   is_official: boolean;
+  source: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -21,6 +22,7 @@ export interface ProjectPage {
   paper_id: string;
   url: string;
   is_official: boolean;
+  source: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -137,6 +139,7 @@ class ApiClient {
     owner?: string;
     official_only?: boolean;
     min_stars?: number;
+    source?: string;
     order_by?: string;
     order_dir?: 'asc' | 'desc';
   }): Promise<PaginatedResponse<Repository>> {
@@ -147,6 +150,7 @@ class ApiClient {
     if (params?.owner) searchParams.append('owner', params.owner);
     if (params?.official_only) searchParams.append('official_only', params.official_only.toString());
     if (params?.min_stars) searchParams.append('min_stars', params.min_stars.toString());
+    if (params?.source) searchParams.append('source', params.source);
     if (params?.order_by) searchParams.append('order_by', params.order_by);
     if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
 
@@ -163,6 +167,7 @@ class ApiClient {
     page?: number;
     page_size?: number;
     official_only?: boolean;
+    source?: string;
     order_by?: string;
     order_dir?: 'asc' | 'desc';
   }): Promise<PaginatedResponse<ProjectPage>> {
@@ -171,6 +176,7 @@ class ApiClient {
     if (params?.page) searchParams.append('page', params.page.toString());
     if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
     if (params?.official_only) searchParams.append('official_only', params.official_only.toString());
+    if (params?.source) searchParams.append('source', params.source);
     if (params?.order_by) searchParams.append('order_by', params.order_by);
     if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
 

@@ -307,6 +307,10 @@ class Repository(BaseModel):
         default=False,
         description="Whether this is the official repository by paper authors",
     )
+    source: str = Field(
+        default="unknown",
+        description="Source of the repository data (pwc_archive, ai_extraction, manual, etc.)",
+    )
 
     # Timestamps
     created_at: Optional[date] = Field(None, description="Repository creation date")
@@ -360,6 +364,10 @@ class ProjectPage(BaseModel):
     is_official: bool = Field(
         default=False,
         description="Whether this is an official project page by paper authors",
+    )
+    source: str = Field(
+        default="unknown",
+        description="Source of the project page data (pwc_archive, ai_extraction, manual, etc.)",
     )
 
     # Timestamps

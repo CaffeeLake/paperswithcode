@@ -1,27 +1,21 @@
 """
 AI-powered batch processor for extracting GitHub URLs and project pages from papers.
 
-This script coordinates with fast_batch_extract.py to avoid processing the same papers:
+This script processes papers to find GitHub repositories and project pages using:
 1. Hybrid processing (fast methods first, AI as fallback)
 2. Semantic caching to avoid redundant API calls
 3. Memory monitoring for 4GB RAM systems
-4. Coordination modes to work alongside other batch scripts
-5. Uses rate limiting from OpenRouterGenerator
-
-Coordination Modes:
-- ai_focus: Focus on papers needing AI (missing GitHub, complex abstracts)
-- fast_complement: Process papers that fast_batch_extract might skip
-- all: Process all papers (original behavior)
+4. Uses rate limiting from OpenRouterGenerator
 
 Logs can be saved at backend/database/logs.
 
 Usage:
 ```bash
-# AI-focused processing (recommended when running with fast_batch_extract)
-uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --coordination ai_focus --limit 100
+# Process papers with default settings
+uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --limit 100
 
-# Memory-safe processing with monitoring and custom start year
-uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --coordination fast_complement --batch-size 10 --start-year 2020
+# Memory-safe processing with custom batch size and start year
+uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --batch-size 10 --start-year 2020
 ```
 """
 
@@ -113,14 +107,10 @@ class BatchURLExtractor:
         batch_size: int = 20,
         dry_run: bool = False,
         use_paid_tier: bool = False,
-        coordination_mode: str = "ai_focus",
         start_year: int = 2014,
     ):
         self.batch_size = batch_size
         self.dry_run = dry_run
-        self.coordination_mode = (
-            coordination_mode  # "ai_focus", "fast_complement", or "all"
-        )
         self.start_year = start_year
 
         # Initialize OpenRouter generator with appropriate rate limits
@@ -192,91 +182,35 @@ class BatchURLExtractor:
     def get_papers_missing_urls(
         self, db: Session, limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Get papers that need URL extraction with coordination logic."""
+        """Get papers that need URL extraction."""
 
         # Create start date from year
         start_date = f"{self.start_year}-01-01"
 
-        if self.coordination_mode == "ai_focus":
-            # Focus on papers that need AI processing (missing GitHub, have complex abstracts)
-            query = """
-            SELECT DISTINCT
-                p.id,
-                p.arxiv_id,
-                p.title,
-                p.abstract,
-                p.date_published,
-                CASE WHEN r.paper_id IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
-                CASE WHEN pp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
-            FROM papers p
-            LEFT JOIN repositories r ON p.id = r.paper_id
-            LEFT JOIN project_pages pp ON p.id = pp.paper_id
-            WHERE p.abstract IS NOT NULL
-              AND p.abstract != ''
-              AND p.arxiv_id IS NOT NULL
-              AND p.arxiv_id != ''
-              AND LENGTH(p.abstract) > 200  -- Longer abstracts more likely to need AI
-              AND r.paper_id IS NULL  -- Focus on missing GitHub (AI's strength)
-              AND p.date_published >= :start_date  -- Focus on papers from specified year onwards
-              AND (
-                -- Prioritize papers less likely to succeed with fast methods
-                p.abstract NOT ILIKE '%github%'
-                AND p.abstract NOT ILIKE '%code%'
-                AND p.abstract NOT ILIKE '%implementation%'
-              )
-            ORDER BY
-                p.date_published DESC NULLS LAST,  -- Newer papers first (more likely to have GitHub)
-                p.id DESC
-            """
-        elif self.coordination_mode == "fast_complement":
-            # Process papers that fast script might have skipped
-            query = """
-            SELECT DISTINCT
-                p.id,
-                p.arxiv_id,
-                p.title,
-                p.abstract,
-                p.date_published,
-                CASE WHEN r.paper_id IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
-                CASE WHEN pp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
-            FROM papers p
-            LEFT JOIN repositories r ON p.id = r.paper_id
-            LEFT JOIN project_pages pp ON p.id = pp.paper_id
-            WHERE p.abstract IS NOT NULL
-              AND p.abstract != ''
-              AND p.arxiv_id IS NOT NULL
-              AND p.arxiv_id != ''
-              AND LENGTH(p.abstract) > 100
-              AND (r.paper_id IS NULL OR pp.paper_id IS NULL)
-              AND p.date_published >= :start_date  -- Focus on papers from specified year onwards
-              AND p.id % 2 = 1  -- Take odd IDs (fast script takes newer/even patterns)
-            ORDER BY
-                p.date_published DESC NULLS LAST,  -- Newer papers first
-                p.id DESC
-            """
-        else:  # "all" mode - original behavior
-            query = """
-            SELECT DISTINCT
-                p.id,
-                p.arxiv_id,
-                p.title,
-                p.abstract,
-                p.date_published,
-                CASE WHEN r.paper_id IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
-                CASE WHEN pp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
-            FROM papers p
-            LEFT JOIN repositories r ON p.id = r.paper_id
-            LEFT JOIN project_pages pp ON p.id = pp.paper_id
-            WHERE p.abstract IS NOT NULL
-              AND p.abstract != ''
-              AND p.arxiv_id IS NOT NULL
-              AND p.arxiv_id != ''
-              AND LENGTH(p.abstract) > 100
-              AND (r.paper_id IS NULL OR pp.paper_id IS NULL)
-            ORDER BY
-                p.date_published DESC NULLS LAST,
-                p.id DESC
-            """
+        # Process all papers that are missing GitHub repositories or project pages
+        query = """
+        SELECT DISTINCT
+            p.id,
+            p.arxiv_id,
+            p.title,
+            p.abstract,
+            p.date_published,
+            CASE WHEN r.paper_id IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
+            CASE WHEN pp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
+        FROM papers p
+        LEFT JOIN repositories r ON p.id = r.paper_id
+        LEFT JOIN project_pages pp ON p.id = pp.paper_id
+        WHERE p.abstract IS NOT NULL
+          AND p.abstract != ''
+          AND p.arxiv_id IS NOT NULL
+          AND p.arxiv_id != ''
+          AND LENGTH(p.abstract) > 100
+          AND (r.paper_id IS NULL OR pp.paper_id IS NULL)
+          AND p.date_published >= :start_date
+        ORDER BY
+            p.date_published DESC NULLS LAST,
+            p.id DESC
+        """
 
         if limit:
             query += f" LIMIT {limit}"
@@ -566,7 +500,6 @@ class BatchURLExtractor:
         print("\n" + "=" * 60)
         print("📊 AI BATCH PROCESSING STATISTICS")
         print("=" * 60)
-        print(f"🔧 Coordination Mode: {self.coordination_mode}")
         print(f"📅 Start Year Filter: {self.start_year}")
         print(f"⏱️  Total Time: {elapsed:.1f} seconds")
         print(f"📄 Papers Processed: {self.stats['papers_processed']}")
@@ -690,17 +623,12 @@ async def main():
         description="AI batch extract GitHub URLs and project pages from papers",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Coordination modes:
-  ai_focus        Focus on papers needing AI (missing GitHub, complex abstracts)
-  fast_complement Process papers that fast_batch_extract might skip
-  all             Process all papers (original behavior)
-
 Examples:
-  # AI-focused processing (recommended when running with fast_batch_extract)
-  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --coordination ai_focus --limit 100
+  # Process papers with default settings
+  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --limit 100
 
-  # Complement fast batch processing with custom start year
-  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --coordination fast_complement --limit 500 --start-year 2020
+  # Custom batch size and start year
+  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --limit 500 --start-year 2020 --batch-size 10
         """,
     )
     parser.add_argument(
@@ -721,12 +649,6 @@ Examples:
         help="Use paid tier rate limits (1000/day instead of 50/day)",
     )
     parser.add_argument(
-        "--coordination",
-        choices=["ai_focus", "fast_complement", "all"],
-        default="ai_focus",
-        help="Coordination mode with other batch scripts (default: ai_focus)",
-    )
-    parser.add_argument(
         "--start-year",
         type=int,
         default=2014,
@@ -739,7 +661,6 @@ Examples:
         batch_size=args.batch_size,
         dry_run=args.dry_run,
         use_paid_tier=args.paid_tier,
-        coordination_mode=args.coordination,
         start_year=args.start_year,
     )
 

@@ -34,6 +34,10 @@ async def get_repositories(
     min_stars: Optional[int] = Query(
         None, ge=0, description="Minimum number of GitHub stars"
     ),
+    source: Optional[str] = Query(
+        None,
+        description="Filter by data source (pwc_archive, ai_extraction, manual, etc.)",
+    ),
     order_by: str = Query("num_stars", description="Field to order by"),
     order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
     db: Session = Depends(get_database_session),
@@ -54,6 +58,7 @@ async def get_repositories(
             owner=owner,
             official_only=official_only,
             min_stars=min_stars,
+            source=source,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -140,6 +145,10 @@ async def get_project_pages(
     official_only: bool = Query(
         False, description="Only include official project pages by paper authors"
     ),
+    source: Optional[str] = Query(
+        None,
+        description="Filter by data source (pwc_archive, ai_extraction, manual, etc.)",
+    ),
     order_by: str = Query("created_at", description="Field to order by"),
     order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
     db: Session = Depends(get_database_session),
@@ -158,6 +167,7 @@ async def get_project_pages(
             page=page,
             page_size=page_size,
             official_only=official_only,
+            source=source,
             order_by=order_by,
             order_dir=order_dir,
         )
