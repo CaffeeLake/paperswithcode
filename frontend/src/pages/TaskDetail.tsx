@@ -166,11 +166,11 @@ const TaskDetail = () => {
           </Button>
         </div>
 
-        <div className="prose max-w-none mb-6">
-          <p className="text-muted-foreground leading-relaxed mb-4">
+        <div className="text-sm mb-6">
+          <p className="text-muted-foreground leading-relaxed mb-4 text-justify">
             {task.description}
           </p>
-          <p className="text-muted-foreground leading-relaxed mb-4">
+          <p className="text-muted-foreground leading-relaxed mb-4 text-justify">
             {task.additionalInfo}
           </p>
           <p className="text-sm text-muted-foreground">

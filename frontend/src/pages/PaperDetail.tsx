@@ -177,8 +177,8 @@ const PaperDetail = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="prose prose-sm max-w-none">
-                  <p className="leading-relaxed whitespace-pre-wrap">{paper.abstract}</p>
+                <div className="text-sm">
+                  <p className="leading-relaxed text-justify text-foreground">{paper.abstract}</p>
                 </div>
               </CardContent>
             </Card>
