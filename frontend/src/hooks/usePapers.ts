@@ -11,6 +11,7 @@ interface UsePapersParams {
   published_before?: string;
   conference?: string;
   latest_only?: boolean;
+  include_resources?: boolean;
   enabled?: boolean;
 }
 
@@ -25,12 +26,13 @@ export function usePapers(params: UsePapersParams = {}) {
     published_before,
     conference,
     latest_only = true,
+    include_resources = false,
     enabled = true,
   } = params;
 
   return useQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers', { page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }],
-    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }),
+    queryKey: ['papers', { page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }],
+    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }),
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
@@ -56,6 +58,7 @@ interface UseInfinitePapersParams {
   published_before?: string;
   conference?: string;
   latest_only?: boolean;
+  include_resources?: boolean;
   enabled?: boolean;
 }
 
@@ -69,11 +72,12 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     published_before,
     conference,
     latest_only = true,
+    include_resources = false,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only }],
+    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getPapers({
         page: pageParam as number,
@@ -84,7 +88,8 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
         published_after,
         published_before,
         conference,
-        latest_only
+        latest_only,
+        include_resources
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,

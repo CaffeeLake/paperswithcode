@@ -2,7 +2,7 @@
  * API client for PapersWithCode backend
  */
 
-const API_BASE_URL = 'http://167.235.148.241:8000/api/v1';
+const API_BASE_URL = 'http://localhost:8000/api/v1';
 
 export interface Repository {
   id: string;
@@ -106,6 +106,7 @@ class ApiClient {
     published_before?: string;
     conference?: string;
     latest_only?: boolean;
+    include_resources?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -118,6 +119,7 @@ class ApiClient {
     if (params?.published_before) searchParams.append('published_before', params.published_before);
     if (params?.conference) searchParams.append('conference', params.conference);
     if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
+    if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
 
     const endpoint = `/papers/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     return this.request<PaginatedResponse<Paper>>(endpoint);

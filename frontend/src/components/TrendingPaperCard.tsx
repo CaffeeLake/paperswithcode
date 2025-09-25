@@ -24,6 +24,8 @@ interface TrendingPaperCardProps {
   githubStars: number;
   tags: string[];
   thumbnailUrl?: string;
+  arxivId?: string;
+  githubUrl?: string;
 }
 
 const formatStars = (stars: number) => {
@@ -45,6 +47,8 @@ const TrendingPaperCard = ({
   githubStars,
   tags,
   thumbnailUrl,
+  arxivId,
+  githubUrl,
 }: TrendingPaperCardProps) => {
   return (
     <div className="flex gap-6 p-6 bg-card rounded-lg border hover:shadow-md transition-shadow">
@@ -122,16 +126,33 @@ const TrendingPaperCard = ({
         </Button>
 
         {/* GitHub Stars */}
-        <div className="flex items-center gap-1 text-sm text-muted-foreground">
-          <Github className="w-4 h-4" />
-          <span className="font-medium">{formatStars(githubStars)}</span>
-        </div>
+        {githubStars > 0 && (
+          <div className="flex items-center gap-1 text-sm text-muted-foreground">
+            <Github className="w-4 h-4" />
+            {githubUrl ? (
+              <a
+                href={githubUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium hover:text-foreground transition-colors"
+              >
+                {formatStars(githubStars)}
+              </a>
+            ) : (
+              <span className="font-medium">{formatStars(githubStars)}</span>
+            )}
+          </div>
+        )}
 
         {/* arXiv Link */}
-        <Button variant="outline" size="sm" className="text-xs">
-          <ExternalLink className="w-3 h-3 mr-1" />
-          arXiv Page
-        </Button>
+        {arxivId && (
+          <Button variant="outline" size="sm" className="text-xs" asChild>
+            <a href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noopener noreferrer">
+              <ExternalLink className="w-3 h-3 mr-1" />
+              arXiv Page
+            </a>
+          </Button>
+        )}
       </div>
     </div>
   );

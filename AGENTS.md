@@ -144,7 +144,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 def get_papers(limit=100):
-    with psycopg2.connect(database="paperswithcode") as conn:
+    with psycopg2.connect(database="paperswithcode_hf") as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT * FROM papers_with_authors LIMIT %s", (limit,))
             return cur.fetchall()

@@ -47,6 +47,9 @@ async def get_papers(
     ),
     order_by: str = Query("date_published", description="Field to order by"),
     order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    include_resources: bool = Query(
+        False, description="Include repositories and project pages"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -72,6 +75,7 @@ async def get_papers(
             latest_only=latest_only,
             order_by=order_by,
             order_dir=order_dir,
+            include_resources=include_resources,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))

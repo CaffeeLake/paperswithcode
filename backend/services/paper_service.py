@@ -249,6 +249,7 @@ class PaperService:
         latest_only: bool = True,
         order_by: str = "date_published",
         order_dir: str = "desc",
+        include_resources: bool = False,
     ) -> Papers:
         """
         Get paginated list of papers with optional filtering.
@@ -319,7 +320,10 @@ class PaperService:
 
             # Convert to API models
             api_papers = [
-                self._convert_db_paper_to_api(db_paper) for db_paper in db_papers
+                self._convert_db_paper_to_api(
+                    db_paper, include_resources=include_resources
+                )
+                for db_paper in db_papers
             ]
 
             # Calculate pagination info

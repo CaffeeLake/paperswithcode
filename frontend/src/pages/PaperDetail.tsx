@@ -349,7 +349,7 @@ const PaperDetail = () => {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Zap className="w-4 h-4" />
-                    <span>Linked Hugging Face models</span>
+                    <span>🤗 Models</span>
                     {paper.arxiv_id && (
                       <a
                         href={`https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`}
@@ -392,7 +392,7 @@ const PaperDetail = () => {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Database className="w-4 h-4" />
-                    <span>Linked Hugging Face datasets</span>
+                    <span>🤗 Datasets</span>
                     {paper.arxiv_id && (
                       <a
                         href={`https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`}
@@ -435,7 +435,7 @@ const PaperDetail = () => {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center space-x-2">
                     <Zap className="w-4 h-4" />
-                    <span>Linked Hugging Face Spaces</span>
+                    <span>🤗 Spaces</span>
                     {paper.arxiv_id && (
                       <a
                         href={`https://huggingface.co/spaces?other=arxiv:${paper.arxiv_id}`}

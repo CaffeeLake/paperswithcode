@@ -347,9 +347,15 @@ class ArxivService:
             # If specific version requested and it's different from what we got
             if version and version != metadata.version:
                 # Modify URL to get specific version
+                # Remove existing version if present, then add requested version
+                import re
+
+                # Remove existing version pattern (e.g., v1, v2, etc.)
+                pdf_url = re.sub(r"v\d+", "", pdf_url)
+                # Add requested version before .pdf extension
                 if pdf_url.endswith(".pdf"):
                     pdf_url = pdf_url.replace(".pdf", f"{version}.pdf")
-                elif not pdf_url.endswith(f"{version}.pdf"):
+                else:
                     pdf_url = f"{pdf_url}{version}.pdf"
 
             return pdf_url
@@ -383,7 +389,9 @@ class ArxivService:
             # Rate limit before PDF download
             await self._rate_limit()
 
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.get(pdf_url, headers=self.headers)
 
                 # Check if we got HTML (reCAPTCHA) instead of PDF
