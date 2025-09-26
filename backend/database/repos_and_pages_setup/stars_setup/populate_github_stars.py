@@ -25,7 +25,6 @@ import logging
 import argparse
 import time
 from typing import List, Dict, Optional
-from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -60,23 +59,12 @@ class GitHubStarsPopulator:
         self.force_update = force_update
         self.batch_size = batch_size
 
-        # Get GitHub token from environment
-        self.github_token = getattr(self.settings, "github_token", None)
+        # Get GitHub token from settings
+        self.github_token = self.settings.github_token
         if not self.github_token:
-            # Try to get it from keys.env directly
-            try:
-                keys_file = Path(__file__).parent.parent.parent / "keys.env"
-                if keys_file.exists():
-                    with open(keys_file, "r") as f:
-                        for line in f:
-                            if line.startswith("GITHUB_TOKEN="):
-                                self.github_token = line.split("=", 1)[1].strip()
-                                break
-            except Exception as e:
-                logger.debug(f"Could not read keys.env: {e}")
-
-        if not self.github_token:
-            raise ValueError("GITHUB_TOKEN not found in environment or keys.env file")
+            raise ValueError(
+                "GITHUB_TOKEN not found. Please set PWC_GITHUB_TOKEN in your keys.env file."
+            )
 
         # Initialize statistics
         self.stats = {
@@ -428,7 +416,7 @@ def main():
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         print("\n❌ Error: GitHub token not found!")
-        print("Please ensure GITHUB_TOKEN is set in your keys.env file.")
+        print("Please ensure PWC_GITHUB_TOKEN is set in your keys.env file.")
         return 1
     except Exception as e:
         logger.error(f"Unexpected error: {e}")

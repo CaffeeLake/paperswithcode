@@ -5,7 +5,7 @@ This script processes papers to find GitHub repositories and project pages using
 1. Hybrid processing (fast methods first, AI as fallback)
 2. Semantic caching to avoid redundant API calls
 3. Memory monitoring for 4GB RAM systems
-4. Uses rate limiting from OpenRouterGenerator
+4. OpenRouterGenerator
 
 Logs can be saved at backend/database/logs.
 
@@ -25,7 +25,6 @@ import time
 import json
 import hashlib
 import psutil
-import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -34,15 +33,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
-from backend.utils.paper_utils import (
-    get_github_and_project_page_urls_from_daily_papers,
-    find_github_url,
-)
 from backend.genai_steps.extract_github_and_project_page_url import (
     get_project_github_urls,
     warm_pdf_cache,
 )
-from backend.utils.pdf_utils import temp_pdf_download, extract_first_two_pages_pymupdf
 from backend.generators.openrouter_generator import OpenRouterGenerator
 from backend.database.logging_config import setup_logging
 
@@ -100,7 +94,7 @@ class SemanticCache:
 
 
 class BatchURLExtractor:
-    """Batch processor with hybrid approach and efficient processing."""
+    """Batch processor to extract GitHub URLs and project pages from papers."""
 
     def __init__(
         self,
@@ -114,14 +108,11 @@ class BatchURLExtractor:
         self.start_year = start_year
 
         # Initialize OpenRouter generator with appropriate rate limits
-        if use_paid_tier:
-            self.generator = OpenRouterGenerator(
-                requests_per_minute=20, requests_per_day=1000
-            )
-        else:
-            self.generator = OpenRouterGenerator(
-                requests_per_minute=20, requests_per_day=50
-            )
+        requests_per_minute = 20
+        requests_per_day = 1000 if use_paid_tier else 50
+        self.generator = OpenRouterGenerator(
+            requests_per_minute=requests_per_minute, requests_per_day=requests_per_day
+        )
 
         self.cache = SemanticCache()
         self.stats = {
@@ -130,8 +121,6 @@ class BatchURLExtractor:
             "papers_with_project_page": 0,
             "papers_with_both": 0,
             "papers_with_neither": 0,
-            "fast_method_success": 0,
-            "ai_method_used": 0,
             "cache_hits": 0,
             "api_errors": 0,
             "start_time": time.time(),
@@ -139,9 +128,7 @@ class BatchURLExtractor:
 
         # Memory monitoring
         self.process = psutil.Process()
-        self.memory_limit_mb = (
-            3500  # Conservative limit for 4GB system with other processes
-        )
+        self.memory_limit_mb = 3500
 
     def get_memory_usage(self) -> Dict[str, float]:
         """Get current memory usage statistics."""
@@ -229,90 +216,6 @@ class BatchURLExtractor:
             for row in result
         ]
 
-    async def try_fast_methods(self, paper: Dict[str, Any]) -> tuple[str, str]:
-        """Try fast methods first (Hugging Face API and regex)."""
-        arxiv_id = paper["arxiv_id"]
-        abstract = paper["abstract"]
-
-        # Method 1: Hugging Face Daily Papers API
-        (
-            github_url,
-            project_page_url,
-        ) = await get_github_and_project_page_urls_from_daily_papers(arxiv_id)
-
-        # Method 2: Regex on abstract
-        if not github_url:
-            github_url = await find_github_url(arxiv_id, abstract)
-
-        return github_url or "", project_page_url or ""
-
-    async def try_ai_method(self, paper: Dict[str, Any]) -> tuple[str, str]:
-        """Use AI method as fallback."""
-        arxiv_id = paper["arxiv_id"]
-        abstract = paper["abstract"]
-
-        try:
-            async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
-                if pdf_path is None:
-                    logger.warning(f"⚠️  Could not download PDF for {arxiv_id}")
-                    return "", ""
-
-                try:
-                    # Extract first 2 pages only to improve AI accuracy and reduce processing
-                    logger.debug(f"📄 Extracting first 2 pages for {arxiv_id}")
-                    first_two_pages_path = await extract_first_two_pages_pymupdf(
-                        pdf_path
-                    )
-
-                    result = await get_project_github_urls(
-                        arxiv_id=arxiv_id,
-                        pdf_path=first_two_pages_path,
-                        session_id=None,
-                        use_reasoning=True,
-                        abstract=abstract,
-                    )
-
-                    # Clean up the temporary first 2 pages file
-                    try:
-                        os.unlink(first_two_pages_path)
-                        logger.debug(
-                            f"🧹 Cleaned up temporary file: {first_two_pages_path}"
-                        )
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"⚠️  Failed to clean up {first_two_pages_path}: {cleanup_error}"
-                        )
-
-                    # Handle case where result might be None or not a tuple
-                    if result is None:
-                        logger.warning(f"⚠️  AI method returned None for {arxiv_id}")
-                        response = {}
-                    elif isinstance(result, tuple) and len(result) == 2:
-                        reasoning, response = result
-                    else:
-                        logger.warning(
-                            f"⚠️  AI method returned unexpected format for {arxiv_id}: {type(result)}"
-                        )
-                        response = {}
-
-                    github_url = response.get("github_url", "") if response else ""
-                    project_page_url = (
-                        response.get("project_page_url", "") if response else ""
-                    )
-
-                    self.stats["ai_method_used"] += 1
-                    return github_url, project_page_url
-
-                except Exception as ai_error:
-                    logger.error(f"❌ AI method call failed for {arxiv_id}: {ai_error}")
-                    self.stats["api_errors"] += 1
-                    return "", ""
-
-        except Exception as e:
-            logger.error(f"❌ AI method setup failed for {arxiv_id}: {e}")
-            self.stats["api_errors"] += 1
-            return "", ""
-
     def save_results_to_db(
         self,
         db: Session,
@@ -366,13 +269,12 @@ class BatchURLExtractor:
             logger.error(f"❌ Error saving results for paper {paper_id}: {e}")
             db.rollback()
 
-    async def process_paper_hybrid(
-        self, paper: Dict[str, Any], db: Session
-    ) -> Dict[str, Any]:
-        """Process a single paper using hybrid approach (fast first, AI fallback)."""
+    async def process_paper(self, paper: Dict[str, Any], db: Session) -> Dict[str, Any]:
+        """Process a single paper using the unified get_project_github_urls function."""
         arxiv_id = paper["arxiv_id"]
         paper_id = paper["id"]
         existing_github_url = paper.get("existing_github_url")
+        abstract = paper["abstract"]
 
         try:
             # Check cache first
@@ -382,20 +284,27 @@ class BatchURLExtractor:
                 self.stats["cache_hits"] += 1
                 github_url = cached_result.get("github_url", "")
                 project_page_url = cached_result.get("project_page_url", "")
-                method_used = "cached"
             else:
-                # Step 1: Try fast methods first
-                github_url, project_page_url = await self.try_fast_methods(paper)
+                try:
+                    reasoning, response = await get_project_github_urls(
+                        arxiv_id=arxiv_id,
+                        session_id=None,
+                        use_reasoning=True,
+                        abstract=abstract,
+                    )
 
-                if github_url or project_page_url:
-                    self.stats["fast_method_success"] += 1
-                    logger.debug(f"⚡ Fast method success for {arxiv_id}")
-                    method_used = "fast"
-                else:
-                    # Step 2: Use AI method as fallback
-                    logger.info(f"🤖 Using AI method for {arxiv_id}")
-                    github_url, project_page_url = await self.try_ai_method(paper)
-                    method_used = "ai"
+                    github_url = response.get("github_url", "") if response else ""
+                    project_page_url = (
+                        response.get("project_page_url", "") if response else ""
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        f"❌ Error calling get_project_github_urls for {arxiv_id}: {e}"
+                    )
+                    self.stats["api_errors"] += 1
+                    github_url = ""
+                    project_page_url = ""
 
                 # Cache the result
                 result_to_cache = {
@@ -408,12 +317,7 @@ class BatchURLExtractor:
             final_github_url = existing_github_url or github_url
 
             # Save results with appropriate source
-            if method_used == "fast":
-                source = "fast"
-            elif method_used == "ai":
-                source = "ai_extraction"
-            else:  # cached
-                source = "ai_extraction"  # Cached results were originally from AI
+            source = "ai_extraction"
 
             self.save_results_to_db(
                 db,
@@ -436,7 +340,7 @@ class BatchURLExtractor:
                 self.stats["papers_with_neither"] += 1
 
             logger.info(
-                f"✅ Completed {arxiv_id}: GitHub={'✓' if final_github_url else '✗'}, Project={'✓' if project_page_url else '✗'} ({method_used})"
+                f"✅ Completed {arxiv_id}: GitHub={'✓' if final_github_url else '✗'}, Project={'✓' if project_page_url else '✗'}"
             )
 
             return {
@@ -444,7 +348,6 @@ class BatchURLExtractor:
                 "arxiv_id": arxiv_id,
                 "github_url": final_github_url,
                 "project_page_url": project_page_url,
-                "method": method_used,
                 "success": True,
             }
 
@@ -464,14 +367,14 @@ class BatchURLExtractor:
         self, papers: List[Dict[str, Any]], db: Session
     ) -> List[Dict[str, Any]]:
         """Process a batch of papers with controlled concurrency."""
-        logger.info(f"🚀 Processing batch of {len(papers)} papers (HYBRID MODE)")
+        logger.info(f"🚀 Processing batch of {len(papers)} papers (UNIFIED MODE)")
 
         # Lower concurrency for AI methods to respect rate limits
         semaphore = asyncio.Semaphore(3)  # Only 3 concurrent requests
 
         async def process_with_semaphore(paper):
             async with semaphore:
-                return await self.process_paper_hybrid(paper, db)
+                return await self.process_paper(paper, db)
 
         results = await asyncio.gather(
             *[process_with_semaphore(paper) for paper in papers], return_exceptions=True
@@ -506,12 +409,6 @@ class BatchURLExtractor:
 
         if self.stats["papers_processed"] > 0:
             print(
-                f"⚡ Fast Method Success: {self.stats['fast_method_success']} ({self.stats['fast_method_success'] / self.stats['papers_processed'] * 100:.1f}%)"
-            )
-            print(
-                f"🤖 AI Method Used: {self.stats['ai_method_used']} ({self.stats['ai_method_used'] / self.stats['papers_processed'] * 100:.1f}%)"
-            )
-            print(
                 f"📋 Cache Hits: {self.stats['cache_hits']} ({self.stats['cache_hits'] / self.stats['papers_processed'] * 100:.1f}%)"
             )
             print(
@@ -539,12 +436,10 @@ class BatchURLExtractor:
             rate = self.stats["papers_processed"] / elapsed
             print(f"⚡ Processing Rate: {rate:.2f} papers/second")
 
-            # Estimate based on AI usage
-            ai_ratio = self.stats["ai_method_used"] / max(
-                1, self.stats["papers_processed"]
-            )
+            # Estimate daily capacity based on rate limits
+            # Assume all papers may use AI (conservative estimate)
             daily_limit = self.generator.requests_per_day
-            estimated_daily = daily_limit / max(ai_ratio, 0.1)  # Account for AI usage
+            estimated_daily = daily_limit  # Conservative: 1 request per paper
 
             print(f"📈 Estimated Daily Capacity: {estimated_daily:.0f} papers")
             if estimated_daily > 0:
@@ -622,14 +517,6 @@ async def main():
     parser = argparse.ArgumentParser(
         description="AI batch extract GitHub URLs and project pages from papers",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Process papers with default settings
-  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --limit 100
-
-  # Custom batch size and start year
-  uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.batch_extract --limit 500 --start-year 2020 --batch-size 10
-        """,
     )
     parser.add_argument(
         "--limit", type=int, help="Maximum number of papers to process", default=None
@@ -645,7 +532,7 @@ Examples:
     )
     parser.add_argument(
         "--paid-tier",
-        action="store_true",
+        action="store_false",
         help="Use paid tier rate limits (1000/day instead of 50/day)",
     )
     parser.add_argument(

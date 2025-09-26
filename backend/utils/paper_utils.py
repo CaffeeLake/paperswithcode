@@ -52,7 +52,7 @@ async def find_github_url(arxiv_id: str, abstract: Optional[str] = None) -> str:
         list: List of found GitHub URLs
     """
     if abstract is None:
-        abstract = await get_abstract_arxiv(arxiv_id=arxiv_id)
+        abstract = await get_abstract(arxiv_id=arxiv_id)
     match = re.search(GITHUB_URL_PATTERN, abstract)
     return match.group(0) if match else ""
 
@@ -163,15 +163,15 @@ async def get_abstract_hf_hub(arxiv_id: str) -> str:
 
 async def get_abstract(arxiv_id: str) -> str:
     """
-    Get the abstract of a paper using the HF REST API.
+    Get the abstract of a paper using the HF REST API and ArXiv API.
     """
 
     try:
-        abstract = await get_abstract_arxiv(arxiv_id=arxiv_id)
+        abstract = await get_abstract_hf_hub(arxiv_id=arxiv_id)
         if abstract is None:
-            abstract = await get_abstract_hf_hub(arxiv_id=arxiv_id)
+            abstract = await get_abstract_arxiv(arxiv_id=arxiv_id)
     except Exception as e:
-        print(f"Error getting abstract from HF Hub: {e}")
+        print(f"Error getting abstract: {e}")
         abstract = "No abstract was found."
 
     return abstract

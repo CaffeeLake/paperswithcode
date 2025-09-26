@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
     openrouter_api_key: str = Field(default="", description="OpenRouter API key")
 
+    # Hugging Face API configuration
+    hf_token: str = Field(
+        default="", description="Hugging Face API token for higher rate limits"
+    )
+
+    # GitHub API configuration
+    github_token: str = Field(
+        default="", description="GitHub API token for higher rate limits"
+    )
+
     # Thumbnail configuration
     thumbnail_cache_dir: str = Field(
         default="./thumbnails", description="Directory to cache PDF thumbnails"

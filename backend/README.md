@@ -37,6 +37,10 @@ python setup_database.py
 
 Create a `.env` file in the project root:
 
+> **Note**: For optimal performance, configure API tokens:
+> - **Hugging Face** (`PWC_HF_TOKEN`): Increases rate limits from 1,000 to 2,500+ requests per 5-minute window. Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+> - **GitHub** (`PWC_GITHUB_TOKEN`): Increases rate limits from 60 to 5,000+ requests per hour. Get your token at [github.com/settings/tokens](https://github.com/settings/tokens).
+
 ```env
 # Database Configuration
 PWC_DB_HOST=localhost
@@ -53,6 +57,10 @@ PWC_ENVIRONMENT=development
 # API Configuration
 PWC_DEFAULT_PAGE_SIZE=50
 PWC_MAX_PAGE_SIZE=500
+
+# API Tokens (Optional - for higher rate limits)
+PWC_HF_TOKEN=your_hf_token_here
+PWC_GITHUB_TOKEN=your_github_token_here
 ```
 
 ### Running the Server
@@ -230,6 +238,8 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_DEFAULT_PAGE_SIZE` | 50 | Default pagination size |
 | `PWC_MAX_PAGE_SIZE` | 500 | Maximum pagination size |
 | `PWC_APP_DOMAIN` | paperswithcode.ai | Domain for URL generation |
+| `PWC_HF_TOKEN` | | Hugging Face API token (increases rate limits) |
+| `PWC_GITHUB_TOKEN` | | GitHub API token (increases rate limits) |
 
 ## Production Deployment
 

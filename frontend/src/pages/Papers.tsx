@@ -43,15 +43,16 @@ const formatDate = (dateString: string) => {
 const transformPaperForUI = (paper: any, index: number) => {
   const authorsWithColors = assignAuthorColors(paper.authors || []);
 
-  // Calculate total GitHub stars from all repositories and find the most starred one
+  // Calculate total GitHub stars from official repositories only and find the most starred one
   const repositories = paper.repositories || [];
-  const totalGithubStars = repositories.reduce((total: number, repo: any) => {
+  const officialRepositories = repositories.filter((repo: any) => repo.is_official);
+  const totalGithubStars = officialRepositories.reduce((total: number, repo: any) => {
     return total + (repo.num_stars || 0);
   }, 0);
 
-  // Find the repository with the most stars for the GitHub link
-  const mostStarredRepo = repositories.length > 0
-    ? repositories.reduce((max: any, repo: any) =>
+  // Find the official repository with the most stars for the GitHub link
+  const mostStarredRepo = officialRepositories.length > 0
+    ? officialRepositories.reduce((max: any, repo: any) =>
         (repo.num_stars || 0) > (max.num_stars || 0) ? repo : max
       )
     : null;
@@ -67,7 +68,7 @@ const transformPaperForUI = (paper: any, index: number) => {
     comments: Math.floor(Math.random() * 5), // Mock comments
     category: "Machine Learning", // Mock category
     isUpvoted: Math.random() > 0.7, // Mock upvote status
-    githubStars: totalGithubStars, // Real GitHub stars from repositories
+    githubStars: totalGithubStars, // Real GitHub stars from official repositories
     tags: ["machine learning", "artificial intelligence", "research"], // Mock tags
     thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
     arxivId: paper.arxiv_id, // Pass through arXiv ID for clickable links

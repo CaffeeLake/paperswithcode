@@ -1,5 +1,6 @@
 import re
 import aiohttp
+import asyncio
 
 from huggingface_hub.utils import build_hf_headers
 
@@ -120,3 +121,8 @@ async def get_user_organizations(username: str) -> list[str]:
     except Exception as e:
         print(f"Error fetching organizations for user {username}: {e}")
         return []
+
+
+if __name__ == "__main__":
+    orgs = asyncio.run(get_user_organizations("nielsr"))
+    print(orgs)

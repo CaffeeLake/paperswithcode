@@ -2,12 +2,17 @@ import { ExternalLink, Star, Github, CheckCircle, Target } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Repository } from "@/lib/api";
+import { useState } from "react";
 
 interface PaperResourcesProps {
   repositories?: Repository[];
 }
 
 const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
+  const [showAllRepositories, setShowAllRepositories] = useState(false);
+
+  // Filter to show only official repositories
+  const officialRepositories = repositories.filter(repo => repo.is_official);
 
   const formatStars = (stars: number) => {
     if (stars >= 1000) {
@@ -21,7 +26,7 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
       return `${repo.owner}/${repo.name}`;
     }
     // Extract owner/name from URL if not provided
-    const match = repo.url.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    const match = repo.url.match(/github\.com\/([^/]+)\/([^/]+)/);
     if (match) {
       return `${match[1]}/${match[2]}`;
     }
@@ -38,14 +43,14 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
             <Github className="w-5 h-5" />
             <span>Code</span>
             <Badge variant="secondary" className="ml-2">
-              {repositories.length}
+              {officialRepositories.length}
             </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {repositories.length > 0 ? (
+          {officialRepositories.length > 0 ? (
             <>
-              {repositories.map((repo) => (
+              {(showAllRepositories ? officialRepositories : officialRepositories.slice(0, 5)).map((repo) => (
                 <div key={repo.id} className="flex items-center justify-between p-2 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors">
                   <div className="flex items-center space-x-3 flex-1 min-w-0">
                     <Github className="w-4 h-4 text-muted-foreground flex-shrink-0" />
@@ -81,10 +86,16 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
                   </div>
                 </div>
               ))}
-              {repositories.length > 7 && (
+              {officialRepositories.length > 5 && (
                 <div className="text-center pt-2">
-                  <button className="text-sm text-paper-blue hover:underline">
-                    See all {repositories.length} implementations
+                  <button
+                    onClick={() => setShowAllRepositories(!showAllRepositories)}
+                    className="text-sm text-paper-blue hover:underline"
+                  >
+                    {showAllRepositories
+                      ? `Show less`
+                      : `See all ${officialRepositories.length} implementations`
+                    }
                   </button>
                 </div>
               )}
@@ -92,7 +103,7 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
           ) : (
             <div className="text-center py-4 text-muted-foreground">
               <Github className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-xs">No code implementations available</p>
+              <p className="text-xs">No official code implementations available</p>
             </div>
           )}
         </CardContent>

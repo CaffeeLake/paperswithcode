@@ -180,9 +180,8 @@ def cleanup_image_files(image_paths: List[str]):
     for image_path in image_paths:
         try:
             os.unlink(image_path)
-            print(f"Cleaned up temporary image: {image_path}")
-        except Exception as e:
-            print(f"Failed to clean up {image_path}: {e}")
+        except Exception:
+            pass
 
 
 @asynccontextmanager
