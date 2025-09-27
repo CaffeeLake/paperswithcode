@@ -373,22 +373,22 @@ class Repositories(BaseModel):
 
 class ProjectPage(BaseModel):
     """
-    Project page showcasing paper work.
+    Project page showcasing paper work - normalized without direct paper reference.
 
-    Represents a demo site, project website, or other web resource associated with a paper.
+    Represents a demo site, project website, or other web resource.
+    Use PaperProjectPage for relationships between papers and project pages.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     # Core project page identification
     id: str = Field(..., description="Project page ID")
-    paper_id: str = Field(..., description="Associated paper ID")
 
     # Project page details
     url: str = Field(..., description="Full URL to project page")
     is_official: bool = Field(
         default=False,
-        description="Whether this is an official project page by paper authors",
+        description="Whether this is an official project page (use PaperProjectPage.is_official for relationship-specific data)",
     )
     source: str = Field(
         default="unknown",
@@ -396,8 +396,10 @@ class ProjectPage(BaseModel):
     )
 
     # Timestamps
-    created_at: Optional[date] = Field(None, description="Repository creation date")
-    updated_at: Optional[date] = Field(None, description="Repository last update date")
+    created_at: Optional[date] = Field(None, description="Project page creation date")
+    updated_at: Optional[date] = Field(
+        None, description="Project page last update date"
+    )
 
     @field_validator("id", mode="before")
     @classmethod
@@ -405,11 +407,51 @@ class ProjectPage(BaseModel):
         """Ensure ID is always a string."""
         return str(v)
 
+
+class PaperProjectPage(BaseModel):
+    """
+    Junction table model for many-to-many relationship between papers and project pages.
+    Simplified to only contain the two ID columns as requested.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Relationship identification (only the two ID columns)
+    paper_id: str = Field(..., description="Associated paper ID")
+    project_page_id: str = Field(..., description="Associated project page ID")
+
     @field_validator("paper_id", mode="before")
     @classmethod
     def ensure_string_paper_id(cls, v):
         """Ensure paper_id is always a string."""
         return str(v)
+
+    @field_validator("project_page_id", mode="before")
+    @classmethod
+    def ensure_string_project_page_id(cls, v):
+        """Ensure project_page_id is always a string."""
+        return str(v)
+
+
+class ProjectPageWithPapers(BaseModel):
+    """
+    Project page with associated papers information.
+
+    Used for API responses that need to show which papers are associated with a project page.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Project page details
+    project_page: ProjectPage = Field(..., description="Project page information")
+
+    # Associated papers
+    papers: List[str] = Field(..., description="List of associated paper IDs")
+
+    # Relationship metadata (if needed)
+    relationships: Optional[List[PaperProjectPage]] = Field(
+        None, description="Detailed relationship information"
+    )
 
 
 class ProjectPages(BaseModel):

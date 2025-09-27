@@ -1,11 +1,9 @@
 # PapersWithCode - Database Schema & UML Design
 
 ## Overview
-This document provides a comprehensive database schema design for the PapersWithCode project, based on the analysis of:
-1. Original PapersWithCode JSON data dumps (papers-with-abstracts.json & evaluation-tables.json)
-2. PapersWithCode API client model structures
-3. Frontend requirements from the existing React application
-4. **Hugging Face API integration** for enhanced author profiles and cross-platform synchronization
+This document provides a comprehensive database schema design for the PapersWithCode project.
+
+This is based on the API client of the legacy [PapersWithCode API](https://paperswithcode-client.readthedocs.io/en/latest/api/index.html), and extends it with various fields such as Hugging Face usernames and project pages.
 
 ## Entity Relationship Diagram (UML)
 
@@ -129,10 +127,24 @@ This document provides a comprehensive database schema design for the PapersWith
         │
         ▼
 ┌─────────────────┐
+│PAPER_PROJECT_PAGES│
+├─────────────────┤
+│ paper_id (FK)   │
+│ project_page_id │
+│ is_official     │
+│ source          │
+│ created_at      │
+│ updated_at      │
+│ PRIMARY KEY     │
+│ (paper_id,      │
+│  project_page_id)│
+└─────────────────┘
+        │
+        ▼
+┌─────────────────┐
 │ PROJECT_PAGES   │
 ├─────────────────┤
 │ id (PK)         │
-│ paper_id (FK)   │
 │ url             │
 │ is_official     │
 │ source          │
@@ -524,16 +536,30 @@ CREATE TABLE paper_repositories (
 ```
 
 ### 8. PROJECT_PAGES
-**Project pages showcasing paper work (e.g., demo sites, project websites)**
+**Project pages showcasing paper work (e.g., demo sites, project websites) - normalized without direct paper reference**
 ```sql
 CREATE TABLE project_pages (
     id BIGSERIAL PRIMARY KEY,
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
     url VARCHAR(500) NOT NULL,
-    is_official BOOLEAN DEFAULT FALSE, -- Created by the paper authors
+    is_official BOOLEAN DEFAULT FALSE, -- Whether this is an official project page by paper authors
     source VARCHAR(50) DEFAULT 'unknown',   -- Source of the project page data (pwc_archive, ai_extraction, manual, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 8b. PAPER_PROJECT_PAGES
+**Junction table for many-to-many relationship between papers and project pages (simplified to only contain IDs)**
+```sql
+CREATE TABLE paper_project_pages (
+    paper_id BIGINT NOT NULL,
+    project_page_id BIGINT NOT NULL,
+
+    PRIMARY KEY (paper_id, project_page_id),
+    CONSTRAINT fk_paper_project_pages_paper_id
+        FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+    CONSTRAINT fk_paper_project_pages_project_page_id
+        FOREIGN KEY (project_page_id) REFERENCES project_pages(id) ON DELETE CASCADE
 );
 ```
 
@@ -605,6 +631,19 @@ CREATE TABLE paper_repositories (
 );
 ```
 
+### 15. PAPER_PROJECT_PAGES
+```sql
+CREATE TABLE paper_project_pages (
+    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
+    project_page_id BIGINT REFERENCES project_pages(id) ON DELETE CASCADE,
+    is_official BOOLEAN DEFAULT FALSE,
+    source VARCHAR(50) DEFAULT 'migration',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (paper_id, project_page_id)
+);
+```
+
 ## Key Relationships
 
 ### One-to-Many
@@ -620,6 +659,7 @@ CREATE TABLE paper_repositories (
 - `papers` ↔ `methods` (via paper_methods)
 - `papers` ↔ `datasets` (via paper_datasets)
 - `papers` ↔ `repositories` (via paper_repositories) **[OPTIMIZED]**
+- `papers` ↔ `project_pages` (via paper_project_pages) **[NORMALIZED]**
 
 ## Indexes for Performance
 
@@ -666,10 +706,14 @@ CREATE UNIQUE INDEX idx_repositories_url_unique ON repositories(url);
 CREATE INDEX idx_paper_repositories_paper_id ON paper_repositories(paper_id);
 CREATE INDEX idx_paper_repositories_repository_id ON paper_repositories(repository_id);
 
--- Project page indexes
-CREATE INDEX idx_project_pages_paper_id ON project_pages(paper_id);
+-- Project page indexes (normalized structure)
 CREATE INDEX idx_project_pages_url ON project_pages(url);
 CREATE INDEX idx_project_pages_source ON project_pages(source);
+CREATE INDEX idx_project_pages_is_official ON project_pages(is_official);
+
+-- Paper-Project Page junction table indexes (simplified)
+CREATE INDEX idx_paper_project_pages_paper_id ON paper_project_pages(paper_id);
+CREATE INDEX idx_paper_project_pages_project_page_id ON paper_project_pages(project_page_id);
 ```
 
 ## Hugging Face Integration Strategy

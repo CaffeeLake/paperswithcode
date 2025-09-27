@@ -343,7 +343,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             )
 
     def insert_repository(self, paper_id: int, github_url: str):
-        """Insert repository information."""
+        """Insert repository information using normalized schema with junction table."""
         if not self.is_valid_github_url(github_url):
             self.logger.warning(f"Invalid GitHub URL: {github_url}")
             return
@@ -351,47 +351,118 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         # Parse owner and name from URL
         owner, name = self.parse_github_url(github_url)
 
-        # Check if repository already exists for this paper
-        query = "SELECT id FROM repositories WHERE paper_id = %s AND url = %s"
-        results = self.execute_query(query, (paper_id, github_url))
+        # Check if repository already exists (by URL)
+        query = "SELECT id FROM repositories WHERE url = %s"
+        results = self.execute_query(query, (github_url,))
+
         if results:
-            return  # Already exists
+            # Repository exists, check if it's already linked to this paper
+            repo_id = results[0]["id"]
+            query = "SELECT 1 FROM paper_repositories WHERE paper_id = %s AND repository_id = %s"
+            link_results = self.execute_query(query, (paper_id, repo_id))
 
-        query = """
-        INSERT INTO repositories (paper_id, url, owner, name, source, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """
+            if link_results:
+                return  # Already linked to this paper
 
-        try:
-            self.execute_query(query, (paper_id, github_url, owner, name))
-            self.new_repos_count += 1
-            self.logger.debug(f"Added repository: {github_url}")
-        except Exception as e:
-            self.logger.error(f"Failed to insert repository {github_url}: {e}")
+            # Link existing repository to paper
+            query = """
+            INSERT INTO paper_repositories (paper_id, repository_id)
+            VALUES (%s, %s)
+            """
+            try:
+                self.execute_query(query, (paper_id, repo_id))
+                self.logger.debug(f"Linked existing repository to paper: {github_url}")
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to link repository {github_url} to paper {paper_id}: {e}"
+                )
+        else:
+            # Create new repository and link to paper
+            query = """
+            INSERT INTO repositories (url, owner, name, source, created_at, updated_at)
+            VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """
+
+            try:
+                results = self.execute_query(query, (github_url, owner, name))
+                if results:
+                    repo_id = results[0]["id"]
+
+                    # Link to paper
+                    query = """
+                    INSERT INTO paper_repositories (paper_id, repository_id)
+                    VALUES (%s, %s)
+                    """
+                    self.execute_query(query, (paper_id, repo_id))
+
+                    self.new_repos_count += 1
+                    self.logger.debug(f"Added new repository: {github_url}")
+            except Exception as e:
+                self.logger.error(f"Failed to insert repository {github_url}: {e}")
 
     def insert_project_page(self, paper_id: int, project_url: str):
-        """Insert project page information."""
+        """Insert project page information using normalized schema with junction table."""
         if not self.is_valid_url(project_url):
             self.logger.warning(f"Invalid project page URL: {project_url}")
             return
 
-        # Check if project page already exists for this paper
-        query = "SELECT id FROM project_pages WHERE paper_id = %s AND url = %s"
-        results = self.execute_query(query, (paper_id, project_url))
+        # Determine if this is an official project page
+        is_official = self.is_official_project_page(project_url)
+
+        # Check if project page already exists (by URL)
+        query = "SELECT id FROM project_pages WHERE url = %s"
+        results = self.execute_query(query, (project_url,))
+
         if results:
-            return  # Already exists
+            # Project page exists, check if it's already linked to this paper
+            page_id = results[0]["id"]
+            query = "SELECT 1 FROM paper_project_pages WHERE paper_id = %s AND project_page_id = %s"
+            link_results = self.execute_query(query, (paper_id, page_id))
 
-        query = """
-        INSERT INTO project_pages (paper_id, url, source, created_at, updated_at)
-        VALUES (%s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """
+            if link_results:
+                return  # Already linked to this paper
 
-        try:
-            self.execute_query(query, (paper_id, project_url))
-            self.new_pages_count += 1
-            self.logger.debug(f"Added project page: {project_url}")
-        except Exception as e:
-            self.logger.error(f"Failed to insert project page {project_url}: {e}")
+            # Link existing project page to paper
+            query = """
+            INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
+            VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """
+            try:
+                self.execute_query(query, (paper_id, page_id, is_official))
+                self.logger.debug(
+                    f"Linked existing project page to paper: {project_url} (official: {is_official})"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to link project page {project_url} to paper {paper_id}: {e}"
+                )
+        else:
+            # Create new project page and link to paper
+            query = """
+            INSERT INTO project_pages (url, source, created_at, updated_at)
+            VALUES (%s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """
+
+            try:
+                results = self.execute_query(query, (project_url,))
+                if results:
+                    page_id = results[0]["id"]
+
+                    # Link to paper with relationship metadata
+                    query = """
+                    INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """
+                    self.execute_query(query, (paper_id, page_id, is_official))
+
+                    self.new_pages_count += 1
+                    self.logger.debug(
+                        f"Added new project page: {project_url} (official: {is_official})"
+                    )
+            except Exception as e:
+                self.logger.error(f"Failed to insert project page {project_url}: {e}")
 
     def is_valid_github_url(self, url: str) -> bool:
         """Check if URL is a valid GitHub repository URL."""
@@ -409,6 +480,49 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         try:
             parsed = urlparse(url)
             return parsed.scheme in ["http", "https"] and parsed.netloc
+        except Exception:
+            return False
+
+    def is_official_project_page(self, url: str) -> bool:
+        """Determine if a project page URL is official."""
+        try:
+            parsed = urlparse(url.lower())
+            domain = parsed.netloc.lower()
+
+            # Consider these domains as official project pages
+            official_domains = [
+                "huggingface.co",
+                "www.huggingface.co",
+                "hf.co",
+                "arxiv.org",
+                "www.arxiv.org",
+                "openai.com",
+                "www.openai.com",
+                "deepmind.com",
+                "www.deepmind.com",
+                "ai.google",
+                "research.google.com",
+                "ai.meta.com",
+                "research.fb.com",
+                "microsoft.com",
+                "research.microsoft.com",
+                "anthropic.com",
+                "www.anthropic.com",
+            ]
+
+            # Check if it's from an official domain
+            if any(
+                domain == official_domain or domain.endswith("." + official_domain)
+                for official_domain in official_domains
+            ):
+                return True
+
+            # Check for Hugging Face spaces and models specifically
+            if "huggingface.co" in domain and ("/spaces/" in url or "/models/" in url):
+                return True
+
+            return False
+
         except Exception:
             return False
 

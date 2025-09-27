@@ -10,8 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
-from backend.models.api import Repository, Repositories, ProjectPage, ProjectPages
+from backend.models.api import (
+    Repository,
+    Repositories,
+    ProjectPage,
+    ProjectPages,
+    PaperProjectPage,
+    ProjectPageWithPapers,
+)
 from backend.services.repository_service import RepositoryService
+from backend.services.project_page_service_simple import ProjectPageServiceSimple
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter()
@@ -162,7 +170,7 @@ async def get_project_pages(
     - Sorting options
     """
     try:
-        service = RepositoryService(db)
+        service = ProjectPageServiceSimple(db)
         return service.get_project_pages(
             page=page,
             page_size=page_size,
@@ -188,7 +196,7 @@ async def get_project_page_by_id(
     Get a specific project page by its database ID.
     """
     try:
-        service = RepositoryService(db)
+        service = ProjectPageServiceSimple(db)
         return service.get_project_page_by_id(page_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -233,8 +241,61 @@ async def get_project_pages_for_paper(
     Get all project pages associated with a specific paper.
     """
     try:
-        service = RepositoryService(db)
+        service = ProjectPageServiceSimple(db)
         return service.get_project_pages_for_paper(paper_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/project-pages/{page_id}/papers",
+    response_model=ProjectPageWithPapers,
+    summary="Get project page with associated papers",
+)
+async def get_project_page_with_papers(
+    page_id: str = Path(..., description="Project page ID"),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get a project page with all associated papers and relationship metadata.
+
+    This endpoint provides detailed information about which papers are associated
+    with a project page, including relationship metadata like official status.
+    """
+    try:
+        service = ProjectPageServiceSimple(db)
+        return service.get_project_page_with_papers(page_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/paper-project-page-relationships/",
+    response_model=List[PaperProjectPage],
+    summary="Get paper-project page relationships",
+)
+async def get_paper_project_page_relationships(
+    paper_id: Optional[str] = Query(None, description="Filter by paper ID"),
+    project_page_id: Optional[str] = Query(
+        None, description="Filter by project page ID"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get paper-project page relationships with optional filtering.
+
+    This endpoint provides access to the junction table data, including
+    relationship metadata like official status and source information.
+    """
+    try:
+        service = ProjectPageServiceSimple(db)
+        return service.get_paper_project_page_relationships(
+            paper_id=paper_id, project_page_id=project_page_id
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

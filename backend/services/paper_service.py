@@ -91,14 +91,16 @@ class PaperService:
         if include_resources:
             try:
                 from .repository_service import RepositoryService
+                from .project_page_service_simple import ProjectPageServiceSimple
 
                 repo_service = RepositoryService(self.db)
+                project_page_service = ProjectPageServiceSimple(self.db)
 
                 # Get repositories for this paper
                 repositories = repo_service.get_repositories_for_paper(str(db_paper.id))
 
-                # Get project pages for this paper
-                project_pages = repo_service.get_project_pages_for_paper(
+                # Get project pages for this paper using the new normalized service
+                project_pages = project_page_service.get_project_pages_for_paper(
                     str(db_paper.id)
                 )
 

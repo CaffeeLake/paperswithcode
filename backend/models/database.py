@@ -94,7 +94,7 @@ class Paper(Base):
         "Repository", secondary="paper_repositories", back_populates="papers"
     )
     project_pages: Mapped[List["ProjectPage"]] = relationship(
-        "ProjectPage", back_populates="paper"
+        "ProjectPage", secondary="paper_project_pages", back_populates="papers"
     )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="paper"
@@ -355,17 +355,16 @@ class Repository(Base):
 
 class ProjectPage(Base):
     """
-    Project pages showcasing paper work.
+    Project pages showcasing paper work - normalized without direct paper reference.
     """
 
     __tablename__ = "project_pages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    paper_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
-    )
     url: Mapped[str] = mapped_column(String(500), nullable=False)
-    is_official: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_official: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )  # Use paper_project_pages.is_official for relationship-specific data
     source: Mapped[str] = mapped_column(String(50), default="unknown")
 
     # Timestamps
@@ -377,17 +376,48 @@ class ProjectPage(Base):
     )
 
     # Relationships
-    paper: Mapped[Paper] = relationship("Paper", back_populates="project_pages")
+    papers: Mapped[List["Paper"]] = relationship(
+        "Paper", secondary="paper_project_pages", back_populates="project_pages"
+    )
 
     # Indexes
     __table_args__ = (
-        Index("idx_project_pages_paper_id", "paper_id"),
         Index("idx_project_pages_url", "url"),
         Index("idx_project_pages_source", "source"),
+        Index("idx_project_pages_is_official", "is_official"),
     )
 
     def __repr__(self) -> str:
         return f"<ProjectPage(id={self.id}, url='{self.url}', official={self.is_official})>"
+
+
+class PaperProjectPage(Base):
+    """
+    Junction table for many-to-many relationship between papers and project pages.
+    Simplified to only contain the two ID columns as requested.
+    """
+
+    __tablename__ = "paper_project_pages"
+
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_page_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("project_pages.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # Relationships
+    paper: Mapped["Paper"] = relationship("Paper", overlaps="project_pages")
+    project_page: Mapped["ProjectPage"] = relationship("ProjectPage", overlaps="papers")
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_paper_project_pages_paper_id", "paper_id"),
+        Index("idx_paper_project_pages_project_page_id", "project_page_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PaperProjectPage(paper_id={self.paper_id}, project_page_id={self.project_page_id})>"
 
 
 class Evaluation(Base):
