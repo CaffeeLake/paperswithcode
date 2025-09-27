@@ -423,13 +423,13 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             if link_results:
                 return  # Already linked to this paper
 
-            # Link existing project page to paper
+            # Link existing project page to paper (junction table only has paper_id and project_page_id)
             query = """
-            INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
-            VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO paper_project_pages (paper_id, project_page_id)
+            VALUES (%s, %s)
             """
             try:
-                self.execute_query(query, (paper_id, page_id, is_official))
+                self.execute_query(query, (paper_id, page_id))
                 self.logger.debug(
                     f"Linked existing project page to paper: {project_url} (official: {is_official})"
                 )
@@ -438,24 +438,24 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
                     f"Failed to link project page {project_url} to paper {paper_id}: {e}"
                 )
         else:
-            # Create new project page and link to paper
+            # Create new project page with is_official flag and link to paper
             query = """
-            INSERT INTO project_pages (url, source, created_at, updated_at)
-            VALUES (%s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
+            VALUES (%s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id
             """
 
             try:
-                results = self.execute_query(query, (project_url,))
+                results = self.execute_query(query, (project_url, is_official))
                 if results:
                     page_id = results[0]["id"]
 
-                    # Link to paper with relationship metadata
+                    # Link to paper (junction table only has paper_id and project_page_id)
                     query = """
-                    INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
-                    VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    INSERT INTO paper_project_pages (paper_id, project_page_id)
+                    VALUES (%s, %s)
                     """
-                    self.execute_query(query, (paper_id, page_id, is_official))
+                    self.execute_query(query, (paper_id, page_id))
 
                     self.new_pages_count += 1
                     self.logger.debug(

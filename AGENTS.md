@@ -6,6 +6,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 
+To connect to the PostGreSQL database, see `docs/POSTGRESQL_GUIDE.md` for details.
+
 ## Project Overview
 
 Paperswithcode.ai is a complete recreation of paperswithcode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database.

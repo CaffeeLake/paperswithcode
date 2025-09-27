@@ -105,10 +105,9 @@ This is based on the API client of the legacy [PapersWithCode API](https://paper
 │ name            │           │ dataset_id (FK)  │
 │ num_stars       │           │ model_name       │
 │ num_stars_upd_at│           │ methodology      │
-│ is_official     │           │ metrics (JSONB)  │
-│ source          │           │ uses_additional  │
-│ created_at      │           │ best_rank        │
-│ updated_at      │           │ best_metric      │
+│ source          │           │ metrics (JSONB)  │
+│ created_at      │           │ uses_additional  │
+│ updated_at      │           │ best_rank        │
 └─────────────────┘           │ external_source  │
         │                     │ created_at       │
         │                     │ updated_at       │
@@ -120,6 +119,7 @@ This is based on the API client of the legacy [PapersWithCode API](https://paper
 ├─────────────────┤
 │ paper_id (FK)   │
 │ repository_id(FK)│
+│ is_official     │
 │ PRIMARY KEY     │
 │ (paper_id,      │
 │  repository_id) │
@@ -518,11 +518,13 @@ CREATE TABLE repositories (
     name VARCHAR(255),
     num_stars INTEGER DEFAULT 0,
     num_stars_updated_at TIMESTAMP WITH TIME ZONE, -- For CRON job tracking
-    is_official BOOLEAN DEFAULT FALSE,      -- Generally considered official
     source VARCHAR(50) DEFAULT 'unknown',  -- Source of the repository data
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Note: is_official is now stored in the paper_repositories junction table
+-- since repositories can have different official status for different papers
 ```
 
 ### 7b. PAPER_REPOSITORIES
@@ -531,6 +533,7 @@ CREATE TABLE repositories (
 CREATE TABLE paper_repositories (
     paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
     repository_id BIGINT REFERENCES repositories(id) ON DELETE CASCADE,
+    is_official BOOLEAN DEFAULT FALSE,      -- Whether this repository is official for this specific paper
     PRIMARY KEY (paper_id, repository_id)
 );
 ```
@@ -627,6 +630,7 @@ CREATE TABLE paper_datasets (
 CREATE TABLE paper_repositories (
     paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
     repository_id BIGINT REFERENCES repositories(id) ON DELETE CASCADE,
+    is_official BOOLEAN DEFAULT FALSE,      -- Whether this repository is official for this specific paper
     PRIMARY KEY (paper_id, repository_id)
 );
 ```

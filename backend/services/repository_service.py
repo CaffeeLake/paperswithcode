@@ -77,7 +77,15 @@ class RepositoryService:
                 query = query.filter(DBRepository.owner.ilike(f"%{owner}%"))
 
             if official_only:
-                query = query.filter(DBRepository.is_official)
+                # Filter repositories that are official for at least one paper
+                from backend.models.database import PaperRepository
+
+                subquery = (
+                    self.db.query(PaperRepository.repository_id)
+                    .filter(PaperRepository.is_official)
+                    .distinct()
+                )
+                query = query.filter(DBRepository.id.in_(subquery))
 
             if min_stars is not None:
                 query = query.filter(DBRepository.num_stars >= min_stars)
@@ -189,15 +197,23 @@ class RepositoryService:
         try:
             from backend.models.database import PaperRepository
 
-            repositories = (
-                self.db.query(DBRepository)
+            # Query repositories with junction table data
+            results = (
+                self.db.query(DBRepository, PaperRepository.is_official)
                 .join(PaperRepository, DBRepository.id == PaperRepository.repository_id)
                 .filter(PaperRepository.paper_id == int(paper_id))
-                .order_by(desc(DBRepository.num_stars))
+                .order_by(
+                    desc(PaperRepository.is_official), desc(DBRepository.num_stars)
+                )
                 .all()
             )
 
-            return [self._db_repository_to_api(repo, paper_id) for repo in repositories]
+            return [
+                self._db_repository_to_api_with_junction(
+                    repo, junction_is_official, paper_id
+                )
+                for repo, junction_is_official in results
+            ]
 
         except ValueError:
             raise PaperNotFoundError(f"Invalid paper ID: {paper_id}")
@@ -340,6 +356,10 @@ class RepositoryService:
         """
         Convert database Repository model to API Repository model.
 
+        Note: Since is_official is now in the junction table, this method
+        defaults is_official to False. For paper-specific queries with correct
+        is_official values, use _db_repository_to_api_with_junction instead.
+
         Args:
             db_repository: Database repository object
             paper_id: Paper ID (for backward compatibility with API)
@@ -354,7 +374,41 @@ class RepositoryService:
             owner=db_repository.owner,
             name=db_repository.name,
             num_stars=db_repository.num_stars,
-            is_official=db_repository.is_official,
+            is_official=False,  # Default to False since is_official is now in junction table
+            source=db_repository.source,
+            created_at=db_repository.created_at.date()
+            if db_repository.created_at
+            else None,
+            updated_at=db_repository.updated_at.date()
+            if db_repository.updated_at
+            else None,
+        )
+
+    def _db_repository_to_api_with_junction(
+        self,
+        db_repository: DBRepository,
+        junction_is_official: bool,
+        paper_id: str = None,
+    ) -> Repository:
+        """
+        Convert database Repository model to API Repository model using junction table data.
+
+        Args:
+            db_repository: Database repository object
+            junction_is_official: is_official value from paper_repositories junction table
+            paper_id: Paper ID
+
+        Returns:
+            API Repository object with correct is_official value
+        """
+        return Repository(
+            id=str(db_repository.id),
+            paper_id=paper_id or "",
+            url=db_repository.url,
+            owner=db_repository.owner,
+            name=db_repository.name,
+            num_stars=db_repository.num_stars,
+            is_official=junction_is_official,  # Use the correct value from junction table
             source=db_repository.source,
             created_at=db_repository.created_at.date()
             if db_repository.created_at

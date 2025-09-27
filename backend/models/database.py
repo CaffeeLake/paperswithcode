@@ -313,6 +313,9 @@ class Repository(Base):
 
     This table stores unique repositories. The relationship to papers
     is handled through the PaperRepository junction table.
+
+    Note: is_official is now stored in the PaperRepository junction table
+    since repositories can have different official status for different papers.
     """
 
     __tablename__ = "repositories"
@@ -322,7 +325,6 @@ class Repository(Base):
     owner: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     num_stars: Mapped[int] = mapped_column(Integer, default=0)
-    is_official: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(50), default="unknown")
 
     # Timestamps
@@ -565,6 +567,7 @@ class PaperRepository(Base):
     repository_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
     )
+    is_official: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Indexes
     __table_args__ = (
