@@ -11,8 +11,9 @@ interface PaperResourcesProps {
 const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
-  // Filter to show only official repositories
-  const officialRepositories = repositories.filter(repo => repo.is_official);
+  // Ensure repositories is always an array and filter to show only official repositories
+  const safeRepositories = repositories || [];
+  const officialRepositories = safeRepositories.filter(repo => repo.is_official);
 
   const formatStars = (stars: number) => {
     if (stars >= 1000) {

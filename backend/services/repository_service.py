@@ -187,14 +187,17 @@ class RepositoryService:
             List of Repository objects
         """
         try:
+            from backend.models.database import PaperRepository
+
             repositories = (
                 self.db.query(DBRepository)
-                .filter(DBRepository.paper_id == int(paper_id))
+                .join(PaperRepository, DBRepository.id == PaperRepository.repository_id)
+                .filter(PaperRepository.paper_id == int(paper_id))
                 .order_by(desc(DBRepository.num_stars))
                 .all()
             )
 
-            return [self._db_repository_to_api(repo) for repo in repositories]
+            return [self._db_repository_to_api(repo, paper_id) for repo in repositories]
 
         except ValueError:
             raise PaperNotFoundError(f"Invalid paper ID: {paper_id}")
@@ -331,19 +334,22 @@ class RepositoryService:
         except Exception as e:
             raise DatabaseError(f"Failed to fetch project pages for paper: {str(e)}")
 
-    def _db_repository_to_api(self, db_repository: DBRepository) -> Repository:
+    def _db_repository_to_api(
+        self, db_repository: DBRepository, paper_id: str = None
+    ) -> Repository:
         """
         Convert database Repository model to API Repository model.
 
         Args:
             db_repository: Database repository object
+            paper_id: Paper ID (for backward compatibility with API)
 
         Returns:
             API Repository object
         """
         return Repository(
             id=str(db_repository.id),
-            paper_id=str(db_repository.paper_id),
+            paper_id=paper_id or "",  # Use provided paper_id or empty string
             url=db_repository.url,
             owner=db_repository.owner,
             name=db_repository.name,

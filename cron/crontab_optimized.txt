@@ -1,0 +1,16 @@
+# PapersWithCode CRON Jobs - Optimized Version
+# This version uses the optimized GitHub stars script that groups repositories
+# by owner/name, providing 10-100x efficiency improvements
+# All times in UTC
+
+# Daily Hugging Face papers import at 3:00 AM UTC
+0 3 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
+
+# Hourly GitHub stars update (OPTIMIZED - groups by owner/name for massive efficiency gains)
+0 * * * * /root/python_projects/paperswithcode/cron/run_github_stars_optimized.sh
+
+# Hourly citation count update (2,800 papers/hour) - RECOMMENDED
+30 * * * * /root/python_projects/paperswithcode/cron/run_citations_hourly.sh
+
+# Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
+0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup

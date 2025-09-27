@@ -1,6 +1,10 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to AI agents when working with code in this repository.
+
+## Essentials
+
+ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 
 ## Project Overview
 

@@ -228,7 +228,7 @@ const PaperDetail = () => {
 
             {/* Code and Tasks */}
             <PaperResources
-              repositories={paper.repositories}
+              repositories={paper.repositories || []}
             />
 
             {/* Evaluation Results */}

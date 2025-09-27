@@ -54,5 +54,5 @@ backend/few_shot_pdfs_cache/
 backend/database/logs/
 backend/database/repos_and_pages_setup/cache
 
-# PDF downloads
-download_arxiv_pdfs/downloaded/
+# Experiments
+experiments/
