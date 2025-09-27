@@ -182,17 +182,18 @@ class BatchURLExtractor:
             p.title,
             p.abstract,
             p.date_published,
-            CASE WHEN r.paper_id IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
-            CASE WHEN pp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
+            CASE WHEN r.url IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
+            CASE WHEN ppp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
         FROM papers p
-        LEFT JOIN repositories r ON p.id = r.paper_id
-        LEFT JOIN project_pages pp ON p.id = pp.paper_id
+        LEFT JOIN paper_repositories pr ON p.id = pr.paper_id
+        LEFT JOIN repositories r ON pr.repository_id = r.id
+        LEFT JOIN paper_project_pages ppp ON p.id = ppp.paper_id
         WHERE p.abstract IS NOT NULL
           AND p.abstract != ''
           AND p.arxiv_id IS NOT NULL
           AND p.arxiv_id != ''
           AND LENGTH(p.abstract) > 100
-          AND (r.paper_id IS NULL OR pp.paper_id IS NULL)
+          AND (pr.paper_id IS NULL OR ppp.paper_id IS NULL)
           AND p.date_published >= :start_date
         ORDER BY
             p.date_published DESC NULLS LAST,
@@ -235,33 +236,64 @@ class BatchURLExtractor:
         try:
             # Insert GitHub repository if found and not already exists
             if github_url and github_url.strip() and not existing_github_url:
-                github_insert = """
-                INSERT INTO repositories (paper_id, url, is_official, source, created_at, updated_at)
-                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT DO NOTHING
+                # First insert into repositories table
+                repo_insert = """
+                INSERT INTO repositories (url, source, created_at, updated_at)
+                VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                RETURNING id
                 """
-                db.execute(
-                    text(github_insert),
-                    {"paper_id": paper_id, "url": github_url.strip(), "source": source},
-                )
-                logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
+                result = db.execute(
+                    text(repo_insert),
+                    {"url": github_url.strip(), "source": source},
+                ).fetchone()
+
+                if result:
+                    repo_id = result.id
+                    # Then insert into junction table
+                    junction_insert = """
+                    INSERT INTO paper_repositories (paper_id, repository_id, is_official)
+                    VALUES (:paper_id, :repository_id, true)
+                    ON CONFLICT DO NOTHING
+                    """
+                    db.execute(
+                        text(junction_insert),
+                        {"paper_id": paper_id, "repository_id": repo_id},
+                    )
+                    logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
 
             # Insert project page if found
             if project_page_url and project_page_url.strip():
-                project_insert = """
-                INSERT INTO project_pages (paper_id, url, is_official, source, created_at, updated_at)
-                VALUES (:paper_id, :url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT DO NOTHING
+                # First insert into project_pages table
+                page_insert = """
+                INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
+                VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
                 """
-                db.execute(
-                    text(project_insert),
-                    {
-                        "paper_id": paper_id,
-                        "url": project_page_url.strip(),
-                        "source": source,
-                    },
-                )
-                logger.debug(f"🌐 Added project page ({source}): {project_page_url}")
+                result = db.execute(
+                    text(page_insert),
+                    {"url": project_page_url.strip(), "source": source},
+                ).fetchone()
+
+                if result:
+                    page_id = result.id
+                    # Then insert into junction table
+                    junction_insert = """
+                    INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
+                    VALUES (:paper_id, :project_page_id, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT DO NOTHING
+                    """
+                    db.execute(
+                        text(junction_insert),
+                        {
+                            "paper_id": paper_id,
+                            "project_page_id": page_id,
+                            "source": source,
+                        },
+                    )
+                    logger.debug(
+                        f"🌐 Added project page ({source}): {project_page_url}"
+                    )
 
             db.commit()
 
