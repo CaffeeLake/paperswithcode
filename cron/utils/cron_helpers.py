@@ -85,7 +85,7 @@ class CronJobBase(ABC):
         return logger
 
     def get_database_connection(self):
-        """Get a database connection using psycopg2."""
+        """Get a database connection using psycopg2 with timeouts."""
         try:
             settings = get_settings()
             return psycopg2.connect(
@@ -94,6 +94,8 @@ class CronJobBase(ABC):
                 database=settings.db_name,
                 user=settings.db_user,
                 password=settings.db_password,
+                connect_timeout=10,  # 10 second connection timeout
+                options="-c statement_timeout=30000",  # 30 second query timeout
             )
         except Exception as e:
             self.logger.error(f"Failed to connect to database: {e}")

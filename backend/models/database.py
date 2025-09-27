@@ -91,7 +91,7 @@ class Paper(Base):
         "Dataset", secondary="paper_datasets", back_populates="papers"
     )
     repositories: Mapped[List["Repository"]] = relationship(
-        "Repository", back_populates="paper"
+        "Repository", secondary="paper_repositories", back_populates="papers"
     )
     project_pages: Mapped[List["ProjectPage"]] = relationship(
         "ProjectPage", back_populates="paper"
@@ -309,16 +309,16 @@ class Dataset(Base):
 
 class Repository(Base):
     """
-    GitHub repositories linked to papers.
+    GitHub repositories (normalized, no direct paper relationship).
+
+    This table stores unique repositories. The relationship to papers
+    is handled through the PaperRepository junction table.
     """
 
     __tablename__ = "repositories"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    paper_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
-    )
-    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
     owner: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     num_stars: Mapped[int] = mapped_column(Integer, default=0)
@@ -333,17 +333,20 @@ class Repository(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationships
-    paper: Mapped[Paper] = relationship("Paper", back_populates="repositories")
+    # Many-to-many relationship with papers through PaperRepository
+    papers: Mapped[List["Paper"]] = relationship(
+        "Paper", secondary="paper_repositories", back_populates="repositories"
+    )
 
     # Indexes
     __table_args__ = (
-        Index("idx_repositories_paper_id", "paper_id"),
         Index("idx_repositories_url", "url"),
         Index("idx_repositories_stars", "num_stars"),
         Index("idx_repositories_owner", "owner"),
         Index("idx_repositories_name", "name"),
         Index("idx_repositories_source", "source"),
+        Index("idx_repositories_created_at", "created_at"),
+        Index("idx_repositories_updated_at", "updated_at"),
     )
 
     def __repr__(self) -> str:
@@ -518,4 +521,23 @@ class PaperDataset(Base):
     __table_args__ = (
         Index("idx_paper_datasets_paper_id", "paper_id"),
         Index("idx_paper_datasets_dataset_id", "dataset_id"),
+    )
+
+
+class PaperRepository(Base):
+    """Junction table for papers and repositories (many-to-many relationship)."""
+
+    __tablename__ = "paper_repositories"
+
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_paper_repositories_paper_id", "paper_id"),
+        Index("idx_paper_repositories_repository_id", "repository_id"),
     )

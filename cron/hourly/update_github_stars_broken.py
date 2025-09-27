@@ -27,6 +27,7 @@ Performance Improvement:
 
 import sys
 import time
+import signal
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import requests
@@ -35,6 +36,39 @@ from urllib3.util.retry import Retry
 
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
+
+
+class TimeoutError(Exception):
+    """Custom timeout exception."""
+
+    pass
+
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise TimeoutError("Operation timed out")
+
+
+def with_timeout(seconds):
+    """Decorator to add timeout to function execution."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # Set up signal handler
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+
+            try:
+                result = func(*args, **kwargs)
+                return result
+            finally:
+                # Reset alarm and handler
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+
+        return wrapper
+
+    return decorator
 
 
 class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
@@ -70,6 +104,12 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
         # Setup HTTP session
         self.session = self._setup_session()
 
+        # Track failed repositories to avoid repeated failures
+        self.failed_repos = set()
+
+        # Track processed repositories in this run to avoid duplicates
+        self.processed_repos = set()
+
     def _setup_session(self) -> requests.Session:
         """Setup requests session with authentication and retry strategy."""
         if not self.github_token:
@@ -88,12 +128,13 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             }
         )
 
-        # Setup retry strategy for transient errors
+        # Setup retry strategy for transient errors (exclude 403 to prevent hanging)
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,  # Faster backoff for hourly jobs: 1, 2, 4 seconds
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=1,  # Minimal retries for hourly jobs
+            backoff_factor=0.3,  # Very fast backoff for hourly jobs
+            status_forcelist=[429, 500, 502, 503, 504],  # Don't retry 403, 404 errors
             allowed_methods=["GET"],
+            raise_on_status=False,  # Don't raise exceptions, let us handle them
         )
 
         adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -105,6 +146,10 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
     def run(self):
         """Main execution logic for GitHub stars update."""
         self.logger.info("Starting hourly GitHub stars update")
+
+        # Set maximum execution time (50 minutes for hourly job)
+        start_time = time.time()
+        max_execution_time = 50 * 60  # 50 minutes in seconds
 
         # Check GitHub API rate limit before starting
         rate_limit_info = self.check_rate_limit()
@@ -135,7 +180,13 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             )
 
         # Process repositories in streaming chunks to reduce memory usage
-        self.process_repositories_in_streaming_chunks(repos_to_process)
+        try:
+            self.process_repositories_in_streaming_chunks(
+                repos_to_process, start_time, max_execution_time
+            )
+        except TimeoutError:
+            self.logger.warning("Job execution timeout reached, stopping gracefully")
+            return
 
         # Log summary
         self.log_summary()
@@ -176,7 +227,14 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
 
         # Chunk query for streaming processing
         query = """
-        SELECT id, owner, name, url, num_stars, num_stars_updated_at
+        SELECT DISTINCT
+            id,
+            owner,
+            name,
+            url,
+            num_stars,
+            num_stars_updated_at,
+            CASE WHEN num_stars_updated_at IS NULL THEN 0 ELSE 1 END as sort_priority
         FROM repositories
         WHERE owner IS NOT NULL
           AND name IS NOT NULL
@@ -186,7 +244,7 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
               OR num_stars IS NULL
           )
         ORDER BY
-            CASE WHEN num_stars_updated_at IS NULL THEN 0 ELSE 1 END,  -- NULL first
+            sort_priority,                                             -- NULL first
             num_stars_updated_at ASC NULLS FIRST,                      -- Oldest first
             id ASC                                                     -- Consistent ordering
         LIMIT %s OFFSET %s
@@ -201,7 +259,12 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             )
             return []
 
-    def process_repositories_in_streaming_chunks(self, total_repos_to_process: int):
+    def process_repositories_in_streaming_chunks(
+        self,
+        total_repos_to_process: int,
+        start_time: float = None,
+        max_execution_time: float = None,
+    ):
         """Process repositories in streaming chunks to reduce memory usage."""
         total_chunks = (total_repos_to_process + self.chunk_size - 1) // self.chunk_size
 
@@ -209,9 +272,18 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             f"Processing {total_repos_to_process} repositories in {total_chunks} chunks of {self.chunk_size}"
         )
 
-        start_time = time.time()
+        chunk_start_time = time.time()
 
         for chunk_num in range(total_chunks):
+            # Check for timeout
+            if start_time and max_execution_time:
+                elapsed_time = time.time() - start_time
+                if elapsed_time > max_execution_time:
+                    self.logger.warning(
+                        f"Execution timeout reached after {elapsed_time:.1f} seconds"
+                    )
+                    raise TimeoutError("Maximum execution time exceeded")
+
             offset = chunk_num * self.chunk_size
             limit = min(self.chunk_size, total_repos_to_process - offset)
 
@@ -236,7 +308,9 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
 
             # Log chunk completion and memory efficiency
             chunk_elapsed = time.time() - chunk_start
-            total_elapsed = time.time() - start_time
+            total_elapsed = time.time() - (
+                start_time if start_time else chunk_start_time
+            )
             rate = (
                 self.stats["repos_processed"] / total_elapsed
                 if total_elapsed > 0
@@ -273,10 +347,15 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             )
 
             # Process each repository in the batch
-            for repo in batch:
+            for i, repo in enumerate(batch):
                 try:
                     self.process_single_repository(repo)
                     time.sleep(self.delay_between_requests)  # Optimized rate limiting
+                except TimeoutError:
+                    repo_key = f"{repo.get('owner')}/{repo.get('name')}"
+                    self.logger.warning(f"Repository processing timed out: {repo_key}")
+                    self.failed_repos.add(repo_key)
+                    self.stats["processing_errors"] += 1
                 except Exception as e:
                     self.logger.error(
                         f"Error processing repository {repo.get('id')}: {e}"
@@ -287,6 +366,7 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             if batch_num < total_batches - 1:
                 time.sleep(self.delay_between_batches)
 
+    @with_timeout(60)  # 60 second timeout per repository
     def process_single_repository(self, repo: Dict):
         """Process a single repository to update its star count."""
         repo_id = repo["id"]
@@ -294,7 +374,21 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
         name = repo["name"]
         current_stars = repo.get("num_stars", 0)
 
+        repo_key = f"{owner}/{name}"
+
         self.stats["repos_processed"] += 1
+
+        # Skip repositories that have already been processed or failed in this run
+        if repo_key in self.failed_repos:
+            self.logger.debug(f"Skipping previously failed repository: {repo_key}")
+            return
+
+        if repo_key in self.processed_repos:
+            self.logger.debug(f"Skipping already processed repository: {repo_key}")
+            return
+
+        # Mark as processed
+        self.processed_repos.add(repo_key)
 
         # Fetch current star count from GitHub API
         stars = self.fetch_github_stars(owner, name)
@@ -320,7 +414,7 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
                 url, timeout=5
             )  # Shorter timeout for hourly jobs
 
-            # Handle rate limiting
+            # Handle rate limiting and 403 errors
             if response.status_code == 403:
                 if "rate limit" in response.text.lower():
                     self.handle_rate_limit(response)
@@ -329,7 +423,13 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
                     self.logger.warning(
                         f"GitHub abuse detection triggered for {owner}/{name}"
                     )
-                    time.sleep(10)  # Shorter wait for hourly jobs
+                    time.sleep(5)  # Shorter wait for hourly jobs
+                    return None
+                else:
+                    # Generic 403 error (could be private repo, access denied, etc.)
+                    self.logger.warning(f"Access denied for {owner}/{name}: 403")
+                    self.stats["api_errors"] += 1
+                    self.failed_repos.add(f"{owner}/{name}")  # Mark as failed
                     return None
 
             if response.status_code == 200:
@@ -344,6 +444,11 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
                     f"GitHub API error for {owner}/{name}: {response.status_code}"
                 )
                 self.stats["api_errors"] += 1
+                if response.status_code in [
+                    403,
+                    404,
+                ]:  # Mark persistent errors as failed
+                    self.failed_repos.add(f"{owner}/{name}")
                 return None
 
         except requests.exceptions.Timeout:

@@ -4,6 +4,9 @@
 # This ensures proper environment loading and error handling for CRON execution
 #
 
+# Set PATH for cron environment
+export PATH="/root/.local/bin:$PATH"
+
 # Set working directory
 cd /root/python_projects/paperswithcode
 

@@ -1,0 +1,15 @@
+# PapersWithCode CRON Jobs - Hourly High-Performance Updates
+# RECOMMENDED for production - processes data 33-108x faster than daily jobs
+# All times in UTC
+
+# Daily Hugging Face papers import at 3:00 AM UTC
+0 3 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
+
+# Hourly GitHub stars update (4,500 repos/hour) - RECOMMENDED
+0 * * * * /root/python_projects/paperswithcode/cron/run_github_stars_hourly.sh
+
+# Hourly citation count update (2,800 papers/hour) - RECOMMENDED
+30 * * * * /root/python_projects/paperswithcode/cron/run_citations_hourly.sh
+
+# Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
+0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup

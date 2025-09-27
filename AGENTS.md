@@ -4,7 +4,11 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Project Overview
 
-PapersWithCode.ai is a complete recreation of PapersWithCode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database. The original PapersWithCode data dump (2.2GB papers + 236MB evaluation tables) was used to populate the database, alongside a CRON job which updates the data on a daily basis using the Arxiv API.
+Paperswithcode.ai is a complete recreation of paperswithcode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database.
+
+The data was populated from the papers indexed at huggingface.co/papers, and enriched with the legacy PapersWithCode data dump (2.2GB papers, repository links + 236MB evaluation tables, see the /data folder).
+
+The data is enriched using CRON jobs which can be found at the cron/ folder. This involves things like adding new papers from huggingface.co/papers, updating the Github stars of linked repositories, updating the citation count of papers, and so on.
 
 **Tech Stack**:
 - **Frontend**: React 18 + TypeScript + Vite + shadcn/ui + Tailwind CSS + TanStack Query + React Router v6

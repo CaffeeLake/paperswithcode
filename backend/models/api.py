@@ -285,16 +285,15 @@ class AuthorSummary(BaseModel):
 
 class Repository(BaseModel):
     """
-    GitHub repository linked to a paper.
+    GitHub repository (normalized, without direct paper association).
 
-    Represents a code repository associated with a research paper.
+    Represents a unique code repository that can be associated with multiple papers.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     # Core repository identification
     id: str = Field(..., description="Repository ID")
-    paper_id: str = Field(..., description="Associated paper ID")
 
     # Repository details
     url: str = Field(..., description="Full GitHub repository URL")
@@ -305,7 +304,7 @@ class Repository(BaseModel):
     num_stars: int = Field(default=0, description="Number of GitHub stars")
     is_official: bool = Field(
         default=False,
-        description="Whether this is the official repository by paper authors",
+        description="Whether this repository is generally considered official",
     )
     source: str = Field(
         default="unknown",
@@ -322,10 +321,36 @@ class Repository(BaseModel):
         """Ensure ID is always a string."""
         return str(v)
 
+
+class PaperRepository(BaseModel):
+    """
+    Simple association between a paper and a repository.
+
+    Represents the many-to-many relationship between papers and repositories.
+    All metadata is stored in the Repository table itself.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Relationship identification
+    paper_id: str = Field(..., description="Associated paper ID")
+    repository_id: str = Field(..., description="Associated repository ID")
+
+    # Optional embedded repository data for convenience
+    repository: Optional[Repository] = Field(
+        None, description="Full repository details"
+    )
+
     @field_validator("paper_id", mode="before")
     @classmethod
     def ensure_string_paper_id(cls, v):
         """Ensure paper_id is always a string."""
+        return str(v)
+
+    @field_validator("repository_id", mode="before")
+    @classmethod
+    def ensure_string_repository_id(cls, v):
+        """Ensure repository_id is always a string."""
         return str(v)
 
 
