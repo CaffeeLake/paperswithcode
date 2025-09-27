@@ -11,16 +11,10 @@ Usage:
     python cron/manage_cron.py cleanup
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to Python path for imports
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 import argparse
 from datetime import datetime
+from pathlib import Path
+import sys
 
 from cron.utils.cron_helpers import get_cron_job_status, cleanup_old_logs
 
@@ -153,9 +147,11 @@ def test_job(job_name: str):
 
     # Run the job script
     import subprocess
+    import sys
 
     try:
         # Change to project root directory
+        project_root = Path(__file__).parent.parent
         result = subprocess.run(
             [sys.executable, str(job_script)],
             cwd=project_root,

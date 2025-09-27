@@ -26,13 +26,6 @@ Performance Improvement:
 """
 
 import sys
-from pathlib import Path
-
-# Add project root to Python path for imports
-project_root = Path(__file__).parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
@@ -52,12 +45,15 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
         self.settings = get_settings()
         self.github_token = self.settings.github_token
 
-        # Optimized configuration for hourly runs
+        # Optimized configuration for hourly runs with memory efficiency
         self.batch_size = 100  # Larger batches for efficiency
         self.delay_between_requests = 0.8  # 0.8s = 4,500 req/hour (90% of 5K limit)
         self.delay_between_batches = 2  # Shorter delays between batches
         self.max_repos_per_run = 4500  # Use 90% of hourly API limit
         self.update_threshold_days = 7  # Only update repos older than this
+        self.chunk_size = (
+            500  # Process repositories in smaller chunks to reduce memory usage
+        )
 
         # Statistics
         self.stats = {
@@ -122,24 +118,24 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
                 self.max_repos_per_run, rate_limit_info["remaining"] - 100
             )
 
-        # Get repositories that need updating
-        repositories = self.get_repositories_to_update()
+        # Get total count of repositories that need updating
+        total_repos = self.get_repositories_count()
 
-        if not repositories:
+        if total_repos == 0:
             self.logger.info("No repositories need updating at this time")
             return
 
-        self.logger.info(f"Found {len(repositories)} repositories to update")
+        self.logger.info(f"Found {total_repos} repositories to update")
 
         # Limit the number of repositories per run to respect rate limits
-        if len(repositories) > self.max_repos_per_run:
-            repositories = repositories[: self.max_repos_per_run]
+        repos_to_process = min(total_repos, self.max_repos_per_run)
+        if repos_to_process < total_repos:
             self.logger.info(
-                f"Limited to {self.max_repos_per_run} repositories for this hourly run"
+                f"Limited to {repos_to_process} repositories for this hourly run"
             )
 
-        # Process repositories in batches
-        self.process_repositories_in_batches(repositories)
+        # Process repositories in streaming chunks to reduce memory usage
+        self.process_repositories_in_streaming_chunks(repos_to_process)
 
         # Log summary
         self.log_summary()
@@ -148,11 +144,37 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
         if datetime.now().hour % 6 == 0:  # Only every 6 hours
             self.vacuum_analyze_table("repositories")
 
-    def get_repositories_to_update(self) -> List[Dict]:
-        """Get repositories that need star count updates, prioritizing older updates."""
+    def get_repositories_count(self) -> int:
+        """Get count of repositories that need star count updates."""
         threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
 
-        # Optimized query for hourly processing
+        # Count query for memory-efficient processing
+        count_query = """
+        SELECT COUNT(*)
+        FROM repositories
+        WHERE owner IS NOT NULL
+          AND name IS NOT NULL
+          AND (
+              num_stars_updated_at IS NULL
+              OR num_stars_updated_at < %s
+              OR num_stars IS NULL
+          )
+        """
+
+        try:
+            result = self.execute_query(count_query, (threshold_date,))
+            count = result[0]["count"] if result else 0
+            self.stats["repos_found"] = count
+            return count
+        except Exception as e:
+            self.logger.error(f"Error counting repositories to update: {e}")
+            return 0
+
+    def get_repositories_chunk(self, offset: int, limit: int) -> List[Dict]:
+        """Get a chunk of repositories that need star count updates."""
+        threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
+
+        # Chunk query for streaming processing
         query = """
         SELECT id, owner, name, url, num_stars, num_stars_updated_at
         FROM repositories
@@ -167,46 +189,90 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             CASE WHEN num_stars_updated_at IS NULL THEN 0 ELSE 1 END,  -- NULL first
             num_stars_updated_at ASC NULLS FIRST,                      -- Oldest first
             id ASC                                                     -- Consistent ordering
-        LIMIT %s  -- Pre-limit in database for efficiency
+        LIMIT %s OFFSET %s
         """
 
         try:
-            results = self.execute_query(
-                query, (threshold_date, self.max_repos_per_run * 2)
-            )
-            self.stats["repos_found"] = len(results)
-
-            if len(results) == 0:
-                self.logger.info("No repositories found matching criteria")
-            else:
-                self.logger.info(f"Selected {len(results)} repositories for processing")
-
+            results = self.execute_query(query, (threshold_date, limit, offset))
             return results
         except Exception as e:
-            self.logger.error(f"Error fetching repositories to update: {e}")
+            self.logger.error(
+                f"Error fetching repository chunk (offset={offset}, limit={limit}): {e}"
+            )
             return []
+
+    def process_repositories_in_streaming_chunks(self, total_repos_to_process: int):
+        """Process repositories in streaming chunks to reduce memory usage."""
+        total_chunks = (total_repos_to_process + self.chunk_size - 1) // self.chunk_size
+
+        self.logger.info(
+            f"Processing {total_repos_to_process} repositories in {total_chunks} chunks of {self.chunk_size}"
+        )
+
+        start_time = time.time()
+
+        for chunk_num in range(total_chunks):
+            offset = chunk_num * self.chunk_size
+            limit = min(self.chunk_size, total_repos_to_process - offset)
+
+            self.logger.info(
+                f"Processing chunk {chunk_num + 1}/{total_chunks} (offset={offset}, limit={limit})"
+            )
+
+            # Fetch chunk of repositories
+            chunk_start = time.time()
+            repositories = self.get_repositories_chunk(offset, limit)
+
+            if not repositories:
+                self.logger.warning(f"No repositories found in chunk {chunk_num + 1}")
+                continue
+
+            self.logger.info(
+                f"Fetched {len(repositories)} repositories in chunk {chunk_num + 1}"
+            )
+
+            # Process this chunk in batches
+            self.process_repositories_in_batches(repositories)
+
+            # Log chunk completion and memory efficiency
+            chunk_elapsed = time.time() - chunk_start
+            total_elapsed = time.time() - start_time
+            rate = (
+                self.stats["repos_processed"] / total_elapsed
+                if total_elapsed > 0
+                else 0
+            )
+
+            progress = ((chunk_num + 1) / total_chunks) * 100
+            self.logger.info(
+                f"Chunk {chunk_num + 1}/{total_chunks} completed in {chunk_elapsed:.1f}s - "
+                f"Progress: {progress:.1f}% - "
+                f"Rate: {rate:.1f} repos/sec - "
+                f"Updated: {self.stats['repos_updated']}"
+            )
+
+            # Small delay between chunks to prevent overwhelming the system
+            if chunk_num < total_chunks - 1:
+                time.sleep(1)
 
     def process_repositories_in_batches(self, repositories: List[Dict]):
         """Process repositories in batches with optimized rate limiting."""
         total_batches = (len(repositories) + self.batch_size - 1) // self.batch_size
 
-        self.logger.info(
+        self.logger.debug(
             f"Processing {len(repositories)} repositories in {total_batches} batches"
         )
-
-        start_time = time.time()
 
         for batch_num in range(total_batches):
             start_idx = batch_num * self.batch_size
             end_idx = min(start_idx + self.batch_size, len(repositories))
             batch = repositories[start_idx:end_idx]
 
-            self.logger.info(
+            self.logger.debug(
                 f"Processing batch {batch_num + 1}/{total_batches} ({len(batch)} repos)"
             )
 
             # Process each repository in the batch
-            batch_start = time.time()
             for repo in batch:
                 try:
                     self.process_single_repository(repo)
@@ -220,18 +286,6 @@ class GitHubStarsHourlyUpdateJob(DatabaseCronJob):
             # Minimal delay between batches for hourly optimization
             if batch_num < total_batches - 1:
                 time.sleep(self.delay_between_batches)
-
-            # Log progress with performance metrics
-            progress = ((batch_num + 1) / total_batches) * 100
-            elapsed = time.time() - start_time
-            rate = self.stats["repos_processed"] / elapsed if elapsed > 0 else 0
-
-            self.logger.info(
-                f"Progress: {progress:.1f}% - "
-                f"Updated: {self.stats['repos_updated']}, "
-                f"Rate: {rate:.1f} repos/sec, "
-                f"Errors: {self.stats['api_errors']}"
-            )
 
     def process_single_repository(self, repo: Dict):
         """Process a single repository to update its star count."""

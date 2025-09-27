@@ -26,13 +26,6 @@ Performance Improvement:
 """
 
 import sys
-from pathlib import Path
-
-# Add project root to Python path for imports
-project_root = Path(__file__).parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 import time
 import asyncio
 from datetime import datetime, timedelta
@@ -74,6 +67,7 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         self.max_papers_per_run = 2800  # Use 77% of hourly theoretical limit
         self.request_timeout = 10.0  # Shorter timeout for hourly jobs
         self.update_threshold_days = 30  # Only update papers older than this
+        self.chunk_size = 500  # Process papers in smaller chunks to reduce memory usage
 
         # Statistics
         self.stats = {
@@ -94,24 +88,24 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         """Main execution logic for citation updates."""
         self.logger.info("Starting hourly citation count update")
 
-        # Get papers that need citation updates
-        papers = self.get_papers_to_update()
+        # Get total count of papers that need citation updates
+        total_papers = self.get_papers_count()
 
-        if not papers:
+        if total_papers == 0:
             self.logger.info("No papers need citation updates at this time")
             return
 
-        self.logger.info(f"Found {len(papers)} papers to update")
+        self.logger.info(f"Found {total_papers} papers to update")
 
         # Limit the number of papers per run to respect rate limits
-        if len(papers) > self.max_papers_per_run:
-            papers = papers[: self.max_papers_per_run]
+        papers_to_process = min(total_papers, self.max_papers_per_run)
+        if papers_to_process < total_papers:
             self.logger.info(
-                f"Limited to {self.max_papers_per_run} papers for this hourly run"
+                f"Limited to {papers_to_process} papers for this hourly run"
             )
 
-        # Process papers with optimized rate limiting
-        asyncio.run(self.process_papers_with_rate_limiting(papers))
+        # Process papers in streaming chunks to reduce memory usage
+        asyncio.run(self.process_papers_in_streaming_chunks(papers_to_process))
 
         # Log summary
         self.log_summary()
@@ -120,11 +114,36 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         if datetime.now().hour % 6 == 0:  # Only every 6 hours
             self.vacuum_analyze_table("papers")
 
-    def get_papers_to_update(self) -> List[Dict]:
-        """Get papers that need citation updates, optimized for hourly processing."""
+    def get_papers_count(self) -> int:
+        """Get count of papers that need citation updates."""
         threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
 
-        # Optimized query with pre-limiting for hourly processing
+        # Count query for memory-efficient processing
+        count_query = """
+        SELECT COUNT(*)
+        FROM papers
+        WHERE is_latest_version = true
+          AND arxiv_id IS NOT NULL
+          AND (
+              citation_updated_at IS NULL
+              OR citation_updated_at < %s
+          )
+        """
+
+        try:
+            result = self.execute_query(count_query, (threshold_date,))
+            count = result[0]["count"] if result else 0
+            self.stats["papers_found"] = count
+            return count
+        except Exception as e:
+            self.logger.error(f"Error counting papers to update: {e}")
+            return 0
+
+    def get_papers_chunk(self, offset: int, limit: int) -> List[Dict]:
+        """Get a chunk of papers that need citation updates."""
+        threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
+
+        # Chunk query for streaming processing
         query = """
         SELECT id, arxiv_id, title, citation_count, citation_updated_at, date_published
         FROM papers
@@ -147,28 +166,75 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             -- Within each tier, oldest updates first
             citation_updated_at ASC NULLS FIRST,
             id ASC
-        LIMIT %s  -- Pre-limit in database for efficiency
+        LIMIT %s OFFSET %s
         """
 
         try:
-            results = self.execute_query(
-                query, (threshold_date, self.max_papers_per_run * 2)
-            )
-            self.stats["papers_found"] = len(results)
-
-            if len(results) == 0:
-                self.logger.info("No papers found matching criteria")
-            else:
-                self.logger.info(f"Selected {len(results)} papers for processing")
-
+            results = self.execute_query(query, (threshold_date, limit, offset))
             return results
         except Exception as e:
-            self.logger.error(f"Error fetching papers to update: {e}")
+            self.logger.error(
+                f"Error fetching papers chunk (offset={offset}, limit={limit}): {e}"
+            )
             return []
+
+    async def process_papers_in_streaming_chunks(self, total_papers_to_process: int):
+        """Process papers in streaming chunks to reduce memory usage."""
+        total_chunks = (
+            total_papers_to_process + self.chunk_size - 1
+        ) // self.chunk_size
+
+        self.logger.info(
+            f"Processing {total_papers_to_process} papers in {total_chunks} chunks of {self.chunk_size}"
+        )
+
+        start_time = time.time()
+
+        for chunk_num in range(total_chunks):
+            offset = chunk_num * self.chunk_size
+            limit = min(self.chunk_size, total_papers_to_process - offset)
+
+            self.logger.info(
+                f"Processing chunk {chunk_num + 1}/{total_chunks} (offset={offset}, limit={limit})"
+            )
+
+            # Fetch chunk of papers
+            chunk_start = time.time()
+            papers = self.get_papers_chunk(offset, limit)
+
+            if not papers:
+                self.logger.warning(f"No papers found in chunk {chunk_num + 1}")
+                continue
+
+            self.logger.info(f"Fetched {len(papers)} papers in chunk {chunk_num + 1}")
+
+            # Process this chunk with rate limiting
+            await self.process_papers_with_rate_limiting(papers)
+
+            # Log chunk completion and memory efficiency
+            chunk_elapsed = time.time() - chunk_start
+            total_elapsed = time.time() - start_time
+            rate = (
+                self.stats["papers_processed"] / total_elapsed
+                if total_elapsed > 0
+                else 0
+            )
+
+            progress = ((chunk_num + 1) / total_chunks) * 100
+            self.logger.info(
+                f"Chunk {chunk_num + 1}/{total_chunks} completed in {chunk_elapsed:.1f}s - "
+                f"Progress: {progress:.1f}% - "
+                f"Rate: {rate:.1f} papers/sec - "
+                f"Updated: {self.stats['citations_updated']}"
+            )
+
+            # Small delay between chunks to prevent overwhelming the system
+            if chunk_num < total_chunks - 1:
+                await asyncio.sleep(1)
 
     async def process_papers_with_rate_limiting(self, papers: List[Dict]):
         """Process papers with optimized rate limiting for hourly execution."""
-        self.logger.info(
+        self.logger.debug(
             f"Processing {len(papers)} papers with {self.request_delay}s delays"
         )
 
@@ -183,20 +249,18 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
             # Process papers in batches
             total_batches = (len(papers) + self.batch_size - 1) // self.batch_size
-            start_time = time.time()
 
             for batch_num in range(total_batches):
                 start_idx = batch_num * self.batch_size
                 end_idx = min(start_idx + self.batch_size, len(papers))
                 batch = papers[start_idx:end_idx]
 
-                self.logger.info(
+                self.logger.debug(
                     f"Processing batch {batch_num + 1}/{total_batches} ({len(batch)} papers)"
                 )
 
                 # Process each paper in the batch with rate limiting
                 batch_results = []
-                batch_start = time.time()
 
                 for paper in batch:
                     try:
@@ -216,19 +280,6 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 # Update database with batch results
                 if batch_results:
                     self.update_citations_batch(batch_results)
-
-                # Log progress with performance metrics
-                elapsed = time.time() - start_time
-                rate = self.stats["papers_processed"] / elapsed if elapsed > 0 else 0
-                progress = ((batch_num + 1) / total_batches) * 100
-
-                self.logger.info(
-                    f"Progress: {progress:.1f}% - "
-                    f"Updated: {self.stats['citations_updated']}, "
-                    f"Rate: {rate:.1f} papers/sec, "
-                    f"API calls: {self.stats['api_calls']}, "
-                    f"Errors: {self.stats['api_errors']}"
-                )
 
     async def process_single_paper(self, paper: Dict) -> Optional[CitationResult]:
         """Process a single paper to update its citation count."""

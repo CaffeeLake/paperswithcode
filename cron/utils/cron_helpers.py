@@ -9,14 +9,6 @@ This module provides common functionality for all cron jobs including:
 - Database connection helpers
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to Python path for imports
-project_root = Path(__file__).parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 import logging
 import traceback
 from abc import ABC, abstractmethod
@@ -24,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from pathlib import Path
 
 from backend.config import get_settings
 
@@ -225,11 +218,23 @@ class DatabaseCronJob(CronJobBase):
         """Perform VACUUM ANALYZE on a table."""
         self.logger.info(f"Running VACUUM ANALYZE on {table_name}")
         # VACUUM cannot be run in a transaction, so we need a separate connection
-        with self.get_database_connection() as conn:
+        try:
+            settings = get_settings()
+            conn = psycopg2.connect(
+                host=settings.db_host,
+                port=settings.db_port,
+                database=settings.db_name,
+                user=settings.db_user,
+                password=settings.db_password,
+            )
             conn.autocommit = True
             with conn.cursor() as cursor:
                 cursor.execute(f"VACUUM ANALYZE {table_name}")
-        self.logger.info(f"VACUUM ANALYZE completed for {table_name}")
+            conn.close()
+            self.logger.info(f"VACUUM ANALYZE completed for {table_name}")
+        except Exception as e:
+            self.logger.error(f"VACUUM ANALYZE failed for {table_name}: {e}")
+            # Don't raise the exception - this is optional maintenance
 
 
 def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, Any]:
