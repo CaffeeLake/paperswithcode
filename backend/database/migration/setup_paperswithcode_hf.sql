@@ -125,27 +125,26 @@ CREATE TABLE datasets (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- REPOSITORIES - GitHub repositories linked to papers
+-- REPOSITORIES - GitHub repositories (normalized, no direct paper relationship)
 CREATE TABLE repositories (
     id BIGSERIAL PRIMARY KEY,
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    url VARCHAR(500) NOT NULL,
+    url VARCHAR(500) NOT NULL UNIQUE,       -- Unique repository URL
     owner VARCHAR(255),
     name VARCHAR(255),
     num_stars INTEGER DEFAULT 0,
-    is_official BOOLEAN DEFAULT FALSE,
-    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the repository data
+    num_stars_updated_at TIMESTAMP WITH TIME ZONE, -- For CRON job tracking
+    is_official BOOLEAN DEFAULT FALSE,      -- Generally considered official
+    source VARCHAR(50) DEFAULT 'unknown',  -- Source of the repository data
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- PROJECT_PAGES - Project pages showcasing paper work (demo sites, project websites)
+-- PROJECT_PAGES - Project pages showcasing paper work (normalized without direct paper reference)
 CREATE TABLE project_pages (
     id BIGSERIAL PRIMARY KEY,
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
     url VARCHAR(500) NOT NULL,
-    is_official BOOLEAN DEFAULT FALSE, -- Created by the paper authors
-    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the project page data
+    is_official BOOLEAN DEFAULT FALSE, -- Whether this is an official project page by paper authors
+    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the project page data (pwc_archive, ai_extraction, manual, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -210,6 +209,25 @@ CREATE TABLE paper_datasets (
     PRIMARY KEY (paper_id, dataset_id)
 );
 
+-- PAPER_REPOSITORIES - Junction table for many-to-many relationship between papers and repositories
+CREATE TABLE paper_repositories (
+    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
+    repository_id BIGINT REFERENCES repositories(id) ON DELETE CASCADE,
+    PRIMARY KEY (paper_id, repository_id)
+);
+
+-- PAPER_PROJECT_PAGES - Junction table for many-to-many relationship between papers and project pages
+CREATE TABLE paper_project_pages (
+    paper_id BIGINT NOT NULL,
+    project_page_id BIGINT NOT NULL,
+
+    PRIMARY KEY (paper_id, project_page_id),
+    CONSTRAINT fk_paper_project_pages_paper_id
+        FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+    CONSTRAINT fk_paper_project_pages_project_page_id
+        FOREIGN KEY (project_page_id) REFERENCES project_pages(id) ON DELETE CASCADE
+);
+
 -- Indexes for Performance
 
 -- Papers table indexes
@@ -251,22 +269,31 @@ CREATE INDEX idx_paper_methods_method_id ON paper_methods(method_id);
 CREATE INDEX idx_paper_datasets_paper_id ON paper_datasets(paper_id);
 CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
 
+-- Paper_repositories junction table indexes
+CREATE INDEX idx_paper_repositories_paper_id ON paper_repositories(paper_id);
+CREATE INDEX idx_paper_repositories_repository_id ON paper_repositories(repository_id);
+
+-- Paper_project_pages junction table indexes
+CREATE INDEX idx_paper_project_pages_paper_id ON paper_project_pages(paper_id);
+CREATE INDEX idx_paper_project_pages_project_page_id ON paper_project_pages(project_page_id);
+
 -- Evaluation indexes
 CREATE INDEX idx_evaluations_paper_task_dataset ON evaluations(paper_id, task_id, dataset_id);
 CREATE INDEX idx_evaluations_metrics ON evaluations USING gin(metrics);
 
--- Repository indexes
-CREATE INDEX idx_repositories_paper_id ON repositories(paper_id);
+-- Repository indexes (normalized structure)
 CREATE INDEX idx_repositories_url ON repositories(url);
 CREATE INDEX idx_repositories_stars ON repositories(num_stars DESC);
 CREATE INDEX idx_repositories_owner ON repositories(owner);
 CREATE INDEX idx_repositories_name ON repositories(name);
 CREATE INDEX idx_repositories_source ON repositories(source);
+CREATE INDEX idx_repositories_num_stars_updated_at ON repositories(num_stars_updated_at);
+CREATE UNIQUE INDEX idx_repositories_url_unique ON repositories(url);
 
--- Project page indexes
-CREATE INDEX idx_project_pages_paper_id ON project_pages(paper_id);
+-- Project page indexes (normalized structure)
 CREATE INDEX idx_project_pages_url ON project_pages(url);
 CREATE INDEX idx_project_pages_source ON project_pages(source);
+CREATE INDEX idx_project_pages_is_official ON project_pages(is_official);
 
 -- Create functions and triggers
 
