@@ -66,7 +66,9 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         self.batch_size = 100  # Larger batches for efficiency
         self.max_papers_per_run = 2800  # Use 77% of hourly theoretical limit
         self.request_timeout = 10.0  # Shorter timeout for hourly jobs
-        self.update_threshold_days = 30  # Only update papers older than this
+        self.update_threshold_days = (
+            7  # Only update papers older than this (reduced for more frequent updates)
+        )
         self.chunk_size = 500  # Process papers in smaller chunks to reduce memory usage
 
         # Statistics
@@ -143,9 +145,19 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         """Get a chunk of papers that need citation updates."""
         threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
 
-        # Chunk query for streaming processing
+        # Chunk query for streaming processing with priority information
         query = """
-        SELECT id, arxiv_id, title, citation_count, citation_updated_at, date_published
+        SELECT
+            id,
+            arxiv_id,
+            title,
+            citation_count,
+            citation_updated_at,
+            date_published,
+            -- Priority indicators for logging
+            CASE WHEN citation_updated_at IS NULL THEN 'NEVER_UPDATED'
+                 WHEN citation_count = 0 THEN 'ZERO_CITATIONS'
+                 ELSE 'REFRESH' END as priority_type
         FROM papers
         WHERE is_latest_version = true
           AND arxiv_id IS NOT NULL
@@ -154,8 +166,10 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
               OR citation_updated_at < %s
           )
         ORDER BY
-            -- Prioritize papers never updated
+            -- Prioritize papers never updated (highest priority)
             CASE WHEN citation_updated_at IS NULL THEN 0 ELSE 1 END,
+            -- Then prioritize papers with 0 citations (may have gained citations)
+            CASE WHEN citation_count = 0 THEN 1 ELSE 2 END,
             -- Then prioritize high-citation years (2017-2024)
             CASE
                 WHEN EXTRACT(YEAR FROM date_published) BETWEEN 2019 AND 2022 THEN 1
@@ -289,15 +303,34 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
         self.stats["papers_processed"] += 1
 
+        # Log high-priority papers
+        priority_type = paper.get("priority_type", "UNKNOWN")
+        if priority_type in ["NEVER_UPDATED", "ZERO_CITATIONS"]:
+            self.logger.debug(
+                f"Processing {priority_type} paper: {arxiv_id} (current citations: {paper.get('citation_count', 0)})"
+            )
+
         # Fetch citation data from Semantic Scholar API
         citation_data = await self.fetch_citation_data(arxiv_id, title)
 
         if citation_data:
+            new_citation_count = citation_data.get("citationCount", 0)
+            current_citation_count = paper.get("citation_count", 0)
+
+            # Log significant updates for high-priority papers
+            if (
+                priority_type in ["NEVER_UPDATED", "ZERO_CITATIONS"]
+                and new_citation_count != current_citation_count
+            ):
+                self.logger.info(
+                    f"Updated {priority_type} paper {arxiv_id}: {current_citation_count} → {new_citation_count} citations"
+                )
+
             return CitationResult(
                 paper_id=paper_id,
                 arxiv_id=arxiv_id,
                 title=title,
-                citation_count=citation_data.get("citationCount", 0),
+                citation_count=new_citation_count,
                 semantic_scholar_id=citation_data.get("paperId"),
                 success=True,
             )
