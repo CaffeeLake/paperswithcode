@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
+from backend.utils.verify_url import verify_url
 
 
 class HuggingFaceDailyPapersJob(DatabaseCronJob):
@@ -366,12 +367,12 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
 
             # Link existing repository to paper
             query = """
-            INSERT INTO paper_repositories (paper_id, repository_id)
-            VALUES (%s, %s)
+            INSERT INTO paper_repositories (paper_id, repository_id, is_official)
+            VALUES (%s, %s, %s)
             ON CONFLICT (paper_id, repository_id) DO NOTHING
             """
             try:
-                self.execute_query(query, (paper_id, repo_id))
+                self.execute_query(query, (paper_id, repo_id, True))
                 self.logger.debug(f"Linked existing repository to paper: {github_url}")
             except Exception as e:
                 self.logger.error(
@@ -392,11 +393,11 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
 
                     # Link to paper
                     query = """
-                    INSERT INTO paper_repositories (paper_id, repository_id)
-                    VALUES (%s, %s)
+                    INSERT INTO paper_repositories (paper_id, repository_id, is_official)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT (paper_id, repository_id) DO NOTHING
                     """
-                    self.execute_query(query, (paper_id, repo_id))
+                    self.execute_query(query, (paper_id, repo_id, True))
 
                     self.new_repos_count += 1
                     self.logger.debug(f"Added new repository: {github_url}")
@@ -405,12 +406,13 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
 
     def insert_project_page(self, paper_id: int, project_url: str):
         """Insert project page information using normalized schema with junction table."""
-        if not self.is_valid_url(project_url):
+        # Verify URL asynchronously
+        if not asyncio.run(verify_url(project_url)):
             self.logger.warning(f"Invalid project page URL: {project_url}")
             return
 
-        # Determine if this is an official project page
-        is_official = self.is_official_project_page(project_url)
+        # Project page is always official
+        is_official = True
 
         # Check if project page already exists (by URL)
         query = "SELECT id FROM project_pages WHERE url = %s"
@@ -476,57 +478,6 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
                 parsed.netloc.lower() in ["github.com", "www.github.com"]
                 and len(parsed.path.strip("/").split("/")) >= 2
             )
-        except Exception:
-            return False
-
-    def is_valid_url(self, url: str) -> bool:
-        """Check if URL is valid."""
-        try:
-            parsed = urlparse(url)
-            return parsed.scheme in ["http", "https"] and parsed.netloc
-        except Exception:
-            return False
-
-    def is_official_project_page(self, url: str) -> bool:
-        """Determine if a project page URL is official."""
-        try:
-            parsed = urlparse(url.lower())
-            domain = parsed.netloc.lower()
-
-            # Consider these domains as official project pages
-            official_domains = [
-                "huggingface.co",
-                "www.huggingface.co",
-                "hf.co",
-                "arxiv.org",
-                "www.arxiv.org",
-                "openai.com",
-                "www.openai.com",
-                "deepmind.com",
-                "www.deepmind.com",
-                "ai.google",
-                "research.google.com",
-                "ai.meta.com",
-                "research.fb.com",
-                "microsoft.com",
-                "research.microsoft.com",
-                "anthropic.com",
-                "www.anthropic.com",
-            ]
-
-            # Check if it's from an official domain
-            if any(
-                domain == official_domain or domain.endswith("." + official_domain)
-                for official_domain in official_domains
-            ):
-                return True
-
-            # Check for Hugging Face spaces and models specifically
-            if "huggingface.co" in domain and ("/spaces/" in url or "/models/" in url):
-                return True
-
-            return False
-
         except Exception:
             return False
 
