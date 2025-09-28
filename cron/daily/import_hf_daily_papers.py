@@ -368,6 +368,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             query = """
             INSERT INTO paper_repositories (paper_id, repository_id)
             VALUES (%s, %s)
+            ON CONFLICT (paper_id, repository_id) DO NOTHING
             """
             try:
                 self.execute_query(query, (paper_id, repo_id))
@@ -393,6 +394,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
                     query = """
                     INSERT INTO paper_repositories (paper_id, repository_id)
                     VALUES (%s, %s)
+                    ON CONFLICT (paper_id, repository_id) DO NOTHING
                     """
                     self.execute_query(query, (paper_id, repo_id))
 
@@ -427,6 +429,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             query = """
             INSERT INTO paper_project_pages (paper_id, project_page_id)
             VALUES (%s, %s)
+            ON CONFLICT (paper_id, project_page_id) DO NOTHING
             """
             try:
                 self.execute_query(query, (paper_id, page_id))
@@ -454,6 +457,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
                     query = """
                     INSERT INTO paper_project_pages (paper_id, project_page_id)
                     VALUES (%s, %s)
+                    ON CONFLICT (paper_id, project_page_id) DO NOTHING
                     """
                     self.execute_query(query, (paper_id, page_id))
 

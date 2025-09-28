@@ -58,7 +58,12 @@ def get_next_repository_group() -> Optional[Dict]:
         ARRAY_AGG(id) as repository_ids,
         COUNT(*) as url_count,
         MIN(num_stars_updated_at) as oldest_update,
-        MAX(num_stars) as current_stars
+        MAX(num_stars) as current_stars,
+        -- Priority: 1 = never updated with 0 stars (highest), 2 = needs refresh (lower)
+        CASE
+            WHEN MIN(num_stars_updated_at) IS NULL AND MAX(num_stars) = 0 THEN 1
+            ELSE 2
+        END as priority
     FROM repositories
     WHERE owner IS NOT NULL
       AND name IS NOT NULL
@@ -71,6 +76,11 @@ def get_next_repository_group() -> Optional[Dict]:
       )
     GROUP BY owner, name
     ORDER BY
+        -- Prioritize never-updated repositories with 0 stars first
+        CASE
+            WHEN MIN(num_stars_updated_at) IS NULL AND MAX(num_stars) = 0 THEN 1
+            ELSE 2
+        END ASC,
         MIN(num_stars_updated_at) ASC NULLS FIRST,
         COUNT(*) DESC  -- Process repositories with more URLs first
     LIMIT 1
@@ -219,6 +229,7 @@ def main():
         repository_ids = repo_group["repository_ids"]
         url_count = repo_group["url_count"]
         current_stars = repo_group.get("current_stars", 0)
+        priority = repo_group.get("priority", 2)
 
         # Fetch stars for this unique repository
         stars = fetch_github_stars(owner, name, github_token)
@@ -229,13 +240,14 @@ def main():
             updated_count = update_repository_group_stars(repository_ids, stars)
             updated_repositories += updated_count
 
+            priority_text = "HIGH PRIORITY" if priority == 1 else "refresh"
             if stars != current_stars:
                 log(
-                    f"Updated {owner}/{name} ({url_count} URLs): {current_stars} → {stars} stars"
+                    f"Updated {owner}/{name} ({url_count} URLs, {priority_text}): {current_stars} → {stars} stars"
                 )
             else:
                 log(
-                    f"Confirmed {owner}/{name} ({url_count} URLs): {stars} stars (no change)"
+                    f"Confirmed {owner}/{name} ({url_count} URLs, {priority_text}): {stars} stars (no change)"
                 )
 
         processed_groups += 1
