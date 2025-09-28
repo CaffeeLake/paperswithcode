@@ -2,10 +2,10 @@
 AI-powered batch processor for extracting GitHub URLs and project pages from papers.
 
 This script processes papers to find GitHub repositories and project pages using:
-1. Hybrid processing (fast methods first, AI as fallback)
-2. Semantic caching to avoid redundant API calls
-3. Memory monitoring for 4GB RAM systems
-4. OpenRouterGenerator
+1. AI extraction via OpenRouterGenerator
+2. Memory monitoring for 4GB RAM systems
+3. Database-driven deduplication (no caching needed)
+4. Prioritization of papers missing both GitHub repos and project pages
 
 Logs can be saved at backend/database/logs.
 
@@ -21,13 +21,10 @@ uv run --env-file backend/keys.env -m backend.database.repos_and_pages_setup.bat
 
 import argparse
 import asyncio
+import logging
 import time
-import json
-import hashlib
 import psutil
-from datetime import datetime
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -40,57 +37,8 @@ from backend.genai_steps.extract_github_and_project_page_url import (
 from backend.generators.openrouter_generator import OpenRouterGenerator
 from backend.database.logging_config import setup_logging
 
-# Set up logging
-logger = setup_logging("batch_extract")
-
-
-class SemanticCache:
-    """Simple semantic caching based on content hashing."""
-
-    def __init__(
-        self,
-        cache_file="backend/database/repos_and_pages_setup/cache/ai_extraction_cache.json",
-    ):
-        self.cache_file = Path(cache_file)
-        self.cache = self._load_cache()
-
-    def _load_cache(self) -> Dict:
-        """Load cache from file."""
-        if self.cache_file.exists():
-            try:
-                with open(self.cache_file, "r") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Failed to load cache: {e}")
-        return {}
-
-    def _save_cache(self):
-        """Save cache to file."""
-        try:
-            with open(self.cache_file, "w") as f:
-                json.dump(self.cache, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save cache: {e}")
-
-    def get_cache_key(self, paper_data: Dict) -> str:
-        """Generate cache key based on paper content."""
-        content = f"{paper_data.get('title', '')}\n{paper_data.get('abstract', '')}"
-        return hashlib.md5(content.encode()).hexdigest()
-
-    def get(self, paper_data: Dict) -> Optional[Dict]:
-        """Get cached result."""
-        key = self.get_cache_key(paper_data)
-        return self.cache.get(key)
-
-    def set(self, paper_data: Dict, result: Dict):
-        """Cache result."""
-        key = self.get_cache_key(paper_data)
-        self.cache[key] = {
-            **result,
-            "cached_at": datetime.now().isoformat(),
-            "paper_id": paper_data.get("id"),
-        }
-        self._save_cache()
+# Set up logging with INFO level for clean extraction results
+logger = setup_logging("batch_extract", log_level=logging.INFO)
 
 
 class BatchURLExtractor:
@@ -114,7 +62,6 @@ class BatchURLExtractor:
             requests_per_minute=requests_per_minute, requests_per_day=requests_per_day
         )
 
-        self.cache = SemanticCache()
         self.stats = {
             "papers_processed": 0,
             "papers_with_github": 0,
@@ -123,7 +70,6 @@ class BatchURLExtractor:
             "papers_with_neither": 0,
             "github_skipped_existing": 0,
             "project_page_skipped_existing": 0,
-            "cache_hits": 0,
             "api_errors": 0,
             "start_time": time.time(),
         }
@@ -176,9 +122,11 @@ class BatchURLExtractor:
         # Create start date from year
         start_date = f"{self.start_year}-01-01"
 
-        # Process papers that are missing EITHER GitHub repositories OR project pages
-        # Updated query to work with normalized schema and junction tables
-        # Only select papers that are missing at least one type of URL
+        # REFINED PRIORITIZATION:
+        # 1. Highest: Never processed by AI + has neither GitHub nor project page
+        # 2. Medium: Never processed by AI + has only one type of URL (missing the other)
+        # 3. Lower: Processed by AI but missing URLs (with reprocessing control)
+        # 4. Skip: Has both URLs or was processed by AI with no results found
         query = """
         SELECT DISTINCT
             p.id,
@@ -187,7 +135,31 @@ class BatchURLExtractor:
             p.abstract,
             p.date_published,
             CASE WHEN repo_count.count > 0 THEN 1 ELSE 0 END as has_github_repo,
-            CASE WHEN page_count.count > 0 THEN 1 ELSE 0 END as has_project_page
+            CASE WHEN page_count.count > 0 THEN 1 ELSE 0 END as has_project_page,
+            -- Check if paper has been processed by AI extraction (found URLs)
+            CASE WHEN ai_repo_count.count > 0 OR ai_page_count.count > 0 THEN 1 ELSE 0 END as processed_by_ai_with_results,
+            -- Check if paper was processed by AI but no URLs found (avoid reprocessing)
+            CASE WHEN ai_no_results.paper_id IS NOT NULL THEN 1 ELSE 0 END as processed_by_ai_no_results,
+            -- Refined priority system
+            CASE
+                -- Priority 0: Never processed by AI + has neither GitHub nor project page (HIGHEST)
+                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
+                     AND (repo_count.count IS NULL OR repo_count.count = 0)
+                     AND (page_count.count IS NULL OR page_count.count = 0) THEN 0
+
+                -- Priority 1: Never processed by AI + has only one type of URL (MEDIUM)
+                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
+                     AND ((repo_count.count > 0 AND (page_count.count IS NULL OR page_count.count = 0))
+                          OR (page_count.count > 0 AND (repo_count.count IS NULL OR repo_count.count = 0))) THEN 1
+
+                -- Priority 2: Processed by AI with results but missing one type of URL (LOWER)
+                WHEN (ai_repo_count.count > 0 OR ai_page_count.count > 0)
+                     AND ((repo_count.count IS NULL OR repo_count.count = 0)
+                          OR (page_count.count IS NULL OR page_count.count = 0)) THEN 2
+
+                -- Priority 999: Skip - has both URLs or was processed with no results
+                ELSE 999
+            END as priority
         FROM papers p
         LEFT JOIN (
             SELECT pr.paper_id, COUNT(*) as count
@@ -199,6 +171,31 @@ class BatchURLExtractor:
             FROM paper_project_pages ppp
             GROUP BY ppp.paper_id
         ) page_count ON p.id = page_count.paper_id
+        LEFT JOIN (
+            -- Count AI-extracted repositories for this paper
+            SELECT pr.paper_id, COUNT(*) as count
+            FROM paper_repositories pr
+            JOIN repositories r ON pr.repository_id = r.id
+            WHERE r.source = 'ai_extraction'
+            GROUP BY pr.paper_id
+        ) ai_repo_count ON p.id = ai_repo_count.paper_id
+        LEFT JOIN (
+            -- Count AI-extracted project pages for this paper
+            SELECT ppp.paper_id, COUNT(*) as count
+            FROM paper_project_pages ppp
+            JOIN project_pages pp ON ppp.project_page_id = pp.id
+            WHERE pp.source = 'ai_extraction'
+            GROUP BY ppp.paper_id
+        ) ai_page_count ON p.id = ai_page_count.paper_id
+        LEFT JOIN (
+            -- Track papers processed by AI with no results (to avoid reprocessing)
+            -- Use a dedicated marker: empty repository with special URL pattern
+            SELECT DISTINCT pr.paper_id
+            FROM paper_repositories pr
+            JOIN repositories r ON pr.repository_id = r.id
+            WHERE r.source = 'ai_extraction'
+              AND r.url = 'AI_PROCESSED_NO_RESULTS'
+        ) ai_no_results ON p.id = ai_no_results.paper_id
         WHERE p.abstract IS NOT NULL
           AND p.abstract != ''
           AND p.arxiv_id IS NOT NULL
@@ -206,10 +203,29 @@ class BatchURLExtractor:
           AND LENGTH(p.abstract) > 100
           AND p.date_published >= :start_date
           AND (
-              repo_count.count IS NULL OR repo_count.count = 0 OR
-              page_count.count IS NULL OR page_count.count = 0
+              -- Only include papers with priority 0, 1, or 2 (skip priority 999)
+              CASE
+                -- Priority 0: Never processed + has neither URL
+                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
+                     AND (repo_count.count IS NULL OR repo_count.count = 0)
+                     AND (page_count.count IS NULL OR page_count.count = 0) THEN 0
+
+                -- Priority 1: Never processed + has only one URL
+                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
+                     AND ((repo_count.count > 0 AND (page_count.count IS NULL OR page_count.count = 0))
+                          OR (page_count.count > 0 AND (repo_count.count IS NULL OR repo_count.count = 0))) THEN 1
+
+                -- Priority 2: Processed with results but missing one URL
+                WHEN (ai_repo_count.count > 0 OR ai_page_count.count > 0)
+                     AND ((repo_count.count IS NULL OR repo_count.count = 0)
+                          OR (page_count.count IS NULL OR page_count.count = 0)) THEN 2
+
+                ELSE 999
+              END <= 2
           )
         ORDER BY
+            -- Prioritize by refined priority system
+            priority,
             p.date_published DESC NULLS LAST,
             p.id DESC
         """
@@ -219,7 +235,7 @@ class BatchURLExtractor:
 
         result = db.execute(text(query), {"start_date": start_date}).fetchall()
 
-        return [
+        papers = [
             {
                 "id": row.id,
                 "arxiv_id": row.arxiv_id,
@@ -227,9 +243,45 @@ class BatchURLExtractor:
                 "abstract": row.abstract,
                 "has_github_repo": bool(row.has_github_repo),
                 "has_project_page": bool(row.has_project_page),
+                "processed_by_ai_with_results": bool(row.processed_by_ai_with_results),
+                "processed_by_ai_no_results": bool(row.processed_by_ai_no_results),
+                "priority": row.priority,
             }
             for row in result
         ]
+
+        # Log sample of papers being processed
+        if papers:
+            logger.info("📋 Sample of papers to process:")
+            for i, paper in enumerate(papers[:3]):  # Log first 3 papers
+                # Determine AI processing status
+                if paper["processed_by_ai_with_results"]:
+                    ai_status = "✅ Processed by AI (found URLs)"
+                elif paper["processed_by_ai_no_results"]:
+                    ai_status = "🔄 Processed by AI (no URLs found)"
+                else:
+                    ai_status = "🆕 Never processed by AI"
+
+                # Priority descriptions
+                priority_desc = {
+                    0: "🔥 Highest (never processed + no URLs)",
+                    1: "⚡ Medium (never processed + partial URLs)",
+                    2: "🔽 Lower (processed but missing URLs)",
+                }
+
+                logger.info(
+                    f"  {i + 1}. {paper['arxiv_id']} - {paper['title'][:100]}..."
+                )
+                logger.info(
+                    f"     Has GitHub: {paper['has_github_repo']}, Has Project: {paper['has_project_page']}"
+                )
+                logger.info(f"     AI Status: {ai_status}")
+                logger.info(
+                    f"     Priority: {priority_desc.get(paper['priority'], f'Unknown ({paper["priority"]})')}"
+                )
+                logger.info(f"     Abstract length: {len(paper['abstract'])} chars")
+
+        return papers
 
     def save_results_to_db(
         self,
@@ -241,8 +293,8 @@ class BatchURLExtractor:
     ) -> None:
         """Save extracted URLs to the database with proper source tracking."""
         if self.dry_run:
-            logger.debug(
-                f"[DRY RUN] Would save for paper {paper_id}: GitHub={github_url}, Project={project_page_url}"
+            logger.info(
+                f"[DRY RUN] Paper {paper_id}: Would save GitHub={github_url}, Project={project_page_url}"
             )
             return
 
@@ -261,9 +313,7 @@ class BatchURLExtractor:
                 ).fetchone()
 
                 if repo_count_result and repo_count_result.repo_count > 0:
-                    logger.debug(
-                        f"📦 Paper {paper_id} already has {repo_count_result.repo_count} GitHub repository(ies), skipping"
-                    )
+                    pass  # Already has repo, will be handled by skip logic
                 else:
                     # First insert into repositories table (normalized - no paper_id)
                     repo_insert = """
@@ -289,7 +339,7 @@ class BatchURLExtractor:
                             text(junction_insert),
                             {"paper_id": paper_id, "repository_id": repo_id},
                         )
-                        logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
+                        logger.info(f"💾 Saved GitHub repo: {github_url}")
 
             # Insert project page if found and paper doesn't already have one
             if project_page_url and project_page_url.strip():
@@ -304,9 +354,7 @@ class BatchURLExtractor:
                 ).fetchone()
 
                 if page_count_result and page_count_result.page_count > 0:
-                    logger.debug(
-                        f"🌐 Paper {paper_id} already has {page_count_result.page_count} project page(s), skipping"
-                    )
+                    pass  # Already has project page, will be handled by skip logic
                 else:
                     # Check if project page already exists (no unique constraint, so we need to check manually)
                     existing_page_query = """
@@ -343,9 +391,37 @@ class BatchURLExtractor:
                             text(junction_insert),
                             {"paper_id": paper_id, "project_page_id": page_id},
                         )
-                        logger.debug(
-                            f"🌐 Added project page ({source}): {project_page_url}"
-                        )
+                        logger.info(f"💾 Saved project page: {project_page_url}")
+
+            # If no URLs were found, create a marker to avoid reprocessing
+            if not github_url and not project_page_url:
+                # Insert a special marker to indicate this paper was processed but no URLs found
+                marker_insert = """
+                INSERT INTO repositories (url, source, created_at, updated_at)
+                VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+                """
+                result = db.execute(
+                    text(marker_insert),
+                    {"url": "AI_PROCESSED_NO_RESULTS", "source": source},
+                ).fetchone()
+
+                if result:
+                    marker_id = result.id
+                    # Link this marker to the paper
+                    junction_insert = """
+                    INSERT INTO paper_repositories (paper_id, repository_id)
+                    VALUES (:paper_id, :repository_id)
+                    ON CONFLICT DO NOTHING
+                    """
+                    db.execute(
+                        text(junction_insert),
+                        {"paper_id": paper_id, "repository_id": marker_id},
+                    )
+                    logger.info(
+                        f"🔄 Marked paper {paper_id} as processed with no URLs found"
+                    )
 
             db.commit()
 
@@ -362,57 +438,56 @@ class BatchURLExtractor:
         abstract = paper["abstract"]
 
         try:
-            # Check cache first
-            cached_result = self.cache.get(paper)
-            if cached_result:
-                logger.debug(f"📋 Cache hit for {arxiv_id}")
-                self.stats["cache_hits"] += 1
-                github_url = cached_result.get("github_url", "")
-                project_page_url = cached_result.get("project_page_url", "")
-            else:
-                try:
-                    reasoning, response = await get_project_github_urls(
-                        arxiv_id=arxiv_id,
-                        session_id=None,
-                        use_reasoning=True,
-                        abstract=abstract,
-                    )
+            # Call AI extraction directly - no caching needed since database handles deduplication
+            try:
+                logger.info(
+                    f"🤖 Starting AI extraction for {arxiv_id}: {paper.get('title', 'N/A')[:80]}..."
+                )
 
-                    github_url = response.get("github_url", "") if response else ""
-                    project_page_url = (
-                        response.get("project_page_url", "") if response else ""
-                    )
+                reasoning, response = await get_project_github_urls(
+                    arxiv_id=arxiv_id,
+                    session_id=None,
+                    use_reasoning=True,
+                    abstract=abstract,
+                )
 
-                except Exception as e:
-                    logger.error(
-                        f"❌ Error calling get_project_github_urls for {arxiv_id}: {e}"
-                    )
-                    self.stats["api_errors"] += 1
-                    github_url = ""
-                    project_page_url = ""
+                github_url = response.get("github_url", "") if response else ""
+                project_page_url = (
+                    response.get("project_page_url", "") if response else ""
+                )
 
-                # Cache the result
-                result_to_cache = {
-                    "github_url": github_url,
-                    "project_page_url": project_page_url,
-                }
-                self.cache.set(paper, result_to_cache)
+                # Log concise results
+                github_status = f"✅ {github_url}" if github_url else "❌ None"
+                project_status = (
+                    f"✅ {project_page_url}" if project_page_url else "❌ None"
+                )
+                logger.info(
+                    f"🔗 {arxiv_id}: GitHub={github_status}, Project={project_status}"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"❌ Error calling get_project_github_urls for {arxiv_id}: {e}"
+                )
+                self.stats["api_errors"] += 1
+                github_url = ""
+                project_page_url = ""
 
             # Only process URLs for papers that don't already have them
             final_github_url = github_url if not has_github_repo else ""
             final_project_page_url = project_page_url if not has_project_page else ""
 
-            # Log what we're skipping vs processing and update stats
+            # Track what we're skipping and update stats
             skip_reasons = []
             if has_github_repo and github_url:
-                skip_reasons.append("GitHub (already has repo)")
+                skip_reasons.append("GitHub (already exists)")
                 self.stats["github_skipped_existing"] += 1
             if has_project_page and project_page_url:
-                skip_reasons.append("Project page (already has page)")
+                skip_reasons.append("Project page (already exists)")
                 self.stats["project_page_skipped_existing"] += 1
 
             if skip_reasons:
-                logger.debug(f"🔄 Paper {arxiv_id}: Skipping {', '.join(skip_reasons)}")
+                logger.info(f"⏭️  {arxiv_id}: Skipped {', '.join(skip_reasons)}")
 
             # Save results with appropriate source
             source = "ai_extraction"
@@ -436,8 +511,19 @@ class BatchURLExtractor:
             if not final_github_url and not project_page_url:
                 self.stats["papers_with_neither"] += 1
 
+            # Final status summary
+            github_final = (
+                "✅ Saved"
+                if final_github_url
+                else ("⏭️ Skipped" if has_github_repo else "❌ None")
+            )
+            project_final = (
+                "✅ Saved"
+                if final_project_page_url
+                else ("⏭️ Skipped" if has_project_page else "❌ None")
+            )
             logger.info(
-                f"✅ Completed {arxiv_id}: GitHub={'✓' if final_github_url else '✗'}, Project={'✓' if project_page_url else '✗'}"
+                f"✅ {arxiv_id}: GitHub={github_final}, Project={project_final}"
             )
 
             return {
@@ -505,9 +591,6 @@ class BatchURLExtractor:
         print(f"📄 Papers Processed: {self.stats['papers_processed']}")
 
         if self.stats["papers_processed"] > 0:
-            print(
-                f"📋 Cache Hits: {self.stats['cache_hits']} ({self.stats['cache_hits'] / self.stats['papers_processed'] * 100:.1f}%)"
-            )
             print(
                 f"🔗 Papers with GitHub: {self.stats['papers_with_github']} ({self.stats['papers_with_github'] / self.stats['papers_processed'] * 100:.1f}%)"
             )

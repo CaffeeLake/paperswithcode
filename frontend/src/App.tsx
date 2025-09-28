@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import Index from "./pages/Index";
 import Papers from "./pages/Papers";
 import PaperDetail from "./pages/PaperDetail";
@@ -14,6 +14,12 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
+// Redirect component for /papers/:arxivId to /paper/:arxivId
+const PapersRedirect = () => {
+  const { arxivId } = useParams<{ arxivId: string }>();
+  return <Navigate to={`/paper/${arxivId}`} replace />;
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -23,6 +29,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/papers" element={<Papers />} />
+          <Route path="/papers/:arxivId" element={<PapersRedirect />} />
           <Route path="/paper/:arxivId" element={<PaperDetail />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
