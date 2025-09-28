@@ -121,6 +121,8 @@ class BatchURLExtractor:
             "papers_with_project_page": 0,
             "papers_with_both": 0,
             "papers_with_neither": 0,
+            "github_skipped_existing": 0,
+            "project_page_skipped_existing": 0,
             "cache_hits": 0,
             "api_errors": 0,
             "start_time": time.time(),
@@ -174,8 +176,9 @@ class BatchURLExtractor:
         # Create start date from year
         start_date = f"{self.start_year}-01-01"
 
-        # Process all papers that are missing GitHub repositories or project pages
+        # Process papers that are missing EITHER GitHub repositories OR project pages
         # Updated query to work with normalized schema and junction tables
+        # Only select papers that are missing at least one type of URL
         query = """
         SELECT DISTINCT
             p.id,
@@ -183,19 +186,29 @@ class BatchURLExtractor:
             p.title,
             p.abstract,
             p.date_published,
-            CASE WHEN r.url IS NOT NULL THEN r.url ELSE NULL END as existing_github_url,
-            CASE WHEN ppp.paper_id IS NOT NULL THEN 1 ELSE 0 END as has_project_page
+            CASE WHEN repo_count.count > 0 THEN 1 ELSE 0 END as has_github_repo,
+            CASE WHEN page_count.count > 0 THEN 1 ELSE 0 END as has_project_page
         FROM papers p
-        LEFT JOIN paper_repositories pr ON p.id = pr.paper_id
-        LEFT JOIN repositories r ON pr.repository_id = r.id
-        LEFT JOIN paper_project_pages ppp ON p.id = ppp.paper_id
+        LEFT JOIN (
+            SELECT pr.paper_id, COUNT(*) as count
+            FROM paper_repositories pr
+            GROUP BY pr.paper_id
+        ) repo_count ON p.id = repo_count.paper_id
+        LEFT JOIN (
+            SELECT ppp.paper_id, COUNT(*) as count
+            FROM paper_project_pages ppp
+            GROUP BY ppp.paper_id
+        ) page_count ON p.id = page_count.paper_id
         WHERE p.abstract IS NOT NULL
           AND p.abstract != ''
           AND p.arxiv_id IS NOT NULL
           AND p.arxiv_id != ''
           AND LENGTH(p.abstract) > 100
-          AND (pr.paper_id IS NULL OR ppp.paper_id IS NULL)
           AND p.date_published >= :start_date
+          AND (
+              repo_count.count IS NULL OR repo_count.count = 0 OR
+              page_count.count IS NULL OR page_count.count = 0
+          )
         ORDER BY
             p.date_published DESC NULLS LAST,
             p.id DESC
@@ -212,7 +225,7 @@ class BatchURLExtractor:
                 "arxiv_id": row.arxiv_id,
                 "title": row.title,
                 "abstract": row.abstract,
-                "existing_github_url": row.existing_github_url,
+                "has_github_repo": bool(row.has_github_repo),
                 "has_project_page": bool(row.has_project_page),
             }
             for row in result
@@ -225,7 +238,6 @@ class BatchURLExtractor:
         github_url: str,
         project_page_url: str,
         source: str = "ai_extraction",
-        existing_github_url: Optional[str] = None,
     ) -> None:
         """Save extracted URLs to the database with proper source tracking."""
         if self.dry_run:
@@ -235,74 +247,105 @@ class BatchURLExtractor:
             return
 
         try:
-            # Insert GitHub repository if found and not already exists
-            if github_url and github_url.strip() and not existing_github_url:
-                # First insert into repositories table (normalized - no paper_id)
-                repo_insert = """
-                INSERT INTO repositories (url, source, created_at, updated_at)
-                VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                RETURNING id
+            # Insert GitHub repository if found and paper doesn't already have one
+            if github_url and github_url.strip():
+                # Check if paper already has ANY GitHub repository
+                existing_repo_check = """
+                SELECT COUNT(*) as repo_count
+                FROM paper_repositories pr
+                JOIN repositories r ON pr.repository_id = r.id
+                WHERE pr.paper_id = :paper_id
                 """
-                result = db.execute(
-                    text(repo_insert),
-                    {"url": github_url.strip(), "source": source},
+                repo_count_result = db.execute(
+                    text(existing_repo_check), {"paper_id": paper_id}
                 ).fetchone()
 
-                if result:
-                    repo_id = result.id
-                    # Then insert into junction table (only foreign keys)
-                    junction_insert = """
-                    INSERT INTO paper_repositories (paper_id, repository_id)
-                    VALUES (:paper_id, :repository_id)
-                    ON CONFLICT DO NOTHING
-                    """
-                    db.execute(
-                        text(junction_insert),
-                        {"paper_id": paper_id, "repository_id": repo_id},
+                if repo_count_result and repo_count_result.repo_count > 0:
+                    logger.debug(
+                        f"📦 Paper {paper_id} already has {repo_count_result.repo_count} GitHub repository(ies), skipping"
                     )
-                    logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
-
-            # Insert project page if found
-            if project_page_url and project_page_url.strip():
-                # Check if project page already exists (no unique constraint, so we need to check manually)
-                existing_page_query = """
-                SELECT id FROM project_pages WHERE url = :url LIMIT 1
-                """
-                existing_page = db.execute(
-                    text(existing_page_query),
-                    {"url": project_page_url.strip()},
-                ).fetchone()
-
-                if existing_page:
-                    page_id = existing_page.id
                 else:
-                    # Insert new project page
-                    page_insert = """
-                    INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
-                    VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    # First insert into repositories table (normalized - no paper_id)
+                    repo_insert = """
+                    INSERT INTO repositories (url, source, created_at, updated_at)
+                    VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                     RETURNING id
                     """
                     result = db.execute(
-                        text(page_insert),
-                        {"url": project_page_url.strip(), "source": source},
+                        text(repo_insert),
+                        {"url": github_url.strip(), "source": source},
                     ).fetchone()
-                    page_id = result.id if result else None
 
-                if page_id:
-                    # Then insert into junction table (only foreign keys)
-                    junction_insert = """
-                    INSERT INTO paper_project_pages (paper_id, project_page_id)
-                    VALUES (:paper_id, :project_page_id)
-                    ON CONFLICT DO NOTHING
-                    """
-                    db.execute(
-                        text(junction_insert),
-                        {"paper_id": paper_id, "project_page_id": page_id},
-                    )
+                    if result:
+                        repo_id = result.id
+                        # Then insert into junction table (only foreign keys)
+                        junction_insert = """
+                        INSERT INTO paper_repositories (paper_id, repository_id)
+                        VALUES (:paper_id, :repository_id)
+                        ON CONFLICT DO NOTHING
+                        """
+                        db.execute(
+                            text(junction_insert),
+                            {"paper_id": paper_id, "repository_id": repo_id},
+                        )
+                        logger.debug(f"📦 Added GitHub repo ({source}): {github_url}")
+
+            # Insert project page if found and paper doesn't already have one
+            if project_page_url and project_page_url.strip():
+                # Check if paper already has ANY project page
+                existing_project_check = """
+                SELECT COUNT(*) as page_count
+                FROM paper_project_pages
+                WHERE paper_id = :paper_id
+                """
+                page_count_result = db.execute(
+                    text(existing_project_check), {"paper_id": paper_id}
+                ).fetchone()
+
+                if page_count_result and page_count_result.page_count > 0:
                     logger.debug(
-                        f"🌐 Added project page ({source}): {project_page_url}"
+                        f"🌐 Paper {paper_id} already has {page_count_result.page_count} project page(s), skipping"
                     )
+                else:
+                    # Check if project page already exists (no unique constraint, so we need to check manually)
+                    existing_page_query = """
+                    SELECT id FROM project_pages WHERE url = :url LIMIT 1
+                    """
+                    existing_page = db.execute(
+                        text(existing_page_query),
+                        {"url": project_page_url.strip()},
+                    ).fetchone()
+
+                    if existing_page:
+                        page_id = existing_page.id
+                    else:
+                        # Insert new project page
+                        page_insert = """
+                        INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
+                        VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id
+                        """
+                        result = db.execute(
+                            text(page_insert),
+                            {"url": project_page_url.strip(), "source": source},
+                        ).fetchone()
+                        page_id = result.id if result else None
+
+                    if page_id:
+                        # Then insert into junction table (only foreign keys)
+                        junction_insert = """
+                        INSERT INTO paper_project_pages (paper_id, project_page_id)
+                        VALUES (:paper_id, :project_page_id)
+                        ON CONFLICT DO NOTHING
+                        """
+                        db.execute(
+                            text(junction_insert),
+                            {"paper_id": paper_id, "project_page_id": page_id},
+                        )
+                        logger.debug(
+                            f"🌐 Added project page ({source}): {project_page_url}"
+                        )
 
             db.commit()
 
@@ -314,7 +357,8 @@ class BatchURLExtractor:
         """Process a single paper using the unified get_project_github_urls function."""
         arxiv_id = paper["arxiv_id"]
         paper_id = paper["id"]
-        existing_github_url = paper.get("existing_github_url")
+        has_github_repo = paper.get("has_github_repo", False)
+        has_project_page = paper.get("has_project_page", False)
         abstract = paper["abstract"]
 
         try:
@@ -354,8 +398,21 @@ class BatchURLExtractor:
                 }
                 self.cache.set(paper, result_to_cache)
 
-            # Use existing GitHub URL if available
-            final_github_url = existing_github_url or github_url
+            # Only process URLs for papers that don't already have them
+            final_github_url = github_url if not has_github_repo else ""
+            final_project_page_url = project_page_url if not has_project_page else ""
+
+            # Log what we're skipping vs processing and update stats
+            skip_reasons = []
+            if has_github_repo and github_url:
+                skip_reasons.append("GitHub (already has repo)")
+                self.stats["github_skipped_existing"] += 1
+            if has_project_page and project_page_url:
+                skip_reasons.append("Project page (already has page)")
+                self.stats["project_page_skipped_existing"] += 1
+
+            if skip_reasons:
+                logger.debug(f"🔄 Paper {arxiv_id}: Skipping {', '.join(skip_reasons)}")
 
             # Save results with appropriate source
             source = "ai_extraction"
@@ -364,9 +421,8 @@ class BatchURLExtractor:
                 db,
                 paper_id,
                 final_github_url,
-                project_page_url,
+                final_project_page_url,
                 source,
-                existing_github_url,
             )
 
             # Update stats
@@ -398,7 +454,7 @@ class BatchURLExtractor:
             return {
                 "paper_id": paper_id,
                 "arxiv_id": arxiv_id,
-                "github_url": existing_github_url or "",
+                "github_url": "",
                 "project_page_url": "",
                 "error": str(e),
                 "success": False,
@@ -466,6 +522,12 @@ class BatchURLExtractor:
             )
 
         print(f"⚠️  API Errors: {self.stats['api_errors']}")
+        print(
+            f"⏭️  GitHub URLs Skipped (existing): {self.stats['github_skipped_existing']}"
+        )
+        print(
+            f"⏭️  Project Pages Skipped (existing): {self.stats['project_page_skipped_existing']}"
+        )
 
         # Memory information
         print(
