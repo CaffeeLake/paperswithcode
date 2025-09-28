@@ -77,8 +77,10 @@ export function PaperSearch() {
     }
   };
 
-  const handleResultClick = (paperId: string) => {
-    navigate(`/paper/${paperId}`);
+  const handleResultClick = (paper: PaperSummary) => {
+    // Use arxiv_id if available, otherwise fall back to id
+    const urlParam = paper.arxiv_id || paper.id;
+    navigate(`/paper/${urlParam}`);
     setShowResults(false);
     setQuery("");
   };
@@ -117,7 +119,7 @@ export function PaperSearch() {
               {results.map((paper) => (
                 <button
                   key={paper.id}
-                  onClick={() => handleResultClick(paper.id)}
+                  onClick={() => handleResultClick(paper)}
                   className="w-full p-3 text-left hover:bg-muted/50 border-b border-border last:border-b-0 transition-colors"
                 >
                   <div className="font-medium text-sm line-clamp-2 mb-1">

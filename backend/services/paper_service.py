@@ -201,7 +201,10 @@ class PaperService:
             raise DatabaseError(f"Error fetching paper {paper_id}: {str(e)}")
 
     def get_paper_by_arxiv_id(
-        self, arxiv_id: str, version: Optional[str] = None
+        self,
+        arxiv_id: str,
+        version: Optional[str] = None,
+        include_resources: bool = False,
     ) -> Paper:
         """
         Get a paper by ArXiv ID and optional version.
@@ -209,6 +212,7 @@ class PaperService:
         Args:
             arxiv_id: ArXiv ID
             version: Specific version (if None, gets latest version)
+            include_resources: Whether to include repositories and project pages
 
         Returns:
             API Paper model
@@ -233,7 +237,9 @@ class PaperService:
                     f"Paper with ArXiv ID {arxiv_id}{version_text} not found"
                 )
 
-            return self._convert_db_paper_to_api(db_paper)
+            return self._convert_db_paper_to_api(
+                db_paper, include_resources=include_resources
+            )
 
         except Exception as e:
             if isinstance(e, PaperNotFoundError):

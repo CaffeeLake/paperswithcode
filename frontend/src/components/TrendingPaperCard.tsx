@@ -66,7 +66,7 @@ const TrendingPaperCard = ({
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <Link to={`/paper/${id}`} className="block group">
+        <Link to={`/paper/${arxivId || id}`} className="block group">
           <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors mb-2">
             {title}
           </h3>

@@ -11,9 +11,16 @@ interface PaperResourcesProps {
 const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
-  // Ensure repositories is always an array and filter to show only official repositories
+  // Ensure repositories is always an array and filter to show official and high-quality repositories
   const safeRepositories = repositories || [];
-  const officialRepositories = safeRepositories.filter(repo => repo.is_official);
+  const displayRepositories = safeRepositories.filter(repo =>
+    repo.is_official || repo.num_stars >= 100
+  ).sort((a, b) => {
+    // Sort by official status first, then by stars
+    if (a.is_official && !b.is_official) return -1;
+    if (!a.is_official && b.is_official) return 1;
+    return b.num_stars - a.num_stars;
+  });
 
   const formatStars = (stars: number) => {
     if (stars >= 1000) {
@@ -23,6 +30,27 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
   };
 
   const getRepositoryDisplayName = (repo: Repository) => {
+    // Check if there are multiple repositories with the same owner/name
+    const sameOwnerRepos = displayRepositories.filter(r =>
+      r.owner === repo.owner && r.name === repo.name
+    );
+
+    // If there are multiple repos from the same owner/name, show the full URL path
+    if (sameOwnerRepos.length > 1) {
+      // For GitHub URLs with subdirectories, show the path after the repo name
+      const match = repo.url.match(/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/master\/(.+))?/);
+      if (match) {
+        const [, owner, name, subPath] = match;
+        if (subPath) {
+          return `${owner}/${name}/${subPath}`;
+        }
+        return `${owner}/${name}`;
+      }
+      // Fallback to full URL if pattern doesn't match
+      return repo.url;
+    }
+
+    // For single repositories, use the standard owner/name format
     if (repo.owner && repo.name) {
       return `${repo.owner}/${repo.name}`;
     }
@@ -44,14 +72,14 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
             <Github className="w-5 h-5" />
             <span>Code</span>
             <Badge variant="secondary" className="ml-2">
-              {officialRepositories.length}
+              {displayRepositories.length}
             </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {officialRepositories.length > 0 ? (
+          {displayRepositories.length > 0 ? (
             <>
-              {(showAllRepositories ? officialRepositories : officialRepositories.slice(0, 5)).map((repo) => (
+              {(showAllRepositories ? displayRepositories : displayRepositories.slice(0, 5)).map((repo) => (
                 <div key={repo.id} className="flex items-center justify-between p-2 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors">
                   <div className="flex items-center space-x-3 flex-1 min-w-0">
                     <Github className="w-4 h-4 text-muted-foreground flex-shrink-0" />
@@ -87,7 +115,7 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
                   </div>
                 </div>
               ))}
-              {officialRepositories.length > 5 && (
+              {displayRepositories.length > 5 && (
                 <div className="text-center pt-2">
                   <button
                     onClick={() => setShowAllRepositories(!showAllRepositories)}
@@ -95,7 +123,7 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
                   >
                     {showAllRepositories
                       ? `Show less`
-                      : `See all ${officialRepositories.length} implementations`
+                      : `See all ${displayRepositories.length} implementations`
                     }
                   </button>
                 </div>
@@ -104,7 +132,7 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
           ) : (
             <div className="text-center py-4 text-muted-foreground">
               <Github className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-xs">No official code implementations available</p>
+              <p className="text-xs">No code implementations available</p>
             </div>
           )}
         </CardContent>

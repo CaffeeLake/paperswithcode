@@ -6,13 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
-import { usePaper } from "@/hooks/usePapers";
+import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import PaperResources from "@/components/PaperResources";
 
 const PaperDetail = () => {
-  const { id } = useParams<{ id: string }>();
-  const { data: paper, isLoading, error } = usePaper(id || "", !!id);
+  const { arxivId } = useParams<{ arxivId: string }>();
+  const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
   const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(paper?.arxiv_id);
 
   // Generate colors for authors (similar to the original hardcoded approach)

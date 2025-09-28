@@ -21,7 +21,7 @@ const taskData = {
         dataset: "COCO test-dev",
         bestModel: "Cascade Eff-B7 NAS-FPN (1280, self-training Copy Paste, single-scale)",
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
-        paperLink: "/paper/simple-copy-paste",
+        paperLink: "/paper/2509.21320",
         hasCode: true,
         benchmark: "coco-test-dev"
       },
@@ -30,7 +30,7 @@ const taskData = {
         dataset: "COCO minival",
         bestModel: "Cascade Eff-B7 NAS-FPN (1280, self-training Copy Paste, single-scale)",
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
-        paperLink: "/paper/simple-copy-paste",
+        paperLink: "/paper/2509.21320",
         hasCode: true,
         benchmark: "coco-minival"
       },
@@ -39,7 +39,7 @@ const taskData = {
         dataset: "PASCAL VOC 2007",
         bestModel: "Cascade Eff-B7 NAS-FPN (Copy Paste pre-training, single-scale)",
         paperTitle: "Simple Copy-Paste is a Strong Data Augmentation Method for Instance Segmentation",
-        paperLink: "/paper/simple-copy-paste",
+        paperLink: "/paper/2509.21320",
         hasCode: true,
         benchmark: "pascal-voc-2007"
       },
@@ -48,7 +48,7 @@ const taskData = {
         dataset: "KITTI Cars Easy",
         bestModel: "Patches",
         paperTitle: "Patch Refinement -- Localized 3D Object Detection",
-        paperLink: "/paper/patch-refinement",
+        paperLink: "/paper/2509.21268",
         hasCode: true,
         benchmark: "kitti-cars-easy"
       },
@@ -57,7 +57,7 @@ const taskData = {
         dataset: "CrowdHuman (full body)",
         bestModel: "IterDet (Faster RCNN, ResNet50, 2 iterations)",
         paperTitle: "IterDet: Iterative Scheme for ObjectDetection in Crowded Environments",
-        paperLink: "/paper/iterdet",
+        paperLink: "/paper/2509.21240",
         hasCode: true,
         benchmark: "crowdhuman-full-body"
       }
@@ -77,7 +77,7 @@ const taskData = {
         dataset: "ImageNet",
         bestModel: "Vision Transformer (ViT-H/14)",
         paperTitle: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
-        paperLink: "/paper/vision-transformer",
+        paperLink: "/paper/2509.21245",
         hasCode: true,
         benchmark: "imagenet"
       }

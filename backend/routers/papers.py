@@ -186,6 +186,9 @@ async def get_paper_by_arxiv_id(
         None,
         description="Specific version (e.g., 'v2'). If not provided, returns latest version",
     ),
+    include_resources: bool = Query(
+        False, description="Include repositories and project pages"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -213,7 +216,7 @@ async def get_paper_by_arxiv_id(
 
     try:
         service = PaperService(db)
-        return service.get_paper_by_arxiv_id(arxiv_id, version)
+        return service.get_paper_by_arxiv_id(arxiv_id, version, include_resources)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

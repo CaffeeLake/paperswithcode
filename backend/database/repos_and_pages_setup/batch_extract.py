@@ -100,7 +100,7 @@ class BatchURLExtractor:
         self,
         batch_size: int = 20,
         dry_run: bool = False,
-        use_paid_tier: bool = False,
+        use_paid_tier: bool = True,
         start_year: int = 2014,
     ):
         self.batch_size = batch_size
@@ -175,6 +175,7 @@ class BatchURLExtractor:
         start_date = f"{self.start_year}-01-01"
 
         # Process all papers that are missing GitHub repositories or project pages
+        # Updated query to work with normalized schema and junction tables
         query = """
         SELECT DISTINCT
             p.id,
@@ -236,7 +237,7 @@ class BatchURLExtractor:
         try:
             # Insert GitHub repository if found and not already exists
             if github_url and github_url.strip() and not existing_github_url:
-                # First insert into repositories table
+                # First insert into repositories table (normalized - no paper_id)
                 repo_insert = """
                 INSERT INTO repositories (url, source, created_at, updated_at)
                 VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -250,10 +251,10 @@ class BatchURLExtractor:
 
                 if result:
                     repo_id = result.id
-                    # Then insert into junction table
+                    # Then insert into junction table (only foreign keys)
                     junction_insert = """
-                    INSERT INTO paper_repositories (paper_id, repository_id, is_official)
-                    VALUES (:paper_id, :repository_id, true)
+                    INSERT INTO paper_repositories (paper_id, repository_id)
+                    VALUES (:paper_id, :repository_id)
                     ON CONFLICT DO NOTHING
                     """
                     db.execute(
@@ -264,32 +265,40 @@ class BatchURLExtractor:
 
             # Insert project page if found
             if project_page_url and project_page_url.strip():
-                # First insert into project_pages table
-                page_insert = """
-                INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
-                VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                RETURNING id
+                # Check if project page already exists (no unique constraint, so we need to check manually)
+                existing_page_query = """
+                SELECT id FROM project_pages WHERE url = :url LIMIT 1
                 """
-                result = db.execute(
-                    text(page_insert),
-                    {"url": project_page_url.strip(), "source": source},
+                existing_page = db.execute(
+                    text(existing_page_query),
+                    {"url": project_page_url.strip()},
                 ).fetchone()
 
-                if result:
-                    page_id = result.id
-                    # Then insert into junction table
+                if existing_page:
+                    page_id = existing_page.id
+                else:
+                    # Insert new project page
+                    page_insert = """
+                    INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
+                    VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id
+                    """
+                    result = db.execute(
+                        text(page_insert),
+                        {"url": project_page_url.strip(), "source": source},
+                    ).fetchone()
+                    page_id = result.id if result else None
+
+                if page_id:
+                    # Then insert into junction table (only foreign keys)
                     junction_insert = """
-                    INSERT INTO paper_project_pages (paper_id, project_page_id, is_official, source, created_at, updated_at)
-                    VALUES (:paper_id, :project_page_id, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    INSERT INTO paper_project_pages (paper_id, project_page_id)
+                    VALUES (:paper_id, :project_page_id)
                     ON CONFLICT DO NOTHING
                     """
                     db.execute(
                         text(junction_insert),
-                        {
-                            "paper_id": paper_id,
-                            "project_page_id": page_id,
-                            "source": source,
-                        },
+                        {"paper_id": paper_id, "project_page_id": page_id},
                     )
                     logger.debug(
                         f"🌐 Added project page ({source}): {project_page_url}"

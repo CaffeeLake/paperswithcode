@@ -23,7 +23,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/papers" element={<Papers />} />
-          <Route path="/paper/:id" element={<PaperDetail />} />
+          <Route path="/paper/:arxivId" element={<PaperDetail />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/methods" element={<Methods />} />

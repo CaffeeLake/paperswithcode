@@ -6,7 +6,9 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 
-To connect to the PostGreSQL database, see `docs/POSTGRESQL_GUIDE.md` for details.
+To authenticate and connect to the PostGreSQL database, see `docs/POSTGRESQL_GUIDE.md` for details.
+
+Hardware: everything is run on a Hetzner VPS with 4GB of RAM and 80GB of disk space. Hence a lot of scripts are optimized to deal with the low RAM.
 
 ## Project Overview
 
@@ -195,6 +197,7 @@ def get_papers(limit=100):
 - Use React Router v6 patterns for navigation
 
 ### Data Processing
+
 **Frontend**:
 - Handle large JSON files with dynamic imports
 - Implement efficient filtering and sorting for 2.2GB dataset
@@ -202,20 +205,12 @@ def get_papers(limit=100):
 - Consider memory management for large data operations
 
 **Database**:
+
 - Use PostgreSQL for structured queries and full-text search
 - Import scripts handle batch processing of large datasets
 - Database includes full-text search indexes on paper titles and abstracts
 - Use proper connection pooling and error handling
 
-## Database Setup
-Before running the application, set up the PostgreSQL database:
-
-1. **Install PostgreSQL** and ensure it's running
-2. **Create database**: `CREATE DATABASE paperswithcode;`
-3. **Set up schema**: `psql -U postgres -d paperswithcode -f database/setup_database.sql`
-4. **Import papers**: `python database/import_papers.py`
-
-See `database/README.md` for detailed setup instructions.
-
 ## Future Integration
+
 The project is designed to evolve from JSON file reading to a full PostgreSQL backend that serves data via REST API with advanced search, filtering, and user management capabilities.

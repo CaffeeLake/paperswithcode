@@ -130,6 +130,11 @@ class ApiClient {
     return this.request<Paper>(endpoint);
   }
 
+  async getPaperByArxivId(arxivId: string, includeResources: boolean = true): Promise<Paper> {
+    const endpoint = `/papers/arxiv/${arxivId}${includeResources ? '?include_resources=true' : ''}`;
+    return this.request<Paper>(endpoint);
+  }
+
   // Repositories API
   async getRepositoriesForPaper(paperId: string): Promise<Repository[]> {
     return this.request<Repository[]>(`/papers/${paperId}/repositories`);
@@ -247,6 +252,7 @@ export const apiClient = new ApiClient();
 export const {
   getPapers,
   getPaper,
+  getPaperByArxivId,
   getRepositoriesForPaper,
   getRepositories,
   getProjectPagesForPaper,
