@@ -255,6 +255,67 @@ uv run --env-file backend/keys.env cron/manage_cron.py test update_github_stars
 
 # Clean up old log files
 uv run --env-file backend/keys.env cron/manage_cron.py cleanup
+
+# 🆕 COMPREHENSIVE STATUS SUMMARY (RECOMMENDED)
+# Show comprehensive status summary with performance metrics
+uv run --env-file backend/keys.env cron/manage_cron.py summary
+
+# Show detailed analysis with full log data
+uv run --env-file backend/keys.env cron/manage_cron.py summary --detailed
+
+# Output in JSON format for scripts/monitoring
+uv run --env-file backend/keys.env cron/manage_cron.py summary --json
+
+# Analyze last 7 days instead of default 3
+uv run --env-file backend/keys.env cron/manage_cron.py summary --days 7
+```
+
+### 🆕 Comprehensive Status Summary Features
+
+The `summary` command provides advanced monitoring capabilities:
+
+**Features:**
+- 📊 **System Overview**: Available vs. active jobs, scheduling status
+- 📈 **Performance Metrics**: Success rates, health scores, processing statistics
+- 🚨 **Smart Alerts**: Automatic detection of issues and performance problems
+- 💾 **Memory Analysis**: Memory usage tracking for optimized scripts
+- 📋 **Job Details**: Individual job status with recent performance history
+- 🔍 **Log Analysis**: Intelligent parsing of log files for insights
+
+**Sample Output:**
+```
+================================================================================
+🔄 PAPERSWITHCODE CRON JOBS STATUS SUMMARY
+================================================================================
+📅 Generated: 2025-09-29T08:45:28.337678
+
+📊 SYSTEM OVERVIEW
+----------------------------------------
+  HOURLY: 2 jobs available
+  DAILY: 1 jobs available
+  📋 Total Available: 3
+  ⚡ Currently Active: 4
+
+📈 PERFORMANCE SUMMARY
+----------------------------------------
+  🎯 Jobs Monitored: 6
+  💚 Healthy Jobs: 5
+  ⚠️  Problematic Jobs: 1
+  🔴 Critical Jobs: 0
+  📊 Average Health Score: 95.8/100
+
+🚨 ALERTS & ISSUES
+----------------------------------------
+  ⚠️ [IMPORT_HF_DAILY_PAPERS] Multiple recent errors (5 errors found)
+  ℹ️ [SYSTEM] Jobs not scheduled in crontab: update_citations, update_github_stars_optimized
+
+📋 JOB STATUS DETAILS
+----------------------------------------
+  ✅ UPDATE_CITATIONS_HOURLY
+    Status: success | Health: 100/100 💚
+    Last Run: 2025-09-29T08:30:01.717197+00:00
+    Duration: 0.07s
+    Recent: 51 runs, 100.0% success
 ```
 
 ### Log Files
