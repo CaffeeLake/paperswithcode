@@ -1,9 +1,23 @@
 # PapersWithCode - Database Schema & UML Design
 
 ## Overview
-This document provides a comprehensive database schema design for the PapersWithCode project.
 
-This is based on the API client of the legacy [PapersWithCode API](https://paperswithcode-client.readthedocs.io/en/latest/api/index.html), and extends it with various fields such as Hugging Face usernames and project pages.
+This document provides a comprehensive overview of the database schema for the PapersWithCode project, reflecting the current production database state as of September 2025.
+
+This schema is based on the API client of the legacy [PapersWithCode API](https://paperswithcode-client.readthedocs.io/en/latest/api/index.html), and has been significantly extended with:
+- **Hugging Face Integration**: Author profiles, usernames, and project pages
+- **Citation Tracking**: Semantic Scholar API integration for real-time citation counts
+- **ArXiv Category Classification**: Primary and secondary category tracking
+- **Enhanced Performance**: Comprehensive indexing and materialized views
+- **Repository Optimization**: Normalized repository structure with efficient CRON job processing
+- **Author Ordering**: Proper first/second author tracking in publications
+
+## Current Database Statistics
+- **Core Tables**: 15 main entity tables + 6 junction tables
+- **Performance Views**: 6 materialized views for optimized queries
+- **Backup Tables**: 2 backup tables for data migration safety
+- **Indexes**: 50+ indexes for full-text search, filtering, and performance
+- **Data Scale**: Designed to handle millions of papers with real-time updates
 
 ## Entity Relationship Diagram (UML)
 
@@ -18,10 +32,16 @@ This is based on the API client of the legacy [PapersWithCode API](https://paper
 │ hf_avatar_url   │    │ version          │    │ parent_id (FK)  │
 │ hf_status       │    │ is_latest_version│    │ area_id (FK)    │
 │ hf_is_pro       │    │ date_published   │    │ level           │
-│ created_at      │    │ proceeding       │    │ updated_at      │
-│ updated_at      │    │ conference       │    └─────────────────┘
-└─────────────────┘    │ conference_url_abs│             │
+│ created_at      │    │ proceeding       │    │ created_at      │
+│ updated_at      │    │ conference       │    │ updated_at      │
+└─────────────────┘    │ conference_url_abs│    └─────────────────┘
                        │ conference_url_pdf│             │
+                       │ citation_count   │              │
+                       │ semantic_scholar_id│            │
+                       │ citation_updated_at│            │
+                       │ primary_category │              │
+                       │ all_categories   │              │
+                       │ urls_extracted   │              │
                        │ created_at       │              │
                        │ updated_at       │              │
                        └──────────────────┘              │ (Self-referencing)
@@ -45,10 +65,11 @@ This is based on the API client of the legacy [PapersWithCode API](https://paper
 ├─────────────────┤    ├─────────────────┤    ├─────────────────┤
 │ paper_id (FK)   │    │ paper_id (FK)   │    │ paper_id (FK)   │
 │ author_id (FK)  │    │ task_id (FK)    │    │ method_id (FK)  │
-│ PRIMARY KEY     │    │ PRIMARY KEY     │    │ PRIMARY KEY     │
-│ (paper_id,      │    │ (paper_id,      │    │ (paper_id,      │
-│  author_id)     │    │  task_id)       │    │  method_id)     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+│ author_order    │    │ PRIMARY KEY     │    │ PRIMARY KEY     │
+│ PRIMARY KEY     │    │ (paper_id,      │    │ (paper_id,      │
+│ (paper_id,      │    │  task_id)       │    │  method_id)     │
+│  author_id)     │    └─────────────────┘    └─────────────────┘
+└─────────────────┘
         │                       │                       │
         │                       │                       ▼
         │                       │              ┌─────────────────┐
@@ -170,6 +191,12 @@ CREATE TABLE papers (
     conference VARCHAR(200),
     conference_url_abs VARCHAR(500),
     conference_url_pdf VARCHAR(500),
+    citation_count INTEGER DEFAULT 0,       -- Number of citations from Semantic Scholar
+    semantic_scholar_id VARCHAR(100),       -- Semantic Scholar paper ID for citation tracking
+    citation_updated_at TIMESTAMP WITH TIME ZONE, -- Last time citations were updated
+    primary_category VARCHAR(50),           -- Primary ArXiv category (e.g., "cs.CV", "cs.LG")
+    all_categories TEXT[],                  -- All ArXiv categories as array
+    urls_extracted BOOLEAN DEFAULT FALSE,   -- Flag indicating if URLs have been extracted
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 
@@ -517,10 +544,10 @@ CREATE TABLE repositories (
     owner VARCHAR(255),
     name VARCHAR(255),
     num_stars INTEGER DEFAULT 0,
-    num_stars_updated_at TIMESTAMP WITH TIME ZONE, -- For CRON job tracking
-    source VARCHAR(50) DEFAULT 'unknown',  -- Source of the repository data
+    source VARCHAR(50) DEFAULT 'unknown',   -- Source of the repository data
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    num_stars_updated_at TIMESTAMP WITH TIME ZONE -- For CRON job tracking
 );
 
 -- Note: is_official is now stored in the paper_repositories junction table
@@ -555,14 +582,9 @@ CREATE TABLE project_pages (
 **Junction table for many-to-many relationship between papers and project pages (simplified to only contain IDs)**
 ```sql
 CREATE TABLE paper_project_pages (
-    paper_id BIGINT NOT NULL,
-    project_page_id BIGINT NOT NULL,
-
-    PRIMARY KEY (paper_id, project_page_id),
-    CONSTRAINT fk_paper_project_pages_paper_id
-        FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
-    CONSTRAINT fk_paper_project_pages_project_page_id
-        FOREIGN KEY (project_page_id) REFERENCES project_pages(id) ON DELETE CASCADE
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    project_page_id BIGINT NOT NULL REFERENCES project_pages(id) ON DELETE CASCADE,
+    PRIMARY KEY (paper_id, project_page_id)
 );
 ```
 
@@ -587,13 +609,34 @@ CREATE TABLE evaluations (
 );
 ```
 
+## Views and Materialized Views
+
+The database includes several views for optimized queries and reporting:
+
+### Performance Views
+- **`authors_with_paper_count`**: Authors with their paper counts for efficient listing
+- **`papers_with_authors`**: Papers with concatenated author names for search and display
+- **`cs_papers`**: Computer Science papers only (filtered by primary_category starting with 'cs.')
+- **`latest_papers`**: Only the latest versions of papers (is_latest_version = true)
+
+### API Views
+- **`project_pages_view`**: Simplified project pages view for API responses
+- **`project_pages_api`**: API-optimized project pages data
+
+### Backup Tables
+- **`repositories_backup`**: Backup of repository data before normalization
+- **`repositorybackup`**: Additional repository backup with extended metadata
+
 ## Junction Tables (Many-to-Many Relationships)
+
+**Note**: While the SQL definitions below show foreign key constraints for clarity, some junction tables in the current database may not have all foreign key constraints explicitly defined at the database level. The relationships are maintained through application logic and proper indexing.
 
 ### 10. PAPER_AUTHORS
 ```sql
 CREATE TABLE paper_authors (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    author_id BIGINT REFERENCES authors(id) ON DELETE CASCADE,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    author_id BIGINT NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+    author_order INTEGER DEFAULT 1,  -- Order of author in paper (1=first author, 2=second, etc.)
     PRIMARY KEY (paper_id, author_id)
 );
 ```
@@ -601,8 +644,8 @@ CREATE TABLE paper_authors (
 ### 11. PAPER_TASKS
 ```sql
 CREATE TABLE paper_tasks (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     PRIMARY KEY (paper_id, task_id)
 );
 ```
@@ -610,8 +653,8 @@ CREATE TABLE paper_tasks (
 ### 12. PAPER_METHODS
 ```sql
 CREATE TABLE paper_methods (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    method_id BIGINT REFERENCES methods(id) ON DELETE CASCADE,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    method_id BIGINT NOT NULL REFERENCES methods(id) ON DELETE CASCADE,
     PRIMARY KEY (paper_id, method_id)
 );
 ```
@@ -619,8 +662,8 @@ CREATE TABLE paper_methods (
 ### 13. PAPER_DATASETS
 ```sql
 CREATE TABLE paper_datasets (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    dataset_id BIGINT REFERENCES datasets(id) ON DELETE CASCADE,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
     PRIMARY KEY (paper_id, dataset_id)
 );
 ```
@@ -628,8 +671,8 @@ CREATE TABLE paper_datasets (
 ### 14. PAPER_REPOSITORIES
 ```sql
 CREATE TABLE paper_repositories (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    repository_id BIGINT REFERENCES repositories(id) ON DELETE CASCADE,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    repository_id BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
     is_official BOOLEAN DEFAULT FALSE,      -- Whether this repository is official for this specific paper
     PRIMARY KEY (paper_id, repository_id)
 );
@@ -638,12 +681,8 @@ CREATE TABLE paper_repositories (
 ### 15. PAPER_PROJECT_PAGES
 ```sql
 CREATE TABLE paper_project_pages (
-    paper_id BIGINT REFERENCES papers(id) ON DELETE CASCADE,
-    project_page_id BIGINT REFERENCES project_pages(id) ON DELETE CASCADE,
-    is_official BOOLEAN DEFAULT FALSE,
-    source VARCHAR(50) DEFAULT 'migration',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    project_page_id BIGINT NOT NULL REFERENCES project_pages(id) ON DELETE CASCADE,
     PRIMARY KEY (paper_id, project_page_id)
 );
 ```
@@ -672,26 +711,44 @@ CREATE TABLE paper_project_pages (
 CREATE INDEX idx_papers_title_search ON papers USING gin(to_tsvector('english', title));
 CREATE INDEX idx_papers_abstract_search ON papers USING gin(to_tsvector('english', abstract));
 
--- Common lookup indexes
+-- Paper lookup and filtering indexes
 CREATE INDEX idx_papers_arxiv_id ON papers(arxiv_id);
 CREATE INDEX idx_papers_date_published ON papers(date_published DESC);
 CREATE INDEX idx_papers_conference ON papers(conference);
+CREATE INDEX idx_papers_latest_version ON papers(is_latest_version);
+CREATE INDEX idx_papers_version ON papers(version);
+CREATE INDEX idx_papers_citation_count ON papers(citation_count DESC);
+CREATE INDEX idx_papers_primary_category ON papers(primary_category);
+CREATE INDEX idx_papers_semantic_scholar_id ON papers(semantic_scholar_id);
+CREATE INDEX idx_papers_urls_extracted ON papers(urls_extracted);
+CREATE INDEX idx_papers_cs_only ON papers(primary_category) WHERE primary_category LIKE 'cs.%';
 
 -- Hierarchical task indexes
 CREATE INDEX idx_tasks_parent_id ON tasks(parent_id);
 CREATE INDEX idx_tasks_area_id ON tasks(area_id);
+CREATE INDEX idx_tasks_slug ON tasks(slug);
 
 -- Author indexes for Hugging Face integration
-CREATE INDEX idx_authors_hf_username ON authors(hf_username);
-CREATE INDEX idx_authors_hf_id ON authors(hf_id);
+CREATE INDEX idx_authors_hf_username ON authors(hf_username) WHERE hf_username IS NOT NULL;
+CREATE INDEX idx_authors_hf_id ON authors(hf_id) WHERE hf_id IS NOT NULL;
 CREATE INDEX idx_authors_name ON authors(name);
 CREATE INDEX idx_authors_name_search ON authors USING gin(to_tsvector('english', name));
+CREATE INDEX idx_authors_created_at ON authors(created_at);
 
--- Junction table indexes
+-- Junction table indexes with enhanced author ordering
 CREATE INDEX idx_paper_authors_paper_id ON paper_authors(paper_id);
 CREATE INDEX idx_paper_authors_author_id ON paper_authors(author_id);
+CREATE INDEX idx_paper_authors_order ON paper_authors(author_order);
+CREATE INDEX idx_paper_authors_paper_order ON paper_authors(paper_id, author_order);
+
 CREATE INDEX idx_paper_tasks_paper_id ON paper_tasks(paper_id);
 CREATE INDEX idx_paper_tasks_task_id ON paper_tasks(task_id);
+
+CREATE INDEX idx_paper_methods_paper_id ON paper_methods(paper_id);
+CREATE INDEX idx_paper_methods_method_id ON paper_methods(method_id);
+
+CREATE INDEX idx_paper_datasets_paper_id ON paper_datasets(paper_id);
+CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
 
 -- Evaluation indexes
 CREATE INDEX idx_evaluations_paper_task_dataset ON evaluations(paper_id, task_id, dataset_id);
@@ -704,6 +761,8 @@ CREATE INDEX idx_repositories_owner ON repositories(owner);
 CREATE INDEX idx_repositories_name ON repositories(name);
 CREATE INDEX idx_repositories_source ON repositories(source);
 CREATE INDEX idx_repositories_num_stars_updated_at ON repositories(num_stars_updated_at);
+CREATE INDEX idx_repositories_created_at ON repositories(created_at);
+CREATE INDEX idx_repositories_updated_at ON repositories(updated_at);
 CREATE UNIQUE INDEX idx_repositories_url_unique ON repositories(url);
 
 -- Paper-Repository junction table indexes
@@ -715,9 +774,13 @@ CREATE INDEX idx_project_pages_url ON project_pages(url);
 CREATE INDEX idx_project_pages_source ON project_pages(source);
 CREATE INDEX idx_project_pages_is_official ON project_pages(is_official);
 
--- Paper-Project Page junction table indexes (simplified)
+-- Paper-Project Page junction table indexes
 CREATE INDEX idx_paper_project_pages_paper_id ON paper_project_pages(paper_id);
 CREATE INDEX idx_paper_project_pages_project_page_id ON paper_project_pages(project_page_id);
+
+-- Backup table indexes for maintenance
+CREATE INDEX idx_repositorybackup_paper_id ON repositorybackup(paper_id);
+CREATE INDEX idx_repositorybackup_url ON repositorybackup(url);
 ```
 
 ## Hugging Face Integration Strategy
@@ -828,6 +891,18 @@ def build_task_hierarchy_from_evaluation_tables():
 6. **Temporal Data**: Track when papers were published and when evaluations were conducted
 
 7. **Hugging Face Integration**: Seamless connection to HF ecosystem with author profiles, avatars, and verification status
+
+8. **Citation Tracking**: Integration with Semantic Scholar API for real-time citation counts
+
+9. **ArXiv Category Classification**: Primary and secondary category tracking for better organization
+
+10. **Author Ordering**: Proper first author, second author tracking in paper_authors junction table
+
+11. **URL Extraction Status**: Track which papers have had their URLs extracted for repository/project page discovery
+
+12. **Performance Views**: Materialized views for common queries (authors with paper counts, CS papers only, etc.)
+
+13. **Comprehensive Indexing**: Full-text search, category filtering, citation sorting, and temporal queries optimized
 
 ## Benefits of Hugging Face Integration
 
@@ -977,6 +1052,42 @@ This optimization achieves the perfect balance:
 
 The system now processes the same data with **dramatically fewer resources** while maintaining the same update frequency and data quality. Individual URLs like `https://github.com/mindspore-ai/models/tree/master/official/cv/resnet` remain as separate database rows, but the CRON job intelligently groups them for efficient GitHub API usage.
 
+## Schema Evolution Changelog
+
+### Major Updates (September 2025)
+
+#### Papers Table Enhancements
+- ✅ **Added `citation_count`**: Real-time citation tracking via Semantic Scholar API
+- ✅ **Added `semantic_scholar_id`**: Direct integration with Semantic Scholar database
+- ✅ **Added `citation_updated_at`**: Timestamp tracking for citation refresh cycles
+- ✅ **Added `primary_category`**: Primary ArXiv category classification (e.g., "cs.CV", "cs.LG")
+- ✅ **Added `all_categories`**: Array of all ArXiv categories for comprehensive classification
+- ✅ **Added `urls_extracted`**: Flag to track URL extraction status for CRON job optimization
+
+#### Author Relationship Improvements
+- ✅ **Added `author_order`** to `paper_authors`: Proper first/second author tracking
+- ✅ **Enhanced indexing**: Optimized queries for author ordering and paper listings
+
+#### Performance & Views
+- ✅ **Added materialized views**: `authors_with_paper_count`, `papers_with_authors`, `cs_papers`, `latest_papers`
+- ✅ **Added API views**: `project_pages_view`, `project_pages_api` for optimized API responses
+- ✅ **Comprehensive indexing**: 50+ indexes including full-text search, category filtering, citation sorting
+
+#### Repository System Optimization
+- ✅ **Normalized repository structure**: Eliminated 14,042 duplicate URLs
+- ✅ **Optimized CRON jobs**: Reduced GitHub API calls by 4-9x through intelligent grouping
+- ✅ **Added backup tables**: `repositories_backup`, `repositorybackup` for safe migrations
+
+#### Data Integrity & Constraints
+- ✅ **Enhanced unique constraints**: Proper URL uniqueness in repositories
+- ✅ **Foreign key relationships**: Improved referential integrity across junction tables
+- ✅ **Partial indexes**: Conditional indexes for better performance (e.g., HF usernames, CS papers)
+
+### Migration Safety
+- All changes maintain backward compatibility with existing frontend code
+- Backup tables preserve original data during schema migrations
+- Views provide optimized query paths without breaking existing API contracts
+
 ---
 
-This schema design provides a robust foundation for the PapersWithCode backend while maintaining compatibility with the existing frontend and the original PapersWithCode data structure, enhanced with modern Hugging Face ecosystem integration and optimized repository storage.
+This schema design provides a robust, scalable foundation for the PapersWithCode backend while maintaining compatibility with the existing frontend and the original PapersWithCode data structure, enhanced with modern Hugging Face ecosystem integration, real-time citation tracking, and optimized repository storage.

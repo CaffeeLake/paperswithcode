@@ -20,7 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -69,6 +69,15 @@ class Paper(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ArXiv category classification
+    primary_category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    all_categories: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
+
+    # URL extraction tracking
+    urls_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -110,6 +119,8 @@ class Paper(Base):
         Index("idx_papers_latest_version", "is_latest_version"),
         Index("idx_papers_citation_count", "citation_count"),
         Index("idx_papers_semantic_scholar_id", "semantic_scholar_id"),
+        Index("idx_papers_primary_category", "primary_category"),
+        Index("idx_papers_urls_extracted", "urls_extracted"),
     )
 
     def __repr__(self) -> str:
@@ -328,6 +339,9 @@ class Repository(Base):
     source: Mapped[str] = mapped_column(String(50), default="unknown")
 
     # Timestamps
+    num_stars_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -347,6 +361,7 @@ class Repository(Base):
         Index("idx_repositories_owner", "owner"),
         Index("idx_repositories_name", "name"),
         Index("idx_repositories_source", "source"),
+        Index("idx_repositories_num_stars_updated_at", "num_stars_updated_at"),
         Index("idx_repositories_created_at", "created_at"),
         Index("idx_repositories_updated_at", "updated_at"),
     )

@@ -396,7 +396,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             # Create new repository and link to paper
             query = """
             INSERT INTO repositories (url, owner, name, source, created_at, updated_at)
-            VALUES (%s, %s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, 'hf_api', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id
             """
 
@@ -460,7 +460,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             # Create new project page with is_official flag and link to paper
             query = """
             INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
-            VALUES (%s, %s, 'hf_daily_papers', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, 'hf_api', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id
             """
 

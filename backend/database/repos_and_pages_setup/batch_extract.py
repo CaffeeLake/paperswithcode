@@ -180,7 +180,7 @@ class BatchURLExtractor:
         project_page_url: str,
         source: str = "ai_extraction",
     ) -> None:
-        """Save extracted URLs to the database with proper source tracking."""
+        """Save extracted URLs to the database using service layer methods."""
         if self.dry_run:
             logger.info(
                 f"[DRY RUN] Paper {paper_id}: Would save GitHub={github_url}, Project={project_page_url}"
@@ -188,163 +188,58 @@ class BatchURLExtractor:
             return
 
         try:
-            # Insert GitHub repository if found
+            from backend.services.repository_service import RepositoryService
+            from backend.services.project_page_service import ProjectPageService
+
+            # Initialize services
+            repo_service = RepositoryService(db)
+            project_service = ProjectPageService(db)
+
+            # Handle GitHub repository if found
             if github_url and github_url.strip():
-                # Check if paper already has an official GitHub repository
-                # Consider hf_api, hf_recovery as "official" sources to preserve
-                existing_official_repo_query = """
-                SELECT r.id, r.url
-                FROM paper_repositories pr
-                JOIN repositories r ON pr.repository_id = r.id
-                WHERE pr.paper_id = :paper_id
-                  AND r.source IN ('hf_api', 'hf_recovery')
-                LIMIT 1
-                """
-                existing_official_repo = db.execute(
-                    text(existing_official_repo_query), {"paper_id": paper_id}
-                ).fetchone()
+                # Extract owner and name from GitHub URL
+                owner, name = parse_github_url(github_url.strip())
 
-                if existing_official_repo:
-                    logger.info(
-                        f"⏭️  Skipping GitHub repo (official exists): {existing_official_repo.url}"
-                    )
+                # Use service method to create repository and associate with paper
+                repository = repo_service.create_repository_for_paper(
+                    paper_id=str(paper_id),
+                    url=github_url.strip(),
+                    owner=owner,
+                    name=name,
+                    num_stars=0,
+                    is_official=True,
+                    source=source,
+                    skip_if_official_exists=True,
+                )
+
+                if repository:
+                    logger.info(f"💾 Saved GitHub repo: {github_url}")
+                    self.stats["papers_with_github"] += 1
                 else:
-                    # Remove any existing non-official repos for this paper
-                    remove_non_official_repos = """
-                    DELETE FROM paper_repositories
-                    WHERE paper_id = :paper_id
-                      AND repository_id IN (
-                          SELECT id FROM repositories
-                          WHERE source NOT IN ('hf_api', 'hf_recovery')
-                      )
-                    """
-                    db.execute(text(remove_non_official_repos), {"paper_id": paper_id})
+                    logger.info(
+                        f"⏭️  Skipped GitHub repo (official exists): {github_url}"
+                    )
+                    self.stats["github_skipped_existing"] += 1
 
-                    # Extract owner and name from GitHub URL
-                    owner, name = parse_github_url(github_url.strip())
-
-                    # Insert new repository
-                    repo_insert = """
-                    INSERT INTO repositories (url, owner, name, source, created_at, updated_at)
-                    VALUES (:url, :owner, :name, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (url) DO UPDATE SET
-                        owner = EXCLUDED.owner,
-                        name = EXCLUDED.name,
-                        updated_at = CURRENT_TIMESTAMP
-                    RETURNING id
-                    """
-                    result = db.execute(
-                        text(repo_insert),
-                        {
-                            "url": github_url.strip(),
-                            "owner": owner,
-                            "name": name,
-                            "source": source,
-                        },
-                    ).fetchone()
-
-                    if result:
-                        repo_id = result.id
-                        # Link to paper with is_official = True
-                        junction_insert = """
-                        INSERT INTO paper_repositories (paper_id, repository_id, is_official)
-                        VALUES (:paper_id, :repository_id, :is_official)
-                        ON CONFLICT (paper_id, repository_id) DO UPDATE SET
-                            is_official = EXCLUDED.is_official
-                        """
-                        db.execute(
-                            text(junction_insert),
-                            {
-                                "paper_id": paper_id,
-                                "repository_id": repo_id,
-                                "is_official": True,
-                            },
-                        )
-                        logger.info(
-                            f"💾 Saved GitHub repo (replaced non-official): {github_url}"
-                        )
-
-            # Insert project page if found
+            # Handle project page if found
             if project_page_url and project_page_url.strip():
-                # Check if paper already has an official project page
-                # Consider hf_api, hf_recovery as "official" sources to preserve
-                existing_official_page_query = """
-                SELECT pp.id, pp.url
-                FROM paper_project_pages ppp
-                JOIN project_pages pp ON ppp.project_page_id = pp.id
-                WHERE ppp.paper_id = :paper_id
-                  AND pp.source IN ('hf_api', 'hf_recovery')
-                  AND pp.is_official = true
-                LIMIT 1
-                """
-                existing_official_page = db.execute(
-                    text(existing_official_page_query), {"paper_id": paper_id}
-                ).fetchone()
+                # Use service method to create project page and associate with paper
+                project_page = project_service.create_project_page_for_paper(
+                    paper_id=str(paper_id),
+                    url=project_page_url.strip(),
+                    is_official=True,
+                    source=source,
+                    skip_if_official_exists=True,
+                )
 
-                if existing_official_page:
-                    logger.info(
-                        f"⏭️  Skipping project page (official exists): {existing_official_page.url}"
-                    )
+                if project_page:
+                    logger.info(f"💾 Saved project page: {project_page_url}")
+                    self.stats["papers_with_project_page"] += 1
                 else:
-                    # Remove any existing non-official project pages for this paper
-                    remove_non_official_pages = """
-                    DELETE FROM paper_project_pages
-                    WHERE paper_id = :paper_id
-                      AND project_page_id IN (
-                          SELECT id FROM project_pages
-                          WHERE source NOT IN ('hf_api', 'hf_recovery')
-                             OR is_official = false
-                      )
-                    """
-                    db.execute(text(remove_non_official_pages), {"paper_id": paper_id})
-
-                    # Check if project page URL already exists
-                    existing_page_query = """
-                    SELECT id FROM project_pages WHERE url = :url LIMIT 1
-                    """
-                    existing_page = db.execute(
-                        text(existing_page_query),
-                        {"url": project_page_url.strip()},
-                    ).fetchone()
-
-                    if existing_page:
-                        page_id = existing_page.id
-                        # Update to mark as official and from AI extraction
-                        update_page = """
-                        UPDATE project_pages
-                        SET is_official = true, source = :source, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = :page_id
-                        """
-                        db.execute(
-                            text(update_page), {"source": source, "page_id": page_id}
-                        )
-                    else:
-                        # Insert new project page
-                        page_insert = """
-                        INSERT INTO project_pages (url, is_official, source, created_at, updated_at)
-                        VALUES (:url, true, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        RETURNING id
-                        """
-                        result = db.execute(
-                            text(page_insert),
-                            {"url": project_page_url.strip(), "source": source},
-                        ).fetchone()
-                        page_id = result.id if result else None
-
-                    if page_id:
-                        # Link to paper
-                        junction_insert = """
-                        INSERT INTO paper_project_pages (paper_id, project_page_id)
-                        VALUES (:paper_id, :project_page_id)
-                        ON CONFLICT DO NOTHING
-                        """
-                        db.execute(
-                            text(junction_insert),
-                            {"paper_id": paper_id, "project_page_id": page_id},
-                        )
-                        logger.info(
-                            f"💾 Saved project page (replaced non-official): {project_page_url}"
-                        )
+                    logger.info(
+                        f"⏭️  Skipped project page (official exists): {project_page_url}"
+                    )
+                    self.stats["project_page_skipped_existing"] += 1
 
             # Always mark the paper as processed (regardless of whether URLs were found)
             update_paper = """
@@ -419,12 +314,8 @@ class BatchURLExtractor:
                 source,
             )
 
-            # Update stats
+            # Update stats (note: individual URL stats are now tracked in save_results_to_db)
             self.stats["papers_processed"] += 1
-            if github_url:
-                self.stats["papers_with_github"] += 1
-            if project_page_url:
-                self.stats["papers_with_project_page"] += 1
             if github_url and project_page_url:
                 self.stats["papers_with_both"] += 1
             if not github_url and not project_page_url:

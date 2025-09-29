@@ -51,3 +51,8 @@ The backend (written in Python) can be run as follows:
 cd backend
 uv run
 ```
+
+## TODOs
+
+- all services should be checked to see if they are in line with the database schema (see also models.py)
+- all cron jobs and batch_extract.py should leverage the services instead of manually writing SQL queries

@@ -52,7 +52,7 @@ export function usePaper(id: string, enabled: boolean = true) {
 export function usePaperByArxivId(arxivId: string, enabled: boolean = true) {
   return useQuery<Paper, Error>({
     queryKey: ['paper-arxiv', arxivId],
-    queryFn: () => apiClient.getPaperByArxivId(arxivId),
+    queryFn: () => apiClient.getPaperByArxivId(arxivId, true), // Explicitly include resources
     enabled: enabled && !!arxivId,
     staleTime: 10 * 60 * 1000, // 10 minutes
     refetchOnWindowFocus: false,

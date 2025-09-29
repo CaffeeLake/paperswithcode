@@ -206,9 +206,7 @@ class ProjectPageService:
                     DBProjectPage.id == DBPaperProjectPage.project_page_id,
                 )
                 .filter(DBPaperProjectPage.paper_id == int(paper_id))
-                .order_by(
-                    desc(DBPaperProjectPage.is_official), desc(DBProjectPage.created_at)
-                )
+                .order_by(desc(DBProjectPage.created_at))
                 .all()
             )
 
@@ -342,3 +340,200 @@ class ProjectPageService:
             if db_relationship.updated_at
             else None,
         )
+
+    def create_or_update_project_page(
+        self,
+        url: str,
+        is_official: bool = True,
+        source: str = "unknown",
+    ) -> ProjectPage:
+        """
+        Create a new project page or update existing one.
+
+        Args:
+            url: Project page URL (unique identifier)
+            is_official: Whether project page is generally official
+            source: Data source
+
+        Returns:
+            ProjectPage object (created or updated)
+        """
+        try:
+            # Check if project page already exists
+            existing_page = (
+                self.db.query(DBProjectPage).filter(DBProjectPage.url == url).first()
+            )
+
+            if existing_page:
+                # Update existing project page
+                existing_page.is_official = (
+                    is_official or existing_page.is_official
+                )  # Keep true if any source says official
+                # Don't update source - keep original
+
+                self.db.commit()
+                return self._db_project_page_to_api(existing_page)
+            else:
+                # Create new project page
+                new_page = DBProjectPage(
+                    url=url,
+                    is_official=is_official,
+                    source=source,
+                )
+
+                self.db.add(new_page)
+                self.db.commit()
+                return self._db_project_page_to_api(new_page)
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to create/update project page: {str(e)}")
+
+    def associate_project_page_with_paper(
+        self,
+        paper_id: str,
+        project_page_id: str,
+        is_official: bool = False,
+        source: str = "unknown",
+    ) -> PaperProjectPage:
+        """
+        Associate a project page with a paper.
+
+        Args:
+            paper_id: Paper ID
+            project_page_id: Project page ID
+            is_official: Whether this project page is official for this paper
+            source: Source of this relationship
+
+        Returns:
+            PaperProjectPage object
+
+        Raises:
+            PaperNotFoundError: If paper or project page not found
+            DatabaseError: If association already exists or other database error
+        """
+        try:
+            from backend.models.database import Paper as DBPaper
+
+            # Check if paper exists
+            paper = self.db.query(DBPaper).filter(DBPaper.id == int(paper_id)).first()
+            if not paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            # Check if project page exists
+            project_page = (
+                self.db.query(DBProjectPage)
+                .filter(DBProjectPage.id == int(project_page_id))
+                .first()
+            )
+            if not project_page:
+                raise PaperNotFoundError(
+                    f"Project page with ID {project_page_id} not found"
+                )
+
+            # Check if association already exists
+            existing_association = (
+                self.db.query(DBPaperProjectPage)
+                .filter(
+                    DBPaperProjectPage.paper_id == int(paper_id),
+                    DBPaperProjectPage.project_page_id == int(project_page_id),
+                )
+                .first()
+            )
+
+            if existing_association:
+                # Update existing association
+                existing_association.is_official = (
+                    is_official or existing_association.is_official
+                )
+                existing_association.source = source
+                self.db.commit()
+                return self._db_paper_project_page_to_api(existing_association)
+            else:
+                # Create new association
+                new_association = DBPaperProjectPage(
+                    paper_id=int(paper_id),
+                    project_page_id=int(project_page_id),
+                    is_official=is_official,
+                    source=source,
+                )
+
+                self.db.add(new_association)
+                self.db.commit()
+                return self._db_paper_project_page_to_api(new_association)
+
+        except ValueError:
+            raise PaperNotFoundError("Invalid paper or project page ID")
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(
+                f"Failed to associate project page with paper: {str(e)}"
+            )
+
+    def create_project_page_for_paper(
+        self,
+        paper_id: str,
+        url: str,
+        is_official: bool = True,
+        source: str = "unknown",
+        skip_if_official_exists: bool = True,
+    ) -> Optional[ProjectPage]:
+        """
+        Create a project page and associate it with a paper in one operation.
+
+        This is a convenience method that combines create_or_update_project_page
+        and associate_project_page_with_paper.
+
+        Args:
+            paper_id: Paper ID
+            url: Project page URL
+            is_official: Whether this project page is official for this paper
+            source: Data source
+            skip_if_official_exists: Skip if paper already has official project page from priority sources
+
+        Returns:
+            ProjectPage object if created/updated, None if skipped
+
+        Raises:
+            PaperNotFoundError: If paper not found
+            DatabaseError: On database errors
+        """
+        try:
+            # Check if we should skip due to existing official project page
+            if skip_if_official_exists:
+                existing_official = (
+                    self.db.query(DBProjectPage)
+                    .join(
+                        DBPaperProjectPage,
+                        DBProjectPage.id == DBPaperProjectPage.project_page_id,
+                    )
+                    .filter(
+                        DBPaperProjectPage.paper_id == int(paper_id),
+                        DBProjectPage.source.in_(["hf_api"]),  # Priority sources
+                        DBPaperProjectPage.is_official,
+                    )
+                    .first()
+                )
+
+                if existing_official:
+                    return None  # Skip - official project page already exists
+
+            # Create or update the project page
+            project_page = self.create_or_update_project_page(
+                url=url, is_official=is_official, source=source
+            )
+
+            # Associate with paper
+            self.associate_project_page_with_paper(
+                paper_id=paper_id,
+                project_page_id=project_page.id,
+                is_official=is_official,
+                source=source,
+            )
+
+            return project_page
+
+        except ValueError:
+            raise PaperNotFoundError(f"Invalid paper ID: {paper_id}")
+        except Exception as e:
+            raise DatabaseError(f"Failed to create project page for paper: {str(e)}")

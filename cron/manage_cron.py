@@ -87,6 +87,8 @@ def show_job_status(job_name: str = None, date: str = None):
 
         if status["exists"]:
             print(f"Status: {status['status']}")
+            if status.get("is_running"):
+                print("🔄 Currently running")
             print(f"Last run: {status['last_run']}")
             if status["duration"]:
                 print(f"Duration: {status['duration']:.2f} seconds")
@@ -103,7 +105,7 @@ def show_job_status(job_name: str = None, date: str = None):
         print(f"CRON Job Status Summary - {today}")
         print("=" * 60)
 
-        categories = ["daily", "weekly", "monthly"]
+        categories = ["hourly", "daily", "weekly", "monthly"]
 
         for category in categories:
             category_dir = cron_dir / category
@@ -114,11 +116,21 @@ def show_job_status(job_name: str = None, date: str = None):
                 for script in category_dir.glob("*.py"):
                     if script.name != "__init__.py":
                         job_name = script.stem
-                        status = get_cron_job_status(job_name, today)
+
+                        # Map script names to actual log file names
+                        log_name_mapping = {
+                            "update_github_stars_optimized": "github_stars_optimized",
+                            "update_citations": "update_citations_hourly",
+                        }
+                        log_name = log_name_mapping.get(job_name, job_name)
+
+                        status = get_cron_job_status(log_name, today)
 
                         status_icon = (
                             "✓"
                             if status["status"] == "success"
+                            else "🔄"
+                            if status["status"] == "running"
                             else "✗"
                             if status["status"] == "failed"
                             else "?"
@@ -617,6 +629,8 @@ class CronStatusAnalyzer:
             # Status icon
             if status["status"] == "success":
                 status_icon = "✅"
+            elif status["status"] == "running":
+                status_icon = "🔄"
             elif status["status"] == "failed":
                 status_icon = "❌"
             else:
@@ -634,6 +648,9 @@ class CronStatusAnalyzer:
             print(
                 f"    Status: {status['status']} | Health: {health}/100 {health_icon}"
             )
+
+            if status["status"] == "running":
+                print("    🔄 Currently executing...")
 
             if status["last_run"]:
                 print(f"    Last Run: {status['last_run']}")

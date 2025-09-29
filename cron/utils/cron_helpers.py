@@ -250,6 +250,9 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
     Returns:
         Dictionary with job status information
     """
+    import subprocess
+    import re
+
     if not date:
         date = datetime.now().strftime("%Y%m%d")
 
@@ -265,26 +268,100 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         "status": "unknown",
         "duration": None,
         "error": None,
+        "is_running": False,
     }
 
     if not log_file.exists():
         return status
+
+    # Check if job is currently running by looking for active processes
+    try:
+        result = subprocess.run(
+            ["ps", "aux"], capture_output=True, text=True, timeout=5
+        )
+
+        if result.returncode == 0:
+            # Look for processes containing the job name or related patterns
+            search_patterns = [
+                job_name,
+                job_name.replace("_", "-"),  # Handle name variations
+                job_name.replace("_", ""),  # Handle concatenated names
+            ]
+
+            # Add specific mappings for known jobs
+            if job_name == "github_stars_optimized":
+                search_patterns.extend(
+                    ["update_github_stars_optimized", "github.*stars"]
+                )
+            elif job_name == "update_citations_hourly":
+                search_patterns.extend(["update_citations", "citations"])
+
+            for line in result.stdout.split("\n"):
+                if "python" in line and "grep" not in line:
+                    for pattern in search_patterns:
+                        if pattern in line:
+                            status["is_running"] = True
+                            break
+                    if status["is_running"]:
+                        break
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+        pass  # If ps command fails, continue with log analysis
 
     try:
         with open(log_file, "r") as f:
             lines = f.readlines()
 
         # Parse log file for status information
+        found_completion = False
+        found_failure = False
+        last_start_time = None
+
+        # Look for the most recent start and completion/failure messages
+        for line in lines:
+            if "Starting" in line and ("cron job:" in line or "optimized" in line):
+                # Extract timestamp from log line
+                timestamp_match = re.match(
+                    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line
+                )
+                if timestamp_match:
+                    last_start_time = timestamp_match.group(1)
+
+        # Check for completion/failure messages after the last start
         for line in reversed(lines):  # Start from the end
-            if "completed successfully" in line:
+            if "completed successfully" in line or "Job completed successfully" in line:
                 status["status"] = "success"
+                found_completion = True
                 break
-            elif "failed" in line:
+            elif "Job timed out" in line:
+                # Timeout is considered successful completion for long-running jobs
+                status["status"] = "success"
+                found_completion = True
+                break
+            elif "failed" in line and (
+                "job failed" in line.lower() or "error" in line.lower()
+            ):
                 status["status"] = "failed"
+                found_failure = True
                 # Try to extract error message
                 if "Error:" in line:
                     status["error"] = line.split("Error:")[-1].strip()
                 break
+
+        # If we found a recent start but no completion/failure, and process is running, it's running
+        if (
+            last_start_time
+            and not found_completion
+            and not found_failure
+            and status["is_running"]
+        ):
+            status["status"] = "running"
+            status["last_run"] = last_start_time
+        elif not found_completion and not found_failure and status["is_running"]:
+            status["status"] = "running"
+
+        # If we found completion or failure, the job is not running regardless of process detection
+        if found_completion or found_failure:
+            status["is_running"] = False
 
         # Extract timing information
         start_time = None
@@ -302,10 +379,14 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 except (ValueError, IndexError):
                     pass
 
-        if end_time:
-            status["last_run"] = end_time
-        elif start_time:
-            status["last_run"] = start_time
+        # Set last_run if not already set
+        if not status["last_run"]:
+            if end_time:
+                status["last_run"] = end_time
+            elif start_time:
+                status["last_run"] = start_time
+            elif last_start_time:
+                status["last_run"] = last_start_time
 
     except Exception as e:
         status["error"] = f"Failed to parse log file: {e}"

@@ -19,7 +19,7 @@ from backend.models.api import (
     ProjectPageWithPapers,
 )
 from backend.services.repository_service import RepositoryService
-from backend.services.project_page_service_simple import ProjectPageServiceSimple
+from backend.services.project_page_service import ProjectPageService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter()
@@ -170,7 +170,7 @@ async def get_project_pages(
     - Sorting options
     """
     try:
-        service = ProjectPageServiceSimple(db)
+        service = ProjectPageService(db)
         return service.get_project_pages(
             page=page,
             page_size=page_size,
@@ -196,7 +196,7 @@ async def get_project_page_by_id(
     Get a specific project page by its database ID.
     """
     try:
-        service = ProjectPageServiceSimple(db)
+        service = ProjectPageService(db)
         return service.get_project_page_by_id(page_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -241,7 +241,7 @@ async def get_project_pages_for_paper(
     Get all project pages associated with a specific paper.
     """
     try:
-        service = ProjectPageServiceSimple(db)
+        service = ProjectPageService(db)
         return service.get_project_pages_for_paper(paper_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -265,7 +265,7 @@ async def get_project_page_with_papers(
     with a project page, including relationship metadata like official status.
     """
     try:
-        service = ProjectPageServiceSimple(db)
+        service = ProjectPageService(db)
         return service.get_project_page_with_papers(page_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -292,7 +292,7 @@ async def get_paper_project_page_relationships(
     relationship metadata like official status and source information.
     """
     try:
-        service = ProjectPageServiceSimple(db)
+        service = ProjectPageService(db)
         return service.get_paper_project_page_relationships(
             paper_id=paper_id, project_page_id=project_page_id
         )
