@@ -144,8 +144,9 @@ Edit your crontab with `crontab -e` and add these entries:
 # PapersWithCode CRON Jobs - Hourly High-Performance Updates
 # RECOMMENDED for production - processes data 33-108x faster than daily jobs
 
-# Daily Hugging Face papers import at 3:00 AM UTC
-0 3 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
+# Hugging Face papers import at 3:00 AM UTC (Tuesday to Saturday only)
+# Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
+0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
 
 # Hourly GitHub stars update (4,500 repos/hour) - RECOMMENDED
 0 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_github_stars.py
@@ -162,8 +163,9 @@ Edit your crontab with `crontab -e` and add these entries:
 # PapersWithCode CRON Jobs - Daily Conservative Updates
 # Use only for development/testing or if you prefer lower API usage
 
-# Daily Hugging Face papers import at 3:00 AM UTC
-0 3 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
+# Hugging Face papers import at 3:00 AM UTC (Tuesday to Saturday only)
+# Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
+0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
 
 # Daily GitHub stars update at 4:00 AM UTC (1,000 repos/day)
 0 4 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/update_github_stars.py
@@ -204,10 +206,11 @@ Edit your crontab with `crontab -e` and add these entries:
 ### 📅 Daily Jobs (`daily/`) - Legacy/Backup
 
 #### 🤗 Hugging Face Daily Papers (`import_hf_daily_papers.py`)
-- **Schedule**: Daily at 3:00 AM UTC
+- **Schedule**: Tuesday to Saturday at 3:00 AM UTC (skips Sunday/Monday)
 - **Purpose**: Import curated daily papers from Hugging Face API
 - **Features**:
   - Fetches papers from previous day (e.g., if run on 2025-09-26, fetches 2025-09-25 papers)
+  - Only runs Tue-Sat since papers are submitted Mon-Fri on Hugging Face
   - Populates Papers, Authors, Repositories, and Project_pages tables
   - Enriches author profiles with Hugging Face data (avatars, Pro status, verification)
   - Extracts GitHub repository links and project page URLs

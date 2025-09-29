@@ -117,115 +117,28 @@ class BatchURLExtractor:
     def get_papers_missing_urls(
         self, db: Session, limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Get papers that need URL extraction."""
+        """Get papers that need URL extraction using the simplified urls_extracted field."""
 
         # Create start date from year
         start_date = f"{self.start_year}-01-01"
 
-        # REFINED PRIORITIZATION:
-        # 1. Highest: Never processed by AI + has neither GitHub nor project page
-        # 2. Medium: Never processed by AI + has only one type of URL (missing the other)
-        # 3. Lower: Processed by AI but missing URLs (with reprocessing control)
-        # 4. Skip: Has both URLs or was processed by AI with no results found
+        # SIMPLIFIED QUERY: Just check the urls_extracted flag
         query = """
-        SELECT DISTINCT
+        SELECT
             p.id,
             p.arxiv_id,
             p.title,
             p.abstract,
             p.date_published,
-            CASE WHEN repo_count.count > 0 THEN 1 ELSE 0 END as has_github_repo,
-            CASE WHEN page_count.count > 0 THEN 1 ELSE 0 END as has_project_page,
-            -- Check if paper has been processed by AI extraction (found URLs)
-            CASE WHEN ai_repo_count.count > 0 OR ai_page_count.count > 0 THEN 1 ELSE 0 END as processed_by_ai_with_results,
-            -- Check if paper was processed by AI but no URLs found (avoid reprocessing)
-            CASE WHEN ai_no_results.paper_id IS NOT NULL THEN 1 ELSE 0 END as processed_by_ai_no_results,
-            -- Refined priority system
-            CASE
-                -- Priority 0: Never processed by AI + has neither GitHub nor project page (HIGHEST)
-                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
-                     AND (repo_count.count IS NULL OR repo_count.count = 0)
-                     AND (page_count.count IS NULL OR page_count.count = 0) THEN 0
-
-                -- Priority 1: Never processed by AI + has only one type of URL (MEDIUM)
-                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
-                     AND ((repo_count.count > 0 AND (page_count.count IS NULL OR page_count.count = 0))
-                          OR (page_count.count > 0 AND (repo_count.count IS NULL OR repo_count.count = 0))) THEN 1
-
-                -- Priority 2: Processed by AI with results but missing one type of URL (LOWER)
-                WHEN (ai_repo_count.count > 0 OR ai_page_count.count > 0)
-                     AND ((repo_count.count IS NULL OR repo_count.count = 0)
-                          OR (page_count.count IS NULL OR page_count.count = 0)) THEN 2
-
-                -- Priority 999: Skip - has both URLs or was processed with no results
-                ELSE 999
-            END as priority
+            p.urls_extracted
         FROM papers p
-        LEFT JOIN (
-            SELECT pr.paper_id, COUNT(*) as count
-            FROM paper_repositories pr
-            GROUP BY pr.paper_id
-        ) repo_count ON p.id = repo_count.paper_id
-        LEFT JOIN (
-            SELECT ppp.paper_id, COUNT(*) as count
-            FROM paper_project_pages ppp
-            GROUP BY ppp.paper_id
-        ) page_count ON p.id = page_count.paper_id
-        LEFT JOIN (
-            -- Count AI-extracted repositories for this paper
-            SELECT pr.paper_id, COUNT(*) as count
-            FROM paper_repositories pr
-            JOIN repositories r ON pr.repository_id = r.id
-            WHERE r.source = 'ai_extraction'
-            GROUP BY pr.paper_id
-        ) ai_repo_count ON p.id = ai_repo_count.paper_id
-        LEFT JOIN (
-            -- Count AI-extracted project pages for this paper
-            SELECT ppp.paper_id, COUNT(*) as count
-            FROM paper_project_pages ppp
-            JOIN project_pages pp ON ppp.project_page_id = pp.id
-            WHERE pp.source = 'ai_extraction'
-            GROUP BY ppp.paper_id
-        ) ai_page_count ON p.id = ai_page_count.paper_id
-        LEFT JOIN (
-            -- Track papers processed by AI with no results (to avoid reprocessing)
-            -- Use a dedicated marker: empty repository with special URL pattern
-            SELECT DISTINCT pr.paper_id
-            FROM paper_repositories pr
-            JOIN repositories r ON pr.repository_id = r.id
-            WHERE r.source = 'ai_extraction'
-              AND r.url = 'AI_PROCESSED_NO_RESULTS'
-        ) ai_no_results ON p.id = ai_no_results.paper_id
         WHERE p.abstract IS NOT NULL
           AND p.abstract != ''
           AND p.arxiv_id IS NOT NULL
           AND p.arxiv_id != ''
-          AND LENGTH(p.abstract) > 100
           AND p.date_published >= :start_date
-          AND (
-              -- Only include papers with priority 0, 1, or 2 (skip priority 999)
-              CASE
-                -- Priority 0: Never processed + has neither URL
-                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
-                     AND (repo_count.count IS NULL OR repo_count.count = 0)
-                     AND (page_count.count IS NULL OR page_count.count = 0) THEN 0
-
-                -- Priority 1: Never processed + has only one URL
-                WHEN (ai_repo_count.count IS NULL AND ai_page_count.count IS NULL AND ai_no_results.paper_id IS NULL)
-                     AND ((repo_count.count > 0 AND (page_count.count IS NULL OR page_count.count = 0))
-                          OR (page_count.count > 0 AND (repo_count.count IS NULL OR repo_count.count = 0))) THEN 1
-
-                -- Priority 2: Processed with results but missing one URL
-                WHEN (ai_repo_count.count > 0 OR ai_page_count.count > 0)
-                     AND ((repo_count.count IS NULL OR repo_count.count = 0)
-                          OR (page_count.count IS NULL OR page_count.count = 0)) THEN 2
-
-                ELSE 999
-              END <= 2
-          )
+          AND p.urls_extracted = FALSE
         ORDER BY
-            -- Prioritize by refined priority system
-            priority,
             p.date_published DESC NULLS LAST,
             p.id DESC
         """
@@ -241,11 +154,7 @@ class BatchURLExtractor:
                 "arxiv_id": row.arxiv_id,
                 "title": row.title,
                 "abstract": row.abstract,
-                "has_github_repo": bool(row.has_github_repo),
-                "has_project_page": bool(row.has_project_page),
-                "processed_by_ai_with_results": bool(row.processed_by_ai_with_results),
-                "processed_by_ai_no_results": bool(row.processed_by_ai_no_results),
-                "priority": row.priority,
+                "urls_extracted": bool(row.urls_extracted),
             }
             for row in result
         ]
@@ -254,31 +163,10 @@ class BatchURLExtractor:
         if papers:
             logger.info("📋 Sample of papers to process:")
             for i, paper in enumerate(papers[:3]):  # Log first 3 papers
-                # Determine AI processing status
-                if paper["processed_by_ai_with_results"]:
-                    ai_status = "✅ Processed by AI (found URLs)"
-                elif paper["processed_by_ai_no_results"]:
-                    ai_status = "🔄 Processed by AI (no URLs found)"
-                else:
-                    ai_status = "🆕 Never processed by AI"
-
-                # Priority descriptions
-                priority_desc = {
-                    0: "🔥 Highest (never processed + no URLs)",
-                    1: "⚡ Medium (never processed + partial URLs)",
-                    2: "🔽 Lower (processed but missing URLs)",
-                }
-
                 logger.info(
                     f"  {i + 1}. {paper['arxiv_id']} - {paper['title'][:100]}..."
                 )
-                logger.info(
-                    f"     Has GitHub: {paper['has_github_repo']}, Has Project: {paper['has_project_page']}"
-                )
-                logger.info(f"     AI Status: {ai_status}")
-                logger.info(
-                    f"     Priority: {priority_desc.get(paper['priority'], f'Unknown ({paper["priority"]})')}"
-                )
+                logger.info(f"     URLs Extracted: {paper['urls_extracted']}")
                 logger.info(f"     Abstract length: {len(paper['abstract'])} chars")
 
         return papers
@@ -299,23 +187,39 @@ class BatchURLExtractor:
             return
 
         try:
-            # Insert GitHub repository if found and paper doesn't already have one
+            # Insert GitHub repository if found
             if github_url and github_url.strip():
-                # Check if paper already has ANY GitHub repository
-                existing_repo_check = """
-                SELECT COUNT(*) as repo_count
+                # Check if paper already has an official GitHub repository
+                # Consider hf_api, hf_recovery as "official" sources to preserve
+                existing_official_repo_query = """
+                SELECT r.id, r.url
                 FROM paper_repositories pr
                 JOIN repositories r ON pr.repository_id = r.id
                 WHERE pr.paper_id = :paper_id
+                  AND r.source IN ('hf_api', 'hf_recovery')
+                LIMIT 1
                 """
-                repo_count_result = db.execute(
-                    text(existing_repo_check), {"paper_id": paper_id}
+                existing_official_repo = db.execute(
+                    text(existing_official_repo_query), {"paper_id": paper_id}
                 ).fetchone()
 
-                if repo_count_result and repo_count_result.repo_count > 0:
-                    pass  # Already has repo, will be handled by skip logic
+                if existing_official_repo:
+                    logger.info(
+                        f"⏭️  Skipping GitHub repo (official exists): {existing_official_repo.url}"
+                    )
                 else:
-                    # First insert into repositories table (normalized - no paper_id)
+                    # Remove any existing non-official repos for this paper
+                    remove_non_official_repos = """
+                    DELETE FROM paper_repositories
+                    WHERE paper_id = :paper_id
+                      AND repository_id IN (
+                          SELECT id FROM repositories
+                          WHERE source NOT IN ('hf_api', 'hf_recovery')
+                      )
+                    """
+                    db.execute(text(remove_non_official_repos), {"paper_id": paper_id})
+
+                    # Insert new repository
                     repo_insert = """
                     INSERT INTO repositories (url, source, created_at, updated_at)
                     VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -329,7 +233,7 @@ class BatchURLExtractor:
 
                     if result:
                         repo_id = result.id
-                        # Then insert into junction table (only foreign keys)
+                        # Link to paper
                         junction_insert = """
                         INSERT INTO paper_repositories (paper_id, repository_id)
                         VALUES (:paper_id, :repository_id)
@@ -339,24 +243,45 @@ class BatchURLExtractor:
                             text(junction_insert),
                             {"paper_id": paper_id, "repository_id": repo_id},
                         )
-                        logger.info(f"💾 Saved GitHub repo: {github_url}")
+                        logger.info(
+                            f"💾 Saved GitHub repo (replaced non-official): {github_url}"
+                        )
 
-            # Insert project page if found and paper doesn't already have one
+            # Insert project page if found
             if project_page_url and project_page_url.strip():
-                # Check if paper already has ANY project page
-                existing_project_check = """
-                SELECT COUNT(*) as page_count
-                FROM paper_project_pages
-                WHERE paper_id = :paper_id
+                # Check if paper already has an official project page
+                # Consider hf_api, hf_recovery as "official" sources to preserve
+                existing_official_page_query = """
+                SELECT pp.id, pp.url
+                FROM paper_project_pages ppp
+                JOIN project_pages pp ON ppp.project_page_id = pp.id
+                WHERE ppp.paper_id = :paper_id
+                  AND pp.source IN ('hf_api', 'hf_recovery')
+                  AND pp.is_official = true
+                LIMIT 1
                 """
-                page_count_result = db.execute(
-                    text(existing_project_check), {"paper_id": paper_id}
+                existing_official_page = db.execute(
+                    text(existing_official_page_query), {"paper_id": paper_id}
                 ).fetchone()
 
-                if page_count_result and page_count_result.page_count > 0:
-                    pass  # Already has project page, will be handled by skip logic
+                if existing_official_page:
+                    logger.info(
+                        f"⏭️  Skipping project page (official exists): {existing_official_page.url}"
+                    )
                 else:
-                    # Check if project page already exists (no unique constraint, so we need to check manually)
+                    # Remove any existing non-official project pages for this paper
+                    remove_non_official_pages = """
+                    DELETE FROM paper_project_pages
+                    WHERE paper_id = :paper_id
+                      AND project_page_id IN (
+                          SELECT id FROM project_pages
+                          WHERE source NOT IN ('hf_api', 'hf_recovery')
+                             OR is_official = false
+                      )
+                    """
+                    db.execute(text(remove_non_official_pages), {"paper_id": paper_id})
+
+                    # Check if project page URL already exists
                     existing_page_query = """
                     SELECT id FROM project_pages WHERE url = :url LIMIT 1
                     """
@@ -367,6 +292,15 @@ class BatchURLExtractor:
 
                     if existing_page:
                         page_id = existing_page.id
+                        # Update to mark as official and from AI extraction
+                        update_page = """
+                        UPDATE project_pages
+                        SET is_official = true, source = :source, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :page_id
+                        """
+                        db.execute(
+                            text(update_page), {"source": source, "page_id": page_id}
+                        )
                     else:
                         # Insert new project page
                         page_insert = """
@@ -381,7 +315,7 @@ class BatchURLExtractor:
                         page_id = result.id if result else None
 
                     if page_id:
-                        # Then insert into junction table (only foreign keys)
+                        # Link to paper
                         junction_insert = """
                         INSERT INTO paper_project_pages (paper_id, project_page_id)
                         VALUES (:paper_id, :project_page_id)
@@ -391,37 +325,23 @@ class BatchURLExtractor:
                             text(junction_insert),
                             {"paper_id": paper_id, "project_page_id": page_id},
                         )
-                        logger.info(f"💾 Saved project page: {project_page_url}")
+                        logger.info(
+                            f"💾 Saved project page (replaced non-official): {project_page_url}"
+                        )
 
-            # If no URLs were found, create a marker to avoid reprocessing
-            if not github_url and not project_page_url:
-                # Insert a special marker to indicate this paper was processed but no URLs found
-                marker_insert = """
-                INSERT INTO repositories (url, source, created_at, updated_at)
-                VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                RETURNING id
-                """
-                result = db.execute(
-                    text(marker_insert),
-                    {"url": "AI_PROCESSED_NO_RESULTS", "source": source},
-                ).fetchone()
+            # Always mark the paper as processed (regardless of whether URLs were found)
+            update_paper = """
+            UPDATE papers
+            SET urls_extracted = TRUE, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :paper_id
+            """
+            db.execute(text(update_paper), {"paper_id": paper_id})
 
-                if result:
-                    marker_id = result.id
-                    # Link this marker to the paper
-                    junction_insert = """
-                    INSERT INTO paper_repositories (paper_id, repository_id)
-                    VALUES (:paper_id, :repository_id)
-                    ON CONFLICT DO NOTHING
-                    """
-                    db.execute(
-                        text(junction_insert),
-                        {"paper_id": paper_id, "repository_id": marker_id},
-                    )
-                    logger.info(
-                        f"🔄 Marked paper {paper_id} as processed with no URLs found"
-                    )
+            # Log the processing status
+            if github_url or project_page_url:
+                logger.info(f"✅ Marked paper {paper_id} as processed with URLs found")
+            else:
+                logger.info(f"🔄 Marked paper {paper_id} as processed (no URLs found)")
 
             db.commit()
 
@@ -433,8 +353,6 @@ class BatchURLExtractor:
         """Process a single paper using the unified get_project_github_urls function."""
         arxiv_id = paper["arxiv_id"]
         paper_id = paper["id"]
-        has_github_repo = paper.get("has_github_repo", False)
-        has_project_page = paper.get("has_project_page", False)
         abstract = paper["abstract"]
 
         try:
@@ -473,55 +391,31 @@ class BatchURLExtractor:
                 github_url = ""
                 project_page_url = ""
 
-            # Only process URLs for papers that don't already have them
-            final_github_url = github_url if not has_github_repo else ""
-            final_project_page_url = project_page_url if not has_project_page else ""
-
-            # Track what we're skipping and update stats
-            skip_reasons = []
-            if has_github_repo and github_url:
-                skip_reasons.append("GitHub (already exists)")
-                self.stats["github_skipped_existing"] += 1
-            if has_project_page and project_page_url:
-                skip_reasons.append("Project page (already exists)")
-                self.stats["project_page_skipped_existing"] += 1
-
-            if skip_reasons:
-                logger.info(f"⏭️  {arxiv_id}: Skipped {', '.join(skip_reasons)}")
-
             # Save results with appropriate source
             source = "ai_extraction"
 
             self.save_results_to_db(
                 db,
                 paper_id,
-                final_github_url,
-                final_project_page_url,
+                github_url,
+                project_page_url,
                 source,
             )
 
             # Update stats
             self.stats["papers_processed"] += 1
-            if final_github_url:
+            if github_url:
                 self.stats["papers_with_github"] += 1
             if project_page_url:
                 self.stats["papers_with_project_page"] += 1
-            if final_github_url and project_page_url:
+            if github_url and project_page_url:
                 self.stats["papers_with_both"] += 1
-            if not final_github_url and not project_page_url:
+            if not github_url and not project_page_url:
                 self.stats["papers_with_neither"] += 1
 
             # Final status summary
-            github_final = (
-                "✅ Saved"
-                if final_github_url
-                else ("⏭️ Skipped" if has_github_repo else "❌ None")
-            )
-            project_final = (
-                "✅ Saved"
-                if final_project_page_url
-                else ("⏭️ Skipped" if has_project_page else "❌ None")
-            )
+            github_final = "✅ Saved" if github_url else "❌ None"
+            project_final = "✅ Saved" if project_page_url else "❌ None"
             logger.info(
                 f"✅ {arxiv_id}: GitHub={github_final}, Project={project_final}"
             )
@@ -529,7 +423,7 @@ class BatchURLExtractor:
             return {
                 "paper_id": paper_id,
                 "arxiv_id": arxiv_id,
-                "github_url": final_github_url,
+                "github_url": github_url,
                 "project_page_url": project_page_url,
                 "success": True,
             }

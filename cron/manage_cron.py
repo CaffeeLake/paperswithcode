@@ -5,10 +5,10 @@ CRON Job Management Script
 Utility script to manage and monitor cron jobs for the PapersWithCode project.
 
 Usage:
-    python cron/manage_cron.py status [job_name] [date]
-    python cron/manage_cron.py list
-    python cron/manage_cron.py test <job_name>
-    python cron/manage_cron.py cleanup
+    uv run cron/manage_cron.py status [job_name] [date]
+    uv run cron/manage_cron.py list
+    uv run cron/manage_cron.py test <job_name>
+    uv run cron/manage_cron.py cleanup
 """
 
 import argparse

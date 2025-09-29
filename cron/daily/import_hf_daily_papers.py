@@ -41,6 +41,19 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         """Main execution logic for Hugging Face daily papers import."""
         self.logger.info("Starting Hugging Face daily papers import")
 
+        # Check if today is a valid day to run (Tuesday to Saturday)
+        # Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
+        today = datetime.now()
+        weekday = today.weekday()  # Monday=0, Sunday=6
+
+        # Skip on Sunday (6) and Monday (0) - only run Tuesday (1) to Saturday (5)
+        if weekday in [0, 6]:  # Monday or Sunday
+            day_name = today.strftime("%A")
+            self.logger.info(
+                f"Skipping import on {day_name} - papers are only submitted Mon-Fri on Hugging Face"
+            )
+            return
+
         # Get yesterday's date
         yesterday = datetime.now() - timedelta(days=1)
         target_date = yesterday.strftime("%Y-%m-%d")
