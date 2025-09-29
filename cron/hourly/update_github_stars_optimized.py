@@ -166,6 +166,31 @@ def update_repository_group_stars(repository_ids: List[int], num_stars: int):
         gc.collect()
 
 
+def mark_repository_group_as_failed(repository_ids: List[int]):
+    """Mark repositories as processed even if API call failed to prevent infinite loops."""
+    query = """
+    UPDATE repositories
+    SET num_stars_updated_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ANY(%s)
+    """
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(query, (repository_ids,))
+            conn.commit()
+            return cursor.rowcount
+    except Exception as e:
+        log(f"Failed to mark repo group as processed {repository_ids}: {e}")
+        return 0
+    finally:
+        if conn:
+            conn.close()
+        gc.collect()
+
+
 def check_memory_usage():
     """Check current memory usage and return available memory in MB."""
     try:
@@ -249,6 +274,12 @@ def main():
                 log(
                     f"Confirmed {owner}/{name} ({url_count} URLs, {priority_text}): {stars} stars (no change)"
                 )
+        else:
+            # API call failed - mark as processed to prevent infinite loops
+            mark_repository_group_as_failed(repository_ids)
+            log(
+                f"API failed for {owner}/{name} - marked as processed to avoid infinite loop"
+            )
 
         processed_groups += 1
 
