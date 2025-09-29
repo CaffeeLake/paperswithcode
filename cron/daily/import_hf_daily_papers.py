@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
 from backend.utils.verify_url import verify_url
+from backend.utils.github_utils import parse_github_url
 
 
 class HuggingFaceDailyPapersJob(DatabaseCronJob):
@@ -363,7 +364,7 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             return
 
         # Parse owner and name from URL
-        owner, name = self.parse_github_url(github_url)
+        owner, name = parse_github_url(github_url)
 
         # Check if repository already exists (by URL)
         query = "SELECT id FROM repositories WHERE url = %s"
@@ -493,17 +494,6 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             )
         except Exception:
             return False
-
-    def parse_github_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """Parse GitHub URL to extract owner and repository name."""
-        try:
-            parsed = urlparse(url)
-            path_parts = parsed.path.strip("/").split("/")
-            if len(path_parts) >= 2:
-                return path_parts[0], path_parts[1]
-        except Exception:
-            pass
-        return None, None
 
 
 if __name__ == "__main__":

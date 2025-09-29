@@ -36,6 +36,7 @@ from backend.genai_steps.extract_github_and_project_page_url import (
 )
 from backend.generators.openrouter_generator import OpenRouterGenerator
 from backend.database.logging_config import setup_logging
+from backend.utils.github_utils import parse_github_url
 
 # Set up logging with INFO level for clean extraction results
 logger = setup_logging("batch_extract", log_level=logging.INFO)
@@ -219,29 +220,45 @@ class BatchURLExtractor:
                     """
                     db.execute(text(remove_non_official_repos), {"paper_id": paper_id})
 
+                    # Extract owner and name from GitHub URL
+                    owner, name = parse_github_url(github_url.strip())
+
                     # Insert new repository
                     repo_insert = """
-                    INSERT INTO repositories (url, source, created_at, updated_at)
-                    VALUES (:url, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (url) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                    INSERT INTO repositories (url, owner, name, source, created_at, updated_at)
+                    VALUES (:url, :owner, :name, :source, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (url) DO UPDATE SET
+                        owner = EXCLUDED.owner,
+                        name = EXCLUDED.name,
+                        updated_at = CURRENT_TIMESTAMP
                     RETURNING id
                     """
                     result = db.execute(
                         text(repo_insert),
-                        {"url": github_url.strip(), "source": source},
+                        {
+                            "url": github_url.strip(),
+                            "owner": owner,
+                            "name": name,
+                            "source": source,
+                        },
                     ).fetchone()
 
                     if result:
                         repo_id = result.id
-                        # Link to paper
+                        # Link to paper with is_official = True
                         junction_insert = """
-                        INSERT INTO paper_repositories (paper_id, repository_id)
-                        VALUES (:paper_id, :repository_id)
-                        ON CONFLICT DO NOTHING
+                        INSERT INTO paper_repositories (paper_id, repository_id, is_official)
+                        VALUES (:paper_id, :repository_id, :is_official)
+                        ON CONFLICT (paper_id, repository_id) DO UPDATE SET
+                            is_official = EXCLUDED.is_official
                         """
                         db.execute(
                             text(junction_insert),
-                            {"paper_id": paper_id, "repository_id": repo_id},
+                            {
+                                "paper_id": paper_id,
+                                "repository_id": repo_id,
+                                "is_official": True,
+                            },
                         )
                         logger.info(
                             f"💾 Saved GitHub repo (replaced non-official): {github_url}"
