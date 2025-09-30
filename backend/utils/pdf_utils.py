@@ -184,14 +184,56 @@ def cleanup_image_files(image_paths: List[str]):
             pass
 
 
+def _is_valid_pdf(content: bytes) -> tuple[bool, str]:
+    """
+    Check if the downloaded content is a valid PDF file.
+
+    Args:
+        content: The downloaded file content
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    # Check PDF magic bytes (PDF files start with "%PDF-")
+    if not content.startswith(b"%PDF-"):
+        # Check if it's HTML (common for reCAPTCHA pages)
+        if content.startswith(b"<!DOCTYPE") or content.startswith(b"<html"):
+            if b"recaptcha" in content.lower() or b"captcha" in content.lower():
+                return False, "ArXiv returned reCAPTCHA page (rate limited)"
+            return False, "ArXiv returned HTML page instead of PDF"
+        return False, "Downloaded file is not a valid PDF (missing PDF magic bytes)"
+
+    # Additional validation: check if file ends properly
+    # PDF files should end with "%%EOF" (possibly followed by whitespace)
+    content_stripped = content.rstrip()
+    if not content_stripped.endswith(b"%%EOF"):
+        return False, "Downloaded file appears to be truncated (missing PDF EOF marker)"
+
+    # Check minimum size (valid PDFs are typically at least 1KB)
+    if len(content) < 1024:
+        return (
+            False,
+            f"Downloaded file too small ({len(content)} bytes) to be a valid PDF",
+        )
+
+    return True, ""
+
+
 @asynccontextmanager
 async def temp_pdf_download(arxiv_id: str):
     """
     Temporarily download a PDF from arXiv asynchronously.
+
+    Validates that the downloaded file is actually a PDF and not HTML (e.g., reCAPTCHA page).
+
+    Raises:
+        aiohttp.ClientError: If HTTP request fails (includes 429 rate limiting)
+        asyncio.TimeoutError: If download times out
+        IOError: If file cannot be saved
+        Exception: If downloaded file is not a valid PDF or for other critical failures
     """
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        filepath = None
         try:
             # Get the PDF URL
             pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
@@ -200,8 +242,17 @@ async def temp_pdf_download(arxiv_id: str):
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(pdf_url) as response:
+                    # Check for rate limiting specifically
+                    if response.status == 429:
+                        raise Exception(f"ArXiv rate limit (429) for {arxiv_id}")
+
                     response.raise_for_status()  # Raise an exception for bad responses
                     content = await response.read()
+
+            # Validate that the content is actually a PDF
+            is_valid, error_msg = _is_valid_pdf(content)
+            if not is_valid:
+                raise Exception(f"Failed to download PDF for {arxiv_id}: {error_msg}")
 
             # Generate a filename for the PDF
             filename = f"{arxiv_id}.pdf"
@@ -214,8 +265,10 @@ async def temp_pdf_download(arxiv_id: str):
             print(f"PDF downloaded successfully to temporary location: {filepath}")
 
         except Exception as e:
-            print(f"An error occurred while downloading PDF at {pdf_url}: {str(e)}")
-            filepath = None
+            # Add context to the error and re-raise
+            error_msg = f"Failed to download PDF for {arxiv_id}: {str(e)}"
+            print(error_msg)
+            raise Exception(error_msg) from e
 
         try:
             yield filepath
@@ -344,3 +397,16 @@ async def extract_first_two_pages_pymupdf(input_path: str) -> str:
     This version runs synchronous file operations in a separate thread.
     """
     return await extract_first_two_pages_pymupdf_sync(input_path)
+
+
+if __name__ == "__main__":
+
+    async def main():
+        async with temp_pdf_download(arxiv_id="2509.22622") as pdf_path:
+            print("Successfully downloaded PDF to: ", pdf_path)
+
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(e)
+    print("Done")

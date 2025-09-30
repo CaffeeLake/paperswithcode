@@ -261,6 +261,9 @@ async def get_project_github_urls(
 
     Returns:
         Tuple of (reasoning, response_dict)
+
+    Raises:
+        Exception: If rate limiting, quota exceeded, or PDF download fails
     """
     reasoning = ""
     github_url = ""
@@ -284,34 +287,45 @@ async def get_project_github_urls(
             "Not all URLs found with simple methods, downloading PDF and trying LLM..."
         )
 
-        async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
-            if pdf_path:
-                try:
-                    pdf_path_processed = await extract_first_two_pages_pymupdf(pdf_path)
+        try:
+            async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
+                pdf_path_processed = await extract_first_two_pages_pymupdf(pdf_path)
 
-                    # Try PDF-based project page extraction if not found yet
-                    if not project_page_url:
-                        project_page_url = await find_project_page_url(
-                            pdf_path=pdf_path_processed
-                        )
+                # Try PDF-based project page extraction if not found yet
+                if not project_page_url:
+                    project_page_url = await find_project_page_url(
+                        pdf_path=pdf_path_processed
+                    )
 
-                    # Use LLM if still missing URLs
-                    if not github_url or not project_page_url:
-                        reasoning, llm_response = await _extract_urls_with_llm(
-                            arxiv_id, pdf_path_processed, abstract, use_reasoning
-                        )
+                # Use LLM if still missing URLs
+                if not github_url or not project_page_url:
+                    reasoning, llm_response = await _extract_urls_with_llm(
+                        arxiv_id, pdf_path_processed, abstract, use_reasoning
+                    )
 
-                        if not github_url and llm_response.get("github_url"):
-                            github_url = llm_response["github_url"]
-                        if not project_page_url and llm_response.get(
-                            "project_page_url"
-                        ):
-                            project_page_url = llm_response["project_page_url"]
+                    if not github_url and llm_response.get("github_url"):
+                        github_url = llm_response["github_url"]
+                    if not project_page_url and llm_response.get("project_page_url"):
+                        project_page_url = llm_response["project_page_url"]
 
-                except Exception as e:
-                    print(f"Failed to process PDF: {e}")
-            else:
-                print("Failed to download PDF, skipping PDF-based extraction")
+        except Exception as e:
+            # Re-raise critical errors (rate limiting, quota, PDF download failures, reCAPTCHA)
+            error_str = str(e).lower()
+            is_critical = (
+                "rate limit" in error_str
+                or "429" in str(e)
+                or "quota" in error_str
+                or "failed to download pdf" in error_str
+                or "recaptcha" in error_str
+                or "captcha" in error_str
+            )
+
+            if is_critical:
+                raise  # Re-raise as-is with full context
+
+            # For non-critical errors, log and continue with whatever URLs we found
+            print(f"Non-critical error during PDF processing: {e}")
+            # Continue with github_url and project_page_url as they are (may be empty)
 
     response = {
         "github_url": github_url,
@@ -375,6 +389,14 @@ async def _extract_urls_with_llm(
 
     except Exception as e:
         logger.error(f"LLM extraction failed for {arxiv_id}: {e}")
+        # Re-raise critical errors that should stop processing
+        if (
+            "rate limit" in str(e).lower()
+            or "429" in str(e)
+            or "quota exceeded" in str(e).lower()
+        ):
+            raise Exception(f"Rate limit or quota error: {e}") from e
+        # For other errors, return empty results
         return "", {"github_url": "", "project_page_url": ""}
     finally:
         # Clean up query-specific image files

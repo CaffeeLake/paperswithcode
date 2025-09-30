@@ -72,6 +72,7 @@ class BatchURLExtractor:
             "github_skipped_existing": 0,
             "project_page_skipped_existing": 0,
             "api_errors": 0,
+            "papers_skipped_critical_errors": 0,  # Papers not marked as processed due to errors
             "start_time": time.time(),
         }
 
@@ -180,7 +181,12 @@ class BatchURLExtractor:
         project_page_url: str,
         source: str = "ai_extraction",
     ) -> None:
-        """Save extracted URLs to the database using service layer methods."""
+        """Save extracted URLs to the database using service layer methods.
+
+        Note: This function ALWAYS marks the paper as urls_extracted = TRUE.
+        Only call this when extraction was successful (even if no URLs found).
+        Do NOT call for critical errors like rate limiting or PDF download failures.
+        """
         if self.dry_run:
             logger.info(
                 f"[DRY RUN] Paper {paper_id}: Would save GitHub={github_url}, Project={project_page_url}"
@@ -296,14 +302,47 @@ class BatchURLExtractor:
                 )
 
             except Exception as e:
-                logger.error(
-                    f"❌ Error calling get_project_github_urls for {arxiv_id}: {e}"
-                )
-                self.stats["api_errors"] += 1
-                github_url = ""
-                project_page_url = ""
+                error_str = str(e).lower()
 
-            # Save results with appropriate source
+                # Check if it's a critical error that should stop processing this paper
+                is_rate_limit = "rate limit" in error_str or "429" in str(e)
+                is_quota_exceeded = (
+                    "quota exceeded" in error_str or "daily quota" in error_str
+                )
+                is_pdf_download_fail = "failed to download pdf" in error_str
+                is_recaptcha = "recaptcha" in error_str or "captcha" in error_str
+
+                if (
+                    is_rate_limit
+                    or is_quota_exceeded
+                    or is_pdf_download_fail
+                    or is_recaptcha
+                ):
+                    # Critical errors - do NOT mark as processed
+                    logger.error(
+                        f"❌ Critical error for {arxiv_id} (will not mark as processed): {e}"
+                    )
+                    self.stats["api_errors"] += 1
+                    self.stats["papers_skipped_critical_errors"] += 1
+                    return {
+                        "paper_id": paper_id,
+                        "arxiv_id": arxiv_id,
+                        "github_url": "",
+                        "project_page_url": "",
+                        "error": str(e),
+                        "success": False,
+                        "should_retry": True,  # Flag for retry
+                    }
+                else:
+                    # Non-critical errors - treat as "no URLs found"
+                    logger.warning(
+                        f"⚠️  Non-critical error for {arxiv_id} (will mark as processed): {e}"
+                    )
+                    self.stats["api_errors"] += 1
+                    github_url = ""
+                    project_page_url = ""
+
+            # Save results with appropriate source (only if no critical error)
             source = "ai_extraction"
 
             self.save_results_to_db(
@@ -407,6 +446,9 @@ class BatchURLExtractor:
             )
 
         print(f"⚠️  API Errors: {self.stats['api_errors']}")
+        print(
+            f"🚫 Papers Skipped (Critical Errors): {self.stats['papers_skipped_critical_errors']}"
+        )
         print(
             f"⏭️  GitHub URLs Skipped (existing): {self.stats['github_skipped_existing']}"
         )
