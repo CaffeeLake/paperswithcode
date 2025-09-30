@@ -28,13 +28,15 @@ Performance Improvement:
 import sys
 import time
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional, Any
 import httpx
 from dataclasses import dataclass
 
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
+from backend.services.paper_service import PaperService
+from backend.database.connection import get_database_session
 
 
 @dataclass
@@ -56,6 +58,10 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
     def __init__(self):
         super().__init__(job_name="update_citations_hourly", log_level="INFO")
         self.settings = get_settings()
+
+        # Initialize paper service - get the actual session from the generator
+        self.db_session = next(get_database_session())
+        self.paper_service = PaperService(self.db_session)
 
         # Semantic Scholar API configuration
         self.api_key = "6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa"
@@ -118,23 +124,10 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
     def get_papers_count(self) -> int:
         """Get count of papers that need citation updates."""
-        threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
-
-        # Count query for memory-efficient processing
-        count_query = """
-        SELECT COUNT(*)
-        FROM papers
-        WHERE is_latest_version = true
-          AND arxiv_id IS NOT NULL
-          AND (
-              citation_updated_at IS NULL
-              OR citation_updated_at < %s
-          )
-        """
-
         try:
-            result = self.execute_query(count_query, (threshold_date,))
-            count = result[0]["count"] if result else 0
+            count = self.paper_service.get_papers_needing_citation_update_count(
+                self.update_threshold_days
+            )
             self.stats["papers_found"] = count
             return count
         except Exception as e:
@@ -143,48 +136,10 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
     def get_papers_chunk(self, offset: int, limit: int) -> List[Dict]:
         """Get a chunk of papers that need citation updates."""
-        threshold_date = datetime.now() - timedelta(days=self.update_threshold_days)
-
-        # Chunk query for streaming processing with priority information
-        query = """
-        SELECT
-            id,
-            arxiv_id,
-            title,
-            citation_count,
-            citation_updated_at,
-            date_published,
-            -- Priority indicators for logging
-            CASE WHEN citation_updated_at IS NULL THEN 'NEVER_UPDATED'
-                 WHEN citation_count = 0 THEN 'ZERO_CITATIONS'
-                 ELSE 'REFRESH' END as priority_type
-        FROM papers
-        WHERE is_latest_version = true
-          AND arxiv_id IS NOT NULL
-          AND (
-              citation_updated_at IS NULL
-              OR citation_updated_at < %s
-          )
-        ORDER BY
-            -- Prioritize papers never updated (highest priority)
-            CASE WHEN citation_updated_at IS NULL THEN 0 ELSE 1 END,
-            -- Then prioritize papers with 0 citations (may have gained citations)
-            CASE WHEN citation_count = 0 THEN 1 ELSE 2 END,
-            -- Then prioritize high-citation years (2017-2024)
-            CASE
-                WHEN EXTRACT(YEAR FROM date_published) BETWEEN 2019 AND 2022 THEN 1
-                WHEN EXTRACT(YEAR FROM date_published) BETWEEN 2017 AND 2018 THEN 2
-                WHEN EXTRACT(YEAR FROM date_published) BETWEEN 2023 AND 2024 THEN 3
-                ELSE 4
-            END,
-            -- Within each tier, oldest updates first
-            citation_updated_at ASC NULLS FIRST,
-            id ASC
-        LIMIT %s OFFSET %s
-        """
-
         try:
-            results = self.execute_query(query, (threshold_date, limit, offset))
+            results = self.paper_service.get_papers_needing_citation_update_chunk(
+                offset, limit, self.update_threshold_days
+            )
             return results
         except Exception as e:
             self.logger.error(
@@ -426,49 +381,28 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
             return
 
         try:
-            # Process successful updates
-            successful_results = [
-                r for r in results if r.success and r.semantic_scholar_id
-            ]
-            if successful_results:
-                for result in successful_results:
-                    query = """
-                    UPDATE papers
-                    SET citation_count = %s,
-                        semantic_scholar_id = %s,
-                        citation_updated_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """
-                    self.execute_query(
-                        query,
-                        (
-                            result.citation_count,
-                            result.semantic_scholar_id,
-                            result.paper_id,
-                        ),
-                    )
-
-                self.stats["citations_updated"] += len(successful_results)
-                self.logger.debug(
-                    f"Updated {len(successful_results)} papers with citations"
+            # Convert CitationResult objects to dictionaries for the paper service
+            citation_updates = []
+            for result in results:
+                citation_updates.append(
+                    {
+                        "paper_id": result.paper_id,
+                        "citation_count": result.citation_count,
+                        "semantic_scholar_id": result.semantic_scholar_id,
+                        "success": result.success,
+                    }
                 )
 
-            # Process failed updates (mark as processed to avoid re-processing)
-            failed_results = [
-                r for r in results if not r.success or not r.semantic_scholar_id
-            ]
-            if failed_results:
-                for result in failed_results:
-                    query = """
-                    UPDATE papers
-                    SET citation_updated_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """
-                    self.execute_query(query, (result.paper_id,))
+            # Use paper service to update citations in batch
+            update_stats = self.paper_service.update_citation_counts_batch(
+                citation_updates
+            )
 
-                self.logger.debug(f"Marked {len(failed_results)} papers as processed")
+            self.stats["citations_updated"] += update_stats["updated"]
+            self.logger.debug(
+                f"Updated {update_stats['updated']} papers with citations, "
+                f"marked {update_stats['failed']} as processed"
+            )
 
         except Exception as e:
             self.logger.error(f"Error updating citations batch: {e}")
@@ -512,35 +446,32 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
     def log_citation_statistics_brief(self):
         """Log brief citation statistics for hourly jobs."""
         try:
-            query = """
-            SELECT
-                COUNT(*) as total_papers,
-                COUNT(CASE WHEN citation_updated_at IS NOT NULL THEN 1 END) as papers_processed,
-                COUNT(CASE WHEN citation_count > 0 THEN 1 END) as papers_with_citations
-            FROM papers
-            WHERE is_latest_version = true
-            """
+            stats = self.paper_service.get_citation_statistics()
 
-            result = self.execute_query(query)
-            if result:
-                stats = result[0]
-                processed_pct = (
-                    (stats["papers_processed"] / stats["total_papers"]) * 100
-                    if stats["total_papers"] > 0
-                    else 0
-                )
-                self.logger.info(
-                    f"  - Overall progress: {processed_pct:.1f}% ({stats['papers_processed']:,}/{stats['total_papers']:,})"
-                )
-                self.logger.info(
-                    f"  - Papers with citations: {stats['papers_with_citations']:,}"
-                )
+            self.logger.info(
+                f"  - Overall progress: {stats['processed_percentage']:.1f}% "
+                f"({stats['papers_processed']:,}/{stats['total_papers']:,})"
+            )
+            self.logger.info(
+                f"  - Papers with citations: {stats['papers_with_citations']:,}"
+            )
 
         except Exception as e:
             self.logger.error(f"Error getting citation statistics: {e}")
 
+    def cleanup(self):
+        """Clean up database connections."""
+        try:
+            if hasattr(self, "db_session") and self.db_session:
+                self.db_session.close()
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+
 
 if __name__ == "__main__":
     job = CitationHourlyUpdateJob()
-    success = job.execute()
+    try:
+        success = job.execute()
+    finally:
+        job.cleanup()
     sys.exit(0 if success else 1)

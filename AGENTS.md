@@ -6,6 +6,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 
+Replace statements like `DBPaper.is_latest_version == True` by just `DBPaper.is_latest_version`. Similarly, when you need to write something like `DBPaper.urls_extracted == False`, write `not DBPaper.urls_extracted` instead.
+
 To authenticate and connect to the PostGreSQL database, see `docs/POSTGRESQL_GUIDE.md` for details.
 
 Hardware: everything is run on a Hetzner VPS with 4GB of RAM and 80GB of disk space. Hence a lot of scripts are optimized to deal with the low RAM.

@@ -8,7 +8,7 @@ to our database schema. The main differences from the original API:
 - Enhanced URL construction based on our schema design
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -67,6 +67,22 @@ class Paper(BaseModel):
     )
     semantic_scholar_id: Optional[str] = Field(
         None, description="Semantic Scholar paper ID"
+    )
+    citation_updated_at: Optional[datetime] = Field(
+        None, description="Last time citations were updated"
+    )
+
+    # ArXiv category classification
+    primary_category: Optional[str] = Field(
+        None, description="Primary ArXiv category (e.g., cs.CV, cs.LG)"
+    )
+    all_categories: List[str] = Field(
+        default_factory=list, description="All ArXiv categories for this paper"
+    )
+
+    # URL extraction tracking
+    urls_extracted: bool = Field(
+        default=False, description="Whether URLs have been extracted for this paper"
     )
 
     # Associated resources (optional, populated when requested)

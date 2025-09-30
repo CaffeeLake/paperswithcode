@@ -9,9 +9,11 @@ the new many-to-many relationship structure, including:
 - Managing repository metadata (stars, owner, etc.)
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, func
+from sqlalchemy import desc, asc, func, case
+import logging
 
 from backend.models.database import (
     Repository as DBRepository,
@@ -26,6 +28,8 @@ from backend.models.api import (
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class RepositoryService:
@@ -148,10 +152,9 @@ class RepositoryService:
                 if include_paper_count or order_by == "paper_count":
                     repo, paper_count = result
                     api_repo = self._db_repository_to_api(repo)
-                    # Add paper count as extra field (not in the base model)
-                    api_repo_dict = api_repo.model_dump()
-                    api_repo_dict["paper_count"] = paper_count
-                    api_repositories.append(api_repo_dict)
+                    # Note: paper_count is lost here since Repository model doesn't have this field
+                    # This is a limitation of the current API model design
+                    api_repositories.append(api_repo)
                 else:
                     api_repositories.append(self._db_repository_to_api(result))
 
@@ -329,7 +332,6 @@ class RepositoryService:
         owner: Optional[str] = None,
         name: Optional[str] = None,
         num_stars: int = 0,
-        is_official: bool = False,
         source: str = "unknown",
     ) -> Repository:
         """
@@ -340,7 +342,6 @@ class RepositoryService:
             owner: Repository owner
             name: Repository name
             num_stars: Number of stars
-            is_official: Whether repository is generally official
             source: Data source
 
         Returns:
@@ -359,9 +360,6 @@ class RepositoryService:
                 existing_repo.num_stars = max(
                     num_stars, existing_repo.num_stars
                 )  # Keep highest star count
-                existing_repo.is_official = (
-                    is_official or existing_repo.is_official
-                )  # Keep true if any source says official
                 # Don't update source - keep original
 
                 self.db.commit()
@@ -373,7 +371,6 @@ class RepositoryService:
                     owner=owner,
                     name=name,
                     num_stars=num_stars,
-                    is_official=is_official,
                     source=source,
                 )
 
@@ -390,7 +387,6 @@ class RepositoryService:
         paper_id: str,
         repository_id: str,
         is_official: bool = False,
-        source: str = "unknown",
     ) -> PaperRepository:
         """
         Associate a repository with a paper.
@@ -399,7 +395,6 @@ class RepositoryService:
             paper_id: Paper ID
             repository_id: Repository ID
             is_official: Whether this repository is official for this paper
-            source: Source of this relationship
 
         Returns:
             PaperRepository object
@@ -440,7 +435,6 @@ class RepositoryService:
                 existing_association.is_official = (
                     is_official or existing_association.is_official
                 )
-                existing_association.source = source
                 self.db.commit()
 
                 # Return API model with embedded repository data
@@ -448,11 +442,6 @@ class RepositoryService:
                 return PaperRepository(
                     paper_id=paper_id,
                     repository_id=repository_id,
-                    is_official=existing_association.is_official,
-                    source=existing_association.source,
-                    created_at=existing_association.created_at.date()
-                    if existing_association.created_at
-                    else None,
                     repository=api_repo,
                 )
 
@@ -461,7 +450,6 @@ class RepositoryService:
                 paper_id=int(paper_id),
                 repository_id=int(repository_id),
                 is_official=is_official,
-                source=source,
             )
 
             self.db.add(new_association)
@@ -472,11 +460,6 @@ class RepositoryService:
             return PaperRepository(
                 paper_id=paper_id,
                 repository_id=repository_id,
-                is_official=is_official,
-                source=source,
-                created_at=new_association.created_at.date()
-                if new_association.created_at
-                else None,
                 repository=api_repo,
             )
 
@@ -546,7 +529,6 @@ class RepositoryService:
                 owner=owner,
                 name=name,
                 num_stars=num_stars,
-                is_official=is_official,
                 source=source,
             )
 
@@ -555,7 +537,6 @@ class RepositoryService:
                 paper_id=paper_id,
                 repository_id=repository.id,
                 is_official=is_official,
-                source=source,
             )
 
             return repository
@@ -590,3 +571,244 @@ class RepositoryService:
             if db_repository.updated_at
             else None,
         )
+
+    def get_next_repository_group_for_stars_update(
+        self, threshold_days: int = 7
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the next unique repository (by owner/name) that needs star count updating.
+        Returns all repository IDs that share the same owner/name.
+
+        This method groups repositories by owner/name to avoid duplicate API calls
+        for the same GitHub repository (e.g., different subdirectories).
+
+        Args:
+            threshold_days: Only get repositories older than this many days
+
+        Returns:
+            Dictionary with repository group information:
+            - owner: Repository owner
+            - name: Repository name
+            - repository_ids: List of repository IDs sharing this owner/name
+            - url_count: Number of URLs for this repository
+            - oldest_update: Oldest update timestamp
+            - current_stars: Current star count
+            - priority: Priority level (1=never updated, 2=needs refresh)
+        """
+        try:
+            threshold_date = datetime.now() - timedelta(days=threshold_days)
+
+            # Create priority for never-updated repositories with 0 stars
+            priority_case = case(
+                (
+                    (func.min(DBRepository.num_stars_updated_at).is_(None))
+                    & (func.max(DBRepository.num_stars) == 0),
+                    1,
+                ),
+                else_=2,
+            )
+
+            # Query to group by owner/name and get all matching repository IDs
+            result = (
+                self.db.query(
+                    DBRepository.owner,
+                    DBRepository.name,
+                    func.array_agg(DBRepository.id).label("repository_ids"),
+                    func.count(DBRepository.id).label("url_count"),
+                    func.min(DBRepository.num_stars_updated_at).label("oldest_update"),
+                    func.max(DBRepository.num_stars).label("current_stars"),
+                    priority_case.label("priority"),
+                )
+                .filter(
+                    DBRepository.owner.is_not(None),
+                    DBRepository.name.is_not(None),
+                    DBRepository.owner != "",
+                    DBRepository.name != "",
+                    (
+                        DBRepository.num_stars_updated_at.is_(None)
+                        | (DBRepository.num_stars_updated_at < threshold_date)
+                        | DBRepository.num_stars.is_(None)
+                    ),
+                )
+                .group_by(DBRepository.owner, DBRepository.name)
+                .order_by(
+                    priority_case.asc(),
+                    func.min(DBRepository.num_stars_updated_at).asc().nullsfirst(),
+                    func.count(
+                        DBRepository.id
+                    ).desc(),  # Process repos with more URLs first
+                )
+                .first()
+            )
+
+            if result:
+                return {
+                    "owner": result.owner,
+                    "name": result.name,
+                    "repository_ids": result.repository_ids,
+                    "url_count": result.url_count,
+                    "oldest_update": result.oldest_update,
+                    "current_stars": result.current_stars or 0,
+                    "priority": result.priority,
+                }
+
+            return None
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Error fetching next repository group for stars update: {str(e)}"
+            )
+
+    def update_repository_stars_batch(
+        self, repository_ids: List[int], num_stars: int
+    ) -> int:
+        """
+        Update star counts for multiple repositories in a batch.
+
+        Args:
+            repository_ids: List of repository IDs to update
+            num_stars: New star count
+
+        Returns:
+            Number of repositories updated
+        """
+        try:
+            updated_count = (
+                self.db.query(DBRepository)
+                .filter(DBRepository.id.in_(repository_ids))
+                .update(
+                    {
+                        DBRepository.num_stars: num_stars,
+                        DBRepository.num_stars_updated_at: func.now(),
+                        DBRepository.updated_at: func.now(),
+                    },
+                    synchronize_session=False,
+                )
+            )
+
+            self.db.commit()
+            return updated_count
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Error updating repository stars: {str(e)}")
+
+    def mark_repositories_as_processed(self, repository_ids: List[int]) -> int:
+        """
+        Mark repositories as processed even if API call failed.
+        This prevents infinite loops for repositories that can't be fetched.
+
+        Args:
+            repository_ids: List of repository IDs to mark as processed
+
+        Returns:
+            Number of repositories marked
+        """
+        try:
+            updated_count = (
+                self.db.query(DBRepository)
+                .filter(DBRepository.id.in_(repository_ids))
+                .update(
+                    {
+                        DBRepository.num_stars_updated_at: func.now(),
+                        DBRepository.updated_at: func.now(),
+                    },
+                    synchronize_session=False,
+                )
+            )
+
+            self.db.commit()
+            return updated_count
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Error marking repositories as processed: {str(e)}")
+
+    def populate_missing_owner_name(self, batch_size: int = 1000) -> Dict[str, int]:
+        """
+        Populate missing owner and name fields by parsing repository URLs.
+
+        This method finds all repositories with NULL or empty owner/name fields
+        and extracts them from the GitHub URLs using parse_github_url utility.
+
+        Args:
+            batch_size: Number of repositories to process in each batch
+
+        Returns:
+            Dictionary with statistics:
+            - total: Total repositories processed
+            - updated: Successfully updated repositories
+            - skipped: Repositories with invalid/non-GitHub URLs
+            - failed: Failed updates
+        """
+        try:
+            from backend.utils.github_utils import parse_github_url
+
+            stats = {"total": 0, "updated": 0, "skipped": 0, "failed": 0}
+
+            # Find repositories with missing owner/name
+            repositories = (
+                self.db.query(DBRepository)
+                .filter(
+                    (DBRepository.owner.is_(None))
+                    | (DBRepository.name.is_(None))
+                    | (DBRepository.owner == "")
+                    | (DBRepository.name == "")
+                )
+                .all()
+            )
+
+            stats["total"] = len(repositories)
+            logger.info(
+                f"Found {stats['total']} repositories with missing owner/name fields"
+            )
+
+            # Process in batches
+            for i in range(0, len(repositories), batch_size):
+                batch = repositories[i : i + batch_size]
+                batch_updated = 0
+
+                for repo in batch:
+                    try:
+                        # Parse GitHub URL to extract owner and name
+                        owner, name = parse_github_url(repo.url)
+
+                        if owner and name:
+                            # Update repository with parsed values
+                            repo.owner = owner
+                            repo.name = name
+                            batch_updated += 1
+                            stats["updated"] += 1
+                        else:
+                            # Skip non-GitHub URLs or invalid URLs
+                            stats["skipped"] += 1
+                            logger.debug(
+                                f"Skipped repository ID {repo.id}: Unable to parse owner/name from {repo.url}"
+                            )
+
+                    except Exception as e:
+                        stats["failed"] += 1
+                        logger.error(
+                            f"Error processing repository ID {repo.id}: {str(e)}"
+                        )
+
+                # Commit batch
+                try:
+                    self.db.commit()
+                    logger.info(
+                        f"Batch {i // batch_size + 1}: Updated {batch_updated}/{len(batch)} repositories"
+                    )
+                except Exception as e:
+                    self.db.rollback()
+                    logger.error(f"Error committing batch: {str(e)}")
+                    stats["failed"] += batch_updated
+                    stats["updated"] -= batch_updated
+
+            logger.info(
+                f"Completed: {stats['updated']} updated, {stats['skipped']} skipped, {stats['failed']} failed"
+            )
+            return stats
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Error populating owner/name fields: {str(e)}")

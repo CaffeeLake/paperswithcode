@@ -134,6 +134,10 @@ class PaperService:
             "is_latest_version": db_paper.is_latest_version,
             "citation_count": db_paper.citation_count,
             "semantic_scholar_id": db_paper.semantic_scholar_id,
+            "citation_updated_at": db_paper.citation_updated_at,
+            "primary_category": db_paper.primary_category,
+            "all_categories": db_paper.all_categories or [],
+            "urls_extracted": db_paper.urls_extracted,
             "repositories": repositories,
             "project_pages": project_pages,
         }
@@ -746,6 +750,10 @@ class PaperService:
                 is_latest_version=paper_data.get("is_latest_version", True),
                 citation_count=paper_data.get("citation_count", 0),
                 semantic_scholar_id=paper_data.get("semantic_scholar_id"),
+                citation_updated_at=paper_data.get("citation_updated_at"),
+                primary_category=paper_data.get("primary_category"),
+                all_categories=paper_data.get("all_categories"),
+                urls_extracted=paper_data.get("urls_extracted", False),
             )
 
             self.db.add(db_paper)
@@ -801,3 +809,368 @@ class PaperService:
         except Exception as e:
             print(f"Error in batch processing: {e}")
             return stats
+
+    def update_paper_metadata(
+        self, paper_id: int, metadata_updates: Dict[str, Any]
+    ) -> bool:
+        """
+        Update paper metadata fields like URLs extracted status, categories, etc.
+
+        Args:
+            paper_id: Database paper ID
+            metadata_updates: Dictionary of fields to update
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                return False
+
+            # Update allowed metadata fields
+            allowed_fields = {
+                "urls_extracted",
+                "primary_category",
+                "all_categories",
+                "citation_count",
+                "semantic_scholar_id",
+                "citation_updated_at",
+            }
+
+            for field, value in metadata_updates.items():
+                if field in allowed_fields and hasattr(db_paper, field):
+                    setattr(db_paper, field, value)
+
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            print(f"Error updating paper metadata {paper_id}: {e}")
+            return False
+
+    def mark_urls_extracted(self, paper_ids: List[int]) -> int:
+        """
+        Mark papers as having their URLs extracted.
+
+        Args:
+            paper_ids: List of paper IDs to update
+
+        Returns:
+            Number of papers successfully updated
+        """
+        try:
+            updated_count = (
+                self.db.query(DBPaper)
+                .filter(DBPaper.id.in_(paper_ids))
+                .update({DBPaper.urls_extracted: True}, synchronize_session=False)
+            )
+            self.db.commit()
+            return updated_count
+
+        except Exception as e:
+            self.db.rollback()
+            print(f"Error marking URLs as extracted: {e}")
+            return 0
+
+    def get_papers_needing_url_extraction(self, limit: int = 100) -> List[DBPaper]:
+        """
+        Get papers that haven't had their URLs extracted yet.
+
+        Args:
+            limit: Maximum number of papers to return
+
+        Returns:
+            List of papers needing URL extraction
+        """
+        try:
+            return (
+                self.db.query(DBPaper)
+                .filter(not DBPaper.urls_extracted)
+                .filter(DBPaper.is_latest_version)
+                .limit(limit)
+                .all()
+            )
+
+        except Exception as e:
+            print(f"Error fetching papers needing URL extraction: {e}")
+            return []
+
+    def get_papers_by_category(
+        self, category: str, limit: int = 100, latest_only: bool = True
+    ) -> List[PaperSummary]:
+        """
+        Get papers by ArXiv category.
+
+        Args:
+            category: ArXiv category (e.g., "cs.CV", "cs.LG")
+            limit: Maximum number of papers to return
+            latest_only: Whether to only include latest versions
+
+        Returns:
+            List of paper summaries in the category
+        """
+        try:
+            query = self.db.query(DBPaper)
+
+            if latest_only:
+                query = query.filter(DBPaper.is_latest_version)
+
+            # Filter by primary category or any category in all_categories
+            query = query.filter(
+                or_(
+                    DBPaper.primary_category == category,
+                    DBPaper.all_categories.contains([category]),
+                )
+            )
+
+            db_papers = query.order_by(desc(DBPaper.date_published)).limit(limit).all()
+
+            return [
+                self._convert_db_paper_to_summary(db_paper) for db_paper in db_papers
+            ]
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Error fetching papers by category {category}: {str(e)}"
+            )
+
+    def get_papers_needing_citation_update_count(self, threshold_days: int = 7) -> int:
+        """
+        Get count of papers that need citation updates.
+
+        Args:
+            threshold_days: Only count papers older than this many days
+
+        Returns:
+            Number of papers needing citation updates
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            threshold_date = datetime.now() - timedelta(days=threshold_days)
+
+            count = (
+                self.db.query(DBPaper)
+                .filter(DBPaper.is_latest_version)
+                .filter(DBPaper.arxiv_id.is_not(None))
+                .filter(
+                    or_(
+                        DBPaper.citation_updated_at.is_(None),
+                        DBPaper.citation_updated_at < threshold_date,
+                    )
+                )
+                .count()
+            )
+
+            return count
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Error counting papers needing citation updates: {str(e)}"
+            )
+
+    def get_papers_needing_citation_update_chunk(
+        self, offset: int, limit: int, threshold_days: int = 7
+    ) -> List[Dict[str, Any]]:
+        """
+        Get a chunk of papers that need citation updates with priority ordering.
+
+        Args:
+            offset: Offset for pagination
+            limit: Maximum number of papers to return
+            threshold_days: Only get papers older than this many days
+
+        Returns:
+            List of paper dictionaries with citation update information
+        """
+        try:
+            from datetime import datetime, timedelta
+            from sqlalchemy import case
+
+            threshold_date = datetime.now() - timedelta(days=threshold_days)
+
+            # Create priority ordering for citation updates
+            priority_order = case(
+                (
+                    DBPaper.citation_updated_at.is_(None),
+                    0,
+                ),  # Never updated (highest priority)
+                (
+                    DBPaper.citation_count == 0,
+                    1,
+                ),  # Zero citations (may have gained citations)
+                else_=2,  # Regular refresh
+            )
+
+            # Year-based priority for high-citation periods
+            year_priority = case(
+                (func.extract("year", DBPaper.date_published).between(2019, 2022), 1),
+                (func.extract("year", DBPaper.date_published).between(2017, 2018), 2),
+                (func.extract("year", DBPaper.date_published).between(2023, 2024), 3),
+                else_=4,
+            )
+
+            db_papers = (
+                self.db.query(DBPaper)
+                .filter(DBPaper.is_latest_version)
+                .filter(DBPaper.arxiv_id.is_not(None))
+                .filter(
+                    or_(
+                        DBPaper.citation_updated_at.is_(None),
+                        DBPaper.citation_updated_at < threshold_date,
+                    )
+                )
+                .order_by(
+                    priority_order,
+                    year_priority,
+                    DBPaper.citation_updated_at.asc().nullsfirst(),
+                    DBPaper.id.asc(),
+                )
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+
+            # Convert to dictionaries with priority information
+            papers_data = []
+            for paper in db_papers:
+                priority_type = (
+                    "NEVER_UPDATED"
+                    if paper.citation_updated_at is None
+                    else ("ZERO_CITATIONS" if paper.citation_count == 0 else "REFRESH")
+                )
+
+                papers_data.append(
+                    {
+                        "id": paper.id,
+                        "arxiv_id": paper.arxiv_id,
+                        "title": paper.title,
+                        "citation_count": paper.citation_count or 0,
+                        "citation_updated_at": paper.citation_updated_at,
+                        "date_published": paper.date_published,
+                        "priority_type": priority_type,
+                    }
+                )
+
+            return papers_data
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Error fetching papers chunk for citation updates: {str(e)}"
+            )
+
+    def update_citation_counts_batch(
+        self, citation_updates: List[Dict[str, Any]]
+    ) -> Dict[str, int]:
+        """
+        Update citation counts for multiple papers in batch.
+
+        Args:
+            citation_updates: List of dictionaries with keys:
+                - paper_id: Database paper ID
+                - citation_count: New citation count
+                - semantic_scholar_id: Semantic Scholar paper ID (optional)
+                - success: Whether the update was successful
+
+        Returns:
+            Dictionary with update statistics: {'updated': count, 'failed': count}
+        """
+        try:
+            stats = {"updated": 0, "failed": 0}
+
+            for update in citation_updates:
+                try:
+                    paper_id = update["paper_id"]
+                    citation_count = update["citation_count"]
+                    semantic_scholar_id = update.get("semantic_scholar_id")
+                    success = update.get("success", True)
+
+                    if success and semantic_scholar_id:
+                        # Successful update with citation data
+                        db_paper = (
+                            self.db.query(DBPaper)
+                            .filter(DBPaper.id == paper_id)
+                            .first()
+                        )
+                        if db_paper:
+                            db_paper.citation_count = citation_count
+                            db_paper.semantic_scholar_id = semantic_scholar_id
+                            db_paper.citation_updated_at = func.now()
+                            db_paper.updated_at = func.now()
+                            stats["updated"] += 1
+                        else:
+                            stats["failed"] += 1
+                    else:
+                        # Failed update - just mark as processed to avoid re-processing
+                        db_paper = (
+                            self.db.query(DBPaper)
+                            .filter(DBPaper.id == paper_id)
+                            .first()
+                        )
+                        if db_paper:
+                            db_paper.citation_updated_at = func.now()
+                            db_paper.updated_at = func.now()
+                            stats["failed"] += 1
+                        else:
+                            stats["failed"] += 1
+
+                except Exception as e:
+                    print(
+                        f"Error updating paper {update.get('paper_id', 'unknown')}: {e}"
+                    )
+                    stats["failed"] += 1
+
+            self.db.commit()
+            return stats
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Error updating citation counts batch: {str(e)}")
+
+    def get_citation_statistics(self) -> Dict[str, Any]:
+        """
+        Get citation update statistics for the database.
+
+        Returns:
+            Dictionary with citation statistics
+        """
+        try:
+            # Get overall statistics
+            total_papers = (
+                self.db.query(DBPaper).filter(DBPaper.is_latest_version).count()
+            )
+
+            papers_processed = (
+                self.db.query(DBPaper)
+                .filter(DBPaper.is_latest_version)
+                .filter(DBPaper.citation_updated_at.is_not(None))
+                .count()
+            )
+
+            papers_with_citations = (
+                self.db.query(DBPaper)
+                .filter(DBPaper.is_latest_version)
+                .filter(DBPaper.citation_count > 0)
+                .count()
+            )
+
+            # Calculate percentages
+            processed_pct = (
+                (papers_processed / total_papers * 100) if total_papers > 0 else 0
+            )
+            citations_pct = (
+                (papers_with_citations / total_papers * 100) if total_papers > 0 else 0
+            )
+
+            return {
+                "total_papers": total_papers,
+                "papers_processed": papers_processed,
+                "papers_with_citations": papers_with_citations,
+                "processed_percentage": round(processed_pct, 1),
+                "citations_percentage": round(citations_pct, 1),
+            }
+
+        except Exception as e:
+            raise DatabaseError(f"Error getting citation statistics: {str(e)}")

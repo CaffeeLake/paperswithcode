@@ -88,24 +88,8 @@ class ProjectPageService:
 
             # Apply filters
             if official_only:
-                if include_paper_count or order_by == "paper_count":
-                    # For queries with joins, filter on junction table
-                    query = query.having(
-                        func.sum(
-                            func.cast(DBPaperProjectPage.is_official, func.INTEGER())
-                        )
-                        > 0
-                    )
-                else:
-                    # For simple queries, use exists subquery
-                    query = query.filter(
-                        self.db.query(DBPaperProjectPage)
-                        .filter(
-                            DBPaperProjectPage.project_page_id == DBProjectPage.id,
-                            DBPaperProjectPage.is_official,
-                        )
-                        .exists()
-                    )
+                # Filter by is_official field in project_pages table (not junction table)
+                query = query.filter(DBProjectPage.is_official)
 
             if source:
                 query = query.filter(DBProjectPage.source == source)
@@ -331,14 +315,6 @@ class ProjectPageService:
         return PaperProjectPage(
             paper_id=str(db_relationship.paper_id),
             project_page_id=str(db_relationship.project_page_id),
-            is_official=db_relationship.is_official,
-            source=db_relationship.source,
-            created_at=db_relationship.created_at.date()
-            if db_relationship.created_at
-            else None,
-            updated_at=db_relationship.updated_at.date()
-            if db_relationship.updated_at
-            else None,
         )
 
     def create_or_update_project_page(
@@ -393,24 +369,23 @@ class ProjectPageService:
         self,
         paper_id: str,
         project_page_id: str,
-        is_official: bool = False,
-        source: str = "unknown",
     ) -> PaperProjectPage:
         """
         Associate a project page with a paper.
 
+        Note: The junction table only stores the relationship (paper_id, project_page_id).
+        Metadata like is_official and source are stored in the project_pages table.
+
         Args:
             paper_id: Paper ID
             project_page_id: Project page ID
-            is_official: Whether this project page is official for this paper
-            source: Source of this relationship
 
         Returns:
             PaperProjectPage object
 
         Raises:
             PaperNotFoundError: If paper or project page not found
-            DatabaseError: If association already exists or other database error
+            DatabaseError: If database error occurs
         """
         try:
             from backend.models.database import Paper as DBPaper
@@ -442,20 +417,14 @@ class ProjectPageService:
             )
 
             if existing_association:
-                # Update existing association
-                existing_association.is_official = (
-                    is_official or existing_association.is_official
-                )
-                existing_association.source = source
-                self.db.commit()
+                # Association already exists, return it
+                # Note: is_official and source are stored in project_pages table, not junction table
                 return self._db_paper_project_page_to_api(existing_association)
             else:
-                # Create new association
+                # Create new association (junction table only stores IDs)
                 new_association = DBPaperProjectPage(
                     paper_id=int(paper_id),
                     project_page_id=int(project_page_id),
-                    is_official=is_official,
-                    source=source,
                 )
 
                 self.db.add(new_association)
@@ -510,7 +479,7 @@ class ProjectPageService:
                     .filter(
                         DBPaperProjectPage.paper_id == int(paper_id),
                         DBProjectPage.source.in_(["hf_api"]),  # Priority sources
-                        DBPaperProjectPage.is_official,
+                        DBProjectPage.is_official,
                     )
                     .first()
                 )
@@ -523,12 +492,10 @@ class ProjectPageService:
                 url=url, is_official=is_official, source=source
             )
 
-            # Associate with paper
+            # Associate with paper (junction table only stores IDs)
             self.associate_project_page_with_paper(
                 paper_id=paper_id,
                 project_page_id=project_page.id,
-                is_official=is_official,
-                source=source,
             )
 
             return project_page
