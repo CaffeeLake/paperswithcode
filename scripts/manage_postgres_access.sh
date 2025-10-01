@@ -2,8 +2,10 @@
 
 # PostgreSQL Access Management Script
 # This script helps manage IP whitelisting for PostgreSQL access
+# Supports both SSL and non-SSL connections
 
 PG_HBA_FILE="/etc/postgresql/16/main/pg_hba.conf"
+PG_CONF_FILE="/etc/postgresql/16/main/postgresql.conf"
 BACKUP_DIR="/etc/postgresql/16/main/backups"
 
 # Create backup directory if it doesn't exist
@@ -24,7 +26,7 @@ add_ip() {
 
     if [[ -z "$ip" || -z "$user" || -z "$database" ]]; then
         echo "Usage: $0 add <IP_ADDRESS> <USERNAME> <DATABASE>"
-        echo "Example: $0 add 192.168.1.100 paperswithcode_user paperswithcode"
+        echo "Example: $0 add 192.168.1.100 paperswithcode_user paperswithcode_hf"
         exit 1
     fi
 
@@ -36,14 +38,42 @@ add_ip() {
 
     create_backup
 
-    # Add the IP to pg_hba.conf
-    echo "host    $database    $user    $ip/32    md5" >> "$PG_HBA_FILE"
+    # Check if listen_addresses is set to '*'
+    if ! grep -q "^listen_addresses = '\*'" "$PG_CONF_FILE"; then
+        echo "⚠️  Warning: PostgreSQL is not configured to listen on all interfaces"
+        echo "Updating listen_addresses to '*' in postgresql.conf..."
+        sudo sed -i "s/^listen_addresses = .*/listen_addresses = '*'/" "$PG_CONF_FILE"
+        echo "PostgreSQL will need to be restarted for this change to take effect."
+        NEEDS_RESTART=true
+    fi
 
-    echo "Added IP $ip for user $user to database $database"
-    echo "Reloading PostgreSQL configuration..."
-    sudo systemctl reload postgresql
+    # Add both SSL and non-SSL entries to pg_hba.conf
+    echo "# Remote access for $ip (added $(date +%Y-%m-%d))" >> "$PG_HBA_FILE"
+    echo "hostssl    $database    $user    $ip/32    md5" >> "$PG_HBA_FILE"
+    echo "host       $database    $user    $ip/32    md5" >> "$PG_HBA_FILE"
 
-    echo "Configuration updated successfully!"
+    # Add firewall rule
+    echo "Adding firewall rule for $ip..."
+    sudo ufw allow from "$ip" to any port 5432 proto tcp
+
+    echo "✅ Added IP $ip for user $user to database $database"
+
+    if [[ "$NEEDS_RESTART" == "true" ]]; then
+        echo "⚠️  PostgreSQL needs to be restarted to listen on all interfaces:"
+        echo "   sudo systemctl restart postgresql"
+        read -p "Restart PostgreSQL now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            sudo systemctl restart postgresql
+            echo "✅ PostgreSQL restarted"
+        else
+            echo "⚠️  Remember to restart PostgreSQL later!"
+        fi
+    else
+        echo "Reloading PostgreSQL configuration..."
+        sudo systemctl reload postgresql
+        echo "✅ Configuration updated successfully!"
+    fi
 }
 
 # Function to remove IP from whitelist
@@ -57,14 +87,19 @@ remove_ip() {
 
     create_backup
 
-    # Remove lines containing the IP
+    # Remove lines containing the IP (including comment line)
     sed -i "/$ip\/32/d" "$PG_HBA_FILE"
+    sed -i "/# Remote access for $ip/d" "$PG_HBA_FILE"
 
-    echo "Removed IP $ip from whitelist"
+    # Remove firewall rule
+    echo "Removing firewall rule for $ip..."
+    sudo ufw delete allow from "$ip" to any port 5432 proto tcp
+
+    echo "✅ Removed IP $ip from whitelist"
     echo "Reloading PostgreSQL configuration..."
     sudo systemctl reload postgresql
 
-    echo "Configuration updated successfully!"
+    echo "✅ Configuration updated successfully!"
 }
 
 # Function to list current whitelisted IPs
@@ -89,14 +124,16 @@ show_help() {
     echo "  help                        - Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 add 192.168.1.100 paperswithcode_user paperswithcode"
-    echo "  $0 remove 192.168.1.100"
+    echo "  $0 add 84.198.172.145 paperswithcode_user paperswithcode_hf"
+    echo "  $0 remove 84.198.172.145"
     echo "  $0 list"
     echo ""
     echo "Security Notes:"
-    echo "- Only add IPs you trust"
+    echo "- Only add IPs you trust (requires sudo)"
+    echo "- Adds both SSL and non-SSL connection support"
+    echo "- Automatically configures firewall rules"
     echo "- Use /32 for single IP addresses"
-    echo "- Changes require PostgreSQL reload"
+    echo "- May require PostgreSQL restart on first use"
     echo "- Backups are automatically created"
 }
 

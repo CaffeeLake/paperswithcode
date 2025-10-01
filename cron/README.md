@@ -13,7 +13,8 @@ cron/
 │   └── update_citations.py          # Update paper citation counts (2K papers/day)
 ├── hourly/             # Scripts that run hourly (RECOMMENDED - high performance)
 │   ├── update_github_stars.py       # Update GitHub repository stars (4.5K repos/hour)
-│   └── update_citations.py          # Update paper citation counts (2.8K papers/hour)
+│   ├── update_citations.py          # Update paper citation counts (2.8K papers/hour)
+│   └── extract_urls.py              # AI extraction of GitHub URLs and project pages (50 papers/hour)
 ├── weekly/             # Scripts that run weekly (future expansion)
 ├── monthly/            # Scripts that run monthly (future expansion)
 ├── logs/               # Log files from cron job executions (auto-created)
@@ -33,6 +34,7 @@ The hourly jobs are **significantly more efficient** and should be used for prod
 |----------|---------------|---------------|------------------|
 | **GitHub Stars** | 4,500 repos/hour | 1,000 repos/day | **108x faster** |
 | **Citations** | 2,800 papers/hour | 2,000 papers/day | **33x faster** |
+| **URL Extraction** | 50 papers/hour | N/A | **AI-powered** |
 
 ### **Processing Time Comparisons**
 
@@ -97,6 +99,7 @@ PWC_DB_NAME=paperswithcode_hf
 PWC_SEMANTIC_SCHOLAR_API_KEY=6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa
 PWC_HF_TOKEN=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
 PWC_GITHUB_TOKEN=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
+PWC_OPENROUTER_API_KEY=your_openrouter_api_key_here
 ```
 
 **For system-wide cron jobs**, add to `/etc/environment`:
@@ -109,6 +112,7 @@ PWC_DB_NAME=paperswithcode_hf
 PWC_SEMANTIC_SCHOLAR_API_KEY=6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa
 PWC_HF_TOKEN=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
 PWC_GITHUB_TOKEN=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
+PWC_OPENROUTER_API_KEY=your_openrouter_api_key_here
 ```
 
 ### 3. Verify Setup
@@ -133,6 +137,9 @@ uv run --env-file backend/keys.env cron/manage_cron.py test update_github_stars
 
 # Test daily citation count update
 uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
+
+# Test hourly URL extraction
+uv run --env-file backend/keys.env cron/manage_cron.py test extract_urls
 ```
 
 ### 5. Install CRON Jobs
@@ -153,6 +160,9 @@ Edit your crontab with `crontab -e` and add these entries:
 
 # Hourly citation count update (2,800 papers/hour) - RECOMMENDED
 30 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_citations.py
+
+# Hourly URL extraction (50 papers/hour) - AI-powered GitHub and project page extraction
+45 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/extract_urls.py
 
 # Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
 0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup
@@ -180,6 +190,23 @@ Edit your crontab with `crontab -e` and add these entries:
 ## 📋 Available CRON Jobs
 
 ### 🚀 Hourly Jobs (`hourly/`) - **RECOMMENDED**
+
+#### 🔗 GitHub URLs and Project Pages Extraction - Hourly (`extract_urls.py`)
+- **Schedule**: Every hour (recommended)
+- **Purpose**: AI-powered extraction of GitHub repositories and project pages from papers
+- **Performance**: **50 papers/hour** (1,200 papers/day with paid tier)
+- **Features**:
+  - Uses OpenRouter AI models for intelligent URL extraction
+  - Memory-optimized for 4GB RAM systems (batch size: 10)
+  - Processes papers from 2014 onwards
+  - Skips papers already processed by HF API import (urls_extracted flag)
+  - Handles rate limits and PDF download failures gracefully
+  - Marks papers as processed to avoid reprocessing
+  - Saves URLs with source='ai_extraction' and is_official=True
+- **Rate Limits**:
+  - Paid tier: 1,000 requests/day, 20 requests/minute
+  - Conservative usage: 50 papers/hour = 1,200/day (with buffer)
+- **API Requirements**: OpenRouter API key (PWC_OPENROUTER_API_KEY in keys.env)
 
 #### ⭐ GitHub Stars Update - Hourly (`update_github_stars.py`)
 - **Schedule**: Every hour (recommended)
@@ -508,9 +535,10 @@ grep CRON /var/log/cron | tail -20
 
 With current configuration:
 - **Hugging Face Papers**: ~100-500 new papers per day
-- **GitHub Stars**: ~1,000 repositories updated per day
-- **Citations**: ~2,000 papers processed per day
-- **Total Runtime**: ~1-2 hours for all daily jobs
+- **GitHub Stars**: ~1,000 repositories updated per day (daily) or 4,500/hour (hourly)
+- **Citations**: ~2,000 papers processed per day (daily) or 2,800/hour (hourly)
+- **URL Extraction**: ~50 papers/hour (1,200 papers/day with 24/7 operation)
+- **Total Runtime**: ~1-2 hours for all daily jobs, continuous for hourly jobs
 
 ## 🔮 Future Expansion
 
