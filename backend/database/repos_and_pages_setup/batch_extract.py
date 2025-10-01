@@ -5,7 +5,20 @@ This script processes papers to find GitHub repositories and project pages using
 1. AI extraction via OpenRouterGenerator
 2. Memory monitoring for 4GB RAM systems
 3. Database-driven deduplication (no caching needed)
-4. Prioritization of papers missing both GitHub repos and project pages
+4. Coordination with HF API CRON job via urls_extracted flag
+
+Processing Logic:
+- Only processes papers where urls_extracted = FALSE
+- Papers imported from HF API have urls_extracted = TRUE (set by import_hf_daily_papers.py)
+- This naturally excludes HF API papers without complex query logic
+- AI-extracted URLs are saved with source='ai_extraction' and is_official=True
+- hf_api URLs always take priority over AI-extracted URLs (enforced by skip_if_official_exists)
+- After successful processing, marks paper with urls_extracted = TRUE
+
+Error Handling:
+- Critical errors (rate limits, PDF download failures, reCAPTCHA) do NOT mark paper as processed
+- Papers with critical errors can be retried in future runs (urls_extracted stays FALSE)
+- Non-critical errors mark paper as processed with no URLs found
 
 Logs can be saved at backend/database/logs.
 
@@ -119,12 +132,16 @@ class BatchURLExtractor:
     def get_papers_missing_urls(
         self, db: Session, limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Get papers that need URL extraction using the simplified urls_extracted field."""
+        """Get papers that need URL extraction using the simplified urls_extracted field.
+
+        Papers imported from HF API already have urls_extracted=TRUE, so they won't be processed.
+        This keeps the query simple and efficient.
+        """
 
         # Create start date from year
         start_date = f"{self.start_year}-01-01"
 
-        # SIMPLIFIED QUERY: Just check the urls_extracted flag
+        # Simple query: just check the urls_extracted flag
         query = """
         SELECT
             p.id,

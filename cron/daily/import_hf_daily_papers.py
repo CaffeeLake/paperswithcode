@@ -200,10 +200,14 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         abstract: str,
         date_published: Optional[datetime],
     ) -> Optional[int]:
-        """Insert a new paper into the database."""
+        """Insert a new paper into the database.
+
+        Sets urls_extracted=TRUE since HF API provides GitHub/project URLs.
+        This prevents AI batch extraction from re-processing these papers.
+        """
         query = """
-        INSERT INTO papers (arxiv_id, title, abstract, date_published, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO papers (arxiv_id, title, abstract, date_published, urls_extracted, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
         """
 
