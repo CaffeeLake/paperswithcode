@@ -4,6 +4,10 @@
 
 This document describes the security measures implemented to protect the PostgreSQL database from unauthorized access, following the BSI (German Federal Office for Information Security) security alert.
 
+**Important**: The PostgreSQL database is now **only accessible locally** on the VPS. The FastAPI backend (port 8000) remains publicly accessible as it should be - this is the correct architecture. The frontend connects to the API, and the API connects to PostgreSQL locally.
+
+For a complete overview of the network architecture, see [NETWORK_ARCHITECTURE.md](NETWORK_ARCHITECTURE.md).
+
 ## Security Measures Implemented
 
 ### 1. Network Access Restrictions
