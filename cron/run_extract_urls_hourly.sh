@@ -29,7 +29,8 @@ fi
 log_message "Environment file found, starting job"
 
 # Run the job with proper error handling
-if uv run --env-file backend/keys.env cron/hourly/extract_urls.py >> "$WRAPPER_LOG" 2>&1; then
+# Job writes to its own log via DatabaseCronJob class, we just capture stderr to wrapper log
+if uv run --env-file backend/keys.env cron/hourly/extract_urls.py 2>> "$WRAPPER_LOG"; then
     log_message "URL extraction job completed successfully"
     exit 0
 else

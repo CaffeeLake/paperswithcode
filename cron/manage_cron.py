@@ -121,8 +121,13 @@ def show_job_status(job_name: str = None, date: str = None):
                         log_name_mapping = {
                             "update_github_stars_optimized": "github_stars_optimized",
                             "update_citations": "update_citations_hourly",
+                            "extract_urls": "extract_urls_hourly",
                         }
                         log_name = log_name_mapping.get(job_name, job_name)
+
+                        # Skip wrapper jobs to avoid duplicates
+                        if "wrapper" in log_name:
+                            continue
 
                         status = get_cron_job_status(log_name, today)
 
@@ -360,6 +365,42 @@ class CronStatusAnalyzer:
                 if progress_match and current_run:
                     current_run["processed_items"] = int(progress_match.group(1))
 
+                # Extract URL extraction specific metrics
+                if "📄 Papers Processed:" in line:
+                    papers_match = re.search(r"📄 Papers Processed: (\d+)", line)
+                    if papers_match and current_run:
+                        current_run["processed_items"] = int(papers_match.group(1))
+
+                # Extract GitHub URLs found
+                if "🔗 Papers with GitHub:" in line:
+                    github_match = re.search(r"🔗 Papers with GitHub: (\d+)", line)
+                    if github_match and current_run:
+                        current_run["github_urls_found"] = int(github_match.group(1))
+
+                # Extract project pages found
+                if "🌐 Papers with Project Page:" in line:
+                    project_match = re.search(
+                        r"🌐 Papers with Project Page: (\d+)", line
+                    )
+                    if project_match and current_run:
+                        current_run["project_pages_found"] = int(project_match.group(1))
+
+                # Extract processing rate
+                if "⚡ Processing Rate:" in line:
+                    rate_match = re.search(
+                        r"⚡ Processing Rate: ([\d.]+) papers/second", line
+                    )
+                    if rate_match and current_run:
+                        current_run["processing_rate"] = float(rate_match.group(1))
+
+                # Extract daily capacity estimate
+                if "📈 Estimated Daily Capacity:" in line:
+                    capacity_match = re.search(
+                        r"📈 Estimated Daily Capacity: (\d+) papers", line
+                    )
+                    if capacity_match and current_run:
+                        current_run["daily_capacity"] = int(capacity_match.group(1))
+
                 # Track warnings
                 if "WARNING" in line and len(stats["warnings"]) < 3:
                     stats["warnings"].append(
@@ -401,6 +442,47 @@ class CronStatusAnalyzer:
                         processed_items
                     )
 
+                # URL extraction specific metrics
+                github_urls = [
+                    r["github_urls_found"]
+                    for r in successful_runs
+                    if r.get("github_urls_found", 0) > 0
+                ]
+                if github_urls:
+                    stats["performance_metrics"]["avg_github_urls_found"] = sum(
+                        github_urls
+                    ) / len(github_urls)
+
+                project_pages = [
+                    r["project_pages_found"]
+                    for r in successful_runs
+                    if r.get("project_pages_found", 0) > 0
+                ]
+                if project_pages:
+                    stats["performance_metrics"]["avg_project_pages_found"] = sum(
+                        project_pages
+                    ) / len(project_pages)
+
+                processing_rates = [
+                    r["processing_rate"]
+                    for r in successful_runs
+                    if r.get("processing_rate", 0) > 0
+                ]
+                if processing_rates:
+                    stats["performance_metrics"]["avg_processing_rate"] = sum(
+                        processing_rates
+                    ) / len(processing_rates)
+
+                daily_capacities = [
+                    r["daily_capacity"]
+                    for r in successful_runs
+                    if r.get("daily_capacity", 0) > 0
+                ]
+                if daily_capacities:
+                    stats["performance_metrics"]["avg_daily_capacity"] = sum(
+                        daily_capacities
+                    ) / len(daily_capacities)
+
         except Exception as e:
             stats["errors"].append(
                 {
@@ -426,6 +508,10 @@ class CronStatusAnalyzer:
 
         # Find all log files for recent dates
         for log_file in self.logs_dir.glob("*.log"):
+            # Skip wrapper jobs to avoid duplicates
+            if "wrapper" in log_file.name:
+                continue
+
             # Extract job name and date from filename
             parts = log_file.stem.split("_")
             if len(parts) >= 2:
@@ -618,69 +704,149 @@ class CronStatusAnalyzer:
                 print(f"  {icon} [{alert['job'].upper()}] {alert['message']}")
             print()
 
-        # Job Status Details
+        # Job Status Details with Enhanced Formatting
         print("📋 JOB STATUS DETAILS")
         print("-" * 40)
 
+        # Group jobs by category for better organization
+        job_categories = {"hourly": [], "daily": [], "weekly": [], "monthly": []}
+
+        # Track processed jobs to avoid duplicates
+        processed_jobs = set()
+
         for job_name, job_data in summary["job_status"].items():
-            status = job_data["basic_status"]
-            health = job_data["health_score"]
+            # Skip if we've already processed this job
+            if job_name in processed_jobs:
+                continue
+            processed_jobs.add(job_name)
 
-            # Status icon
-            if status["status"] == "success":
-                status_icon = "✅"
-            elif status["status"] == "running":
-                status_icon = "🔄"
-            elif status["status"] == "failed":
-                status_icon = "❌"
+            # Determine category based on job name patterns
+            if (
+                "hourly" in job_name
+                or "github_stars" in job_name
+                or "citations" in job_name
+                or "extract_urls" in job_name
+            ):
+                job_categories["hourly"].append((job_name, job_data))
+            elif "daily" in job_name or "import_hf" in job_name:
+                job_categories["daily"].append((job_name, job_data))
+            elif "weekly" in job_name:
+                job_categories["weekly"].append((job_name, job_data))
+            elif "monthly" in job_name:
+                job_categories["monthly"].append((job_name, job_data))
             else:
-                status_icon = "❓"
+                # Default to hourly for unknown jobs
+                job_categories["hourly"].append((job_name, job_data))
 
-            # Health icon
-            if health >= 80:
-                health_icon = "💚"
-            elif health >= 50:
-                health_icon = "⚠️"
-            else:
-                health_icon = "🔴"
+        for category, jobs in job_categories.items():
+            if not jobs:
+                continue
 
-            print(f"\n  {status_icon} {job_name.upper()}")
-            print(
-                f"    Status: {status['status']} | Health: {health}/100 {health_icon}"
-            )
+            print(f"\n🕐 {category.upper()} JOBS")
+            print("=" * 50)
 
-            if status["status"] == "running":
-                print("    🔄 Currently executing...")
+            for job_name, job_data in jobs:
+                status = job_data["basic_status"]
+                health = job_data["health_score"]
 
-            if status["last_run"]:
-                print(f"    Last Run: {status['last_run']}")
+                # Status icon
+                if status["status"] == "success":
+                    status_icon = "✅"
+                elif status["status"] == "running":
+                    status_icon = "🔄"
+                elif status["status"] == "failed":
+                    status_icon = "❌"
+                else:
+                    status_icon = "❓"
 
-            if status["duration"]:
-                print(f"    Duration: {status['duration']:.2f}s")
+                # Health icon
+                if health >= 80:
+                    health_icon = "💚"
+                elif health >= 50:
+                    health_icon = "⚠️"
+                else:
+                    health_icon = "🔴"
 
-            # Recent performance
-            if "recent_performance" in job_data and job_data["recent_performance"]:
-                perf = job_data["recent_performance"]
+                # Job name formatting
+                display_name = job_name.replace("_", " ").title()
+                if "github" in job_name.lower():
+                    display_name = "GitHub Stars Update"
+                elif "citations" in job_name.lower():
+                    display_name = "Citations Update"
+                elif "extract_urls" in job_name.lower():
+                    display_name = "URL Extraction"
+                elif "import_hf" in job_name.lower():
+                    display_name = "Hugging Face Papers Import"
+
+                print(f"\n  {status_icon} {display_name}")
                 print(
-                    f"    Recent: {perf['total_runs']} runs, {perf['success_rate']:.1f}% success"
+                    f"    Status: {status['status'].upper()} | Health: {health}/100 {health_icon}"
                 )
 
-            # Today's performance metrics
-            if "today_performance" in job_data:
-                today_perf = job_data["today_performance"]
-                if "avg_items_processed" in today_perf:
+                if status["status"] == "running":
+                    print("    🔄 Currently executing...")
+
+                if status["last_run"]:
+                    print(f"    Last Run: {status['last_run']}")
+
+                if status["duration"]:
+                    print(f"    Duration: {status['duration']:.2f}s")
+
+                # Enhanced performance metrics
+                if "recent_performance" in job_data and job_data["recent_performance"]:
+                    perf = job_data["recent_performance"]
                     print(
-                        f"    Processing: {today_perf['avg_items_processed']:.0f} items/run avg"
-                    )
-                if "avg_memory_mb" in today_perf:
-                    print(
-                        f"    Memory: {today_perf['avg_memory_mb']:.0f}MB avg, {today_perf['peak_memory_mb']:.0f}MB peak"
+                        f"    Recent: {perf['total_runs']} runs, {perf['success_rate']:.1f}% success"
                     )
 
-            if status["error"]:
-                print(f"    ❌ Error: {status['error']}")
+                # Today's performance metrics with better formatting
+                if "today_performance" in job_data:
+                    today_perf = job_data["today_performance"]
+                    if "avg_items_processed" in today_perf:
+                        items = today_perf["avg_items_processed"]
+                        if "github" in job_name.lower():
+                            print(f"    📊 Repositories: {items:.0f} processed/run avg")
+                        elif "citations" in job_name.lower():
+                            print(f"    📊 Papers: {items:.0f} processed/run avg")
+                        elif "extract_urls" in job_name.lower():
+                            print(f"    📊 Papers: {items:.0f} processed/run avg")
+                        else:
+                            print(f"    📊 Items: {items:.0f} processed/run avg")
+
+                    if "avg_memory_mb" in today_perf:
+                        avg_mem = today_perf["avg_memory_mb"]
+                        peak_mem = today_perf.get("peak_memory_mb", avg_mem)
+                        print(
+                            f"    💾 Memory: {avg_mem:.0f}MB avg, {peak_mem:.0f}MB peak"
+                        )
+
+                # Special formatting for specific job types
+                if "extract_urls" in job_name.lower():
+                    # Add URL extraction specific metrics if available
+                    if "today_performance" in job_data:
+                        perf = job_data["today_performance"]
+                        if "total_items_processed" in perf:
+                            total = perf["total_items_processed"]
+                            print(f"    🔗 URLs Found: {total:.0f} total processed")
+                        if "avg_github_urls_found" in perf:
+                            github = perf["avg_github_urls_found"]
+                            print(f"    📂 GitHub URLs: {github:.0f} found/run avg")
+                        if "avg_project_pages_found" in perf:
+                            pages = perf["avg_project_pages_found"]
+                            print(f"    🌐 Project Pages: {pages:.0f} found/run avg")
+                        if "avg_processing_rate" in perf:
+                            rate = perf["avg_processing_rate"]
+                            print(f"    ⚡ Rate: {rate:.2f} papers/second")
+                        if "avg_daily_capacity" in perf:
+                            capacity = perf["avg_daily_capacity"]
+                            print(f"    📈 Daily Capacity: {capacity:.0f} papers")
+
+                if status["error"]:
+                    print(f"    ❌ Error: {status['error']}")
 
         print("\n" + "=" * 80)
+        print("💡 TIP: Use '--detailed' flag for more comprehensive analysis")
+        print("=" * 80)
 
 
 def run_summary(detailed: bool = False, json_output: bool = False, days: int = 3):
