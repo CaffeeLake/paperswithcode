@@ -49,20 +49,26 @@ def parse_github_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 def normalize_github_url(url: str) -> Optional[str]:
     """
-    Normalize GitHub URL to standard format.
+    Normalize GitHub URL to standard format with lowercase for case-insensitive comparison.
+
+    GitHub URLs are case-insensitive in practice (they redirect), so we normalize to
+    lowercase to avoid duplicate entries in the database.
 
     Args:
         url: GitHub URL in any format
 
     Returns:
-        Normalized GitHub URL or None if invalid
+        Normalized GitHub URL (lowercase) or None if invalid
 
     Examples:
         >>> normalize_github_url("https://github.com/microsoft/DialoGPT/tree/main/examples")
-        "https://github.com/microsoft/DialoGPT"
+        "https://github.com/microsoft/dialogpt"
 
-        >>> normalize_github_url("github.com/microsoft/DialoGPT")
-        "https://github.com/microsoft/DialoGPT"
+        >>> normalize_github_url("github.com/Microsoft/DialoGPT")
+        "https://github.com/microsoft/dialogpt"
+
+        >>> normalize_github_url("https://github.com/FaceBook/React")
+        "https://github.com/facebook/react"
     """
     if not url:
         return None
@@ -73,7 +79,9 @@ def normalize_github_url(url: str) -> Optional[str]:
 
     owner, name = parse_github_url(url)
     if owner and name:
-        return f"https://github.com/{owner}/{name}"
+        # Normalize to lowercase for case-insensitive comparison
+        # GitHub URLs are case-insensitive and redirect to the proper case
+        return f"https://github.com/{owner.lower()}/{name.lower()}"
 
     return None
 

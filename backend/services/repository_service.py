@@ -27,6 +27,7 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.github_utils import normalize_github_url
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -337,6 +338,8 @@ class RepositoryService:
         """
         Create a new repository or update existing one.
 
+        GitHub URLs are normalized to lowercase to avoid case-sensitivity duplicates.
+
         Args:
             url: Repository URL (unique identifier)
             owner: Repository owner
@@ -348,7 +351,14 @@ class RepositoryService:
             Repository object (created or updated)
         """
         try:
-            # Check if repository already exists
+            # Normalize GitHub URLs to lowercase to avoid case-sensitivity duplicates
+            # GitHub URLs are case-insensitive in practice (they redirect)
+            normalized_url = normalize_github_url(url)
+            if normalized_url:
+                url = normalized_url
+                logger.debug(f"Normalized GitHub URL to: {url}")
+
+            # Check if repository already exists (case-insensitive for GitHub URLs)
             existing_repo = (
                 self.db.query(DBRepository).filter(DBRepository.url == url).first()
             )
