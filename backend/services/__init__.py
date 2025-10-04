@@ -8,6 +8,7 @@ from .paper_service import PaperService
 from .thumbnail_service import ThumbnailService
 from .area_service import AreaService
 from .task_service import TaskService
+from .method_service import MethodService
 
 __all__ = [
     "ArxivService",
@@ -16,4 +17,5 @@ __all__ = [
     "ThumbnailService",
     "AreaService",
     "TaskService",
+    "MethodService",
 ]

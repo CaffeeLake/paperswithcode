@@ -108,3 +108,43 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     refetchOnWindowFocus: false,
   });
 }
+
+interface UseInfiniteTaskPapersParams {
+  taskId: string;
+  page_size?: number;
+  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_dir?: 'asc' | 'desc';
+  latest_only?: boolean;
+  include_resources?: boolean;
+  enabled?: boolean;
+}
+
+export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
+  const {
+    taskId,
+    page_size = 20,
+    order_by = 'date_published',
+    order_dir = 'desc',
+    latest_only = true,
+    include_resources = true,
+    enabled = true,
+  } = params;
+
+  return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
+    queryKey: ['task-papers-infinite', taskId, { page_size, order_by, order_dir, latest_only, include_resources }],
+    queryFn: ({ pageParam = 1 }) =>
+      apiClient.getTaskPapers(taskId, {
+        page: pageParam as number,
+        page_size,
+        order_by,
+        order_dir,
+        latest_only,
+        include_resources
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_page,
+    initialPageParam: 1,
+    enabled: enabled && !!taskId,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
+  });
+}

@@ -80,6 +80,25 @@ export interface Task {
   updated_at?: string;
 }
 
+export interface Method {
+  id: string;
+  name: string;
+  full_name?: string;
+  description?: string;
+  area_id?: string;
+  introduced_year?: number;
+  source_url?: string;
+  source_title?: string;
+  code_snippet_url?: string;
+  collection_name?: string;
+  collection_description?: string;
+  collection_parent?: string;
+  collection_area?: string;
+  paper_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next_page: number | null;
@@ -329,6 +348,80 @@ class ApiClient {
     return this.request<Task[]>(`/tasks/${taskId}/parents`);
   }
 
+  async getTaskPapers(taskId: string, params?: {
+    page?: number;
+    page_size?: number;
+    order_by?: 'date_published' | 'citation_count' | 'title';
+    order_dir?: 'asc' | 'desc';
+    latest_only?: boolean;
+    include_resources?: boolean;
+  }): Promise<PaginatedResponse<Paper>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+    if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
+    if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString ? `/tasks/${taskId}/papers?${queryString}` : `/tasks/${taskId}/papers`;
+
+    return this.request<PaginatedResponse<Paper>>(endpoint);
+  }
+
+  // Methods API
+  async getMethods(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    name?: string;
+    full_name?: string;
+    introduced_year?: number;
+    ordering?: string;
+  }): Promise<PaginatedResponse<Method>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.name) searchParams.append('name', params.name);
+    if (params?.full_name) searchParams.append('full_name', params.full_name);
+    if (params?.introduced_year) searchParams.append('introduced_year', params.introduced_year.toString());
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/methods/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Method>>(endpoint);
+  }
+
+  async getMethod(id: string): Promise<Method> {
+    return this.request<Method>(`/methods/${id}`);
+  }
+
+  async getMethodPapers(methodId: string, params?: {
+    page?: number;
+    page_size?: number;
+    order_by?: 'date_published' | 'citation_count' | 'title';
+    order_dir?: 'asc' | 'desc';
+    latest_only?: boolean;
+    include_resources?: boolean;
+  }): Promise<PaginatedResponse<Paper>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+    if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
+    if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString ? `/methods/${methodId}/papers?${queryString}` : `/methods/${methodId}/papers`;
+
+    return this.request<PaginatedResponse<Paper>>(endpoint);
+  }
+
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
     const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
@@ -379,6 +472,10 @@ export const getTasks = apiClient.getTasks.bind(apiClient);
 export const getTask = apiClient.getTask.bind(apiClient);
 export const getTaskChildren = apiClient.getTaskChildren.bind(apiClient);
 export const getTaskParents = apiClient.getTaskParents.bind(apiClient);
+export const getTaskPapers = apiClient.getTaskPapers.bind(apiClient);
+export const getMethods = apiClient.getMethods.bind(apiClient);
+export const getMethod = apiClient.getMethod.bind(apiClient);
+export const getMethodPapers = apiClient.getMethodPapers.bind(apiClient);
 export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
 export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
 export const healthCheck = apiClient.healthCheck.bind(apiClient);

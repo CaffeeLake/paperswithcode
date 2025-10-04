@@ -1,148 +1,234 @@
+import { Card } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import Header from "@/components/Header";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { FileText, AlertCircle, Layers } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { getAreas, getMethods, type Area, type Method } from "@/lib/api";
+import { useMemo } from "react";
 
-const methodCategories = [
-  {
-    name: "General",
-    methods: [
-      {
-        id: "regularization",
-        name: "Regularization",
-        icon: "🔧",
-        methodCount: 35,
-        papersWithCode: 8337
-      },
-      {
-        id: "stochastic-optimization",
-        name: "Stochastic Optimization",
-        icon: "📈",
-        methodCount: 32,
-        papersWithCode: 3816
-      },
-      {
-        id: "attention",
-        name: "Attention",
-        icon: "🎯",
-        methodCount: 31,
-        papersWithCode: 4702
-      },
-      {
-        id: "activation-functions",
-        name: "Activation Functions",
-        icon: "⚡",
-        methodCount: 30,
-        papersWithCode: 12018
-      },
-      {
-        id: "normalization",
-        name: "Normalization",
-        icon: "📊",
-        methodCount: 29,
-        papersWithCode: 5087
-      }
-    ]
-  },
-  {
-    name: "Computer Vision",
-    methods: [
-      {
-        id: "convolutional-neural-networks",
-        name: "Convolutional Neural Networks",
-        icon: "🕸️",
-        methodCount: 86,
-        papersWithCode: 2449
-      },
-      {
-        id: "image-model-blocks",
-        name: "Image Model Blocks",
-        icon: "🧩",
-        methodCount: 72,
-        papersWithCode: 3005
-      },
-      {
-        id: "generative-models",
-        name: "Generative Models",
-        icon: "🎨",
-        methodCount: 54,
-        papersWithCode: 3730
-      },
-      {
-        id: "object-detection-models",
-        name: "Object Detection Models",
-        icon: "👁️",
-        methodCount: 34,
-        papersWithCode: 833
-      },
-      {
-        id: "image-feature-extractors",
-        name: "Image Feature Extractors",
-        icon: "🔍",
-        methodCount: 27,
-        papersWithCode: 52
-      }
-    ]
+// Method icon mapping based on method name
+const getMethodIcon = (methodName: string): string => {
+  const iconMap: Record<string, string> = {
+    "ResNet": "🕸️",
+    "Transformer": "🔄",
+    "BERT": "📝",
+    "Adam": "📈",
+    "Dropout": "🎲",
+    "Attention": "🎯",
+    "Batch Normalization": "📊",
+    "Convolutional Neural Network": "🧩",
+    "GAN": "🎨",
+    "LSTM": "🔁",
+  };
+
+  // Check for partial matches
+  for (const [key, icon] of Object.entries(iconMap)) {
+    if (methodName.toLowerCase().includes(key.toLowerCase())) {
+      return icon;
+    }
   }
-];
+
+  return "🔬"; // Default icon
+};
+
+interface AreaSectionProps {
+  area: Area;
+  methods: Method[];
+}
+
+const AreaSection = ({ area, methods }: AreaSectionProps) => {
+  if (methods.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mb-12">
+      <h2 className="text-2xl font-semibold mb-6">{area.name}</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-6">
+        {methods.map((method) => (
+          <Link key={method.id} to={`/methods/${method.id}`}>
+            <Card className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card h-full">
+              <div className="flex items-start space-x-3 mb-4">
+                <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">
+                  {getMethodIcon(method.name)}
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-base leading-tight">{method.name}</h3>
+                  {method.full_name && method.full_name !== method.name && (
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+                      {method.full_name}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2 text-sm text-muted-foreground">
+                {method.paper_count !== undefined && (
+                  <div className="flex items-center space-x-1">
+                    <FileText className="w-3 h-3" />
+                    <span>{method.paper_count} papers</span>
+                  </div>
+                )}
+                {method.introduced_year && (
+                  <p className="text-xs">Introduced: {method.introduced_year}</p>
+                )}
+              </div>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const Methods = () => {
+  // Fetch all areas
+  const { data: areasData, isLoading: isLoadingAreas, error: areasError, refetch: refetchAreas } = useQuery({
+    queryKey: ['areas'],
+    queryFn: () => getAreas({ page: 1, page_size: 100, ordering: 'name' }),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch all methods (with proper pagination handling)
+  const { data: methodsData, isLoading: isLoadingMethods, error: methodsError, refetch: refetchMethods } = useQuery({
+    queryKey: ['methods'],
+    queryFn: async () => {
+      // Fetch first page to get total count
+      const firstPage = await getMethods({ page: 1, page_size: 100, ordering: 'name' });
+
+      // If there are more pages, fetch them all
+      const totalPages = Math.ceil(firstPage.count / 100);
+      if (totalPages <= 1) {
+        return firstPage;
+      }
+
+      // Fetch remaining pages in parallel
+      const remainingPages = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, i) =>
+          getMethods({ page: i + 2, page_size: 100, ordering: 'name' })
+        )
+      );
+
+      // Combine all results
+      return {
+        count: firstPage.count,
+        next_page: null,
+        previous_page: null,
+        results: [
+          ...firstPage.results,
+          ...remainingPages.flatMap(page => page.results)
+        ]
+      };
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Memoize areas and methods to prevent recalculation on every render
+  const areas = useMemo(() => areasData?.results || [], [areasData?.results]);
+  const allMethods = useMemo(() => methodsData?.results || [], [methodsData?.results]);
+
+  // Group methods by area
+  const methodsByArea = useMemo(() => {
+    const grouped = new Map<string, Method[]>();
+
+    // Initialize all areas
+    areas.forEach(area => {
+      grouped.set(area.id, []);
+    });
+
+    // Group methods by area_id
+    allMethods.forEach(method => {
+      if (method.area_id) {
+        const existingMethods = grouped.get(method.area_id) || [];
+        grouped.set(method.area_id, [...existingMethods, method]);
+      }
+    });
+
+    return grouped;
+  }, [areas, allMethods]);
+
+  const isLoading = isLoadingAreas || isLoadingMethods;
+  const error = areasError || methodsError;
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
 
-      {/* Hero Section */}
-      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white py-16">
-        <div className="container mx-auto px-4 text-center">
-          <h1 className="text-5xl font-bold mb-4">Methods</h1>
-          <p className="text-xl opacity-90 mb-2">🔬 825 machine learning components</p>
-        </div>
-      </div>
+      <main className="container mx-auto px-4 py-8">
+        {/* Header Section */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold mb-4">Methods</h1>
 
-      {/* Description */}
-      <div className="container mx-auto px-4 py-8 text-center">
-        <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
-          A free and open resource that the community can edit and contribute to
-        </p>
-      </div>
-
-      {/* Method Categories */}
-      <div className="container mx-auto px-4 pb-12">
-        {methodCategories.map((category) => (
-          <div key={category.name} className="mb-12">
-            <h2 className="text-3xl font-bold mb-6">{category.name}</h2>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
-              {category.methods.map((method) => (
-                <Card key={method.id} className="hover:shadow-lg transition-shadow cursor-pointer">
-                  <CardContent className="p-6">
-                    <div className="flex items-start gap-3 mb-4">
-                      <div className="text-3xl">{method.icon}</div>
-                      <h3 className="text-lg font-semibold leading-tight">{method.name}</h3>
-                    </div>
-
-                    <div className="space-y-1 text-sm text-muted-foreground">
-                      <div className="flex items-center gap-2">
-                        <span className="text-primary">🔬</span>
-                        <span>{method.methodCount} methods</span>
-                      </div>
-                      <div>
-                        <span>{method.papersWithCode.toLocaleString()} papers with code</span>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+          <div className="flex items-center space-x-4 text-muted-foreground mb-4">
+            <div className="flex items-center space-x-1">
+              <Layers className="w-4 h-4" />
+              <span>{areasData?.count || 0} research areas</span>
             </div>
-
-            <div className="mt-6">
-              <Button variant="link" className="text-primary hover:underline">
-                ▶ See all {category.methods.length > 5 ? '52' : category.methods.length} categories
-              </Button>
+            <span>•</span>
+            <div className="flex items-center space-x-1">
+              <FileText className="w-4 h-4" />
+              <span>{methodsData?.count || 0} AI/ML methods</span>
             </div>
           </div>
-        ))}
-      </div>
+
+          <p className="text-muted-foreground">
+            A comprehensive collection of AI/ML methods, techniques, and components
+          </p>
+        </div>
+
+        {/* Error State */}
+        {error && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription className="flex items-center justify-between">
+              <span>Failed to load methods. {error instanceof Error ? error.message : 'Please try again later.'}</span>
+              <button
+                onClick={() => {
+                  refetchAreas();
+                  refetchMethods();
+                }}
+                className="ml-4 px-3 py-1 bg-white text-red-600 rounded hover:bg-gray-100 text-sm font-medium"
+              >
+                Retry
+              </button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Loading State */}
+        {isLoading ? (
+          <div className="space-y-12">
+            {[...Array(3)].map((_, i) => (
+              <div key={i}>
+                <Skeleton className="h-8 w-64 mb-6" />
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+                  {[...Array(5)].map((_, j) => (
+                    <Card key={j} className="p-6">
+                      <div className="flex items-start space-x-3 mb-4">
+                        <Skeleton className="w-10 h-10 rounded-lg" />
+                        <Skeleton className="h-6 flex-1" />
+                      </div>
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="h-4 w-24" />
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* Methods by Area */
+          areas.map((area) => {
+            const methods = methodsByArea.get(area.id) || [];
+            return <AreaSection key={area.id} area={area} methods={methods} />;
+          })
+        )}
+      </main>
     </div>
   );
 };

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Task, Tasks
+from backend.models.api import Task, Tasks, Papers
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -156,6 +156,54 @@ async def get_task_parents(
     try:
         service = TaskService(db)
         return service.get_task_parents(task_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{task_id}/papers", response_model=Papers)
+async def get_task_papers(
+    task_id: str,
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(
+        20, ge=1, le=100, description="Number of papers per page (max 100)"
+    ),
+    latest_only: bool = Query(
+        True, description="Whether to only include latest versions of papers"
+    ),
+    order_by: str = Query(
+        "date_published",
+        description="Field to order by: date_published, title, citation_count",
+    ),
+    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    include_resources: bool = Query(
+        False, description="Include repositories and tasks"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get papers associated with a specific task.
+
+    Returns paginated papers that are tagged with the specified task.
+    Supports sorting by publication date, title, or citation count.
+
+    **Examples:**
+    - `/api/v1/tasks/2/papers` - Get recent papers for task 2
+    - `/api/v1/tasks/object-detection/papers?order_by=citation_count` - Most cited papers
+    - `/api/v1/tasks/object-detection/papers?order_by=title&order_dir=asc` - Papers A-Z
+    """
+    try:
+        service = TaskService(db)
+        return service.get_task_papers(
+            task_id=task_id,
+            page=page,
+            page_size=page_size,
+            latest_only=latest_only,
+            order_by=order_by,
+            order_dir=order_dir,
+            include_resources=include_resources,
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

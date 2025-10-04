@@ -54,13 +54,22 @@ def create_app() -> FastAPI:
     )
 
     # Include routers
-    from backend.routers import papers, authors, thumbnails, repositories, areas, tasks
+    from backend.routers import (
+        papers,
+        authors,
+        thumbnails,
+        repositories,
+        areas,
+        tasks,
+        methods,
+    )
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     app.include_router(authors.router, prefix="/api/v1", tags=["authors"])
     app.include_router(repositories.router, prefix="/api/v1", tags=["repositories"])
     app.include_router(areas.router, prefix="/api/v1", tags=["areas"])
     app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
+    app.include_router(methods.router, prefix="/api/v1", tags=["methods"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
 
     # Health check endpoint

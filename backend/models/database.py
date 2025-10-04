@@ -262,6 +262,12 @@ class Method(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Area assignment (methods belong to one area)
+    area_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("areas.id"), nullable=True
+    )
+
     introduced_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     source_title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -280,6 +286,7 @@ class Method(Base):
     )
 
     # Relationships
+    area: Mapped[Optional[Area]] = relationship("Area")
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_methods", back_populates="methods"
     )

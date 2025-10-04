@@ -348,3 +348,47 @@ async def get_papers_legacy(
         return service.get_papers(page=page, latest_only=True)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/papers/{paper_id}/methods/",
+    summary="Get methods used in a paper",
+)
+async def get_paper_methods(
+    paper_id: str = Path(..., description="Paper ID or ArXiv ID"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(
+        50, ge=1, le=100, description="Number of methods per page (max 100)"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get all methods used in a specific paper.
+
+    Returns a paginated list of AI/ML methods (techniques, algorithms, approaches)
+    that are associated with the specified paper.
+
+    **Examples:**
+    - `/api/v1/papers/1234/methods/` - Get methods for paper ID 1234
+    - `/api/v1/papers/1706.03762/methods/` - Get methods for ArXiv paper 1706.03762 (Attention is All You Need)
+    """
+    try:
+        # Import here to avoid circular imports
+        from backend.services.method_service import MethodService
+
+        paper_service = PaperService(db)
+
+        # Get the paper to verify it exists and get the numeric ID
+        paper = paper_service.get_paper_by_id_or_arxiv(paper_id)
+
+        # Get methods for this paper
+        method_service = MethodService(db)
+        return method_service.get_methods_for_paper(
+            paper_id=int(paper.id),
+            page=page,
+            page_size=page_size,
+        )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))

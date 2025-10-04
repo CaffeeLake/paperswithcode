@@ -288,7 +288,7 @@ def get_latest_paper_version(db: Session, arxiv_id: str) -> Optional[Paper]:
     """Get the latest version of a paper by ArXiv ID."""
     return db.query(Paper).filter(
         Paper.arxiv_id == arxiv_id,
-        Paper.is_latest_version == True
+        Paper.is_latest_version
     ).first()
 
 def get_all_paper_versions(db: Session, arxiv_id: str) -> List[Paper]:
@@ -524,12 +524,26 @@ CREATE TABLE tasks (
 
 ### 5. METHODS
 **AI methods and techniques**
+
+Methods represent specific AI/ML techniques, algorithms, and approaches used in research. The methods system is fully integrated with the API and supports comprehensive queries including:
+- Full-text search across method names and descriptions
+- Filtering by year introduced, collection, and area
+- Paper count aggregation for each method
+- Collection-based grouping for related methods
+
+**Examples of Methods**:
+- **Architectures**: ResNet, Transformer, BERT, GPT, Vision Transformer
+- **Optimizers**: Adam, SGD, AdaGrad, RMSprop
+- **Techniques**: Dropout, Batch Normalization, Attention Mechanism
+- **Training Methods**: Transfer Learning, Few-Shot Learning, Self-Supervised Learning
+
 ```sql
 CREATE TABLE methods (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     full_name VARCHAR(500),
     description TEXT,
+    area_id BIGINT REFERENCES areas(id) ON DELETE SET NULL,  -- Methods belong to one area
     introduced_year INTEGER,
     source_url VARCHAR(500),
     source_title VARCHAR(500),
@@ -542,6 +556,19 @@ CREATE TABLE methods (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+**API Integration** (October 2025):
+- ✅ **Service Layer**: `MethodService` with full CRUD operations
+- ✅ **API Endpoints** (Compatible with PapersWithCode API):
+  - `GET /api/v1/methods/` - List methods with pagination/filtering
+  - `GET /api/v1/methods/{method_id}` - Get specific method
+  - `GET /api/v1/papers/{paper_id}/methods/` - Get methods used in a paper
+- ✅ **Filtering**: By name, full_name, search query, introduced_year, collection
+- ✅ **Ordering**: By name, full_name, introduced_year, created_at (asc/desc)
+- ✅ **Area Association**: Each method belongs to one area (General, Computer Vision, NLP, etc.)
+- ✅ **Paper Association**: Many-to-many relationship via `paper_methods` junction table
+- ✅ **Metadata**: Paper count, collection grouping, source attribution
+- ✅ **Data Import**: 133 curated methods imported from CSV with area mappings
 
 ### 6. DATASETS
 **Benchmark datasets**

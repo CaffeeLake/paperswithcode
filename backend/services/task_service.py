@@ -410,3 +410,107 @@ class TaskService:
             )
         except Exception as e:
             raise DatabaseError(f"Failed to get paper count for task: {str(e)}")
+
+    def get_task_papers(
+        self,
+        task_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        latest_only: bool = True,
+        order_by: str = "date_published",
+        order_dir: str = "desc",
+        include_resources: bool = False,
+    ):
+        """
+        Get papers associated with a specific task.
+
+        Args:
+            task_id: The task ID or slug
+            page: Page number (1-based)
+            page_size: Number of papers per page
+            latest_only: Whether to only include latest versions
+            order_by: Field to order by (date_published, title, citation_count)
+            order_dir: Order direction (asc, desc)
+            include_resources: Whether to include repositories and tasks
+
+        Returns:
+            Papers object with pagination info and results
+
+        Raises:
+            PaperNotFoundError: If task not found
+            DatabaseError: If database query fails
+        """
+        try:
+            from backend.models.database import Paper as DBPaper
+            from backend.models.api import Papers
+
+            # Get task to verify it exists (try by ID or slug)
+            task = None
+            if task_id.isdigit():
+                task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
+            else:
+                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+
+            if not task:
+                raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
+
+            # Base query for papers with this task
+            query = (
+                self.db.query(DBPaper)
+                .join(PaperTask, DBPaper.id == PaperTask.paper_id)
+                .filter(PaperTask.task_id == task.id)
+            )
+
+            # Apply latest version filter
+            if latest_only:
+                query = query.filter(DBPaper.is_latest_version)
+
+            # Apply ordering
+            if order_by == "date_published":
+                order_field = DBPaper.date_published
+            elif order_by == "title":
+                order_field = DBPaper.title
+            elif order_by == "citation_count":
+                order_field = DBPaper.citation_count
+            else:
+                order_field = DBPaper.date_published
+
+            if order_dir == "desc":
+                query = query.order_by(desc(order_field))
+            else:
+                query = query.order_by(asc(order_field))
+
+            # Get total count
+            total_count = query.count()
+
+            # Apply pagination
+            offset = (page - 1) * page_size
+            db_papers = query.offset(offset).limit(page_size).all()
+
+            # Convert to API models
+            from backend.services.paper_service import PaperService
+
+            paper_service = PaperService(self.db)
+
+            papers = []
+            for db_paper in db_papers:
+                paper = paper_service._convert_db_paper_to_api(
+                    db_paper, include_resources=include_resources
+                )
+                papers.append(paper)
+
+            # Calculate pagination
+            next_page = page + 1 if offset + page_size < total_count else None
+            previous_page = page - 1 if page > 1 else None
+
+            return Papers(
+                count=total_count,
+                next=next_page,
+                previous=previous_page,
+                results=papers,
+            )
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            raise DatabaseError(f"Failed to get papers for task: {str(e)}")

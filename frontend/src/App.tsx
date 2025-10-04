@@ -9,6 +9,7 @@ import PaperDetail from "./pages/PaperDetail";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
 import Methods from "./pages/Methods";
+import MethodDetail from "./pages/MethodDetail";
 import Benchmark from "./pages/Benchmark";
 import NotFound from "./pages/NotFound";
 
@@ -44,6 +45,7 @@ const App = () => (
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/methods" element={<Methods />} />
+          <Route path="/methods/:methodId" element={<MethodDetail />} />
           <Route path="/benchmark/:benchmark" element={<Benchmark />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

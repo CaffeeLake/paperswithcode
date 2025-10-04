@@ -572,6 +572,86 @@ class MethodSummary(BaseModel):
         return str(v)
 
 
+class Method(BaseModel):
+    """
+    Method object representing an AI/ML method or technique.
+
+    Methods are techniques, algorithms, or approaches used in machine learning
+    research. Examples: ResNet, Transformer, BERT, Adam Optimizer, etc.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core method identification
+    id: str = Field(..., description="Method ID")
+    name: str = Field(..., description="Method short name (e.g., 'ResNet', 'BERT')")
+    full_name: Optional[str] = Field(None, description="Method full name")
+    description: Optional[str] = Field(None, description="Method description")
+
+    # Area assignment (methods belong to one area, like tasks)
+    area_id: Optional[str] = Field(None, description="ID of the research area")
+
+    # Method metadata
+    introduced_year: Optional[int] = Field(
+        None, description="Year the method was introduced"
+    )
+    source_url: Optional[str] = Field(
+        None, description="URL to the source that introduced the method"
+    )
+    source_title: Optional[str] = Field(
+        None, description="Title of the source that introduced the method"
+    )
+    code_snippet_url: Optional[str] = Field(
+        None, description="URL to a code snippet implementing the method"
+    )
+
+    # Collection metadata (for grouped methods)
+    collection_name: Optional[str] = Field(
+        None, description="Name of the method collection"
+    )
+    collection_description: Optional[str] = Field(
+        None, description="Description of the method collection"
+    )
+    collection_parent: Optional[str] = Field(None, description="Parent collection name")
+    collection_area: Optional[str] = Field(
+        None, description="Research area of the collection"
+    )
+
+    # Metadata
+    paper_count: Optional[int] = Field(
+        None, description="Number of papers using this method"
+    )
+
+    # Timestamps
+    created_at: Optional[datetime] = Field(
+        None, description="Method creation timestamp"
+    )
+    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
+
+    @field_validator("id", "area_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure IDs are strings."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class Methods(BaseModel):
+    """
+    Object representing a paginated page of methods.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Method] = Field(..., description="List of methods on this page")
+
+
 class Task(BaseModel):
     """
     Task object representing a specific AI/ML task.
