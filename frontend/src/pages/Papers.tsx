@@ -10,6 +10,31 @@ import { useState, useEffect } from "react";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useSearchParams } from "react-router-dom";
 
+// Type definitions
+interface Task {
+  id: string;
+  name: string;
+  slug?: string;
+}
+
+interface Repository {
+  url?: string;
+  num_stars?: number;
+  is_official?: boolean;
+}
+
+interface PaperFromAPI {
+  id: string;
+  title: string;
+  abstract: string;
+  authors: string[];
+  published: string;
+  thumbnail_url?: string;
+  arxiv_id?: string;
+  tasks?: Task[];
+  repositories?: Repository[];
+}
+
 // Color palette for author avatars
 const authorColors = [
   "#3B82F6", "#8B5CF6", "#EF4444", "#10B981",
@@ -40,22 +65,28 @@ const formatDate = (dateString: string) => {
 };
 
 // Helper function to generate mock UI data from API paper
-const transformPaperForUI = (paper: any, index: number) => {
+const transformPaperForUI = (paper: PaperFromAPI, index: number) => {
   const authorsWithColors = assignAuthorColors(paper.authors || []);
 
   // Calculate total GitHub stars from official repositories only and find the most starred one
   const repositories = paper.repositories || [];
-  const officialRepositories = repositories.filter((repo: any) => repo.is_official);
-  const totalGithubStars = officialRepositories.reduce((total: number, repo: any) => {
+  const officialRepositories = repositories.filter((repo: Repository) => repo.is_official);
+  const totalGithubStars = officialRepositories.reduce((total: number, repo: Repository) => {
     return total + (repo.num_stars || 0);
   }, 0);
 
   // Find the official repository with the most stars for the GitHub link
   const mostStarredRepo = officialRepositories.length > 0
-    ? officialRepositories.reduce((max: any, repo: any) =>
+    ? officialRepositories.reduce((max: Repository, repo: Repository) =>
         (repo.num_stars || 0) > (max.num_stars || 0) ? repo : max
       )
     : null;
+
+  // Extract task names from the paper's tasks
+  // Keep the tag names in their original case for display
+  const tags = paper.tasks && paper.tasks.length > 0
+    ? paper.tasks.map((task: Task) => task.name)
+    : [];
 
   return {
     id: paper.id,
@@ -69,7 +100,7 @@ const transformPaperForUI = (paper: any, index: number) => {
     category: "Machine Learning", // Mock category
     isUpvoted: Math.random() > 0.7, // Mock upvote status
     githubStars: totalGithubStars, // Real GitHub stars from official repositories
-    tags: ["machine learning", "artificial intelligence", "research"], // Mock tags
+    tags: tags, // Real tags from API tasks
     thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
     arxivId: paper.arxiv_id, // Pass through arXiv ID for clickable links
     githubUrl: mostStarredRepo?.url, // Link to most starred repository

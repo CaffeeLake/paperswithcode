@@ -34,7 +34,7 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
 │ hf_is_pro       │    │ date_published   │    │ level           │
 │ created_at      │    │ proceeding       │    │ created_at      │
 │ updated_at      │    │ conference       │    │ updated_at      │
-└─────────────────┘    │ conference_url_abs│    └─────────────────┘
+└─────────────────┘    │ conference_url_abs│   └─────────────────┘
                        │ conference_url_pdf│             │
                        │ citation_count   │              │
                        │ semantic_scholar_id│            │

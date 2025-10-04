@@ -92,6 +92,12 @@ class Paper(BaseModel):
     project_pages: Optional[List["ProjectPage"]] = Field(
         None, description="Project pages associated with this paper"
     )
+    tasks: Optional[List["TaskSummary"]] = Field(
+        None, description="AI/ML tasks associated with this paper"
+    )
+    methods: Optional[List["MethodSummary"]] = Field(
+        None, description="Methods and techniques used in this paper"
+    )
 
     @field_validator("authors", mode="before")
     @classmethod
@@ -525,6 +531,45 @@ class Areas(BaseModel):
         None, description="Number of the previous page"
     )
     results: List[Area] = Field(..., description="List of areas on this page")
+
+
+class TaskSummary(BaseModel):
+    """
+    Lightweight task summary for embedding in paper objects.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Task ID")
+    name: str = Field(..., description="Task name (e.g., 'Image Classification')")
+    slug: Optional[str] = Field(None, description="URL-friendly task slug")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class MethodSummary(BaseModel):
+    """
+    Lightweight method summary for embedding in paper objects.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Method ID")
+    name: str = Field(..., description="Method name")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
 
 
 class Task(BaseModel):

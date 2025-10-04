@@ -84,6 +84,44 @@ class PaperService:
             filename = f"{safe_arxiv_id}_{db_paper.version}.jpg"
             thumbnail_url = f"/api/thumbnails/{filename}"
 
+        # Get tasks and methods for this paper (always included)
+        tasks = None
+        methods = None
+        try:
+            from backend.models.database import Task as DBTask, Method as DBMethod
+            from backend.models.api import TaskSummary, MethodSummary
+
+            # Get tasks for this paper
+            db_tasks = (
+                self.db.query(DBTask)
+                .join(DBTask.papers)
+                .filter(DBPaper.id == db_paper.id)
+                .all()
+            )
+            if db_tasks:
+                tasks = [
+                    TaskSummary(id=str(task.id), name=task.name, slug=task.slug)
+                    for task in db_tasks
+                ]
+
+            # Get methods for this paper
+            db_methods = (
+                self.db.query(DBMethod)
+                .join(DBMethod.papers)
+                .filter(DBPaper.id == db_paper.id)
+                .all()
+            )
+            if db_methods:
+                methods = [
+                    MethodSummary(id=str(method.id), name=method.name)
+                    for method in db_methods
+                ]
+
+        except Exception:
+            # If there's an error fetching tasks/methods, just leave them as None
+            tasks = None
+            methods = None
+
         # Get repositories and project pages if requested
         repositories = None
         project_pages = None
@@ -140,6 +178,8 @@ class PaperService:
             "urls_extracted": db_paper.urls_extracted,
             "repositories": repositories,
             "project_pages": project_pages,
+            "tasks": tasks,
+            "methods": methods,
         }
 
         return Paper(**paper_data)
@@ -478,38 +518,34 @@ class PaperService:
 
     def search_papers(self, query: str, limit: int = 10) -> List[PaperSummary]:
         """
-        Fast search for papers with improved ranking that prioritizes exact matches.
+        Fast search for papers ordered primarily by citation count.
 
-        Uses ILIKE queries with enhanced ranking:
-        1. Exact title matches (highest priority)
-        2. Title contains query (sorted by citation count)
-        3. Abstract contains query (sorted by citation count)
+        Uses ILIKE queries with citation-based ranking:
+        1. All papers matching query (title or abstract)
+        2. Sorted by citation count (highest first)
+        3. Small relevance boost for title matches
 
         Args:
             query: Search query
             limit: Maximum number of results
 
         Returns:
-            List of paper summaries ordered by relevance and citation count
+            List of paper summaries ordered by citation count and relevance
         """
         try:
             from sqlalchemy import case
 
-            # Create a ranking score based on match type and citation count
-            # Exact title match gets highest score, then partial matches
-            ranking_score = case(
+            # Create a small relevance boost that doesn't override citation ordering
+            # Title matches get a tiny boost (equivalent to ~100 citations)
+            relevance_boost = case(
                 (
                     DBPaper.title.ilike(query),
-                    1000000 + DBPaper.citation_count,
-                ),  # Exact title match
+                    100,
+                ),  # Exact title match - small boost
                 (
                     DBPaper.title.ilike(f"%{query}%"),
-                    100000 + DBPaper.citation_count,
-                ),  # Title contains
-                (
-                    DBPaper.abstract.ilike(f"%{query}%"),
-                    DBPaper.citation_count,
-                ),  # Abstract contains
+                    50,
+                ),  # Title contains - smaller boost
                 else_=0,
             )
 
@@ -524,7 +560,9 @@ class PaperService:
                 )
                 .filter(DBPaper.is_latest_version)
                 .order_by(
-                    desc(ranking_score),  # Custom ranking score
+                    desc(
+                        DBPaper.citation_count + relevance_boost
+                    ),  # Citations first, small boost for title relevance
                     desc(DBPaper.date_published),  # Date as tiebreaker
                 )
                 .limit(limit)

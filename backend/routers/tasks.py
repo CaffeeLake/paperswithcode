@@ -88,17 +88,24 @@ async def get_task(
     db: Session = Depends(get_database_session),
 ):
     """
-    Get a specific AI/ML task by ID.
+    Get a specific AI/ML task by ID or slug.
 
     Returns detailed information about a task including its description,
     hierarchy information (parent/area), and paper count.
 
-    **Example:**
+    **Examples:**
     - `/api/v1/tasks/1` - Get task with ID 1
+    - `/api/v1/tasks/computer-use-agents` - Get task by slug
     """
     try:
         service = TaskService(db)
-        return service.get_task_by_id(task_id)
+
+        # Try as numeric ID first
+        if task_id.isdigit():
+            return service.get_task_by_id(task_id)
+
+        # Otherwise, treat as slug
+        return service.get_task_by_slug(task_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

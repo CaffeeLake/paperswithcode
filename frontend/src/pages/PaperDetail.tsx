@@ -10,6 +10,13 @@ import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import PaperResources from "@/components/PaperResources";
 
+// Type definitions
+interface Task {
+  id: string;
+  name: string;
+  slug?: string;
+}
+
 const PaperDetail = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
   const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
@@ -152,20 +159,20 @@ const PaperDetail = () => {
                 </span>
               </div>
 
-              {/* Tags - Note: tags are not available in the current API, so we'll hide this section for now */}
-              {/*
-              <div className="mb-6">
-                <div className="flex flex-wrap gap-2">
-                  {paper.tags?.map((tag, index) => (
-                    <Link key={index} to={`/tasks/${tag.toLowerCase().replace(/\s+/g, '-')}`}>
-                      <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
-                        {tag}
-                      </Badge>
-                    </Link>
-                  ))}
+              {/* Tasks */}
+              {paper.tasks && paper.tasks.length > 0 && (
+                <div className="mb-6">
+                  <div className="flex flex-wrap gap-2">
+                    {paper.tasks.map((task: Task, index: number) => (
+                      <Link key={index} to={`/tasks/${task.slug || task.name.toLowerCase().replace(/\s+/g, '-')}`}>
+                        <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
+                          {task.name}
+                        </Badge>
+                      </Link>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              */}
+              )}
             </div>
 
             {/* Abstract */}
@@ -229,6 +236,7 @@ const PaperDetail = () => {
             {/* Code and Tasks */}
             <PaperResources
               repositories={paper.repositories || []}
+              tasks={paper.tasks || []}
             />
 
             {/* Evaluation Results */}

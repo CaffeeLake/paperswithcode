@@ -3,12 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Repository } from "@/lib/api";
 import { useState } from "react";
+import { Link } from "react-router-dom";
+
+interface Task {
+  id: string;
+  name: string;
+  slug?: string;
+}
 
 interface PaperResourcesProps {
   repositories?: Repository[];
+  tasks?: Task[];
 }
 
-const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
+const PaperResources = ({ repositories = [], tasks = [] }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
   // Ensure repositories is always an array and filter to show official and high-quality repositories
@@ -145,15 +153,27 @@ const PaperResources = ({ repositories = [] }: PaperResourcesProps) => {
             <Target className="w-5 h-5" />
             <span>Tasks</span>
             <Badge variant="secondary" className="ml-2">
-              0
+              {tasks.length}
             </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="text-center py-4 text-muted-foreground">
-            <Target className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            <p className="text-xs">Tasks will be available soon</p>
-          </div>
+          {tasks.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {tasks.map((task: Task) => (
+                <Link key={task.id} to={`/tasks/${task.slug || task.name.toLowerCase().replace(/\s+/g, '-')}`}>
+                  <Badge variant="secondary" className="text-sm hover:bg-secondary/80 cursor-pointer transition-colors">
+                    {task.name}
+                  </Badge>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-4 text-muted-foreground">
+              <Target className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p className="text-xs">No tasks available</p>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -47,6 +47,7 @@ export interface Paper {
   semantic_scholar_id?: string;
   repositories?: Repository[];
   project_pages?: ProjectPage[];
+  tasks?: Task[];
 }
 
 export interface Author {
