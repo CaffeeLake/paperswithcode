@@ -58,6 +58,27 @@ export interface Author {
   semantic_scholar_id?: string;
 }
 
+export interface Area {
+  id: string;
+  name: string;
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Task {
+  id: string;
+  name: string;
+  description?: string;
+  slug?: string;
+  parent_id?: string;
+  area_id?: string;
+  level: number;
+  paper_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next_page: number | null;
@@ -75,6 +96,8 @@ class ApiClient {
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
+    console.log(`[API] Requesting: ${url}`);
+
     try {
       const response = await fetch(url, {
         headers: {
@@ -84,13 +107,19 @@ class ApiClient {
         ...options,
       });
 
+      console.log(`[API] Response from ${url}:`, response.status, response.statusText);
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[API] Error response:`, errorText);
         throw new Error(`API request failed: ${response.status} ${response.statusText}`);
       }
 
-      return await response.json();
+      const data = await response.json();
+      console.log(`[API] Success:`, data);
+      return data;
     } catch (error) {
-      console.error(`API request to ${url} failed:`, error);
+      console.error(`[API] Request to ${url} failed:`, error);
       throw error;
     }
   }
@@ -215,6 +244,90 @@ class ApiClient {
     return this.request<Author>(`/authors/${id}`);
   }
 
+  // Areas API
+  async getAreas(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    name?: string;
+    ordering?: string;
+  }): Promise<PaginatedResponse<Area>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.name) searchParams.append('name', params.name);
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/areas/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Area>>(endpoint);
+  }
+
+  async getArea(id: string): Promise<Area> {
+    return this.request<Area>(`/areas/${id}`);
+  }
+
+  async getAreaTasks(areaId: string, params?: {
+    page?: number;
+    page_size?: number;
+  }): Promise<PaginatedResponse<Task>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+
+    const endpoint = `/areas/${areaId}/tasks${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Task>>(endpoint);
+  }
+
+  // Tasks API
+  async getTasks(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    name?: string;
+    area_id?: number;
+    parent_id?: number;
+    level?: number;
+    ordering?: string;
+  }): Promise<PaginatedResponse<Task>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.name) searchParams.append('name', params.name);
+    if (params?.area_id) searchParams.append('area_id', params.area_id.toString());
+    if (params?.parent_id) searchParams.append('parent_id', params.parent_id.toString());
+    if (params?.level !== undefined) searchParams.append('level', params.level.toString());
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/tasks/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Task>>(endpoint);
+  }
+
+  async getTask(id: string): Promise<Task> {
+    return this.request<Task>(`/tasks/${id}`);
+  }
+
+  async getTaskChildren(taskId: string, params?: {
+    page?: number;
+    page_size?: number;
+  }): Promise<PaginatedResponse<Task>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+
+    const endpoint = `/tasks/${taskId}/children${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Task>>(endpoint);
+  }
+
+  async getTaskParents(taskId: string): Promise<Task[]> {
+    return this.request<Task[]>(`/tasks/${taskId}/parents`);
+  }
+
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
     const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
@@ -248,18 +361,23 @@ class ApiClient {
 // Create and export a singleton instance
 export const apiClient = new ApiClient();
 
-// Export individual API functions for convenience
-export const {
-  getPapers,
-  getPaper,
-  getPaperByArxivId,
-  getRepositoriesForPaper,
-  getRepositories,
-  getProjectPagesForPaper,
-  getProjectPages,
-  getAuthors,
-  getAuthor,
-  generateThumbnail,
-  getThumbnailStatus,
-  healthCheck,
-} = apiClient;
+// Export individual API functions for convenience (with proper binding)
+export const getPapers = apiClient.getPapers.bind(apiClient);
+export const getPaper = apiClient.getPaper.bind(apiClient);
+export const getPaperByArxivId = apiClient.getPaperByArxivId.bind(apiClient);
+export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
+export const getRepositories = apiClient.getRepositories.bind(apiClient);
+export const getProjectPagesForPaper = apiClient.getProjectPagesForPaper.bind(apiClient);
+export const getProjectPages = apiClient.getProjectPages.bind(apiClient);
+export const getAuthors = apiClient.getAuthors.bind(apiClient);
+export const getAuthor = apiClient.getAuthor.bind(apiClient);
+export const getAreas = apiClient.getAreas.bind(apiClient);
+export const getArea = apiClient.getArea.bind(apiClient);
+export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);
+export const getTasks = apiClient.getTasks.bind(apiClient);
+export const getTask = apiClient.getTask.bind(apiClient);
+export const getTaskChildren = apiClient.getTaskChildren.bind(apiClient);
+export const getTaskParents = apiClient.getTaskParents.bind(apiClient);
+export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
+export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
+export const healthCheck = apiClient.healthCheck.bind(apiClient);

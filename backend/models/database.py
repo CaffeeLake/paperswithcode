@@ -226,8 +226,12 @@ class Task(Base):
     )
 
     # Relationships
-    parent: Mapped[Optional["Task"]] = relationship("Task", remote_side=[id])
-    children: Mapped[List["Task"]] = relationship("Task")
+    parent: Mapped[Optional["Task"]] = relationship(
+        "Task", remote_side=[id], back_populates="children"
+    )
+    children: Mapped[List["Task"]] = relationship(
+        "Task", back_populates="parent", overlaps="parent"
+    )
     area: Mapped[Optional[Area]] = relationship("Area", back_populates="tasks")
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_tasks", back_populates="tasks"
@@ -424,8 +428,10 @@ class PaperProjectPage(Base):
     )
 
     # Relationships
-    paper: Mapped["Paper"] = relationship("Paper", overlaps="project_pages")
-    project_page: Mapped["ProjectPage"] = relationship("ProjectPage", overlaps="papers")
+    paper: Mapped["Paper"] = relationship("Paper", overlaps="project_pages,papers")
+    project_page: Mapped["ProjectPage"] = relationship(
+        "ProjectPage", overlaps="papers,project_pages"
+    )
 
     # Indexes
     __table_args__ = (

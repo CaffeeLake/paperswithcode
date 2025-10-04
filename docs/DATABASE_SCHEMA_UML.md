@@ -484,7 +484,20 @@ CREATE TABLE areas (
 ```
 
 ### 4. TASKS
-**AI tasks with hierarchical structure - Built from evaluation-tables.json**
+**AI tasks with hierarchical structure**
+
+Tasks represent specific AI/ML problems and capabilities, organized hierarchically within research areas. Tasks are fully integrated with the API and support advanced queries including:
+- Hierarchical parent-child relationships
+- Area-based organization
+- Paper count aggregation
+- Full-text search across task names and descriptions
+
+**Current Task Coverage** (October 2025):
+- **Computer Vision**: Image Classification, Object Detection
+- **Robotics**: Vision Language Action Models
+- **Natural Language Processing**: Language Modeling, Machine Translation
+- **General Tasks**: Vision Language Models, Computer Use Agents
+
 ```sql
 CREATE TABLE tasks (
     id BIGSERIAL PRIMARY KEY,
@@ -498,6 +511,16 @@ CREATE TABLE tasks (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+**API Integration** (October 2025):
+- ✅ **Service Layer**: `TaskService` with full CRUD operations
+- ✅ **API Endpoints**:
+  - `GET /api/v1/tasks/` - List tasks with pagination/filtering
+  - `GET /api/v1/tasks/{task_id}` - Get specific task
+  - `GET /api/v1/tasks/{task_id}/children` - Get subtasks
+  - `GET /api/v1/tasks/{task_id}/parents` - Get parent hierarchy
+- ✅ **Filtering**: By area, parent task, hierarchy level, search query
+- ✅ **Hierarchical Queries**: Navigate task hierarchies efficiently
 
 ### 5. METHODS
 **AI methods and techniques**

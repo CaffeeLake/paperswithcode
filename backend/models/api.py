@@ -487,5 +487,99 @@ class ProjectPages(BaseModel):
     )
 
 
+class Area(BaseModel):
+    """
+    Research area object representing a broad field of AI/ML research.
+
+    Examples: Computer Vision, Natural Language Processing, Reinforcement Learning, etc.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core area identification
+    id: str = Field(..., description="Area ID")
+    name: str = Field(..., description="Area name (e.g., 'Computer Vision')")
+    description: Optional[str] = Field(None, description="Area description")
+
+    # Timestamps
+    created_at: Optional[datetime] = Field(None, description="Area creation timestamp")
+    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
+        return str(v)
+
+
+class Areas(BaseModel):
+    """
+    Object representing a paginated page of areas.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Area] = Field(..., description="List of areas on this page")
+
+
+class Task(BaseModel):
+    """
+    Task object representing a specific AI/ML task.
+
+    Tasks are hierarchical and can have parent-child relationships.
+    Examples: Image Classification, Object Detection, Language Modeling, etc.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # Core task identification
+    id: str = Field(..., description="Task ID")
+    name: str = Field(..., description="Task name (e.g., 'Image Classification')")
+    description: Optional[str] = Field(None, description="Task description")
+    slug: Optional[str] = Field(None, description="URL-friendly task slug")
+
+    # Hierarchical structure
+    parent_id: Optional[str] = Field(None, description="ID of the parent task")
+    area_id: Optional[str] = Field(None, description="ID of the research area")
+    level: int = Field(default=0, description="Depth in task hierarchy (0=top-level)")
+
+    # Metadata
+    paper_count: Optional[int] = Field(
+        None, description="Number of papers for this task"
+    )
+
+    # Timestamps
+    created_at: Optional[datetime] = Field(None, description="Task creation timestamp")
+    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
+
+    @field_validator("id", "parent_id", "area_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure IDs are strings."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class Tasks(BaseModel):
+    """
+    Object representing a paginated page of tasks.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Task] = Field(..., description="List of tasks on this page")
+
+
 # Resolve forward references
 Paper.model_rebuild()
