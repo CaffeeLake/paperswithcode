@@ -233,10 +233,11 @@ const PaperDetail = () => {
               </Button>
             </div>
 
-            {/* Code and Tasks */}
+            {/* Code, Tasks, and Methods */}
             <PaperResources
               repositories={paper.repositories || []}
               tasks={paper.tasks || []}
+              methods={paper.methods || []}
             />
 
             {/* Evaluation Results */}

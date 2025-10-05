@@ -562,6 +562,15 @@ class MethodSummary(BaseModel):
 
     id: str = Field(..., description="Method ID")
     name: str = Field(..., description="Method name")
+    source_url: Optional[str] = Field(
+        None, description="URL to the source paper/article"
+    )
+    source_title: Optional[str] = Field(
+        None, description="Title of the source paper/article"
+    )
+    code_snippet_url: Optional[str] = Field(
+        None, description="URL to code implementation"
+    )
 
     @field_validator("id", mode="before")
     @classmethod
@@ -603,6 +612,10 @@ class Method(BaseModel):
     )
     code_snippet_url: Optional[str] = Field(
         None, description="URL to a code snippet implementing the method"
+    )
+    image_url: Optional[str] = Field(
+        None,
+        description="URL to an image/diagram representing the method (e.g., architecture diagram)",
     )
 
     # Collection metadata (for grouped methods)

@@ -113,7 +113,13 @@ class PaperService:
             )
             if db_methods:
                 methods = [
-                    MethodSummary(id=str(method.id), name=method.name)
+                    MethodSummary(
+                        id=str(method.id),
+                        name=method.name,
+                        source_url=method.source_url,
+                        source_title=method.source_title,
+                        code_snippet_url=method.code_snippet_url,
+                    )
                     for method in db_methods
                 ]
 

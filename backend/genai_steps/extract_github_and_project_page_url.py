@@ -14,6 +14,7 @@ import asyncio
 import os
 from pathlib import Path
 import logging
+import time
 
 from pydantic import BaseModel
 
@@ -53,6 +54,26 @@ logger = logging.getLogger(__name__)
 
 # Initialize variables
 template = load_prompt("extract_github_and_project_page_url.json")
+
+# ArXiv rate limiting - 3 seconds between requests
+ARXIV_RATE_LIMIT_DELAY = 3.0
+_last_arxiv_request_time = None
+
+
+async def _rate_limit_arxiv():
+    """Ensure we respect ArXiv's rate limit of 1 request per 3 seconds."""
+    global _last_arxiv_request_time
+
+    if _last_arxiv_request_time is not None:
+        elapsed = time.time() - _last_arxiv_request_time
+        if elapsed < ARXIV_RATE_LIMIT_DELAY:
+            wait_time = ARXIV_RATE_LIMIT_DELAY - elapsed
+            logger.debug(
+                f"Rate limiting: waiting {wait_time:.2f}s before ArXiv request"
+            )
+            await asyncio.sleep(wait_time)
+
+    _last_arxiv_request_time = time.time()
 
 
 class FewShotPDFCache:
@@ -288,7 +309,40 @@ async def get_project_github_urls(
         )
 
         try:
-            async with temp_pdf_download(arxiv_id=arxiv_id) as pdf_path:
+            # Apply rate limiting before downloading from ArXiv
+            await _rate_limit_arxiv()
+
+            async with temp_pdf_download(arxiv_id=arxiv_id) as (
+                pdf_path,
+                error_message,
+            ):
+                # Check if download failed
+                if pdf_path is None or error_message is not None:
+                    error_msg = error_message or "Unknown error"
+
+                    # Check if it's a critical error (reCAPTCHA, rate limiting, etc.)
+                    error_str = error_msg.lower()
+                    is_critical = (
+                        "recaptcha" in error_str
+                        or "captcha" in error_str
+                        or "rate limit" in error_str
+                        or "429" in error_str
+                    )
+
+                    if is_critical:
+                        raise Exception(
+                            f"Failed to download PDF for {arxiv_id}: {error_msg}"
+                        )
+                    else:
+                        # Non-critical error, log and continue
+                        print(f"Failed to download PDF for {arxiv_id}: {error_msg}")
+                        # Continue with whatever URLs we found
+                        return reasoning, {
+                            "github_url": github_url,
+                            "project_page_url": project_page_url,
+                        }
+
+                # PDF downloaded successfully, process it
                 pdf_path_processed = await extract_first_two_pages_pymupdf(pdf_path)
 
                 # Try PDF-based project page extraction if not found yet

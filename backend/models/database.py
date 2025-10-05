@@ -272,6 +272,7 @@ class Method(Base):
     source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     source_title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     code_snippet_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     collection_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     collection_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     collection_parent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

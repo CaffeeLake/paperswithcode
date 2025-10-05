@@ -184,52 +184,86 @@ const MethodDetail = () => {
             )}
           </div>
 
-          {/* Method Description */}
+          {/* Method Description and Image - Two Column Layout */}
           {method.description && (
             <Card className="p-6 mb-6">
-              <h2 className="text-lg font-semibold mb-3">Description</h2>
-              <div className="prose prose-slate dark:prose-invert max-w-none">
-                <ReactMarkdown
-                  remarkPlugins={[remarkMath, remarkGfm]}
-                  rehypePlugins={[rehypeKatex]}
-                >
-                  {method.description}
-                </ReactMarkdown>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Left Column - Description */}
+                <div>
+                  <div className="prose prose-slate dark:prose-invert max-w-none">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkMath, remarkGfm]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {method.description}
+                    </ReactMarkdown>
+                  </div>
+
+                  {/* Source Information */}
+                  {method.source_title && (
+                    <div className="mt-6 pt-6 border-t">
+                      <p className="text-sm text-muted-foreground mb-3">
+                        <span className="font-semibold">Source:</span>{' '}
+                        {method.source_url ? (
+                          <a
+                            href={method.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            {method.source_title}
+                          </a>
+                        ) : (
+                          method.source_title
+                        )}
+                      </p>
+
+                      {/* Action Buttons */}
+                      <div className="flex gap-3">
+                        {method.source_url && (
+                          <a
+                            href={method.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+                          >
+                            Read Paper
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        )}
+                        {method.code_snippet_url && (
+                          <a
+                            href={method.code_snippet_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
+                          >
+                            See Code
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column - Image/Diagram */}
+                {method.image_url && (
+                  <div className="flex items-start justify-center">
+                    <img
+                      src={method.image_url}
+                      alt={`${method.name} diagram`}
+                      className="max-w-full h-auto rounded-lg shadow-md"
+                      onError={(e) => {
+                        // Hide image if it fails to load
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </Card>
           )}
-
-          {/* Additional Information */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {method.source_url && (
-              <Card className="p-4">
-                <h3 className="text-sm font-semibold mb-2">Source</h3>
-                <a
-                  href={method.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline flex items-center gap-1"
-                >
-                  {method.source_title || method.source_url}
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </Card>
-            )}
-            {method.code_snippet_url && (
-              <Card className="p-4">
-                <h3 className="text-sm font-semibold mb-2">Code Snippet</h3>
-                <a
-                  href={method.code_snippet_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline flex items-center gap-1"
-                >
-                  View Code
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </Card>
-            )}
-          </div>
         </div>
 
         {/* Papers Section */}

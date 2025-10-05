@@ -1,4 +1,4 @@
-from typing import List, Generator
+from typing import List, Generator, Callable, Any, TypeVar
 from contextlib import contextmanager, asynccontextmanager
 import asyncio
 import aiohttp
@@ -11,6 +11,8 @@ from PyPDF2 import PdfReader
 from pdf2image import convert_from_path
 import pdfplumber
 
+# Type variable for generic return type
+T = TypeVar("T")
 
 PROJECT_PAGE_URL_PATTERN = r"\bhttps?://[a-zA-Z0-9.-]+\.github\.io[^\s]*"
 
@@ -219,59 +221,159 @@ def _is_valid_pdf(content: bytes) -> tuple[bool, str]:
     return True, ""
 
 
+def _is_valid_pdf_content(content: bytes) -> bool:
+    """
+    Check if the downloaded content is actually a PDF file.
+
+    Args:
+        content: The downloaded content as bytes
+
+    Returns:
+        bool: True if content appears to be a valid PDF, False otherwise
+    """
+    if not content:
+        return False
+
+    # Check PDF magic number (PDF files start with %PDF-)
+    if not content.startswith(b"%PDF-"):
+        return False
+
+    # Additional check: ensure it's not HTML content (common when rate limited)
+    content_lower = content[:1024].lower()  # Check first 1KB
+    html_indicators = [b"<html", b"<!doctype", b"<head>", b"<body>", b"recaptcha"]
+
+    for indicator in html_indicators:
+        if indicator in content_lower:
+            print(
+                f"Warning: Downloaded content appears to be HTML (contains '{indicator.decode()}')"
+            )
+            return False
+
+    return True
+
+
+async def async_retry_with_backoff(
+    func: Callable[[], Any],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0,
+    retry_exceptions: tuple = (Exception,),
+    operation_name: str = "operation",
+) -> T:
+    """
+    Generic async retry function with exponential backoff.
+
+    Args:
+        func: Async function to retry (should be a callable that returns a coroutine)
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+        backoff_factor: Multiplier for delay after each failure
+        retry_exceptions: Tuple of exception types that should trigger a retry
+        operation_name: Name of the operation for logging purposes
+
+    Returns:
+        The result of the successful function call
+
+    Raises:
+        The last exception if all retries are exhausted
+    """
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            if attempt == 0:
+                print(f"Starting {operation_name}")
+            else:
+                print(f"Retry attempt {attempt + 1}/{max_retries} for {operation_name}")
+
+            result = await func()
+            return result
+
+        except retry_exceptions as e:
+            last_exception = e
+
+            if attempt == max_retries - 1:  # Last attempt
+                print(f"All {max_retries} attempts failed for {operation_name}")
+                raise e
+
+            # Calculate delay with exponential backoff
+            delay = min(base_delay * (backoff_factor**attempt), max_delay)
+            print(
+                f"{operation_name} failed with {type(e).__name__}: {str(e)}, retrying in {delay:.1f} seconds..."
+            )
+            await asyncio.sleep(delay)
+
+    # This should never be reached, but just in case
+    if last_exception:
+        raise last_exception
+    raise RuntimeError(f"Unexpected error in retry logic for {operation_name}")
+
+
 @asynccontextmanager
 async def temp_pdf_download(arxiv_id: str):
     """
     Temporarily download a PDF from arXiv asynchronously.
-
-    Validates that the downloaded file is actually a PDF and not HTML (e.g., reCAPTCHA page).
-
-    Raises:
-        aiohttp.ClientError: If HTTP request fails (includes 429 rate limiting)
-        asyncio.TimeoutError: If download times out
-        IOError: If file cannot be saved
-        Exception: If downloaded file is not a valid PDF or for other critical failures
     """
 
+    filepath = None
+    error_message = None
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             # Get the PDF URL
             pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
 
-            # Download the PDF asynchronously with timeout and retry
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(pdf_url) as response:
-                    # Check for rate limiting specifically
-                    if response.status == 429:
-                        raise Exception(f"ArXiv rate limit (429) for {arxiv_id}")
+            # Download the PDF asynchronously with increased timeout for large files
+            # ArXiv PDFs can be quite large (20MB+), so we need generous timeouts
+            timeout = aiohttp.ClientTimeout(total=120, connect=10, sock_read=60)
 
-                    response.raise_for_status()  # Raise an exception for bad responses
-                    content = await response.read()
+            async def download_pdf():
+                """Inner function to download PDF that will be retried."""
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(pdf_url) as response:
+                        response.raise_for_status()  # Raise an exception for bad responses
+                        content = await response.read()
+                        print(f"Downloaded {len(content)} bytes")
+                        return content
 
-            # Validate that the content is actually a PDF
-            is_valid, error_msg = _is_valid_pdf(content)
-            if not is_valid:
-                raise Exception(f"Failed to download PDF for {arxiv_id}: {error_msg}")
+            # Use the retry function with specific exceptions that should trigger retries
+            content = await async_retry_with_backoff(
+                func=download_pdf,
+                max_retries=3,
+                base_delay=1.0,
+                backoff_factor=2.0,
+                retry_exceptions=(
+                    asyncio.TimeoutError,
+                    aiohttp.ClientError,
+                    aiohttp.ServerTimeoutError,
+                ),
+                operation_name=f"PDF download from {pdf_url}",
+            )
+
+            if not _is_valid_pdf_content(content):
+                raise Exception("Downloaded content is not a valid PDF file")
 
             # Generate a filename for the PDF
             filename = f"{arxiv_id}.pdf"
             filepath = os.path.join(temp_dir, filename)
 
-            # Save the PDF asynchronously
+            # Save the PDF synchronously (file write doesn't need to be async)
             with open(filepath, "wb") as f:
-                await asyncio.to_thread(f.write, content)
+                f.write(content)
 
             print(f"PDF downloaded successfully to temporary location: {filepath}")
 
         except Exception as e:
-            # Add context to the error and re-raise
-            error_msg = f"Failed to download PDF for {arxiv_id}: {str(e)}"
-            print(error_msg)
-            raise Exception(error_msg) from e
+            error_details = f"{type(e).__name__}: {str(e)}"
+            print(
+                f"An error occurred while downloading PDF at {pdf_url}: {error_details}"
+            )
+            filepath = None
+            error_message = error_details
 
         try:
-            yield filepath
+            yield filepath, error_message
         except GeneratorExit:
             # Handle cleanup when the generator is being closed
             pass

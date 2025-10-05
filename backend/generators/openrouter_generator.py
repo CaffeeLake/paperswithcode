@@ -31,7 +31,7 @@ class OpenRouterGenerator(RateLimitingMixin, Generator):
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY
         )
-        self.model_name = "x-ai/grok-4-fast:free"
+        self.model_name = "x-ai/grok-4-fast"
 
     def encode_image(self, image_path: str) -> str:
         """

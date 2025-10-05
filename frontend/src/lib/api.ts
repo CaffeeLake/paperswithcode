@@ -48,6 +48,7 @@ export interface Paper {
   repositories?: Repository[];
   project_pages?: ProjectPage[];
   tasks?: Task[];
+  methods?: Method[];
 }
 
 export interface Author {
@@ -90,6 +91,7 @@ export interface Method {
   source_url?: string;
   source_title?: string;
   code_snippet_url?: string;
+  image_url?: string;
   collection_name?: string;
   collection_description?: string;
   collection_parent?: string;

@@ -51,18 +51,38 @@ const AreaSection = ({ area, methods }: AreaSectionProps) => {
         {methods.map((method) => (
           <Link key={method.id} to={`/methods/${method.id}`}>
             <Card className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card h-full">
-              <div className="flex items-start space-x-3 mb-4">
-                <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">
-                  {getMethodIcon(method.name)}
+              {/* Method thumbnail image or icon */}
+              {method.image_url ? (
+                <div className="mb-4 rounded-lg overflow-hidden bg-muted flex items-center justify-center" style={{ height: '120px' }}>
+                  <img
+                    src={method.image_url}
+                    alt={`${method.name} thumbnail`}
+                    className="w-full h-full object-contain"
+                    onError={(e) => {
+                      // Fallback to icon if image fails to load
+                      e.currentTarget.style.display = 'none';
+                      const parent = e.currentTarget.parentElement;
+                      if (parent) {
+                        parent.innerHTML = `<div class="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">${getMethodIcon(method.name)}</div>`;
+                      }
+                    }}
+                  />
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-base leading-tight">{method.name}</h3>
-                  {method.full_name && method.full_name !== method.name && (
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
-                      {method.full_name}
-                    </p>
-                  )}
+              ) : (
+                <div className="mb-4 flex justify-center">
+                  <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center text-lg">
+                    {getMethodIcon(method.name)}
+                  </div>
                 </div>
+              )}
+
+              <div className="mb-3">
+                <h3 className="font-semibold text-base leading-tight">{method.name}</h3>
+                {method.full_name && method.full_name !== method.name && (
+                  <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+                    {method.full_name}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2 text-sm text-muted-foreground">
