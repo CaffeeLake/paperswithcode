@@ -92,18 +92,25 @@ async def get_method(
     db: Session = Depends(get_database_session),
 ):
     """
-    Get a specific AI/ML method by ID.
+    Get a specific AI/ML method by ID or name.
 
     Returns detailed information about a method including its description,
     source attribution, collection information, and paper count.
 
     **Examples:**
     - `/api/v1/methods/1` - Get method with ID 1
-    - `/api/v1/methods/42` - Get method with ID 42
+    - `/api/v1/methods/GPT-2` - Get method by name
+    - `/api/v1/methods/Transformer` - Get method by name
     """
     try:
         service = MethodService(db)
-        return service.get_method_by_id(method_id)
+
+        # Try as numeric ID first
+        if method_id.isdigit():
+            return service.get_method_by_id(method_id)
+
+        # Otherwise, treat as name
+        return service.get_method_by_name(method_id)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -136,11 +143,13 @@ async def get_method_papers(
     Get all papers that use a specific method.
 
     Returns a paginated list of papers tagged with the given method.
+    Accepts either method ID or method name.
 
     **Example queries:**
-    - `/api/v1/methods/1/papers` - Get papers using method 1
-    - `/api/v1/methods/1/papers?order_by=citation_count&order_dir=desc` - Most cited papers
-    - `/api/v1/methods/1/papers?include_resources=true` - Include GitHub repos
+    - `/api/v1/methods/1/papers` - Get papers using method ID 1
+    - `/api/v1/methods/GPT-2/papers` - Get papers using GPT-2
+    - `/api/v1/methods/Transformer/papers?order_by=citation_count&order_dir=desc` - Most cited papers
+    - `/api/v1/methods/BERT/papers?include_resources=true` - Include GitHub repos
     """
     try:
         service = MethodService(db)

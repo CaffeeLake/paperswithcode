@@ -49,7 +49,7 @@ const AreaSection = ({ area, methods }: AreaSectionProps) => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-6">
         {methods.map((method) => (
-          <Link key={method.id} to={`/methods/${method.id}`}>
+          <Link key={method.id} to={`/methods/${encodeURIComponent(method.name)}`}>
             <Card className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card h-full">
               {/* Method thumbnail image or icon */}
               {method.image_url ? (

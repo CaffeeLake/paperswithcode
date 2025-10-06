@@ -202,7 +202,7 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperRe
             <div className="space-y-3">
               {methods.map((method: Method) => (
                 <div key={method.id} className="p-3 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors">
-                  <Link to={`/methods/${method.id}`}>
+                  <Link to={`/methods/${encodeURIComponent(method.name)}`}>
                     <h3 className="font-medium text-sm mb-2 hover:text-primary transition-colors">
                       {method.name}
                     </h3>

@@ -214,6 +214,66 @@ class MethodService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve method: {str(e)}")
 
+    def get_method_by_name(self, method_name: str) -> Method:
+        """
+        Get a specific AI/ML method by name.
+
+        Args:
+            method_name: The method name (case-insensitive exact match)
+
+        Returns:
+            Method object
+
+        Raises:
+            PaperNotFoundError: If method not found
+            DatabaseError: If database query fails
+        """
+        try:
+            # Query the database (case-insensitive match)
+            db_method = (
+                self.db.query(DBMethod).filter(DBMethod.name.ilike(method_name)).first()
+            )
+
+            if not db_method:
+                raise PaperNotFoundError(f"Method '{method_name}' not found")
+
+            # Get paper count for this method
+            paper_count = (
+                self.db.query(func.count(PaperMethod.paper_id))
+                .filter(PaperMethod.method_id == db_method.id)
+                .scalar()
+                or 0
+            )
+
+            # Convert to API model
+            method_dict = {
+                "id": str(db_method.id),
+                "name": db_method.name,
+                "full_name": db_method.full_name,
+                "description": db_method.description,
+                "area_id": str(db_method.area_id) if db_method.area_id else None,
+                "introduced_year": db_method.introduced_year,
+                "source_url": db_method.source_url,
+                "source_title": db_method.source_title,
+                "code_snippet_url": db_method.code_snippet_url,
+                "image_url": db_method.image_url,
+                "image_credit": db_method.image_credit,
+                "collection_name": db_method.collection_name,
+                "collection_description": db_method.collection_description,
+                "collection_parent": db_method.collection_parent,
+                "collection_area": db_method.collection_area,
+                "paper_count": paper_count,
+                "created_at": db_method.created_at,
+                "updated_at": db_method.updated_at,
+            }
+
+            return Method(**method_dict)
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve method: {str(e)}")
+
     def get_methods_for_paper(
         self,
         paper_id: int,
@@ -507,7 +567,7 @@ class MethodService:
         Get papers associated with a specific method.
 
         Args:
-            method_id: The method ID
+            method_id: The method ID or name
             page: Page number (1-based)
             page_size: Number of papers per page
             latest_only: Whether to only include latest versions
@@ -527,14 +587,24 @@ class MethodService:
             from backend.models.api import Papers
             from sqlalchemy import desc, asc
 
-            # Get method to verify it exists
-            method_id_int = int(method_id)
-            method = (
-                self.db.query(DBMethod).filter(DBMethod.id == method_id_int).first()
-            )
+            # Get method to verify it exists - try by ID first, then by name
+            method = None
+            if method_id.isdigit():
+                method_id_int = int(method_id)
+                method = (
+                    self.db.query(DBMethod).filter(DBMethod.id == method_id_int).first()
+                )
+
+            # If not found by ID or not numeric, try by name
+            if not method:
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(DBMethod.name.ilike(method_id))
+                    .first()
+                )
 
             if not method:
-                raise PaperNotFoundError(f"Method with ID '{method_id}' not found")
+                raise PaperNotFoundError(f"Method '{method_id}' not found")
 
             # Base query for papers with this method
             query = (

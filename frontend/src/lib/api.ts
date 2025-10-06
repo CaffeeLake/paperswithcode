@@ -399,7 +399,7 @@ class ApiClient {
   }
 
   async getMethod(id: string): Promise<Method> {
-    return this.request<Method>(`/methods/${id}`);
+    return this.request<Method>(`/methods/${encodeURIComponent(id)}`);
   }
 
   async getMethodPapers(methodId: string, params?: {
@@ -420,7 +420,7 @@ class ApiClient {
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
 
     const queryString = searchParams.toString();
-    const endpoint = queryString ? `/methods/${methodId}/papers?${queryString}` : `/methods/${methodId}/papers`;
+    const endpoint = queryString ? `/methods/${encodeURIComponent(methodId)}/papers?${queryString}` : `/methods/${encodeURIComponent(methodId)}/papers`;
 
     return this.request<PaginatedResponse<Paper>>(endpoint);
   }
