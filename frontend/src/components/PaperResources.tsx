@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Repository } from "@/lib/api";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { getMethodSlug } from "@/lib/slug";
 
 interface Task {
   id: string;
@@ -14,6 +15,7 @@ interface Task {
 interface Method {
   id: string;
   name: string;
+  slug?: string;
   source_url?: string;
   source_title?: string;
   code_snippet_url?: string;
@@ -197,45 +199,15 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperRe
             </Badge>
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2">
           {methods.length > 0 ? (
-            <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
               {methods.map((method: Method) => (
-                <div key={method.id} className="p-3 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors">
-                  <Link to={`/methods/${encodeURIComponent(method.name)}`}>
-                    <h3 className="font-medium text-sm mb-2 hover:text-primary transition-colors">
-                      {method.name}
-                    </h3>
-                  </Link>
-                  {(method.source_url || method.code_snippet_url) && (
-                    <div className="flex gap-2 mt-2">
-                      {method.source_url && (
-                        <a
-                          href={method.source_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          Read paper
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                      {method.code_snippet_url && (
-                        <a
-                          href={method.code_snippet_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-3 py-1 text-xs bg-secondary text-secondary-foreground rounded hover:bg-secondary/90 transition-colors"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          See code
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <Link key={method.id} to={`/methods/${getMethodSlug(method)}`}>
+                  <Badge variant="secondary" className="text-sm hover:bg-secondary/80 cursor-pointer transition-colors">
+                    {method.name}
+                  </Badge>
+                </Link>
               ))}
             </div>
           ) : (

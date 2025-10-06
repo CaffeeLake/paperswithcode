@@ -116,6 +116,7 @@ class MethodService:
                 method_dict = {
                     "id": str(db_method.id),
                     "name": db_method.name,
+                    "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
@@ -187,6 +188,7 @@ class MethodService:
             method_dict = {
                 "id": str(db_method.id),
                 "name": db_method.name,
+                "slug": db_method.slug,
                 "full_name": db_method.full_name,
                 "description": db_method.description,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
@@ -216,10 +218,10 @@ class MethodService:
 
     def get_method_by_name(self, method_name: str) -> Method:
         """
-        Get a specific AI/ML method by name.
+        Get a specific AI/ML method by name or slug.
 
         Args:
-            method_name: The method name (case-insensitive exact match)
+            method_name: The method name or slug (case-insensitive exact match)
 
         Returns:
             Method object
@@ -229,9 +231,16 @@ class MethodService:
             DatabaseError: If database query fails
         """
         try:
-            # Query the database (case-insensitive match)
+            # Try to find by slug first (preferred), then fall back to name
             db_method = (
-                self.db.query(DBMethod).filter(DBMethod.name.ilike(method_name)).first()
+                self.db.query(DBMethod)
+                .filter(
+                    or_(
+                        DBMethod.slug == method_name.lower(),
+                        DBMethod.name.ilike(method_name),
+                    )
+                )
+                .first()
             )
 
             if not db_method:
@@ -249,6 +258,7 @@ class MethodService:
             method_dict = {
                 "id": str(db_method.id),
                 "name": db_method.name,
+                "slug": db_method.slug,
                 "full_name": db_method.full_name,
                 "description": db_method.description,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
@@ -324,6 +334,7 @@ class MethodService:
                 method_dict = {
                     "id": str(db_method.id),
                     "name": db_method.name,
+                    "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
@@ -492,6 +503,7 @@ class MethodService:
                 method_dict = {
                     "id": str(db_method.id),
                     "name": db_method.name,
+                    "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
@@ -587,7 +599,7 @@ class MethodService:
             from backend.models.api import Papers
             from sqlalchemy import desc, asc
 
-            # Get method to verify it exists - try by ID first, then by name
+            # Get method to verify it exists - try by ID first, then by slug/name
             method = None
             if method_id.isdigit():
                 method_id_int = int(method_id)
@@ -595,11 +607,16 @@ class MethodService:
                     self.db.query(DBMethod).filter(DBMethod.id == method_id_int).first()
                 )
 
-            # If not found by ID or not numeric, try by name
+            # If not found by ID or not numeric, try by slug first, then name
             if not method:
                 method = (
                     self.db.query(DBMethod)
-                    .filter(DBMethod.name.ilike(method_id))
+                    .filter(
+                        or_(
+                            DBMethod.slug == method_id.lower(),
+                            DBMethod.name.ilike(method_id),
+                        )
+                    )
                     .first()
                 )
 

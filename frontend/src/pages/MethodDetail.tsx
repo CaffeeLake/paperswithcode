@@ -115,13 +115,26 @@ const MethodDetail = () => {
   // Intersection observer for infinite scroll
   const { targetRef, isIntersecting } = useIntersectionObserver({
     threshold: 0.1,
+    rootMargin: '100px', // Start loading 100px before reaching the trigger
   });
 
   useEffect(() => {
     if (isIntersecting && hasNextPage && !isFetchingNextPage) {
+      console.log('🔄 Fetching next page...', { hasNextPage, isFetchingNextPage });
       fetchNextPage();
     }
   }, [isIntersecting, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  // Debug logging for pagination state
+  useEffect(() => {
+    console.log('📊 Pagination State:', {
+      totalPapers: transformedPapers.length,
+      totalCount,
+      hasNextPage,
+      isFetchingNextPage,
+      pagesLoaded: papersData?.pages.length || 0
+    });
+  }, [transformedPapers.length, totalCount, hasNextPage, isFetchingNextPage, papersData?.pages.length]);
 
   if (isLoading) {
     return (
@@ -286,10 +299,16 @@ const MethodDetail = () => {
         {/* Papers Section */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold">
-              Papers using {method.name}
-              {totalCount > 0 && <span className="text-muted-foreground ml-2">({totalCount})</span>}
-            </h2>
+            <div>
+              <h2 className="text-2xl font-bold">
+                Papers using {method.name}
+              </h2>
+              {totalCount > 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Showing {transformedPapers.length} of {totalCount} papers
+                </p>
+              )}
+            </div>
 
             <div className="flex items-center gap-2">
               <label htmlFor="sort-select" className="text-sm text-muted-foreground">
@@ -332,18 +351,41 @@ const MethodDetail = () => {
                 <TrendingPaperCard key={paper.id} {...paper} />
               ))}
 
-              {/* Infinite scroll trigger */}
+              {/* Infinite scroll trigger and Load More button */}
               {hasNextPage && (
-                <div ref={targetRef} className="flex items-center justify-center py-8">
-                  {isFetchingNextPage && (
-                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                  )}
+                <div className="py-8">
+                  <div ref={targetRef} className="flex flex-col items-center justify-center gap-4">
+                    {isFetchingNextPage ? (
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                        <span className="text-muted-foreground">Loading more papers...</span>
+                      </div>
+                    ) : (
+                      <div className="text-center">
+                        <p className="text-sm text-muted-foreground mb-3">
+                          Showing {transformedPapers.length} of {totalCount} papers
+                        </p>
+                        <button
+                          onClick={() => fetchNextPage()}
+                          disabled={!hasNextPage || isFetchingNextPage}
+                          className="px-6 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Load More Papers
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {!hasNextPage && transformedPapers.length > 0 && (
-                <div className="text-center text-muted-foreground py-4">
-                  All papers loaded ({totalCount} total)
+                <div className="text-center py-8 border-t">
+                  <p className="text-muted-foreground font-medium">
+                    All {totalCount} papers loaded
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    You've reached the end of the list
+                  </p>
                 </div>
               )}
             </div>

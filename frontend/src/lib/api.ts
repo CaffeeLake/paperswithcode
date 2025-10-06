@@ -84,6 +84,7 @@ export interface Task {
 export interface Method {
   id: string;
   name: string;
+  slug?: string;
   full_name?: string;
   description?: string;
   area_id?: string;

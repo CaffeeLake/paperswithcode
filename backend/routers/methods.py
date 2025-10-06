@@ -92,15 +92,16 @@ async def get_method(
     db: Session = Depends(get_database_session),
 ):
     """
-    Get a specific AI/ML method by ID or name.
+    Get a specific AI/ML method by ID, slug, or name.
 
     Returns detailed information about a method including its description,
     source attribution, collection information, and paper count.
 
     **Examples:**
     - `/api/v1/methods/1` - Get method with ID 1
-    - `/api/v1/methods/GPT-2` - Get method by name
-    - `/api/v1/methods/Transformer` - Get method by name
+    - `/api/v1/methods/gpt-2` - Get method by slug (preferred)
+    - `/api/v1/methods/vision-transformer` - Get method by slug
+    - `/api/v1/methods/GPT-2` - Get method by name (legacy support)
     """
     try:
         service = MethodService(db)

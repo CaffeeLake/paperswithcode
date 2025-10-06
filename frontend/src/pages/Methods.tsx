@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getAreas, getMethods, type Area, type Method } from "@/lib/api";
 import { useMemo } from "react";
+import { getMethodSlug } from "@/lib/slug";
 
 // Method icon mapping based on method name
 const getMethodIcon = (methodName: string): string => {
@@ -49,7 +50,7 @@ const AreaSection = ({ area, methods }: AreaSectionProps) => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-6">
         {methods.map((method) => (
-          <Link key={method.id} to={`/methods/${encodeURIComponent(method.name)}`}>
+          <Link key={method.id} to={`/methods/${getMethodSlug(method)}`}>
             <Card className="p-6 hover:shadow-md transition-shadow cursor-pointer border bg-card h-full">
               {/* Method thumbnail image or icon */}
               {method.image_url ? (

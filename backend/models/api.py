@@ -594,6 +594,9 @@ class Method(BaseModel):
     # Core method identification
     id: str = Field(..., description="Method ID")
     name: str = Field(..., description="Method short name (e.g., 'ResNet', 'BERT')")
+    slug: Optional[str] = Field(
+        None, description="URL-friendly slug (lowercase, hyphenated)"
+    )
     full_name: Optional[str] = Field(None, description="Method full name")
     description: Optional[str] = Field(None, description="Method description")
 
