@@ -249,7 +249,7 @@ const MethodDetail = () => {
 
                 {/* Right Column - Image/Diagram */}
                 {method.image_url && (
-                  <div className="flex items-start justify-center">
+                  <div className="flex flex-col items-start justify-center">
                     <img
                       src={method.image_url}
                       alt={`${method.name} diagram`}
@@ -259,6 +259,23 @@ const MethodDetail = () => {
                         e.currentTarget.style.display = 'none';
                       }}
                     />
+                    {method.image_credit && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Image credit:{' '}
+                        {method.image_credit.startsWith('http') ? (
+                          <a
+                            href={method.image_credit}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            {method.image_credit}
+                          </a>
+                        ) : (
+                          method.image_credit
+                        )}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

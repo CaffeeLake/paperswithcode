@@ -92,6 +92,7 @@ export interface Method {
   source_title?: string;
   code_snippet_url?: string;
   image_url?: string;
+  image_credit?: string;
   collection_name?: string;
   collection_description?: string;
   collection_parent?: string;

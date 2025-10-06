@@ -617,6 +617,10 @@ class Method(BaseModel):
         None,
         description="URL to an image/diagram representing the method (e.g., architecture diagram)",
     )
+    image_credit: Optional[str] = Field(
+        None,
+        description="Attribution/credit for the method image (e.g., paper URL, source URL)",
+    )
 
     # Collection metadata (for grouped methods)
     collection_name: Optional[str] = Field(

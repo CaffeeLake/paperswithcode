@@ -21,8 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterGenerator(RateLimitingMixin, Generator):
-    def __init__(self, requests_per_minute=20, requests_per_day=1000, **kwargs):
-        # Initialize rate limiting with OpenRouter's limits
+    def __init__(self, requests_per_minute=200, requests_per_day=10000, **kwargs):
+        # Initialize rate limiting with OpenRouter's paid model limits
+        # Note: 20 req/min and 1000 req/day limits only apply to :free models
+        # For paid models like grok-4-fast with a paid account, limits are much higher
         super().__init__(
             requests_per_minute=requests_per_minute,
             requests_per_day=requests_per_day,
@@ -229,10 +231,8 @@ if __name__ == "__main__":
         print("🧪 Testing OpenRouter Generator with Rate Limiting...")
 
         try:
-            # Test with paid tier limits
-            generator = OpenRouterGenerator(
-                requests_per_minute=20, requests_per_day=1000
-            )
+            # Test with default paid tier limits (200/min, 10000/day)
+            generator = OpenRouterGenerator()
 
             # Show initial rate limit status
             print("\n📊 Initial Rate Limit Status:")
