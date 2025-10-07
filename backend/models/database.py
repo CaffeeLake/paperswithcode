@@ -207,6 +207,7 @@ class Task(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
+    keywords: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Hierarchical structure
     parent_id: Mapped[Optional[int]] = mapped_column(

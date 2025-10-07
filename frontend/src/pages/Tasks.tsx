@@ -13,6 +13,7 @@ const getTaskIcon = (taskName: string): string => {
   const iconMap: Record<string, string> = {
     "Image Classification": "🖼️",
     "Object Detection": "🔍",
+    "OCR": "📄",
     "Semantic Segmentation": "🎯",
     "Image Generation": "🎨",
     "Denoising": "✨",
@@ -24,6 +25,7 @@ const getTaskIcon = (taskName: string): string => {
     "Text Generation": "📄",
     "Vision Language Action Models": "🤖",
     "Vision Language Models": "👁️",
+    "Vision-Language Models": "👁️",
     "Computer Use Agents": "💻",
   };
 

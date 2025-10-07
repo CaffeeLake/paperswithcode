@@ -687,6 +687,9 @@ class Task(BaseModel):
     name: str = Field(..., description="Task name (e.g., 'Image Classification')")
     description: Optional[str] = Field(None, description="Task description")
     slug: Optional[str] = Field(None, description="URL-friendly task slug")
+    keywords: Optional[str] = Field(
+        None, description="Comma-separated keywords for matching papers to this task"
+    )
 
     # Hierarchical structure
     parent_id: Optional[str] = Field(None, description="ID of the parent task")
