@@ -32,13 +32,6 @@ echo "============================================================" >> "$LOG_FIL
 echo "Starting trending GitHub Stars job at $(date)" >> "$LOG_FILE"
 echo "============================================================" >> "$LOG_FILE"
 
-# Check if GitHub token is set
-if [ -z "$PWC_GITHUB_TOKEN" ]; then
-    echo "ERROR: PWC_GITHUB_TOKEN environment variable not set" >> "$LOG_FILE"
-    echo "Please set PWC_GITHUB_TOKEN in backend/keys.env" >> "$LOG_FILE"
-    exit 1
-fi
-
 # Check available memory
 AVAILABLE_MEM=$(free -m | awk '/^Mem:/{print $7}')
 echo "Available memory: ${AVAILABLE_MEM}MB" >> "$LOG_FILE"
