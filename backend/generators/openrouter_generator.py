@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterGenerator(RateLimitingMixin, Generator):
+    """
+    OpenRouter Generator class.
+    """
+
     def __init__(self, requests_per_minute=200, requests_per_day=10000, **kwargs):
         # Initialize rate limiting with OpenRouter's paid model limits
         # Note: 20 req/min and 1000 req/day limits only apply to :free models
@@ -219,8 +223,6 @@ class OpenRouterGenerator(RateLimitingMixin, Generator):
             return await self._execute_with_rate_limiting(
                 self._generate_openai_sdk_internal, messages, schema
             )
-
-    # get_rate_limit_status method is now inherited from RateLimitingMixin
 
 
 if __name__ == "__main__":

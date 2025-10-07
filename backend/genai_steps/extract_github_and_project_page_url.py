@@ -41,6 +41,7 @@ from backend.utils.paper_utils import (
 
 from backend.models.generators import Message
 from backend.generators.openrouter_generator import OpenRouterGenerator
+from backend.models.generators import Generator
 
 
 class Response(BaseModel):
@@ -138,8 +139,21 @@ class FewShotManager:
         self._cached_messages = None
         self._cached_image_paths = []
 
-    async def get_few_shot_messages(self) -> list[Message]:
+    async def get_few_shot_messages(self, generator=None) -> list[Message]:
         """Get cached few-shot messages, creating them if necessary."""
+        # Check if we need to regenerate based on generator type
+        from backend.generators.hf_generator import HFGenerator
+
+        is_hf = generator is not None and isinstance(generator, HFGenerator)
+
+        # For HF, use zero-shot due to HTTP request size limits (not context window)
+        if is_hf:
+            logger.debug(
+                "Using zero-shot for HF Generator (API request size limit, not context)"
+            )
+            return []  # HF API has HTTP request size limits even with 200k context models
+
+        # Use cached messages if available
         if self._cached_messages is not None:
             logger.debug("Using cached few-shot messages")
             return self._cached_messages
@@ -148,9 +162,15 @@ class FewShotManager:
         messages = []
         all_image_paths = []
 
+        # Determine how many examples to create
+        max_examples = 0 if is_hf else 10  # HF has HTTP request size limits
+
         for idx, (few_shot_arxiv_id, response_content) in enumerate(
             zip(arxiv_ids, responses)
         ):
+            if idx >= max_examples:
+                break
+
             try:
                 # Get cached PDF path
                 pdf_file_path = await self.pdf_cache.get_pdf_path(idx)
@@ -269,6 +289,7 @@ async def get_project_github_urls(
     github_url: Optional[str] = None,
     use_reasoning: bool = True,
     abstract: Optional[str] = None,
+    generator: Optional[Generator] = None,
 ) -> tuple[str, dict]:
     """
     Extract GitHub and project page URLs for a given paper.
@@ -279,6 +300,7 @@ async def get_project_github_urls(
         github_url: Pre-existing GitHub URL (unused but kept for compatibility)
         use_reasoning: Whether to use reasoning in LLM generation
         abstract: Optional pre-fetched abstract
+        generator: Optional Generator instance to use (defaults to OpenRouterGenerator)
 
     Returns:
         Tuple of (reasoning, response_dict)
@@ -354,7 +376,7 @@ async def get_project_github_urls(
                 # Use LLM if still missing URLs
                 if not github_url or not project_page_url:
                     reasoning, llm_response = await _extract_urls_with_llm(
-                        arxiv_id, pdf_path_processed, abstract, use_reasoning
+                        arxiv_id, pdf_path_processed, abstract, use_reasoning, generator
                     )
 
                     if not github_url and llm_response.get("github_url"):
@@ -390,7 +412,11 @@ async def get_project_github_urls(
 
 
 async def _extract_urls_with_llm(
-    arxiv_id: str, pdf_path: str, abstract: Optional[str], use_reasoning: bool
+    arxiv_id: str,
+    pdf_path: str,
+    abstract: Optional[str],
+    use_reasoning: bool,
+    generator: Optional[Generator] = None,
 ) -> tuple[str, dict]:
     """
     Extract URLs using LLM with few-shot examples.
@@ -400,14 +426,16 @@ async def _extract_urls_with_llm(
         pdf_path: Path to the PDF file
         abstract: Optional pre-fetched abstract
         use_reasoning: Whether to use reasoning in LLM generation
+        generator: Optional Generator instance to use (defaults to OpenRouterGenerator)
 
     Returns:
         Tuple of (reasoning, response_dict)
     """
-    generator = OpenRouterGenerator()
+    if generator is None:
+        generator = OpenRouterGenerator()
 
     # Get few-shot messages (cached after first call)
-    few_shot_messages = await few_shot_manager.get_few_shot_messages()
+    few_shot_messages = await few_shot_manager.get_few_shot_messages(generator)
 
     # Create query message
     print("Processing main query...")
@@ -421,13 +449,30 @@ async def _extract_urls_with_llm(
         query_image_paths = query_message.image_paths
 
     try:
-        response_str, _ = await generator.generate(
-            messages=messages, schema=Response, use_reasoning=use_reasoning
-        )
+        # Check if generator supports use_reasoning parameter
+        from backend.generators.google_generator import GoogleGenerator
+        from backend.generators.hf_generator import HFGenerator
 
-        reasoning = response_str.reasoning
-        project_page_url = response_str.project_page_url
-        github_url = response_str.github_url
+        if isinstance(generator, (GoogleGenerator, HFGenerator)):
+            # GoogleGenerator and HFGenerator don't support use_reasoning
+            response_str, _ = await generator.generate(
+                messages=messages, schema=Response
+            )
+        else:
+            # OpenRouterGenerator supports use_reasoning
+            response_str, _ = await generator.generate(
+                messages=messages, schema=Response, use_reasoning=use_reasoning
+            )
+
+        # Handle different response types (Pydantic model vs dict)
+        if isinstance(response_str, dict):
+            reasoning = response_str.get("reasoning", "")
+            project_page_url = response_str.get("project_page_url", "")
+            github_url = response_str.get("github_url", "")
+        else:
+            reasoning = response_str.reasoning
+            project_page_url = response_str.project_page_url
+            github_url = response_str.github_url
 
         # Verify the project page URL
         if isinstance(project_page_url, str) and project_page_url:
@@ -477,7 +522,7 @@ async def warm_pdf_cache():
     # Also warm the few-shot messages cache
     logger.info("Warming few-shot messages cache...")
     try:
-        messages = await few_shot_manager.get_few_shot_messages()
+        messages = await few_shot_manager.get_few_shot_messages(generator=None)
         logger.info(f"Few-shot messages cache ready: {len(messages)} messages")
     except Exception as e:
         logger.error(f"Failed to warm few-shot messages cache: {e}")

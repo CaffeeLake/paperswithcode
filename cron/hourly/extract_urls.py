@@ -2,16 +2,16 @@
 Hourly GitHub URLs and Project Pages Extraction CRON Job
 
 AI-powered extraction of GitHub repositories and project pages from papers using
-OpenRouter AI models. This job processes papers that haven't been analyzed yet
+Google Gemini AI models. This job processes papers that haven't been analyzed yet
 (urls_extracted = FALSE) to find official GitHub repos and project pages.
 
-Rate Limits (OpenRouter API):
-- Free tier: 50 requests per day
-- Paid tier: 1,000 requests per day
-- Per-minute limit: 20 requests
+Rate Limits (Google Gemini Free Tier):
+- Gemini 2.5 Flash: 250 requests per day (10 RPM)
+- Gemini 2.5 Pro: 100 requests per day (5 RPM)
+- Combined: 350 requests per day
 
 Optimized Strategy:
-- Process 50 papers per hour (conservative for paid tier = 1,200/day with buffer)
+- Process 14 papers per hour (conservative for free tier = 336/day with buffer)
 - Use memory-safe batch processing (4GB RAM system)
 - Prioritize recent papers (2014 onwards by default)
 - Skip papers already processed by HF API import
@@ -48,11 +48,12 @@ class URLExtractionHourlyJob(DatabaseCronJob):
         super().__init__(job_name="extract_urls_hourly", log_level="INFO")
         self.settings = get_settings()
 
-        # Configuration for hourly runs
-        self.papers_per_hour = 50  # Conservative for paid tier
+        # Configuration for hourly runs with Gemini free tier
+        # Free tier: 350 RPD (250 Flash + 100 Pro) / 24 hours = ~14 papers/hour max
+        self.papers_per_hour = 14  # Conservative for Gemini free tier (350 RPD / 24)
         self.batch_size = 10  # Smaller batches for memory safety (4GB RAM)
         self.start_year = 2014  # Only process papers from 2014 onwards
-        self.use_paid_tier = True  # Using paid tier rate limits
+        self.use_paid_tier = False  # Using Gemini free tier (350 RPD)
 
     def run(self):
         """Main execution logic for URL extraction."""

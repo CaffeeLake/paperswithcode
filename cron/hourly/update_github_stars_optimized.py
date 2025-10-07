@@ -153,7 +153,7 @@ def main():
 
         # Optimized limits - much more efficient due to deduplication
         delay = 1.0  # 1 second between API calls (3600 calls/hour max)
-        max_unique_repos = 3000  # Process up to 3000 unique repositories per hour
+        max_unique_repos = 4500  # Process up to 4500 unique repositories per hour (90% of GitHub's 5K rate limit)
         min_memory_mb = 200  # Stop if less than 200MB available
 
         processed_groups = 0

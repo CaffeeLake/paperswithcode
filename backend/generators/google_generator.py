@@ -177,11 +177,10 @@ class GoogleGenerator(RateLimitingMixin, Generator):
         Given a list of messages, this function generates a response using the Gemini API
         along with the model name used.
         """
+        # Use only free tier models with best rate limits
         models = [
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.5-flash-preview-06-17",
-            "gemini-2.5-pro",
+            "gemini-2.5-flash",  # 250 RPD free tier
+            "gemini-2.5-pro",  # 100 RPD free tier
         ]
         last_exception = None
         for model_name in models:

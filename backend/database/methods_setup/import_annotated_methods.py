@@ -206,7 +206,7 @@ def verify_import(conn) -> None:
 
 def main():
     """Main function to import annotated methods data."""
-    csv_path = "/root/python_projects/paperswithcode/data/methods_export - methods_export (1).csv"
+    csv_path = "/root/python_projects/paperswithcode/data/methods_export_20251006_131751 - methods_export_20251006_131751.csv"
 
     print("=" * 70)
     print("Methods Annotation Import Script")

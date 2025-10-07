@@ -2,7 +2,7 @@
 AI-powered batch processor for extracting GitHub URLs and project pages from papers.
 
 This script processes papers to find GitHub repositories and project pages using:
-1. AI extraction via OpenRouterGenerator
+1. AI extraction via GoogleGenerator (Gemini - 350 requests/day free tier)
 2. Memory monitoring for 4GB RAM systems
 3. Database-driven deduplication (no caching needed)
 4. Coordination with HF API CRON job via urls_extracted flag
@@ -47,7 +47,7 @@ from backend.genai_steps.extract_github_and_project_page_url import (
     get_project_github_urls,
     warm_pdf_cache,
 )
-from backend.generators.openrouter_generator import OpenRouterGenerator
+from backend.generators.google_generator import GoogleGenerator
 from backend.database.logging_config import setup_logging
 from backend.utils.github_utils import parse_github_url
 
@@ -62,17 +62,19 @@ class BatchURLExtractor:
         self,
         batch_size: int = 20,
         dry_run: bool = False,
-        use_paid_tier: bool = True,
+        use_paid_tier: bool = False,
         start_year: int = 2014,
     ):
         self.batch_size = batch_size
         self.dry_run = dry_run
         self.start_year = start_year
 
-        # Initialize OpenRouter generator with appropriate rate limits
-        requests_per_minute = 20
-        requests_per_day = 1000 if use_paid_tier else 50
-        self.generator = OpenRouterGenerator(
+        # Initialize Google Gemini generator with free tier limits
+        # Gemini 2.5 Flash: 250 RPD + Gemini 2.5 Pro: 100 RPD = 350 total
+        # Conservative: use 10 RPM to avoid hitting per-minute limits
+        requests_per_minute = 10
+        requests_per_day = 350 if not use_paid_tier else 10000  # Free tier or Tier 1
+        self.generator = GoogleGenerator(
             requests_per_minute=requests_per_minute, requests_per_day=requests_per_day
         )
 
@@ -300,8 +302,9 @@ class BatchURLExtractor:
                 reasoning, response = await get_project_github_urls(
                     arxiv_id=arxiv_id,
                     session_id=None,
-                    use_reasoning=True,
+                    use_reasoning=False,  # Keep simple for better performance
                     abstract=abstract,
+                    generator=self.generator,
                 )
 
                 github_url = response.get("github_url", "") if response else ""
@@ -579,7 +582,7 @@ async def main():
     )
     parser.add_argument(
         "--paid-tier",
-        action="store_false",
+        action="store_true",
         help="Use paid tier rate limits (1000/day instead of 50/day)",
     )
     parser.add_argument(
