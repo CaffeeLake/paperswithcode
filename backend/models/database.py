@@ -370,6 +370,13 @@ class Repository(Base):
         "Paper", secondary="paper_repositories", back_populates="repositories"
     )
 
+    # One-to-many relationship with star history
+    star_history: Mapped[List["RepositoryStarHistory"]] = relationship(
+        "RepositoryStarHistory",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+    )
+
     # Indexes
     __table_args__ = (
         Index("idx_repositories_url", "url"),
@@ -384,6 +391,44 @@ class Repository(Base):
 
     def __repr__(self) -> str:
         return f"<Repository(id={self.id}, url='{self.url}', stars={self.num_stars})>"
+
+
+class RepositoryStarHistory(Base):
+    """
+    Repository star history model for tracking GitHub star counts over time.
+
+    This enables trending metrics by storing historical snapshots of star counts.
+    """
+
+    __tablename__ = "repository_star_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    num_stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    repository: Mapped["Repository"] = relationship(
+        "Repository", back_populates="star_history"
+    )
+
+    # Constraints and indexes
+    __table_args__ = (
+        UniqueConstraint("repository_id", "snapshot_at", name="uq_repo_snapshot_time"),
+        Index("idx_star_history_repository_id", "repository_id"),
+        Index("idx_star_history_snapshot_at", "snapshot_at"),
+        Index("idx_star_history_repo_time", "repository_id", "snapshot_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<RepositoryStarHistory(id={self.id}, repository_id={self.repository_id}, stars={self.num_stars}, snapshot_at='{self.snapshot_at}')>"
 
 
 class ProjectPage(Base):

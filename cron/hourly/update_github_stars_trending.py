@@ -1,0 +1,406 @@
+"""
+Trending-Focused GitHub Stars Update CRON Job
+
+This job prioritizes recent papers (published within last 6 months) for frequent
+star count updates to enable accurate trending metrics. It stores historical
+snapshots in the repository_star_history table.
+
+Key Features:
+- Prioritizes papers published in last 6 months
+- Updates every 1-2 hours (vs 7 days for regular job)
+- Stores historical snapshots for velocity calculations
+- Memory efficient for 4GB RAM systems
+- Separate from regular stars update job
+
+Strategy:
+- Recent papers (< 6 months old): Update every 1-2 hours
+- Older papers: Handled by regular stars update job
+- Each update creates a historical snapshot
+- Enables trending calculations based on star velocity
+
+Schedule: Hourly (every hour)
+Dependencies: PostgreSQL, GitHub API token
+"""
+
+import sys
+import time
+import gc
+import os
+from datetime import datetime, timedelta
+from typing import Optional, Dict
+import requests
+
+from backend.database.connection import db_manager
+from backend.services.repository_service import RepositoryService
+from sqlalchemy import text
+
+
+def log(message: str):
+    """Memory-efficient logging - print and flush immediately."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{timestamp} - {message}", flush=True)
+
+
+def get_repository_service():
+    """Get a repository service instance with database session."""
+    session = db_manager.session_local()
+    return session, RepositoryService(session)
+
+
+def get_next_trending_repository_group(
+    session, threshold_hours: int = 2
+) -> Optional[Dict]:
+    """
+    Get the next unique repository (by owner/name) from recent papers that needs updating.
+
+    Prioritizes:
+    1. Papers published in last 6 months
+    2. Repositories not updated in last N hours
+    3. Official repositories only
+
+    Args:
+        session: Database session
+        threshold_hours: Only get repositories older than this many hours
+
+    Returns:
+        Dictionary with repository group information
+    """
+    try:
+        threshold_date = datetime.now() - timedelta(hours=threshold_hours)
+        six_months_ago = datetime.now() - timedelta(days=180)
+
+        # Query to find trending-eligible repositories
+        # Groups by owner/name to avoid duplicate API calls
+        query = text("""
+            SELECT
+                r.owner,
+                r.name,
+                array_agg(DISTINCT r.id) as repository_ids,
+                COUNT(DISTINCT r.id) as url_count,
+                MIN(r.num_stars_updated_at) as oldest_update,
+                MAX(r.num_stars) as current_stars,
+                MIN(p.date_published) as oldest_paper_date,
+                CASE
+                    WHEN MIN(r.num_stars_updated_at) IS NULL THEN 1
+                    ELSE 2
+                END as priority
+            FROM repositories r
+            JOIN paper_repositories pr ON r.id = pr.repository_id
+            JOIN papers p ON pr.paper_id = p.id
+            WHERE r.owner IS NOT NULL
+            AND r.name IS NOT NULL
+            AND r.owner != ''
+            AND r.name != ''
+            AND pr.is_official = TRUE
+            AND p.date_published >= :six_months_ago
+            AND p.is_latest_version = TRUE
+            AND (
+                r.num_stars_updated_at IS NULL
+                OR r.num_stars_updated_at < :threshold_date
+            )
+            GROUP BY r.owner, r.name
+            ORDER BY
+                priority ASC,
+                MIN(r.num_stars_updated_at) ASC NULLS FIRST,
+                MIN(p.date_published) DESC,
+                COUNT(DISTINCT r.id) DESC
+            LIMIT 1
+        """)
+
+        result = session.execute(
+            query,
+            {
+                "threshold_date": threshold_date,
+                "six_months_ago": six_months_ago,
+            },
+        ).fetchone()
+
+        if result:
+            return {
+                "owner": result[0],
+                "name": result[1],
+                "repository_ids": result[2],
+                "url_count": result[3],
+                "oldest_update": result[4],
+                "current_stars": result[5] or 0,
+                "oldest_paper_date": result[6],
+                "priority": result[7],
+            }
+
+        return None
+
+    except Exception as e:
+        log(f"Database error: {e}")
+        return None
+    finally:
+        gc.collect()
+
+
+def fetch_github_stars(owner: str, name: str, github_token: str) -> Optional[int]:
+    """Fetch star count with minimal memory usage."""
+    url = f"https://api.github.com/repos/{owner}/{name}"
+
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "PapersWithCode-Trending/1.0",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code == 200:
+            data = response.json()
+            stars = data.get("stargazers_count", 0)
+            # Clean up response data immediately
+            del data, response
+            gc.collect()
+            return stars
+        elif response.status_code == 404:
+            return 0
+        elif response.status_code == 403:
+            if "rate limit" in response.text.lower():
+                log(f"Rate limit hit for {owner}/{name} - waiting 60s")
+                time.sleep(60)
+            return None
+        else:
+            log(f"API error {response.status_code} for {owner}/{name}")
+            return None
+
+    except Exception as e:
+        log(f"API error for {owner}/{name}: {e}")
+        return None
+    finally:
+        gc.collect()
+
+
+def store_star_snapshot(
+    session, repository_ids: list, num_stars: int, snapshot_time: datetime = None
+):
+    """
+    Store a historical snapshot of star counts for trending analysis.
+
+    Args:
+        session: Database session
+        repository_ids: List of repository IDs to snapshot
+        num_stars: Current star count
+        snapshot_time: Time of snapshot (defaults to now)
+    """
+    if snapshot_time is None:
+        snapshot_time = datetime.now()
+
+    try:
+        # Insert snapshot for each repository ID
+        for repo_id in repository_ids:
+            insert_query = text("""
+                INSERT INTO repository_star_history
+                    (repository_id, num_stars, snapshot_at)
+                VALUES (:repo_id, :num_stars, :snapshot_at)
+                ON CONFLICT (repository_id, snapshot_at)
+                DO UPDATE SET num_stars = :num_stars
+            """)
+
+            session.execute(
+                insert_query,
+                {
+                    "repo_id": repo_id,
+                    "num_stars": num_stars,
+                    "snapshot_at": snapshot_time,
+                },
+            )
+
+        session.commit()
+        return len(repository_ids)
+
+    except Exception as e:
+        session.rollback()
+        log(f"Error storing star snapshot: {e}")
+        return 0
+    finally:
+        gc.collect()
+
+
+def update_repository_group_stars_with_history(
+    repo_service: RepositoryService, session, repository_ids: list, num_stars: int
+):
+    """
+    Update repository stars and store historical snapshot.
+
+    Args:
+        repo_service: Repository service instance
+        session: Database session
+        repository_ids: List of repository IDs to update
+        num_stars: New star count
+    """
+    try:
+        # Update current star counts
+        updated_count = repo_service.update_repository_stars_batch(
+            repository_ids, num_stars
+        )
+
+        return updated_count
+
+    except Exception as e:
+        log(f"Update error for repo group {repository_ids}: {e}")
+        return 0
+    finally:
+        gc.collect()
+
+
+def check_memory_usage():
+    """Check current memory usage and return available memory in MB."""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            meminfo = f.read()
+
+        for line in meminfo.split("\n"):
+            if "MemAvailable:" in line:
+                available_kb = int(line.split()[1])
+                available_mb = available_kb // 1024
+                return available_mb
+    except:  # noqa: E722
+        return 1000  # Default fallback
+
+
+def main():
+    """Main execution function for trending stars update."""
+    log("Starting trending-focused GitHub stars update")
+
+    # Check GitHub token
+    github_token = os.getenv("PWC_GITHUB_TOKEN")
+    if not github_token:
+        log("ERROR: PWC_GITHUB_TOKEN not set")
+        sys.exit(1)
+
+    # Initialize database session and service
+    session = None
+    repo_service = None
+
+    try:
+        session, repo_service = get_repository_service()
+        log("Database session and repository service initialized")
+
+        # Configuration for trending updates
+        delay = 1.2  # Slightly slower to be safe (3000 calls/hour)
+        max_updates = 500  # Process up to 500 repositories per hour
+        threshold_hours = 2  # Update repos not updated in last 2 hours
+        min_memory_mb = 200  # Stop if less than 200MB available
+
+        processed_groups = 0
+        updated_repositories = 0
+        snapshots_stored = 0
+        api_calls = 0
+        start_time = time.time()
+        max_runtime = 55 * 60  # 55 minutes max (leave 5 min buffer)
+
+        log(
+            f"Targeting {max_updates} repositories from papers published in last 6 months"
+        )
+        log(f"Update threshold: {threshold_hours} hours")
+
+        while processed_groups < max_updates:
+            # Check runtime limit
+            if time.time() - start_time > max_runtime:
+                log("Runtime limit reached - stopping")
+                break
+
+            # Check memory availability
+            available_memory = check_memory_usage()
+            if available_memory < min_memory_mb:
+                log(f"Low memory ({available_memory}MB) - stopping to prevent OOM")
+                break
+
+            # Get next trending repository group
+            repo_group = get_next_trending_repository_group(session, threshold_hours)
+            if not repo_group:
+                log("No more trending repositories to process")
+                break
+
+            owner = repo_group["owner"]
+            name = repo_group["name"]
+            repository_ids = repo_group["repository_ids"]
+            url_count = repo_group["url_count"]
+            current_stars = repo_group.get("current_stars", 0)
+            oldest_paper_date = repo_group.get("oldest_paper_date")
+            priority = repo_group.get("priority", 2)
+
+            # Calculate paper age
+            if oldest_paper_date:
+                paper_age_days = (datetime.now().date() - oldest_paper_date).days
+            else:
+                paper_age_days = 0
+
+            # Fetch stars for this unique repository
+            stars = fetch_github_stars(owner, name, github_token)
+            api_calls += 1
+
+            if stars is not None:
+                # Update ALL repositories and store snapshot
+                updated_count = update_repository_group_stars_with_history(
+                    repo_service, session, repository_ids, stars
+                )
+                updated_repositories += updated_count
+                snapshots_stored += updated_count
+
+                priority_text = "NEW" if priority == 1 else "trending"
+                stars_change = stars - current_stars
+                change_indicator = (
+                    f"(+{stars_change})"
+                    if stars_change > 0
+                    else f"({stars_change})"
+                    if stars_change < 0
+                    else ""
+                )
+
+                log(
+                    f"Updated {owner}/{name} ({url_count} URLs, {priority_text}, {paper_age_days}d old): "
+                    f"{current_stars} → {stars} stars {change_indicator}"
+                )
+            else:
+                # API call failed - mark as processed to prevent infinite loops
+                repo_service.mark_repositories_as_processed(repository_ids)
+                log(f"API failed for {owner}/{name} - marked as processed")
+
+            processed_groups += 1
+
+            # Progress update every 50 repositories
+            if processed_groups % 50 == 0:
+                elapsed = (time.time() - start_time) / 60
+                memory = check_memory_usage()
+                log(
+                    f"Progress: {processed_groups} repos, {updated_repositories} URLs, "
+                    f"{snapshots_stored} snapshots, {api_calls} API calls, "
+                    f"{elapsed:.1f}min elapsed, {memory}MB memory"
+                )
+
+            # Rate limiting
+            time.sleep(delay)
+
+            # Garbage collection every 10 groups
+            if processed_groups % 10 == 0:
+                gc.collect()
+
+        # Final summary
+        elapsed = (time.time() - start_time) / 60
+        final_memory = check_memory_usage()
+
+        log("=" * 80)
+        log("Trending Stars Update Completed")
+        log("=" * 80)
+        log(f"Repositories processed: {processed_groups}")
+        log(f"Repository URLs updated: {updated_repositories}")
+        log(f"Historical snapshots stored: {snapshots_stored}")
+        log(f"API calls: {api_calls}")
+        log(f"Runtime: {elapsed:.1f} minutes")
+        log(f"Final memory available: {final_memory}MB")
+        log("=" * 80)
+
+    finally:
+        # Clean up database session
+        if session:
+            session.close()
+            log("Database session closed")
+
+
+if __name__ == "__main__":
+    main()

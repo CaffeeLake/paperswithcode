@@ -12,9 +12,10 @@ cron/
 │   ├── update_github_stars.py       # Update GitHub repository stars (1K repos/day)
 │   └── update_citations.py          # Update paper citation counts (2K papers/day)
 ├── hourly/             # Scripts that run hourly (RECOMMENDED - high performance)
-│   ├── update_github_stars.py       # Update GitHub repository stars (4.5K repos/hour)
-│   ├── update_citations.py          # Update paper citation counts (2.8K papers/hour)
-│   └── extract_urls.py              # AI extraction of GitHub URLs and project pages (50 papers/hour)
+│   ├── update_github_stars_optimized.py  # Update all repository stars (4.5K repos/hour)
+│   ├── update_github_stars_trending.py   # Track star velocity for trending (500 repos/hour)
+│   ├── update_citations.py               # Update paper citation counts (2.8K papers/hour)
+│   └── extract_urls.py                   # AI extraction of GitHub URLs and project pages (50 papers/hour)
 ├── weekly/             # Scripts that run weekly (future expansion)
 ├── monthly/            # Scripts that run monthly (future expansion)
 ├── logs/               # Log files from cron job executions (auto-created)
@@ -70,17 +71,56 @@ The cron jobs require specific timestamp columns to track when data was last upd
 
 ```sql
 -- The papers table already has citation_updated_at in paperswithcode_hf database
--- But we need to add the star count tracking column to repositories table:
+-- Star count tracking column (should already exist in repositories table):
 
 ALTER TABLE repositories
-ADD COLUMN num_stars_updated_at TIMESTAMP WITH TIME ZONE;
+ADD COLUMN IF NOT EXISTS num_stars_updated_at TIMESTAMP WITH TIME ZONE;
 
 -- Create index for better performance
-CREATE INDEX idx_repositories_num_stars_updated_at ON repositories(num_stars_updated_at);
+CREATE INDEX IF NOT EXISTS idx_repositories_num_stars_updated_at ON repositories(num_stars_updated_at);
 
 -- Verify the citation_updated_at column exists (should already be there):
 -- SELECT column_name FROM information_schema.columns
 -- WHERE table_name = 'papers' AND column_name = 'citation_updated_at';
+```
+
+### 1b. Trending Feature Setup (Optional but Recommended)
+
+For the trending papers feature, run the star history setup script:
+
+```bash
+cd /root/python_projects/paperswithcode
+uv run --env-file backend/keys.env python -c "
+from backend.database.connection import db_manager
+from sqlalchemy import text
+
+with open('backend/database/repos_and_pages_setup/setup_star_history.sql', 'r') as f:
+    sql = f.read()
+
+with db_manager.session_local() as session:
+    session.execute(text(sql))
+    session.commit()
+    print('✅ Trending database schema created successfully')
+"
+```
+
+This creates:
+- `repository_star_history` table for historical star count snapshots
+- `calculate_star_velocity()` function to calculate stars gained per hour
+- `calculate_trending_score()` function for weighted trending scores
+- `trending_repositories_24h` and `trending_papers_24h` views
+- All necessary indexes for performance
+
+Verify setup:
+```bash
+uv run --env-file backend/keys.env python -c "
+from backend.database.connection import db_manager
+from sqlalchemy import text
+
+with db_manager.session_local() as session:
+    count = session.execute(text('SELECT COUNT(*) FROM repository_star_history')).scalar()
+    print(f'✅ Star history table exists with {count} snapshots')
+"
 ```
 
 ### 2. Environment Variables Setup
@@ -155,14 +195,17 @@ Edit your crontab with `crontab -e` and add these entries:
 # Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
 0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
 
-# Hourly GitHub stars update (4,500 repos/hour) - RECOMMENDED
-0 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_github_stars.py
+# Hourly GitHub stars update - OPTIMIZED (4,500 repos/hour, all repos, 7-day refresh)
+0 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_github_stars_optimized.sh
+
+# Hourly GitHub stars trending (500 repos/hour, recent papers, 1-2 hour refresh) - NEW
+15 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_github_stars_trending.sh
 
 # Hourly citation count update (2,800 papers/hour) - RECOMMENDED
-30 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_citations.py
+30 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_citations_hourly.sh
 
 # Hourly URL extraction (50 papers/hour) - AI-powered GitHub and project page extraction
-45 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/extract_urls.py
+45 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_extract_urls_hourly.sh
 
 # Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
 0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup
@@ -208,16 +251,35 @@ Edit your crontab with `crontab -e` and add these entries:
   - Conservative usage: 50 papers/hour = 1,200/day (with buffer)
 - **API Requirements**: OpenRouter API key (PWC_OPENROUTER_API_KEY in keys.env)
 
-#### ⭐ GitHub Stars Update - Hourly (`update_github_stars.py`)
-- **Schedule**: Every hour (recommended)
-- **Purpose**: High-performance repository star count updates
+#### ⭐ GitHub Stars Update - Optimized Hourly (`update_github_stars_optimized.py`)
+- **Schedule**: Every hour at :00 (recommended)
+- **Purpose**: Comprehensive repository star count updates for all repos
 - **Performance**: **4,500 repositories/hour** (108x faster than daily)
+- **Scope**: All 50K+ repositories
+- **Refresh Rate**: Every 7 days per repository
 - **Features**:
   - Optimized rate limiting (0.8s delays = 4,500 req/hour, 90% of GitHub's 5K limit)
+  - Deduplication by owner/name (10-100x API savings)
   - Larger batches (100 repos) with efficient processing
   - Pre-limited database queries for performance
-  - Shorter timeouts and faster error recovery
   - Complete database update in ~15 hours vs. 66 days
+
+#### 🔥 GitHub Stars Trending - Hourly (`update_github_stars_trending.py`) **NEW**
+- **Schedule**: Every hour at :15 (recommended)
+- **Purpose**: Track star velocity for recent papers to enable trending metrics
+- **Performance**: **500 repositories/hour** (safe rate for trending analysis)
+- **Scope**: Recent papers only (last 6 months) = ~3,700 repositories
+- **Refresh Rate**: Every 1-2 hours per repository (high frequency for velocity)
+- **Features**:
+  - **Historical snapshots**: Stores star counts in `repository_star_history` table
+  - **Trending calculations**: Enables velocity (stars/hour) and trending score metrics
+  - **Recency-weighted**: Recent changes weighted higher than old growth
+  - **Separate from main job**: No conflicts, independent failure isolation
+  - **Memory efficient**: 300-400MB peak for 4GB RAM systems
+  - **Database views**: `trending_repositories_24h` and `trending_papers_24h`
+- **Storage**: Creates ~12,000 snapshots/day (~18MB/month)
+- **Why separate job?**: Needs frequent updates (1-2 hours) vs. regular job (7 days) + stores historical data
+- **API endpoint**: `/api/papers/trending` for frontend integration
 
 #### 📊 Citation Count Update - Hourly (`update_citations.py`)
 - **Schedule**: Every hour (recommended)
@@ -535,10 +597,75 @@ grep CRON /var/log/cron | tail -20
 
 With current configuration:
 - **Hugging Face Papers**: ~100-500 new papers per day
-- **GitHub Stars**: ~1,000 repositories updated per day (daily) or 4,500/hour (hourly)
-- **Citations**: ~2,000 papers processed per day (daily) or 2,800/hour (hourly)
-- **URL Extraction**: ~50 papers/hour (1,200 papers/day with 24/7 operation)
-- **Total Runtime**: ~1-2 hours for all daily jobs, continuous for hourly jobs
+- **GitHub Stars (Optimized)**: 4,500 repos/hour (108,000/day continuous, 7-day refresh cycle)
+- **GitHub Stars (Trending)**: 500 repos/hour (12,000 snapshots/day, 1-2 hour refresh)
+- **Citations**: 2,800 papers/hour (67,200/day continuous)
+- **URL Extraction**: 50 papers/hour (1,200 papers/day with 24/7 operation)
+- **Total Runtime**: Continuous for hourly jobs
+- **Storage Growth**: ~18MB/month for trending snapshots
+
+### Trending Feature Metrics
+
+With the trending feature enabled:
+- **Historical Snapshots**: ~12,000 per day (500 repos × 24 hours)
+- **Storage**: ~50 bytes per snapshot, ~600KB/day, ~18MB/month
+- **Coverage**: Recent papers (last 6 months) = ~3,700 repositories
+- **Velocity Calculations**: Requires 2+ snapshots taken hours apart
+- **Data Availability**: Trending scores available 1-2 hours after first run
+- **API Endpoint**: `/api/papers/trending?limit=20&max_age_days=180`
+
+**Query Trending Papers:**
+```bash
+# Via API
+curl "http://your-api-url/api/papers/trending?limit=10"
+
+# Via Database
+uv run --env-file backend/keys.env python -c "
+from backend.database.connection import db_manager
+from sqlalchemy import text
+
+with db_manager.session_local() as session:
+    results = session.execute(text('''
+        SELECT arxiv_id, title, current_stars, trending_score
+        FROM trending_papers_24h
+        ORDER BY trending_score DESC LIMIT 10
+    ''')).fetchall()
+
+    for row in results:
+        print(f'{row[0]}: {row[1][:50]}...')
+        print(f'  ⭐ {row[2]} stars | 🔥 Score: {row[3]:.1f}')
+"
+```
+
+## 🤔 FAQ: Why Two GitHub Stars Jobs?
+
+**Q: Why separate `update_github_stars_optimized.py` and `update_github_stars_trending.py`?**
+
+**A: They serve fundamentally different purposes:**
+
+| Aspect | Optimized (Regular) | Trending |
+|--------|---------------------|----------|
+| **Purpose** | Keep all repos fresh | Track star velocity |
+| **Scope** | All 50K+ repos | Recent papers (6mo) only |
+| **Frequency** | Every 7 days | Every 1-2 hours |
+| **Storage** | Updates current count | Current + historical snapshots |
+| **Data** | `repositories.num_stars` | `repository_star_history` table |
+| **Use Case** | General display | Trending calculations |
+| **API Usage** | 90% of limit (4,500/hour) | 10% of limit (500/hour) |
+
+**Key Point**: The trending job stores **historical snapshots** needed to calculate velocity:
+```
+velocity = (stars_now - stars_2_hours_ago) / 2
+```
+
+Without frequent snapshots, you can't detect trending patterns. The regular job only updates the current count once per week, which isn't sufficient for trending analysis.
+
+**Benefits of Separation:**
+- ✅ **Independent Failure**: If one breaks, the other continues
+- ✅ **Easy Monitoring**: Track each job's health separately
+- ✅ **Flexible Configuration**: Adjust trending frequency without affecting regular updates
+- ✅ **Clear Purpose**: Each job has one well-defined responsibility
+- ✅ **API Efficiency**: Combined they use <100% of GitHub's rate limit
 
 ## 🔮 Future Expansion
 
@@ -547,6 +674,28 @@ The cron system is designed for easy expansion:
 - **Monthly Jobs**: Database optimization, analytics reports
 - **Custom Jobs**: Easy to add using the base classes
 - **Notifications**: Email/Slack alerts for failures
+
+**Trending Feature Enhancements:**
+- Multiple time windows (12h, 48h, 7-day trending views)
+- Per-category trending (trending in Computer Vision, NLP, etc.)
+- Historical trending scores (show "previously trending" papers)
+- Adaptive refresh rates (increase frequency for high-velocity papers)
+- Trending threshold alerts (notify when paper crosses velocity threshold)
+
+---
+
+## 📚 Additional Documentation
+
+### Detailed Trending Guide
+
+For comprehensive trending feature documentation, see:
+- **`cron/TRENDING_GUIDE.md`**: Full guide with SQL examples, Python code, troubleshooting
+- **`cron/TRENDING_SUMMARY.md`**: Quick reference and architecture overview
+
+**Quick Links:**
+- [Trending Database Schema](backend/database/repos_and_pages_setup/setup_star_history.sql)
+- [Trending Job Source](cron/hourly/update_github_stars_trending.py)
+- [Setup Script](cron/run_github_stars_trending.sh)
 
 ---
 
