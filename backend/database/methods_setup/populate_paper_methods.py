@@ -68,7 +68,7 @@ def populate_paper_methods():
 
         # Stream through papers JSON file
         json_path = "data/papers-with-abstracts.json"
-        print(f"\n3. Streaming papers from {json_path.name}...")
+        print(f"\n3. Streaming papers from {json_path}...")
         print("   (This may take a while for 2.2GB file...)")
 
         papers_processed = 0
