@@ -10,7 +10,7 @@ This service handles all paper-related operations, including:
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_, func
+from sqlalchemy import desc, asc, or_, func, text
 
 from backend.models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
 from backend.models.api import (
@@ -326,7 +326,7 @@ class PaperService:
             published_before: Filter papers published before this date (YYYY-MM-DD)
             conference: Filter by conference
             latest_only: Whether to only include latest versions of papers
-            order_by: Field to order by (date_published, title)
+            order_by: Field to order by (date_published, title, citation_count, trending)
             order_dir: Order direction (asc, desc)
 
         Returns:
@@ -339,6 +339,19 @@ class PaperService:
 
             # Limit page size
             page_size = min(page_size, self.settings.max_page_size)
+
+            # Special handling for trending sort
+            if order_by == "trending":
+                return self._get_trending_papers(
+                    page=page,
+                    page_size=page_size,
+                    search=search,
+                    published_after=published_after,
+                    published_before=published_before,
+                    conference=conference,
+                    latest_only=latest_only,
+                    include_resources=include_resources,
+                )
 
             # Build base query
             query = self.db.query(DBPaper)
@@ -404,6 +417,152 @@ class PaperService:
 
         except Exception as e:
             raise DatabaseError(f"Error fetching papers: {str(e)}")
+
+    def _get_trending_papers(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        published_after: Optional[str] = None,
+        published_before: Optional[str] = None,
+        conference: Optional[str] = None,
+        latest_only: bool = True,
+        include_resources: bool = False,
+    ) -> Papers:
+        """
+        Get papers sorted by trending (star velocity over last 24-48 hours).
+
+        This uses repository_star_history to calculate the rate of star growth
+        and ranks papers by velocity. Requires at least 2 snapshots per repository.
+
+        Args:
+            Same as get_papers()
+
+        Returns:
+            Paginated Papers response sorted by star velocity
+        """
+        from datetime import datetime, timedelta
+
+        try:
+            # Calculate velocity over last 48 hours (wider window = more data)
+            velocity_window_hours = 48
+            threshold_time = datetime.now() - timedelta(hours=velocity_window_hours)
+
+            # Build a raw SQL query for trending papers with velocity calculation
+            # This is complex because we need to:
+            # 1. Join papers -> paper_repositories -> repositories -> repository_star_history
+            # 2. Calculate velocity as (max_stars - min_stars) / hours_elapsed
+            # 3. Filter for papers with meaningful star changes
+            # 4. Apply all the same filters as regular get_papers
+
+            sql_query = text("""
+                WITH paper_velocities AS (
+                    SELECT DISTINCT ON (p.id)
+                        p.id as paper_id,
+                        p.title,
+                        p.abstract,
+                        p.arxiv_id,
+                        p.version,
+                        p.is_latest_version,
+                        p.date_published,
+                        p.proceeding,
+                        p.conference,
+                        p.citation_count,
+                        MAX(rsh.num_stars) - MIN(rsh.num_stars) as star_gain,
+                        EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) / 3600.0 as hours_span,
+                        CASE
+                            WHEN EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) > 0
+                            THEN (MAX(rsh.num_stars) - MIN(rsh.num_stars))::float /
+                                 (EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) / 3600.0)
+                            ELSE 0
+                        END as stars_per_hour,
+                        COUNT(DISTINCT rsh.snapshot_at) as snapshot_count
+                    FROM papers p
+                    JOIN paper_repositories pr ON p.id = pr.paper_id
+                    JOIN repositories r ON pr.repository_id = r.id
+                    JOIN repository_star_history rsh ON r.id = rsh.repository_id
+                    WHERE rsh.snapshot_at >= :threshold_time
+                        AND (:search_term IS NULL OR p.title ILIKE :search_term OR p.abstract ILIKE :search_term)
+                        AND (:published_after IS NULL OR p.date_published >= :published_after)
+                        AND (:published_before IS NULL OR p.date_published <= :published_before)
+                        AND (:conference IS NULL OR p.conference ILIKE :conference)
+                        AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
+                    GROUP BY p.id, p.title, p.abstract, p.arxiv_id, p.version,
+                             p.is_latest_version, p.date_published, p.proceeding,
+                             p.conference, p.citation_count
+                    HAVING COUNT(DISTINCT rsh.snapshot_at) >= 2
+                        AND MAX(rsh.num_stars) > MIN(rsh.num_stars)
+                    ORDER BY p.id, stars_per_hour DESC
+                )
+                SELECT
+                    paper_id,
+                    COUNT(*) OVER() as total_count
+                FROM paper_velocities
+                ORDER BY stars_per_hour DESC
+                LIMIT :limit OFFSET :offset
+            """)
+
+            # Prepare query parameters
+            search_param = f"%{search}%" if search else None
+            conference_param = f"%{conference}%" if conference else None
+
+            # Execute the query to get paper IDs
+            result = self.db.execute(
+                sql_query,
+                {
+                    "threshold_time": threshold_time,
+                    "search_term": search_param,
+                    "published_after": published_after,
+                    "published_before": published_before,
+                    "conference": conference_param,
+                    "latest_only": latest_only,
+                    "limit": page_size,
+                    "offset": (page - 1) * page_size,
+                },
+            ).fetchall()
+
+            if not result:
+                # No trending data available yet
+                return Papers(
+                    count=0,
+                    next_page=None,
+                    previous_page=None,
+                    results=[],
+                )
+
+            # Extract paper IDs and total count
+            paper_ids = [row[0] for row in result]
+            total_count = result[0][1] if result else 0
+
+            # Fetch full paper objects maintaining the order
+            db_papers = []
+            for paper_id in paper_ids:
+                paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+                if paper:
+                    db_papers.append(paper)
+
+            # Convert to API models
+            api_papers = [
+                self._convert_db_paper_to_api(
+                    db_paper, include_resources=include_resources
+                )
+                for db_paper in db_papers
+            ]
+
+            # Calculate pagination info
+            total_pages = (total_count + page_size - 1) // page_size
+            next_page = page + 1 if page < total_pages else None
+            previous_page = page - 1 if page > 1 else None
+
+            return Papers(
+                count=total_count,
+                next_page=next_page,
+                previous_page=previous_page,
+                results=api_papers,
+            )
+
+        except Exception as e:
+            raise DatabaseError(f"Error fetching trending papers: {str(e)}")
 
     def get_paper_versions(self, arxiv_id: str) -> PaperVersions:
         """

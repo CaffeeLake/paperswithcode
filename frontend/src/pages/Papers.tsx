@@ -113,7 +113,7 @@ const Papers = () => {
 
   const [searchTerm, setSearchTerm] = useState(urlSearch);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(urlSearch);
-  const [sortBy, setSortBy] = useState<'date_published' | 'citation_count' | 'title'>('date_published');
+  const [sortBy, setSortBy] = useState<'date_published' | 'citation_count' | 'title' | 'trending'>('trending');
 
   // Update search term when URL changes
   useEffect(() => {
@@ -143,7 +143,7 @@ const Papers = () => {
     page_size: 20,
     search: debouncedSearchTerm || undefined,
     order_by: sortBy,
-    order_dir: sortBy === 'title' ? 'asc' : 'desc',
+    order_dir: sortBy === 'title' ? 'asc' : 'desc', // trending is always desc by default
     include_resources: true
   });
 
@@ -191,7 +191,12 @@ const Papers = () => {
         <div className="mb-8">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h1 className="text-4xl font-bold mb-2">Trending Papers</h1>
+              <h1 className="text-4xl font-bold mb-2">
+                {sortBy === 'trending' && '🔥 Trending Papers'}
+                {sortBy === 'date_published' && 'Recent Papers'}
+                {sortBy === 'citation_count' && 'Most Cited Papers'}
+                {sortBy === 'title' && 'Papers A-Z'}
+              </h1>
               <div className="flex items-center text-muted-foreground">
                 <span className="mr-2">by</span>
                 <div className="flex items-center space-x-1 mr-2">
@@ -236,6 +241,14 @@ const Papers = () => {
             <Button
               variant="outline"
               size="sm"
+              className={sortBy === 'trending' ? "bg-orange-500 text-white hover:bg-orange-600" : ""}
+              onClick={() => setSortBy('trending')}
+            >
+              🔥 Trending
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               className={sortBy === 'date_published' ? "bg-muted" : ""}
               onClick={() => setSortBy('date_published')}
             >
@@ -257,11 +270,6 @@ const Papers = () => {
             >
               A-Z
             </Button>
-            <div className="ml-auto">
-              <Button variant="default" size="sm" className="bg-orange-500 hover:bg-orange-600">
-                Trending Papers
-              </Button>
-            </div>
           </div>
         </div>
 

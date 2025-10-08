@@ -5,7 +5,7 @@ interface UsePapersParams {
   page?: number;
   page_size?: number;
   search?: string;
-  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_by?: 'date_published' | 'citation_count' | 'title' | 'trending';
   order_dir?: 'asc' | 'desc';
   published_after?: string;
   published_before?: string;
@@ -62,7 +62,7 @@ export function usePaperByArxivId(arxivId: string, enabled: boolean = true) {
 interface UseInfinitePapersParams {
   page_size?: number;
   search?: string;
-  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_by?: 'date_published' | 'citation_count' | 'title' | 'trending';
   order_dir?: 'asc' | 'desc';
   published_after?: string;
   published_before?: string;
