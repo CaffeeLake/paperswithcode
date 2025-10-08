@@ -12,6 +12,9 @@
 #
 # Usage: cron/run_github_stars_trending.sh
 
+# Set PATH for cron environment (needed for uv command)
+export PATH="/root/.local/bin:$PATH"
+
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"

@@ -27,6 +27,7 @@ const getTaskIcon = (taskName: string): string => {
     "Vision Language Models": "👁️",
     "Vision-Language Models": "👁️",
     "Computer Use Agents": "💻",
+    "Automatic Speech Recognition": "🎤",
   };
 
   return iconMap[taskName] || "📊";
