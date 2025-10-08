@@ -333,6 +333,15 @@ class Repository(BaseModel):
         description="Source of the repository data (pwc_archive, ai_extraction, manual, etc.)",
     )
 
+    # Trending metrics
+    trending_score: Optional[float] = Field(
+        None,
+        description="EMA trending score (stars per hour) - higher means faster recent growth",
+    )
+    trending_score_updated_at: Optional[datetime] = Field(
+        None, description="When the trending score was last calculated"
+    )
+
     # Timestamps
     created_at: Optional[date] = Field(None, description="Repository creation date")
     updated_at: Optional[date] = Field(None, description="Repository last update date")

@@ -574,6 +574,10 @@ class RepositoryService:
             num_stars=db_repository.num_stars,
             is_official=False,  # Default to False since is_official is now in junction table
             source=db_repository.source,
+            trending_score=float(db_repository.trending_score)
+            if db_repository.trending_score is not None
+            else None,
+            trending_score_updated_at=db_repository.trending_score_updated_at,
             created_at=db_repository.created_at.date()
             if db_repository.created_at
             else None,
@@ -822,3 +826,182 @@ class RepositoryService:
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Error populating owner/name fields: {str(e)}")
+
+    def get_trending_repositories(
+        self,
+        page: int = 1,
+        page_size: Optional[int] = None,
+        min_score: Optional[float] = None,
+        min_age_days: int = 0,
+        max_age_days: int = 180,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get trending repositories sorted by trending score.
+
+        Args:
+            page: Page number (1-based)
+            page_size: Number of repositories per page
+            min_score: Minimum trending score (stars/hour)
+            min_age_days: Minimum paper age in days
+            max_age_days: Maximum paper age in days (default 180 = 6 months)
+
+        Returns:
+            List of repository dictionaries with trending information
+        """
+        if page_size is None:
+            page_size = self.settings.default_page_size
+
+        try:
+            min_date = datetime.now() - timedelta(days=max_age_days)
+            max_date = (
+                datetime.now() - timedelta(days=min_age_days)
+                if min_age_days > 0
+                else datetime.now()
+            )
+
+            # Query trending repositories with paper information
+            query = (
+                self.db.query(
+                    DBRepository.id,
+                    DBRepository.url,
+                    DBRepository.owner,
+                    DBRepository.name,
+                    DBRepository.num_stars,
+                    DBRepository.trending_score,
+                    DBRepository.trending_score_updated_at,
+                    func.count(func.distinct(DBPaper.id)).label("paper_count"),
+                    func.min(DBPaper.date_published).label("oldest_paper_date"),
+                )
+                .join(
+                    DBPaperRepository,
+                    DBRepository.id == DBPaperRepository.repository_id,
+                )
+                .join(DBPaper, DBPaperRepository.paper_id == DBPaper.id)
+                .filter(
+                    DBRepository.trending_score.is_not(None),
+                    DBPaper.is_latest_version,
+                    DBPaper.date_published.between(min_date, max_date),
+                )
+            )
+
+            if min_score is not None:
+                query = query.filter(DBRepository.trending_score >= min_score)
+
+            query = query.group_by(
+                DBRepository.id,
+                DBRepository.url,
+                DBRepository.owner,
+                DBRepository.name,
+                DBRepository.num_stars,
+                DBRepository.trending_score,
+                DBRepository.trending_score_updated_at,
+            ).order_by(desc(DBRepository.trending_score))
+
+            # Apply pagination
+            offset = (page - 1) * page_size
+            results = query.offset(offset).limit(page_size).all()
+
+            # Convert to dictionaries
+            trending_repos = []
+            for row in results:
+                oldest_paper_date = row.oldest_paper_date
+                paper_age_days = (
+                    (datetime.now().date() - oldest_paper_date).days
+                    if oldest_paper_date
+                    else None
+                )
+
+                trending_repos.append(
+                    {
+                        "id": row.id,
+                        "url": row.url,
+                        "owner": row.owner,
+                        "name": row.name,
+                        "num_stars": row.num_stars,
+                        "trending_score": float(row.trending_score)
+                        if row.trending_score
+                        else 0.0,
+                        "trending_score_updated_at": row.trending_score_updated_at,
+                        "paper_count": row.paper_count,
+                        "oldest_paper_date": oldest_paper_date,
+                        "paper_age_days": paper_age_days,
+                    }
+                )
+
+            return trending_repos
+
+        except Exception as e:
+            raise DatabaseError(f"Error fetching trending repositories: {str(e)}")
+
+    def update_repository_trending_score(
+        self, repository_id: int, trending_score: float
+    ) -> bool:
+        """
+        Update the trending score for a repository.
+
+        Args:
+            repository_id: Repository ID
+            trending_score: New trending score (stars/hour)
+
+        Returns:
+            True if successful
+        """
+        try:
+            repo = (
+                self.db.query(DBRepository)
+                .filter(DBRepository.id == repository_id)
+                .first()
+            )
+
+            if not repo:
+                raise DatabaseError(f"Repository {repository_id} not found")
+
+            repo.trending_score = trending_score
+            repo.trending_score_updated_at = func.now()
+            repo.updated_at = func.now()
+
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Error updating trending score: {str(e)}")
+
+    def get_repository_star_history(
+        self, repository_id: int, hours_lookback: int = 168
+    ) -> List[Dict[str, Any]]:
+        """
+        Get star count history for a repository.
+
+        Args:
+            repository_id: Repository ID
+            hours_lookback: Number of hours to look back (default 168 = 7 days)
+
+        Returns:
+            List of historical snapshots with timestamps and star counts
+        """
+        try:
+            from backend.models.database import RepositoryStarHistory
+
+            cutoff_time = datetime.now() - timedelta(hours=hours_lookback)
+
+            snapshots = (
+                self.db.query(RepositoryStarHistory)
+                .filter(
+                    RepositoryStarHistory.repository_id == repository_id,
+                    RepositoryStarHistory.snapshot_at >= cutoff_time,
+                )
+                .order_by(RepositoryStarHistory.snapshot_at.asc())
+                .all()
+            )
+
+            return [
+                {
+                    "num_stars": snapshot.num_stars,
+                    "snapshot_at": snapshot.snapshot_at,
+                }
+                for snapshot in snapshots
+            ]
+
+        except Exception as e:
+            raise DatabaseError(f"Error fetching star history: {str(e)}")

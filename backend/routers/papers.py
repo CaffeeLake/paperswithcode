@@ -150,6 +150,104 @@ async def get_paper_stats(db: Session = Depends(get_database_session)):
 
 
 @router.get(
+    "/papers/trending",
+    response_model=List[Dict[str, Any]],
+    summary="Get trending papers based on GitHub star velocity",
+)
+async def get_trending_papers(
+    limit: int = Query(
+        20, ge=1, le=100, description="Maximum number of trending papers"
+    ),
+    max_age_days: int = Query(
+        180, ge=1, le=365, description="Maximum paper age in days"
+    ),
+    min_velocity: Optional[float] = Query(
+        None, ge=0, description="Minimum star velocity (stars/hour)"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get trending papers ranked by GitHub repository star velocity (EMA-based).
+
+    This endpoint uses the trending_papers_24h view which ranks papers based on
+    their repository trending scores calculated using Exponential Moving Average (EMA).
+
+    The trending score is calculated hourly by a cron job that:
+    - Tracks star count changes over time
+    - Calculates velocity (stars gained per hour)
+    - Applies EMA smoothing (α=0.15) to reduce noise and weight recent trends
+
+    Returns papers with:
+    - High trending scores (recent star growth)
+    - Official repository links only
+    - Latest versions only
+    - Published within the specified age limit (default: 6 months)
+
+    **Note**: The trending feature requires the hourly cron job to run for
+    at least 1-2 hours to collect sufficient data for velocity calculations.
+    """
+    try:
+        query = text("""
+            SELECT
+                paper_id,
+                arxiv_id,
+                title,
+                date_published,
+                repository_id,
+                repository_url,
+                owner,
+                repo_name,
+                current_stars,
+                COALESCE(velocity_24h, 0) as velocity_24h,
+                COALESCE(trending_score, 0) as trending_score,
+                COALESCE(stars_gained_24h, 0) as stars_gained_24h,
+                paper_age_days
+            FROM trending_papers_24h
+            WHERE paper_age_days <= :max_age_days
+            AND (:min_velocity IS NULL OR COALESCE(velocity_24h, 0) >= :min_velocity)
+            ORDER BY trending_score DESC NULLS LAST, current_stars DESC
+            LIMIT :limit
+        """)
+
+        results = db.execute(
+            query,
+            {
+                "limit": limit,
+                "max_age_days": max_age_days,
+                "min_velocity": min_velocity,
+            },
+        ).fetchall()
+
+        return [
+            {
+                "paper_id": str(row[0]),
+                "arxiv_id": row[1],
+                "title": row[2],
+                "date_published": row[3].isoformat() if row[3] else None,
+                "repository": {
+                    "id": str(row[4]),
+                    "url": row[5],
+                    "owner": row[6],
+                    "name": row[7],
+                    "num_stars": row[8],
+                },
+                "trending": {
+                    "velocity_24h": float(row[9]) if row[9] else 0.0,
+                    "trending_score": float(row[10]) if row[10] else 0.0,
+                    "stars_gained_24h": int(row[11]) if row[11] else 0,
+                },
+                "paper_age_days": float(row[12]) if row[12] else 0.0,
+            }
+            for row in results
+        ]
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching trending papers: {str(e)}"
+        )
+
+
+@router.get(
     "/papers/{paper_id}", response_model=Paper, summary="Get paper by database ID"
 )
 async def get_paper_by_id(
@@ -393,96 +491,3 @@ async def get_paper_methods(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get(
-    "/papers/trending",
-    response_model=List[Dict[str, Any]],
-    summary="Get trending papers based on GitHub star velocity",
-)
-async def get_trending_papers(
-    limit: int = Query(
-        20, ge=1, le=100, description="Maximum number of trending papers"
-    ),
-    max_age_days: int = Query(
-        180, ge=1, le=365, description="Maximum paper age in days"
-    ),
-    min_velocity: Optional[float] = Query(
-        None, ge=0, description="Minimum star velocity (stars/hour)"
-    ),
-    db: Session = Depends(get_database_session),
-):
-    """
-    Get trending papers ranked by GitHub repository star velocity.
-
-    This endpoint uses the trending_papers_24h view which calculates trending scores
-    based on:
-    - Star velocity (stars gained per hour)
-    - Recency weighting (recent changes weighted higher)
-    - Paper age (only includes papers from last 6 months by default)
-
-    Returns an empty list if no trending data is available yet (requires at least
-    2 star count snapshots taken at different times).
-
-    **Note**: The trending feature requires the hourly trending job to run for
-    at least 1-2 hours to collect sufficient data for velocity calculations.
-    """
-    try:
-        query = text("""
-            SELECT
-                paper_id,
-                arxiv_id,
-                title,
-                date_published,
-                repository_id,
-                repository_url,
-                owner,
-                repo_name,
-                current_stars,
-                COALESCE(velocity_24h, 0) as velocity_24h,
-                COALESCE(trending_score, 0) as trending_score,
-                COALESCE(stars_gained_24h, 0) as stars_gained_24h,
-                paper_age_days
-            FROM trending_papers_24h
-            WHERE paper_age_days <= :max_age_days
-            AND (:min_velocity IS NULL OR COALESCE(velocity_24h, 0) >= :min_velocity)
-            ORDER BY trending_score DESC NULLS LAST, current_stars DESC
-            LIMIT :limit
-        """)
-
-        results = db.execute(
-            query,
-            {
-                "limit": limit,
-                "max_age_days": max_age_days,
-                "min_velocity": min_velocity,
-            },
-        ).fetchall()
-
-        return [
-            {
-                "paper_id": str(row[0]),
-                "arxiv_id": row[1],
-                "title": row[2],
-                "date_published": row[3].isoformat() if row[3] else None,
-                "repository": {
-                    "id": str(row[4]),
-                    "url": row[5],
-                    "owner": row[6],
-                    "name": row[7],
-                    "num_stars": row[8],
-                },
-                "trending": {
-                    "velocity_24h": float(row[9]) if row[9] else 0.0,
-                    "trending_score": float(row[10]) if row[10] else 0.0,
-                    "stars_gained_24h": int(row[11]) if row[11] else 0,
-                },
-                "paper_age_days": float(row[12]) if row[12] else 0.0,
-            }
-            for row in results
-        ]
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error fetching trending papers: {str(e)}"
-        )

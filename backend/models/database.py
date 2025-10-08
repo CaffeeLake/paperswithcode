@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     Date,
     DateTime,
+    Numeric,
     ForeignKey,
     UniqueConstraint,
     Index,
@@ -355,6 +356,14 @@ class Repository(Base):
     num_stars: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str] = mapped_column(String(50), default="unknown")
 
+    # Trending metrics (EMA-based)
+    trending_score: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 4), nullable=True, comment="EMA trending score (stars/hour)"
+    )
+    trending_score_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Timestamps
     num_stars_updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -386,6 +395,10 @@ class Repository(Base):
         Index("idx_repositories_name", "name"),
         Index("idx_repositories_source", "source"),
         Index("idx_repositories_num_stars_updated_at", "num_stars_updated_at"),
+        Index("idx_repositories_trending_score", "trending_score"),
+        Index(
+            "idx_repositories_trending_score_updated_at", "trending_score_updated_at"
+        ),
         Index("idx_repositories_created_at", "created_at"),
         Index("idx_repositories_updated_at", "updated_at"),
     )
