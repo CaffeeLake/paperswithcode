@@ -1,12 +1,11 @@
 import Header from "@/components/Header";
-import { Search, Sparkles, Github, Loader2 } from "lucide-react";
+import { Sparkles, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import PaperCard from "@/components/PaperCard";
 import TrendingPaperCard from "@/components/TrendingPaperCard";
 import { useInfinitePapers, useTrendingPapers } from "@/hooks/usePapers";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useSearchParams } from "react-router-dom";
 import { TrendingPaper } from "@/lib/api";
@@ -138,18 +137,24 @@ const transformTrendingPaperForUI = (paper: TrendingPaper, index: number) => {
 };
 
 const Papers = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const urlSearch = searchParams.get('search') || '';
+  const urlSort = searchParams.get('sort') || 'trending';
 
   const [searchTerm, setSearchTerm] = useState(urlSearch);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(urlSearch);
-  const [sortBy, setSortBy] = useState<'date_published' | 'citation_count' | 'title' | 'trending'>('trending');
+  const [sortBy, setSortBy] = useState<'date_published' | 'citation_count' | 'title' | 'trending'>(
+    urlSort as 'date_published' | 'citation_count' | 'title' | 'trending'
+  );
 
-  // Update search term when URL changes
+  // Update search term and sort when URL changes
   useEffect(() => {
     const newSearch = searchParams.get('search') || '';
+    const newSort = searchParams.get('sort') || 'trending';
     setSearchTerm(newSearch);
     setDebouncedSearchTerm(newSearch);
+    setSortBy(newSort as 'date_published' | 'citation_count' | 'title' | 'trending');
   }, [searchParams]);
 
   // Debounce search term to avoid too many API calls
@@ -161,10 +166,26 @@ const Papers = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
+  // Track sorting transitions to prevent showing stale data
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const previousSortRef = useRef(sortBy);
+
+  // Helper function to update sort and URL
+  const handleSortChange = (newSort: 'date_published' | 'citation_count' | 'title' | 'trending') => {
+    if (newSort !== sortBy) {
+      setIsTransitioning(true);
+      previousSortRef.current = sortBy;
+    }
+    setSortBy(newSort);
+    const params = new URLSearchParams(searchParams);
+    params.set('sort', newSort);
+    setSearchParams(params);
+  };
+
   // Use trending endpoint when sortBy is 'trending' and no search term
   const useTrendingEndpoint = sortBy === 'trending' && !debouncedSearchTerm;
 
-  // Fetch trending papers
+  // Fetch trending papers using dedicated endpoint
   const {
     data: trendingData,
     isLoading: trendingLoading,
@@ -186,43 +207,75 @@ const Papers = () => {
   } = useInfinitePapers({
     page_size: 20,
     search: debouncedSearchTerm || undefined,
-    order_by: sortBy === 'trending' ? 'date_published' : sortBy, // Fallback to date_published for trending with search
+    order_by: sortBy === 'trending' ? 'date_published' : sortBy, // Fallback for trending with search
     order_dir: sortBy === 'title' ? 'asc' : 'desc',
     include_resources: true,
     enabled: !useTrendingEndpoint,
   });
 
+  // Clear transition state once data is loaded
+  useEffect(() => {
+    if (isTransitioning) {
+      const hasData = useTrendingEndpoint ? !!trendingData : !!(infiniteData && infiniteData.pages.length > 0);
+      const isStillLoading = useTrendingEndpoint ? trendingLoading : infiniteLoading;
+
+      if (hasData && !isStillLoading) {
+        setIsTransitioning(false);
+      }
+    }
+  }, [isTransitioning, useTrendingEndpoint, trendingData, infiniteData, trendingLoading, infiniteLoading]);
+
   // Combine data based on which endpoint is active
+  // IMPORTANT: Only use data from the currently active endpoint to prevent showing stale data
   const isLoading = useTrendingEndpoint ? trendingLoading : infiniteLoading;
   const error = useTrendingEndpoint ? trendingError : infiniteError;
 
   let transformedPapers;
   let totalCount;
 
-  if (useTrendingEndpoint) {
-    // Transform trending papers
-    transformedPapers = (trendingData || []).map(transformTrendingPaperForUI);
-    totalCount = trendingData?.length || 0;
+  // Don't show any data while transitioning to prevent stale data flash
+  if (isTransitioning) {
+    transformedPapers = [];
+    totalCount = 0;
+  } else if (useTrendingEndpoint) {
+    // Only show trending data when trending endpoint is active and has data
+    if (trendingData) {
+      transformedPapers = trendingData.map(transformTrendingPaperForUI);
+      totalCount = trendingData.length;
+    } else {
+      transformedPapers = [];
+      totalCount = 0;
+    }
   } else {
-    // Flatten all pages into a single array for infinite scroll
-    const allPapers = infiniteData?.pages.flatMap(page => page.results) || [];
-    transformedPapers = allPapers.map(transformPaperForUI);
-    totalCount = infiniteData?.pages[0]?.count || 0;
+    // Only show infinite scroll data when that endpoint is active and has data
+    if (infiniteData && infiniteData.pages.length > 0) {
+      const allPapers = infiniteData.pages.flatMap(page => page.results);
+      transformedPapers = allPapers.map(transformPaperForUI);
+      totalCount = infiniteData.pages[0]?.count || 0;
+    } else {
+      transformedPapers = [];
+      totalCount = 0;
+    }
   }
 
   // Debug logging (temporary)
   console.log('📊 Papers State:', {
+    sortBy,
     useTrendingEndpoint,
+    isTransitioning,
     totalPages: infiniteData?.pages.length || 0,
     totalPapers: transformedPapers.length,
     hasNextPage,
     isFetchingNextPage,
     isLoading,
-    sortBy,
+    trendingLoading,
+    infiniteLoading,
+    hasTrendingData: !!trendingData,
+    hasInfiniteData: !!(infiniteData && infiniteData.pages.length > 0),
     searchTerm: debouncedSearchTerm
   });
 
-  // Intersection observer for infinite scroll (only for non-trending)
+  // Intersection observer for infinite scroll
   const { targetRef, isIntersecting } = useIntersectionObserver({
     threshold: 0.1,
     rootMargin: '50px'
@@ -301,7 +354,7 @@ const Papers = () => {
               variant="outline"
               size="sm"
               className={sortBy === 'trending' ? "bg-muted" : ""}
-              onClick={() => setSortBy('trending')}
+              onClick={() => handleSortChange('trending')}
             >
               🔥 Trending
             </Button>
@@ -309,7 +362,7 @@ const Papers = () => {
               variant="outline"
               size="sm"
               className={sortBy === 'date_published' ? "bg-muted" : ""}
-              onClick={() => setSortBy('date_published')}
+              onClick={() => handleSortChange('date_published')}
             >
               Recent
             </Button>
@@ -317,7 +370,7 @@ const Papers = () => {
               variant="outline"
               size="sm"
               className={sortBy === 'citation_count' ? "bg-muted" : ""}
-              onClick={() => setSortBy('citation_count')}
+              onClick={() => handleSortChange('citation_count')}
             >
               Most Cited
             </Button>
@@ -325,7 +378,7 @@ const Papers = () => {
               variant="outline"
               size="sm"
               className={sortBy === 'title' ? "bg-muted" : ""}
-              onClick={() => setSortBy('title')}
+              onClick={() => handleSortChange('title')}
             >
               A-Z
             </Button>
@@ -334,10 +387,12 @@ const Papers = () => {
 
 
         {/* Loading State */}
-        {isLoading && (
+        {(isLoading || isTransitioning) && (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            <span className="ml-2 text-muted-foreground">Loading papers...</span>
+            <span className="ml-2 text-muted-foreground">
+              {isTransitioning ? 'Switching view...' : 'Loading papers...'}
+            </span>
           </div>
         )}
 
@@ -352,7 +407,7 @@ const Papers = () => {
         )}
 
         {/* Papers List */}
-        {!isLoading && !error && (
+        {!isLoading && !isTransitioning && !error && (
           <div className="space-y-6">
             {transformedPapers.length > 0 ? (
               <>
