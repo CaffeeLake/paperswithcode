@@ -534,3 +534,81 @@ async def get_paper_methods(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/papers/{paper_id}/tasks",
+    response_model=Paper,
+    summary="Update tasks for a paper",
+)
+async def update_paper_tasks(
+    paper_id: int = Path(..., description="Database paper ID"),
+    task_ids: List[int] = Query(
+        ..., description="List of task IDs to associate with the paper"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update the tasks associated with a paper.
+
+    This endpoint allows admin users to update which tasks are linked to a paper.
+    It replaces all existing task associations with the provided list.
+
+    **Request Parameters:**
+    - `paper_id`: Database ID of the paper to update
+    - `task_ids`: List of task IDs to associate with this paper
+
+    **Returns:**
+    - Updated paper with new task associations
+
+    **Example:**
+    ```
+    PUT /api/v1/papers/123/tasks?task_ids=1&task_ids=2&task_ids=3
+    ```
+    """
+    try:
+        service = PaperService(db)
+        return service.update_paper_tasks(paper_id, task_ids)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/papers/{paper_id}/methods",
+    response_model=Paper,
+    summary="Update methods for a paper",
+)
+async def update_paper_methods(
+    paper_id: int = Path(..., description="Database paper ID"),
+    method_ids: List[int] = Query(
+        ..., description="List of method IDs to associate with the paper"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update the methods associated with a paper.
+
+    This endpoint allows admin users to update which methods are linked to a paper.
+    It replaces all existing method associations with the provided list.
+
+    **Request Parameters:**
+    - `paper_id`: Database ID of the paper to update
+    - `method_ids`: List of method IDs to associate with this paper
+
+    **Returns:**
+    - Updated paper with new method associations
+
+    **Example:**
+    ```
+    PUT /api/v1/papers/123/methods?method_ids=1&method_ids=2&method_ids=3
+    ```
+    """
+    try:
+        service = PaperService(db)
+        return service.update_paper_methods(paper_id, method_ids)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))

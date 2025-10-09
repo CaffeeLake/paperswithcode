@@ -1377,3 +1377,103 @@ class PaperService:
 
         except Exception as e:
             raise DatabaseError(f"Error getting citation statistics: {str(e)}")
+
+    def update_paper_tasks(self, paper_id: int, task_ids: List[int]) -> Paper:
+        """
+        Update the tasks associated with a paper.
+
+        Args:
+            paper_id: Database paper ID
+            task_ids: List of task IDs to associate with the paper
+
+        Returns:
+            Updated Paper object
+
+        Raises:
+            PaperNotFoundError: If paper is not found
+            DatabaseError: If update fails
+        """
+        try:
+            from backend.models.database import Task as DBTask, PaperTask
+
+            # Verify paper exists
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            # Verify all task IDs exist
+            existing_tasks = self.db.query(DBTask).filter(DBTask.id.in_(task_ids)).all()
+            existing_task_ids = {task.id for task in existing_tasks}
+            invalid_task_ids = set(task_ids) - existing_task_ids
+            if invalid_task_ids:
+                raise DatabaseError(f"Invalid task IDs: {invalid_task_ids}")
+
+            # Delete existing paper_tasks associations
+            self.db.query(PaperTask).filter(PaperTask.paper_id == paper_id).delete()
+
+            # Add new associations
+            for task_id in task_ids:
+                paper_task = PaperTask(paper_id=paper_id, task_id=task_id)
+                self.db.add(paper_task)
+
+            self.db.commit()
+
+            # Return updated paper
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper tasks: {str(e)}")
+
+    def update_paper_methods(self, paper_id: int, method_ids: List[int]) -> Paper:
+        """
+        Update the methods associated with a paper.
+
+        Args:
+            paper_id: Database paper ID
+            method_ids: List of method IDs to associate with the paper
+
+        Returns:
+            Updated Paper object
+
+        Raises:
+            PaperNotFoundError: If paper is not found
+            DatabaseError: If update fails
+        """
+        try:
+            from backend.models.database import Method as DBMethod, PaperMethod
+
+            # Verify paper exists
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            # Verify all method IDs exist
+            existing_methods = (
+                self.db.query(DBMethod).filter(DBMethod.id.in_(method_ids)).all()
+            )
+            existing_method_ids = {method.id for method in existing_methods}
+            invalid_method_ids = set(method_ids) - existing_method_ids
+            if invalid_method_ids:
+                raise DatabaseError(f"Invalid method IDs: {invalid_method_ids}")
+
+            # Delete existing paper_methods associations
+            self.db.query(PaperMethod).filter(PaperMethod.paper_id == paper_id).delete()
+
+            # Add new associations
+            for method_id in method_ids:
+                paper_method = PaperMethod(paper_id=paper_id, method_id=method_id)
+                self.db.add(paper_method)
+
+            self.db.commit()
+
+            # Return updated paper
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper methods: {str(e)}")

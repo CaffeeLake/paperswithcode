@@ -14,6 +14,8 @@ Hardware: everything is run on a Hetzner VPS with 4GB of RAM and 80GB of disk sp
 
 The backend and frontend can be run using the `start_service.sh` bash script. They can be stopped using the `stop_services.sh` bash script.
 
+The backend API includes a v1 in its URL, use http://localhost:8000/api/v1.
+
 ## Project Overview
 
 Paperswithcode.ai is a complete recreation of paperswithcode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database.

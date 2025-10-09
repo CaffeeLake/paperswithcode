@@ -1,14 +1,19 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe } from "lucide-react";
+import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
 import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import PaperResources from "@/components/PaperResources";
+import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, type Task as APITask, type Method as APIMethod } from "@/lib/api";
+import { useState } from "react";
+import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 
 // Type definitions
 interface Task {
@@ -21,11 +26,80 @@ const PaperDetail = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
   const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
   const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(paper?.arxiv_id);
+  const queryClient = useQueryClient();
+
+  // Admin editing state
+  const [isEditingTasks, setIsEditingTasks] = useState(false);
+  const [isEditingMethods, setIsEditingMethods] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
+  const [selectedMethodIds, setSelectedMethodIds] = useState<number[]>([]);
+
+  // Fetch all tasks (using max allowed page_size of 100)
+  const { data: allTasksData } = useQuery({
+    queryKey: ['tasks'],
+    queryFn: () => getTasks({ page_size: 100 }),
+    enabled: isEditingTasks,
+  });
+
+  // Fetch all methods (using max allowed page_size of 100)
+  const { data: allMethodsData } = useQuery({
+    queryKey: ['methods'],
+    queryFn: () => getMethods({ page_size: 100 }),
+    enabled: isEditingMethods,
+  });
+
+  // Mutation for updating tasks
+  const updateTasksMutation = useMutation({
+    mutationFn: ({ paperId, taskIds }: { paperId: string; taskIds: number[] }) =>
+      updatePaperTasks(paperId, taskIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+      setIsEditingTasks(false);
+    },
+  });
+
+  // Mutation for updating methods
+  const updateMethodsMutation = useMutation({
+    mutationFn: ({ paperId, methodIds }: { paperId: string; methodIds: number[] }) =>
+      updatePaperMethods(paperId, methodIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+      setIsEditingMethods(false);
+    },
+  });
 
   // Generate colors for authors (similar to the original hardcoded approach)
   const getAuthorColor = (index: number) => {
     const colors = ["#3B82F6", "#8B5CF6", "#EF4444", "#10B981", "#F59E0B", "#EC4899", "#06B6D4", "#84CC16", "#F97316"];
     return colors[index % colors.length];
+  };
+
+  // Initialize selected items when opening dialog
+  const handleEditTasks = () => {
+    if (paper?.tasks) {
+      setSelectedTaskIds(paper.tasks.map((t: Task) => parseInt(t.id)));
+    }
+    setIsEditingTasks(true);
+  };
+
+  const handleEditMethods = () => {
+    if (paper?.methods) {
+      setSelectedMethodIds(paper.methods.map((m: { id: string }) => parseInt(m.id)));
+    }
+    setIsEditingMethods(true);
+  };
+
+  // Save handlers
+  const handleSaveTasks = () => {
+    if (paper?.id) {
+      updateTasksMutation.mutate({ paperId: paper.id, taskIds: selectedTaskIds });
+    }
+  };
+
+  const handleSaveMethods = () => {
+    if (paper?.id) {
+      updateMethodsMutation.mutate({ paperId: paper.id, methodIds: selectedMethodIds });
+    }
   };
 
   if (isLoading) {
@@ -160,8 +234,20 @@ const PaperDetail = () => {
               </div>
 
               {/* Tasks */}
-              {paper.tasks && paper.tasks.length > 0 && (
-                <div className="mb-6">
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold">Tasks</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={handleEditTasks}
+                  >
+                    <Edit className="w-3 h-3 mr-1" />
+                    <span className="text-xs">Edit</span>
+                  </Button>
+                </div>
+                {paper.tasks && paper.tasks.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
                     {paper.tasks.map((task: Task, index: number) => (
                       <Link key={index} to={`/tasks/${task.slug || task.name.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -171,8 +257,10 @@ const PaperDetail = () => {
                       </Link>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <p className="text-sm text-muted-foreground">No tasks assigned</p>
+                )}
+              </div>
             </div>
 
             {/* Abstract */}
@@ -238,6 +326,8 @@ const PaperDetail = () => {
               repositories={paper.repositories || []}
               tasks={paper.tasks || []}
               methods={paper.methods || []}
+              onEditTasks={handleEditTasks}
+              onEditMethods={handleEditMethods}
             />
 
             {/* Evaluation Results */}
@@ -486,6 +576,147 @@ const PaperDetail = () => {
           </div>
         </div>
       </div>
+
+      {/* Edit Tasks Dialog */}
+      <Dialog open={isEditingTasks} onOpenChange={setIsEditingTasks}>
+        <DialogContent className="max-w-2xl max-h-[600px]">
+          <DialogHeader>
+            <DialogTitle>Edit Paper Tasks</DialogTitle>
+            <DialogDescription>
+              Select the tasks that this paper addresses. You can select multiple tasks.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 overflow-y-auto max-h-[400px]">
+            {allTasksData?.results && allTasksData.results.length > 0 ? (
+              <div className="space-y-2">
+                {allTasksData.results.map((task: APITask) => (
+                  <div key={task.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
+                    <Checkbox
+                      id={`task-${task.id}`}
+                      checked={selectedTaskIds.includes(parseInt(task.id))}
+                      onCheckedChange={(checked) => {
+                        const taskId = parseInt(task.id);
+                        if (checked) {
+                          setSelectedTaskIds([...selectedTaskIds, taskId]);
+                        } else {
+                          setSelectedTaskIds(selectedTaskIds.filter(id => id !== taskId));
+                        }
+                      }}
+                    />
+                    <label
+                      htmlFor={`task-${task.id}`}
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer flex-1"
+                    >
+                      {task.name}
+                      {task.description && (
+                        <span className="block text-xs text-muted-foreground font-normal mt-1">
+                          {task.description.substring(0, 100)}{task.description.length > 100 ? '...' : ''}
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
+                <p>Loading tasks...</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsEditingTasks(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveTasks} disabled={updateTasksMutation.isPending}>
+              {updateTasksMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Methods Dialog */}
+      <Dialog open={isEditingMethods} onOpenChange={setIsEditingMethods}>
+        <DialogContent className="max-w-2xl max-h-[600px]">
+          <DialogHeader>
+            <DialogTitle>Edit Paper Methods</DialogTitle>
+            <DialogDescription>
+              Select the methods and techniques used in this paper. You can select multiple methods.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 overflow-y-auto max-h-[400px]">
+            {allMethodsData?.results && allMethodsData.results.length > 0 ? (
+              <div className="space-y-2">
+                {allMethodsData.results.map((method: APIMethod) => (
+                  <div key={method.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
+                    <Checkbox
+                      id={`method-${method.id}`}
+                      checked={selectedMethodIds.includes(parseInt(method.id))}
+                      onCheckedChange={(checked) => {
+                        const methodId = parseInt(method.id);
+                        if (checked) {
+                          setSelectedMethodIds([...selectedMethodIds, methodId]);
+                        } else {
+                          setSelectedMethodIds(selectedMethodIds.filter(id => id !== methodId));
+                        }
+                      }}
+                    />
+                    <label
+                      htmlFor={`method-${method.id}`}
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer flex-1"
+                    >
+                      {method.name}
+                      {method.full_name && method.full_name !== method.name && (
+                        <span className="block text-xs text-muted-foreground font-normal">
+                          {method.full_name}
+                        </span>
+                      )}
+                      {method.description && (
+                        <span className="block text-xs text-muted-foreground font-normal mt-1">
+                          {method.description.substring(0, 100)}{method.description.length > 100 ? '...' : ''}
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
+                <p>Loading methods...</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsEditingMethods(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveMethods} disabled={updateMethodsMutation.isPending}>
+              {updateMethodsMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

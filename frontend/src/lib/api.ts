@@ -212,6 +212,20 @@ class ApiClient {
     return this.request<Paper>(endpoint);
   }
 
+  async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
+    const searchParams = new URLSearchParams();
+    taskIds.forEach(id => searchParams.append('task_ids', id.toString()));
+    const endpoint = `/papers/${paperId}/tasks?${searchParams.toString()}`;
+    return this.request<Paper>(endpoint, { method: 'PUT' });
+  }
+
+  async updatePaperMethods(paperId: string, methodIds: number[]): Promise<Paper> {
+    const searchParams = new URLSearchParams();
+    methodIds.forEach(id => searchParams.append('method_ids', id.toString()));
+    const endpoint = `/papers/${paperId}/methods?${searchParams.toString()}`;
+    return this.request<Paper>(endpoint, { method: 'PUT' });
+  }
+
   async getTrendingPapers(params?: {
     limit?: number;
     max_age_days?: number;
@@ -502,6 +516,8 @@ export const apiClient = new ApiClient();
 export const getPapers = apiClient.getPapers.bind(apiClient);
 export const getPaper = apiClient.getPaper.bind(apiClient);
 export const getPaperByArxivId = apiClient.getPaperByArxivId.bind(apiClient);
+export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
+export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);

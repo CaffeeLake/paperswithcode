@@ -1,6 +1,7 @@
-import { ExternalLink, Star, Github, CheckCircle, Target, Zap } from "lucide-react";
+import { ExternalLink, Star, Github, CheckCircle, Target, Zap, Edit } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Repository } from "@/lib/api";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -25,9 +26,11 @@ interface PaperResourcesProps {
   repositories?: Repository[];
   tasks?: Task[];
   methods?: Method[];
+  onEditTasks?: () => void;
+  onEditMethods?: () => void;
 }
 
-const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperResourcesProps) => {
+const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTasks, onEditMethods }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
   // Ensure repositories is always an array and filter to show official and high-quality repositories
@@ -162,13 +165,26 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperRe
       {/* Tasks Section */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-lg flex items-center space-x-2">
-            <Target className="w-5 h-5" />
-            <span>Tasks</span>
-            <Badge variant="secondary" className="ml-2">
-              {tasks.length}
-            </Badge>
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg flex items-center space-x-2">
+              <Target className="w-5 h-5" />
+              <span>Tasks</span>
+              <Badge variant="secondary" className="ml-2">
+                {tasks.length}
+              </Badge>
+            </CardTitle>
+            {onEditTasks && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={onEditTasks}
+              >
+                <Edit className="w-3 h-3 mr-1" />
+                <span className="text-xs">Edit</span>
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-2">
           {tasks.length > 0 ? (
@@ -193,13 +209,26 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperRe
       {/* Methods Section */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-lg flex items-center space-x-2">
-            <Zap className="w-5 h-5" />
-            <span>Methods</span>
-            <Badge variant="secondary" className="ml-2">
-              {methods.length}
-            </Badge>
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg flex items-center space-x-2">
+              <Zap className="w-5 h-5" />
+              <span>Methods</span>
+              <Badge variant="secondary" className="ml-2">
+                {methods.length}
+              </Badge>
+            </CardTitle>
+            {onEditMethods && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={onEditMethods}
+              >
+                <Edit className="w-3 h-3 mr-1" />
+                <span className="text-xs">Edit</span>
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-2">
           {methods.length > 0 ? (
