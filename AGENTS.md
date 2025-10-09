@@ -12,6 +12,8 @@ To authenticate and connect to the PostGreSQL database, see `docs/POSTGRESQL_GUI
 
 Hardware: everything is run on a Hetzner VPS with 4GB of RAM and 80GB of disk space. Hence a lot of scripts are optimized to deal with the low RAM.
 
+The backend and frontend can be run using the `start_service.sh` bash script. They can be stopped using the `stop_services.sh` bash script.
+
 ## Project Overview
 
 Paperswithcode.ai is a complete recreation of paperswithcode.com built with modern web technologies. The project consists of a React frontend and a FastAPI backend, which uses a PostgreSQL database.

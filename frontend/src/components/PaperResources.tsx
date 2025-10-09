@@ -117,10 +117,12 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [] }: PaperRe
                         )}
                       </div>
                       <div className="flex items-center space-x-2 mt-1">
-                        <div className="flex items-center space-x-1 text-sm text-muted-foreground">
-                          <Star className="w-3 h-3" />
-                          <span>{formatStars(repo.num_stars)}</span>
-                        </div>
+                        {repo.num_stars > 0 && (
+                          <div className="flex items-center space-x-1 text-xs text-muted-foreground">
+                            <Star className="w-2.5 h-2.5" />
+                            <span>{formatStars(repo.num_stars)}</span>
+                          </div>
+                        )}
                         <a
                           href={repo.url}
                           target="_blank"

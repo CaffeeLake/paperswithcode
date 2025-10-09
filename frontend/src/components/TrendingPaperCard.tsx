@@ -1,4 +1,4 @@
-import { ChevronUp, Github, ExternalLink } from "lucide-react";
+import { Star, FileText, Github } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -15,13 +15,10 @@ interface TrendingPaperCardProps {
   title: string;
   abstract: string;
   authors: Author[];
-  submittedBy: string;
+  submittedBy?: string;
   date: string;
-  upvotes: number;
-  comments: number;
-  category: string;
-  isUpvoted: boolean;
   githubStars: number;
+  starsPerHour?: number;
   tags: string[];
   thumbnailUrl?: string;
   arxivId?: string;
@@ -42,9 +39,8 @@ const TrendingPaperCard = ({
   authors,
   submittedBy,
   date,
-  upvotes,
-  isUpvoted,
   githubStars,
+  starsPerHour,
   tags,
   thumbnailUrl,
   arxivId,
@@ -59,100 +55,97 @@ const TrendingPaperCard = ({
           title={title}
           className="w-full h-32"
         />
-        <div className="mt-2 text-xs text-muted-foreground">
-          Submitted by <span className="text-primary">@{submittedBy}</span>
-        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <Link to={`/paper/${arxivId || id}`} className="block group">
-          <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors mb-2">
+        <Link to={`/paper/${arxivId || id}`} className="block group mb-2">
+          <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
             {title}
           </h3>
         </Link>
 
-        <p className="text-sm text-muted-foreground mb-4 leading-relaxed line-clamp-3">
-          {abstract}
-        </p>
-
-        {/* Tags */}
-        <div className="flex flex-wrap gap-2 mb-4">
-          {tags.map((tag, index) => (
-            <Link key={index} to={`/tasks/${tag.toLowerCase().replace(/\s+/g, '-')}`}>
-              <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
-                {tag}
-              </Badge>
-            </Link>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-4 mb-3">
-          {/* Authors */}
-          <div className="flex items-center gap-2">
-            <div className="flex items-center space-x-1">
-              {authors.slice(0, 4).map((author, index) => (
-                <Avatar key={index} className="w-6 h-6">
-                  <AvatarFallback
-                    className="text-xs text-white"
-                    style={{ backgroundColor: author.color }}
-                  >
-                    {author.name.split(' ').map(n => n[0]).join('')}
-                  </AvatarFallback>
-                </Avatar>
-              ))}
-              {authors.length > 4 && (
-                <span className="text-xs text-muted-foreground ml-1">
-                  +{authors.length - 4} authors
-                </span>
-              )}
-            </div>
-            <span className="text-xs text-muted-foreground">• Published on {date}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Right Actions */}
-      <div className="flex flex-col items-end gap-3 flex-shrink-0">
-        {/* Upvote */}
-        <Button
-          variant={isUpvoted ? "default" : "outline"}
-          size="sm"
-          className="flex items-center gap-1"
-        >
-          <ChevronUp className="w-4 h-4" />
-          <span className="text-sm font-medium">Upvote</span>
-          <span className="text-sm">{upvotes}</span>
-        </Button>
-
-        {/* GitHub Stars */}
-        {githubStars > 0 && (
-          <div className="flex items-center gap-1 text-sm text-muted-foreground">
-            <Github className="w-4 h-4" />
-            {githubUrl ? (
+        <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground">
+          {submittedBy && (
+            <>
+              <Github className="w-3 h-3" />
               <a
                 href={githubUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-medium hover:text-foreground transition-colors"
+                className="hover:text-foreground transition-colors"
               >
-                {formatStars(githubStars)}
+                {submittedBy}
               </a>
-            ) : (
-              <span className="font-medium">{formatStars(githubStars)}</span>
+              <span>•</span>
+            </>
+          )}
+          <span>{date}</span>
+        </div>
+
+        {/* Tags */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {tags.slice(0, 4).map((tag, index) => (
+              <Link key={index} to={`/tasks/${tag.toLowerCase().replace(/\s+/g, '-')}`}>
+                <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors bg-gray-100">
+                  📊 {tag}
+                </Badge>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Right Section - Stars & Actions */}
+      <div className="flex flex-col items-end gap-3 flex-shrink-0 min-w-[140px]">
+        {/* GitHub Stars Box */}
+        {githubStars > 0 && (
+          <div className="flex flex-col items-center">
+            <div className="flex items-center justify-center bg-background border rounded-lg p-2 min-w-[80px]">
+              <Star className="w-3 h-3 text-yellow-500 fill-yellow-500 mr-1" />
+              <span className="text-base font-semibold">{formatStars(githubStars)}</span>
+            </div>
+            {starsPerHour !== undefined && (
+              <div className="text-xs text-muted-foreground mt-1 text-center">
+                {starsPerHour.toFixed(2)} stars / hour
+              </div>
             )}
           </div>
         )}
 
-        {/* arXiv Link */}
-        {arxivId && (
-          <Button variant="outline" size="sm" className="text-xs" asChild>
-            <a href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="w-3 h-3 mr-1" />
-              arXiv Page
-            </a>
-          </Button>
-        )}
+        {/* Action Buttons */}
+        <div className="flex flex-col gap-2 w-full">
+          {/* Paper Button */}
+          {arxivId && (
+            <Button
+              variant="default"
+              size="sm"
+              className="w-full bg-cyan-500 hover:bg-cyan-600 text-white"
+              asChild
+            >
+              <Link to={`/paper/${arxivId}`}>
+                <FileText className="w-3 h-3 mr-1" />
+                Paper
+              </Link>
+            </Button>
+          )}
+
+          {/* Code Button */}
+          {githubUrl && (
+            <Button
+              variant="default"
+              size="sm"
+              className="w-full bg-blue-500 hover:bg-blue-600 text-white"
+              asChild
+            >
+              <a href={githubUrl} target="_blank" rel="noopener noreferrer">
+                <Github className="w-3 h-3 mr-1" />
+                Code
+              </a>
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

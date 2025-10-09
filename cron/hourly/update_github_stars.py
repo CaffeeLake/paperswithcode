@@ -13,7 +13,7 @@ Key Features:
 - Memory efficient processing for 4GB RAM systems
 
 Update Strategy:
-- Recent papers (< 6 months old): Update every 1-2 hours
+- Recent papers (< 6 months old): Update every hour (for accurate velocity tracking)
 - Regular papers: Update every 7 days
 - Each update stores a historical snapshot for trending calculations
 
@@ -54,7 +54,7 @@ def get_next_repository_group(
     Returns all repository IDs that share the same owner/name.
 
     Priority system:
-    1. Recent papers (< 6 months old): Update every 1-2 hours
+    1. Recent papers (< 6 months old): Update every hour
     2. Regular papers: Update every 7 days
     3. Never-updated repositories: Highest priority
 
@@ -336,7 +336,9 @@ def main():
         # Configuration
         delay = 1.0  # 1 second between API calls (3600 calls/hour max)
         max_updates = 3000  # Process up to 3000 repositories per hour (safe margin for 5K GitHub rate limit)
-        threshold_hours_recent = 2  # Update recent papers every 2 hours
+        threshold_hours_recent = (
+            1  # Update recent papers every 1 hour (for accurate velocity tracking)
+        )
         threshold_days_regular = 7  # Update regular papers every 7 days
         min_memory_mb = 200  # Stop if less than 200MB available
 

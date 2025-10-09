@@ -5,10 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import PaperCard from "@/components/PaperCard";
 import TrendingPaperCard from "@/components/TrendingPaperCard";
-import { useInfinitePapers } from "@/hooks/usePapers";
+import { useInfinitePapers, useTrendingPapers } from "@/hooks/usePapers";
 import { useState, useEffect } from "react";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useSearchParams } from "react-router-dom";
+import { TrendingPaper } from "@/lib/api";
 
 // Type definitions
 interface Task {
@@ -88,22 +89,51 @@ const transformPaperForUI = (paper: PaperFromAPI, index: number) => {
     ? paper.tasks.map((task: Task) => task.name)
     : [];
 
+  // Use repository owner/name if available, otherwise undefined (no dummy data)
+  let submittedBy: string | undefined = undefined;
+  if (mostStarredRepo?.url) {
+    // Extract owner/repo from URL like "https://github.com/owner/repo"
+    const urlMatch = mostStarredRepo.url.match(/github\.com\/([^/]+)\/([^/]+)/);
+    if (urlMatch) {
+      submittedBy = `${urlMatch[1]}/${urlMatch[2]}`;
+    }
+  }
+
   return {
     id: paper.id,
     title: paper.title,
     abstract: paper.abstract,
     authors: authorsWithColors,
-    submittedBy: `user${paper.id}`, // Mock submitted by
+    submittedBy: submittedBy, // Use repository owner/name if available
     date: formatDate(paper.published),
-    upvotes: Math.floor(Math.random() * 200) + 10, // Mock upvotes
-    comments: Math.floor(Math.random() * 5), // Mock comments
-    category: "Machine Learning", // Mock category
-    isUpvoted: Math.random() > 0.7, // Mock upvote status
     githubStars: totalGithubStars, // Real GitHub stars from official repositories
+    starsPerHour: undefined, // Not available for non-trending papers
     tags: tags, // Real tags from API tasks
     thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
     arxivId: paper.arxiv_id, // Pass through arXiv ID for clickable links
     githubUrl: mostStarredRepo?.url, // Link to most starred repository
+  };
+};
+
+// Helper function to transform trending paper to UI format
+const transformTrendingPaperForUI = (paper: TrendingPaper, index: number) => {
+  // Generate mock authors for now (trending endpoint doesn't include authors)
+  const mockAuthors = ['John Doe', 'Jane Smith'];
+  const authorsWithColors = assignAuthorColors(mockAuthors);
+
+  return {
+    id: paper.paper_id,
+    title: paper.title,
+    abstract: '', // Trending endpoint doesn't include abstract
+    authors: authorsWithColors,
+    submittedBy: `${paper.repository.owner}/${paper.repository.name}`,
+    date: paper.date_published ? formatDate(paper.date_published) : 'Unknown',
+    githubStars: paper.repository.num_stars,
+    starsPerHour: paper.trending.velocity_24h,
+    tags: paper.tasks || [], // Use tasks from API response
+    thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
+    arxivId: paper.arxiv_id,
+    githubUrl: paper.repository.url,
   };
 };
 
@@ -131,31 +161,60 @@ const Papers = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Fetch papers from API with infinite scroll
+  // Use trending endpoint when sortBy is 'trending' and no search term
+  const useTrendingEndpoint = sortBy === 'trending' && !debouncedSearchTerm;
+
+  // Fetch trending papers
   const {
-    data,
-    isLoading,
-    error,
+    data: trendingData,
+    isLoading: trendingLoading,
+    error: trendingError,
+  } = useTrendingPapers({
+    limit: 50,
+    max_age_days: 180,
+    enabled: useTrendingEndpoint,
+  });
+
+  // Fetch papers from API with infinite scroll (for non-trending or when searching)
+  const {
+    data: infiniteData,
+    isLoading: infiniteLoading,
+    error: infiniteError,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage
   } = useInfinitePapers({
     page_size: 20,
     search: debouncedSearchTerm || undefined,
-    order_by: sortBy,
-    order_dir: sortBy === 'title' ? 'asc' : 'desc', // trending is always desc by default
-    include_resources: true
+    order_by: sortBy === 'trending' ? 'date_published' : sortBy, // Fallback to date_published for trending with search
+    order_dir: sortBy === 'title' ? 'asc' : 'desc',
+    include_resources: true,
+    enabled: !useTrendingEndpoint,
   });
 
-  // Flatten all pages into a single array
-  const allPapers = data?.pages.flatMap(page => page.results) || [];
-  const transformedPapers = allPapers.map(transformPaperForUI);
-  const totalCount = data?.pages[0]?.count || 0;
+  // Combine data based on which endpoint is active
+  const isLoading = useTrendingEndpoint ? trendingLoading : infiniteLoading;
+  const error = useTrendingEndpoint ? trendingError : infiniteError;
+
+  let transformedPapers;
+  let totalCount;
+
+  if (useTrendingEndpoint) {
+    // Transform trending papers
+    transformedPapers = (trendingData || []).map(transformTrendingPaperForUI);
+    totalCount = trendingData?.length || 0;
+  } else {
+    // Flatten all pages into a single array for infinite scroll
+    const allPapers = infiniteData?.pages.flatMap(page => page.results) || [];
+    transformedPapers = allPapers.map(transformPaperForUI);
+    totalCount = infiniteData?.pages[0]?.count || 0;
+  }
 
   // Debug logging (temporary)
   console.log('📊 Papers State:', {
-    totalPages: data?.pages.length || 0,
-    totalPapers: allPapers.length,
+    useTrendingEndpoint,
+    totalPages: infiniteData?.pages.length || 0,
+    totalPapers: transformedPapers.length,
     hasNextPage,
     isFetchingNextPage,
     isLoading,
@@ -163,15 +222,15 @@ const Papers = () => {
     searchTerm: debouncedSearchTerm
   });
 
-  // Intersection observer for infinite scroll
+  // Intersection observer for infinite scroll (only for non-trending)
   const { targetRef, isIntersecting } = useIntersectionObserver({
     threshold: 0.1,
     rootMargin: '50px'
   });
 
-  // Fetch next page when intersection observer triggers
+  // Fetch next page when intersection observer triggers (only for non-trending)
   useEffect(() => {
-    if (isIntersecting && hasNextPage && !isFetchingNextPage) {
+    if (!useTrendingEndpoint && isIntersecting && hasNextPage && !isFetchingNextPage) {
       console.log('🔄 Fetching next page...', {
         isIntersecting,
         hasNextPage,
@@ -180,7 +239,7 @@ const Papers = () => {
       });
       fetchNextPage();
     }
-  }, [isIntersecting, hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [useTrendingEndpoint, isIntersecting, hasNextPage, isFetchingNextPage, fetchNextPage, transformedPapers.length]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -241,7 +300,7 @@ const Papers = () => {
             <Button
               variant="outline"
               size="sm"
-              className={sortBy === 'trending' ? "bg-orange-500 text-white hover:bg-orange-600" : ""}
+              className={sortBy === 'trending' ? "bg-muted" : ""}
               onClick={() => setSortBy('trending')}
             >
               🔥 Trending
@@ -301,46 +360,56 @@ const Papers = () => {
                   <TrendingPaperCard key={paper.id} {...paper} />
                 ))}
 
-                {/* Intersection Observer Target */}
-                <div
-                  ref={targetRef}
-                  className="h-32 flex items-center justify-center border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-lg my-4"
-                  style={{ minHeight: '100px' }}
-                >
-                  {isFetchingNextPage && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Loading more papers...</span>
-                    </div>
-                  )}
-                  {hasNextPage && !isFetchingNextPage && (
-                    <div className="flex flex-col items-center gap-3">
-                      <div className="text-sm text-muted-foreground text-center">
-                        📜 Scroll here to load more papers automatically<br/>
-                        <span className="text-xs">or click the button below</span>
+                {/* Intersection Observer Target - Only show for non-trending with pagination */}
+                {!useTrendingEndpoint && (
+                  <div
+                    ref={targetRef}
+                    className="h-32 flex items-center justify-center border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-lg my-4"
+                    style={{ minHeight: '100px' }}
+                  >
+                    {isFetchingNextPage && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Loading more papers...</span>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => fetchNextPage()}
-                        className="text-xs"
-                      >
-                        Load More Papers
-                      </Button>
-                    </div>
-                  )}
-                  {!hasNextPage && (
-                    <div className="text-sm text-muted-foreground">
-                      🎉 All papers loaded!
-                    </div>
-                  )}
-                </div>
+                    )}
+                    {hasNextPage && !isFetchingNextPage && (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="text-sm text-muted-foreground text-center">
+                          📜 Scroll here to load more papers automatically<br/>
+                          <span className="text-xs">or click the button below</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => fetchNextPage()}
+                          className="text-xs"
+                        >
+                          Load More Papers
+                        </Button>
+                      </div>
+                    )}
+                    {!hasNextPage && (
+                      <div className="text-sm text-muted-foreground">
+                        🎉 All papers loaded!
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* End indicator for trending papers */}
+                {useTrendingEndpoint && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    🔥 Showing top {transformedPapers.length} trending papers
+                  </div>
+                )}
               </>
             ) : (
               <div className="text-center py-12">
                 <p className="text-muted-foreground">No papers found</p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  Search: "{debouncedSearchTerm}" | Papers: {allPapers.length} | Total: {totalCount}
+                  {debouncedSearchTerm && `Search: "${debouncedSearchTerm}" | `}
+                  Papers: {transformedPapers.length} | Total: {totalCount}
                 </p>
               </div>
             )}
@@ -348,10 +417,10 @@ const Papers = () => {
         )}
 
         {/* Pagination Info */}
-        {data && (
+        {(infiniteData || trendingData) && (
           <div className="mt-8 text-center text-sm text-muted-foreground">
             Showing {transformedPapers.length} of {totalCount} papers
-            {!hasNextPage && transformedPapers.length > 0 && (
+            {!useTrendingEndpoint && !hasNextPage && transformedPapers.length > 0 && (
               <div className="mt-2 text-xs">
                 🎉 You've reached the end! All papers loaded.
               </div>

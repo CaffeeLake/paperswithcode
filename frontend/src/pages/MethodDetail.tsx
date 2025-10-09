@@ -53,12 +53,22 @@ const transformPaperForUI = (paper: Paper, index: number) => {
     ? paper.tasks.map((task) => task.name)
     : [];
 
+  // Use repository owner/name if available, otherwise undefined (no dummy data)
+  let submittedBy: string | undefined = undefined;
+  if (mostStarredRepo?.url) {
+    // Extract owner/repo from URL like "https://github.com/owner/repo"
+    const urlMatch = mostStarredRepo.url.match(/github\.com\/([^/]+)\/([^/]+)/);
+    if (urlMatch) {
+      submittedBy = `${urlMatch[1]}/${urlMatch[2]}`;
+    }
+  }
+
   return {
     id: paper.id,
     title: paper.title,
     abstract: paper.abstract,
     authors: authorsWithColors,
-    submittedBy: `user${paper.id}`,
+    submittedBy: submittedBy, // Use repository owner/name if available
     date: formatDate(paper.published),
     upvotes: Math.floor(Math.random() * 200) + 10,
     comments: Math.floor(Math.random() * 5),

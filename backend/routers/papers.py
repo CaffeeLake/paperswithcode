@@ -218,28 +218,71 @@ async def get_trending_papers(
             },
         ).fetchall()
 
-        return [
-            {
-                "paper_id": str(row[0]),
-                "arxiv_id": row[1],
-                "title": row[2],
-                "date_published": row[3].isoformat() if row[3] else None,
-                "repository": {
-                    "id": str(row[4]),
-                    "url": row[5],
-                    "owner": row[6],
-                    "name": row[7],
-                    "num_stars": row[8],
-                },
-                "trending": {
-                    "velocity_24h": float(row[9]) if row[9] else 0.0,
-                    "trending_score": float(row[10]) if row[10] else 0.0,
-                    "stars_gained_24h": int(row[11]) if row[11] else 0,
-                },
-                "paper_age_days": float(row[12]) if row[12] else 0.0,
-            }
-            for row in results
-        ]
+        # Get paper IDs for fetching tasks
+        paper_ids = [row[0] for row in results]
+
+        # Fetch tasks for all papers in one query for efficiency
+        tasks_dict = {}
+        if paper_ids:
+            tasks_query = text("""
+                SELECT pt.paper_id, t.name
+                FROM paper_tasks pt
+                JOIN tasks t ON pt.task_id = t.id
+                WHERE pt.paper_id = ANY(:paper_ids)
+                ORDER BY pt.paper_id, t.name
+            """)
+
+            tasks_results = db.execute(tasks_query, {"paper_ids": paper_ids}).fetchall()
+
+            # Organize tasks by paper_id
+            for task_row in tasks_results:
+                paper_id = task_row[0]
+                task_name = task_row[1]
+                if paper_id not in tasks_dict:
+                    tasks_dict[paper_id] = []
+                tasks_dict[paper_id].append(task_name)
+
+        papers = []
+        for row in results:
+            paper_id = row[0]
+            arxiv_id = row[1]
+            # Generate thumbnail URL for all ArXiv papers (on-demand generation)
+            thumbnail_url = None
+            if arxiv_id:
+                # Generate thumbnail URL that will trigger on-demand generation
+                # Format: {arxiv_id_with_underscores}_v1.jpg (trending papers are always latest version)
+                safe_arxiv_id = arxiv_id.replace(".", "_")
+                filename = f"{safe_arxiv_id}_v1.jpg"
+                thumbnail_url = f"/api/thumbnails/{filename}"
+
+            # Get tasks for this paper
+            paper_tasks = tasks_dict.get(paper_id, [])
+
+            papers.append(
+                {
+                    "paper_id": str(paper_id),
+                    "arxiv_id": arxiv_id,
+                    "title": row[2],
+                    "date_published": row[3].isoformat() if row[3] else None,
+                    "thumbnail_url": thumbnail_url,
+                    "tasks": paper_tasks,  # Add tasks to the response
+                    "repository": {
+                        "id": str(row[4]),
+                        "url": row[5],
+                        "owner": row[6],
+                        "name": row[7],
+                        "num_stars": row[8],
+                    },
+                    "trending": {
+                        "velocity_24h": float(row[9]) if row[9] else 0.0,
+                        "trending_score": float(row[10]) if row[10] else 0.0,
+                        "stars_gained_24h": int(row[11]) if row[11] else 0,
+                    },
+                    "paper_age_days": float(row[12]) if row[12] else 0.0,
+                }
+            )
+
+        return papers
 
     except Exception as e:
         raise HTTPException(

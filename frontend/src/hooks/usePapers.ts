@@ -1,5 +1,5 @@
 import { useQuery, useInfiniteQuery } from '@tanstack/react-query';
-import { apiClient, Paper, PaginatedResponse } from '@/lib/api';
+import { apiClient, Paper, PaginatedResponse, TrendingPaper } from '@/lib/api';
 
 interface UsePapersParams {
   page?: number;
@@ -145,6 +145,30 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
     initialPageParam: 1,
     enabled: enabled && !!taskId,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
+  });
+}
+
+interface UseTrendingPapersParams {
+  limit?: number;
+  max_age_days?: number;
+  min_velocity?: number;
+  enabled?: boolean;
+}
+
+export function useTrendingPapers(params: UseTrendingPapersParams = {}) {
+  const {
+    limit = 20,
+    max_age_days = 180,
+    min_velocity,
+    enabled = true,
+  } = params;
+
+  return useQuery<TrendingPaper[], Error>({
+    queryKey: ['trending-papers', { limit, max_age_days, min_velocity }],
+    queryFn: () => apiClient.getTrendingPapers({ limit, max_age_days, min_velocity }),
+    enabled,
+    staleTime: 2 * 60 * 1000, // 2 minutes (shorter for trending data)
     refetchOnWindowFocus: false,
   });
 }

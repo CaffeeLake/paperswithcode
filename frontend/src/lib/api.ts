@@ -110,6 +110,30 @@ export interface PaginatedResponse<T> {
   results: T[];
 }
 
+export interface TrendingMetrics {
+  velocity_24h: number;
+  trending_score: number;
+  stars_gained_24h: number;
+}
+
+export interface TrendingPaper {
+  paper_id: string;
+  arxiv_id: string;
+  title: string;
+  date_published: string | null;
+  thumbnail_url?: string;
+  tasks?: string[];  // Array of task names
+  repository: {
+    id: string;
+    url: string;
+    owner: string;
+    name: string;
+    num_stars: number;
+  };
+  trending: TrendingMetrics;
+  paper_age_days: number;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -186,6 +210,21 @@ class ApiClient {
   async getPaperByArxivId(arxivId: string, includeResources: boolean = true): Promise<Paper> {
     const endpoint = `/papers/arxiv/${arxivId}${includeResources ? '?include_resources=true' : ''}`;
     return this.request<Paper>(endpoint);
+  }
+
+  async getTrendingPapers(params?: {
+    limit?: number;
+    max_age_days?: number;
+    min_velocity?: number;
+  }): Promise<TrendingPaper[]> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    if (params?.max_age_days) searchParams.append('max_age_days', params.max_age_days.toString());
+    if (params?.min_velocity !== undefined) searchParams.append('min_velocity', params.min_velocity.toString());
+
+    const endpoint = `/papers/trending${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<TrendingPaper[]>(endpoint);
   }
 
   // Repositories API
@@ -463,6 +502,7 @@ export const apiClient = new ApiClient();
 export const getPapers = apiClient.getPapers.bind(apiClient);
 export const getPaper = apiClient.getPaper.bind(apiClient);
 export const getPaperByArxivId = apiClient.getPaperByArxivId.bind(apiClient);
+export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);
 export const getProjectPagesForPaper = apiClient.getProjectPagesForPaper.bind(apiClient);
