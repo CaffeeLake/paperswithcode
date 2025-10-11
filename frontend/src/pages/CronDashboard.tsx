@@ -13,7 +13,11 @@ import {
   Activity,
   Calendar,
   TrendingUp,
-  RefreshCw
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Database
 } from "lucide-react";
 
 interface CronJobStatus {
@@ -26,6 +30,8 @@ interface CronJobStatus {
   error: string | null;
   next_run: string | null;
   schedule: string | null;
+  work_metrics?: Record<string, string | number>;
+  work_summary?: string | null;
 }
 
 interface CronJobsResponse {
@@ -34,6 +40,7 @@ interface CronJobsResponse {
   summary: {
     total_jobs: number;
     success: number;
+    success_no_work: number;
     failed: number;
     running: number;
     unknown: number;
@@ -61,6 +68,8 @@ const StatusIcon = ({ status, isRunning }: { status: string; isRunning: boolean 
   switch (status) {
     case "success":
       return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+    case "success_no_work":
+      return <CheckCircle2 className="h-5 w-5 text-yellow-500" />;
     case "failed":
       return <XCircle className="h-5 w-5 text-red-500" />;
     case "running":
@@ -85,6 +94,12 @@ const StatusBadge = ({ status, isRunning }: { status: string; isRunning: boolean
       return (
         <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
           Success
+        </Badge>
+      );
+    case "success_no_work":
+      return (
+        <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-300">
+          Success (No Work)
         </Badge>
       );
     case "failed":
@@ -195,12 +210,26 @@ const categoryColors: Record<string, string> = {
 
 const CronDashboard = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["cronStatus"],
     queryFn: fetchCronStatus,
     refetchInterval: autoRefresh ? 30000 : false, // Auto-refresh every 30 seconds if enabled
   });
+
+  // Toggle job expansion
+  const toggleJobExpansion = (jobName: string) => {
+    setExpandedJobs((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(jobName)) {
+        newSet.delete(jobName);
+      } else {
+        newSet.add(jobName);
+      }
+      return newSet;
+    });
+  };
 
   // Group jobs by category
   const jobsByCategory = data?.jobs.reduce((acc, job) => {
@@ -377,54 +406,112 @@ const CronDashboard = () => {
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
-                      {jobsByCategory[category].map((job) => (
-                        <div
-                          key={job.job_name}
-                          className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                        >
-                          <div className="flex items-start justify-between">
-                            <div className="flex items-start gap-3 flex-1">
-                              <StatusIcon status={job.status} isRunning={job.is_running} />
-                              <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold text-gray-900 mb-1">
-                                  {formatJobName(job.job_name)}
-                                </h3>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-sm text-gray-600">
-                                  <div className="flex items-center gap-1">
-                                    <Clock className="h-4 w-4" />
-                                    <span>Last: {formatDate(job.last_run)}</span>
+                      {jobsByCategory[category].map((job) => {
+                        const isExpanded = expandedJobs.has(job.job_name);
+                        const hasMetrics = job.work_metrics && Object.keys(job.work_metrics).length > 0;
+
+                        return (
+                          <div
+                            key={job.job_name}
+                            className="border rounded-lg overflow-hidden transition-all"
+                          >
+                            <div
+                              className="p-4 hover:bg-gray-50 transition-colors cursor-pointer"
+                              onClick={() => toggleJobExpansion(job.job_name)}
+                            >
+                              <div className="flex items-start justify-between">
+                                <div className="flex items-start gap-3 flex-1">
+                                  <StatusIcon status={job.status} isRunning={job.is_running} />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <h3 className="font-semibold text-gray-900">
+                                        {formatJobName(job.job_name)}
+                                      </h3>
+                                      {hasMetrics && (
+                                        <button
+                                          className="text-gray-400 hover:text-gray-600 transition-colors"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            toggleJobExpansion(job.job_name);
+                                          }}
+                                        >
+                                          {isExpanded ? (
+                                            <ChevronUp className="h-4 w-4" />
+                                          ) : (
+                                            <ChevronDown className="h-4 w-4" />
+                                          )}
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-sm text-gray-600">
+                                      <div className="flex items-center gap-1">
+                                        <Clock className="h-4 w-4" />
+                                        <span>Last: {formatDate(job.last_run)}</span>
+                                      </div>
+                                      {job.duration !== null && (
+                                        <div className="flex items-center gap-1">
+                                          <TrendingUp className="h-4 w-4" />
+                                          <span>Duration: {formatDuration(job.duration)}</span>
+                                        </div>
+                                      )}
+                                      {job.schedule && (
+                                        <div className="flex items-center gap-1">
+                                          <Calendar className="h-4 w-4" />
+                                          <span className="font-mono text-xs">{job.schedule}</span>
+                                        </div>
+                                      )}
+                                      {job.next_run && (
+                                        <div className="flex items-center gap-1">
+                                          <Activity className="h-4 w-4" />
+                                          <span>Next: {formatFutureDate(job.next_run)}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {job.work_summary && (
+                                      <div className="mt-2 text-sm text-gray-600 bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
+                                        <FileText className="h-3 w-3" />
+                                        <span>{job.work_summary}</span>
+                                      </div>
+                                    )}
+                                    {job.error && (
+                                      <div className="mt-2 text-sm text-red-600 bg-red-50 rounded px-2 py-1">
+                                        <span className="font-semibold">Error: </span>
+                                        {job.error}
+                                      </div>
+                                    )}
                                   </div>
-                                  {job.duration && (
-                                    <div className="flex items-center gap-1">
-                                      <TrendingUp className="h-4 w-4" />
-                                      <span>Duration: {formatDuration(job.duration)}</span>
-                                    </div>
-                                  )}
-                                  {job.schedule && (
-                                    <div className="flex items-center gap-1">
-                                      <Calendar className="h-4 w-4" />
-                                      <span className="font-mono text-xs">{job.schedule}</span>
-                                    </div>
-                                  )}
-                                  {job.next_run && (
-                                    <div className="flex items-center gap-1">
-                                      <Activity className="h-4 w-4" />
-                                      <span>Next: {formatFutureDate(job.next_run)}</span>
-                                    </div>
-                                  )}
                                 </div>
-                                {job.error && (
-                                  <div className="mt-2 text-sm text-red-600 bg-red-50 rounded px-2 py-1">
-                                    <span className="font-semibold">Error: </span>
-                                    {job.error}
-                                  </div>
-                                )}
+                                <StatusBadge status={job.status} isRunning={job.is_running} />
                               </div>
                             </div>
-                            <StatusBadge status={job.status} isRunning={job.is_running} />
+
+                            {/* Expandable Work Metrics Section */}
+                            {isExpanded && hasMetrics && (
+                              <div className="border-t bg-gray-50 p-4">
+                                <div className="flex items-center gap-2 mb-3">
+                                  <Database className="h-4 w-4 text-gray-600" />
+                                  <h4 className="font-semibold text-gray-700">Work Metrics</h4>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                                  {Object.entries(job.work_metrics).map(([key, value]) => (
+                                    <div
+                                      key={key}
+                                      className="bg-white rounded border border-gray-200 p-3"
+                                    >
+                                      <div className="text-xs text-gray-500 mb-1">
+                                        {key.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
+                                      </div>
+                                      <div className="text-lg font-semibold text-gray-900">
+                                        {typeof value === 'number' ? value.toLocaleString() : value}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </CardContent>
                 </Card>

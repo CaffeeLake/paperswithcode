@@ -24,13 +24,15 @@ class CronJobStatus(BaseModel):
 
     job_name: str
     category: str
-    status: str  # success, failed, running, unknown
+    status: str  # success, success_no_work, failed, running, unknown
     last_run: Optional[str] = None
     duration: Optional[float] = None
     is_running: bool = False
     error: Optional[str] = None
     next_run: Optional[str] = None
     schedule: Optional[str] = None
+    work_metrics: Dict[str, Any] = {}
+    work_summary: Optional[str] = None
 
 
 class CronJobsResponse(BaseModel):
@@ -279,6 +281,8 @@ async def get_cron_status(
                 error=status["error"],
                 next_run=next_run,
                 schedule=schedule,
+                work_metrics=status.get("work_metrics", {}),
+                work_summary=status.get("work_summary"),
             )
 
             jobs_status.append(job_status)
@@ -286,17 +290,22 @@ async def get_cron_status(
     # Calculate summary statistics
     total_jobs = len(jobs_status)
     success_count = sum(1 for j in jobs_status if j.status == "success")
+    success_no_work_count = sum(1 for j in jobs_status if j.status == "success_no_work")
     failed_count = sum(1 for j in jobs_status if j.status == "failed")
     running_count = sum(1 for j in jobs_status if j.is_running)
     unknown_count = sum(1 for j in jobs_status if j.status == "unknown")
 
+    # For health score, count both "success" and "success_no_work" as healthy
+    healthy_count = success_count + success_no_work_count
+
     summary = {
         "total_jobs": total_jobs,
         "success": success_count,
+        "success_no_work": success_no_work_count,
         "failed": failed_count,
         "running": running_count,
         "unknown": unknown_count,
-        "health_score": (success_count / total_jobs * 100) if total_jobs > 0 else 0,
+        "health_score": (healthy_count / total_jobs * 100) if total_jobs > 0 else 0,
     }
 
     return CronJobsResponse(

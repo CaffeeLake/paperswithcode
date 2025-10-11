@@ -35,6 +35,7 @@ Performance:
 
 import sys
 import asyncio
+import signal
 
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
@@ -54,6 +55,20 @@ class URLExtractionHourlyJob(DatabaseCronJob):
         self.batch_size = 10  # Smaller batches for memory safety (4GB RAM)
         self.start_year = 2014  # Only process papers from 2014 onwards
         self.use_paid_tier = False  # Using Gemini free tier (350 RPD)
+
+        # Timeout protection (2 hours max - should complete in < 30 minutes normally)
+        self.max_runtime_seconds = 2 * 60 * 60
+        self.shutdown_requested = False
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        self.logger.warning(f"Received {signal_name} - initiating graceful shutdown")
+        self.shutdown_requested = True
 
     def run(self):
         """Main execution logic for URL extraction."""
@@ -75,13 +90,34 @@ class URLExtractionHourlyJob(DatabaseCronJob):
                 start_year=self.start_year,
             )
 
-            # Run extraction asynchronously
-            asyncio.run(extractor.run(limit=self.papers_per_hour))
+            # Run extraction asynchronously with timeout protection
+            try:
+                asyncio.run(
+                    asyncio.wait_for(
+                        extractor.run(limit=self.papers_per_hour),
+                        timeout=self.max_runtime_seconds,
+                    )
+                )
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"Job timed out after {self.max_runtime_seconds}s - "
+                    f"this prevents zombie processes"
+                )
+                # Don't raise - let it complete gracefully
+                stats = extractor.stats if hasattr(extractor, "stats") else {}
+            except KeyboardInterrupt:
+                self.logger.warning("Job interrupted by user")
+                stats = extractor.stats if hasattr(extractor, "stats") else {}
+            else:
+                # Normal completion
+                stats = extractor.stats
 
             # Log final statistics
-            stats = extractor.stats
             self.logger.info("=" * 80)
-            self.logger.info("URL Extraction completed successfully")
+            if stats.get("papers_processed", 0) > 0:
+                self.logger.info("URL Extraction completed successfully")
+            else:
+                self.logger.info("URL Extraction completed (no papers to process)")
             self.logger.info("=" * 80)
             self.logger.info(f"Papers processed: {stats['papers_processed']}")
             self.logger.info(f"Papers with GitHub: {stats['papers_with_github']}")

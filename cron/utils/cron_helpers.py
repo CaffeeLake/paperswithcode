@@ -269,6 +269,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         "duration": None,
         "error": None,
         "is_running": False,
+        "work_metrics": {},  # Store work metrics (papers processed, repos updated, etc)
     }
 
     if not log_file.exists():
@@ -432,6 +433,59 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 status["last_run"] = start_time
             elif last_start_time:
                 status["last_run"] = last_start_time
+
+        # Extract work metrics from logs (papers processed, repos updated, etc)
+        work_metrics = {}
+        for line in lines:
+            # Papers processed
+            if re.search(r"Papers processed:\s*(\d+)", line):
+                match = re.search(r"Papers processed:\s*(\d+)", line)
+                work_metrics["papers_processed"] = int(match.group(1))
+            # Repositories processed
+            elif re.search(r"Repositories processed:\s*(\d+)", line):
+                match = re.search(r"Repositories processed:\s*(\d+)", line)
+                work_metrics["repositories_processed"] = int(match.group(1))
+            # Repository URLs updated
+            elif re.search(r"Repository URLs updated:\s*(\d+)", line):
+                match = re.search(r"Repository URLs updated:\s*(\d+)", line)
+                work_metrics["repository_urls_updated"] = int(match.group(1))
+            # Papers found
+            elif re.search(r"Found (\d+) papers", line):
+                match = re.search(r"Found (\d+) papers", line)
+                work_metrics["papers_found"] = int(match.group(1))
+            # Repos updated (for trending scores)
+            elif re.search(r"Repos updated:\s*(\d+)", line):
+                match = re.search(r"Repos updated:\s*(\d+)", line)
+                work_metrics["repos_updated"] = int(match.group(1))
+            # No papers/repos to process messages
+            elif "No papers need citation updates" in line:
+                work_metrics["papers_processed"] = 0
+                work_metrics["reason"] = "no_papers_to_update"
+            elif "No more repositories to process" in line:
+                work_metrics["repositories_processed"] = 0
+                work_metrics["reason"] = "no_repos_to_update"
+            elif "No papers found that need processing" in line:
+                work_metrics["papers_processed"] = 0
+                work_metrics["reason"] = "no_papers_found"
+
+        status["work_metrics"] = work_metrics
+
+        # Detect "fake success" - job completed but did no work
+        if found_completion and not found_failure:
+            # Check if this was a success but no work was done
+            total_work = (
+                work_metrics.get("papers_processed", 0)
+                + work_metrics.get("repositories_processed", 0)
+                + work_metrics.get("repository_urls_updated", 0)
+                + work_metrics.get("repos_updated", 0)
+            )
+            if total_work == 0:
+                status["status"] = "success_no_work"
+                status["work_summary"] = (
+                    "Completed successfully but no items to process"
+                )
+            else:
+                status["work_summary"] = f"Processed {total_work} items"
 
     except Exception as e:
         status["error"] = f"Failed to parse log file: {e}"

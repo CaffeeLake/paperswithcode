@@ -28,6 +28,7 @@ Performance Improvement:
 import sys
 import time
 import asyncio
+import signal
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 import httpx
@@ -77,6 +78,14 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         )
         self.chunk_size = 500  # Process papers in smaller chunks to reduce memory usage
 
+        # Timeout protection (90 minutes max - should complete in < 60 minutes normally)
+        self.max_runtime_seconds = 90 * 60
+        self.shutdown_requested = False
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
         # Statistics
         self.stats = {
             "papers_found": 0,
@@ -91,6 +100,12 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
 
         # HTTP client will be created in async context
         self.client = None
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        self.logger.warning(f"Received {signal_name} - initiating graceful shutdown")
+        self.shutdown_requested = True
 
     def run(self):
         """Main execution logic for citation updates."""
@@ -112,8 +127,22 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
                 f"Limited to {papers_to_process} papers for this hourly run"
             )
 
-        # Process papers in streaming chunks to reduce memory usage
-        asyncio.run(self.process_papers_in_streaming_chunks(papers_to_process))
+        # Process papers in streaming chunks to reduce memory usage with timeout protection
+        try:
+            asyncio.run(
+                asyncio.wait_for(
+                    self.process_papers_in_streaming_chunks(papers_to_process),
+                    timeout=self.max_runtime_seconds,
+                )
+            )
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"Job timed out after {self.max_runtime_seconds}s - "
+                f"this prevents zombie processes"
+            )
+            # Don't raise - let it complete gracefully
+        except KeyboardInterrupt:
+            self.logger.warning("Job interrupted by user")
 
         # Log summary
         self.log_summary()
