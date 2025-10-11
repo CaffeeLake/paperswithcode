@@ -441,9 +441,13 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
             if re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)
                 work_metrics["papers_processed"] = int(match.group(1))
-            # Repositories processed
-            elif re.search(r"Repositories processed:\s*(\d+)", line):
-                match = re.search(r"Repositories processed:\s*(\d+)", line)
+            # Repositories processed (with or without "Total")
+            elif re.search(
+                r"(?:Total\s+)?repositories processed:\s*(\d+)", line, re.IGNORECASE
+            ):
+                match = re.search(
+                    r"(?:Total\s+)?repositories processed:\s*(\d+)", line, re.IGNORECASE
+                )
                 work_metrics["repositories_processed"] = int(match.group(1))
             # Repository URLs updated
             elif re.search(r"Repository URLs updated:\s*(\d+)", line):
@@ -453,18 +457,38 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
             elif re.search(r"Found (\d+) papers", line):
                 match = re.search(r"Found (\d+) papers", line)
                 work_metrics["papers_found"] = int(match.group(1))
-            # Repos updated (for trending scores)
-            elif re.search(r"Repos updated:\s*(\d+)", line):
-                match = re.search(r"Repos updated:\s*(\d+)", line)
+            # Trending scores updated (captures both "Repos updated" and "Trending scores updated")
+            elif re.search(
+                r"(?:Repos updated|Trending scores updated):\s*(\d+)",
+                line,
+                re.IGNORECASE,
+            ):
+                match = re.search(
+                    r"(?:Repos updated|Trending scores updated):\s*(\d+)",
+                    line,
+                    re.IGNORECASE,
+                )
                 work_metrics["repos_updated"] = int(match.group(1))
-            # No papers/repos to process messages
-            elif "No papers need citation updates" in line:
+
+        # Only set zero values if we didn't already find explicit counts
+        for line in lines:
+            # No papers/repos to process messages - only apply if not already set
+            if (
+                "No papers need citation updates" in line
+                and "papers_processed" not in work_metrics
+            ):
                 work_metrics["papers_processed"] = 0
                 work_metrics["reason"] = "no_papers_to_update"
-            elif "No more repositories to process" in line:
+            elif (
+                "No more repositories to process" in line
+                and "repositories_processed" not in work_metrics
+            ):
                 work_metrics["repositories_processed"] = 0
                 work_metrics["reason"] = "no_repos_to_update"
-            elif "No papers found that need processing" in line:
+            elif (
+                "No papers found that need processing" in line
+                and "papers_processed" not in work_metrics
+            ):
                 work_metrics["papers_processed"] = 0
                 work_metrics["reason"] = "no_papers_found"
 

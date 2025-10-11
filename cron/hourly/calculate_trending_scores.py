@@ -81,7 +81,7 @@ def get_repositories_needing_trending_update(
             AND (
                 r.trending_score IS NULL
                 OR r.trending_score_updated_at IS NULL
-                OR r.trending_score_updated_at < :threshold_date
+                OR r.trending_score_updated_at <= :threshold_date
             )
             ORDER BY
                 r.trending_score_updated_at NULLS FIRST,
