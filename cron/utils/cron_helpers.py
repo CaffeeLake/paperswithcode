@@ -318,7 +318,13 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
 
         # Look for the most recent start and completion/failure messages
         for line in lines:
-            if "Starting" in line and ("cron job:" in line or "optimized" in line):
+            if "Starting" in line and (
+                "cron job:" in line
+                or "optimized" in line
+                or "GitHub Stars Update" in line
+                or "Trending Score" in line
+                or "Score Calculation" in line
+            ):
                 # Extract timestamp from log line
                 timestamp_match = re.match(
                     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line
@@ -328,7 +334,12 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
 
         # Check for completion/failure messages after the last start
         for line in reversed(lines):  # Start from the end
-            if "completed successfully" in line or "Job completed successfully" in line:
+            if (
+                "completed successfully" in line
+                or "Job completed successfully" in line
+                or "Update Completed" in line
+                or "Calculation Completed" in line
+            ):
                 status["status"] = "success"
                 found_completion = True
                 break
@@ -366,6 +377,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         # Extract timing information
         start_time = None
         end_time = None
+        completion_time = None
 
         for line in lines:
             if "Start time:" in line:
@@ -378,10 +390,43 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                     status["duration"] = float(duration_str.split()[0])
                 except (ValueError, IndexError):
                     pass
+            elif "Runtime:" in line:
+                # Handle "Runtime: X minutes" or "Runtime: X seconds" format
+                runtime_str = line.split("Runtime:")[-1].strip()
+                try:
+                    parts = runtime_str.split()
+                    if len(parts) >= 2:
+                        value = float(parts[0])
+                        unit = parts[1].lower()
+                        if "minute" in unit:
+                            status["duration"] = value * 60
+                        elif "second" in unit:
+                            status["duration"] = value
+                        elif "hour" in unit:
+                            status["duration"] = value * 3600
+                except (ValueError, IndexError):
+                    pass
+
+        # For jobs that completed, extract the completion timestamp
+        if found_completion:
+            for line in reversed(lines):
+                if (
+                    "Update Completed" in line
+                    or "Calculation Completed" in line
+                    or "completed successfully" in line
+                ):
+                    timestamp_match = re.match(
+                        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line
+                    )
+                    if timestamp_match:
+                        completion_time = timestamp_match.group(1)
+                        break
 
         # Set last_run if not already set
         if not status["last_run"]:
-            if end_time:
+            if completion_time:
+                status["last_run"] = completion_time
+            elif end_time:
                 status["last_run"] = end_time
             elif start_time:
                 status["last_run"] = start_time

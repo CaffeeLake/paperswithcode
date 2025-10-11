@@ -11,6 +11,7 @@ import TaskDetail from "./pages/TaskDetail";
 import Methods from "./pages/Methods";
 import MethodDetail from "./pages/MethodDetail";
 import Benchmark from "./pages/Benchmark";
+import CronDashboard from "./pages/CronDashboard";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient({
@@ -47,6 +48,7 @@ const App = () => (
           <Route path="/methods" element={<Methods />} />
           <Route path="/methods/:methodId" element={<MethodDetail />} />
           <Route path="/benchmark/:benchmark" element={<Benchmark />} />
+          <Route path="/cron-dashboard" element={<CronDashboard />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

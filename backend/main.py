@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
         areas,
         tasks,
         methods,
+        cron,
     )
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
     app.include_router(methods.router, prefix="/api/v1", tags=["methods"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
+    app.include_router(cron.router, prefix="/api/v1", tags=["cron"])
 
     # Health check endpoint
     @app.get("/health")

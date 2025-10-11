@@ -1,4 +1,4 @@
-import { Sparkles, Menu, User } from "lucide-react";
+import { Sparkles, Menu, User, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Link, useLocation } from "react-router-dom";
@@ -50,6 +50,17 @@ const Header = () => {
                   }`}
                 >
                   Methods
+                </Button>
+              </Link>
+              <Link to="/cron-dashboard">
+                <Button
+                  variant="ghost"
+                  className={`text-sm font-medium flex items-center gap-1 ${
+                    location.pathname === '/cron-dashboard' ? 'text-primary' : ''
+                  }`}
+                >
+                  <Activity className="w-4 h-4" />
+                  Status
                 </Button>
               </Link>
             </nav>
