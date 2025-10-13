@@ -516,3 +516,146 @@ class TaskService:
             raise
         except Exception as e:
             raise DatabaseError(f"Failed to get papers for task: {str(e)}")
+
+    def add_keywords(self, task_id: str, keywords: List[str]) -> Task:
+        """
+        Add keywords to a task (appends to existing keywords).
+
+        Args:
+            task_id: The task ID or slug
+            keywords: List of keywords to add
+
+        Returns:
+            Updated Task object
+
+        Raises:
+            PaperNotFoundError: If task not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get task - try by ID or slug
+            task = None
+            if task_id.isdigit():
+                task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
+            else:
+                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+
+            if not task:
+                raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
+
+            # Parse existing keywords
+            existing_keywords = []
+            if task.keywords:
+                existing_keywords = [kw.strip() for kw in task.keywords.split(",")]
+
+            # Add new keywords (avoid duplicates)
+            for keyword in keywords:
+                keyword = keyword.strip()
+                if keyword and keyword not in existing_keywords:
+                    existing_keywords.append(keyword)
+
+            # Update keywords
+            task.keywords = ", ".join(existing_keywords)
+            self.db.commit()
+            self.db.refresh(task)
+
+            # Return updated task
+            return self.get_task_by_id(str(task.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to add keywords to task: {str(e)}")
+
+    def remove_keywords(self, task_id: str, keywords: List[str]) -> Task:
+        """
+        Remove specific keywords from a task.
+
+        Args:
+            task_id: The task ID or slug
+            keywords: List of keywords to remove
+
+        Returns:
+            Updated Task object
+
+        Raises:
+            PaperNotFoundError: If task not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get task - try by ID or slug
+            task = None
+            if task_id.isdigit():
+                task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
+            else:
+                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+
+            if not task:
+                raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
+
+            # Parse existing keywords
+            existing_keywords = []
+            if task.keywords:
+                existing_keywords = [kw.strip() for kw in task.keywords.split(",")]
+
+            # Remove specified keywords
+            keywords_to_remove = [kw.strip().lower() for kw in keywords]
+            existing_keywords = [
+                kw for kw in existing_keywords if kw.lower() not in keywords_to_remove
+            ]
+
+            # Update keywords
+            task.keywords = ", ".join(existing_keywords) if existing_keywords else None
+            self.db.commit()
+            self.db.refresh(task)
+
+            # Return updated task
+            return self.get_task_by_id(str(task.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to remove keywords from task: {str(e)}")
+
+    def replace_keywords(self, task_id: str, keywords: List[str]) -> Task:
+        """
+        Replace all keywords for a task.
+
+        Args:
+            task_id: The task ID or slug
+            keywords: List of keywords to set (replaces all existing keywords)
+
+        Returns:
+            Updated Task object
+
+        Raises:
+            PaperNotFoundError: If task not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get task - try by ID or slug
+            task = None
+            if task_id.isdigit():
+                task = self.db.query(DBTask).filter(DBTask.id == int(task_id)).first()
+            else:
+                task = self.db.query(DBTask).filter(DBTask.slug == task_id).first()
+
+            if not task:
+                raise PaperNotFoundError(f"Task with ID or slug '{task_id}' not found")
+
+            # Set new keywords
+            cleaned_keywords = [kw.strip() for kw in keywords if kw.strip()]
+            task.keywords = ", ".join(cleaned_keywords) if cleaned_keywords else None
+            self.db.commit()
+            self.db.refresh(task)
+
+            # Return updated task
+            return self.get_task_by_id(str(task.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to replace keywords for task: {str(e)}")

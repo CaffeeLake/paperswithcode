@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Task, Tasks, Papers
+from backend.models.api import Task, Tasks, Papers, KeywordUpdate
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -204,6 +204,102 @@ async def get_task_papers(
             order_dir=order_dir,
             include_resources=include_resources,
         )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{task_id}/keywords", response_model=Task)
+async def add_task_keywords(
+    task_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Add keywords to a task (appends to existing keywords).
+
+    Adds the specified keywords to the task's keyword list without removing
+    existing keywords. Duplicates are automatically prevented.
+
+    **Examples:**
+    - `/api/v1/tasks/computer-use-agents/keywords` - Add keywords to task by slug
+    - `/api/v1/tasks/1/keywords` - Add keywords by task ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["agent", "computer-use"]
+    }
+    ```
+    """
+    try:
+        service = TaskService(db)
+        return service.add_keywords(task_id, keyword_update.keywords)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{task_id}/keywords", response_model=Task)
+async def remove_task_keywords(
+    task_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Remove specific keywords from a task.
+
+    Removes the specified keywords from the task's keyword list.
+    Keywords not present in the list are silently ignored.
+
+    **Examples:**
+    - `/api/v1/tasks/computer-use-agents/keywords` - Remove keywords from task by slug
+    - `/api/v1/tasks/1/keywords` - Remove keywords by task ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["old-keyword"]
+    }
+    ```
+    """
+    try:
+        service = TaskService(db)
+        return service.remove_keywords(task_id, keyword_update.keywords)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{task_id}/keywords", response_model=Task)
+async def replace_task_keywords(
+    task_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Replace all keywords for a task.
+
+    Replaces the entire keyword list with the provided keywords.
+    All existing keywords are removed and replaced with the new list.
+
+    **Examples:**
+    - `/api/v1/tasks/computer-use-agents/keywords` - Replace all keywords for task by slug
+    - `/api/v1/tasks/1/keywords` - Replace keywords by task ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["agent", "computer-use", "automation"]
+    }
+    ```
+    """
+    try:
+        service = TaskService(db)
+        return service.replace_keywords(task_id, keyword_update.keywords)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

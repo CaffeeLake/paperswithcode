@@ -267,6 +267,7 @@ class Method(Base):
     )
     full_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    keywords: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Area assignment (methods belong to one area)
     area_id: Mapped[Optional[int]] = mapped_column(

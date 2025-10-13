@@ -4,7 +4,9 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Essentials
 
-Do not write a SUMMARY.md markdown file when you have finished your work.
+Do not write a Markdown file to summarize code changes.
+
+Run anything where you need to proceed with further work as a background task in Cursor.
 
 ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 

@@ -119,6 +119,7 @@ class MethodService:
                     "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
+                    "keywords": db_method.keywords,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
                     "introduced_year": db_method.introduced_year,
                     "source_url": db_method.source_url,
@@ -190,6 +191,7 @@ class MethodService:
                 "slug": db_method.slug,
                 "full_name": db_method.full_name,
                 "description": db_method.description,
+                "keywords": db_method.keywords,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
                 "introduced_year": db_method.introduced_year,
                 "source_url": db_method.source_url,
@@ -200,7 +202,6 @@ class MethodService:
                 "collection_name": db_method.collection_name,
                 "collection_description": db_method.collection_description,
                 "collection_parent": db_method.collection_parent,
-                "collection_area": db_method.collection_area,
                 "paper_count": paper_count,
                 "created_at": db_method.created_at,
                 "updated_at": db_method.updated_at,
@@ -260,6 +261,7 @@ class MethodService:
                 "slug": db_method.slug,
                 "full_name": db_method.full_name,
                 "description": db_method.description,
+                "keywords": db_method.keywords,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
                 "introduced_year": db_method.introduced_year,
                 "source_url": db_method.source_url,
@@ -270,7 +272,6 @@ class MethodService:
                 "collection_name": db_method.collection_name,
                 "collection_description": db_method.collection_description,
                 "collection_parent": db_method.collection_parent,
-                "collection_area": db_method.collection_area,
                 "paper_count": paper_count,
                 "created_at": db_method.created_at,
                 "updated_at": db_method.updated_at,
@@ -336,6 +337,7 @@ class MethodService:
                     "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
+                    "keywords": db_method.keywords,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
                     "introduced_year": db_method.introduced_year,
                     "source_url": db_method.source_url,
@@ -504,6 +506,7 @@ class MethodService:
                     "slug": db_method.slug,
                     "full_name": db_method.full_name,
                     "description": db_method.description,
+                    "keywords": db_method.keywords,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
                     "introduced_year": db_method.introduced_year,
                     "source_url": db_method.source_url,
@@ -682,3 +685,190 @@ class MethodService:
             raise PaperNotFoundError(f"Invalid method ID: {method_id}")
         except Exception as e:
             raise DatabaseError(f"Failed to get papers for method: {str(e)}")
+
+    def add_keywords(self, method_id: str, keywords: List[str]) -> Method:
+        """
+        Add keywords to a method (appends to existing keywords).
+
+        Args:
+            method_id: The method ID or name
+            keywords: List of keywords to add
+
+        Returns:
+            Updated Method object
+
+        Raises:
+            PaperNotFoundError: If method not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get method - try by ID first, then by name/slug
+            method = None
+            if method_id.isdigit():
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(DBMethod.id == int(method_id))
+                    .first()
+                )
+
+            if not method:
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(
+                        or_(
+                            DBMethod.slug == method_id.lower(),
+                            DBMethod.name.ilike(method_id),
+                        )
+                    )
+                    .first()
+                )
+
+            if not method:
+                raise PaperNotFoundError(f"Method '{method_id}' not found")
+
+            # Parse existing keywords
+            existing_keywords = []
+            if method.keywords:
+                existing_keywords = [kw.strip() for kw in method.keywords.split(",")]
+
+            # Add new keywords (avoid duplicates)
+            for keyword in keywords:
+                keyword = keyword.strip()
+                if keyword and keyword not in existing_keywords:
+                    existing_keywords.append(keyword)
+
+            # Update keywords
+            method.keywords = ", ".join(existing_keywords)
+            self.db.commit()
+            self.db.refresh(method)
+
+            # Return updated method
+            return self.get_method_by_id(str(method.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to add keywords to method: {str(e)}")
+
+    def remove_keywords(self, method_id: str, keywords: List[str]) -> Method:
+        """
+        Remove specific keywords from a method.
+
+        Args:
+            method_id: The method ID or name
+            keywords: List of keywords to remove
+
+        Returns:
+            Updated Method object
+
+        Raises:
+            PaperNotFoundError: If method not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get method - try by ID first, then by name/slug
+            method = None
+            if method_id.isdigit():
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(DBMethod.id == int(method_id))
+                    .first()
+                )
+
+            if not method:
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(
+                        or_(
+                            DBMethod.slug == method_id.lower(),
+                            DBMethod.name.ilike(method_id),
+                        )
+                    )
+                    .first()
+                )
+
+            if not method:
+                raise PaperNotFoundError(f"Method '{method_id}' not found")
+
+            # Parse existing keywords
+            existing_keywords = []
+            if method.keywords:
+                existing_keywords = [kw.strip() for kw in method.keywords.split(",")]
+
+            # Remove specified keywords
+            keywords_to_remove = [kw.strip().lower() for kw in keywords]
+            existing_keywords = [
+                kw for kw in existing_keywords if kw.lower() not in keywords_to_remove
+            ]
+
+            # Update keywords
+            method.keywords = (
+                ", ".join(existing_keywords) if existing_keywords else None
+            )
+            self.db.commit()
+            self.db.refresh(method)
+
+            # Return updated method
+            return self.get_method_by_id(str(method.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to remove keywords from method: {str(e)}")
+
+    def replace_keywords(self, method_id: str, keywords: List[str]) -> Method:
+        """
+        Replace all keywords for a method.
+
+        Args:
+            method_id: The method ID or name
+            keywords: List of keywords to set (replaces all existing keywords)
+
+        Returns:
+            Updated Method object
+
+        Raises:
+            PaperNotFoundError: If method not found
+            DatabaseError: If database operation fails
+        """
+        try:
+            # Get method - try by ID first, then by name/slug
+            method = None
+            if method_id.isdigit():
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(DBMethod.id == int(method_id))
+                    .first()
+                )
+
+            if not method:
+                method = (
+                    self.db.query(DBMethod)
+                    .filter(
+                        or_(
+                            DBMethod.slug == method_id.lower(),
+                            DBMethod.name.ilike(method_id),
+                        )
+                    )
+                    .first()
+                )
+
+            if not method:
+                raise PaperNotFoundError(f"Method '{method_id}' not found")
+
+            # Set new keywords
+            cleaned_keywords = [kw.strip() for kw in keywords if kw.strip()]
+            method.keywords = ", ".join(cleaned_keywords) if cleaned_keywords else None
+            self.db.commit()
+            self.db.refresh(method)
+
+            # Return updated method
+            return self.get_method_by_id(str(method.id))
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to replace keywords for method: {str(e)}")

@@ -608,6 +608,9 @@ class Method(BaseModel):
     )
     full_name: Optional[str] = Field(None, description="Method full name")
     description: Optional[str] = Field(None, description="Method description")
+    keywords: Optional[str] = Field(
+        None, description="Comma-separated keywords for matching papers to this method"
+    )
 
     # Area assignment (methods belong to one area, like tasks)
     area_id: Optional[str] = Field(None, description="ID of the research area")
@@ -733,6 +736,21 @@ class Tasks(BaseModel):
         None, description="Number of the previous page"
     )
     results: List[Task] = Field(..., description="List of tasks on this page")
+
+
+# Keyword management models
+
+
+class KeywordUpdate(BaseModel):
+    """
+    Request model for updating keywords on tasks or methods.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    keywords: List[str] = Field(
+        ..., description="List of keywords to add, remove, or replace"
+    )
 
 
 # Resolve forward references

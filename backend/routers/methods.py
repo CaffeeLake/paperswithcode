@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Method, Methods, Papers
+from backend.models.api import Method, Methods, Papers, KeywordUpdate
 from backend.services.method_service import MethodService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -163,6 +163,102 @@ async def get_method_papers(
             order_dir=order_dir,
             include_resources=include_resources,
         )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{method_id}/keywords", response_model=Method)
+async def add_method_keywords(
+    method_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Add keywords to a method (appends to existing keywords).
+
+    Adds the specified keywords to the method's keyword list without removing
+    existing keywords. Duplicates are automatically prevented.
+
+    **Examples:**
+    - `/api/v1/methods/function-calling/keywords` - Add keywords to "function calling" method
+    - `/api/v1/methods/1/keywords` - Add keywords by method ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["function-calling", "tool-use"]
+    }
+    ```
+    """
+    try:
+        service = MethodService(db)
+        return service.add_keywords(method_id, keyword_update.keywords)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{method_id}/keywords", response_model=Method)
+async def remove_method_keywords(
+    method_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Remove specific keywords from a method.
+
+    Removes the specified keywords from the method's keyword list.
+    Keywords not present in the list are silently ignored.
+
+    **Examples:**
+    - `/api/v1/methods/function-calling/keywords` - Remove keywords from "function calling" method
+    - `/api/v1/methods/1/keywords` - Remove keywords by method ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["old-keyword"]
+    }
+    ```
+    """
+    try:
+        service = MethodService(db)
+        return service.remove_keywords(method_id, keyword_update.keywords)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{method_id}/keywords", response_model=Method)
+async def replace_method_keywords(
+    method_id: str,
+    keyword_update: KeywordUpdate,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Replace all keywords for a method.
+
+    Replaces the entire keyword list with the provided keywords.
+    All existing keywords are removed and replaced with the new list.
+
+    **Examples:**
+    - `/api/v1/methods/function-calling/keywords` - Replace all keywords for "function calling" method
+    - `/api/v1/methods/1/keywords` - Replace keywords by method ID
+
+    **Request body:**
+    ```json
+    {
+        "keywords": ["function-calling", "tool-calling", "function-call"]
+    }
+    ```
+    """
+    try:
+        service = MethodService(db)
+        return service.replace_keywords(method_id, keyword_update.keywords)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
