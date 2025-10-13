@@ -2,23 +2,31 @@
 """
 Link papers to tasks based on keyword matching in titles and abstracts.
 
-This script:
-1. Loads all tasks that have keywords defined
-2. Matches keywords against paper titles and abstracts
-3. Case sensitivity rules:
-   - If a keyword contains at least 1 capital letter: case-sensitive matching
-   - If a keyword is all lowercase: case-insensitive matching
-4. Links papers to tasks in the paper_tasks table
-5. Uses word boundary matching for accuracy
+Matching Strategy:
+- Uses simple matching where all matching keywords are tagged
+- A paper can have multiple task categories (e.g., image classification AND object detection)
+
+Case-Sensitivity Rules:
+- Keywords with at least 1 capital letter: case-sensitive matching
+  * Examples: "BERT", "VLM", "GPT-4"
+  * Uses substring matching to catch plurals (VLMs, GANs) and compounds (LVLMs, OpenCLIP)
+  * Case sensitivity prevents false positives (CLIP vs clip)
+- All-lowercase keywords: case-insensitive matching
+  * Examples: "transformer", "attention", "object detection"
+  * Uses word boundary matching to prevent false matches (e.g., "transformed" when looking for "transformer")
 """
 
-import re
 import os
-from typing import Dict, List, Set, Tuple
-from collections import defaultdict
+from typing import Dict, List
 
 import psycopg2
 from psycopg2.extras import RealDictCursor, execute_batch
+from collections import defaultdict
+
+from backend.utils.keyword_matching import (
+    create_keyword_patterns,
+    find_matching_items_simple,
+)
 
 
 def get_db_connection():
@@ -32,23 +40,6 @@ def get_db_connection():
     )
 
 
-def is_case_sensitive_keyword(keyword: str) -> bool:
-    """
-    Determine if a keyword should use case-sensitive matching.
-
-    Rule: If a keyword contains at least 1 capital letter, it's case-sensitive.
-          If keyword is all lowercase, it's case-insensitive.
-
-    Args:
-        keyword: The keyword to check
-
-    Returns:
-        True if case-sensitive matching should be used
-    """
-    # Check if keyword has at least one uppercase letter
-    return any(c.isupper() for c in keyword)
-
-
 def load_tasks_with_keywords(conn) -> List[Dict]:
     """Load all tasks that have keywords defined."""
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -59,101 +50,9 @@ def load_tasks_with_keywords(conn) -> List[Dict]:
         ORDER BY id
     """)
 
-    tasks = []
-    for row in cur.fetchall():
-        # Parse comma-separated keywords
-        keywords_list = [k.strip() for k in row["keywords"].split(",") if k.strip()]
-
-        if not keywords_list:
-            continue
-
-        # Categorize keywords by case sensitivity
-        case_sensitive_keywords = []
-        case_insensitive_keywords = []
-
-        for keyword in keywords_list:
-            if is_case_sensitive_keyword(keyword):
-                case_sensitive_keywords.append(keyword)
-            else:
-                case_insensitive_keywords.append(keyword)
-
-        tasks.append(
-            {
-                "id": row["id"],
-                "name": row["name"],
-                "keywords": keywords_list,
-                "case_sensitive_keywords": case_sensitive_keywords,
-                "case_insensitive_keywords": case_insensitive_keywords,
-            }
-        )
-
+    tasks = cur.fetchall()
     cur.close()
     return tasks
-
-
-def create_keyword_patterns(
-    tasks: List[Dict],
-) -> Tuple[Dict[str, List[int]], Dict[str, List[int]]]:
-    """
-    Create lookup structures for keyword matching.
-
-    Returns:
-        (case_sensitive_patterns, case_insensitive_patterns)
-        Each pattern dict maps keyword -> list of task IDs
-    """
-    case_sensitive = defaultdict(list)
-    case_insensitive = defaultdict(list)
-
-    for task in tasks:
-        task_id = task["id"]
-
-        # Add case-sensitive keywords
-        for keyword in task["case_sensitive_keywords"]:
-            case_sensitive[keyword].append(task_id)
-
-        # Add case-insensitive keywords (store in lowercase)
-        for keyword in task["case_insensitive_keywords"]:
-            case_insensitive[keyword.lower()].append(task_id)
-
-    return dict(case_sensitive), dict(case_insensitive)
-
-
-def find_matching_tasks(
-    text: str,
-    case_sensitive_patterns: Dict[str, List[int]],
-    case_insensitive_patterns: Dict[str, List[int]],
-) -> Set[int]:
-    """
-    Find all tasks whose keywords appear in the text.
-
-    Args:
-        text: The text to search (title + abstract)
-        case_sensitive_patterns: Case-sensitive keyword patterns
-        case_insensitive_patterns: Case-insensitive keyword patterns
-
-    Returns:
-        Set of task IDs that match
-    """
-    if not text:
-        return set()
-
-    matched_tasks = set()
-
-    # Find case-sensitive matches
-    for keyword, task_ids in case_sensitive_patterns.items():
-        # Use word boundary matching for better accuracy
-        pattern = r"\b" + re.escape(keyword) + r"\b"
-        if re.search(pattern, text):
-            matched_tasks.update(task_ids)
-
-    # Find case-insensitive matches
-    text_lower = text.lower()
-    for keyword_lower, task_ids in case_insensitive_patterns.items():
-        pattern = r"\b" + re.escape(keyword_lower) + r"\b"
-        if re.search(pattern, text_lower):
-            matched_tasks.update(task_ids)
-
-    return matched_tasks
 
 
 def link_papers_by_task_keywords():
@@ -172,18 +71,14 @@ def link_papers_by_task_keywords():
         tasks = load_tasks_with_keywords(conn)
         print(f"   ✓ Loaded {len(tasks)} tasks with keywords")
 
-        # Count case-sensitive vs case-insensitive
-        total_case_sensitive = sum(len(t["case_sensitive_keywords"]) for t in tasks)
-        total_case_insensitive = sum(len(t["case_insensitive_keywords"]) for t in tasks)
-        print(f"   - {total_case_sensitive} case-sensitive keywords")
-        print(f"   - {total_case_insensitive} case-insensitive keywords")
-
         print("\n2. Building keyword patterns...")
         case_sensitive_patterns, case_insensitive_patterns = create_keyword_patterns(
             tasks
         )
         total_keywords = len(case_sensitive_patterns) + len(case_insensitive_patterns)
-        print(f"   ✓ Built patterns for {total_keywords} unique keywords")
+        print(
+            f"   ✓ Built patterns for {total_keywords} unique keywords (simple matching)"
+        )
         print(f"   - {len(case_sensitive_patterns)} unique case-sensitive keywords")
         print(f"   - {len(case_insensitive_patterns)} unique case-insensitive keywords")
 
@@ -233,8 +128,8 @@ def link_papers_by_task_keywords():
             if not text.strip():
                 continue
 
-            # Find matching tasks
-            matching_task_ids = find_matching_tasks(
+            # Find matching tasks (simple matching - all matching tasks are tagged)
+            matching_task_ids = find_matching_items_simple(
                 text, case_sensitive_patterns, case_insensitive_patterns
             )
 
