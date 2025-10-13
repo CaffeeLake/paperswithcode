@@ -232,35 +232,6 @@ const PaperDetail = () => {
                   ))}
                 </span>
               </div>
-
-              {/* Tasks */}
-              <div className="mb-6">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold">Tasks</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2"
-                    onClick={handleEditTasks}
-                  >
-                    <Edit className="w-3 h-3 mr-1" />
-                    <span className="text-xs">Edit</span>
-                  </Button>
-                </div>
-                {paper.tasks && paper.tasks.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {paper.tasks.map((task: Task, index: number) => (
-                      <Link key={index} to={`/tasks/${task.slug || task.name.toLowerCase().replace(/\s+/g, '-')}`}>
-                        <Badge variant="secondary" className="text-xs hover:bg-secondary/80 cursor-pointer transition-colors">
-                          {task.name}
-                        </Badge>
-                      </Link>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No tasks assigned</p>
-                )}
-              </div>
             </div>
 
             {/* Abstract */}

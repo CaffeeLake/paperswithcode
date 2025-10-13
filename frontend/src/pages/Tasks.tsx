@@ -1,12 +1,11 @@
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import Header from "@/components/Header";
-import { BarChart, Layers, Users, FileText, Twitter, AlertCircle } from "lucide-react";
+import { Layers, FileText, AlertCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getAreas, getAreaTasks, type Area, type Task } from "@/lib/api";
+import { getAreas, getAreaTasks, getTasks, type Area, type Task } from "@/lib/api";
 
 // Task icon mapping based on task name
 const getTaskIcon = (taskName: string): string => {
@@ -112,7 +111,7 @@ const AreaSection = ({ area }: { area: Area }) => {
 
 const Tasks = () => {
   // Fetch all areas
-  const { data: areasData, isLoading: isLoadingAreas, error, refetch } = useQuery({
+  const { data: areasData, isLoading: isLoadingAreas, error: areasError, refetch: refetchAreas } = useQuery({
     queryKey: ['areas'],
     queryFn: async () => {
       console.log('[Tasks] Starting to fetch areas...');
@@ -129,12 +128,49 @@ const Tasks = () => {
     retry: 3,
   });
 
+  // Fetch all tasks to get total count
+  const { data: tasksData, isLoading: isLoadingTasks, error: tasksError, refetch: refetchTasks } = useQuery({
+    queryKey: ['all-tasks'],
+    queryFn: async () => {
+      // Fetch first page to get total count
+      const firstPage = await getTasks({ page: 1, page_size: 100, ordering: 'name' });
+
+      // If there are more pages, fetch them all
+      const totalPages = Math.ceil(firstPage.count / 100);
+      if (totalPages <= 1) {
+        return firstPage;
+      }
+
+      // Fetch remaining pages in parallel
+      const remainingPages = await Promise.all(
+        Array.from({ length: totalPages - 1 }, (_, i) =>
+          getTasks({ page: i + 2, page_size: 100, ordering: 'name' })
+        )
+      );
+
+      // Combine all results
+      return {
+        count: firstPage.count,
+        next_page: null,
+        previous_page: null,
+        results: [
+          ...firstPage.results,
+          ...remainingPages.flatMap(page => page.results)
+        ]
+      };
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
   const areas = areasData?.results || [];
+  const isLoading = isLoadingAreas || isLoadingTasks;
+  const error = areasError || tasksError;
 
   console.log('[Tasks] Render state:', {
-    isLoading: isLoadingAreas,
+    isLoading,
     error: error?.message,
     areasCount: areas.length,
+    tasksCount: tasksData?.count,
     areasData
   });
 
@@ -155,13 +191,13 @@ const Tasks = () => {
             <span>•</span>
             <div className="flex items-center space-x-1">
               <FileText className="w-4 h-4" />
-              <span>Browse AI/ML tasks by area</span>
+              <span>{tasksData?.count || 0} AI/ML tasks</span>
             </div>
           </div>
 
-          <div className="flex items-center space-x-2 text-primary">
-            <span>Powered by PapersWithCode API</span>
-          </div>
+          <p className="text-muted-foreground">
+            A comprehensive collection of AI/ML tasks organized by research area
+          </p>
         </div>
 
         {/* Error State */}
@@ -169,9 +205,12 @@ const Tasks = () => {
           <Alert variant="destructive" className="mb-6">
             <AlertCircle className="h-4 w-4" />
             <AlertDescription className="flex items-center justify-between">
-              <span>Failed to load research areas. {error instanceof Error ? error.message : 'Please try again later.'}</span>
+              <span>Failed to load tasks. {error instanceof Error ? error.message : 'Please try again later.'}</span>
               <button
-                onClick={() => refetch()}
+                onClick={() => {
+                  refetchAreas();
+                  refetchTasks();
+                }}
                 className="ml-4 px-3 py-1 bg-white text-red-600 rounded hover:bg-gray-100 text-sm font-medium"
               >
                 Retry
@@ -181,7 +220,7 @@ const Tasks = () => {
         )}
 
         {/* Loading State */}
-        {isLoadingAreas ? (
+        {isLoading ? (
           <div className="space-y-12">
             {[...Array(3)].map((_, i) => (
               <div key={i}>
