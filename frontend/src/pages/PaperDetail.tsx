@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check } from "lucide-react";
+import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
 import { usePaperByArxivId } from "@/hooks/usePapers";
@@ -33,6 +34,8 @@ const PaperDetail = () => {
   const [isEditingMethods, setIsEditingMethods] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
   const [selectedMethodIds, setSelectedMethodIds] = useState<number[]>([]);
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
+  const [methodSearchQuery, setMethodSearchQuery] = useState("");
 
   // Fetch all tasks (using max allowed page_size of 100)
   const { data: allTasksData } = useQuery({
@@ -79,6 +82,7 @@ const PaperDetail = () => {
     if (paper?.tasks) {
       setSelectedTaskIds(paper.tasks.map((t: Task) => parseInt(t.id)));
     }
+    setTaskSearchQuery("");
     setIsEditingTasks(true);
   };
 
@@ -86,6 +90,7 @@ const PaperDetail = () => {
     if (paper?.methods) {
       setSelectedMethodIds(paper.methods.map((m: { id: string }) => parseInt(m.id)));
     }
+    setMethodSearchQuery("");
     setIsEditingMethods(true);
   };
 
@@ -101,6 +106,25 @@ const PaperDetail = () => {
       updateMethodsMutation.mutate({ paperId: paper.id, methodIds: selectedMethodIds });
     }
   };
+
+  // Filter tasks based on search query
+  const filteredTasks = allTasksData?.results?.filter((task: APITask) => {
+    const searchLower = taskSearchQuery.toLowerCase();
+    return (
+      task.name.toLowerCase().includes(searchLower) ||
+      (task.description && task.description.toLowerCase().includes(searchLower))
+    );
+  });
+
+  // Filter methods based on search query
+  const filteredMethods = allMethodsData?.results?.filter((method: APIMethod) => {
+    const searchLower = methodSearchQuery.toLowerCase();
+    return (
+      method.name.toLowerCase().includes(searchLower) ||
+      (method.full_name && method.full_name.toLowerCase().includes(searchLower)) ||
+      (method.description && method.description.toLowerCase().includes(searchLower))
+    );
+  });
 
   if (isLoading) {
     return (
@@ -557,10 +581,20 @@ const PaperDetail = () => {
               Select the tasks that this paper addresses. You can select multiple tasks.
             </DialogDescription>
           </DialogHeader>
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search tasks..."
+              value={taskSearchQuery}
+              onChange={(e) => setTaskSearchQuery(e.target.value)}
+              className="pl-9"
+            />
+          </div>
           <div className="py-4 overflow-y-auto max-h-[400px]">
-            {allTasksData?.results && allTasksData.results.length > 0 ? (
+            {filteredTasks && filteredTasks.length > 0 ? (
               <div className="space-y-2">
-                {allTasksData.results.map((task: APITask) => (
+                {filteredTasks.map((task: APITask) => (
                   <div key={task.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
                     <Checkbox
                       id={`task-${task.id}`}
@@ -587,6 +621,11 @@ const PaperDetail = () => {
                     </label>
                   </div>
                 ))}
+              </div>
+            ) : allTasksData?.results ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                <p>No tasks found matching "{taskSearchQuery}"</p>
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground">
@@ -625,10 +664,20 @@ const PaperDetail = () => {
               Select the methods and techniques used in this paper. You can select multiple methods.
             </DialogDescription>
           </DialogHeader>
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search methods..."
+              value={methodSearchQuery}
+              onChange={(e) => setMethodSearchQuery(e.target.value)}
+              className="pl-9"
+            />
+          </div>
           <div className="py-4 overflow-y-auto max-h-[400px]">
-            {allMethodsData?.results && allMethodsData.results.length > 0 ? (
+            {filteredMethods && filteredMethods.length > 0 ? (
               <div className="space-y-2">
-                {allMethodsData.results.map((method: APIMethod) => (
+                {filteredMethods.map((method: APIMethod) => (
                   <div key={method.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
                     <Checkbox
                       id={`method-${method.id}`}
@@ -660,6 +709,11 @@ const PaperDetail = () => {
                     </label>
                   </div>
                 ))}
+              </div>
+            ) : allMethodsData?.results ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                <p>No methods found matching "{methodSearchQuery}"</p>
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground">
