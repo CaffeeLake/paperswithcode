@@ -642,9 +642,6 @@ class Method(BaseModel):
         None, description="Description of the method collection"
     )
     collection_parent: Optional[str] = Field(None, description="Parent collection name")
-    collection_area: Optional[str] = Field(
-        None, description="Research area of the collection"
-    )
 
     # Metadata
     paper_count: Optional[int] = Field(

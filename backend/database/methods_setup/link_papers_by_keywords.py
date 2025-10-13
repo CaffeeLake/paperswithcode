@@ -2,10 +2,19 @@
 """
 Link papers to methods based on keyword matching in titles and abstracts.
 
-Rules:
-1. Case-sensitive matching for all-caps methods (BPE, CNN, BERT, GPT, etc.)
-2. Only match methods that have keywords defined
-3. Prefer longest matching keyword (e.g., GPT-2 over GPT, YOLOv8 over YOLO)
+Case-Sensitivity Rules:
+- If a keyword contains at least 1 capital letter: case-sensitive matching
+- If a keyword is all lowercase: case-insensitive matching
+- Examples:
+  - "BERT", "GPT-4", "ResNet" → case-sensitive (must match exactly)
+  - "transformer", "attention", "dropout" → case-insensitive (any case)
+  - "vision-language" → case-insensitive (all lowercase)
+  - "ViT", "BigGAN" → case-sensitive (has capital letters)
+
+Matching Strategy:
+1. Only match methods that have keywords defined
+2. Use word boundary matching for accuracy
+3. Prefer longest matching keyword (e.g., GPT-2 over GPT)
 """
 
 import re
@@ -15,64 +24,22 @@ from collections import defaultdict
 import psycopg2
 from psycopg2.extras import RealDictCursor, execute_batch
 
-# Case-sensitive method names (all-caps or specific versions)
-CASE_SENSITIVE_METHODS = {
-    "BPE",
-    "CNN",
-    "BERT",
-    "GPT",
-    "DDPM",
-    "GPT-4o",
-    "ViT",
-    "GPT-2",
-    "GPT-3",
-    "GPT-4",
-    "YOLOv3",
-    "YOLOv8",
-    "BigGAN",
-    "MoE",
-    "ColBERT",
-    "NeRF",
-    "DiT",
-    "RoPE",
-    "DUSt3R",
-    "T5",
-    "LSTM",
-    "RNN",
-    "GAN",
-    "VAE",
-    "BLEU",
-    "ROUGE",
-    "DDIM",
-    "SVM",
-    "ReLU",
-    "GELU",
-    "GPT-3.5",
-    "GPT-4-turbo",
-}
 
-
-def is_case_sensitive(method_name: str, keywords: List[str]) -> bool:
+def is_case_sensitive_keyword(keyword: str) -> bool:
     """
-    Determine if a method should use case-sensitive matching.
+    Determine if a keyword should use case-sensitive matching.
+
+    Rule: If a keyword contains at least 1 capital letter, it's case-sensitive.
+          If keyword is all lowercase, it's case-insensitive.
 
     Args:
-        method_name: Name of the method
-        keywords: List of keywords for the method
+        keyword: The keyword to check
 
     Returns:
         True if case-sensitive matching should be used
     """
-    # Check if method name is in the explicit case-sensitive list
-    if method_name in CASE_SENSITIVE_METHODS:
-        return True
-
-    # Check if any keyword is all-caps (2+ chars)
-    for keyword in keywords:
-        if len(keyword) >= 2 and keyword.isupper() and keyword.isalpha():
-            return True
-
-    return False
+    # Check if keyword has at least one uppercase letter
+    return any(c.isupper() for c in keyword)
 
 
 def load_methods_with_keywords(conn) -> List[Dict]:
@@ -93,12 +60,23 @@ def load_methods_with_keywords(conn) -> List[Dict]:
         if not keywords_list:
             continue
 
+        # Categorize keywords by case sensitivity
+        case_sensitive_keywords = []
+        case_insensitive_keywords = []
+
+        for keyword in keywords_list:
+            if is_case_sensitive_keyword(keyword):
+                case_sensitive_keywords.append(keyword)
+            else:
+                case_insensitive_keywords.append(keyword)
+
         methods.append(
             {
                 "id": row["id"],
                 "name": row["name"],
                 "keywords": keywords_list,
-                "case_sensitive": is_case_sensitive(row["name"], keywords_list),
+                "case_sensitive_keywords": case_sensitive_keywords,
+                "case_insensitive_keywords": case_insensitive_keywords,
             }
         )
 
@@ -120,19 +98,27 @@ def create_keyword_patterns(
     case_insensitive = defaultdict(list)
 
     for method in methods:
-        for keyword in method["keywords"]:
+        method_id = method["id"]
+
+        # Add case-sensitive keywords
+        for keyword in method["case_sensitive_keywords"]:
             method_info = {
-                "id": method["id"],
+                "id": method_id,
                 "name": method["name"],
                 "keyword": keyword,
                 "keyword_len": len(keyword),
             }
+            case_sensitive[keyword].append(method_info)
 
-            if method["case_sensitive"]:
-                case_sensitive[keyword].append(method_info)
-            else:
-                # Store lowercase version for case-insensitive matching
-                case_insensitive[keyword.lower()].append(method_info)
+        # Add case-insensitive keywords (store in lowercase)
+        for keyword in method["case_insensitive_keywords"]:
+            method_info = {
+                "id": method_id,
+                "name": method["name"],
+                "keyword": keyword,
+                "keyword_len": len(keyword),
+            }
+            case_insensitive[keyword.lower()].append(method_info)
 
     return dict(case_sensitive), dict(case_insensitive)
 
@@ -233,10 +219,13 @@ def link_papers_by_keywords():
         methods = load_methods_with_keywords(conn)
         print(f"   ✓ Loaded {len(methods)} methods with keywords")
 
-        case_sensitive_count = sum(1 for m in methods if m["case_sensitive"])
-        case_insensitive_count = len(methods) - case_sensitive_count
-        print(f"   - {case_sensitive_count} methods use case-sensitive matching")
-        print(f"   - {case_insensitive_count} methods use case-insensitive matching")
+        # Count keywords by case sensitivity
+        total_case_sensitive = sum(len(m["case_sensitive_keywords"]) for m in methods)
+        total_case_insensitive = sum(
+            len(m["case_insensitive_keywords"]) for m in methods
+        )
+        print(f"   - {total_case_sensitive} case-sensitive keywords")
+        print(f"   - {total_case_insensitive} case-insensitive keywords")
 
         print("\n2. Building keyword patterns...")
         case_sensitive_patterns, case_insensitive_patterns = create_keyword_patterns(
@@ -244,8 +233,8 @@ def link_papers_by_keywords():
         )
         total_keywords = len(case_sensitive_patterns) + len(case_insensitive_patterns)
         print(f"   ✓ Built patterns for {total_keywords} unique keywords")
-        print(f"   - {len(case_sensitive_patterns)} case-sensitive keywords")
-        print(f"   - {len(case_insensitive_patterns)} case-insensitive keywords")
+        print(f"   - {len(case_sensitive_patterns)} unique case-sensitive keywords")
+        print(f"   - {len(case_insensitive_patterns)} unique case-insensitive keywords")
 
         # Check current state of paper_methods
         cur = conn.cursor(cursor_factory=RealDictCursor)

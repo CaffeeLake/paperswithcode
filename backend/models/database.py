@@ -282,7 +282,6 @@ class Method(Base):
     collection_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     collection_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     collection_parent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    collection_area: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

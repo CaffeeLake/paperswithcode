@@ -6,23 +6,114 @@ Fetches the daily papers from Hugging Face API for the previous day and imports 
 - Authors table with Hugging Face profile information
 - Repositories table with GitHub links
 - Project_pages table with project page URLs
+- Paper_tasks table with automatic task tagging based on keywords
+- Paper_methods table with automatic method tagging based on keywords
+
+Automatic Task & Method Tagging:
+- Matches keywords in paper titles and abstracts
+- Case-sensitive matching for keywords with capital letters (e.g., BERT, VLM, GPT-4)
+- Case-insensitive matching for all-lowercase keywords (e.g., object detection, transformer)
 
 Schedule: Daily at 3:00 AM UTC (after ArXiv update)
 Dependencies: PostgreSQL, Hugging Face API
 """
 
 import sys
+import re
 
 import aiohttp
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 from urllib.parse import urlparse
+from collections import defaultdict
 
 from cron.utils.cron_helpers import DatabaseCronJob
 from backend.config import get_settings
 from backend.utils.verify_url import verify_url
 from backend.utils.github_utils import parse_github_url
+
+
+def is_case_sensitive_keyword(keyword: str) -> bool:
+    """
+    Determine if a keyword should use case-sensitive matching.
+
+    Rule: If a keyword contains at least 1 capital letter, it's case-sensitive.
+          If keyword is all lowercase, it's case-insensitive.
+
+    Args:
+        keyword: The keyword to check
+
+    Returns:
+        True if case-sensitive matching should be used
+    """
+    return any(c.isupper() for c in keyword)
+
+
+def create_keyword_patterns(
+    tasks: List[Dict],
+) -> Tuple[Dict[str, List[int]], Dict[str, List[int]]]:
+    """
+    Create lookup structures for keyword matching.
+
+    Returns:
+        (case_sensitive_patterns, case_insensitive_patterns)
+        Each pattern dict maps keyword -> list of task IDs
+    """
+    case_sensitive = defaultdict(list)
+    case_insensitive = defaultdict(list)
+
+    for task in tasks:
+        task_id = task["id"]
+
+        # Parse keywords
+        keywords_list = [k.strip() for k in task["keywords"].split(",") if k.strip()]
+
+        for keyword in keywords_list:
+            if is_case_sensitive_keyword(keyword):
+                case_sensitive[keyword].append(task_id)
+            else:
+                case_insensitive[keyword.lower()].append(task_id)
+
+    return dict(case_sensitive), dict(case_insensitive)
+
+
+def find_matching_tasks(
+    text: str,
+    case_sensitive_patterns: Dict[str, List[int]],
+    case_insensitive_patterns: Dict[str, List[int]],
+) -> Set[int]:
+    """
+    Find all tasks whose keywords appear in the text.
+
+    Args:
+        text: The text to search (title + abstract)
+        case_sensitive_patterns: Case-sensitive keyword patterns
+        case_insensitive_patterns: Case-insensitive keyword patterns
+
+    Returns:
+        Set of task IDs that match
+    """
+    if not text:
+        return set()
+
+    matched_tasks = set()
+
+    # Find case-sensitive matches
+    for keyword, task_ids in case_sensitive_patterns.items():
+        # Use word boundary matching for better accuracy
+        pattern = r"\b" + re.escape(keyword) + r"\b"
+        if re.search(pattern, text):
+            matched_tasks.update(task_ids)
+
+    # Find case-insensitive matches
+    text_lower = text.lower()
+    for keyword_lower, task_ids in case_insensitive_patterns.items():
+        pattern = r"\b" + re.escape(keyword_lower) + r"\b"
+        if re.search(pattern, text_lower):
+            matched_tasks.update(task_ids)
+
+    return matched_tasks
 
 
 class HuggingFaceDailyPapersJob(DatabaseCronJob):
@@ -37,6 +128,16 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         self.new_authors_count = 0
         self.new_repos_count = 0
         self.new_pages_count = 0
+        self.new_tasks_count = 0
+        self.new_methods_count = 0
+
+        # Task keyword matching patterns (loaded once at start)
+        self.task_case_sensitive_patterns = {}
+        self.task_case_insensitive_patterns = {}
+
+        # Method keyword matching patterns (loaded once at start)
+        self.method_case_sensitive_patterns = {}
+        self.method_case_insensitive_patterns = {}
 
     def run(self):
         """Main execution logic for Hugging Face daily papers import."""
@@ -54,6 +155,10 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
                 f"Skipping import on {day_name} - papers are only submitted Mon-Fri on Hugging Face"
             )
             return
+
+        # Load tasks and methods with keywords for automatic tagging
+        self.load_task_keywords()
+        self.load_method_keywords()
 
         # Get yesterday's date
         yesterday = datetime.now() - timedelta(days=1)
@@ -89,6 +194,8 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         self.logger.info(f"  - New authors added: {self.new_authors_count}")
         self.logger.info(f"  - New repositories added: {self.new_repos_count}")
         self.logger.info(f"  - New project pages added: {self.new_pages_count}")
+        self.logger.info(f"  - New task links added: {self.new_tasks_count}")
+        self.logger.info(f"  - New method links added: {self.new_methods_count}")
         self.logger.info(f"  - Errors: {self.error_count}")
 
         # Update database statistics
@@ -96,6 +203,8 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
         self.vacuum_analyze_table("authors")
         self.vacuum_analyze_table("repositories")
         self.vacuum_analyze_table("project_pages")
+        self.vacuum_analyze_table("paper_tasks")
+        self.vacuum_analyze_table("paper_methods")
 
     async def fetch_daily_papers(self, date: str) -> List[Dict]:
         """Fetch daily papers from Hugging Face API."""
@@ -139,6 +248,143 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
             self.logger.debug(f"Could not fetch details for paper {arxiv_id}: {e}")
             return None, None
 
+    def load_task_keywords(self):
+        """Load tasks with keywords and create keyword patterns for matching."""
+        try:
+            query = """
+                SELECT id, name, keywords
+                FROM tasks
+                WHERE keywords IS NOT NULL AND keywords != ''
+                ORDER BY id
+            """
+
+            tasks = self.execute_query(query)
+
+            if not tasks:
+                self.logger.warning("No tasks with keywords found")
+                return
+
+            # Create keyword patterns
+            self.task_case_sensitive_patterns, self.task_case_insensitive_patterns = (
+                create_keyword_patterns(tasks)
+            )
+
+            total_keywords = len(self.task_case_sensitive_patterns) + len(
+                self.task_case_insensitive_patterns
+            )
+            self.logger.info(
+                f"Loaded {len(tasks)} tasks with {total_keywords} unique keywords for auto-tagging"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to load task keywords: {e}")
+
+    def load_method_keywords(self):
+        """Load methods with keywords and create keyword patterns for matching."""
+        try:
+            query = """
+                SELECT id, name, keywords
+                FROM methods
+                WHERE keywords IS NOT NULL AND keywords != ''
+                ORDER BY id
+            """
+
+            methods = self.execute_query(query)
+
+            if not methods:
+                self.logger.warning("No methods with keywords found")
+                return
+
+            # Create keyword patterns
+            (
+                self.method_case_sensitive_patterns,
+                self.method_case_insensitive_patterns,
+            ) = create_keyword_patterns(methods)
+
+            total_keywords = len(self.method_case_sensitive_patterns) + len(
+                self.method_case_insensitive_patterns
+            )
+            self.logger.info(
+                f"Loaded {len(methods)} methods with {total_keywords} unique keywords for auto-tagging"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to load method keywords: {e}")
+
+    def tag_paper_with_tasks(self, paper_id: int, title: str, abstract: str):
+        """Tag a paper with relevant tasks based on keyword matching."""
+        # Combine title and abstract
+        text = ""
+        if title:
+            text = title
+        if abstract:
+            text += " " + abstract
+
+        if not text.strip():
+            return
+
+        # Find matching tasks
+        matching_task_ids = find_matching_tasks(
+            text, self.task_case_sensitive_patterns, self.task_case_insensitive_patterns
+        )
+
+        if not matching_task_ids:
+            return
+
+        # Link paper to tasks
+        query = """
+            INSERT INTO paper_tasks (paper_id, task_id)
+            VALUES (%s, %s)
+            ON CONFLICT (paper_id, task_id) DO NOTHING
+        """
+
+        for task_id in matching_task_ids:
+            try:
+                self.execute_query(query, (paper_id, task_id))
+                self.new_tasks_count += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to link paper {paper_id} to task {task_id}: {e}"
+                )
+
+    def tag_paper_with_methods(self, paper_id: int, title: str, abstract: str):
+        """Tag a paper with relevant methods based on keyword matching."""
+        # Combine title and abstract
+        text = ""
+        if title:
+            text = title
+        if abstract:
+            text += " " + abstract
+
+        if not text.strip():
+            return
+
+        # Find matching methods
+        matching_method_ids = find_matching_tasks(
+            text,
+            self.method_case_sensitive_patterns,
+            self.method_case_insensitive_patterns,
+        )
+
+        if not matching_method_ids:
+            return
+
+        # Link paper to methods
+        query = """
+            INSERT INTO paper_methods (paper_id, method_id)
+            VALUES (%s, %s)
+            ON CONFLICT (paper_id, method_id) DO NOTHING
+        """
+
+        for method_id in matching_method_ids:
+            try:
+                self.execute_query(query, (paper_id, method_id))
+                self.new_methods_count += 1
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to link paper {paper_id} to method {method_id}: {e}"
+                )
+
     def process_paper(self, paper_data: Dict):
         """Process a single paper and insert into database."""
         paper_info = paper_data.get("paper", {})
@@ -177,6 +423,10 @@ class HuggingFaceDailyPapersJob(DatabaseCronJob):
 
             # Process authors
             self.process_authors(paper_id, paper_info.get("authors", []))
+
+            # Tag paper with relevant tasks and methods based on keywords
+            self.tag_paper_with_tasks(paper_id, title, abstract)
+            self.tag_paper_with_methods(paper_id, title, abstract)
 
             # Fetch and process repositories and project pages
             github_repo, project_page = asyncio.run(self.fetch_paper_details(arxiv_id))

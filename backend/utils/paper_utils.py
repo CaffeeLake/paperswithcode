@@ -177,6 +177,102 @@ async def get_abstract(arxiv_id: str) -> str:
     return abstract
 
 
+async def get_title_hf_hub(arxiv_id: str) -> str:
+    """
+    Get the title of a paper using the Hugging Face Hub API.
+    """
+    paper_details = await asyncio.to_thread(paper_info, id=arxiv_id)
+    title = paper_details.title
+    return title
+
+
+async def get_title_arxiv(arxiv_id: str) -> str | None:
+    """
+    Fetches the Arxiv page for a given ID and extracts the paper title.
+
+    Args:
+        arxiv_id: The ArXiv identifier (e.g., "2505.17225" or "cs/0001001v1").
+
+    Returns:
+        The paper title as a string, or None if fetching fails or title not found.
+    """
+    soup = await _fetch_arxiv_page(arxiv_id)
+    if soup is None:
+        return None
+
+    # Method 1: Try the <h1> tag with class "title"
+    title_h1 = soup.find("h1", class_="title mathjax")
+    if title_h1:
+        # The <h1> often contains a <span class="descriptor">Title:</span>
+        # We want the text after that span.
+        title_span = title_h1.find("span", class_="descriptor")
+        if title_span and title_span.get_text(strip=True).lower() == "title:":
+            # Get all text nodes following the span directly within h1
+            # or just get the full text and remove the prefix
+            full_h1_text = title_h1.get_text(separator=" ", strip=True)
+            prefix_to_remove = "Title:"
+            if full_h1_text.lower().startswith(prefix_to_remove.lower()):
+                title_text = full_h1_text[len(prefix_to_remove) :].strip()
+                if title_text:  # Ensure it's not empty after stripping
+                    return title_text
+        else:
+            # If no "Title:" descriptor span, take the whole h1 text
+            # This might happen if the structure changes
+            title_text = title_h1.get_text(strip=True)
+            if title_text:
+                return title_text
+
+    # Method 2: Try meta tags (often more reliable for clean title)
+    meta_tags_to_check = [
+        {"name": "citation_title"},  # Usually the most direct and clean
+        {"property": "og:title"},  # OpenGraph title
+        {"name": "twitter:title"},  # Twitter card title
+    ]
+    for tag_attrs in meta_tags_to_check:
+        meta_tag = soup.find("meta", attrs=tag_attrs)
+        if meta_tag and meta_tag.get("content"):
+            title_text = meta_tag.get("content").strip()
+            # Sometimes og:title or twitter:title might have extra bits for very long titles (e.g., "...")
+            # citation_title is usually precise.
+            if title_text:
+                return title_text
+
+    # Method 3: Try the <title> tag in the <head>
+    # This usually looks like "[arxiv_id] Actual Title"
+    head_title_tag = soup.find("title")
+    if head_title_tag and head_title_tag.string:
+        full_title_text = head_title_tag.string.strip()
+        # Try to remove the "[arxiv_id]" part
+        # A more robust way using regex to remove anything in brackets at the start
+        cleaned_title = re.sub(r"^\[[^\]]+\]\s*", "", full_title_text).strip()
+        if cleaned_title:
+            return cleaned_title
+        # Fallback for simpler structure if regex fails or not preferred:
+        # if ']' in full_title_text:
+        #     parts = full_title_text.split(']', 1)
+        #     if len(parts) > 1 and parts[1].strip():
+        #         return parts[1].strip()
+
+    print(f"Title not found in expected locations for ArXiv ID: {arxiv_id}")
+    return None
+
+
+async def get_title(arxiv_id: str) -> str:
+    """
+    Get the title of a paper using the HF REST API.
+    """
+
+    try:
+        title = await get_title_arxiv(arxiv_id=arxiv_id)
+        if title is None:
+            title = await get_title_hf_hub(arxiv_id=arxiv_id)
+    except Exception as e:
+        print(f"Error getting title from HF Hub: {e}")
+        title = "No title was found."
+
+    return title
+
+
 async def get_comments(arxiv_id: str) -> str:
     """
     Get the comments for a paper using the Hugging Face API.

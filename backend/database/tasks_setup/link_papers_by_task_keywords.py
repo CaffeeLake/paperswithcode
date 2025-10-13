@@ -5,9 +5,11 @@ Link papers to tasks based on keyword matching in titles and abstracts.
 This script:
 1. Loads all tasks that have keywords defined
 2. Matches keywords against paper titles and abstracts
-3. Uses case-sensitive matching for acronyms (VLM, OCR, ASR, etc.)
-4. Uses case-insensitive matching for regular phrases
-5. Links papers to tasks in the paper_tasks table
+3. Case sensitivity rules:
+   - If a keyword contains at least 1 capital letter: case-sensitive matching
+   - If a keyword is all lowercase: case-insensitive matching
+4. Links papers to tasks in the paper_tasks table
+5. Uses word boundary matching for accuracy
 """
 
 import re
@@ -17,33 +19,6 @@ from collections import defaultdict
 
 import psycopg2
 from psycopg2.extras import RealDictCursor, execute_batch
-
-
-# Acronyms and terms that should use case-sensitive matching
-CASE_SENSITIVE_TERMS = {
-    "VLM",
-    "MLLM",
-    "LVLM",
-    "OCR",
-    "ASR",
-    "NMT",
-    "LLM",
-    "GUI",
-    "RLVR",
-    "CoT",
-    "VLA",
-    "SWE",
-    "CIFAR10",
-    "ImageNet",
-    "OSWorld",
-    "NeRF",
-    "DUSt3R",
-    "VGGT",
-    "FLUX1",
-    "AI",
-    "NLP",
-    "CV",
-}
 
 
 def get_db_connection():
@@ -61,24 +36,17 @@ def is_case_sensitive_keyword(keyword: str) -> bool:
     """
     Determine if a keyword should use case-sensitive matching.
 
+    Rule: If a keyword contains at least 1 capital letter, it's case-sensitive.
+          If keyword is all lowercase, it's case-insensitive.
+
     Args:
         keyword: The keyword to check
 
     Returns:
         True if case-sensitive matching should be used
     """
-    # Check if keyword is in the explicit case-sensitive list
-    if keyword in CASE_SENSITIVE_TERMS:
-        return True
-
-    # Check if keyword is all-caps (2+ chars) - likely an acronym
-    if len(keyword) >= 2 and keyword.isupper():
-        # Allow hyphens in acronyms (e.g., SWE-Bench)
-        keyword_cleaned = keyword.replace("-", "")
-        if keyword_cleaned.isupper() and keyword_cleaned.isalpha():
-            return True
-
-    return False
+    # Check if keyword has at least one uppercase letter
+    return any(c.isupper() for c in keyword)
 
 
 def load_tasks_with_keywords(conn) -> List[Dict]:

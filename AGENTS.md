@@ -4,6 +4,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Essentials
 
+Do not write a SUMMARY.md markdown file when you have finished your work.
+
 ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts. This ensures you use the correct environment variables.
 
 Replace statements like `DBPaper.is_latest_version == True` by just `DBPaper.is_latest_version`. Similarly, when you need to write something like `DBPaper.urls_extracted == False`, write `not DBPaper.urls_extracted` instead.

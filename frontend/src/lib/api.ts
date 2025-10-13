@@ -97,7 +97,6 @@ export interface Method {
   collection_name?: string;
   collection_description?: string;
   collection_parent?: string;
-  collection_area?: string;
   paper_count?: number;
   created_at?: string;
   updated_at?: string;
