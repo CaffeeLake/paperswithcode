@@ -3,6 +3,7 @@ import { Search, Loader2, ExternalLink } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
+import LatexTitle from "@/components/LatexTitle";
 
 interface PaperSummary {
   id: string;
@@ -123,7 +124,7 @@ export function PaperSearch() {
                   className="w-full p-3 text-left hover:bg-muted/50 border-b border-border last:border-b-0 transition-colors"
                 >
                   <div className="font-medium text-sm line-clamp-2 mb-1">
-                    {paper.title}
+                    <LatexTitle title={paper.title} />
                   </div>
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
                     <div className="flex items-center space-x-2">

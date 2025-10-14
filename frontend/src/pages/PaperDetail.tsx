@@ -15,6 +15,7 @@ import PaperResources from "@/components/PaperResources";
 import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, type Task as APITask, type Method as APIMethod } from "@/lib/api";
 import { useState } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
+import LatexTitle from "@/components/LatexTitle";
 
 // Type definitions
 interface Task {
@@ -192,7 +193,7 @@ const PaperDetail = () => {
             {/* Paper Header */}
             <div className="mb-8">
               <div className="flex items-start justify-between mb-4">
-                <h1 className="text-3xl font-bold leading-tight pr-8">{paper.title}</h1>
+                <h1 className="text-3xl font-bold leading-tight pr-8"><LatexTitle title={paper.title} /></h1>
                 <div className="flex items-center space-x-2">
                   <Button
                     variant="outline"

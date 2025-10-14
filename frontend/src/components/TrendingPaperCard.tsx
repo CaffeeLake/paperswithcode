@@ -4,6 +4,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
 import PaperThumbnail from "@/components/PaperThumbnail";
+import LatexTitle from "@/components/LatexTitle";
 
 interface Author {
   name: string;
@@ -61,7 +62,7 @@ const TrendingPaperCard = ({
       <div className="flex-1 min-w-0">
         <Link to={`/paper/${arxivId || id}`} className="block group mb-2">
           <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
-            {title}
+            <LatexTitle title={title} />
           </h3>
         </Link>
 

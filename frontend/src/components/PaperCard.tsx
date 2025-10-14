@@ -5,6 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import PaperThumbnail from "@/components/PaperThumbnail";
+import LatexTitle from "@/components/LatexTitle";
 
 interface Author {
   name: string;
@@ -71,7 +72,7 @@ const PaperCard = ({
 
           {/* Paper Title */}
           <h3 className="font-semibold text-lg leading-tight mb-2 line-clamp-2 group-hover:text-primary transition-colors">
-            {title}
+            <LatexTitle title={title} />
           </h3>
 
           {/* Authors */}
