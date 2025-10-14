@@ -28,9 +28,10 @@ interface PaperResourcesProps {
   methods?: Method[];
   onEditTasks?: () => void;
   onEditMethods?: () => void;
+  onEditRepositories?: () => void;
 }
 
-const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTasks, onEditMethods }: PaperResourcesProps) => {
+const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTasks, onEditMethods, onEditRepositories }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
   // Ensure repositories is always an array and filter to show official and high-quality repositories
@@ -90,13 +91,26 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTas
       {/* Code Section */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-lg flex items-center space-x-2">
-            <Github className="w-5 h-5" />
-            <span>Code</span>
-            <Badge variant="secondary" className="ml-2">
-              {displayRepositories.length}
-            </Badge>
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg flex items-center space-x-2">
+              <Github className="w-5 h-5" />
+              <span>Code</span>
+              <Badge variant="secondary" className="ml-2">
+                {displayRepositories.length}
+              </Badge>
+            </CardTitle>
+            {onEditRepositories && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={onEditRepositories}
+              >
+                <Edit className="w-3 h-3 mr-1" />
+                <span className="text-xs">Edit</span>
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-2">
           {displayRepositories.length > 0 ? (

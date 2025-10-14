@@ -1477,3 +1477,102 @@ class PaperService:
             if isinstance(e, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper methods: {str(e)}")
+
+    def update_paper_repositories(
+        self, paper_id: int, repositories: List[Dict[str, Any]]
+    ) -> Paper:
+        """
+        Update the repositories associated with a paper.
+
+        Creates repositories if they don't exist, and establishes the paper-repository
+        associations with the is_official flag.
+
+        Args:
+            paper_id: Database paper ID
+            repositories: List of dicts with 'url' and 'is_official' keys
+
+        Returns:
+            Updated Paper object
+
+        Raises:
+            PaperNotFoundError: If paper is not found
+            DatabaseError: If update fails
+        """
+        try:
+            from backend.models.database import (
+                Repository as DBRepository,
+                PaperRepository,
+            )
+            import re
+
+            # Verify paper exists
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            # Delete existing paper_repositories associations
+            self.db.query(PaperRepository).filter(
+                PaperRepository.paper_id == paper_id
+            ).delete()
+
+            # Process each repository URL
+            for repo_data in repositories:
+                url = repo_data.get("url", "").strip()
+                is_official = repo_data.get("is_official", False)
+
+                if not url:
+                    continue
+
+                # Check if repository already exists
+                existing_repo = (
+                    self.db.query(DBRepository).filter(DBRepository.url == url).first()
+                )
+
+                if existing_repo:
+                    # Use existing repository
+                    repository_id = existing_repo.id
+                else:
+                    # Create new repository
+                    # Extract owner and name from GitHub URL
+                    owner = None
+                    name = None
+                    github_match = re.match(
+                        r"https?://github\.com/([^/]+)/([^/]+)(?:/.*)?", url
+                    )
+                    if github_match:
+                        owner = github_match.group(1)
+                        name = github_match.group(2)
+                        # Remove .git suffix if present
+                        if name.endswith(".git"):
+                            name = name[:-4]
+
+                    # Create new repository entry
+                    new_repo = DBRepository(
+                        url=url,
+                        owner=owner,
+                        name=name,
+                        num_stars=0,
+                        source="manual",  # Marked as manually added by admin
+                    )
+                    self.db.add(new_repo)
+                    self.db.flush()  # Get the ID without committing
+                    repository_id = new_repo.id
+
+                # Create paper-repository association
+                paper_repository = PaperRepository(
+                    paper_id=paper_id,
+                    repository_id=repository_id,
+                    is_official=is_official,
+                )
+                self.db.add(paper_repository)
+
+            self.db.commit()
+
+            # Return updated paper
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper repositories: {str(e)}")

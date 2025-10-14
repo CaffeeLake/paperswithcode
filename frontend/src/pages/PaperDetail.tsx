@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check, Search } from "lucide-react";
+import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check, Search, Plus, Trash2, Github } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -12,7 +12,7 @@ import Header from "@/components/Header";
 import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import PaperResources from "@/components/PaperResources";
-import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, type Task as APITask, type Method as APIMethod } from "@/lib/api";
+import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, updatePaperRepositories, type Task as APITask, type Method as APIMethod } from "@/lib/api";
 import { useState } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import LatexTitle from "@/components/LatexTitle";
@@ -33,10 +33,15 @@ const PaperDetail = () => {
   // Admin editing state
   const [isEditingTasks, setIsEditingTasks] = useState(false);
   const [isEditingMethods, setIsEditingMethods] = useState(false);
+  const [isEditingRepositories, setIsEditingRepositories] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
   const [selectedMethodIds, setSelectedMethodIds] = useState<number[]>([]);
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [methodSearchQuery, setMethodSearchQuery] = useState("");
+
+  // Repository editing state (different from tasks/methods - we manage URLs directly)
+  const [editedRepositories, setEditedRepositories] = useState<Array<{ url: string; is_official: boolean }>>([]);
+  const [newRepositoryUrl, setNewRepositoryUrl] = useState("");
 
   // Fetch all tasks (using max allowed page_size of 100)
   const { data: allTasksData } = useQuery({
@@ -72,6 +77,17 @@ const PaperDetail = () => {
     },
   });
 
+  // Mutation for updating repositories (now sends URLs instead of IDs)
+  const updateRepositoriesMutation = useMutation({
+    mutationFn: ({ paperId, repositories }: { paperId: string; repositories: Array<{ url: string; is_official: boolean }> }) =>
+      updatePaperRepositories(paperId, repositories),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+      setIsEditingRepositories(false);
+      setNewRepositoryUrl("");
+    },
+  });
+
   // Generate colors for authors (similar to the original hardcoded approach)
   const getAuthorColor = (index: number) => {
     const colors = ["#3B82F6", "#8B5CF6", "#EF4444", "#10B981", "#F59E0B", "#EC4899", "#06B6D4", "#84CC16", "#F97316"];
@@ -95,6 +111,22 @@ const PaperDetail = () => {
     setIsEditingMethods(true);
   };
 
+  const handleEditRepositories = () => {
+    if (paper?.repositories) {
+      // Initialize with current repositories
+      setEditedRepositories(
+        paper.repositories.map((r) => ({
+          url: r.url,
+          is_official: r.is_official || false,
+        }))
+      );
+    } else {
+      setEditedRepositories([]);
+    }
+    setNewRepositoryUrl("");
+    setIsEditingRepositories(true);
+  };
+
   // Save handlers
   const handleSaveTasks = () => {
     if (paper?.id) {
@@ -106,6 +138,38 @@ const PaperDetail = () => {
     if (paper?.id) {
       updateMethodsMutation.mutate({ paperId: paper.id, methodIds: selectedMethodIds });
     }
+  };
+
+  const handleSaveRepositories = () => {
+    if (paper?.id) {
+      updateRepositoriesMutation.mutate({ paperId: paper.id, repositories: editedRepositories });
+    }
+  };
+
+  const handleAddRepository = () => {
+    const trimmedUrl = newRepositoryUrl.trim();
+    if (!trimmedUrl) return;
+
+    // Check if URL already exists
+    if (editedRepositories.some(r => r.url === trimmedUrl)) {
+      alert("This repository URL is already added");
+      return;
+    }
+
+    setEditedRepositories([...editedRepositories, { url: trimmedUrl, is_official: false }]);
+    setNewRepositoryUrl("");
+  };
+
+  const handleRemoveRepository = (url: string) => {
+    setEditedRepositories(editedRepositories.filter(r => r.url !== url));
+  };
+
+  const handleToggleOfficial = (url: string) => {
+    setEditedRepositories(
+      editedRepositories.map(r =>
+        r.url === url ? { ...r, is_official: !r.is_official } : r
+      )
+    );
   };
 
   // Filter tasks based on search query
@@ -175,6 +239,14 @@ const PaperDetail = () => {
     });
   };
 
+  // Format proceeding by removing trailing number (e.g., "ICCV 2023 1" -> "ICCV 2023")
+  const formatProceeding = (proceeding: string | null | undefined) => {
+    if (!proceeding) return null;
+    // Remove trailing space and 1-2 digit number (e.g., " 1", " 11")
+    // Only matches 1-2 digits to avoid removing years (4 digits)
+    return proceeding.replace(/\s+\d{1,2}$/, '');
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -228,17 +300,9 @@ const PaperDetail = () => {
                 <div className="flex items-center space-x-1">
                   <span>Published on {formatDate(paper.published?.toString() || null)}</span>
                 </div>
-                {paper.conference && (
+                {formatProceeding(paper.proceeding) && (
                   <div className="flex items-center space-x-1">
-                    <span>Conference: {paper.conference}</span>
-                  </div>
-                )}
-                {paper.version && (
-                  <div className="flex items-center space-x-1">
-                    <span>Version: {paper.version}</span>
-                    {paper.is_latest_version && (
-                      <Badge variant="secondary" className="text-xs">Latest</Badge>
-                    )}
+                    <span>Conference: {formatProceeding(paper.proceeding)}</span>
                   </div>
                 )}
               </div>
@@ -324,6 +388,7 @@ const PaperDetail = () => {
               methods={paper.methods || []}
               onEditTasks={handleEditTasks}
               onEditMethods={handleEditMethods}
+              onEditRepositories={handleEditRepositories}
             />
 
             {/* Evaluation Results */}
@@ -729,6 +794,110 @@ const PaperDetail = () => {
             </Button>
             <Button onClick={handleSaveMethods} disabled={updateMethodsMutation.isPending}>
               {updateMethodsMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Repositories Dialog */}
+      <Dialog open={isEditingRepositories} onOpenChange={setIsEditingRepositories}>
+        <DialogContent className="max-w-2xl max-h-[600px]">
+          <DialogHeader>
+            <DialogTitle>Edit Paper Repositories</DialogTitle>
+            <DialogDescription>
+              Add or remove GitHub repository URLs associated with this paper. Mark repositories as official if they are created by the paper authors.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Add new repository */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Add Repository URL</label>
+            <div className="flex space-x-2">
+              <Input
+                type="url"
+                placeholder="https://github.com/owner/repo"
+                value={newRepositoryUrl}
+                onChange={(e) => setNewRepositoryUrl(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddRepository();
+                  }
+                }}
+                className="flex-1"
+              />
+              <Button onClick={handleAddRepository} size="sm" disabled={!newRepositoryUrl.trim()}>
+                <Plus className="w-4 h-4 mr-1" />
+                Add
+              </Button>
+            </div>
+          </div>
+
+          {/* List of repositories */}
+          <div className="py-4 overflow-y-auto max-h-[350px]">
+            {editedRepositories.length > 0 ? (
+              <div className="space-y-2">
+                {editedRepositories.map((repo, index) => (
+                  <div key={index} className="flex items-center space-x-2 p-3 bg-muted/30 rounded-lg hover:bg-muted/50 transition-colors">
+                    <Github className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-sm font-medium text-paper-blue truncate">
+                          {repo.url}
+                        </span>
+                        {repo.is_official && (
+                          <Badge variant="secondary" className="text-xs">Official</Badge>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleToggleOfficial(repo.url)}
+                        className="h-8 px-2"
+                        title={repo.is_official ? "Mark as unofficial" : "Mark as official"}
+                      >
+                        <Check className={`w-4 h-4 ${repo.is_official ? 'text-green-600' : 'text-muted-foreground'}`} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleRemoveRepository(repo.url)}
+                        className="h-8 px-2 text-destructive hover:text-destructive"
+                        title="Remove repository"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <Github className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">No repositories added yet</p>
+                <p className="text-xs mt-1">Add a repository URL above to get started</p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsEditingRepositories(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveRepositories} disabled={updateRepositoriesMutation.isPending}>
+              {updateRepositoriesMutation.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Saving...

@@ -35,28 +35,30 @@ TASK_HIERARCHY = [
 def get_db_connection():
     """Create and return a database connection."""
     return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        database=os.getenv("DB_NAME", "paperswithcode_hf"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", ""),
-        port=os.getenv("DB_PORT", "5432"),
+        host=os.getenv("PWC_DB_HOST", "localhost"),
+        database=os.getenv("PWC_DB_NAME", "paperswithcode_hf"),
+        user=os.getenv("PWC_DB_USER", "postgres"),
+        password=os.getenv("PWC_DB_PASSWORD", ""),
+        port=os.getenv("PWC_DB_PORT", "5432"),
     )
 
 
 def get_papers_with_conflicting_tasks(conn) -> List[Dict]:
     """
     Find papers that have tasks violating the hierarchy.
-    Returns papers with their task lists.
+    Returns papers with their task lists and task IDs.
     """
     query = """
     SELECT
-        paper_id,
-        array_agg(DISTINCT task) as tasks
-    FROM paper_tasks
-    WHERE LOWER(task) IN ('omni models', 'video language models',
+        pt.paper_id,
+        array_agg(DISTINCT t.name) as tasks,
+        array_agg(DISTINCT t.id) as task_ids
+    FROM paper_tasks pt
+    JOIN tasks t ON pt.task_id = t.id
+    WHERE LOWER(t.name) IN ('omni models', 'video language models',
                           'vision-language models', 'language modeling')
-    GROUP BY paper_id
-    HAVING COUNT(DISTINCT LOWER(task)) > 1
+    GROUP BY pt.paper_id
+    HAVING COUNT(DISTINCT LOWER(t.name)) > 1
     """
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -103,6 +105,23 @@ def get_tasks_to_remove(highest_task: str, all_tasks: List[str]) -> List[str]:
     return tasks_to_remove
 
 
+def get_task_ids_by_names(conn, task_names: List[str]) -> List[int]:
+    """
+    Get task IDs for given task names.
+    """
+    if not task_names:
+        return []
+
+    query = """
+    SELECT id FROM tasks
+    WHERE name = ANY(%s)
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(query, (task_names,))
+        return [row[0] for row in cur.fetchall()]
+
+
 def remove_conflicting_tasks(conn, paper_id: str, tasks_to_remove: List[str]) -> int:
     """
     Remove specified tasks from a paper.
@@ -111,13 +130,19 @@ def remove_conflicting_tasks(conn, paper_id: str, tasks_to_remove: List[str]) ->
     if not tasks_to_remove:
         return 0
 
+    # Get task IDs for the task names
+    task_ids = get_task_ids_by_names(conn, tasks_to_remove)
+
+    if not task_ids:
+        return 0
+
     query = """
     DELETE FROM paper_tasks
-    WHERE paper_id = %s AND task = ANY(%s)
+    WHERE paper_id = %s AND task_id = ANY(%s)
     """
 
     with conn.cursor() as cur:
-        cur.execute(query, (paper_id, tasks_to_remove))
+        cur.execute(query, (paper_id, task_ids))
         return cur.rowcount
 
 

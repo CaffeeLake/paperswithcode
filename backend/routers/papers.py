@@ -6,7 +6,8 @@ original PapersWithCode API specification.
 """
 
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -608,6 +609,72 @@ async def update_paper_methods(
     try:
         service = PaperService(db)
         return service.update_paper_methods(paper_id, method_ids)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RepositoryInput(BaseModel):
+    """Input model for repository data."""
+
+    url: str = Field(..., description="Repository URL")
+    is_official: bool = Field(
+        default=False, description="Whether this is an official repository"
+    )
+
+
+class UpdateRepositoriesRequest(BaseModel):
+    """Request model for updating paper repositories."""
+
+    repositories: List[RepositoryInput] = Field(
+        ..., description="List of repositories to associate with the paper"
+    )
+
+
+@router.put(
+    "/papers/{paper_id}/repositories",
+    response_model=Paper,
+    summary="Update repositories for a paper",
+)
+async def update_paper_repositories(
+    paper_id: int = Path(..., description="Database paper ID"),
+    request: UpdateRepositoriesRequest = Body(...),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update the repositories associated with a paper.
+
+    This endpoint allows admin users to update which repositories are linked to a paper.
+    It replaces all existing repository associations with the provided list.
+    If a repository URL doesn't exist in the database, it will be created automatically.
+
+    **Request Parameters:**
+    - `paper_id`: Database ID of the paper to update
+    - `repositories`: List of repository objects with URL and is_official flag
+
+    **Returns:**
+    - Updated paper with new repository associations
+
+    **Example:**
+    ```json
+    PUT /api/v1/papers/123/repositories
+    {
+        "repositories": [
+            {"url": "https://github.com/owner/repo", "is_official": true},
+            {"url": "https://github.com/another/repo", "is_official": false}
+        ]
+    }
+    ```
+    """
+    try:
+        service = PaperService(db)
+        # Convert Pydantic models to dict for service layer
+        repositories_data = [
+            {"url": repo.url, "is_official": repo.is_official}
+            for repo in request.repositories
+        ]
+        return service.update_paper_repositories(paper_id, repositories_data)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
