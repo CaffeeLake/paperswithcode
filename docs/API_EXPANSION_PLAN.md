@@ -6,7 +6,7 @@ This document outlines the systematic expansion of the PapersWithCode API from t
 
 ## Current State Analysis
 
-### Existing API Endpoints (17 total)
+### Existing API Endpoints (20 total)
 
 #### Papers API (10 endpoints) ✅
 ```
@@ -35,10 +35,17 @@ GET  /api/v1/repositories/                     # List repositories with paginati
 GET  /api/v1/repositories/{repository_id}      # Get specific repository details
 ```
 
-#### Areas API (2 endpoints) ✅ **NEW**
+#### Areas API (2 endpoints) ✅
 ```
 GET  /api/v1/areas/                            # List research areas with pagination/filtering
 GET  /api/v1/areas/{area_id}                   # Get specific area details
+```
+
+#### Datasets API (3 endpoints) ✅ **NEW - October 2025**
+```
+GET  /api/v1/datasets/                         # List datasets with pagination/filtering/task filtering
+GET  /api/v1/datasets/{dataset_id}             # Get specific dataset details
+GET  /api/v1/datasets/{dataset_id}/evaluations # Get evaluation tables for dataset
 ```
 
 ### Database Tables Available
@@ -53,9 +60,11 @@ Based on your database schema, we have the following tables ready for API expans
 - `paper_project_pages` ✅ (ready for Project Pages API)
 - `paper_tasks` ✅ (ready for Tasks API)
 - `paper_methods` ✅ (ready for Methods API)
-- `paper_datasets` ✅ (ready for Datasets API)
+- `paper_datasets` ✅ (used by Datasets API)
+- `task_datasets` ✅ (NEW - used by Datasets API for task-dataset relationships)
 - `tasks` ✅ (database ready, API pending)
-- `methods`, `datasets` ✅ (ready for individual entity APIs)
+- `methods` ✅ (ready for Methods API)
+- `datasets` ✅ (API implemented - **October 2025**)
 - `evaluations` ✅ (ready for Evaluations API)
 
 ## API Expansion Phases
@@ -178,18 +187,27 @@ GET  /api/v1/methods/{method_id}/papers  # Get papers using method
 - **Filtering**: By name, paper count, publication date
 - **Response Model**: `Method`, `Methods`
 
-#### 2.4 Datasets API
+#### 2.4 Datasets API ✅ **COMPLETED - October 2025**
 ```
 GET  /api/v1/datasets/                               # List datasets
 GET  /api/v1/datasets/{dataset_id}                   # Get specific dataset
-GET  /api/v1/datasets/{dataset_id}/papers            # Get papers using dataset
 GET  /api/v1/datasets/{dataset_id}/evaluations       # Get evaluation tables
 ```
 
-**Implementation Details:**
-- **Database Query**: Join `datasets` with `paper_datasets` and `papers`
-- **Filtering**: By domain, size, paper count
-- **Response Model**: `Dataset`, `Datasets`
+**Implementation Status:** ✅ Fully implemented
+**Database Schema:** Matches `datasets` table with `task_datasets` junction table
+- Table: `datasets` (id, name, full_name, description, url, hf_url)
+- Junction: `paper_datasets` (papers using datasets)
+- Junction: `task_datasets` (NEW - direct task-dataset relationships)
+- Service: `DatasetService` with full CRUD operations
+- Features: Task filtering, search functionality, paper/task count aggregation
+
+**Key Enhancements:**
+- **Task-Dataset Relationships**: Direct many-to-many relationship (e.g., ImageNet → Image Classification)
+- **Task Filtering**: Filter datasets by task ID or slug (`/api/v1/datasets/?task=image-classification`)
+- **Search**: Full-text search across name, full_name, and description
+- **Metadata**: Returns paper_count and task_count for each dataset
+- **Legacy Compatible**: Matches original PapersWithCode API specification
 
 #### 2.5 Conferences API
 ```
@@ -489,9 +507,9 @@ def upgrade():
 ### ⏳ Next Up (Priority Order)
 1. **Complete Repositories & Project Pages API** (Phase 1.1 remaining)
 2. **Methods API** (Phase 2.3)
-3. **Datasets API** (Phase 2.4)
-4. **Conferences API** (Phase 2.5)
-5. **Tasks-Papers integration** - Add papers endpoint to Tasks API
+3. **Conferences API** (Phase 2.5)
+4. **Tasks-Papers integration** - Add papers endpoint to Tasks API
+5. **Evaluations API** (Phase 3.1)
 
 ## Next Steps
 

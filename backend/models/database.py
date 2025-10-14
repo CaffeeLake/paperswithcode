@@ -238,6 +238,9 @@ class Task(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_tasks", back_populates="tasks"
     )
+    datasets: Mapped[List["Dataset"]] = relationship(
+        "Dataset", secondary="task_datasets", back_populates="tasks"
+    )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="task"
     )
@@ -311,10 +314,64 @@ class Dataset(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     full_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     hf_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Additional metadata from PapersWithCode
+    short_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    homepage: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    parent_dataset_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Image/media URLs
+    image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    verified_image_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )
+
+    # Paper reference (the paper that introduced this dataset)
+    introducing_paper_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True
+    )
+    introducing_paper_title: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )
+
+    # Licensing information
+    license_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    license_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Introduction date
+    introduced_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+    # JSONB fields for arrays
+    modalities: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )  # e.g., ["Images", "Videos"]
+    languages: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )  # e.g., ["English", "Chinese"]
+    variants: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )  # e.g., ["COCO test-dev", "COCO 2017"]
+
+    # Usage count
+    num_papers: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    # Warning/notes
+    warning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # PWC source URL
+    pwc_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -328,8 +385,16 @@ class Dataset(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_datasets", back_populates="datasets"
     )
+    tasks: Mapped[List["Task"]] = relationship(
+        "Task", secondary="task_datasets", back_populates="datasets"
+    )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="dataset"
+    )
+
+    # Self-referential relationship for parent datasets
+    parent_dataset: Mapped[Optional["Dataset"]] = relationship(
+        "Dataset", remote_side=[id], foreign_keys=[parent_dataset_id]
     )
 
     def __repr__(self) -> str:
@@ -645,6 +710,25 @@ class PaperDataset(Base):
     __table_args__ = (
         Index("idx_paper_datasets_paper_id", "paper_id"),
         Index("idx_paper_datasets_dataset_id", "dataset_id"),
+    )
+
+
+class TaskDataset(Base):
+    """Junction table for tasks and datasets (many-to-many relationship)."""
+
+    __tablename__ = "task_datasets"
+
+    task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    dataset_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_task_datasets_task_id", "task_id"),
+        Index("idx_task_datasets_dataset_id", "dataset_id"),
     )
 
 

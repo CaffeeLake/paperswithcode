@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Task hierarchy (ordered from most general to most specific)
 TASK_HIERARCHY = [
     "omni models",
-    "video language models",
+    "video-language models",  # Fixed: hyphen not space
     "vision-language models",
     "language modeling",
 ]
@@ -55,7 +55,7 @@ def get_papers_with_conflicting_tasks(conn) -> List[Dict]:
         array_agg(DISTINCT t.id) as task_ids
     FROM paper_tasks pt
     JOIN tasks t ON pt.task_id = t.id
-    WHERE LOWER(t.name) IN ('omni models', 'video language models',
+    WHERE LOWER(t.name) IN ('omni models', 'video-language models',
                           'vision-language models', 'language modeling')
     GROUP BY pt.paper_id
     HAVING COUNT(DISTINCT LOWER(t.name)) > 1

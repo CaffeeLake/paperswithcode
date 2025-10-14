@@ -47,7 +47,7 @@ const App = () => (
           <Route path="/tasks/:taskId" element={<TaskDetail />} />
           <Route path="/methods" element={<Methods />} />
           <Route path="/methods/:methodId" element={<MethodDetail />} />
-          <Route path="/benchmark/:benchmark" element={<Benchmark />} />
+          <Route path="/benchmark/:datasetSlug" element={<Benchmark />} />
           <Route path="/cron-dashboard" element={<CronDashboard />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

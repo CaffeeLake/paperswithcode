@@ -104,16 +104,28 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
         │                       │
         │                       ▼
         │              ┌─────────────────┐
-        │              │     DATASETS    │
-        │              ├─────────────────┤
-        │              │ id (PK)         │
-        │              │ name            │
-        │              │ full_name       │
-        │              │ description     │
-        │              │ url             │
-        │              │ hf_url          │
-        │              │ created_at      │
-        │              │ updated_at      │
+        │              │     DATASETS    │◄──────┐
+        │              ├─────────────────┤       │
+        │              │ id (PK)         │       │
+        │              │ name            │       │
+        │              │ full_name       │       │
+        │              │ description     │       │
+        │              │ url             │       │
+        │              │ hf_url          │       │
+        │              │ created_at      │       │
+        │              │ updated_at      │       │
+        │              └─────────────────┘       │
+        │                       │                │
+        │                       │                │
+        │                       ▼                │
+        │              ┌─────────────────┐       │
+        │              │  TASK_DATASETS  │       │
+        │              ├─────────────────┤       │
+        │              │ task_id (FK)    │───────┘
+        │              │ dataset_id (FK) │
+        │              │ PRIMARY KEY     │
+        │              │ (task_id,       │
+        │              │  dataset_id)    │
         │              └─────────────────┘
         │
         ▼
@@ -571,7 +583,13 @@ CREATE TABLE methods (
 - ✅ **Data Import**: 133 curated methods imported from CSV with area mappings
 
 ### 6. DATASETS
-**Benchmark datasets**
+**Benchmark datasets with task associations**
+
+Datasets represent benchmark datasets used for evaluating AI/ML models. Each dataset can be associated with:
+- **Papers** (via `paper_datasets`) - Papers that use this dataset for evaluation
+- **Tasks** (via `task_datasets`) - Tasks this dataset is designed for (e.g., ImageNet → Image Classification)
+- **Evaluations** - Benchmark results on this dataset
+
 ```sql
 CREATE TABLE datasets (
     id BIGSERIAL PRIMARY KEY,
@@ -584,6 +602,27 @@ CREATE TABLE datasets (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+**Common Examples**:
+- **ImageNet** → Image Classification (Computer Vision)
+- **COCO** → Object Detection (Computer Vision)
+- **SQuAD** → Question Answering (NLP)
+- **GLUE** → Natural Language Understanding (NLP)
+- **LibriSpeech** → Speech Recognition (Audio)
+
+**API Integration** (October 2025):
+- ✅ **Service Layer**: `DatasetService` with full CRUD operations
+- ✅ **API Endpoints** (Compatible with PapersWithCode API):
+  - `GET /api/v1/datasets/` - List datasets with pagination/filtering
+  - `GET /api/v1/datasets/{dataset_id}` - Get specific dataset
+  - `GET /api/v1/datasets/{dataset_id}/evaluations/` - Get evaluations for dataset
+  - `GET /api/v1/papers/{paper_id}/datasets/` - Get datasets used in paper
+- ✅ **Filtering**: By name, full_name, task, search query
+- ✅ **Task Association**: Filter datasets by task (e.g., `/api/v1/datasets/?task=image-classification`)
+- ✅ **Ordering**: By name, full_name, created_at (asc/desc)
+- ✅ **Paper Association**: Many-to-many relationship via `paper_datasets` junction table
+- ✅ **Task Association**: Many-to-many relationship via `task_datasets` junction table (NEW)
+- ✅ **Metadata**: Paper count, task count for each dataset
 
 ### 7. REPOSITORIES
 **GitHub repositories (normalized, no direct paper relationship)**
@@ -718,7 +757,29 @@ CREATE TABLE paper_datasets (
 );
 ```
 
-### 14. PAPER_REPOSITORIES
+### 14. TASK_DATASETS
+```sql
+CREATE TABLE task_datasets (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, dataset_id)
+);
+```
+
+**Purpose**: Links datasets directly to tasks, enabling queries like "datasets for Image Classification task."
+
+**Example Relationships**:
+- ImageNet → Image Classification
+- COCO → Object Detection
+- SQuAD → Question Answering
+- GLUE → Natural Language Understanding
+
+This allows the system to answer queries like:
+- "What datasets are used for Image Classification?"
+- "What tasks is ImageNet associated with?"
+- Filter datasets by task: `/api/v1/datasets/?task=image-classification`
+
+### 15. PAPER_REPOSITORIES
 ```sql
 CREATE TABLE paper_repositories (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -728,7 +789,7 @@ CREATE TABLE paper_repositories (
 );
 ```
 
-### 15. PAPER_PROJECT_PAGES
+### 16. PAPER_PROJECT_PAGES
 ```sql
 CREATE TABLE paper_project_pages (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -753,6 +814,7 @@ CREATE TABLE paper_project_pages (
 - `papers` ↔ `datasets` (via paper_datasets)
 - `papers` ↔ `repositories` (via paper_repositories) **[OPTIMIZED]**
 - `papers` ↔ `project_pages` (via paper_project_pages) **[NORMALIZED]**
+- `tasks` ↔ `datasets` (via task_datasets) **[NEW]** - Direct task-dataset relationships (e.g., ImageNet → Image Classification)
 
 ## Indexes for Performance
 
@@ -799,6 +861,9 @@ CREATE INDEX idx_paper_methods_method_id ON paper_methods(method_id);
 
 CREATE INDEX idx_paper_datasets_paper_id ON paper_datasets(paper_id);
 CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
+
+CREATE INDEX idx_task_datasets_task_id ON task_datasets(task_id);
+CREATE INDEX idx_task_datasets_dataset_id ON task_datasets(dataset_id);
 
 -- Evaluation indexes
 CREATE INDEX idx_evaluations_paper_task_dataset ON evaluations(paper_id, task_id, dataset_id);
@@ -1103,6 +1168,17 @@ This optimization achieves the perfect balance:
 The system now processes the same data with **dramatically fewer resources** while maintaining the same update frequency and data quality. Individual URLs like `https://github.com/mindspore-ai/models/tree/master/official/cv/resnet` remain as separate database rows, but the CRON job intelligently groups them for efficient GitHub API usage.
 
 ## Schema Evolution Changelog
+
+### Major Updates (October 2025)
+
+#### Dataset-Task Direct Relationships
+- ✅ **Added `task_datasets` junction table**: Direct many-to-many relationship between tasks and datasets
+- ✅ **Purpose**: Enable queries like "datasets for Image Classification" independent of evaluations
+- ✅ **Examples**: ImageNet → Image Classification, COCO → Object Detection, SQuAD → Question Answering
+- ✅ **API Support**: Filter datasets by task via `/api/v1/datasets/?task=image-classification`
+- ✅ **Service Layer**: Complete `DatasetService` with filtering, search, and associations
+- ✅ **Router**: Full CRUD endpoints matching legacy PapersWithCode API specification
+- ✅ **Indexes**: Optimized indexes on both `task_id` and `dataset_id` for efficient queries
 
 ### Major Updates (September 2025)
 

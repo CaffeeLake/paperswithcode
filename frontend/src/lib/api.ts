@@ -102,6 +102,36 @@ export interface Method {
   updated_at?: string;
 }
 
+export interface Dataset {
+  id: string;
+  name: string;
+  full_name?: string;
+  description?: string;
+  url?: string;
+  hf_url?: string;
+  slug?: string;
+  paper_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Evaluation {
+  id: string;
+  paper_id: string;
+  task_id: string;
+  dataset_id: string;
+  model_name?: string;
+  methodology?: string;
+  metrics: Record<string, string | number>;
+  uses_additional_data: boolean;
+  best_rank?: number;
+  best_metric?: string;
+  evaluated_on?: string;
+  external_source_url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next_page: number | null;
@@ -486,6 +516,77 @@ class ApiClient {
     return this.request<PaginatedResponse<Paper>>(endpoint);
   }
 
+  // Datasets API
+  async getDatasets(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    name?: string;
+    full_name?: string;
+    task?: string;
+    ordering?: string;
+  }): Promise<PaginatedResponse<Dataset>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.name) searchParams.append('name', params.name);
+    if (params?.full_name) searchParams.append('full_name', params.full_name);
+    if (params?.task) searchParams.append('task', params.task);
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/datasets/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Dataset>>(endpoint);
+  }
+
+  async getDataset(id: string): Promise<Dataset> {
+    return this.request<Dataset>(`/datasets/${id}`);
+  }
+
+  async getDatasetBySlug(slug: string): Promise<Dataset> {
+    // Use the datasets/{slug} endpoint which supports both ID and slug lookups
+    return this.request<Dataset>(`/datasets/${slug}`);
+  }
+
+  // Evaluations API
+  async getEvaluations(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    paper_id?: number;
+    task_id?: number;
+    dataset_id?: number;
+    ordering?: string;
+  }): Promise<PaginatedResponse<Evaluation>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.paper_id) searchParams.append('paper_id', params.paper_id.toString());
+    if (params?.task_id) searchParams.append('task_id', params.task_id.toString());
+    if (params?.dataset_id) searchParams.append('dataset_id', params.dataset_id.toString());
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/evaluations/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Evaluation>>(endpoint);
+  }
+
+  async getEvaluation(id: string): Promise<Evaluation> {
+    return this.request<Evaluation>(`/evaluations/${id}`);
+  }
+
+  async getEvaluationsByPaper(paperId: string): Promise<Evaluation[]> {
+    const response = await this.getEvaluations({ paper_id: parseInt(paperId), page_size: 100 });
+    return response.results;
+  }
+
+  async getEvaluationsByDataset(datasetId: string): Promise<Evaluation[]> {
+    const response = await this.getEvaluations({ dataset_id: parseInt(datasetId), page_size: 100 });
+    return response.results;
+  }
+
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
     const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
@@ -544,6 +645,13 @@ export const getTaskPapers = apiClient.getTaskPapers.bind(apiClient);
 export const getMethods = apiClient.getMethods.bind(apiClient);
 export const getMethod = apiClient.getMethod.bind(apiClient);
 export const getMethodPapers = apiClient.getMethodPapers.bind(apiClient);
+export const getDatasets = apiClient.getDatasets.bind(apiClient);
+export const getDataset = apiClient.getDataset.bind(apiClient);
+export const getDatasetBySlug = apiClient.getDatasetBySlug.bind(apiClient);
+export const getEvaluations = apiClient.getEvaluations.bind(apiClient);
+export const getEvaluation = apiClient.getEvaluation.bind(apiClient);
+export const getEvaluationsByPaper = apiClient.getEvaluationsByPaper.bind(apiClient);
+export const getEvaluationsByDataset = apiClient.getEvaluationsByDataset.bind(apiClient);
 export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
 export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
 export const healthCheck = apiClient.healthCheck.bind(apiClient);

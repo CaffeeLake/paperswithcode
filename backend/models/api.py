@@ -738,6 +738,288 @@ class Tasks(BaseModel):
     results: List[Task] = Field(..., description="List of tasks on this page")
 
 
+class Dataset(BaseModel):
+    """
+    Dataset object matching the original PapersWithCode API specification.
+
+    Represents a benchmark dataset used for evaluating AI/ML models.
+    Examples: ImageNet, COCO, SQuAD, GLUE
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Dataset ID")
+    name: str = Field(..., description="Dataset name")
+    slug: Optional[str] = Field(None, description="URL-friendly dataset slug")
+    full_name: Optional[str] = Field(None, description="Dataset full name")
+    description: Optional[str] = Field(None, description="Dataset description")
+    url: Optional[str] = Field(
+        None, description="URL for dataset download or information"
+    )
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+
+    # Additional metadata from PapersWithCode
+    short_description: Optional[str] = Field(
+        None, description="Short description/summary"
+    )
+    homepage: Optional[str] = Field(None, description="Official homepage URL")
+    parent_dataset_id: Optional[str] = Field(
+        None, description="Parent dataset ID if this is a variant"
+    )
+
+    # Image URLs
+    image_url: Optional[str] = Field(None, description="Main image URL for the dataset")
+    thumbnail_url: Optional[str] = Field(None, description="Thumbnail image URL")
+    verified_image_url: Optional[str] = Field(
+        None, description="Verified image URL from PWC"
+    )
+
+    # Paper reference
+    introducing_paper_id: Optional[str] = Field(
+        None, description="ID of paper that introduced this dataset"
+    )
+    introducing_paper_title: Optional[str] = Field(
+        None, description="Title of paper that introduced this dataset"
+    )
+
+    # Licensing
+    license_name: Optional[str] = Field(
+        None, description="License name (e.g., MIT, Apache 2.0)"
+    )
+    license_url: Optional[str] = Field(None, description="URL to license details")
+
+    # Dates
+    introduced_date: Optional[date] = Field(
+        None, description="Date when dataset was introduced"
+    )
+
+    # Array fields
+    modalities: Optional[List[str]] = Field(
+        None, description="Data modalities (e.g., ['Images', 'Videos'])"
+    )
+    languages: Optional[List[str]] = Field(
+        None, description="Languages (e.g., ['English', 'Chinese'])"
+    )
+    variants: Optional[List[str]] = Field(
+        None, description="Dataset variants/splits (e.g., ['COCO test-dev'])"
+    )
+
+    # Usage and warnings
+    num_papers: Optional[int] = Field(
+        None, description="Number of papers using this dataset"
+    )
+    warning: Optional[str] = Field(
+        None, description="Warning or note about the dataset"
+    )
+
+    # PWC source
+    pwc_url: Optional[str] = Field(None, description="Original PapersWithCode URL")
+
+    # Legacy fields (kept for backwards compatibility)
+    paper_count: Optional[int] = Field(
+        None, description="Number of papers using this dataset (alias for num_papers)"
+    )
+    task_count: Optional[int] = Field(
+        None, description="Number of tasks associated with this dataset"
+    )
+
+    @field_validator("id", "parent_dataset_id", "introducing_paper_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class Datasets(BaseModel):
+    """
+    Object representing a paginated page of datasets.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Dataset] = Field(..., description="List of datasets on this page")
+
+
+class DatasetCreateRequest(BaseModel):
+    """
+    Request model for creating a new dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str = Field(..., description="Dataset name")
+    full_name: Optional[str] = Field(None, description="Dataset full name")
+    description: Optional[str] = Field(None, description="Dataset description")
+    url: Optional[str] = Field(None, description="Dataset URL")
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+
+    # Additional PWC fields
+    short_description: Optional[str] = Field(
+        None, description="Short description/summary"
+    )
+    homepage: Optional[str] = Field(None, description="Official homepage URL")
+    image_url: Optional[str] = Field(None, description="Main image URL")
+    thumbnail_url: Optional[str] = Field(None, description="Thumbnail image URL")
+    verified_image_url: Optional[str] = Field(None, description="Verified image URL")
+    license_name: Optional[str] = Field(None, description="License name")
+    license_url: Optional[str] = Field(None, description="License URL")
+    introduced_date: Optional[date] = Field(None, description="Introduction date")
+    modalities: Optional[List[str]] = Field(None, description="Data modalities")
+    languages: Optional[List[str]] = Field(None, description="Languages")
+    variants: Optional[List[str]] = Field(None, description="Dataset variants")
+    num_papers: Optional[int] = Field(None, description="Number of papers")
+    warning: Optional[str] = Field(None, description="Warning/note")
+    pwc_url: Optional[str] = Field(None, description="PapersWithCode URL")
+
+
+class DatasetUpdateRequest(BaseModel):
+    """
+    Request model for updating an existing dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: Optional[str] = Field(None, description="Dataset name")
+    full_name: Optional[str] = Field(None, description="Dataset full name")
+    description: Optional[str] = Field(None, description="Dataset description")
+    url: Optional[str] = Field(None, description="Dataset URL")
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+
+    # Additional PWC fields
+    short_description: Optional[str] = Field(
+        None, description="Short description/summary"
+    )
+    homepage: Optional[str] = Field(None, description="Official homepage URL")
+    image_url: Optional[str] = Field(None, description="Main image URL")
+    thumbnail_url: Optional[str] = Field(None, description="Thumbnail image URL")
+    verified_image_url: Optional[str] = Field(None, description="Verified image URL")
+    license_name: Optional[str] = Field(None, description="License name")
+    license_url: Optional[str] = Field(None, description="License URL")
+    introduced_date: Optional[date] = Field(None, description="Introduction date")
+    modalities: Optional[List[str]] = Field(None, description="Data modalities")
+    languages: Optional[List[str]] = Field(None, description="Languages")
+    variants: Optional[List[str]] = Field(None, description="Dataset variants")
+    num_papers: Optional[int] = Field(None, description="Number of papers")
+    warning: Optional[str] = Field(None, description="Warning/note")
+    pwc_url: Optional[str] = Field(None, description="PapersWithCode URL")
+
+
+# Evaluation models
+
+
+class Evaluation(BaseModel):
+    """
+    Benchmark evaluation result.
+
+    Represents a performance evaluation of a paper/model on a specific task and dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Evaluation ID")
+    paper_id: str = Field(..., description="Paper ID that produced this evaluation")
+    task_id: str = Field(..., description="Task ID being evaluated")
+    dataset_id: str = Field(..., description="Dataset ID used for evaluation")
+    model_name: Optional[str] = Field(None, description="Name of the model/method used")
+    methodology: Optional[str] = Field(None, description="Methodology description")
+    metrics: dict = Field(
+        ...,
+        description="Dictionary of metric names and values (e.g., {'AP': '44.9', 'AP50': '64.7'})",
+    )
+    uses_additional_data: bool = Field(
+        default=False, description="Whether additional data was used beyond the dataset"
+    )
+    best_rank: Optional[int] = Field(
+        None, description="Best rank achieved in leaderboard"
+    )
+    best_metric: Optional[str] = Field(
+        None, description="Name of the best performing metric"
+    )
+    evaluated_on: Optional[date] = Field(
+        None, description="Date when evaluation was performed"
+    )
+    external_source_url: Optional[str] = Field(
+        None, description="URL to external source (e.g., competition)"
+    )
+    created_at: datetime = Field(..., description="Timestamp when record was created")
+    updated_at: datetime = Field(
+        ..., description="Timestamp when record was last updated"
+    )
+
+    @field_validator("id", "paper_id", "task_id", "dataset_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class Evaluations(BaseModel):
+    """
+    Object representing a paginated page of evaluations.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Evaluation] = Field(
+        ..., description="List of evaluations on this page"
+    )
+
+
+class EvaluationCreateRequest(BaseModel):
+    """
+    Request model for creating a new evaluation.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    paper_id: int = Field(..., description="Paper ID")
+    task_id: int = Field(..., description="Task ID")
+    dataset_id: int = Field(..., description="Dataset ID")
+    model_name: Optional[str] = Field(None, description="Model name")
+    methodology: Optional[str] = Field(None, description="Methodology description")
+    metrics: dict = Field(..., description="Dictionary of metrics")
+    uses_additional_data: bool = Field(
+        default=False, description="Uses additional data"
+    )
+    best_rank: Optional[int] = Field(None, description="Best rank")
+    best_metric: Optional[str] = Field(None, description="Best metric name")
+    evaluated_on: Optional[date] = Field(None, description="Evaluation date")
+    external_source_url: Optional[str] = Field(None, description="External source URL")
+
+
+class EvaluationUpdateRequest(BaseModel):
+    """
+    Request model for updating an existing evaluation.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    model_name: Optional[str] = Field(None, description="Model name")
+    methodology: Optional[str] = Field(None, description="Methodology description")
+    metrics: Optional[dict] = Field(None, description="Dictionary of metrics")
+    uses_additional_data: Optional[bool] = Field(
+        None, description="Uses additional data"
+    )
+    best_rank: Optional[int] = Field(None, description="Best rank")
+    best_metric: Optional[str] = Field(None, description="Best metric name")
+    evaluated_on: Optional[date] = Field(None, description="Evaluation date")
+    external_source_url: Optional[str] = Field(None, description="External source URL")
+
+
 # Keyword management models
 
 

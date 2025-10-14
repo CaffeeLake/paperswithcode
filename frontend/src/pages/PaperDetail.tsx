@@ -11,6 +11,7 @@ import { Link, useParams } from "react-router-dom";
 import Header from "@/components/Header";
 import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
+import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import PaperResources from "@/components/PaperResources";
 import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, updatePaperRepositories, type Task as APITask, type Method as APIMethod } from "@/lib/api";
 import { useState } from "react";
@@ -28,7 +29,24 @@ const PaperDetail = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
   const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
   const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(paper?.arxiv_id);
+  const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByPaper(paper?.id, !!paper?.id);
   const queryClient = useQueryClient();
+
+  // Fetch tasks and datasets to display names instead of IDs
+  const { data: allTasksDataForEvals } = useQuery({
+    queryKey: ['tasks-for-evals'],
+    queryFn: () => getTasks({ page_size: 100 }),
+    enabled: !!evaluations && evaluations.length > 0,
+  });
+
+  const { data: allDatasetsData } = useQuery({
+    queryKey: ['datasets-for-evals'],
+    queryFn: async () => {
+      const { getDatasets } = await import('@/lib/api');
+      return getDatasets({ page_size: 100 });
+    },
+    enabled: !!evaluations && evaluations.length > 0,
+  });
 
   // Admin editing state
   const [isEditingTasks, setIsEditingTasks] = useState(false);
@@ -403,100 +421,92 @@ const PaperDetail = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                {/* SOTA Badge */}
-                <div className="bg-muted/30 rounded-lg p-4 mb-6">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <Trophy className="w-5 h-5 text-yellow-600" />
-                      <span className="font-semibold">SOTA for </span>
-                      <Link to="/benchmark/wider-face-easy" className="text-primary hover:underline font-semibold">
-                        Face Detection on WIDER Face (Easy)
-                      </Link>
-                    </div>
-                    <button className="text-primary text-sm hover:underline">
-                      →| Get a GitHub badge
-                    </button>
+                {evaluationsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                    <span>Loading evaluation results...</span>
                   </div>
-                </div>
+                ) : evaluations && evaluations.length > 0 ? (
+                  <>
+                    {/* SOTA Badge - show if any evaluation has best_rank === 1 */}
+                    {evaluations.some(e => e.best_rank === 1) && (
+                      <div className="bg-muted/30 rounded-lg p-4 mb-6">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-3">
+                            <Trophy className="w-5 h-5 text-yellow-600" />
+                            <span className="font-semibold">State-of-the-Art results achieved</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
-                {/* Evaluation Table */}
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Task</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric name</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric value</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Global rank</th>
-                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Compare</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr className="border-b border-border hover:bg-muted/20">
-                        <td className="py-4 px-4">Face Detection</td>
-                        <td className="py-4 px-4">FDDB</td>
-                        <td className="py-4 px-4 font-medium">DSFD</td>
-                        <td className="py-4 px-4">AP</td>
-                        <td className="py-4 px-4 font-semibold">0.991</td>
-                        <td className="py-4 px-4 font-semibold"># 1</td>
-                        <td className="py-4 px-4">
-                          <Link to="/benchmark/fddb">
-                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                              See all
-                            </Button>
-                          </Link>
-                        </td>
-                      </tr>
-                      <tr className="border-b border-border hover:bg-muted/20">
-                        <td className="py-4 px-4">Face Detection</td>
-                        <td className="py-4 px-4">WIDER Face (Easy)</td>
-                        <td className="py-4 px-4 font-medium">DSFD</td>
-                        <td className="py-4 px-4">AP</td>
-                        <td className="py-4 px-4 font-semibold">0.960</td>
-                        <td className="py-4 px-4 font-semibold"># 1</td>
-                        <td className="py-4 px-4">
-                          <Link to="/benchmark/wider-face-easy">
-                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                              See all
-                            </Button>
-                          </Link>
-                        </td>
-                      </tr>
-                      <tr className="border-b border-border hover:bg-muted/20">
-                        <td className="py-4 px-4">Face Detection</td>
-                        <td className="py-4 px-4">WIDER Face (Hard)</td>
-                        <td className="py-4 px-4 font-medium">DSFD</td>
-                        <td className="py-4 px-4">AP</td>
-                        <td className="py-4 px-4 font-semibold">0.900</td>
-                        <td className="py-4 px-4 font-semibold"># 1</td>
-                        <td className="py-4 px-4">
-                          <Link to="/benchmark/wider-face-hard">
-                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                              See all
-                            </Button>
-                          </Link>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-muted/20">
-                        <td className="py-4 px-4">Face Detection</td>
-                        <td className="py-4 px-4">WIDER Face (Medium)</td>
-                        <td className="py-4 px-4 font-medium">DSFD</td>
-                        <td className="py-4 px-4">AP</td>
-                        <td className="py-4 px-4 font-semibold">0.953</td>
-                        <td className="py-4 px-4 font-semibold"># 1</td>
-                        <td className="py-4 px-4">
-                          <Link to="/benchmark/wider-face-medium">
-                            <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4">
-                              See all
-                            </Button>
-                          </Link>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                    {/* Evaluation Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Task</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Value</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Rank</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {evaluations.map((evaluation, idx) => {
+                            // Get the primary metric to display
+                            const metricName = evaluation.best_metric || Object.keys(evaluation.metrics)[0];
+                            const metricValue = evaluation.metrics[metricName];
+
+                            // Get task name
+                            const task = allTasksDataForEvals?.results?.find(
+                              (t: APITask) => t.id === evaluation.task_id
+                            );
+                            const taskName = task?.name || `Task ${evaluation.task_id}`;
+
+                            // Get dataset name and slug
+                            const dataset = allDatasetsData?.results?.find(
+                              (d: any) => d.id === evaluation.dataset_id
+                            );
+                            const datasetName = dataset?.name || `Dataset ${evaluation.dataset_id}`;
+                            const datasetSlug = dataset?.slug || `dataset-${evaluation.dataset_id}`;
+
+                            return (
+                              <tr key={evaluation.id} className={`${idx < evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
+                                <td className="py-4 px-4">{taskName}</td>
+                                <td className="py-4 px-4">{datasetName}</td>
+                                <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
+                                <td className="py-4 px-4">{metricName}</td>
+                                <td className="py-4 px-4 font-semibold">{metricValue}</td>
+                                <td className="py-4 px-4 font-semibold">
+                                  {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
+                                </td>
+                                <td className="py-4 px-4">
+                                  <Button
+                                    size="sm"
+                                    className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
+                                    asChild
+                                  >
+                                    <Link to={`/benchmark/${datasetSlug}`}>
+                                      See all
+                                    </Link>
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Database className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                    <p>No evaluation results available for this paper yet.</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
