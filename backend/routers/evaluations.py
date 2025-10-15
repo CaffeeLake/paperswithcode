@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Evaluation, Evaluations
+from backend.models.api import (
+    Evaluation,
+    Evaluations,
+    EvaluationCreateRequest,
+    EvaluationUpdateRequest,
+)
 from backend.services.evaluation_service import EvaluationService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import DatabaseError
@@ -108,6 +113,129 @@ async def get_evaluation(
     except HTTPException:
         raise
     except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/", response_model=Evaluation, status_code=201)
+async def create_evaluation(
+    request: EvaluationCreateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Create a new evaluation.
+
+    Creates a new benchmark evaluation result for a paper on a specific task and dataset.
+
+    **Request Body:**
+    ```json
+    {
+        "paper_id": 123,
+        "task_id": 1,
+        "dataset_id": 5,
+        "model_name": "DETR",
+        "metrics": {"AP": "44.9", "AP50": "64.7"},
+        "best_rank": 1,
+        "best_metric": "AP"
+    }
+    ```
+
+    **Returns:**
+    - Created evaluation object with ID
+    """
+    try:
+        service = EvaluationService(db)
+        return service.create_evaluation(
+            paper_id=request.paper_id,
+            task_id=request.task_id,
+            dataset_id=request.dataset_id,
+            model_name=request.model_name,
+            methodology=request.methodology,
+            metrics=request.metrics,
+            uses_additional_data=request.uses_additional_data,
+            best_rank=request.best_rank,
+            best_metric=request.best_metric,
+            evaluated_on=request.evaluated_on,
+            external_source_url=request.external_source_url,
+        )
+
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.put("/{evaluation_id}", response_model=Evaluation)
+async def update_evaluation(
+    evaluation_id: int,
+    request: EvaluationUpdateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update an existing evaluation.
+
+    Updates the fields of an existing evaluation. Only provided fields will be updated.
+
+    **Example:**
+    ```
+    PUT /api/v1/evaluations/123
+    {
+        "model_name": "DETR-R50",
+        "metrics": {"AP": "45.2", "AP50": "65.1"},
+        "best_rank": 2
+    }
+    ```
+
+    **Returns:**
+    - Updated evaluation object
+    """
+    try:
+        service = EvaluationService(db)
+        return service.update_evaluation(
+            evaluation_id=evaluation_id,
+            model_name=request.model_name,
+            methodology=request.methodology,
+            metrics=request.metrics,
+            uses_additional_data=request.uses_additional_data,
+            best_rank=request.best_rank,
+            best_metric=request.best_metric,
+            evaluated_on=request.evaluated_on,
+            external_source_url=request.external_source_url,
+        )
+
+    except DatabaseError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/{evaluation_id}", status_code=204)
+async def delete_evaluation(
+    evaluation_id: int,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Delete an evaluation.
+
+    Permanently deletes an evaluation by ID.
+
+    **Example:**
+    - `/api/v1/evaluations/123` - Delete evaluation with ID 123
+
+    **Returns:**
+    - 204 No Content on success
+    """
+    try:
+        service = EvaluationService(db)
+        service.delete_evaluation(evaluation_id)
+        return None
+
+    except DatabaseError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

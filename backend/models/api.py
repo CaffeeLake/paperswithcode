@@ -763,8 +763,17 @@ class Dataset(BaseModel):
         None, description="Short description/summary"
     )
     homepage: Optional[str] = Field(None, description="Official homepage URL")
+
+    # Dataset hierarchy and variants
     parent_dataset_id: Optional[str] = Field(
         None, description="Parent dataset ID if this is a variant"
+    )
+    variant_type: Optional[str] = Field(
+        None,
+        description="Type of variant: split, variant, subset, derived, or augmented",
+    )
+    split_name: Optional[str] = Field(
+        None, description="Name of the split (e.g., test-dev, minival, val2017)"
     )
 
     # Image URLs
@@ -781,6 +790,9 @@ class Dataset(BaseModel):
     introducing_paper_title: Optional[str] = Field(
         None, description="Title of paper that introduced this dataset"
     )
+    paper_url: Optional[str] = Field(
+        None, description="URL to paper that introduced this dataset"
+    )
 
     # Licensing
     license_name: Optional[str] = Field(
@@ -789,6 +801,9 @@ class Dataset(BaseModel):
     license_url: Optional[str] = Field(None, description="URL to license details")
 
     # Dates
+    introduced_year: Optional[int] = Field(
+        None, description="Year the dataset was introduced"
+    )
     introduced_date: Optional[date] = Field(
         None, description="Date when dataset was introduced"
     )
@@ -952,6 +967,14 @@ class Evaluation(BaseModel):
     updated_at: datetime = Field(
         ..., description="Timestamp when record was last updated"
     )
+
+    # Additional fields for frontend display
+    paper_title: Optional[str] = Field(None, description="Title of the paper")
+    paper_arxiv_id: Optional[str] = Field(None, description="ArXiv ID of the paper")
+    code_url: Optional[str] = Field(
+        None, description="URL to the code repository (GitHub)"
+    )
+    result_url: Optional[str] = Field(None, description="URL to the result/demo page")
 
     @field_validator("id", "paper_id", "task_id", "dataset_id", mode="before")
     @classmethod

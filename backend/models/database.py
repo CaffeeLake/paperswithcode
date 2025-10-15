@@ -325,9 +325,13 @@ class Dataset(Base):
     # Additional metadata from PapersWithCode
     short_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     homepage: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Dataset hierarchy and variants
     parent_dataset_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
     )
+    variant_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    split_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # Image/media URLs
     image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -343,13 +347,15 @@ class Dataset(Base):
     introducing_paper_title: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True
     )
+    paper_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # Licensing information
     license_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     license_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
-    # Introduction date
+    # Introduction date/year
     introduced_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    introduced_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # JSONB fields for arrays
     modalities: Mapped[Optional[dict]] = mapped_column(

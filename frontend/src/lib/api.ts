@@ -130,6 +130,10 @@ export interface Evaluation {
   external_source_url?: string;
   created_at: string;
   updated_at: string;
+  paper_title?: string;
+  paper_arxiv_id?: string;
+  code_url?: string;
+  result_url?: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -587,6 +591,50 @@ class ApiClient {
     return response.results;
   }
 
+  async createEvaluation(data: {
+    paper_id: number;
+    task_id: number;
+    dataset_id: number;
+    model_name?: string;
+    methodology?: string;
+    metrics: Record<string, string | number>;
+    uses_additional_data?: boolean;
+    best_rank?: number;
+    best_metric?: string;
+    evaluated_on?: string;
+    external_source_url?: string;
+  }): Promise<Evaluation> {
+    const endpoint = '/evaluations/';
+    return this.request<Evaluation>(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateEvaluation(evaluationId: string, data: {
+    model_name?: string;
+    methodology?: string;
+    metrics?: Record<string, string | number>;
+    uses_additional_data?: boolean;
+    best_rank?: number;
+    best_metric?: string;
+    evaluated_on?: string;
+    external_source_url?: string;
+  }): Promise<Evaluation> {
+    const endpoint = `/evaluations/${evaluationId}`;
+    return this.request<Evaluation>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteEvaluation(evaluationId: string): Promise<void> {
+    const endpoint = `/evaluations/${evaluationId}`;
+    return this.request<void>(endpoint, {
+      method: 'DELETE',
+    });
+  }
+
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
     const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
@@ -652,6 +700,9 @@ export const getEvaluations = apiClient.getEvaluations.bind(apiClient);
 export const getEvaluation = apiClient.getEvaluation.bind(apiClient);
 export const getEvaluationsByPaper = apiClient.getEvaluationsByPaper.bind(apiClient);
 export const getEvaluationsByDataset = apiClient.getEvaluationsByDataset.bind(apiClient);
+export const createEvaluation = apiClient.createEvaluation.bind(apiClient);
+export const updateEvaluation = apiClient.updateEvaluation.bind(apiClient);
+export const deleteEvaluation = apiClient.deleteEvaluation.bind(apiClient);
 export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
 export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
 export const healthCheck = apiClient.healthCheck.bind(apiClient);

@@ -51,3 +51,26 @@ export function useEvaluations(params?: {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 }
+
+/**
+ * Fetch evaluations for a specific task and dataset (for leaderboards)
+ */
+export function useTaskDatasetEvaluations(
+  taskId: string | number | undefined,
+  datasetId: string | number | undefined,
+  enabled: boolean = true
+) {
+  return useQuery({
+    queryKey: ['evaluations', 'task', taskId, 'dataset', datasetId],
+    queryFn: () => {
+      const params: { task_id?: number; dataset_id?: number; page_size: number } = {
+        page_size: 100,
+      };
+      if (taskId) params.task_id = typeof taskId === 'string' ? parseInt(taskId) : taskId;
+      if (datasetId) params.dataset_id = typeof datasetId === 'string' ? parseInt(datasetId) : datasetId;
+      return getEvaluations(params);
+    },
+    enabled: enabled && !!taskId && !!datasetId,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}

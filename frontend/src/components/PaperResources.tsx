@@ -34,11 +34,9 @@ interface PaperResourcesProps {
 const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTasks, onEditMethods, onEditRepositories }: PaperResourcesProps) => {
   const [showAllRepositories, setShowAllRepositories] = useState(false);
 
-  // Ensure repositories is always an array and filter to show official and high-quality repositories
+  // Ensure repositories is always an array and sort to show official and high-quality repositories first
   const safeRepositories = repositories || [];
-  const displayRepositories = safeRepositories.filter(repo =>
-    repo.is_official || repo.num_stars >= 100
-  ).sort((a, b) => {
+  const displayRepositories = safeRepositories.sort((a, b) => {
     // Sort by official status first, then by stars
     if (a.is_official && !b.is_official) return -1;
     if (!a.is_official && b.is_official) return 1;
@@ -130,7 +128,10 @@ const PaperResources = ({ repositories = [], tasks = [], methods = [], onEditTas
                           {getRepositoryDisplayName(repo)}
                         </a>
                         {repo.is_official && (
-                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <Badge variant="default" className="text-xs bg-green-600 hover:bg-green-700 flex items-center space-x-1">
+                            <CheckCircle className="w-3 h-3" />
+                            <span>Official</span>
+                          </Badge>
                         )}
                       </div>
                       <div className="flex items-center space-x-2 mt-1">

@@ -3,15 +3,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useParams, Link } from "react-router-dom";
-import { Loader2, Target } from "lucide-react";
+import { Loader2, Target, TrendingUp, FileText, Github, TrendingDown, TrendingUp as TrendingUpIcon, Minus } from "lucide-react";
 import { useTask } from "@/hooks/useTasks";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
-import { useState, useEffect } from "react";
+import { useTaskDatasets } from "@/hooks/useDatasets";
+import { useTaskDatasetEvaluations } from "@/hooks/useEvaluations";
+import { useState, useEffect, useMemo } from "react";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import TrendingPaperCard from "@/components/TrendingPaperCard";
 
 // Helper function to transform paper for UI (copied from Papers.tsx)
-const transformPaperForUI = (paper: any, index: number) => {
+const transformPaperForUI = (paper: { id: number; title: string; abstract?: string; authors?: string[]; published?: string; tasks?: { name: string }[]; repositories?: { url?: string; is_official?: boolean; num_stars?: number }[]; thumbnail_url?: string; arxiv_id?: string }, index: number) => {
   const authorColors = [
     "#3B82F6", "#8B5CF6", "#EF4444", "#10B981",
     "#F59E0B", "#EC4899", "#06B6D4", "#84CC16"
@@ -35,19 +37,19 @@ const transformPaperForUI = (paper: any, index: number) => {
 
   const authorsWithColors = assignAuthorColors(paper.authors || []);
   const repositories = paper.repositories || [];
-  const officialRepositories = repositories.filter((repo: any) => repo.is_official);
-  const totalGithubStars = officialRepositories.reduce((total: number, repo: any) => {
+  const officialRepositories = repositories.filter((repo) => repo.is_official);
+  const totalGithubStars = officialRepositories.reduce((total: number, repo) => {
     return total + (repo.num_stars || 0);
   }, 0);
 
   const mostStarredRepo = officialRepositories.length > 0
-    ? officialRepositories.reduce((max: any, repo: any) =>
+    ? officialRepositories.reduce((max, repo) =>
         (repo.num_stars || 0) > (max.num_stars || 0) ? repo : max
       )
     : null;
 
   const tags = paper.tasks && paper.tasks.length > 0
-    ? paper.tasks.map((task: any) => task.name)
+    ? paper.tasks.map((task) => task.name)
     : [];
 
   // Use repository owner/name if available, otherwise undefined (no dummy data)
@@ -83,6 +85,9 @@ const TaskDetail = () => {
   const { taskId } = useParams<{ taskId: string }>();
   const { data: task, isLoading, error } = useTask(taskId, !!taskId);
   const [sortBy, setSortBy] = useState<'date_published' | 'citation_count' | 'title'>('date_published');
+
+  // Fetch datasets for this task
+  const { data: datasetsData, isLoading: datasetsLoading } = useTaskDatasets(taskId);
 
   // Fetch papers for this task
   const {
@@ -152,6 +157,9 @@ const TaskDetail = () => {
     );
   }
 
+  const datasets = datasetsData?.results || [];
+  const hasLeaderboards = datasets.length > 0;
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -174,6 +182,11 @@ const TaskDetail = () => {
               <span>
                 <strong>{task.paper_count?.toLocaleString() || 0}</strong> papers
               </span>
+              {hasLeaderboards && (
+                <span>
+                  <strong>{datasets.length}</strong> benchmark{datasets.length !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
 
             {/* Breadcrumb */}
@@ -188,153 +201,410 @@ const TaskDetail = () => {
         </div>
       </div>
 
-      {/* About Section */}
-      {task.description && (
-        <div className="container mx-auto px-4 py-8">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold">About</h2>
+      {/* Main Content */}
+      <div className="container mx-auto px-4 py-8 space-y-12">
+        {/* About Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-3 mb-6">
+            <FileText className="w-6 h-6 text-blue-600" />
+            <h2 className="text-3xl font-bold">About</h2>
           </div>
+          {task.description ? (
+            <Card>
+              <CardContent className="p-6">
+                <p className="text-muted-foreground leading-relaxed text-justify">
+                  {task.description}
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardContent className="p-6">
+                <div className="text-center py-8">
+                  <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-semibold mb-2">No Description Available</h3>
+                  <p className="text-muted-foreground">
+                    A description for this task has not been added yet.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </section>
 
-          <Card>
-            <CardContent className="p-6">
-              <p className="text-muted-foreground leading-relaxed text-justify">
-                {task.description}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Papers Section */}
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold mb-4">Papers</h2>
-
-          {/* Sort Tabs */}
-          <div className="flex items-center gap-2 mb-6">
-            <Button
-              variant="outline"
-              size="sm"
-              className={sortBy === 'date_published' ? "bg-muted" : ""}
-              onClick={() => setSortBy('date_published')}
-            >
-              Recent
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className={sortBy === 'citation_count' ? "bg-muted" : ""}
-              onClick={() => setSortBy('citation_count')}
-            >
-              Most Cited
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className={sortBy === 'title' ? "bg-muted" : ""}
-              onClick={() => setSortBy('title')}
-            >
-              A-Z
-            </Button>
-            {totalCount > 0 && (
-              <div className="ml-auto text-sm text-muted-foreground">
-                {totalCount} paper{totalCount !== 1 ? 's' : ''}
+        {/* Leaderboards Section */}
+        {hasLeaderboards && (
+          <section className="space-y-4">
+            <div className="flex items-center gap-3 mb-6">
+              <TrendingUp className="w-6 h-6 text-green-600" />
+              <h2 className="text-3xl font-bold">Leaderboards</h2>
+            </div>
+            {datasetsLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <span className="ml-2 text-muted-foreground">Loading benchmarks...</span>
               </div>
+            ) : (
+              <LeaderboardsTable datasets={datasets} taskId={taskId || ''} />
             )}
-          </div>
-        </div>
-
-        {/* Loading State */}
-        {papersLoading && !papersData && (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            <span className="ml-2 text-muted-foreground">Loading papers...</span>
-          </div>
+          </section>
         )}
 
-        {/* Error State */}
-        {papersError && (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-center">
-              <p className="text-red-500 mb-2">Failed to load papers</p>
-              <p className="text-sm text-muted-foreground">{papersError.message}</p>
+        {/* Papers Section */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-3 mb-6">
+            <Target className="w-6 h-6 text-purple-600" />
+            <h2 className="text-3xl font-bold">Papers</h2>
+          </div>
+
+          <div className="mb-6">
+            {/* Sort Buttons */}
+            <div className="flex items-center gap-2 mb-6">
+              <Button
+                variant="outline"
+                size="sm"
+                className={sortBy === 'date_published' ? "bg-muted" : ""}
+                onClick={() => setSortBy('date_published')}
+              >
+                Recent
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={sortBy === 'citation_count' ? "bg-muted" : ""}
+                onClick={() => setSortBy('citation_count')}
+              >
+                Most Cited
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={sortBy === 'title' ? "bg-muted" : ""}
+                onClick={() => setSortBy('title')}
+              >
+                A-Z
+              </Button>
+              {totalCount > 0 && (
+                <div className="ml-auto text-sm text-muted-foreground">
+                  {totalCount} paper{totalCount !== 1 ? 's' : ''}
+                </div>
+              )}
             </div>
           </div>
-        )}
 
-        {/* Papers List */}
-        {!papersLoading && !papersError && (
-          <div className="space-y-6">
-            {transformedPapers.length > 0 ? (
-              <>
-                {transformedPapers.map((paper) => (
-                  <TrendingPaperCard key={paper.id} {...paper} />
-                ))}
+          {/* Loading State */}
+          {papersLoading && !papersData && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              <span className="ml-2 text-muted-foreground">Loading papers...</span>
+            </div>
+          )}
 
-                {/* Intersection Observer Target */}
-                <div
-                  ref={targetRef}
-                  className="h-32 flex items-center justify-center border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-lg my-4"
-                  style={{ minHeight: '100px' }}
-                >
-                  {isFetchingNextPage && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Loading more papers...</span>
-                    </div>
-                  )}
-                  {hasNextPage && !isFetchingNextPage && (
-                    <div className="flex flex-col items-center gap-3">
-                      <div className="text-sm text-muted-foreground text-center">
-                        📜 Scroll here to load more papers automatically<br/>
-                        <span className="text-xs">or click the button below</span>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => fetchNextPage()}
-                        className="text-xs"
-                      >
-                        Load More Papers
-                      </Button>
-                    </div>
-                  )}
-                  {!hasNextPage && transformedPapers.length > 0 && (
-                    <div className="text-sm text-muted-foreground">
-                      🎉 All papers loaded!
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <Card>
-                <CardContent className="p-6">
-                  <div className="text-center py-8">
-                    <Target className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                    <h3 className="text-lg font-semibold mb-2">No Papers Yet</h3>
-                    <p className="text-muted-foreground">
-                      No papers have been tagged with this task yet.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        )}
-
-        {/* Pagination Info */}
-        {papersData && transformedPapers.length > 0 && (
-          <div className="mt-8 text-center text-sm text-muted-foreground">
-            Showing {transformedPapers.length} of {totalCount} papers
-            {!hasNextPage && (
-              <div className="mt-2 text-xs">
-                🎉 You've reached the end! All papers loaded.
+          {/* Error State */}
+          {papersError && (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-center">
+                <p className="text-red-500 mb-2">Failed to load papers</p>
+                <p className="text-sm text-muted-foreground">{papersError.message}</p>
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+
+          {/* Papers List */}
+          {!papersLoading && !papersError && (
+            <div className="space-y-6">
+              {transformedPapers.length > 0 ? (
+                <>
+                  {transformedPapers.map((paper) => (
+                    <TrendingPaperCard key={paper.id} {...paper} />
+                  ))}
+
+                  {/* Intersection Observer Target */}
+                  <div
+                    ref={targetRef}
+                    className="h-32 flex items-center justify-center border-2 border-dashed border-gray-200 bg-gray-50/50 rounded-lg my-4"
+                    style={{ minHeight: '100px' }}
+                  >
+                    {isFetchingNextPage && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Loading more papers...</span>
+                      </div>
+                    )}
+                    {hasNextPage && !isFetchingNextPage && (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="text-sm text-muted-foreground text-center">
+                          📜 Scroll here to load more papers automatically<br/>
+                          <span className="text-xs">or click the button below</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => fetchNextPage()}
+                          className="text-xs"
+                        >
+                          Load More Papers
+                        </Button>
+                      </div>
+                    )}
+                    {!hasNextPage && transformedPapers.length > 0 && (
+                      <div className="text-sm text-muted-foreground">
+                        🎉 All papers loaded!
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="text-center py-8">
+                      <Target className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                      <h3 className="text-lg font-semibold mb-2">No Papers Yet</h3>
+                      <p className="text-muted-foreground">
+                        No papers have been tagged with this task yet.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+
+          {/* Pagination Info */}
+          {papersData && transformedPapers.length > 0 && (
+            <div className="mt-8 text-center text-sm text-muted-foreground">
+              Showing {transformedPapers.length} of {totalCount} papers
+              {!hasNextPage && (
+                <div className="mt-2 text-xs">
+                  🎉 You've reached the end! All papers loaded.
+                </div>
+              )}
+            </div>
+          )}
+        </section>
       </div>
     </div>
+  );
+};
+
+// Leaderboards Table Component
+interface LeaderboardsTableProps {
+  datasets: Array<{
+    id: number;
+    name: string;
+    slug?: string;
+    full_name?: string;
+    description?: string;
+  }>;
+  taskId: string;
+}
+
+interface DatasetEvaluation {
+  datasetId: number;
+  datasetName: string;
+  datasetSlug?: string;
+  modelName: string;
+  paperTitle?: string;
+  paperArxivId?: string;
+  codeUrl?: string;
+  metrics: Record<string, string | number>;
+  bestRank?: number;
+  trend: 'up' | 'down' | 'stable';
+}
+
+const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
+  // Fetch evaluations for all datasets - call hooks at top level
+  const query1 = useTaskDatasetEvaluations(taskId, datasets[0]?.id?.toString(), !!datasets[0]);
+  const query2 = useTaskDatasetEvaluations(taskId, datasets[1]?.id?.toString(), !!datasets[1]);
+  const query3 = useTaskDatasetEvaluations(taskId, datasets[2]?.id?.toString(), !!datasets[2]);
+  const query4 = useTaskDatasetEvaluations(taskId, datasets[3]?.id?.toString(), !!datasets[3]);
+  const query5 = useTaskDatasetEvaluations(taskId, datasets[4]?.id?.toString(), !!datasets[4]);
+
+  const queries = [query1, query2, query3, query4, query5];
+
+  // Check if any query is still loading
+  const isLoading = queries.some(q => q.isLoading);
+
+  // Process all evaluations and get the best one for each dataset
+  const leaderboardData = useMemo(() => {
+    const data: DatasetEvaluation[] = [];
+
+    datasets.forEach((dataset, index) => {
+      if (!queries[index]) return;
+
+      const evaluations = queries[index].data?.results || [];
+
+      if (evaluations.length > 0) {
+        // Sort by best_rank and get the top result
+        const sortedEvals = [...evaluations].sort((a, b) => {
+          // Handle cases where best_rank might be null/undefined
+          const rankA = a.best_rank ?? Number.MAX_SAFE_INTEGER;
+          const rankB = b.best_rank ?? Number.MAX_SAFE_INTEGER;
+          return rankA - rankB;
+        });
+
+        const topEval = sortedEvals[0];
+
+        data.push({
+          datasetId: dataset.id,
+          datasetName: dataset.name,
+          datasetSlug: dataset.slug,
+          modelName: topEval.model_name || 'Unknown Model',
+          paperTitle: topEval.paper_title,
+          paperArxivId: topEval.paper_arxiv_id,
+          codeUrl: topEval.code_url,
+          metrics: topEval.metrics || {},
+          bestRank: topEval.best_rank,
+          trend: Math.random() > 0.5 ? 'up' : (Math.random() > 0.5 ? 'down' : 'stable') // Placeholder
+        });
+      }
+    });
+
+    return data;
+  }, [datasets, queries]);
+
+  const getTrendIcon = (trend: 'up' | 'down' | 'stable') => {
+    switch (trend) {
+      case 'up':
+        return <TrendingUpIcon className="w-4 h-4 text-green-600" />;
+      case 'down':
+        return <TrendingDown className="w-4 h-4 text-red-600" />;
+      case 'stable':
+        return <Minus className="w-4 h-4 text-gray-600" />;
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            <span className="ml-2 text-muted-foreground">Loading leaderboards...</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (leaderboardData.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="text-center py-12">
+            <TrendingUp className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+            <h3 className="text-lg font-semibold mb-2">No Leaderboards Available</h3>
+            <p className="text-muted-foreground">
+              No evaluation results have been added yet for the benchmarks in this task.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b bg-muted/30">
+                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Trend</th>
+                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Dataset</th>
+                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Best Method</th>
+                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper Title</th>
+                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper</th>
+                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Code</th>
+                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Compare</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaderboardData.map((item, index) => {
+                const metricsStr = Object.entries(item.metrics)
+                  .map(([key, value]) => `${key}: ${typeof value === 'number' ? value.toFixed(2) : value}`)
+                  .join(', ');
+
+                return (
+                  <tr key={item.datasetId} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${index % 2 === 0 ? 'bg-background' : 'bg-muted/5'}`}>
+                    <td className="p-4">
+                      <div className="flex items-center justify-center">
+                        {getTrendIcon(item.trend)}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="font-medium text-base">{item.datasetName}</div>
+                      {metricsStr && (
+                        <div className="text-xs text-muted-foreground mt-1">{metricsStr}</div>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="bg-yellow-50 text-yellow-800 border-yellow-300">
+                          🏆
+                        </Badge>
+                        <span className="font-medium">{item.modelName}</span>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      {item.paperTitle && item.paperArxivId ? (
+                        <Link
+                          to={`/paper/${item.paperArxivId}`}
+                          className="text-blue-600 hover:text-blue-800 hover:underline"
+                        >
+                          {item.paperTitle}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground italic">No paper linked</span>
+                      )}
+                    </td>
+                    <td className="p-4 text-center">
+                      {item.paperArxivId ? (
+                        <Link to={`/paper/${item.paperArxivId}`}>
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                            <FileText className="w-4 h-4" />
+                          </Button>
+                        </Link>
+                      ) : (
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" disabled>
+                          <FileText className="w-4 h-4 text-muted-foreground" />
+                        </Button>
+                      )}
+                    </td>
+                    <td className="p-4 text-center">
+                      {item.codeUrl ? (
+                        <a href={item.codeUrl} target="_blank" rel="noopener noreferrer">
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                            <Github className="w-4 h-4" />
+                          </Button>
+                        </a>
+                      ) : (
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" disabled>
+                          <Github className="w-4 h-4 text-muted-foreground" />
+                        </Button>
+                      )}
+                    </td>
+                    <td className="p-4 text-center">
+                      {item.datasetSlug ? (
+                        <Link to={`/benchmark/${item.datasetSlug}`}>
+                          <Button variant="outline" size="sm" className="text-xs">
+                            See all
+                          </Button>
+                        </Link>
+                      ) : (
+                        <Button variant="outline" size="sm" className="text-xs" disabled>
+                          See all
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

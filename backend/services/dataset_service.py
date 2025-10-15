@@ -135,19 +135,29 @@ class DatasetService:
                     # PWC enriched fields
                     "short_description": db_dataset.short_description,
                     "homepage": db_dataset.homepage,
+                    # Hierarchy and variant fields
                     "parent_dataset_id": str(db_dataset.parent_dataset_id)
                     if db_dataset.parent_dataset_id
                     else None,
+                    "variant_type": db_dataset.variant_type,
+                    "split_name": db_dataset.split_name,
+                    # Images
                     "image_url": db_dataset.image_url,
                     "thumbnail_url": db_dataset.thumbnail_url,
                     "verified_image_url": db_dataset.verified_image_url,
+                    # Paper reference
                     "introducing_paper_id": str(db_dataset.introducing_paper_id)
                     if db_dataset.introducing_paper_id
                     else None,
                     "introducing_paper_title": db_dataset.introducing_paper_title,
+                    "paper_url": db_dataset.paper_url,
+                    # Licensing
                     "license_name": db_dataset.license_name,
                     "license_url": db_dataset.license_url,
+                    # Dates
+                    "introduced_year": db_dataset.introduced_year,
                     "introduced_date": db_dataset.introduced_date,
+                    # Metadata
                     "modalities": db_dataset.modalities,
                     "languages": db_dataset.languages,
                     "variants": db_dataset.variants,
@@ -219,19 +229,29 @@ class DatasetService:
                 # PWC enriched fields
                 "short_description": db_dataset.short_description,
                 "homepage": db_dataset.homepage,
+                # Hierarchy and variant fields
                 "parent_dataset_id": str(db_dataset.parent_dataset_id)
                 if db_dataset.parent_dataset_id
                 else None,
+                "variant_type": db_dataset.variant_type,
+                "split_name": db_dataset.split_name,
+                # Images
                 "image_url": db_dataset.image_url,
                 "thumbnail_url": db_dataset.thumbnail_url,
                 "verified_image_url": db_dataset.verified_image_url,
+                # Paper reference
                 "introducing_paper_id": str(db_dataset.introducing_paper_id)
                 if db_dataset.introducing_paper_id
                 else None,
                 "introducing_paper_title": db_dataset.introducing_paper_title,
+                "paper_url": db_dataset.paper_url,
+                # Licensing
                 "license_name": db_dataset.license_name,
                 "license_url": db_dataset.license_url,
+                # Dates
+                "introduced_year": db_dataset.introduced_year,
                 "introduced_date": db_dataset.introduced_date,
+                # Metadata
                 "modalities": db_dataset.modalities,
                 "languages": db_dataset.languages,
                 "variants": db_dataset.variants,
@@ -292,19 +312,29 @@ class DatasetService:
                 # PWC enriched fields
                 "short_description": db_dataset.short_description,
                 "homepage": db_dataset.homepage,
+                # Hierarchy and variant fields
                 "parent_dataset_id": str(db_dataset.parent_dataset_id)
                 if db_dataset.parent_dataset_id
                 else None,
+                "variant_type": db_dataset.variant_type,
+                "split_name": db_dataset.split_name,
+                # Images
                 "image_url": db_dataset.image_url,
                 "thumbnail_url": db_dataset.thumbnail_url,
                 "verified_image_url": db_dataset.verified_image_url,
+                # Paper reference
                 "introducing_paper_id": str(db_dataset.introducing_paper_id)
                 if db_dataset.introducing_paper_id
                 else None,
                 "introducing_paper_title": db_dataset.introducing_paper_title,
+                "paper_url": db_dataset.paper_url,
+                # Licensing
                 "license_name": db_dataset.license_name,
                 "license_url": db_dataset.license_url,
+                # Dates
+                "introduced_year": db_dataset.introduced_year,
                 "introduced_date": db_dataset.introduced_date,
+                # Metadata
                 "modalities": db_dataset.modalities,
                 "languages": db_dataset.languages,
                 "variants": db_dataset.variants,

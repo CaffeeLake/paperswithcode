@@ -13,7 +13,7 @@ import { usePaperByArxivId } from "@/hooks/usePapers";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import PaperResources from "@/components/PaperResources";
-import { getTasks, getMethods, updatePaperTasks, updatePaperMethods, updatePaperRepositories, type Task as APITask, type Method as APIMethod } from "@/lib/api";
+import { getTasks, getMethods, getDatasets, updatePaperTasks, updatePaperMethods, updatePaperRepositories, createEvaluation, updateEvaluation, deleteEvaluation, type Task as APITask, type Method as APIMethod, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
 import { useState } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import LatexTitle from "@/components/LatexTitle";
@@ -61,6 +61,23 @@ const PaperDetail = () => {
   const [editedRepositories, setEditedRepositories] = useState<Array<{ url: string; is_official: boolean }>>([]);
   const [newRepositoryUrl, setNewRepositoryUrl] = useState("");
 
+  // Evaluation editing state
+  const [isEditingEvaluations, setIsEditingEvaluations] = useState(false);
+
+  // Extended evaluation type to track operation (create/update/delete)
+  interface EditableEvaluation {
+    id?: string;
+    task_id: string;
+    dataset_id: string;
+    model_name: string;
+    metric_name: string;
+    metric_value: string;
+    best_rank?: string;
+    operation?: 'create' | 'update' | 'delete' | 'unchanged';
+  }
+
+  const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluation[]>([]);
+
   // Fetch all tasks (using max allowed page_size of 100)
   const { data: allTasksData } = useQuery({
     queryKey: ['tasks'],
@@ -73,6 +90,19 @@ const PaperDetail = () => {
     queryKey: ['methods'],
     queryFn: () => getMethods({ page_size: 100 }),
     enabled: isEditingMethods,
+  });
+
+  // Fetch all tasks and datasets for evaluation editing
+  const { data: allTasksForEvals } = useQuery({
+    queryKey: ['tasks-for-eval-edit'],
+    queryFn: () => getTasks({ page_size: 100 }),
+    enabled: isEditingEvaluations,
+  });
+
+  const { data: allDatasetsForEvals } = useQuery({
+    queryKey: ['datasets-for-eval-edit'],
+    queryFn: () => getDatasets({ page_size: 100 }),
+    enabled: isEditingEvaluations,
   });
 
   // Mutation for updating tasks
@@ -103,6 +133,40 @@ const PaperDetail = () => {
       queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
       setIsEditingRepositories(false);
       setNewRepositoryUrl("");
+    },
+  });
+
+  // Mutation for saving evaluations (handles create, update, delete)
+  const saveEvaluationsMutation = useMutation({
+    mutationFn: async ({ paperId, evaluations }: { paperId: string; evaluations: EditableEvaluation[] }) => {
+      // Process each evaluation based on its operation
+      for (const evalItem of evaluations) {
+        if (evalItem.operation === 'delete' && evalItem.id) {
+          await deleteEvaluation(evalItem.id);
+        } else if (evalItem.operation === 'create') {
+          await createEvaluation({
+            paper_id: parseInt(paperId),
+            task_id: parseInt(evalItem.task_id),
+            dataset_id: parseInt(evalItem.dataset_id),
+            model_name: evalItem.model_name || undefined,
+            metrics: { [evalItem.metric_name]: evalItem.metric_value },
+            best_metric: evalItem.metric_name,
+            best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+          });
+        } else if (evalItem.operation === 'update' && evalItem.id) {
+          await updateEvaluation(evalItem.id, {
+            model_name: evalItem.model_name || undefined,
+            metrics: { [evalItem.metric_name]: evalItem.metric_value },
+            best_metric: evalItem.metric_name,
+            best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+          });
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+      queryClient.invalidateQueries({ queryKey: ['evaluations-by-paper'] });
+      setIsEditingEvaluations(false);
     },
   });
 
@@ -188,6 +252,92 @@ const PaperDetail = () => {
         r.url === url ? { ...r, is_official: !r.is_official } : r
       )
     );
+  };
+
+  // Evaluation editing handlers
+  const handleEditEvaluations = () => {
+    if (evaluations && evaluations.length > 0) {
+      // Convert existing evaluations to editable format
+      const editable: EditableEvaluation[] = evaluations.map(e => {
+        const metricName = e.best_metric || Object.keys(e.metrics)[0];
+        const metricValue = e.metrics[metricName];
+        return {
+          id: e.id,
+          task_id: e.task_id,
+          dataset_id: e.dataset_id,
+          model_name: e.model_name || '',
+          metric_name: metricName || '',
+          metric_value: String(metricValue || ''),
+          best_rank: e.best_rank ? String(e.best_rank) : '',
+          operation: 'unchanged' as const,
+        };
+      });
+      setEditedEvaluations(editable);
+    } else {
+      setEditedEvaluations([]);
+    }
+    setIsEditingEvaluations(true);
+  };
+
+  const handleAddEvaluation = () => {
+    setEditedEvaluations([
+      ...editedEvaluations,
+      {
+        task_id: '',
+        dataset_id: '',
+        model_name: '',
+        metric_name: '',
+        metric_value: '',
+        best_rank: '',
+        operation: 'create',
+      },
+    ]);
+  };
+
+  const handleDeleteEvaluation = (index: number) => {
+    const evaluation = editedEvaluations[index];
+    if (evaluation.id) {
+      // Mark existing evaluation for deletion
+      setEditedEvaluations(
+        editedEvaluations.map((e, i) =>
+          i === index ? { ...e, operation: 'delete' as const } : e
+        )
+      );
+    } else {
+      // Remove new evaluation from list
+      setEditedEvaluations(editedEvaluations.filter((_, i) => i !== index));
+    }
+  };
+
+  const handleUpdateEvaluationField = (
+    index: number,
+    field: keyof EditableEvaluation,
+    value: string
+  ) => {
+    setEditedEvaluations(
+      editedEvaluations.map((e, i) => {
+        if (i !== index) return e;
+        const updated = { ...e, [field]: value };
+        // Mark as updated if it was previously unchanged
+        if (e.operation === 'unchanged') {
+          updated.operation = 'update';
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleSaveEvaluations = () => {
+    if (paper?.id) {
+      // Filter out evaluations marked for deletion that are shown in UI
+      const evaluationsToSave = editedEvaluations.filter(
+        e => e.operation !== 'delete' || e.id
+      );
+      saveEvaluationsMutation.mutate({
+        paperId: paper.id,
+        evaluations: evaluationsToSave,
+      });
+    }
   };
 
   // Filter tasks based on search query
@@ -414,7 +564,12 @@ const PaperDetail = () => {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-xl font-semibold">Results from the paper</CardTitle>
-                  <Button variant="ghost" size="sm" className="flex items-center space-x-1 text-muted-foreground">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="flex items-center space-x-1 text-muted-foreground"
+                    onClick={handleEditEvaluations}
+                  >
                     <Edit className="w-4 h-4" />
                     <span>Edit</span>
                   </Button>
@@ -908,6 +1063,163 @@ const PaperDetail = () => {
             </Button>
             <Button onClick={handleSaveRepositories} disabled={updateRepositoriesMutation.isPending}>
               {updateRepositoriesMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Evaluations Dialog */}
+      <Dialog open={isEditingEvaluations} onOpenChange={setIsEditingEvaluations}>
+        <DialogContent className="max-w-6xl max-h-[800px]">
+          <DialogHeader>
+            <DialogTitle>Edit Evaluation Results</DialogTitle>
+            <DialogDescription>
+              Add, edit, or remove evaluation results for this paper. Each row represents a benchmark result.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4 overflow-y-auto max-h-[600px]">
+            {editedEvaluations.filter(e => e.operation !== 'delete').length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-2 px-2 font-medium text-sm">Task</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm">Dataset</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm">Model</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm">Metric</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm">Rank</th>
+                      <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {editedEvaluations.map((evaluation, index) => {
+                      if (evaluation.operation === 'delete') return null;
+
+                      return (
+                        <tr key={index} className="border-b border-border">
+                          <td className="py-2 px-2">
+                            <select
+                              className="w-full px-2 py-1 text-sm border border-border rounded-md bg-background"
+                              value={evaluation.task_id}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'task_id', e.target.value)}
+                            >
+                              <option value="">Select Task</option>
+                              {allTasksForEvals?.results?.map((task: APITask) => (
+                                <option key={task.id} value={task.id}>
+                                  {task.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2">
+                            <select
+                              className="w-full px-2 py-1 text-sm border border-border rounded-md bg-background"
+                              value={evaluation.dataset_id}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'dataset_id', e.target.value)}
+                            >
+                              <option value="">Select Dataset</option>
+                              {allDatasetsForEvals?.results?.map((dataset: Dataset) => (
+                                <option key={dataset.id} value={dataset.id}>
+                                  {dataset.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="text"
+                              className="w-full text-sm"
+                              placeholder="Model name"
+                              value={evaluation.model_name}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'model_name', e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="text"
+                              className="w-full text-sm"
+                              placeholder="AP, mAP, etc."
+                              value={evaluation.metric_name}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'metric_name', e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="text"
+                              className="w-full text-sm"
+                              placeholder="44.9"
+                              value={evaluation.metric_value}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'metric_value', e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Input
+                              type="text"
+                              className="w-full text-sm"
+                              placeholder="1"
+                              value={evaluation.best_rank}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'best_rank', e.target.value)}
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteEvaluation(index)}
+                              className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                              title="Delete row"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <Database className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                <p>No evaluation results yet</p>
+                <p className="text-sm mt-2">Click "Add Row" below to add a new evaluation</p>
+              </div>
+            )}
+
+            <div className="mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleAddEvaluation}
+                className="flex items-center space-x-2"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Row</span>
+              </Button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsEditingEvaluations(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveEvaluations}
+              disabled={saveEvaluationsMutation.isPending}
+            >
+              {saveEvaluationsMutation.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Saving...
