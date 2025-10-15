@@ -149,6 +149,10 @@ async def get_dataset_evaluations(
     page_size: int = Query(
         50, ge=1, le=100, description="Number of evaluations per page (max 100)"
     ),
+    ordering: Optional[str] = Query(
+        "-best_rank",
+        description="Order by field: created_at, best_rank, evaluated_on (prefix with '-' for descending)",
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -169,30 +173,44 @@ async def get_dataset_evaluations(
                 status_code=400, detail="Invalid dataset ID. Must be an integer."
             )
 
-        service = DatasetService(db)
+        dataset_service = DatasetService(db)
 
         # Check if dataset exists
-        dataset = service.get_dataset(dataset_id_int)
+        dataset = dataset_service.get_dataset(dataset_id_int)
         if not dataset:
             raise HTTPException(
                 status_code=404, detail=f"Dataset with ID {dataset_id} not found"
             )
 
-        # Get evaluation count
-        eval_count = service.get_dataset_evaluations_count(dataset_id_int)
+        # Parse ordering
+        order_dir = "asc"
+        order_by = "created_at"
+        if ordering:
+            if ordering.startswith("-"):
+                order_dir = "desc"
+                order_by = ordering[1:]
+            else:
+                order_dir = "asc"
+                order_by = ordering
 
-        # Calculate pagination
-        total_pages = (eval_count + page_size - 1) // page_size
-        next_page = page + 1 if page < total_pages else None
-        previous_page = page - 1 if page > 1 else None
+        # Use EvaluationService to fetch actual evaluation data
+        from backend.services.evaluation_service import EvaluationService
 
-        # Note: Full evaluation data retrieval would require Evaluation service
-        # For now, return basic structure matching the API pattern
+        evaluation_service = EvaluationService(db)
+        evaluations_response = evaluation_service.get_evaluations(
+            page=page,
+            page_size=page_size,
+            dataset_id=dataset_id_int,
+            order_by=order_by,
+            order_dir=order_dir,
+        )
+
+        # Return in the expected format
         return {
-            "count": eval_count,
-            "next_page": next_page,
-            "previous_page": previous_page,
-            "results": [],  # Would be populated with actual evaluation data
+            "count": evaluations_response.count,
+            "next_page": evaluations_response.next_page,
+            "previous_page": evaluations_response.previous_page,
+            "results": [eval.model_dump() for eval in evaluations_response.results],
         }
 
     except HTTPException:

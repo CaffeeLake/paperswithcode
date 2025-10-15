@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check, Search, Plus, Trash2, Github } from "lucide-react";
+import { MessageCircle, Calendar, ExternalLink, BookOpen, Database, Zap, Bookmark, Trophy, Edit, Loader2, Globe, X, Check, Search, Plus, Trash2, Github, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -16,7 +16,7 @@ import PaperResources from "@/components/PaperResources";
 import { getTasks, getMethods, getDatasets, updatePaperTasks, updatePaperMethods, updatePaperRepositories, createEvaluation, updateEvaluation, deleteEvaluation, type Task as APITask, type Method as APIMethod, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
 import { useState } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
-import LatexTitle from "@/components/LatexTitle";
+import { LatexTitle, LatexText } from "@/components/LatexTitle";
 
 // Type definitions
 interface Task {
@@ -155,6 +155,8 @@ const PaperDetail = () => {
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
           await updateEvaluation(evalItem.id, {
+            task_id: parseInt(evalItem.task_id),
+            dataset_id: parseInt(evalItem.dataset_id),
             model_name: evalItem.model_name || undefined,
             metrics: { [evalItem.metric_name]: evalItem.metric_value },
             best_metric: evalItem.metric_name,
@@ -165,7 +167,7 @@ const PaperDetail = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
-      queryClient.invalidateQueries({ queryKey: ['evaluations-by-paper'] });
+      queryClient.invalidateQueries({ queryKey: ['evaluations', 'paper', paper?.id] });
       setIsEditingEvaluations(false);
     },
   });
@@ -435,14 +437,11 @@ const PaperDetail = () => {
               <div className="flex items-start justify-between mb-4">
                 <h1 className="text-3xl font-bold leading-tight pr-8"><LatexTitle title={paper.title} /></h1>
                 <div className="flex items-center space-x-2">
-                  <Button
-                    variant="outline"
-                    className="flex items-center space-x-2 bg-primary/5 border-primary/20 hover:bg-primary/10"
-                  >
-                    <ArrowUp className="w-4 h-4" />
-                    <span>Upvote</span>
+                  <div className="flex items-center space-x-2 px-4 py-2 bg-primary/5 border border-primary/20 rounded-md">
+                    <Quote className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-sm">Citations:</span>
                     <span className="font-semibold">{paper.citation_count || 0}</span>
-                  </Button>
+                  </div>
                   <div className="flex items-center space-x-1">
                     {/* Colorful author avatars */}
                     <div className="flex -space-x-1">
@@ -501,7 +500,9 @@ const PaperDetail = () => {
               </CardHeader>
               <CardContent>
                 <div className="text-sm">
-                  <p className="leading-relaxed text-justify text-foreground">{paper.abstract}</p>
+                  <p className="leading-relaxed text-justify text-foreground">
+                    <LatexText text={paper.abstract} />
+                  </p>
                 </div>
               </CardContent>
             </Card>

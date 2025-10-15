@@ -7,7 +7,7 @@ import { Loader2, Target, TrendingUp, FileText, Github, TrendingDown, TrendingUp
 import { useTask } from "@/hooks/useTasks";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useTaskDatasets } from "@/hooks/useDatasets";
-import { useTaskDatasetEvaluations } from "@/hooks/useEvaluations";
+import { useEvaluations } from "@/hooks/useEvaluations";
 import { useState, useEffect, useMemo } from "react";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import TrendingPaperCard from "@/components/TrendingPaperCard";
@@ -69,7 +69,7 @@ const transformPaperForUI = (paper: { id: number; title: string; abstract?: stri
     authors: authorsWithColors,
     submittedBy: submittedBy, // Use repository owner/name if available
     date: formatDate(paper.published),
-    upvotes: Math.floor(Math.random() * 200) + 10,
+    upvotes: paper.citation_count || 0,
     comments: Math.floor(Math.random() * 5),
     category: "Machine Learning",
     isUpvoted: Math.random() > 0.7,
@@ -413,26 +413,33 @@ interface DatasetEvaluation {
 }
 
 const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
-  // Fetch evaluations for all datasets - call hooks at top level
-  const query1 = useTaskDatasetEvaluations(taskId, datasets[0]?.id?.toString(), !!datasets[0]);
-  const query2 = useTaskDatasetEvaluations(taskId, datasets[1]?.id?.toString(), !!datasets[1]);
-  const query3 = useTaskDatasetEvaluations(taskId, datasets[2]?.id?.toString(), !!datasets[2]);
-  const query4 = useTaskDatasetEvaluations(taskId, datasets[3]?.id?.toString(), !!datasets[3]);
-  const query5 = useTaskDatasetEvaluations(taskId, datasets[4]?.id?.toString(), !!datasets[4]);
-
-  const queries = [query1, query2, query3, query4, query5];
-
-  // Check if any query is still loading
-  const isLoading = queries.some(q => q.isLoading);
+  // Fetch all evaluations for this task at once (for all datasets)
+  const { data: allEvaluationsData, isLoading } = useEvaluations({
+    task_id: parseInt(taskId),
+    page_size: 100
+  });
 
   // Process all evaluations and get the best one for each dataset
   const leaderboardData = useMemo(() => {
+    if (!allEvaluationsData?.results) return [];
+
     const data: DatasetEvaluation[] = [];
 
-    datasets.forEach((dataset, index) => {
-      if (!queries[index]) return;
+    // Create a map of dataset ID to dataset info for quick lookup
+    const datasetMap = new Map(datasets.map(d => [d.id, d]));
 
-      const evaluations = queries[index].data?.results || [];
+    // Group evaluations by dataset ID
+    const evalsByDataset = new Map<number, typeof allEvaluationsData.results>();
+    allEvaluationsData.results.forEach(evaluation => {
+      if (!evalsByDataset.has(evaluation.dataset_id)) {
+        evalsByDataset.set(evaluation.dataset_id, []);
+      }
+      evalsByDataset.get(evaluation.dataset_id)!.push(evaluation);
+    });
+
+    // For each dataset, get the top evaluation
+    datasets.forEach((dataset) => {
+      const evaluations = evalsByDataset.get(dataset.id) || [];
 
       if (evaluations.length > 0) {
         // Sort by best_rank and get the top result
@@ -461,7 +468,7 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
     });
 
     return data;
-  }, [datasets, queries]);
+  }, [datasets, allEvaluationsData]);
 
   const getTrendIcon = (trend: 'up' | 'down' | 'stable') => {
     switch (trend) {

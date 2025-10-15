@@ -194,6 +194,8 @@ async def update_evaluation(
         service = EvaluationService(db)
         return service.update_evaluation(
             evaluation_id=evaluation_id,
+            task_id=request.task_id,
+            dataset_id=request.dataset_id,
             model_name=request.model_name,
             methodology=request.methodology,
             metrics=request.metrics,
@@ -236,6 +238,49 @@ async def delete_evaluation(
     except DatabaseError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/recalculate-ranks", status_code=200)
+async def recalculate_ranks(
+    task_id: int = Query(..., description="Task ID for the leaderboard"),
+    dataset_id: int = Query(..., description="Dataset ID for the leaderboard"),
+    uses_additional_data: Optional[bool] = Query(
+        None,
+        description="If specified, only recalculate for evaluations with this value",
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Recalculate ranks for all evaluations in a specific leaderboard.
+
+    This endpoint recalculates the best_rank field for all evaluations matching the
+    specified task_id and dataset_id. Rankings are based on the best_metric value,
+    with higher values receiving better (lower) ranks.
+
+    **Example:**
+    - `POST /api/v1/evaluations/recalculate-ranks?task_id=2&dataset_id=5` - Recalculate ranks for task 2 on dataset 5
+
+    **Returns:**
+    - JSON object with the number of evaluations updated
+    """
+    try:
+        service = EvaluationService(db)
+        updated_count = service.recalculate_ranks(
+            task_id=task_id,
+            dataset_id=dataset_id,
+            uses_additional_data=uses_additional_data,
+        )
+        return {
+            "message": f"Successfully recalculated ranks for {updated_count} evaluations",
+            "task_id": task_id,
+            "dataset_id": dataset_id,
+            "updated_count": updated_count,
+        }
+
+    except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

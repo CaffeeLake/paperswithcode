@@ -70,7 +70,7 @@ const transformPaperForUI = (paper: Paper, index: number) => {
     authors: authorsWithColors,
     submittedBy: submittedBy, // Use repository owner/name if available
     date: formatDate(paper.published),
-    upvotes: Math.floor(Math.random() * 200) + 10,
+    upvotes: paper.citation_count || 0,
     comments: Math.floor(Math.random() * 5),
     category: "Machine Learning",
     isUpvoted: Math.random() > 0.7,

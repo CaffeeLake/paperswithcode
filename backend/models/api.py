@@ -971,6 +971,9 @@ class Evaluation(BaseModel):
     # Additional fields for frontend display
     paper_title: Optional[str] = Field(None, description="Title of the paper")
     paper_arxiv_id: Optional[str] = Field(None, description="ArXiv ID of the paper")
+    paper_published_date: Optional[str] = Field(
+        None, description="Publication date of the paper"
+    )
     code_url: Optional[str] = Field(
         None, description="URL to the code repository (GitHub)"
     )
@@ -1031,6 +1034,8 @@ class EvaluationUpdateRequest(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    task_id: Optional[int] = Field(None, description="Task ID")
+    dataset_id: Optional[int] = Field(None, description="Dataset ID")
     model_name: Optional[str] = Field(None, description="Model name")
     methodology: Optional[str] = Field(None, description="Methodology description")
     metrics: Optional[dict] = Field(None, description="Dictionary of metrics")

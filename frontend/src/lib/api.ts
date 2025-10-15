@@ -132,6 +132,7 @@ export interface Evaluation {
   updated_at: string;
   paper_title?: string;
   paper_arxiv_id?: string;
+  paper_published_date?: string;
   code_url?: string;
   result_url?: string;
 }
@@ -587,7 +588,11 @@ class ApiClient {
   }
 
   async getEvaluationsByDataset(datasetId: string): Promise<Evaluation[]> {
-    const response = await this.getEvaluations({ dataset_id: parseInt(datasetId), page_size: 100 });
+    const response = await this.getEvaluations({
+      dataset_id: parseInt(datasetId),
+      page_size: 100,
+      ordering: 'best_rank'  // Sort by rank ascending (rank 1 first)
+    });
     return response.results;
   }
 
@@ -612,6 +617,8 @@ class ApiClient {
   }
 
   async updateEvaluation(evaluationId: string, data: {
+    task_id?: number;
+    dataset_id?: number;
     model_name?: string;
     methodology?: string;
     metrics?: Record<string, string | number>;

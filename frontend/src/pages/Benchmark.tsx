@@ -28,7 +28,7 @@ const Benchmark = () => {
 
   // Filter states
   const [selectedMetric, setSelectedMetric] = useState<string>('');
-  const [sortBy, setSortBy] = useState<string>('date');
+  const [sortBy, setSortBy] = useState<string>('rank');
   const [modelFilter, setModelFilter] = useState<string>('all');
 
   // Fetch dataset by slug
@@ -54,84 +54,116 @@ const Benchmark = () => {
     );
   }, [tasksData]);
 
-  // Get available metrics
+  // Get available metrics across all evaluations
   const availableMetrics = useMemo(() => {
     if (!evaluations || evaluations.length === 0) return [];
-    const firstEval = evaluations[0];
-    return Object.keys(firstEval?.metrics || {});
+    const metricsSet = new Set<string>();
+    evaluations.forEach(e => {
+      Object.keys(e.metrics || {}).forEach(metric => metricsSet.add(metric));
+    });
+    return Array.from(metricsSet);
   }, [evaluations]);
 
-  // Set default metric
+  // Check if all evaluations use the same metric
+  const allSameMetric = useMemo(() => {
+    if (!evaluations || evaluations.length === 0) return true;
+    const firstMetric = evaluations[0]?.best_metric;
+    return evaluations.every(e => e.best_metric === firstMetric);
+  }, [evaluations]);
+
+  // Set default metric only if all evaluations use the same metric
   useEffect(() => {
-    if (availableMetrics.length > 0 && !selectedMetric) {
+    if (availableMetrics.length > 0 && !selectedMetric && allSameMetric) {
       setSelectedMetric(evaluations?.[0]?.best_metric || availableMetrics[0]);
     }
-  }, [availableMetrics, selectedMetric, evaluations]);
+  }, [availableMetrics, selectedMetric, evaluations, allSameMetric]);
 
   // Process evaluations to include paper info and sort by metric value
   const processedEvaluations = useMemo(() => {
     if (!evaluations) return [];
 
-    // Get primary metric
+    // Get primary metric for filtering/display purposes
     const primaryMetric = selectedMetric || evaluations[0]?.best_metric || Object.keys(evaluations[0]?.metrics || {})[0];
 
     // Sort by metric value (descending)
     return evaluations
-      .map(e => ({
-        ...e,
-        primaryMetric,
-        primaryValue: parseFloat(String(e.metrics[primaryMetric] || 0)),
-        year: e.evaluated_on ? new Date(e.evaluated_on).getFullYear() : null
-      }))
+      .map(e => {
+        // Use the selected metric if available, otherwise fall back to each evaluation's best_metric
+        const metricToUse = selectedMetric || e.best_metric || Object.keys(e.metrics || {})[0];
+        const metricValue = e.metrics[metricToUse];
+
+        return {
+          ...e,
+          primaryMetric: metricToUse,
+          primaryValue: parseFloat(String(metricValue || 0)),
+          year: e.evaluated_on
+            ? new Date(e.evaluated_on).getFullYear()
+            : e.paper_published_date
+              ? new Date(e.paper_published_date).getFullYear()
+              : null
+        };
+      })
       .sort((a, b) => {
-        if (sortBy === 'date') {
-          return new Date(b.evaluated_on || 0).getTime() - new Date(a.evaluated_on || 0).getTime();
+        if (sortBy === 'rank') {
+          // Sort by best_rank (ascending - lower rank is better)
+          // Items without a rank go to the end
+          const rankA = a.best_rank ?? Number.MAX_SAFE_INTEGER;
+          const rankB = b.best_rank ?? Number.MAX_SAFE_INTEGER;
+          if (rankA !== rankB) {
+            return rankA - rankB;
+          }
+          // If ranks are equal, use metric value as tiebreaker
+          return b.primaryValue - a.primaryValue;
         }
+        if (sortBy === 'date') {
+          const dateA = a.evaluated_on || a.paper_published_date || 0;
+          const dateB = b.evaluated_on || b.paper_published_date || 0;
+          return new Date(dateB).getTime() - new Date(dateA).getTime();
+        }
+        // Default: sort by metric value
         return b.primaryValue - a.primaryValue;
       });
   }, [evaluations, selectedMetric, sortBy]);
 
-  // Get top models for chart (models with best scores)
-  const topModels = useMemo(() => {
-    const sorted = [...processedEvaluations].sort((a, b) => b.primaryValue - a.primaryValue);
-    return sorted.slice(0, Math.min(10, sorted.length));
-  }, [processedEvaluations]);
-
-  // Prepare chart data - group by date and show top performers
+  // Prepare chart data - show state-of-the-art progression over time
   const chartData = useMemo(() => {
-    if (!topModels.length) return [];
+    if (!processedEvaluations.length) return [];
 
-    // Group evaluations by paper_id to ensure same date for results from the same paper
-    const paperDates = new Map<string, number>();
-    topModels
-      .filter(e => e.evaluated_on && e.paper_id)
-      .forEach(e => {
-        const paperId = e.paper_id;
-        const date = new Date(e.evaluated_on!).getTime();
-        if (!paperDates.has(paperId) || paperDates.get(paperId)! > date) {
-          // Use the earliest evaluated_on date for this paper
-          paperDates.set(paperId, date);
-        }
-      });
-
-    return topModels
-      .filter(e => e.evaluated_on)
+    // Filter evaluations with valid dates
+    const evaluationsWithDates = processedEvaluations
+      .filter(e => e.evaluated_on || e.paper_published_date)
       .map(e => {
-        // Use the paper's date if available, otherwise use the evaluation's own date
-        const dateTimestamp = e.paper_id && paperDates.has(e.paper_id)
-          ? paperDates.get(e.paper_id)!
-          : new Date(e.evaluated_on!).getTime();
-
+        const dateStr = e.evaluated_on || e.paper_published_date;
+        const dateTimestamp = new Date(dateStr!).getTime();
         return {
           date: dateTimestamp,
           dateStr: new Date(dateTimestamp).toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
           value: e.primaryValue,
           model: e.model_name || 'Unknown',
-          isTop: true
+          evaluation: e
         };
       })
       .sort((a, b) => a.date - b.date);
-  }, [topModels]);
+
+    // Build state-of-the-art frontier: keep only entries that set new records
+    const sotaFrontier = [];
+    let currentBest = -Infinity;
+
+    for (const point of evaluationsWithDates) {
+      if (point.value > currentBest) {
+        currentBest = point.value;
+        sotaFrontier.push({
+          date: point.date,
+          dateStr: point.dateStr,
+          value: point.value,
+          model: point.model,
+          isTop: true
+        });
+      }
+    }
+
+    return sotaFrontier;
+  }, [processedEvaluations]);
 
   // Get the best evaluation (SOTA)
   const sotaEvaluation = processedEvaluations.find(e => e.best_rank === 1) || processedEvaluations[0];
@@ -223,11 +255,14 @@ const Benchmark = () => {
                 <div className="flex items-center space-x-6 text-sm">
                   <div className="flex items-center space-x-2">
                     <span className="text-muted-foreground">View</span>
-                    <Select value={selectedMetric} onValueChange={setSelectedMetric}>
+                    <Select value={selectedMetric || 'all'} onValueChange={(value) => setSelectedMetric(value === 'all' ? '' : value)}>
                       <SelectTrigger className="w-[200px] h-8">
                         <SelectValue placeholder="Select metric" />
                       </SelectTrigger>
                       <SelectContent>
+                        {!allSameMetric && (
+                          <SelectItem value="all">All Metrics</SelectItem>
+                        )}
                         {availableMetrics.map(metric => (
                           <SelectItem key={metric} value={metric}>
                             {metric}
@@ -244,8 +279,9 @@ const Benchmark = () => {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="date">Date</SelectItem>
+                        <SelectItem value="rank">Rank</SelectItem>
                         <SelectItem value="score">Score</SelectItem>
+                        <SelectItem value="date">Date</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -314,8 +350,8 @@ const Benchmark = () => {
                     dataKey="value"
                     stroke="#0ea5e9"
                     strokeWidth={2}
-                    dot={(props: any) => {
-                      const { cx, cy, payload } = props;
+                    dot={(props: { cx: number; cy: number; payload: unknown }) => {
+                      const { cx, cy } = props;
                       return (
                         <Dot
                           cx={cx}
@@ -340,7 +376,9 @@ const Benchmark = () => {
                 </div>
                 <div className="flex items-center space-x-2">
                   <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-                  <span className="text-muted-foreground">Models with highest {selectedMetric || 'metric'}</span>
+                  <span className="text-muted-foreground">
+                    Models with highest {selectedMetric || (allSameMetric ? processedEvaluations[0]?.primaryMetric : 'score') || 'metric'}
+                  </span>
                 </div>
               </div>
             </CardContent>
@@ -366,7 +404,7 @@ const Benchmark = () => {
                     <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">
-                      {selectedMetric || processedEvaluations[0]?.primaryMetric || 'Metric'}
+                      {selectedMetric || (allSameMetric ? processedEvaluations[0]?.primaryMetric : 'Score') || 'Metric'}
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">Paper</th>
                     <th className="text-center py-3 px-4 font-medium text-muted-foreground">Code</th>
@@ -389,7 +427,12 @@ const Benchmark = () => {
                           <div className="font-medium">{evaluation.model_name || 'Unknown Model'}</div>
                         </td>
                         <td className="py-4 px-4">
-                          <div className="font-semibold">{evaluation.primaryValue.toFixed(2)}</div>
+                          <div className="font-semibold">
+                            {evaluation.primaryValue.toFixed(2)}
+                            {!allSameMetric && !selectedMetric && (
+                              <span className="text-xs text-muted-foreground ml-1">({evaluation.primaryMetric})</span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-4 px-4">
                           {evaluation.paper_title && evaluation.paper_arxiv_id ? (

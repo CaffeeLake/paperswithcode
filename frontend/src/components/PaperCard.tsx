@@ -1,4 +1,4 @@
-import { ArrowUp, MessageCircle, Calendar, Users } from "lucide-react";
+import { MessageCircle, Calendar, Users, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -115,16 +115,10 @@ const PaperCard = ({
           {/* Actions */}
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <Button
-                variant="ghost"
-                size="sm"
-                className={`flex items-center space-x-1 h-8 px-2 ${
-                  isUpvoted ? 'text-primary bg-primary/10' : 'text-muted-foreground'
-                }`}
-              >
-                <ArrowUp className="w-4 h-4" />
+              <div className="flex items-center space-x-1 h-8 px-2 text-muted-foreground" title="Citations">
+                <Quote className="w-4 h-4" />
                 <span className="text-sm font-medium">{upvotes}</span>
-              </Button>
+              </div>
               <Button variant="ghost" size="sm" className="flex items-center space-x-1 h-8 px-2 text-muted-foreground">
                 <MessageCircle className="w-4 h-4" />
                 <span className="text-sm">{comments}</span>
