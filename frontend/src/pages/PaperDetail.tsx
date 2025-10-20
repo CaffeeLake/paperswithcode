@@ -14,7 +14,7 @@ import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import PaperResources from "@/components/PaperResources";
 import { getTasks, getMethods, getDatasets, updatePaperTasks, updatePaperMethods, updatePaperRepositories, createEvaluation, updateEvaluation, deleteEvaluation, type Task as APITask, type Method as APIMethod, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { LatexTitle, LatexText } from "@/components/LatexTitle";
 
@@ -142,7 +142,15 @@ const PaperDetail = () => {
       // Process each evaluation based on its operation
       for (const evalItem of evaluations) {
         if (evalItem.operation === 'delete' && evalItem.id) {
-          await deleteEvaluation(evalItem.id);
+          try {
+            await deleteEvaluation(evalItem.id);
+          } catch (error: any) {
+            // If the evaluation doesn't exist (404), that's fine - it's already gone
+            if (error?.status !== 404) {
+              throw error;
+            }
+            console.log(`Evaluation ${evalItem.id} already deleted or not found`);
+          }
         } else if (evalItem.operation === 'create') {
           await createEvaluation({
             paper_id: parseInt(paperId),
@@ -320,6 +328,12 @@ const PaperDetail = () => {
       editedEvaluations.map((e, i) => {
         if (i !== index) return e;
         const updated = { ...e, [field]: value };
+
+        // If task changes, reset the dataset selection
+        if (field === 'task_id') {
+          updated.dataset_id = '';
+        }
+
         // Mark as updated if it was previously unchanged
         if (e.operation === 'unchanged') {
           updated.operation = 'update';
@@ -360,6 +374,56 @@ const PaperDetail = () => {
       (method.description && method.description.toLowerCase().includes(searchLower))
     );
   });
+
+  // Create a map of task_id -> datasets using React Query
+  // We'll fetch datasets for each unique task_id in the evaluations
+  const uniqueTaskIds = useMemo(() => {
+    return Array.from(new Set(editedEvaluations.map(e => e.task_id).filter(id => id && id !== '')));
+  }, [editedEvaluations]);
+
+  // Fetch datasets for each unique task
+  const taskDatasetsQueries = useQuery({
+    queryKey: ['datasets-by-tasks', uniqueTaskIds, isEditingEvaluations],
+    queryFn: async () => {
+      if (!isEditingEvaluations) return {};
+
+      const datasetsMap: Record<string, Dataset[]> = {};
+
+      // Fetch datasets for each task in parallel
+      await Promise.all(
+        uniqueTaskIds.map(async (taskId) => {
+          if (taskId) {
+            try {
+              const response = await getDatasets({ task_id: parseInt(taskId), page_size: 100 });
+              datasetsMap[taskId] = response.results;
+            } catch (error) {
+              console.error(`Error fetching datasets for task ${taskId}:`, error);
+              datasetsMap[taskId] = [];
+            }
+          }
+        })
+      );
+
+      return datasetsMap;
+    },
+    enabled: isEditingEvaluations && uniqueTaskIds.length > 0,
+  });
+
+  // Function to get filtered datasets for a specific task
+  const getFilteredDatasetsForTask = (taskId: string): Dataset[] => {
+    // If no task is selected, return all datasets
+    if (!taskId) {
+      return allDatasetsForEvals?.results || [];
+    }
+
+    // If we have task-specific datasets from our query, use those
+    if (taskDatasetsQueries.data && taskDatasetsQueries.data[taskId]) {
+      return taskDatasetsQueries.data[taskId];
+    }
+
+    // Fallback to all datasets if the query hasn't loaded yet
+    return allDatasetsForEvals?.results || [];
+  };
 
   if (isLoading) {
     return (
@@ -436,29 +500,10 @@ const PaperDetail = () => {
             <div className="mb-8">
               <div className="flex items-start justify-between mb-4">
                 <h1 className="text-3xl font-bold leading-tight pr-8"><LatexTitle title={paper.title} /></h1>
-                <div className="flex items-center space-x-2">
-                  <div className="flex items-center space-x-2 px-4 py-2 bg-primary/5 border border-primary/20 rounded-md">
-                    <Quote className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-sm">Citations:</span>
-                    <span className="font-semibold">{paper.citation_count || 0}</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    {/* Colorful author avatars */}
-                    <div className="flex -space-x-1">
-                      {paper.authors.slice(0, 12).map((_, i) => (
-                        <div
-                          key={i}
-                          className="w-6 h-6 rounded-full border-2 border-background"
-                          style={{ backgroundColor: getAuthorColor(i) }}
-                        />
-                      ))}
-                    </div>
-                    {paper.citation_count > 0 && (
-                      <Badge variant="secondary" className="bg-paper-orange/10 text-paper-orange">
-                        +{paper.citation_count}
-                      </Badge>
-                    )}
-                  </div>
+                <div className="flex items-center space-x-2 px-4 py-2 bg-primary/5 border border-primary/20 rounded-md">
+                  <Quote className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-sm">Citations:</span>
+                  <span className="font-semibold">{paper.citation_count || 0}</span>
                 </div>
               </div>
 
@@ -616,18 +661,29 @@ const PaperDetail = () => {
                             const metricName = evaluation.best_metric || Object.keys(evaluation.metrics)[0];
                             const metricValue = evaluation.metrics[metricName];
 
-                            // Get task name
-                            const task = allTasksDataForEvals?.results?.find(
-                              (t: APITask) => t.id === evaluation.task_id
-                            );
-                            const taskName = task?.name || `Task ${evaluation.task_id}`;
+                            // Get task name - prefer from evaluation, fallback to lookup
+                            const taskName = evaluation.task_name || (() => {
+                              const task = allTasksDataForEvals?.results?.find(
+                                (t: APITask) => t.id === evaluation.task_id
+                              );
+                              return task?.name || `Task ${evaluation.task_id}`;
+                            })();
 
-                            // Get dataset name and slug
-                            const dataset = allDatasetsData?.results?.find(
-                              (d: any) => d.id === evaluation.dataset_id
-                            );
-                            const datasetName = dataset?.name || `Dataset ${evaluation.dataset_id}`;
-                            const datasetSlug = dataset?.slug || `dataset-${evaluation.dataset_id}`;
+                            // Get dataset name and slug - prefer from evaluation, fallback to lookup
+                            const datasetName = evaluation.dataset_name || (() => {
+                              const dataset = allDatasetsData?.results?.find(
+                                (d: APIDataset) => d.id === evaluation.dataset_id
+                              );
+                              return dataset?.name || `Dataset ${evaluation.dataset_id}`;
+                            })();
+
+                            // Get dataset slug - now available directly from evaluation
+                            const datasetSlug = evaluation.dataset_slug || (() => {
+                              const dataset = allDatasetsData?.results?.find(
+                                (d: APIDataset) => d.id === evaluation.dataset_id
+                              );
+                              return dataset?.slug || `dataset-${evaluation.dataset_id}`;
+                            })();
 
                             return (
                               <tr key={evaluation.id} className={`${idx < evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
@@ -1100,7 +1156,6 @@ const PaperDetail = () => {
                       <th className="text-left py-2 px-2 font-medium text-sm">Model</th>
                       <th className="text-left py-2 px-2 font-medium text-sm">Metric</th>
                       <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
-                      <th className="text-left py-2 px-2 font-medium text-sm">Rank</th>
                       <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
                     </tr>
                   </thead>
@@ -1131,7 +1186,7 @@ const PaperDetail = () => {
                               onChange={(e) => handleUpdateEvaluationField(index, 'dataset_id', e.target.value)}
                             >
                               <option value="">Select Dataset</option>
-                              {allDatasetsForEvals?.results?.map((dataset: Dataset) => (
+                              {getFilteredDatasetsForTask(evaluation.task_id).map((dataset: Dataset) => (
                                 <option key={dataset.id} value={dataset.id}>
                                   {dataset.name}
                                 </option>
@@ -1163,15 +1218,6 @@ const PaperDetail = () => {
                               placeholder="44.9"
                               value={evaluation.metric_value}
                               onChange={(e) => handleUpdateEvaluationField(index, 'metric_value', e.target.value)}
-                            />
-                          </td>
-                          <td className="py-2 px-2">
-                            <Input
-                              type="text"
-                              className="w-full text-sm"
-                              placeholder="1"
-                              value={evaluation.best_rank}
-                              onChange={(e) => handleUpdateEvaluationField(index, 'best_rank', e.target.value)}
                             />
                           </td>
                           <td className="py-2 px-2">

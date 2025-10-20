@@ -639,6 +639,41 @@ class Evaluation(Base):
         return f"<Evaluation(id={self.id}, paper_id={self.paper_id}, task_id={self.task_id}, dataset_id={self.dataset_id})>"
 
 
+class Metric(Base):
+    """
+    Metric definitions with ranking direction.
+
+    Defines evaluation metrics and whether they should rank with higher or lower values as better.
+    Examples:
+    - Higher is better: AP, accuracy, F1, BLEU
+    - Lower is better: WER, error rates, perplexity
+    """
+
+    __tablename__ = "metrics"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    direction: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # "higher_is_better" or "lower_is_better"
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Indexes
+    __table_args__ = (Index("idx_metrics_name", "name"),)
+
+    def __repr__(self) -> str:
+        return f"<Metric(id={self.id}, name={self.name}, direction={self.direction})>"
+
+
 # Junction tables for many-to-many relationships
 
 

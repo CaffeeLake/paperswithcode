@@ -978,6 +978,11 @@ class Evaluation(BaseModel):
         None, description="URL to the code repository (GitHub)"
     )
     result_url: Optional[str] = Field(None, description="URL to the result/demo page")
+    task_name: Optional[str] = Field(None, description="Name of the task")
+    dataset_name: Optional[str] = Field(None, description="Name of the dataset")
+    dataset_slug: Optional[str] = Field(
+        None, description="URL-friendly slug of the dataset"
+    )
 
     @field_validator("id", "paper_id", "task_id", "dataset_id", mode="before")
     @classmethod

@@ -12,8 +12,12 @@ from sqlalchemy import desc, asc, or_
 from backend.models.database import (
     Evaluation as DBEvaluation,
     Paper as DBPaper,
+    Task as DBTask,
+    Dataset as DBDataset,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
+    TaskDataset,
+    Metric as DBMetric,
 )
 from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
@@ -61,6 +65,96 @@ class EvaluationService:
             return paper_title, paper_arxiv_id, code_url, paper_published_date
         except Exception:
             return None, None, None, None
+
+    def _get_task_name(self, task_id: int) -> Optional[str]:
+        """
+        Get task name for a given task ID.
+
+        Returns:
+            Task name or None if not found
+        """
+        try:
+            task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+            return task.name if task else None
+        except Exception:
+            return None
+
+    def _get_dataset_name(self, dataset_id: int) -> Optional[str]:
+        """
+        Get dataset name for a given dataset ID.
+
+        Returns:
+            Dataset name or None if not found
+        """
+        try:
+            dataset = (
+                self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+            )
+            return dataset.name if dataset else None
+        except Exception:
+            return None
+
+    def _get_dataset_slug(self, dataset_id: int) -> Optional[str]:
+        """
+        Get dataset slug for a given dataset ID.
+
+        Returns:
+            Dataset slug or None if not found
+        """
+        try:
+            dataset = (
+                self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+            )
+            return dataset.slug if dataset else None
+        except Exception:
+            return None
+
+    def _link_dataset_to_task(self, task_id: int, dataset_id: int) -> bool:
+        """
+        Link a dataset to a task via the task_datasets junction table.
+
+        This ensures the dataset appears in the task's leaderboards section.
+        If the link already exists, this method does nothing.
+
+        Args:
+            task_id: Task ID
+            dataset_id: Dataset ID
+
+        Returns:
+            True if the link was created or already exists
+        """
+        try:
+            # Check if link already exists
+            existing_link = (
+                self.db.query(TaskDataset)
+                .filter(
+                    TaskDataset.task_id == task_id,
+                    TaskDataset.dataset_id == dataset_id,
+                )
+                .first()
+            )
+
+            if existing_link:
+                return True
+
+            # Create the link
+            task_dataset = TaskDataset(task_id=task_id, dataset_id=dataset_id)
+
+            self.db.add(task_dataset)
+            self.db.flush()  # Flush to DB without committing (will commit with evaluation)
+
+            return True
+        except Exception as e:
+            # Log the error for debugging purposes
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Failed to link dataset {dataset_id} to task {task_id}: {str(e)}"
+            )
+            # If linking fails, we still want the evaluation to succeed
+            # The dataset can be linked manually later if needed
+            return False
 
     def get_evaluations(
         self,
@@ -149,6 +243,11 @@ class EvaluationService:
                     self._get_paper_info(db_evaluation.paper_id)
                 )
 
+                # Get task and dataset names
+                task_name = self._get_task_name(db_evaluation.task_id)
+                dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
+                dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
+
                 # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
                 result_url = db_evaluation.external_source_url
                 if not result_url and paper_arxiv_id:
@@ -174,6 +273,9 @@ class EvaluationService:
                     "code_url": code_url,
                     "paper_published_date": paper_published_date,
                     "result_url": result_url,
+                    "task_name": task_name,
+                    "dataset_name": dataset_name,
+                    "dataset_slug": dataset_slug,
                 }
                 evaluation_list.append(Evaluation(**evaluation_dict))
 
@@ -220,6 +322,11 @@ class EvaluationService:
                 self._get_paper_info(db_evaluation.paper_id)
             )
 
+            # Get task and dataset names
+            task_name = self._get_task_name(db_evaluation.task_id)
+            dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
+            dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
+
             # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
             result_url = db_evaluation.external_source_url
             if not result_url and paper_arxiv_id:
@@ -245,6 +352,9 @@ class EvaluationService:
                 "code_url": code_url,
                 "paper_published_date": paper_published_date,
                 "result_url": result_url,
+                "task_name": task_name,
+                "dataset_name": dataset_name,
+                "dataset_slug": dataset_slug,
             }
 
             return Evaluation(**evaluation_dict)
@@ -314,6 +424,10 @@ class EvaluationService:
             DatabaseError: If database operation fails
         """
         try:
+            # Link the dataset to the task if not already linked
+            # This ensures the dataset appears in the task's leaderboards section
+            self._link_dataset_to_task(task_id, dataset_id)
+
             db_evaluation = DBEvaluation(
                 paper_id=paper_id,
                 task_id=task_id,
@@ -553,8 +667,9 @@ class EvaluationService:
         """
         Recalculate ranks for all evaluations in a specific leaderboard.
 
-        This method orders evaluations by their best_metric value (higher is better)
-        and assigns ranks accordingly. Evaluations with the same metric value get the same rank.
+        This method orders evaluations by their best_metric value and assigns ranks accordingly.
+        The ranking direction (higher is better vs lower is better) is determined by the
+        metrics table. Evaluations with the same metric value get the same rank.
 
         Args:
             task_id: Task ID to recalculate ranks for
@@ -586,6 +701,35 @@ class EvaluationService:
             if not evaluations:
                 return 0
 
+            # Determine the ranking direction from the metrics table
+            # Get the first evaluation's best_metric to look up direction
+            metric_direction = "higher_is_better"  # Default
+            first_eval_metric = None
+            for eval_obj in evaluations:
+                if eval_obj.best_metric:
+                    first_eval_metric = eval_obj.best_metric
+                    break
+
+            if first_eval_metric:
+                # Query metrics table for ranking direction
+                metric_def = (
+                    self.db.query(DBMetric)
+                    .filter(DBMetric.name == first_eval_metric)
+                    .first()
+                )
+
+                if metric_def:
+                    metric_direction = metric_def.direction
+                else:
+                    # Log warning if metric not found in database
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Metric '{first_eval_metric}' not found in metrics table. "
+                        f"Defaulting to 'higher_is_better' for ranking."
+                    )
+
             # Extract metric values for sorting - rank ALL evaluations together
             # (uses_additional_data is displayed as a tag but doesn't affect ranking)
             eval_scores = []
@@ -605,11 +749,23 @@ class EvaluationService:
 
                 eval_scores.append((eval_obj, metric_value))
 
-            # Sort by metric value (descending - higher is better)
+            # Sort by metric value based on direction
             # Place evaluations without valid metric values at the end
-            eval_scores.sort(
-                key=lambda x: (x[1] is None, -x[1] if x[1] is not None else 0)
-            )
+            if metric_direction == "lower_is_better":
+                # For "lower is better" metrics (WER, error rates, perplexity)
+                # Lower values should get rank 1
+                eval_scores.sort(
+                    key=lambda x: (
+                        x[1] is None,
+                        x[1] if x[1] is not None else float("inf"),
+                    )
+                )
+            else:
+                # For "higher is better" metrics (AP, accuracy, F1)
+                # Higher values should get rank 1 (default behavior)
+                eval_scores.sort(
+                    key=lambda x: (x[1] is None, -x[1] if x[1] is not None else 0)
+                )
 
             # Assign ranks (same value = same rank)
             current_rank = 1

@@ -455,7 +455,7 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
         data.push({
           datasetId: dataset.id,
           datasetName: dataset.name,
-          datasetSlug: dataset.slug,
+          datasetSlug: topEval.dataset_slug || dataset.slug,
           modelName: topEval.model_name || 'Unknown Model',
           paperTitle: topEval.paper_title,
           paperArxivId: topEval.paper_arxiv_id,

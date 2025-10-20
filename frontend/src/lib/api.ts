@@ -135,6 +135,9 @@ export interface Evaluation {
   paper_published_date?: string;
   code_url?: string;
   result_url?: string;
+  task_name?: string;
+  dataset_name?: string;
+  dataset_slug?: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -194,7 +197,11 @@ class ApiClient {
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[API] Error response:`, errorText);
-        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+        const error: any = new Error(`API request failed: ${response.status} ${response.statusText}`);
+        error.status = response.status;
+        error.statusText = response.statusText;
+        error.response = errorText;
+        throw error;
       }
 
       const data = await response.json();
@@ -529,6 +536,7 @@ class ApiClient {
     name?: string;
     full_name?: string;
     task?: string;
+    task_id?: number;
     ordering?: string;
   }): Promise<PaginatedResponse<Dataset>> {
     const searchParams = new URLSearchParams();
@@ -539,6 +547,7 @@ class ApiClient {
     if (params?.name) searchParams.append('name', params.name);
     if (params?.full_name) searchParams.append('full_name', params.full_name);
     if (params?.task) searchParams.append('task', params.task);
+    if (params?.task_id) searchParams.append('task', params.task_id.toString());
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/datasets/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;

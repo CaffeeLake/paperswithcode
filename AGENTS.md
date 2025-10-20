@@ -2,9 +2,9 @@
 
 This file provides guidance to AI agents when working with code in this repository.
 
-## Essentials
+## Essentials: Python
 
-Do not write a Markdown file to summarize code changes. Just implement the code.
+Do not write SUMMARY.md files to summarize code changes. Just implement the code.
 
 Run anything where you need to proceed with further work as a background task in Cursor.
 

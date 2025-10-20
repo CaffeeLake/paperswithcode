@@ -125,7 +125,7 @@ const Benchmark = () => {
       });
   }, [evaluations, selectedMetric, sortBy]);
 
-  // Prepare chart data - show state-of-the-art progression over time
+  // Prepare chart data - show best result per paper over time
   const chartData = useMemo(() => {
     if (!processedEvaluations.length) return [];
 
@@ -140,29 +140,33 @@ const Benchmark = () => {
           dateStr: new Date(dateTimestamp).toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
           value: e.primaryValue,
           model: e.model_name || 'Unknown',
+          paperId: e.paper_id,
           evaluation: e
         };
-      })
-      .sort((a, b) => a.date - b.date);
+      });
 
-    // Build state-of-the-art frontier: keep only entries that set new records
-    const sotaFrontier = [];
-    let currentBest = -Infinity;
+    // Group evaluations by paper_id and keep only the best result per paper
+    const paperBestResults = new Map<string, typeof evaluationsWithDates[0]>();
 
     for (const point of evaluationsWithDates) {
-      if (point.value > currentBest) {
-        currentBest = point.value;
-        sotaFrontier.push({
-          date: point.date,
-          dateStr: point.dateStr,
-          value: point.value,
-          model: point.model,
-          isTop: true
-        });
+      const existing = paperBestResults.get(point.paperId);
+      if (!existing || point.value > existing.value) {
+        paperBestResults.set(point.paperId, point);
       }
     }
 
-    return sotaFrontier;
+    // Convert to array, sort by date, and build chart data
+    const bestResultsPerPaper = Array.from(paperBestResults.values())
+      .sort((a, b) => a.date - b.date)
+      .map(point => ({
+        date: point.date,
+        dateStr: point.dateStr,
+        value: point.value,
+        model: point.model,
+        isTop: true
+      }));
+
+    return bestResultsPerPaper;
   }, [processedEvaluations]);
 
   // Get the best evaluation (SOTA)
@@ -371,13 +375,9 @@ const Benchmark = () => {
               {/* Legend */}
               <div className="flex items-center justify-center space-x-6 mt-4 text-xs">
                 <div className="flex items-center space-x-2">
-                  <div className="w-3 h-3 rounded-full bg-gray-300"></div>
-                  <span className="text-muted-foreground">Other models</span>
-                </div>
-                <div className="flex items-center space-x-2">
                   <div className="w-3 h-3 rounded-full bg-blue-500"></div>
                   <span className="text-muted-foreground">
-                    Models with highest {selectedMetric || (allSameMetric ? processedEvaluations[0]?.primaryMetric : 'score') || 'metric'}
+                    Best result per paper
                   </span>
                 </div>
               </div>
