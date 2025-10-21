@@ -121,6 +121,26 @@ curl "http://localhost:8000/api/v1/papers/?page=1&page_size=10"
 | `/api/v1/papers/recent` | GET | Get recently published papers |
 | `/api/v1/papers/stats` | GET | Get database statistics |
 
+### Dataset Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/datasets/` | GET | List datasets with pagination and filtering |
+| `/api/v1/datasets/{dataset_id}` | GET | Get specific dataset details |
+| `/api/v1/datasets/{dataset_id}/evaluations` | GET | Get evaluations for dataset |
+| `/api/v1/datasets/` | POST | Create new dataset with task associations |
+
+### Evaluation Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/evaluations/` | GET | List evaluations with filtering |
+| `/api/v1/evaluations/{evaluation_id}` | GET | Get specific evaluation |
+| `/api/v1/evaluations/` | POST | Create new evaluation result |
+| `/api/v1/evaluations/{evaluation_id}` | PUT | Update evaluation result |
+| `/api/v1/evaluations/{evaluation_id}` | DELETE | Delete evaluation result |
+| `/api/v1/evaluations/recalculate-ranks` | POST | Recalculate leaderboard ranks |
+
 ### Query Parameters
 
 #### `/api/v1/papers/` - Advanced Filtering
@@ -302,6 +322,12 @@ The application provides structured logging and can be integrated with monitorin
 - **Metrics**: Built-in FastAPI metrics and database connection pooling stats
 - **Logging**: Structured logging with configurable levels
 - **Database Monitoring**: Connection pool metrics and query performance tracking
+
+## Documentation
+
+- **[API Guide: Adding Data](../docs/API_GUIDE_ADDING_DATA.md)** - Quick reference for adding datasets and evaluations
+- **[Adding Evaluations Guide](../docs/ADDING_EVALUATIONS_GUIDE.md)** - Detailed evaluation management guide
+- **[API Expansion Plan](../docs/API_EXPANSION_PLAN.md)** - Complete API roadmap and implementation status
 
 ## Contributing
 

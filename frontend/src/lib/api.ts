@@ -77,6 +77,8 @@ export interface Task {
   area_id?: string;
   level: number;
   paper_count?: number;
+  image_url?: string;
+  image_credit?: string;
   created_at?: string;
   updated_at?: string;
 }

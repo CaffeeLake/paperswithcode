@@ -4,6 +4,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getTask, getTasks, getTaskChildren, getTaskParents } from '@/lib/api';
+import { preloadImage } from '@/lib/imagePreloader';
 
 /**
  * Hook to fetch a single task by ID or slug
@@ -11,9 +12,19 @@ import { getTask, getTasks, getTaskChildren, getTaskParents } from '@/lib/api';
 export const useTask = (taskId: string | undefined, enabled: boolean = true) => {
   return useQuery({
     queryKey: ['task', taskId],
-    queryFn: () => {
+    queryFn: async () => {
       if (!taskId) throw new Error('Task ID is required');
-      return getTask(taskId);
+
+      // Fetch the task data
+      const task = await getTask(taskId);
+
+      // If the task has an image, preload it before returning
+      if (task.image_url) {
+        console.log(`[useTask] Preloading image for task ${taskId}: ${task.image_url}`);
+        await preloadImage(task.image_url);
+      }
+
+      return task;
     },
     enabled: enabled && !!taskId,
     staleTime: 5 * 60 * 1000, // 5 minutes

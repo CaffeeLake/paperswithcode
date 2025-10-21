@@ -212,9 +212,81 @@ const TaskDetail = () => {
           {task.description ? (
             <Card>
               <CardContent className="p-6">
-                <p className="text-muted-foreground leading-relaxed text-justify">
-                  {task.description}
-                </p>
+                <div className="relative">
+                  {/* Mobile: Stack image above text */}
+                  <div className="block sm:hidden mb-4">
+                    {task.image_url && (
+                      <div className="w-full max-w-sm mx-auto">
+                        <img
+                          src={task.image_url}
+                          alt={`${task.name} diagram`}
+                          className="w-full h-auto rounded-lg shadow-md"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                        {task.image_credit && (
+                          <p className="text-xs text-muted-foreground mt-2 text-center">
+                            Image credit:{' '}
+                            {task.image_credit.startsWith('http') ? (
+                              <a
+                                href={task.image_credit}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline"
+                              >
+                                {task.image_credit}
+                              </a>
+                            ) : (
+                              task.image_credit
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Desktop: Inline Image with Text Wrapping */}
+                  {task.image_url && (
+                    <div className="hidden sm:block float-right ml-6 mb-4 max-w-sm sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
+                      <img
+                        src={task.image_url}
+                        alt={`${task.name} diagram`}
+                        className="w-full h-auto rounded-lg shadow-md"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                      {task.image_credit && (
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Image credit:{' '}
+                          {task.image_credit.startsWith('http') ? (
+                            <a
+                              href={task.image_credit}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              {task.image_credit}
+                            </a>
+                          ) : (
+                            task.image_credit
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Description Text with Wrapping */}
+                  <div className="overflow-hidden">
+                    <p className="text-muted-foreground leading-relaxed text-justify">
+                      {task.description}
+                    </p>
+                  </div>
+
+                  {/* Clear float for desktop responsiveness */}
+                  <div className="hidden sm:block clear-both"></div>
+                </div>
               </CardContent>
             </Card>
           ) : (

@@ -13,10 +13,12 @@ from backend.models.database import (
     Dataset as DBDataset,
     PaperDataset,
     TaskDataset,
+    Task as DBTask,
     Evaluation as DBEvaluation,
 )
-from backend.models.api import Dataset, Datasets
+from backend.models.api import Dataset, Datasets, DatasetCreateRequest
 from backend.utils.exceptions import DatabaseError
+from backend.utils.slug_utils import slugify
 
 
 class DatasetService:
@@ -460,3 +462,84 @@ class DatasetService:
             order_by="name",
             order_dir="asc",
         )
+
+    def create_dataset(self, request: DatasetCreateRequest) -> Dataset:
+        """
+        Create a new dataset and link it to specified tasks.
+
+        Args:
+            request: DatasetCreateRequest with dataset data and task IDs
+
+        Returns:
+            Created Dataset object
+
+        Raises:
+            DatabaseError: If database operation fails
+            ValueError: If task IDs don't exist or slug already exists
+        """
+        try:
+            # Generate slug from name
+            slug = slugify(request.name)
+
+            # Check if slug already exists
+            existing_dataset = (
+                self.db.query(DBDataset).filter(DBDataset.slug == slug).first()
+            )
+            if existing_dataset:
+                raise ValueError(f"Dataset with slug '{slug}' already exists")
+
+            # Validate that all task IDs exist
+            existing_task_ids = set(
+                self.db.query(DBTask.id).filter(DBTask.id.in_(request.task_ids)).all()
+            )
+            existing_task_ids = {task_id[0] for task_id in existing_task_ids}
+
+            missing_task_ids = set(request.task_ids) - existing_task_ids
+            if missing_task_ids:
+                raise ValueError(f"Task IDs not found: {sorted(missing_task_ids)}")
+
+            # Create the dataset
+            db_dataset = DBDataset(
+                name=request.name,
+                slug=slug,
+                full_name=request.full_name,
+                description=request.description,
+                url=request.url,
+                hf_url=request.hf_url,
+                paper_url=request.paper_url,
+                # Additional PWC fields
+                short_description=request.short_description,
+                homepage=request.homepage,
+                image_url=request.image_url,
+                thumbnail_url=request.thumbnail_url,
+                verified_image_url=request.verified_image_url,
+                license_name=request.license_name,
+                license_url=request.license_url,
+                introduced_date=request.introduced_date,
+                modalities=request.modalities,
+                languages=request.languages,
+                variants=request.variants,
+                num_papers=request.num_papers,
+                warning=request.warning,
+                pwc_url=request.pwc_url,
+            )
+
+            self.db.add(db_dataset)
+            self.db.flush()  # Get the ID without committing
+
+            # Create task-dataset relationships
+            for task_id in request.task_ids:
+                task_dataset = TaskDataset(task_id=task_id, dataset_id=db_dataset.id)
+                self.db.add(task_dataset)
+
+            self.db.commit()
+
+            # Return the created dataset using the existing get_dataset method
+            return self.get_dataset(db_dataset.id)
+
+        except ValueError as e:
+            self.db.rollback()
+            raise e
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to create dataset: {str(e)}")

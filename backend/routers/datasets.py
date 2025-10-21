@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Dataset, Datasets
+from backend.models.api import Dataset, Datasets, DatasetCreateRequest
 from backend.services.dataset_service import DatasetService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import DatabaseError
@@ -215,6 +215,61 @@ async def get_dataset_evaluations(
 
     except HTTPException:
         raise
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/", response_model=Dataset, status_code=201)
+async def create_dataset(
+    request: DatasetCreateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Create a new dataset and link it to specified tasks.
+
+    Creates a new benchmark dataset with the provided information and automatically
+    links it to the specified tasks. The dataset slug is auto-generated from the name.
+
+    **Request Body:**
+    ```json
+    {
+        "name": "Video-MMLU",
+        "full_name": "Video-MMLU: A Massive Multi-Discipline Lecture Understanding Benchmark",
+        "description": "A comprehensive benchmark for evaluating Large Multimodal Models",
+        "url": "https://enxinsong.com/Video-MMLU-web/",
+        "hf_url": "https://huggingface.co/datasets/Enxin/Video-MMLU",
+        "paper_url": "https://arxiv.org/abs/2504.14693",
+        "task_ids": [9],
+        "modalities": ["Videos", "Text"],
+        "languages": ["English"],
+        "license_name": "MIT",
+        "introduced_date": "2025-01-01"
+    }
+    ```
+
+    **Returns:**
+    - Created dataset object with auto-generated slug and task associations
+    - 201 status code on success
+
+    **Errors:**
+    - 400: Invalid request data or missing required fields
+    - 404: One or more task IDs not found
+    - 409: Dataset with the same slug already exists
+    - 500: Internal server error
+    """
+    try:
+        service = DatasetService(db)
+        return service.create_dataset(request)
+
+    except ValueError as e:
+        if "Task IDs not found" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        elif "already exists" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:

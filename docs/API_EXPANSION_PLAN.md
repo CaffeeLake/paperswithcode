@@ -192,9 +192,10 @@ GET  /api/v1/methods/{method_id}/papers  # Get papers using method
 GET  /api/v1/datasets/                               # List datasets
 GET  /api/v1/datasets/{dataset_id}                   # Get specific dataset
 GET  /api/v1/datasets/{dataset_id}/evaluations       # Get evaluation tables
+POST /api/v1/datasets/                               # Create new dataset
 ```
 
-**Implementation Status:** ✅ Fully implemented
+**Implementation Status:** ✅ Fully implemented with full CRUD operations
 **Database Schema:** Matches `datasets` table with `task_datasets` junction table
 - Table: `datasets` (id, name, full_name, description, url, hf_url)
 - Junction: `paper_datasets` (papers using datasets)
@@ -207,7 +208,10 @@ GET  /api/v1/datasets/{dataset_id}/evaluations       # Get evaluation tables
 - **Task Filtering**: Filter datasets by task ID or slug (`/api/v1/datasets/?task=image-classification`)
 - **Search**: Full-text search across name, full_name, and description
 - **Metadata**: Returns paper_count and task_count for each dataset
+- **Dataset Creation**: POST endpoint with automatic task linking and slug generation
 - **Legacy Compatible**: Matches original PapersWithCode API specification
+
+**Documentation:** See [API Guide: Adding Data](API_GUIDE_ADDING_DATA.md) for usage examples
 
 #### 2.5 Conferences API
 ```
@@ -226,22 +230,31 @@ GET  /api/v1/conferences/{conference_id}/proceedings # Get proceedings
 **Timeline: 3-4 weeks**
 **Dependencies: Phase 2 completion**
 
-#### 3.1 Evaluations API
+#### 3.1 Evaluations API ✅ **COMPLETED - October 2025**
 ```
 GET  /api/v1/evaluations/                           # List evaluation tables
 GET  /api/v1/evaluations/{eval_id}                  # Get specific evaluation table
-GET  /api/v1/evaluations/{eval_id}/results          # Get evaluation results
-GET  /api/v1/evaluations/{eval_id}/metrics          # Get evaluation metrics
-POST /api/v1/evaluations/                           # Create evaluation table (admin)
-PUT  /api/v1/evaluations/{eval_id}                  # Update evaluation table (admin)
-DELETE /api/v1/evaluations/{eval_id}                # Delete evaluation table (admin)
+POST /api/v1/evaluations/                           # Create evaluation result
+PUT  /api/v1/evaluations/{eval_id}                  # Update evaluation result
+DELETE /api/v1/evaluations/{eval_id}               # Delete evaluation result
+POST /api/v1/evaluations/recalculate-ranks         # Recalculate leaderboard ranks
 ```
 
-**Implementation Details:**
-- **Database Query**: Complex joins across `evaluation_tables`, `results`, `metrics`
-- **CRUD Operations**: Full create/read/update/delete support
-- **Authentication**: Admin-only for write operations
-- **Response Model**: `EvaluationTable`, `Result`, `Metric`
+**Implementation Status:** ✅ Fully implemented with full CRUD operations
+**Database Schema:** Matches `evaluations` table with automatic task-dataset linking
+- Table: `evaluations` (id, paper_id, task_id, dataset_id, model_name, metrics, best_rank)
+- Junction: `task_datasets` (auto-created when evaluation is added)
+- Service: `EvaluationService` with full CRUD operations
+- Features: Automatic rank calculation, metric direction support, leaderboard management
+
+**Key Features:**
+- **Automatic Ranking**: Supports both "higher is better" and "lower is better" metrics
+- **Task-Dataset Linking**: Automatically links datasets to tasks when evaluations are created
+- **Rank Recalculation**: Automatic rank updates when evaluations are added/modified/deleted
+- **Metric Support**: 37 predefined metrics with correct ranking directions
+- **Search & Filtering**: Filter by paper, task, dataset with full-text search
+
+**Documentation:** See [API Guide: Adding Data](API_GUIDE_ADDING_DATA.md) and [Adding Evaluations Guide](ADDING_EVALUATIONS_GUIDE.md) for detailed usage
 
 #### 3.2 Cross-Entity Relationship Endpoints
 ```

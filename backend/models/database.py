@@ -219,6 +219,11 @@ class Task(Base):
     )
     level: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Metadata columns
+    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    image_credit: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    useful_leaderboards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

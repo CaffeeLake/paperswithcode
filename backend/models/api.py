@@ -709,6 +709,12 @@ class Task(BaseModel):
     paper_count: Optional[int] = Field(
         None, description="Number of papers for this task"
     )
+    image_url: Optional[str] = Field(
+        None, description="URL to task image/visual representation"
+    )
+    image_credit: Optional[str] = Field(
+        None, description="Image source/credit information"
+    )
 
     # Timestamps
     created_at: Optional[datetime] = Field(None, description="Task creation timestamp")
@@ -871,9 +877,13 @@ class DatasetCreateRequest(BaseModel):
 
     name: str = Field(..., description="Dataset name")
     full_name: Optional[str] = Field(None, description="Dataset full name")
-    description: Optional[str] = Field(None, description="Dataset description")
-    url: Optional[str] = Field(None, description="Dataset URL")
-    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+    description: str = Field(..., description="Dataset description")
+    url: str = Field(..., description="Dataset URL")
+    hf_url: str = Field(..., description="Hugging Face dataset URL")
+    paper_url: str = Field(..., description="URL to paper that introduced this dataset")
+    task_ids: List[int] = Field(
+        ..., description="List of task IDs to link this dataset to"
+    )
 
     # Additional PWC fields
     short_description: Optional[str] = Field(

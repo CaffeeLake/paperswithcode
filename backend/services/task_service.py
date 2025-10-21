@@ -123,6 +123,8 @@ class TaskService:
                     "area_id": str(db_task.area_id) if db_task.area_id else None,
                     "level": db_task.level,
                     "paper_count": paper_count,
+                    "image_url": db_task.image_url,
+                    "image_credit": db_task.image_credit,
                     "created_at": db_task.created_at,
                     "updated_at": db_task.updated_at,
                 }
@@ -180,6 +182,8 @@ class TaskService:
                 "area_id": str(db_task.area_id) if db_task.area_id else None,
                 "level": db_task.level,
                 "paper_count": paper_count,
+                "image_url": db_task.image_url,
+                "image_credit": db_task.image_credit,
                 "created_at": db_task.created_at,
                 "updated_at": db_task.updated_at,
             }
