@@ -31,6 +31,7 @@ const Benchmark = () => {
   const [selectedMetric, setSelectedMetric] = useState<string>('');
   const [sortBy, setSortBy] = useState<string>('rank');
   const [modelFilter, setModelFilter] = useState<string>('all');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | 'default'>('default');
 
   // Fetch dataset by slug
   const { data: dataset, isLoading: datasetLoading, error: datasetError } = useDatasetBySlug(datasetSlug);
@@ -77,6 +78,25 @@ const Benchmark = () => {
     }
   }, [availableMetrics, selectedMetric, evaluations]);
 
+  // Handle metric column click for sorting
+  const handleMetricClick = (metric: string) => {
+    if (metric === selectedMetric) {
+      // Clicking the same metric: cycle through default -> asc -> desc -> default
+      if (sortDirection === 'default') {
+        setSortDirection('asc');
+      } else if (sortDirection === 'asc') {
+        setSortDirection('desc');
+      } else {
+        setSortDirection('default');
+      }
+    } else {
+      // Clicking a different metric: select it with default direction
+      setSelectedMetric(metric);
+      setSortDirection('default');
+      setSortBy('score'); // Switch to score-based sorting
+    }
+  };
+
   // Process evaluations to include paper info and sort by selected metric
   const processedEvaluations = useMemo(() => {
     if (!evaluations) return [];
@@ -85,7 +105,16 @@ const Benchmark = () => {
     const sortMetric = selectedMetric || evaluations[0]?.best_metric || availableMetrics[0];
 
     // Get the metric direction (default to higher_is_better if not found)
-    const metricDirection = sortMetric ? (metricDirections[sortMetric] || 'higher_is_better') : 'higher_is_better';
+    const naturalDirection = sortMetric ? (metricDirections[sortMetric] || 'higher_is_better') : 'higher_is_better';
+
+    // Determine effective sort direction
+    let effectiveDirection: 'asc' | 'desc';
+    if (sortDirection === 'default') {
+      // Use natural direction: lower_is_better -> asc, higher_is_better -> desc
+      effectiveDirection = naturalDirection === 'lower_is_better' ? 'asc' : 'desc';
+    } else {
+      effectiveDirection = sortDirection;
+    }
 
     // Sort by selected metric or rank
     return evaluations
@@ -115,10 +144,10 @@ const Benchmark = () => {
             return rankA - rankB;
           }
           // If ranks are equal, use sort metric value as tiebreaker (respecting direction)
-          if (metricDirection === 'lower_is_better') {
-            return a.sortValue - b.sortValue; // Lower is better
+          if (effectiveDirection === 'asc') {
+            return a.sortValue - b.sortValue; // Ascending
           } else {
-            return b.sortValue - a.sortValue; // Higher is better
+            return b.sortValue - a.sortValue; // Descending
           }
         }
         if (sortBy === 'date') {
@@ -126,16 +155,16 @@ const Benchmark = () => {
           const dateB = b.evaluated_on || b.paper_published_date || 0;
           return new Date(dateB).getTime() - new Date(dateA).getTime();
         }
-        // Default: sort by selected metric value based on direction
-        if (metricDirection === 'lower_is_better') {
-          // For metrics like WER, lower is better (ascending sort)
+        // Default: sort by selected metric value based on effective direction
+        if (effectiveDirection === 'asc') {
+          // Ascending: lower values first
           return a.sortValue - b.sortValue;
         } else {
-          // For metrics like AP/Accuracy, higher is better (descending sort)
+          // Descending: higher values first
           return b.sortValue - a.sortValue;
         }
       });
-  }, [evaluations, selectedMetric, sortBy, availableMetrics, metricDirections]);
+  }, [evaluations, selectedMetric, sortBy, availableMetrics, metricDirections, sortDirection]);
 
   // Prepare chart data - show best result per paper over time
   const chartData = useMemo(() => {
@@ -413,14 +442,29 @@ const Benchmark = () => {
                     <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground min-w-[200px]">Model</th>
                     {/* Dynamic metric columns */}
-                    {availableMetrics.map(metric => (
-                      <th key={metric} className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
-                        {metric}
-                        {metric === selectedMetric && (
-                          <span className="text-primary ml-1">↓</span>
-                        )}
-                      </th>
-                    ))}
+                    {availableMetrics.map(metric => {
+                      const isSelected = metric === selectedMetric;
+                      const naturalDirection = metricDirections[metric] || 'higher_is_better';
+
+                      // Always show natural direction indicator
+                      const naturalArrow = naturalDirection === 'lower_is_better' ? '↑' : '↓';
+
+                      return (
+                        <th
+                          key={metric}
+                          className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
+                          onClick={() => handleMetricClick(metric)}
+                          title={`Click to sort by ${metric}. ${naturalDirection === 'lower_is_better' ? 'Lower is better' : 'Higher is better'}`}
+                        >
+                          <div className="flex items-center gap-1">
+                            <span className={isSelected ? 'font-bold text-foreground' : ''}>
+                              {metric}
+                            </span>
+                            <span className="text-muted-foreground text-base">{naturalArrow}</span>
+                          </div>
+                        </th>
+                      );
+                    })}
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">Paper</th>
                     <th className="text-center py-3 px-4 font-medium text-muted-foreground">Code</th>
                     <th className="text-center py-3 px-4 font-medium text-muted-foreground">Year</th>

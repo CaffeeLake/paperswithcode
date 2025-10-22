@@ -13,10 +13,10 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
 - **Author Ordering**: Proper first/second author tracking in publications
 
 ## Current Database Statistics
-- **Core Tables**: 15 main entity tables + 6 junction tables
+- **Core Tables**: 16 main entity tables + 6 junction tables
 - **Performance Views**: 6 materialized views for optimized queries
 - **Backup Tables**: 2 backup tables for data migration safety
-- **Indexes**: 50+ indexes for full-text search, filtering, and performance
+- **Indexes**: 51+ indexes for full-text search, filtering, and performance
 - **Data Scale**: Designed to handle millions of papers with real-time updates
 
 ## Entity Relationship Diagram (UML)
@@ -129,19 +129,20 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
         │              └─────────────────┘
         │
         ▼
-┌─────────────────┐           ┌──────────────────┐
-│  REPOSITORIES   │           │   EVALUATIONS    │
-├─────────────────┤           ├──────────────────┤
-│ id (PK)         │           │ id (PK)          │
-│ url (UNIQUE)    │           │ paper_id (FK)    │
-│ owner           │           │ task_id (FK)     │
-│ name            │           │ dataset_id (FK)  │
-│ num_stars       │           │ model_name       │
-│ num_stars_upd_at│           │ methodology      │
-│ source          │           │ metrics (JSONB)  │
-│ created_at      │           │ uses_additional  │
-│ updated_at      │           │ best_rank        │
-└─────────────────┘           │ external_source  │
+┌─────────────────┐           ┌──────────────────┐         ┌─────────────────┐
+│  REPOSITORIES   │           │   EVALUATIONS    │         │     METRICS     │
+├─────────────────┤           ├──────────────────┤         ├─────────────────┤
+│ id (PK)         │           │ id (PK)          │         │ id (PK)         │
+│ url (UNIQUE)    │           │ paper_id (FK)    │         │ name (UNIQUE)   │
+│ owner           │           │ task_id (FK)     │         │ full_name       │
+│ name            │           │ dataset_id (FK)  │         │ direction       │
+│ num_stars       │           │ model_name       │         │ description     │
+│ num_stars_upd_at│           │ methodology      │         │ created_at      │
+│ source          │           │ metrics (JSONB)  │         │ updated_at      │
+│ created_at      │           │ uses_additional  │         └─────────────────┘
+│ updated_at      │           │ best_rank        │                   ▲
+└─────────────────┘           │ best_metric      │───────────────────┘
+        │                     │ external_source  │    (logical reference)
         │                     │ created_at       │
         │                     │ updated_at       │
         │                     └──────────────────┘
@@ -624,7 +625,49 @@ CREATE TABLE datasets (
 - ✅ **Task Association**: Many-to-many relationship via `task_datasets` junction table (NEW)
 - ✅ **Metadata**: Paper count, task count for each dataset
 
-### 7. REPOSITORIES
+### 7. METRICS
+**Metric definitions with ranking directions**
+
+Metrics represent evaluation metrics used in benchmark evaluations with explicit ranking direction information. This table centralizes metric definitions and specifies whether higher or lower values indicate better performance, enabling correct ranking calculations across leaderboards.
+
+**Examples of Metrics**:
+- **Higher is Better**: AP, mAP, Accuracy, F1, BLEU, ROUGE, IoU, Precision, Recall
+- **Lower is Better**: WER, CER, Perplexity, Error Rate, MAE, MSE, FID
+
+```sql
+CREATE TABLE metrics (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,           -- Short metric name (e.g., "WER", "AP", "Accuracy")
+    full_name VARCHAR(255),                      -- Full metric name (e.g., "Word Error Rate")
+    direction VARCHAR(20) NOT NULL               -- "higher_is_better" or "lower_is_better"
+        CHECK (direction IN ('higher_is_better', 'lower_is_better')),
+    description TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Logical Relationship with Evaluations**:
+- The `evaluations.best_metric` field contains a metric name that logically references `metrics.name`
+- This is not enforced as a foreign key to allow flexibility in evaluation data import
+- The metrics table serves as a reference dictionary for proper ranking calculations
+
+**Pre-populated Metrics** (32 common metrics):
+- **Lower is better** (9 metrics): WER, CER, Perplexity, Error Rate, Loss, MAE, MSE, RMSE, FID
+- **Higher is better** (23 metrics): AP, mAP, box AP, AP50, AP75, APS, APM, APL, Accuracy, Top-1 Accuracy, Top-5 Accuracy, F1, Precision, Recall, AUC, BLEU, ROUGE, ROUGE-L, METEOR, IoU, Dice, mIoU, R@1, R@5, R@10, MRR, NDCG, PSNR
+
+**API Integration** (October 2025):
+- ✅ **Service Layer**: `MetricService` with full CRUD operations
+- ✅ **API Endpoints**:
+  - `GET /api/v1/metrics/` - List metrics with pagination/filtering
+  - `GET /api/v1/metrics/{metric_name}` - Get specific metric by name
+  - `GET /api/v1/metrics/directions` - Get all metric directions as a dictionary
+- ✅ **Filtering**: By direction (higher_is_better/lower_is_better), search query
+- ✅ **Ordering**: By name, direction, created_at (asc/desc)
+- ✅ **Direction Lookup**: Optimized endpoint for frontend to quickly lookup metric directions
+- ✅ **Metadata**: Used by ranking calculation scripts and leaderboard APIs
+
+### 8. REPOSITORIES
 **GitHub repositories (normalized, no direct paper relationship)**
 ```sql
 CREATE TABLE repositories (
@@ -643,7 +686,7 @@ CREATE TABLE repositories (
 -- since repositories can have different official status for different papers
 ```
 
-### 7b. PAPER_REPOSITORIES
+### 8b. PAPER_REPOSITORIES
 **Junction table for many-to-many relationship between papers and repositories**
 ```sql
 CREATE TABLE paper_repositories (
@@ -654,7 +697,7 @@ CREATE TABLE paper_repositories (
 );
 ```
 
-### 8. PROJECT_PAGES
+### 9. PROJECT_PAGES
 **Project pages showcasing paper work (e.g., demo sites, project websites) - normalized without direct paper reference**
 ```sql
 CREATE TABLE project_pages (
@@ -667,7 +710,7 @@ CREATE TABLE project_pages (
 );
 ```
 
-### 8b. PAPER_PROJECT_PAGES
+### 9b. PAPER_PROJECT_PAGES
 **Junction table for many-to-many relationship between papers and project pages (simplified to only contain IDs)**
 ```sql
 CREATE TABLE paper_project_pages (
@@ -677,7 +720,7 @@ CREATE TABLE paper_project_pages (
 );
 ```
 
-### 9. EVALUATIONS
+### 10. EVALUATIONS
 **Benchmark evaluation results**
 ```sql
 CREATE TABLE evaluations (
@@ -720,7 +763,7 @@ The database includes several views for optimized queries and reporting:
 
 **Note**: While the SQL definitions below show foreign key constraints for clarity, some junction tables in the current database may not have all foreign key constraints explicitly defined at the database level. The relationships are maintained through application logic and proper indexing.
 
-### 10. PAPER_AUTHORS
+### 11. PAPER_AUTHORS
 ```sql
 CREATE TABLE paper_authors (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -730,7 +773,7 @@ CREATE TABLE paper_authors (
 );
 ```
 
-### 11. PAPER_TASKS
+### 12. PAPER_TASKS
 ```sql
 CREATE TABLE paper_tasks (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -739,7 +782,7 @@ CREATE TABLE paper_tasks (
 );
 ```
 
-### 12. PAPER_METHODS
+### 13. PAPER_METHODS
 ```sql
 CREATE TABLE paper_methods (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -748,7 +791,7 @@ CREATE TABLE paper_methods (
 );
 ```
 
-### 13. PAPER_DATASETS
+### 14. PAPER_DATASETS
 ```sql
 CREATE TABLE paper_datasets (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -757,7 +800,7 @@ CREATE TABLE paper_datasets (
 );
 ```
 
-### 14. TASK_DATASETS
+### 15. TASK_DATASETS
 ```sql
 CREATE TABLE task_datasets (
     task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -779,7 +822,7 @@ This allows the system to answer queries like:
 - "What tasks is ImageNet associated with?"
 - Filter datasets by task: `/api/v1/datasets/?task=image-classification`
 
-### 15. PAPER_REPOSITORIES
+### 16. PAPER_REPOSITORIES
 ```sql
 CREATE TABLE paper_repositories (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -789,7 +832,7 @@ CREATE TABLE paper_repositories (
 );
 ```
 
-### 16. PAPER_PROJECT_PAGES
+### 17. PAPER_PROJECT_PAGES
 ```sql
 CREATE TABLE paper_project_pages (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -864,6 +907,9 @@ CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
 
 CREATE INDEX idx_task_datasets_task_id ON task_datasets(task_id);
 CREATE INDEX idx_task_datasets_dataset_id ON task_datasets(dataset_id);
+
+-- Metrics indexes
+CREATE INDEX idx_metrics_name ON metrics(name);
 
 -- Evaluation indexes
 CREATE INDEX idx_evaluations_paper_task_dataset ON evaluations(paper_id, task_id, dataset_id);
@@ -1179,6 +1225,17 @@ The system now processes the same data with **dramatically fewer resources** whi
 - ✅ **Service Layer**: Complete `DatasetService` with filtering, search, and associations
 - ✅ **Router**: Full CRUD endpoints matching legacy PapersWithCode API specification
 - ✅ **Indexes**: Optimized indexes on both `task_id` and `dataset_id` for efficient queries
+
+#### Metrics Table Addition
+- ✅ **Added `metrics` table**: Centralized metric definitions with ranking directions
+- ✅ **Purpose**: Support correct ranking for "higher is better" vs "lower is better" metrics
+- ✅ **Pre-populated data**: 32 common metrics (WER, CER, AP, mAP, Accuracy, F1, BLEU, etc.)
+- ✅ **Direction field**: CHECK constraint ensures only 'higher_is_better' or 'lower_is_better' values
+- ✅ **Logical relationship**: EVALUATIONS.best_metric references METRICS.name (not enforced as FK for flexibility)
+- ✅ **API Support**: Full REST API with filtering, search, and optimized direction lookup endpoint
+- ✅ **Service Layer**: Complete `MetricService` with CRUD operations
+- ✅ **Router**: `/api/v1/metrics/` endpoints for metric management and direction queries
+- ✅ **Use case**: Powers ranking calculations and leaderboard sorting across all benchmarks
 
 ### Major Updates (September 2025)
 
