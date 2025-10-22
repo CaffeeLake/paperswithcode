@@ -142,6 +142,20 @@ export interface Evaluation {
   dataset_slug?: string;
 }
 
+export interface Metric {
+  id: string;
+  name: string;
+  full_name?: string;
+  direction: 'higher_is_better' | 'lower_is_better';
+  description?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MetricDirections {
+  directions: Record<string, 'higher_is_better' | 'lower_is_better'>;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next_page: number | null;
@@ -681,6 +695,34 @@ class ApiClient {
     }
     return await response.json();
   }
+
+  // Metrics
+  async getMetrics(params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    direction?: 'higher_is_better' | 'lower_is_better';
+    ordering?: string;
+  }): Promise<PaginatedResponse<Metric>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.q) searchParams.append('q', params.q);
+    if (params?.direction) searchParams.append('direction', params.direction);
+    if (params?.ordering) searchParams.append('ordering', params.ordering);
+
+    const endpoint = `/metrics/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PaginatedResponse<Metric>>(endpoint);
+  }
+
+  async getMetric(metricName: string): Promise<Metric> {
+    return this.request<Metric>(`/metrics/${metricName}`);
+  }
+
+  async getMetricDirections(): Promise<MetricDirections> {
+    return this.request<MetricDirections>('/metrics/directions');
+  }
 }
 
 // Create and export a singleton instance
@@ -723,4 +765,7 @@ export const updateEvaluation = apiClient.updateEvaluation.bind(apiClient);
 export const deleteEvaluation = apiClient.deleteEvaluation.bind(apiClient);
 export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
 export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
+export const getMetrics = apiClient.getMetrics.bind(apiClient);
+export const getMetric = apiClient.getMetric.bind(apiClient);
+export const getMetricDirections = apiClient.getMetricDirections.bind(apiClient);
 export const healthCheck = apiClient.healthCheck.bind(apiClient);

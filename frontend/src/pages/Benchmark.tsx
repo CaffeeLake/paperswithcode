@@ -6,6 +6,7 @@ import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, CheckCircle, Loader2
 import { useParams, Link } from "react-router-dom";
 import { useDatasetBySlug } from "@/hooks/useDatasets";
 import { useEvaluationsByDataset } from "@/hooks/useEvaluations";
+import { useMetricDirections } from "@/hooks/useMetrics";
 import { getTasks, getPaper, type Task, type Paper, type Evaluation } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState, useEffect } from "react";
@@ -40,6 +41,10 @@ const Benchmark = () => {
     !!dataset?.id
   );
 
+  // Fetch metric directions for correct sorting
+  const { data: metricDirectionsData } = useMetricDirections();
+  const metricDirections = metricDirectionsData?.directions || {};
+
   // Fetch tasks to display task names
   const { data: tasksData } = useQuery({
     queryKey: ['tasks'],
@@ -54,48 +59,45 @@ const Benchmark = () => {
     );
   }, [tasksData]);
 
-  // Get available metrics across all evaluations
+  // Get available metrics across all evaluations (these will be our table columns)
   const availableMetrics = useMemo(() => {
     if (!evaluations || evaluations.length === 0) return [];
     const metricsSet = new Set<string>();
     evaluations.forEach(e => {
       Object.keys(e.metrics || {}).forEach(metric => metricsSet.add(metric));
     });
-    return Array.from(metricsSet);
+    // Sort metrics alphabetically for consistent column order
+    return Array.from(metricsSet).sort();
   }, [evaluations]);
 
-  // Check if all evaluations use the same metric
-  const allSameMetric = useMemo(() => {
-    if (!evaluations || evaluations.length === 0) return true;
-    const firstMetric = evaluations[0]?.best_metric;
-    return evaluations.every(e => e.best_metric === firstMetric);
-  }, [evaluations]);
-
-  // Set default metric only if all evaluations use the same metric
+  // Set default selected metric for sorting (use best_metric from first evaluation)
   useEffect(() => {
-    if (availableMetrics.length > 0 && !selectedMetric && allSameMetric) {
+    if (availableMetrics.length > 0 && !selectedMetric) {
       setSelectedMetric(evaluations?.[0]?.best_metric || availableMetrics[0]);
     }
-  }, [availableMetrics, selectedMetric, evaluations, allSameMetric]);
+  }, [availableMetrics, selectedMetric, evaluations]);
 
-  // Process evaluations to include paper info and sort by metric value
+  // Process evaluations to include paper info and sort by selected metric
   const processedEvaluations = useMemo(() => {
     if (!evaluations) return [];
 
-    // Get primary metric for filtering/display purposes
-    const primaryMetric = selectedMetric || evaluations[0]?.best_metric || Object.keys(evaluations[0]?.metrics || {})[0];
+    // Get the metric to sort by
+    const sortMetric = selectedMetric || evaluations[0]?.best_metric || availableMetrics[0];
 
-    // Sort by metric value (descending)
+    // Get the metric direction (default to higher_is_better if not found)
+    const metricDirection = sortMetric ? (metricDirections[sortMetric] || 'higher_is_better') : 'higher_is_better';
+
+    // Sort by selected metric or rank
     return evaluations
       .map(e => {
-        // Use the selected metric if available, otherwise fall back to each evaluation's best_metric
-        const metricToUse = selectedMetric || e.best_metric || Object.keys(e.metrics || {})[0];
-        const metricValue = e.metrics[metricToUse];
+        // Get value for the selected sort metric
+        const sortValue = sortMetric && e.metrics[sortMetric]
+          ? parseFloat(String(e.metrics[sortMetric]))
+          : 0;
 
         return {
           ...e,
-          primaryMetric: metricToUse,
-          primaryValue: parseFloat(String(metricValue || 0)),
+          sortValue,
           year: e.evaluated_on
             ? new Date(e.evaluated_on).getFullYear()
             : e.paper_published_date
@@ -112,18 +114,28 @@ const Benchmark = () => {
           if (rankA !== rankB) {
             return rankA - rankB;
           }
-          // If ranks are equal, use metric value as tiebreaker
-          return b.primaryValue - a.primaryValue;
+          // If ranks are equal, use sort metric value as tiebreaker (respecting direction)
+          if (metricDirection === 'lower_is_better') {
+            return a.sortValue - b.sortValue; // Lower is better
+          } else {
+            return b.sortValue - a.sortValue; // Higher is better
+          }
         }
         if (sortBy === 'date') {
           const dateA = a.evaluated_on || a.paper_published_date || 0;
           const dateB = b.evaluated_on || b.paper_published_date || 0;
           return new Date(dateB).getTime() - new Date(dateA).getTime();
         }
-        // Default: sort by metric value
-        return b.primaryValue - a.primaryValue;
+        // Default: sort by selected metric value based on direction
+        if (metricDirection === 'lower_is_better') {
+          // For metrics like WER, lower is better (ascending sort)
+          return a.sortValue - b.sortValue;
+        } else {
+          // For metrics like AP/Accuracy, higher is better (descending sort)
+          return b.sortValue - a.sortValue;
+        }
       });
-  }, [evaluations, selectedMetric, sortBy]);
+  }, [evaluations, selectedMetric, sortBy, availableMetrics, metricDirections]);
 
   // Prepare chart data - show best result per paper over time
   const chartData = useMemo(() => {
@@ -138,7 +150,7 @@ const Benchmark = () => {
         return {
           date: dateTimestamp,
           dateStr: new Date(dateTimestamp).toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-          value: e.primaryValue,
+          value: e.sortValue,
           model: e.model_name || 'Unknown',
           paperId: e.paper_id,
           evaluation: e
@@ -258,15 +270,12 @@ const Benchmark = () => {
                 {/* Filter Controls */}
                 <div className="flex items-center space-x-6 text-sm">
                   <div className="flex items-center space-x-2">
-                    <span className="text-muted-foreground">View</span>
-                    <Select value={selectedMetric || 'all'} onValueChange={(value) => setSelectedMetric(value === 'all' ? '' : value)}>
+                    <span className="text-muted-foreground">Sort by</span>
+                    <Select value={selectedMetric || availableMetrics[0]} onValueChange={setSelectedMetric}>
                       <SelectTrigger className="w-[200px] h-8">
                         <SelectValue placeholder="Select metric" />
                       </SelectTrigger>
                       <SelectContent>
-                        {!allSameMetric && (
-                          <SelectItem value="all">All Metrics</SelectItem>
-                        )}
                         {availableMetrics.map(metric => (
                           <SelectItem key={metric} value={metric}>
                             {metric}
@@ -277,7 +286,7 @@ const Benchmark = () => {
                   </div>
 
                   <div className="flex items-center space-x-2">
-                    <span className="text-muted-foreground">by</span>
+                    <span className="text-muted-foreground">Order</span>
                     <Select value={sortBy} onValueChange={setSortBy}>
                       <SelectTrigger className="w-[120px] h-8">
                         <SelectValue />
@@ -291,7 +300,7 @@ const Benchmark = () => {
                   </div>
 
                   <div className="flex items-center space-x-2">
-                    <span className="text-muted-foreground">for</span>
+                    <span className="text-muted-foreground">Filter</span>
                     <Select value={modelFilter} onValueChange={setModelFilter}>
                       <SelectTrigger className="w-[140px] h-8">
                         <SelectValue />
@@ -402,21 +411,24 @@ const Benchmark = () => {
                 <thead>
                   <tr className="border-b border-border">
                     <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">
-                      {selectedMetric || (allSameMetric ? processedEvaluations[0]?.primaryMetric : 'Score') || 'Metric'}
-                    </th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground min-w-[200px]">Model</th>
+                    {/* Dynamic metric columns */}
+                    {availableMetrics.map(metric => (
+                      <th key={metric} className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                        {metric}
+                        {metric === selectedMetric && (
+                          <span className="text-primary ml-1">↓</span>
+                        )}
+                      </th>
+                    ))}
                     <th className="text-left py-3 px-4 font-medium text-muted-foreground">Paper</th>
                     <th className="text-center py-3 px-4 font-medium text-muted-foreground">Code</th>
-                    <th className="text-center py-3 px-4 font-medium text-muted-foreground">Result</th>
                     <th className="text-center py-3 px-4 font-medium text-muted-foreground">Year</th>
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Tags</th>
                   </tr>
                 </thead>
                 <tbody>
                     {processedEvaluations.map((evaluation, index) => {
                       const rank = evaluation.best_rank || index + 1;
-                      const taskName = taskMap[evaluation.task_id] || '';
 
                       return (
                         <tr key={evaluation.id} className="border-b border-border hover:bg-muted/20">
@@ -426,22 +438,29 @@ const Benchmark = () => {
                         <td className="py-4 px-4">
                           <div className="font-medium">{evaluation.model_name || 'Unknown Model'}</div>
                         </td>
-                        <td className="py-4 px-4">
-                          <div className="font-semibold">
-                            {evaluation.primaryValue.toFixed(2)}
-                            {!allSameMetric && !selectedMetric && (
-                              <span className="text-xs text-muted-foreground ml-1">({evaluation.primaryMetric})</span>
-                            )}
-                          </div>
-                        </td>
+                        {/* Dynamic metric value columns */}
+                        {availableMetrics.map(metric => {
+                          const value = evaluation.metrics[metric];
+                          return (
+                            <td key={metric} className="py-4 px-4">
+                              {value !== undefined && value !== null ? (
+                                <div className="font-semibold">
+                                  {typeof value === 'number' ? value.toFixed(2) : value}
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
+                            </td>
+                          );
+                        })}
                         <td className="py-4 px-4">
                           {evaluation.paper_title && evaluation.paper_arxiv_id ? (
                             <Link
                               to={`/paper/${evaluation.paper_arxiv_id}`}
                               className="text-primary hover:underline text-sm"
                             >
-                              {evaluation.paper_title.length > 60
-                                ? `${evaluation.paper_title.substring(0, 60)}...`
+                              {evaluation.paper_title.length > 50
+                                ? `${evaluation.paper_title.substring(0, 50)}...`
                                 : evaluation.paper_title}
                             </Link>
                           ) : evaluation.paper_arxiv_id ? (
@@ -472,38 +491,9 @@ const Benchmark = () => {
                           )}
                         </td>
                         <td className="py-4 px-4 text-center">
-                          {evaluation.result_url ? (
-                            <a
-                              href={evaluation.result_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center text-primary hover:underline"
-                              title="View results"
-                            >
-                              <CheckCircle className="w-4 h-4" />
-                            </a>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">-</span>
-                          )}
-                        </td>
-                        <td className="py-4 px-4 text-center">
                           <span className="text-muted-foreground">
                             {evaluation.year || (evaluation.evaluated_on ? new Date(evaluation.evaluated_on).getFullYear() : '-')}
                           </span>
-                        </td>
-                        <td className="py-4 px-4">
-                          <div className="flex flex-wrap gap-1">
-                            {taskName && (
-                              <Badge variant="secondary" className="text-xs">
-                                {taskName}
-                              </Badge>
-                            )}
-                            {evaluation.uses_additional_data && (
-                              <Badge variant="secondary" className="text-xs bg-orange-100 text-orange-700">
-                                Extra data
-                              </Badge>
-                            )}
-                          </div>
                         </td>
                       </tr>
                       );

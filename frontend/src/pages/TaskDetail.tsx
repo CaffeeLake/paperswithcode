@@ -317,7 +317,7 @@ const TaskDetail = () => {
                 <span className="ml-2 text-muted-foreground">Loading benchmarks...</span>
               </div>
             ) : (
-              <LeaderboardsTable datasets={datasets} taskId={taskId || ''} />
+              <LeaderboardsTable datasets={datasets} taskId={task.id} />
             )}
           </section>
         )}

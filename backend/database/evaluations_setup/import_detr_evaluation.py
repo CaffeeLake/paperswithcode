@@ -20,6 +20,9 @@ from backend.models.database import (
     Task as DBTask,
     Dataset as DBDataset,
 )
+from backend.database.evaluations_setup.evaluation_helpers import (
+    get_or_create_evaluation,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -150,44 +153,26 @@ def import_evaluation(db: Session, eval_data: Dict) -> Optional[DBEvaluation]:
 
     logger.info(f"Found dataset: {dataset.name} (ID: {dataset.id})")
 
-    # Check if evaluation already exists
-    existing = (
-        db.query(DBEvaluation)
-        .filter(
-            DBEvaluation.paper_id == paper.id,
-            DBEvaluation.task_id == task.id,
-            DBEvaluation.dataset_id == dataset.id,
-            DBEvaluation.model_name == eval_data["model_name"],
-        )
-        .first()
-    )
-
-    if existing:
-        logger.info(f"Evaluation already exists (ID: {existing.id})")
-        return existing
-
     # Determine best metric (usually AP for object detection)
     metrics = eval_data.get("metrics", {})
     best_metric = "box AP" if "box AP" in metrics else "AP" if "AP" in metrics else None
 
-    # Create the evaluation
-    evaluation = DBEvaluation(
+    # Use get_or_create_evaluation to handle existing evaluations and metric merging
+    evaluation = get_or_create_evaluation(
+        db=db,
         paper_id=paper.id,
         task_id=task.id,
         dataset_id=dataset.id,
         model_name=eval_data.get("model_name"),
-        methodology=None,  # Not provided in the data
         metrics=metrics,
+        methodology=None,  # Not provided in the data
         uses_additional_data=eval_data.get("uses_additional_data", False),
         best_rank=None,  # Not provided in the data
         best_metric=best_metric,
         evaluated_on=parse_date(eval_data.get("paper_date")),
         external_source_url=eval_data.get("paper_url"),
+        merge_metrics=True,
     )
-
-    db.add(evaluation)
-    db.commit()
-    db.refresh(evaluation)
 
     logger.info(f"Successfully imported evaluation (ID: {evaluation.id})")
     logger.info(f"  Paper: {paper.title}")

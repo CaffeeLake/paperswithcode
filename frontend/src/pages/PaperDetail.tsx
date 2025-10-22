@@ -649,18 +649,20 @@ const PaperDetail = () => {
                             <th className="text-left py-3 px-4 font-medium text-muted-foreground">Task</th>
                             <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
                             <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Metric</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Value</th>
+                            {/* Dynamic metric columns - get all unique metrics from all evaluations */}
+                            {Array.from(new Set(
+                              evaluations.flatMap(e => Object.keys(e.metrics || {}))
+                            )).sort().map(metric => (
+                              <th key={metric} className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                                {metric}
+                              </th>
+                            ))}
                             <th className="text-left py-3 px-4 font-medium text-muted-foreground">Rank</th>
                             <th className="text-left py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
                           </tr>
                         </thead>
                         <tbody>
                           {evaluations.map((evaluation, idx) => {
-                            // Get the primary metric to display
-                            const metricName = evaluation.best_metric || Object.keys(evaluation.metrics)[0];
-                            const metricValue = evaluation.metrics[metricName];
-
                             // Get task name - prefer from evaluation, fallback to lookup
                             const taskName = evaluation.task_name || (() => {
                               const task = allTasksDataForEvals?.results?.find(
@@ -685,13 +687,31 @@ const PaperDetail = () => {
                               return dataset?.slug || `dataset-${evaluation.dataset_id}`;
                             })();
 
+                            // Get all unique metrics across all evaluations for consistent columns
+                            const allMetrics = Array.from(new Set(
+                              evaluations.flatMap(e => Object.keys(e.metrics || {}))
+                            )).sort();
+
                             return (
                               <tr key={evaluation.id} className={`${idx < evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
                                 <td className="py-4 px-4">{taskName}</td>
                                 <td className="py-4 px-4">{datasetName}</td>
                                 <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
-                                <td className="py-4 px-4">{metricName}</td>
-                                <td className="py-4 px-4 font-semibold">{metricValue}</td>
+                                {/* Dynamic metric value columns */}
+                                {allMetrics.map(metric => {
+                                  const value = evaluation.metrics[metric];
+                                  return (
+                                    <td key={metric} className="py-4 px-4">
+                                      {value !== undefined && value !== null ? (
+                                        <span className="font-semibold">
+                                          {typeof value === 'number' ? value.toFixed(2) : value}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground">-</span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
                                 <td className="py-4 px-4 font-semibold">
                                   {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
                                 </td>

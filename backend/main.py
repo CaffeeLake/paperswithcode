@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
         methods,
         datasets,
         evaluations,
+        metrics,
         cron,
     )
 
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(methods.router, prefix="/api/v1", tags=["methods"])
     app.include_router(datasets.router, prefix="/api/v1", tags=["datasets"])
     app.include_router(evaluations.router, prefix="/api/v1", tags=["evaluations"])
+    app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
     app.include_router(cron.router, prefix="/api/v1", tags=["cron"])
 

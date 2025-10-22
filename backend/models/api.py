@@ -878,9 +878,11 @@ class DatasetCreateRequest(BaseModel):
     name: str = Field(..., description="Dataset name")
     full_name: Optional[str] = Field(None, description="Dataset full name")
     description: str = Field(..., description="Dataset description")
-    url: str = Field(..., description="Dataset URL")
-    hf_url: str = Field(..., description="Hugging Face dataset URL")
-    paper_url: str = Field(..., description="URL to paper that introduced this dataset")
+    url: Optional[str] = Field(None, description="Dataset URL")
+    hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+    paper_url: Optional[str] = Field(
+        None, description="URL to paper that introduced this dataset"
+    )
     task_ids: List[int] = Field(
         ..., description="List of task IDs to link this dataset to"
     )
@@ -1061,6 +1063,67 @@ class EvaluationUpdateRequest(BaseModel):
     best_metric: Optional[str] = Field(None, description="Best metric name")
     evaluated_on: Optional[date] = Field(None, description="Evaluation date")
     external_source_url: Optional[str] = Field(None, description="External source URL")
+
+
+# Metric models
+
+
+class Metric(BaseModel):
+    """
+    Metric definition with ranking direction.
+
+    Defines evaluation metrics and whether they should rank with higher or lower values as better.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Metric ID")
+    name: str = Field(..., description="Metric name (e.g., 'WER', 'AP', 'Accuracy')")
+    full_name: Optional[str] = Field(None, description="Full metric name")
+    direction: str = Field(
+        ..., description="Ranking direction: 'higher_is_better' or 'lower_is_better'"
+    )
+    description: Optional[str] = Field(None, description="Metric description")
+    created_at: datetime = Field(..., description="Timestamp when record was created")
+    updated_at: datetime = Field(
+        ..., description="Timestamp when record was last updated"
+    )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class Metrics(BaseModel):
+    """
+    Object representing a paginated page of metrics.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    count: int = Field(..., description="Number of elements matching the query")
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[Metric] = Field(..., description="List of metrics on this page")
+
+
+class MetricDirections(BaseModel):
+    """
+    Map of metric names to their ranking directions.
+
+    Optimized response for frontend to quickly lookup metric directions.
+    """
+
+    directions: dict[str, str] = Field(
+        ...,
+        description="Dictionary mapping metric names to directions (e.g., {'WER': 'lower_is_better', 'AP': 'higher_is_better'})",
+    )
 
 
 # Keyword management models
