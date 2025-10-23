@@ -44,7 +44,9 @@ const Benchmark = () => {
 
   // Fetch metric directions for correct sorting
   const { data: metricDirectionsData } = useMetricDirections();
-  const metricDirections = metricDirectionsData?.directions || {};
+  const metricDirections = useMemo(() => {
+    return metricDirectionsData?.directions || {};
+  }, [metricDirectionsData]);
 
   // Fetch tasks to display task names
   const { data: tasksData } = useQuery({
@@ -78,6 +80,13 @@ const Benchmark = () => {
     }
   }, [availableMetrics, selectedMetric, evaluations]);
 
+  // Auto-sync sortBy to 'score' when a metric is selected and we're not explicitly using rank/date
+  useEffect(() => {
+    if (selectedMetric && sortBy !== 'rank' && sortBy !== 'date') {
+      setSortBy('score');
+    }
+  }, [selectedMetric, sortBy]);
+
   // Handle metric column click for sorting
   const handleMetricClick = (metric: string) => {
     if (metric === selectedMetric) {
@@ -93,30 +102,32 @@ const Benchmark = () => {
       // Clicking a different metric: select it with default direction
       setSelectedMetric(metric);
       setSortDirection('default');
-      setSortBy('score'); // Switch to score-based sorting
     }
+    // ALWAYS ensure we're in score-based sorting mode when clicking metrics
+    setSortBy('score');
   };
 
   // Process evaluations to include paper info and sort by selected metric
   const processedEvaluations = useMemo(() => {
     if (!evaluations) return [];
 
-    // Get the metric to sort by
+    // Get the metric to sort by (for score-based sorting)
     const sortMetric = selectedMetric || evaluations[0]?.best_metric || availableMetrics[0];
 
-    // Get the metric direction (default to higher_is_better if not found)
+    // Get the metric's natural direction (default to higher_is_better if not found)
     const naturalDirection = sortMetric ? (metricDirections[sortMetric] || 'higher_is_better') : 'higher_is_better';
 
-    // Determine effective sort direction
+    // Determine effective sort direction for metric-based sorting
     let effectiveDirection: 'asc' | 'desc';
     if (sortDirection === 'default') {
-      // Use natural direction: lower_is_better -> asc, higher_is_better -> desc
+      // Use natural direction: lower_is_better -> asc (best first), higher_is_better -> desc (best first)
       effectiveDirection = naturalDirection === 'lower_is_better' ? 'asc' : 'desc';
     } else {
+      // Use explicit direction from user
       effectiveDirection = sortDirection;
     }
 
-    // Sort by selected metric or rank
+    // Map evaluations to include computed values
     return evaluations
       .map(e => {
         // Get value for the selected sort metric
@@ -135,32 +146,36 @@ const Benchmark = () => {
         };
       })
       .sort((a, b) => {
+        // SORTING LOGIC: Handle three modes - rank, date, and score
+
         if (sortBy === 'rank') {
-          // Sort by best_rank (ascending - lower rank is better)
-          // Items without a rank go to the end
+          // Mode 1: Sort by best_rank (ascending - lower rank number is better)
           const rankA = a.best_rank ?? Number.MAX_SAFE_INTEGER;
           const rankB = b.best_rank ?? Number.MAX_SAFE_INTEGER;
           if (rankA !== rankB) {
             return rankA - rankB;
           }
-          // If ranks are equal, use sort metric value as tiebreaker (respecting direction)
+          // Tiebreaker: use metric value with current direction
           if (effectiveDirection === 'asc') {
-            return a.sortValue - b.sortValue; // Ascending
+            return a.sortValue - b.sortValue;
           } else {
-            return b.sortValue - a.sortValue; // Descending
+            return b.sortValue - a.sortValue;
           }
         }
+
         if (sortBy === 'date') {
+          // Mode 2: Sort by date (most recent first)
           const dateA = a.evaluated_on || a.paper_published_date || 0;
           const dateB = b.evaluated_on || b.paper_published_date || 0;
           return new Date(dateB).getTime() - new Date(dateA).getTime();
         }
-        // Default: sort by selected metric value based on effective direction
+
+        // Mode 3: Sort by selected metric value using effective direction
         if (effectiveDirection === 'asc') {
-          // Ascending: lower values first
+          // Ascending: lower values first (e.g., for WER, lower is better)
           return a.sortValue - b.sortValue;
         } else {
-          // Descending: higher values first
+          // Descending: higher values first (e.g., for Accuracy, higher is better)
           return b.sortValue - a.sortValue;
         }
       });
@@ -446,21 +461,44 @@ const Benchmark = () => {
                       const isSelected = metric === selectedMetric;
                       const naturalDirection = metricDirections[metric] || 'higher_is_better';
 
-                      // Always show natural direction indicator
-                      const naturalArrow = naturalDirection === 'lower_is_better' ? '↑' : '↓';
+                      // Determine which arrow to show based on current sort state
+                      // Arrow meanings: ↑ = ascending (small to large), ↓ = descending (large to small)
+                      let displayArrow = '';
+                      let arrowColor = 'text-muted-foreground';
+
+                      if (isSelected && sortBy === 'score') {
+                        // For selected metric when in score mode, show current sort direction
+                        if (sortDirection === 'default') {
+                          // Default: show natural direction (↓ for lower_is_better means asc, ↑ for higher_is_better means desc)
+                          displayArrow = naturalDirection === 'lower_is_better' ? '↓' : '↑';
+                          arrowColor = 'text-primary';
+                        } else if (sortDirection === 'asc') {
+                          // Explicitly ascending: lower values first
+                          displayArrow = '↑';
+                          arrowColor = 'text-primary';
+                        } else if (sortDirection === 'desc') {
+                          // Explicitly descending: higher values first
+                          displayArrow = '↓';
+                          arrowColor = 'text-primary';
+                        }
+                      } else {
+                        // For non-selected metrics or when not in score mode, show natural direction hint
+                        displayArrow = naturalDirection === 'lower_is_better' ? '↓' : '↑';
+                        arrowColor = 'text-muted-foreground';
+                      }
 
                       return (
                         <th
                           key={metric}
                           className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
                           onClick={() => handleMetricClick(metric)}
-                          title={`Click to sort by ${metric}. ${naturalDirection === 'lower_is_better' ? 'Lower is better' : 'Higher is better'}`}
+                          title={`Click to sort by ${metric}. ${naturalDirection === 'lower_is_better' ? 'Lower is better' : 'Higher is better'}${isSelected && sortBy === 'score' ? ` (currently sorted ${sortDirection === 'asc' ? 'ascending' : sortDirection === 'desc' ? 'descending' : 'by default'})` : ''}`}
                         >
                           <div className="flex items-center gap-1">
-                            <span className={isSelected ? 'font-bold text-foreground' : ''}>
+                            <span className={isSelected && sortBy === 'score' ? 'font-bold text-foreground' : ''}>
                               {metric}
                             </span>
-                            <span className="text-muted-foreground text-base">{naturalArrow}</span>
+                            <span className={`text-base ${arrowColor}`}>{displayArrow}</span>
                           </div>
                         </th>
                       );
