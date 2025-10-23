@@ -48,6 +48,10 @@ const PaperDetail = () => {
     enabled: !!evaluations && evaluations.length > 0,
   });
 
+  // Author display state
+  const [showAllAuthors, setShowAllAuthors] = useState(false);
+  const AUTHOR_DISPLAY_LIMIT = 30;
+
   // Admin editing state
   const [isEditingTasks, setIsEditingTasks] = useState(false);
   const [isEditingMethods, setIsEditingMethods] = useState(false);
@@ -523,14 +527,25 @@ const PaperDetail = () => {
               <div className="mb-6">
                 <span className="text-sm font-semibold text-foreground">Authors: </span>
                 <span className="text-sm">
-                  {paper.authors.map((author, index) => (
+                  {(showAllAuthors ? paper.authors : paper.authors.slice(0, AUTHOR_DISPLAY_LIMIT)).map((author, index) => (
                     <span key={index}>
                       <button className="text-paper-blue hover:underline font-medium">
                         {author}
                       </button>
-                      {index < paper.authors.length - 1 && ", "}
+                      {index < (showAllAuthors ? paper.authors.length : Math.min(AUTHOR_DISPLAY_LIMIT, paper.authors.length)) - 1 && ", "}
                     </span>
                   ))}
+                  {paper.authors.length > AUTHOR_DISPLAY_LIMIT && (
+                    <button
+                      onClick={() => setShowAllAuthors(!showAllAuthors)}
+                      className="ml-2 text-paper-blue hover:underline font-medium text-sm"
+                    >
+                      {showAllAuthors
+                        ? "Show less"
+                        : `+${paper.authors.length - AUTHOR_DISPLAY_LIMIT} more authors`
+                      }
+                    </button>
+                  )}
                 </span>
               </div>
             </div>
