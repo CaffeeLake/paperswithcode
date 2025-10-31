@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import Header from "@/components/Header";
-import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, CheckCircle, Loader2, ChevronDown } from "lucide-react";
+import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, Loader2, BookOpen } from "lucide-react";
 import { useParams, Link } from "react-router-dom";
 import { useDatasetBySlug } from "@/hooks/useDatasets";
 import { useEvaluationsByDataset } from "@/hooks/useEvaluations";
@@ -35,6 +35,36 @@ const Benchmark = () => {
 
   // Fetch dataset by slug
   const { data: dataset, isLoading: datasetLoading, error: datasetError } = useDatasetBySlug(datasetSlug);
+
+  // Fetch introducing paper details when available
+  const { data: introducingPaper } = useQuery({
+    queryKey: ['introducing-paper', dataset?.introducing_paper_id],
+    queryFn: () => getPaper(dataset!.introducing_paper_id!, false),
+    enabled: !!dataset?.introducing_paper_id,
+  });
+
+  const introducingPaperArxivId = useMemo(() => {
+    if (introducingPaper?.arxiv_id) {
+      return introducingPaper.arxiv_id;
+    }
+
+    if (dataset?.paper_url) {
+      const match = dataset.paper_url.match(/arxiv\.org\/(?:abs|pdf)\/([\w\.\-]+)/i);
+      if (match && match[1]) {
+        return match[1].replace(/\.pdf$/i, '');
+      }
+    }
+
+    return null;
+  }, [introducingPaper?.arxiv_id, dataset?.paper_url]);
+
+  const introducingPaperTitle = useMemo(() => {
+    const title = introducingPaper?.title || dataset?.introducing_paper_title;
+    if (!title) {
+      return null;
+    }
+    return title.length > 60 ? `${title.substring(0, 57)}...` : title;
+  }, [introducingPaper?.title, dataset?.introducing_paper_title]);
 
   // Fetch evaluations for this dataset
   const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByDataset(
@@ -301,6 +331,27 @@ const Benchmark = () => {
             <p className="mt-4 text-sm text-muted-foreground max-w-3xl">
               {dataset.description}
             </p>
+          )}
+
+          {(introducingPaperArxivId || dataset.hf_url) && (
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              {introducingPaperArxivId && (
+                <Button variant="outline" className="flex items-center space-x-2" asChild>
+                  <Link to={`/paper/${introducingPaperArxivId}`}>
+                    <BookOpen className="w-4 h-4" />
+                    <span>{introducingPaperTitle || 'Introducing paper'}</span>
+                  </Link>
+                </Button>
+              )}
+              {dataset.hf_url && (
+                <Button variant="outline" className="flex items-center space-x-2" asChild>
+                  <a href={dataset.hf_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="w-4 h-4" />
+                    <span>View on Hugging Face</span>
+                  </a>
+                </Button>
+              )}
+            </div>
           )}
         </div>
 

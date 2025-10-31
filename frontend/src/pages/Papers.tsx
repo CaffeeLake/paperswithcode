@@ -298,20 +298,20 @@ const Papers = () => {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <div className="container mx-auto px-4 py-8 max-w-7xl">
+      <div className="container mx-auto px-3 py-6 sm:px-4 sm:py-8 max-w-7xl">
         {/* Header Section */}
         <div className="mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-4xl font-bold mb-2">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
+            <div className="space-y-2">
+              <h1 className="text-3xl sm:text-4xl font-bold">
                 {sortBy === 'trending' && '🔥 Trending Papers'}
                 {sortBy === 'date_published' && 'Recent Papers'}
                 {sortBy === 'citation_count' && 'Most Cited Papers'}
                 {sortBy === 'title' && 'Papers A-Z'}
               </h1>
-              <div className="flex items-center text-muted-foreground">
-                <span className="mr-2">by</span>
-                <div className="flex items-center space-x-1 mr-2">
+              <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-sm sm:text-base">
+                <span>by</span>
+                <div className="flex items-center space-x-1">
                   <Avatar className="w-6 h-6">
                     <AvatarFallback className="text-xs bg-blue-500 text-white">AK</AvatarFallback>
                   </Avatar>
@@ -328,8 +328,8 @@ const Papers = () => {
           </div>
 
           {/* Search Bar */}
-          <div className="flex items-center gap-4 mb-6">
-            <div className="relative flex-1 max-w-md">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 mb-6">
+            <div className="relative w-full sm:flex-1 sm:max-w-md">
               <Sparkles className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
               <Input
                 className="pl-10 bg-muted/50 border focus-visible:ring-1 focus-visible:ring-primary"
@@ -349,11 +349,11 @@ const Papers = () => {
           </div>
 
           {/* Time Filter Tabs */}
-          <div className="flex items-center gap-2">
+          <div className="flex gap-2 overflow-x-auto pb-2 sm:pb-0 sm:flex-wrap">
             <Button
               variant="outline"
               size="sm"
-              className={sortBy === 'trending' ? "bg-muted" : ""}
+              className={`${sortBy === 'trending' ? "bg-muted" : ""} whitespace-nowrap`}
               onClick={() => handleSortChange('trending')}
             >
               🔥 Trending
@@ -361,7 +361,7 @@ const Papers = () => {
             <Button
               variant="outline"
               size="sm"
-              className={sortBy === 'date_published' ? "bg-muted" : ""}
+              className={`${sortBy === 'date_published' ? "bg-muted" : ""} whitespace-nowrap`}
               onClick={() => handleSortChange('date_published')}
             >
               Recent
@@ -369,7 +369,7 @@ const Papers = () => {
             <Button
               variant="outline"
               size="sm"
-              className={sortBy === 'citation_count' ? "bg-muted" : ""}
+              className={`${sortBy === 'citation_count' ? "bg-muted" : ""} whitespace-nowrap`}
               onClick={() => handleSortChange('citation_count')}
             >
               Most Cited
@@ -377,7 +377,7 @@ const Papers = () => {
             <Button
               variant="outline"
               size="sm"
-              className={sortBy === 'title' ? "bg-muted" : ""}
+              className={`${sortBy === 'title' ? "bg-muted" : ""} whitespace-nowrap`}
               onClick={() => handleSortChange('title')}
             >
               A-Z
@@ -408,7 +408,7 @@ const Papers = () => {
 
         {/* Papers List */}
         {!isLoading && !isTransitioning && !error && (
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {transformedPapers.length > 0 ? (
               <>
                 {transformedPapers.map((paper) => (

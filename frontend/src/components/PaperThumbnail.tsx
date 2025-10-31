@@ -25,7 +25,7 @@ const PaperThumbnail = ({
           </div>
         )}
         <img
-          src={`http://167.235.148.241:8000${thumbnailUrl}`}
+          src={thumbnailUrl}
           alt={`Thumbnail for ${title}`}
           className="w-full h-full object-cover"
           onLoad={() => setIsLoading(false)}

@@ -21,6 +21,7 @@ from backend.models.database import (
 )
 from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
+from backend.services.dataset_metric_service import DatasetMetricService
 
 
 class EvaluationService:
@@ -421,9 +422,20 @@ class EvaluationService:
             Created Evaluation object
 
         Raises:
+            ValueError: If metrics are not valid for this dataset
             DatabaseError: If database operation fails
         """
         try:
+            # Validate metrics against dataset's allowed metrics
+            metric_service = DatasetMetricService(self.db)
+            metric_keys = list(metrics.keys())
+            is_valid, error_message = metric_service.validate_metrics_for_dataset(
+                dataset_id, metric_keys, best_metric
+            )
+
+            if not is_valid:
+                raise ValueError(error_message)
+
             # Link the dataset to the task if not already linked
             # This ensures the dataset appears in the task's leaderboards section
             self._link_dataset_to_task(task_id, dataset_id)
@@ -524,6 +536,7 @@ class EvaluationService:
             Updated Evaluation object
 
         Raises:
+            ValueError: If metrics are not valid for this dataset
             DatabaseError: If database operation fails
         """
         try:
@@ -539,6 +552,26 @@ class EvaluationService:
             # Store old task_id and dataset_id for rank recalculation
             old_task_id = db_evaluation.task_id
             old_dataset_id = db_evaluation.dataset_id
+
+            # Determine which dataset to validate against
+            target_dataset_id = dataset_id if dataset_id is not None else old_dataset_id
+
+            # Determine which metrics and best_metric to validate
+            target_metrics = metrics if metrics is not None else db_evaluation.metrics
+            target_best_metric = (
+                best_metric if best_metric is not None else db_evaluation.best_metric
+            )
+
+            # Validate metrics if they are being changed or dataset is changing
+            if metrics is not None or dataset_id is not None or best_metric is not None:
+                metric_service = DatasetMetricService(self.db)
+                metric_keys = list(target_metrics.keys())
+                is_valid, error_message = metric_service.validate_metrics_for_dataset(
+                    target_dataset_id, metric_keys, target_best_metric
+                )
+
+                if not is_valid:
+                    raise ValueError(error_message)
 
             # Update only provided fields
             if task_id is not None:

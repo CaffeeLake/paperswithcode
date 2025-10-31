@@ -9,8 +9,17 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Dataset, Datasets, DatasetCreateRequest
+from backend.models.api import (
+    Dataset,
+    Datasets,
+    DatasetCreateRequest,
+    DatasetMetrics,
+    DatasetMetricAddRequest,
+    DatasetMetricSetRequest,
+    DatasetMetricLink,
+)
 from backend.services.dataset_service import DatasetService
+from backend.services.dataset_metric_service import DatasetMetricService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import DatabaseError
 
@@ -270,6 +279,193 @@ async def create_dataset(
             raise HTTPException(status_code=409, detail=str(e))
         else:
             raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# Dataset-Metric Management Endpoints
+
+
+@router.get("/{dataset_id}/metrics", response_model=DatasetMetrics)
+async def get_dataset_metrics(
+    dataset_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get all allowed metrics for a dataset.
+
+    Returns the list of metrics that are valid for evaluation submissions
+    on this dataset. These metrics are enforced when creating or updating evaluations.
+
+    **Example:**
+    - `/api/v1/datasets/6/metrics` - Get allowed metrics for dataset 6
+
+    **Returns:**
+    ```json
+    {
+        "dataset_id": "6",
+        "dataset_name": "COCO",
+        "metrics": [
+            {
+                "dataset_id": "6",
+                "metric_id": "1",
+                "metric_name": "AP",
+                "metric_direction": "higher_is_better",
+                "created_at": "2025-10-24T12:00:00Z"
+            },
+            ...
+        ]
+    }
+    ```
+    """
+    try:
+        # Parse dataset_id
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid dataset ID. Must be an integer."
+            )
+
+        service = DatasetMetricService(db)
+        return service.get_dataset_metrics(dataset_id_int)
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/{dataset_id}/metrics", response_model=DatasetMetricLink, status_code=201)
+async def add_metric_to_dataset(
+    dataset_id: str,
+    request: DatasetMetricAddRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Add a metric to a dataset's allowed metrics list.
+
+    Links a metric to a dataset, allowing evaluations to use this metric
+    when submitting results for this dataset.
+
+    **Example:**
+    ```
+    POST /api/v1/datasets/6/metrics
+    {
+        "metric_name": "AP50"
+    }
+    ```
+
+    **Returns:**
+    - 201 status with the created link
+    - 400 if dataset or metric not found
+    - 409 if metric is already linked to dataset
+    """
+    try:
+        # Parse dataset_id
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid dataset ID. Must be an integer."
+            )
+
+        service = DatasetMetricService(db)
+        return service.add_metric_to_dataset(dataset_id_int, request.metric_name)
+
+    except ValueError as e:
+        if "already linked" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        else:
+            raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.put("/{dataset_id}/metrics", response_model=DatasetMetrics)
+async def set_dataset_metrics(
+    dataset_id: str,
+    request: DatasetMetricSetRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Set all allowed metrics for a dataset (replaces existing).
+
+    Replaces all existing metric links with the provided list. This is useful
+    for bulk configuration of dataset metrics.
+
+    **Example:**
+    ```
+    PUT /api/v1/datasets/6/metrics
+    {
+        "metric_names": ["AP", "AP50", "AP75", "APs", "APm", "APl"]
+    }
+    ```
+
+    **Returns:**
+    - Updated DatasetMetrics object
+    - 404 if dataset or any metric not found
+    """
+    try:
+        # Parse dataset_id
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid dataset ID. Must be an integer."
+            )
+
+        service = DatasetMetricService(db)
+        return service.set_dataset_metrics(dataset_id_int, request.metric_names)
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/{dataset_id}/metrics/{metric_name}", status_code=204)
+async def remove_metric_from_dataset(
+    dataset_id: str,
+    metric_name: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Remove a metric from a dataset's allowed metrics list.
+
+    Unlinks a metric from a dataset. After removal, evaluations can no longer
+    use this metric when submitting results for this dataset.
+
+    **Example:**
+    - `DELETE /api/v1/datasets/6/metrics/AP50` - Remove AP50 from dataset 6
+
+    **Returns:**
+    - 204 No Content on success
+    - 404 if dataset, metric, or link not found
+    """
+    try:
+        # Parse dataset_id
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid dataset ID. Must be an integer."
+            )
+
+        service = DatasetMetricService(db)
+        service.remove_metric_from_dataset(dataset_id_int, metric_name)
+        return None
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:

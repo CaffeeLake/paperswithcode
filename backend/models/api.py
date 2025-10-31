@@ -744,6 +744,24 @@ class Tasks(BaseModel):
     results: List[Task] = Field(..., description="List of tasks on this page")
 
 
+class TaskCreateRequest(BaseModel):
+    """
+    Request model for creating a new task.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str = Field(..., description="Task name")
+    description: Optional[str] = Field(None, description="Task description")
+    keywords: Optional[str] = Field(
+        None, description="Comma-separated keywords for matching papers to this task"
+    )
+    area_id: Optional[int] = Field(None, description="Research area ID")
+    parent_id: Optional[int] = Field(None, description="Parent task ID (for subtasks)")
+    image_url: Optional[str] = Field(None, description="Task image URL")
+    image_credit: Optional[str] = Field(None, description="Image credit/attribution")
+
+
 class Dataset(BaseModel):
     """
     Dataset object matching the original PapersWithCode API specification.
@@ -842,6 +860,11 @@ class Dataset(BaseModel):
     )
     task_count: Optional[int] = Field(
         None, description="Number of tasks associated with this dataset"
+    )
+
+    # Allowed metrics for this dataset
+    allowed_metrics: Optional[List[str]] = Field(
+        None, description="List of metric names allowed for evaluations on this dataset"
     )
 
     @field_validator("id", "parent_dataset_id", "introducing_paper_id", mode="before")
@@ -1138,6 +1161,82 @@ class KeywordUpdate(BaseModel):
 
     keywords: List[str] = Field(
         ..., description="List of keywords to add, remove, or replace"
+    )
+
+
+# Dataset-Metric relationship models
+
+
+class DatasetMetricLink(BaseModel):
+    """
+    Response model for dataset-metric relationship.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    dataset_id: str = Field(..., description="Dataset ID")
+    metric_id: str = Field(..., description="Metric ID")
+    metric_name: str = Field(..., description="Metric name")
+    metric_direction: str = Field(
+        ..., description="Metric direction (higher_is_better or lower_is_better)"
+    )
+    created_at: datetime = Field(
+        ..., description="When this relationship was established"
+    )
+
+    @field_validator("dataset_id", "metric_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure IDs are strings."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class DatasetMetrics(BaseModel):
+    """
+    List of metrics allowed for a dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    dataset_id: str = Field(..., description="Dataset ID")
+    dataset_name: str = Field(..., description="Dataset name")
+    metrics: List[DatasetMetricLink] = Field(
+        ..., description="List of allowed metrics for this dataset"
+    )
+
+    @field_validator("dataset_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure dataset_id is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class DatasetMetricAddRequest(BaseModel):
+    """
+    Request model for adding a metric to a dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    metric_name: str = Field(
+        ..., description="Name of the metric to add (e.g., 'AP', 'WER', 'Accuracy')"
+    )
+
+
+class DatasetMetricSetRequest(BaseModel):
+    """
+    Request model for setting all metrics for a dataset.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    metric_names: List[str] = Field(
+        ...,
+        description="List of metric names allowed for this dataset (replaces existing)",
     )
 
 

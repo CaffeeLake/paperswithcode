@@ -48,25 +48,25 @@ const TrendingPaperCard = ({
   githubUrl,
 }: TrendingPaperCardProps) => {
   return (
-    <div className="flex gap-6 p-6 bg-card rounded-lg border hover:shadow-md transition-shadow">
+    <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:gap-6 sm:p-6 bg-card rounded-lg border hover:shadow-md transition-shadow">
       {/* Paper Preview */}
-      <div className="flex-shrink-0 w-48">
+      <div className="flex-shrink-0 w-full sm:w-40 lg:w-48">
         <PaperThumbnail
           thumbnailUrl={thumbnailUrl}
           title={title}
-          className="w-full h-32"
+          className="w-full h-40 sm:h-32 rounded-md"
         />
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <Link to={`/paper/${arxivId || id}`} className="block group mb-2">
-          <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
+          <h3 className="text-base sm:text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
             <LatexTitle title={title} />
           </h3>
         </Link>
 
-        <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-muted-foreground">
           {submittedBy && (
             <>
               <Github className="w-3 h-3" />
@@ -99,16 +99,16 @@ const TrendingPaperCard = ({
       </div>
 
       {/* Right Section - Stars & Actions */}
-      <div className="flex flex-col items-end gap-3 flex-shrink-0 min-w-[140px]">
+      <div className="flex flex-col gap-3 w-full sm:w-[160px]">
         {/* GitHub Stars Box */}
         {githubStars > 0 && (
-          <div className="flex flex-col items-center">
-            <div className="flex items-center justify-center bg-background border rounded-lg p-2 min-w-[80px]">
+          <div className="flex flex-col sm:items-center">
+            <div className="flex items-center justify-start sm:justify-center bg-background border rounded-lg p-2 w-full sm:w-auto">
               <Star className="w-3 h-3 text-yellow-500 fill-yellow-500 mr-1" />
               <span className="text-base font-semibold">{formatStars(githubStars)}</span>
             </div>
             {starsPerHour !== undefined && (
-              <div className="text-xs text-muted-foreground mt-1 text-center">
+              <div className="text-xs text-muted-foreground mt-1 text-left sm:text-center">
                 {starsPerHour.toFixed(2)} stars / hour
               </div>
             )}

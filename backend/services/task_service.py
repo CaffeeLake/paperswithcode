@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
 from backend.models.database import Task as DBTask, Area as DBArea, PaperTask
-from backend.models.api import Task, Tasks
+from backend.models.api import Task, Tasks, TaskCreateRequest
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.slug_utils import slugify
 
 
 class TaskService:
@@ -663,3 +664,73 @@ class TaskService:
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to replace keywords for task: {str(e)}")
+
+    def create_task(self, request: TaskCreateRequest) -> Task:
+        """
+        Create a new task.
+
+        Args:
+            request: TaskCreateRequest with task data
+
+        Returns:
+            Created Task object
+
+        Raises:
+            DatabaseError: If database operation fails
+            ValueError: If area_id or parent_id don't exist, or slug already exists
+        """
+        try:
+            # Validate area_id exists if provided
+            if request.area_id is not None:
+                area = (
+                    self.db.query(DBArea).filter(DBArea.id == request.area_id).first()
+                )
+                if not area:
+                    raise ValueError(f"Area with ID {request.area_id} not found")
+
+            # Validate parent_id exists if provided and calculate level
+            level = 0
+            if request.parent_id is not None:
+                parent = (
+                    self.db.query(DBTask).filter(DBTask.id == request.parent_id).first()
+                )
+                if not parent:
+                    raise ValueError(
+                        f"Parent task with ID {request.parent_id} not found"
+                    )
+                level = parent.level + 1
+
+            # Generate slug from name
+            slug = slugify(request.name)
+
+            # Check if slug already exists
+            existing_task = self.db.query(DBTask).filter(DBTask.slug == slug).first()
+            if existing_task:
+                raise ValueError(f"Task with slug '{slug}' already exists")
+
+            # Create the task
+            db_task = DBTask(
+                name=request.name,
+                slug=slug,
+                description=request.description,
+                keywords=request.keywords,
+                area_id=request.area_id,
+                parent_id=request.parent_id,
+                level=level,
+                image_url=request.image_url,
+                image_credit=request.image_credit,
+            )
+
+            self.db.add(db_task)
+            self.db.commit()
+            self.db.refresh(db_task)
+
+            # Return the created task using the existing get_task_by_id method
+            return self.get_task_by_id(str(db_task.id))
+
+        except ValueError as e:
+            self.db.rollback()
+            raise e
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to create task: {str(e)}")

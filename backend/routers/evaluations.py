@@ -128,6 +128,11 @@ async def create_evaluation(
 
     Creates a new benchmark evaluation result for a paper on a specific task and dataset.
 
+    **Metric Validation:**
+    - All metrics in the `metrics` dictionary must be allowed for the specified dataset
+    - The `best_metric` must also be in the allowed metrics list
+    - Use `GET /api/v1/datasets/{dataset_id}/metrics` to see allowed metrics for a dataset
+
     **Request Body:**
     ```json
     {
@@ -142,7 +147,9 @@ async def create_evaluation(
     ```
 
     **Returns:**
-    - Created evaluation object with ID
+    - 201: Created evaluation object with ID
+    - 400: Invalid metrics for the dataset (see error message for allowed metrics)
+    - 500: Internal server error
     """
     try:
         service = EvaluationService(db)
@@ -160,6 +167,9 @@ async def create_evaluation(
             external_source_url=request.external_source_url,
         )
 
+    except ValueError as e:
+        # Validation error (invalid metrics for dataset)
+        raise HTTPException(status_code=400, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -177,6 +187,11 @@ async def update_evaluation(
 
     Updates the fields of an existing evaluation. Only provided fields will be updated.
 
+    **Metric Validation:**
+    - If updating `metrics` or `dataset_id`, all metrics must be allowed for the dataset
+    - If updating `best_metric`, it must be in the allowed metrics list
+    - Use `GET /api/v1/datasets/{dataset_id}/metrics` to see allowed metrics
+
     **Example:**
     ```
     PUT /api/v1/evaluations/123
@@ -188,7 +203,10 @@ async def update_evaluation(
     ```
 
     **Returns:**
-    - Updated evaluation object
+    - 200: Updated evaluation object
+    - 400: Invalid metrics for the dataset
+    - 404: Evaluation not found
+    - 500: Internal server error
     """
     try:
         service = EvaluationService(db)
@@ -206,6 +224,9 @@ async def update_evaluation(
             external_source_url=request.external_source_url,
         )
 
+    except ValueError as e:
+        # Validation error (invalid metrics for dataset)
+        raise HTTPException(status_code=400, detail=str(e))
     except DatabaseError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))

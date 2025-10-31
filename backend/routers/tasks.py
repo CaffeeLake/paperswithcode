@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Task, Tasks, Papers, KeywordUpdate
+from backend.models.api import Task, Tasks, Papers, KeywordUpdate, TaskCreateRequest
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -208,6 +208,57 @@ async def get_task_papers(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/", response_model=Task, status_code=201)
+async def create_task(
+    request: TaskCreateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Create a new task.
+
+    Creates a new AI/ML task with the provided information. The task slug is
+    auto-generated from the name. The task level is automatically calculated
+    based on whether it has a parent task.
+
+    **Request Body:**
+    ```json
+    {
+        "name": "Audio Classification",
+        "description": "Classification of audio signals into predefined categories",
+        "keywords": "audio classification",
+        "area_id": 6,
+        "parent_id": null,
+        "image_url": null,
+        "image_credit": null
+    }
+    ```
+
+    **Returns:**
+    - Created task object with auto-generated slug and ID
+    - 201 status code on success
+
+    **Errors:**
+    - 400: Invalid request data (area_id or parent_id don't exist)
+    - 409: Task with the same slug already exists
+    - 500: Internal server error
+    """
+    try:
+        service = TaskService(db)
+        return service.create_task(request)
+
+    except ValueError as e:
+        if "not found" in str(e):
+            raise HTTPException(status_code=400, detail=str(e))
+        elif "already exists" in str(e):
+            raise HTTPException(status_code=409, detail=str(e))
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.post("/{task_id}/keywords", response_model=Task)

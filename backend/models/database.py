@@ -402,6 +402,9 @@ class Dataset(Base):
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="dataset"
     )
+    metrics: Mapped[List["Metric"]] = relationship(
+        "Metric", secondary="dataset_metrics", back_populates="datasets"
+    )
 
     # Self-referential relationship for parent datasets
     parent_dataset: Mapped[Optional["Dataset"]] = relationship(
@@ -672,6 +675,11 @@ class Metric(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # Relationships
+    datasets: Mapped[List["Dataset"]] = relationship(
+        "Dataset", secondary="dataset_metrics", back_populates="metrics"
+    )
+
     # Indexes
     __table_args__ = (Index("idx_metrics_name", "name"),)
 
@@ -795,4 +803,26 @@ class PaperRepository(Base):
     __table_args__ = (
         Index("idx_paper_repositories_paper_id", "paper_id"),
         Index("idx_paper_repositories_repository_id", "repository_id"),
+    )
+
+
+class DatasetMetric(Base):
+    """Junction table for datasets and metrics (many-to-many relationship)."""
+
+    __tablename__ = "dataset_metrics"
+
+    dataset_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
+    )
+    metric_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("metrics.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_dataset_metrics_dataset_id", "dataset_id"),
+        Index("idx_dataset_metrics_metric_id", "metric_id"),
     )

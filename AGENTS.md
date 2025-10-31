@@ -32,9 +32,16 @@ The data is continuously enriched using **CRON jobs** (`cron/` folder) that add 
 - **Frontend**: React 18 + TypeScript + Vite + shadcn/ui + Tailwind CSS + TanStack Query + React Router v6
 - **Backend**: FastAPI with 11 API routers, service layer architecture, SQLAlchemy ORM
 - **Database**: PostgreSQL with full-text search indexes
+- **Web Server**: Nginx reverse proxy with Let's Encrypt SSL certificates
 - **GenAI**: OpenRouter/Google Gemini for URL extraction from PDFs
 - **CRON System**: Hourly and daily jobs for data enrichment
 - **Package Management**: uv for Python dependencies, npm for frontend
+
+**Production Deployment**:
+- **Domain**: paperswithcode.co (HTTPS enabled)
+- **Server**: Hetzner VPS (167.235.148.241)
+- **SSL**: Let's Encrypt with automatic renewal
+- **Reverse Proxy**: Nginx routes requests to backend (8000) and frontend (8080)
 
 ## Essential Commands
 
@@ -1022,6 +1029,125 @@ For more detailed information, see:
 **Frontend**:
 - `docs/FRONTEND_TRENDING_UPDATE.md` - Frontend trending integration
 - `docs/LATEX_RENDERING.md` - LaTeX math rendering
+
+**Deployment**:
+- `docs/HTTPS_SETUP.md` - Complete HTTPS setup guide with Nginx and Let's Encrypt
+- `DNS_SETUP_INSTRUCTIONS.md` - Quick DNS configuration instructions
+
+## HTTPS and Production Deployment
+
+### Overview
+
+The production site runs at **https://paperswithcode.co** with Nginx as a reverse proxy handling SSL termination and routing.
+
+### Architecture
+
+```
+Internet (HTTPS/443) → Nginx → Backend API (localhost:8000)
+                              → Frontend (localhost:8080)
+```
+
+### Setup HTTPS
+
+1. **Update DNS** (if not done):
+   - Point `paperswithcode.co` to `167.235.148.241`
+   - Point `www.paperswithcode.co` to `167.235.148.241`
+   - Wait 5-10 minutes for DNS propagation
+
+2. **Run SSL setup script**:
+   ```bash
+   cd /root/python_projects/paperswithcode
+   ./setup_ssl.sh
+   ```
+
+   This will:
+   - Verify DNS configuration
+   - Obtain free SSL certificate from Let's Encrypt
+   - Configure Nginx for HTTPS
+   - Set up automatic certificate renewal
+   - Enable HTTP → HTTPS redirect
+
+3. **Access your site**:
+   - Main site: https://paperswithcode.co
+   - API: https://paperswithcode.co/api/v1/
+   - API Docs: https://paperswithcode.co/docs
+
+### Nginx Management
+
+```bash
+# Test configuration
+sudo nginx -t
+
+# Reload Nginx (no downtime)
+sudo systemctl reload nginx
+
+# Restart Nginx
+sudo systemctl restart nginx
+
+# Check status
+sudo systemctl status nginx
+
+# View logs
+sudo tail -f /var/log/nginx/paperswithcode_error.log
+sudo tail -f /var/log/nginx/paperswithcode_access.log
+```
+
+### SSL Certificate Management
+
+```bash
+# Check certificate status
+sudo certbot certificates
+
+# Test renewal (dry run)
+sudo certbot renew --dry-run
+
+# Force renewal
+sudo certbot renew --force-renewal
+
+# Check auto-renewal timer
+sudo systemctl status certbot.timer
+```
+
+Certificates are automatically renewed by systemd timer when they have 30 days or less remaining.
+
+### Configuration Files
+
+- **Nginx config**: `/etc/nginx/sites-available/paperswithcode.co`
+- **SSL certificates**: `/etc/letsencrypt/live/paperswithcode.co/`
+- **Setup script**: `/root/python_projects/paperswithcode/setup_ssl.sh`
+- **Full guide**: `/root/python_projects/paperswithcode/docs/HTTPS_SETUP.md`
+
+### Troubleshooting
+
+**DNS not pointing to server**:
+```bash
+# Check DNS
+dig +short paperswithcode.co A
+# Should return: 167.235.148.241
+
+# Check server IP
+curl -4 -s ifconfig.me
+# Should return: 167.235.148.241
+```
+
+**Certificate verification failed**:
+- Ensure DNS points to your server
+- Check port 80 is accessible: `sudo ufw status`
+- Verify Nginx is running: `sudo systemctl status nginx`
+
+**Backend/Frontend not accessible**:
+```bash
+# Check services are running
+ps aux | grep -E "uvicorn|vite"
+
+# Start services if needed
+./start_services.sh
+
+# Check Nginx proxy
+sudo tail -f /var/log/nginx/paperswithcode_error.log
+```
+
+For detailed troubleshooting, see `docs/HTTPS_SETUP.md`.
 
 ## Quick Reference
 

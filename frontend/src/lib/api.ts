@@ -2,7 +2,7 @@
  * API client for PapersWithCode backend
  */
 
-const API_BASE_URL = 'http://167.235.148.241:8000/api/v1';
+const API_BASE_URL = '/api/v1';
 
 export interface Repository {
   id: string;
@@ -669,7 +669,7 @@ class ApiClient {
 
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
-    const url = `http://167.235.148.241:8000/api/thumbnails/generate/${paperId}`;
+    const url = `/api/thumbnails/generate/${paperId}`;
     const response = await fetch(url, { method: 'POST' });
     if (!response.ok) {
       throw new Error(`Thumbnail generation failed: ${response.status}`);
@@ -678,7 +678,7 @@ class ApiClient {
   }
 
   async getThumbnailStatus(paperId: string): Promise<{ has_thumbnail: boolean; thumbnail_url?: string; arxiv_id?: string; version?: string }> {
-    const url = `http://167.235.148.241:8000/api/thumbnails/status/${paperId}`;
+    const url = `/api/thumbnails/status/${paperId}`;
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Thumbnail status check failed: ${response.status}`);
@@ -688,7 +688,7 @@ class ApiClient {
 
   // Health check
   async healthCheck(): Promise<{ status: string; service: string }> {
-    const url = `http://167.235.148.241:8000/health`; // Use VPS IP for health check
+    const url = `/health`;
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Health check failed: ${response.status}`);
