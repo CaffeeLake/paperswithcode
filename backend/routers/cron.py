@@ -4,16 +4,15 @@ FastAPI router for CRON job monitoring endpoints.
 This module provides API endpoints for monitoring and managing CRON jobs.
 """
 
-import subprocess
-import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from cron.utils.cron_helpers import get_cron_job_status
+from backend.utils.auth import require_admin_token
 
 
 router = APIRouter()
@@ -60,114 +59,6 @@ def get_available_jobs() -> Dict[str, List[str]]:
     return jobs
 
 
-def get_active_cron_jobs() -> List[Dict[str, str]]:
-    """Get currently scheduled cron jobs from crontab with their schedules."""
-    try:
-        result = subprocess.run(
-            ["crontab", "-l"], capture_output=True, text=True, check=False
-        )
-
-        if result.returncode != 0:
-            return []
-
-        active_jobs = []
-        for line in result.stdout.split("\n"):
-            line = line.strip()
-            if line and not line.startswith("#"):
-                # Extract job name and schedule from cron line
-                if "cron/" in line:
-                    # Extract schedule (first 5 fields)
-                    parts = line.split()
-                    if len(parts) >= 6:
-                        schedule = " ".join(parts[:5])
-
-                        # Look for patterns like cron/daily/job_name.py or cron/run_job.sh
-                        match = re.search(
-                            r"cron/(?:daily/|hourly/|weekly/|monthly/)?([^/\s]+)(?:\.py|\.sh)",
-                            line,
-                        )
-                        if match:
-                            job_name = match.group(1)
-
-                            # Map wrapper script names to actual job names
-                            job_name_mappings = {
-                                "run_github_stars": "update_github_stars",
-                                "run_trending_scores": "calculate_trending_scores",
-                                "run_citations_hourly": "update_citations",
-                                "run_extract_urls_hourly": "extract_urls",
-                            }
-
-                            # Use mapped name if it exists
-                            mapped_name = job_name_mappings.get(job_name, job_name)
-
-                            active_jobs.append(
-                                {
-                                    "name": mapped_name,
-                                    "schedule": schedule,
-                                    "full_line": line,
-                                }
-                            )
-
-        return active_jobs
-
-    except Exception as e:
-        print(f"Error getting crontab: {e}")
-        return []
-
-
-def calculate_next_run(schedule: str) -> Optional[str]:
-    """
-    Calculate the next run time based on cron schedule.
-    This is a simplified calculation - production would use croniter library.
-    """
-    try:
-        # Parse cron schedule
-        parts = schedule.split()
-        if len(parts) != 5:
-            return None
-
-        minute, hour, day, month, weekday = parts
-        now = datetime.utcnow()
-
-        # Simplified logic for common patterns
-        if minute == "*" and hour == "*":
-            # Runs every minute
-            next_run = now + timedelta(minutes=1)
-            return next_run.strftime("%Y-%m-%dT%H:%M:%SZ")
-        elif hour == "*":
-            # Hourly jobs
-            try:
-                min_val = int(minute)
-                if now.minute >= min_val:
-                    next_run = now.replace(
-                        minute=min_val, second=0, microsecond=0
-                    ) + timedelta(hours=1)
-                else:
-                    next_run = now.replace(minute=min_val, second=0, microsecond=0)
-                return next_run.strftime("%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                pass
-        else:
-            # Daily or other jobs
-            try:
-                hour_val = int(hour)
-                min_val = int(minute) if minute != "*" else 0
-
-                next_run = now.replace(
-                    hour=hour_val, minute=min_val, second=0, microsecond=0
-                )
-                if next_run <= now:
-                    next_run += timedelta(days=1)
-                return next_run.strftime("%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                pass
-
-        return "See crontab"
-
-    except Exception:
-        return None
-
-
 def get_job_description(job_name: str, category: str) -> Optional[str]:
     """Get job description from docstring."""
     try:
@@ -206,6 +97,7 @@ def get_job_description(job_name: str, category: str) -> Optional[str]:
     "/cron/status",
     response_model=CronJobsResponse,
     summary="Get CRON jobs status",
+    dependencies=[Depends(require_admin_token)],
 )
 async def get_cron_status(
     days: int = Query(
@@ -226,8 +118,6 @@ async def get_cron_status(
 
     # Get available and active jobs
     available_jobs = get_available_jobs()
-    active_jobs_data = get_active_cron_jobs()
-    active_jobs = {job["name"]: job for job in active_jobs_data}
 
     jobs_status = []
 
@@ -253,13 +143,6 @@ async def get_cron_status(
             # Get job status from logs
             status = get_cron_job_status(log_name, today)
 
-            # Get schedule info if job is active
-            schedule = None
-            next_run = None
-            if job_name in active_jobs:
-                schedule = active_jobs[job_name]["schedule"]
-                next_run = calculate_next_run(schedule)
-
             # Convert last_run to ISO 8601 format with Z suffix (UTC)
             last_run_iso = None
             if status["last_run"]:
@@ -279,8 +162,8 @@ async def get_cron_status(
                 duration=status["duration"],
                 is_running=status["is_running"],
                 error=status["error"],
-                next_run=next_run,
-                schedule=schedule,
+                next_run=None,
+                schedule=None,
                 work_metrics=status.get("work_metrics", {}),
                 work_summary=status.get("work_summary"),
             )
@@ -317,6 +200,7 @@ async def get_cron_status(
     "/cron/job/{job_name}",
     response_model=Dict[str, Any],
     summary="Get detailed status for a specific job",
+    dependencies=[Depends(require_admin_token)],
 )
 async def get_job_detail(
     job_name: str,
@@ -389,6 +273,7 @@ async def get_job_detail(
 @router.get(
     "/cron/health",
     summary="Get CRON system health",
+    dependencies=[Depends(require_admin_token)],
 )
 async def get_cron_health():
     """

@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
     # Startup
     settings = get_settings()
     print("🚀 Starting PapersWithCode API server")
-    print(f"📊 Database: {settings.database_url}")
+    print(f"📊 Database: {settings.database_log_identifier}")
     print(f"🌍 Environment: {settings.environment}")
 
     yield
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.allowed_origins,
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],

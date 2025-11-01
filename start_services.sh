@@ -6,6 +6,9 @@
 
 set -e  # Exit on any error
 
+# Ensure backend starts in production mode unless explicitly overridden
+export PWC_ENVIRONMENT="${PWC_ENVIRONMENT:-production}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

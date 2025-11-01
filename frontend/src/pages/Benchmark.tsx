@@ -58,14 +58,6 @@ const Benchmark = () => {
     return null;
   }, [introducingPaper?.arxiv_id, dataset?.paper_url]);
 
-  const introducingPaperTitle = useMemo(() => {
-    const title = introducingPaper?.title || dataset?.introducing_paper_title;
-    if (!title) {
-      return null;
-    }
-    return title.length > 60 ? `${title.substring(0, 57)}...` : title;
-  }, [introducingPaper?.title, dataset?.introducing_paper_title]);
-
   // Fetch evaluations for this dataset
   const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByDataset(
     dataset?.id,
@@ -339,7 +331,7 @@ const Benchmark = () => {
                 <Button variant="outline" className="flex items-center space-x-2" asChild>
                   <Link to={`/paper/${introducingPaperArxivId}`}>
                     <BookOpen className="w-4 h-4" />
-                    <span>{introducingPaperTitle || 'Introducing paper'}</span>
+                    <span>Link to paper</span>
                   </Link>
                 </Button>
               )}

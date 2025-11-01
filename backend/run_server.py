@@ -18,7 +18,7 @@ def main():
     project_root = Path(__file__).parent.parent
 
     print("🚀 Starting PapersWithCode FastAPI Development Server")
-    print(f"📊 Database: {settings.database_url}")
+    print(f"📊 Database: {settings.database_log_identifier}")
     print(f"🌍 Environment: {settings.environment}")
     print(f"🔧 Host: {settings.host}:{settings.port}")
     print(f"📚 API Docs: http://{settings.host}:{settings.port}/docs")

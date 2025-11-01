@@ -34,10 +34,10 @@ class Settings(BaseSettings):
             "http://localhost:3000",
             "http://localhost:5173",
             "http://localhost:8080",
-            "http://167.235.148.241:8080",
-            "*",  # Allow all origins for now (can be restricted later)
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:8080",
         ],
-        description="Allowed CORS origins",
+        description="Allowed CORS origins for non-production environments",
     )
 
     # API configuration
@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # LLM API keys
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
     openrouter_api_key: str = Field(default="", description="OpenRouter API key")
+    openai_api_key: str = Field(default="", description="OpenAI API key")
+
+    # Admin API configuration
+    admin_api_token: str = Field(
+        default="",
+        description="API token required for administrative endpoints",
+    )
 
     # Hugging Face API configuration
     hf_token: str = Field(
@@ -93,6 +100,12 @@ class Settings(BaseSettings):
         return f"postgresql://{self.db_user}{password_part}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     @property
+    def database_log_identifier(self) -> str:
+        """Return a sanitized identifier for logging database connections."""
+
+        return f"{self.db_user}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+    @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
         return self.environment.lower() == "development"
@@ -101,6 +114,15 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.environment.lower() == "production"
+
+    @property
+    def cors_allowed_origins(self) -> List[str]:
+        """Return the appropriate CORS origins for the current environment."""
+
+        if self.is_production:
+            return ["https://paperswithcode.co", "https://www.paperswithcode.co"]
+
+        return self.allowed_origins
 
 
 @lru_cache()
