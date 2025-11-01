@@ -136,6 +136,30 @@ const transformTrendingPaperForUI = (paper: TrendingPaper, index: number) => {
   };
 };
 
+const deduplicateById = <T extends { id: string }>(items: T[]) => {
+  const uniqueMap = new Map<string, T>();
+
+  items.forEach((item) => {
+    if (!uniqueMap.has(item.id)) {
+      uniqueMap.set(item.id, item);
+    }
+  });
+
+  return Array.from(uniqueMap.values());
+};
+
+const deduplicateByPaperId = <T extends { paper_id: string }>(items: T[]) => {
+  const uniqueMap = new Map<string, T>();
+
+  items.forEach((item) => {
+    if (!uniqueMap.has(item.paper_id)) {
+      uniqueMap.set(item.paper_id, item);
+    }
+  });
+
+  return Array.from(uniqueMap.values());
+};
+
 const Papers = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -240,8 +264,9 @@ const Papers = () => {
   } else if (useTrendingEndpoint) {
     // Only show trending data when trending endpoint is active and has data
     if (trendingData) {
-      transformedPapers = trendingData.map(transformTrendingPaperForUI);
-      totalCount = trendingData.length;
+      const uniqueTrending = deduplicateByPaperId(trendingData);
+      transformedPapers = uniqueTrending.map(transformTrendingPaperForUI);
+      totalCount = uniqueTrending.length;
     } else {
       transformedPapers = [];
       totalCount = 0;
@@ -250,7 +275,8 @@ const Papers = () => {
     // Only show infinite scroll data when that endpoint is active and has data
     if (infiniteData && infiniteData.pages.length > 0) {
       const allPapers = infiniteData.pages.flatMap(page => page.results);
-      transformedPapers = allPapers.map(transformPaperForUI);
+      const uniquePapers = deduplicateById(allPapers);
+      transformedPapers = uniquePapers.map(transformPaperForUI);
       totalCount = infiniteData.pages[0]?.count || 0;
     } else {
       transformedPapers = [];

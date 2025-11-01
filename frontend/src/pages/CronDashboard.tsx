@@ -4,6 +4,7 @@ import Header from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Clock,
   CheckCircle2,
@@ -48,15 +49,81 @@ interface CronJobsResponse {
   };
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const resolveApiBaseUrl = (): string => {
+  const envApiBaseUrl = import.meta.env.VITE_API_URL?.trim();
+
+  const ensureNoTrailingSlash = (value: string) =>
+    value.endsWith("/") ? value.slice(0, -1) : value;
+
+  const coerceHttps = (url: URL) => {
+    if (typeof window !== "undefined" && window.location.protocol === "https:" && url.protocol === "http:") {
+      return null;
+    }
+    return url;
+  };
+
+  if (envApiBaseUrl) {
+    try {
+      const baseUrl = envApiBaseUrl.startsWith("http")
+        ? new URL(envApiBaseUrl)
+        : new URL(envApiBaseUrl, typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
+
+      const sanitized = coerceHttps(baseUrl);
+
+      if (sanitized === null) {
+        if (typeof window !== "undefined") {
+          return ensureNoTrailingSlash(window.location.origin);
+        }
+        return "http://localhost:8000";
+      }
+
+      if (
+        typeof window !== "undefined" &&
+        window.location.protocol === "https:" &&
+        sanitized.hostname === window.location.hostname &&
+        sanitized.port &&
+        sanitized.port !== window.location.port
+      ) {
+        return ensureNoTrailingSlash(window.location.origin);
+      }
+
+      return ensureNoTrailingSlash(sanitized.origin);
+    } catch (error) {
+      console.warn("[CronDashboard] Failed to parse VITE_API_URL, falling back to window origin", error);
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    return ensureNoTrailingSlash(window.location.origin);
+  }
+
+  return "http://localhost:8000";
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 // Fetch cron jobs status
-const fetchCronStatus = async (): Promise<CronJobsResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/v1/cron/status`);
+const fetchCronStatus = async (token?: string): Promise<CronJobsResponse> => {
+  const headers: HeadersInit = token ? { "X-Admin-Token": token } : {};
+  const response = await fetch(`${API_BASE_URL}/api/v1/cron/status`, {
+    headers,
+  });
+
+  if (response.status === 401) {
+    throw new Error("Unauthorized. Please check your admin token.");
+  }
+
   if (!response.ok) {
     throw new Error("Failed to fetch cron status");
   }
   return response.json();
+};
+
+const loadStoredToken = (): string => {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return localStorage.getItem("cronAdminToken") ?? "";
 };
 
 // Status icon component
@@ -211,12 +278,46 @@ const categoryColors: Record<string, string> = {
 const CronDashboard = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
+  const [adminToken, setAdminToken] = useState<string>(() => loadStoredToken());
+  const [tokenInput, setTokenInput] = useState<string>(() => loadStoredToken());
+  const [tokenSaved, setTokenSaved] = useState(false);
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["cronStatus"],
-    queryFn: fetchCronStatus,
-    refetchInterval: autoRefresh ? 30000 : false, // Auto-refresh every 30 seconds if enabled
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (adminToken) {
+      localStorage.setItem("cronAdminToken", adminToken);
+    } else {
+      localStorage.removeItem("cronAdminToken");
+    }
+  }, [adminToken]);
+
+  useEffect(() => {
+    if (!tokenSaved) return;
+    const timeout = window.setTimeout(() => setTokenSaved(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [tokenSaved]);
+
+  const handleApplyToken = () => {
+    setAdminToken(tokenInput.trim());
+    setTokenSaved(true);
+  };
+
+  const handleClearToken = () => {
+    setTokenInput("");
+    setAdminToken("");
+  };
+
+  const canFetch = adminToken.trim().length > 0;
+
+  const { data, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ["cronStatus", adminToken],
+    queryFn: () => fetchCronStatus(adminToken.trim()),
+    enabled: canFetch,
+    refetchInterval: canFetch && autoRefresh ? 30000 : false, // Auto-refresh every 30 seconds if enabled
+    retry: false,
   });
+
+  const errorMessage = error instanceof Error ? error.message : undefined;
 
   // Toggle job expansion
   const toggleJobExpansion = (jobName: string) => {
@@ -275,26 +376,68 @@ const CronDashboard = () => {
                 variant="outline"
                 size="sm"
                 onClick={() => setAutoRefresh(!autoRefresh)}
-                className={autoRefresh ? "border-blue-500 text-blue-600" : ""}
+                disabled={!canFetch}
+                className={`${autoRefresh ? "border-blue-500 text-blue-600" : ""} ${!canFetch ? "opacity-60 cursor-not-allowed" : ""}`}
               >
-                <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh && canFetch ? "animate-spin" : ""}`} />
                 Auto-refresh {autoRefresh ? "ON" : "OFF"}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => refetch()}
-                disabled={isLoading}
+                disabled={!canFetch || isFetching}
               >
-                <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
             </div>
           </div>
         </div>
 
+        <Card className="mb-6">
+          <CardContent className="pt-6 space-y-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="font-semibold text-gray-800">Admin token</p>
+                <p className="text-sm text-gray-600">
+                  Enter your admin token to view CRON job metrics. The token is stored locally in this browser
+                  and sent with requests as the <code className="font-mono">X-Admin-Token</code> header.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full md:w-auto">
+                <Input
+                  type="password"
+                  placeholder="Enter admin token"
+                  value={tokenInput}
+                  onChange={(event) => setTokenInput(event.target.value)}
+                  className="sm:w-64"
+                />
+                <Button size="sm" onClick={handleApplyToken} disabled={!tokenInput.trim()}>
+                  Apply token
+                </Button>
+                {adminToken && (
+                  <Button variant="ghost" size="sm" onClick={handleClearToken}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
+            {tokenSaved && (
+              <p className="text-xs text-green-600">
+                Token saved. Future requests will automatically include it.
+              </p>
+            )}
+            <p className={`text-xs ${canFetch ? "text-gray-500" : "text-blue-700"}`}>
+              {canFetch
+                ? "Token stored locally in this browser. Clear it when you are finished on shared devices."
+                : "Enter your admin token above to enable CRON job monitoring."}
+            </p>
+          </CardContent>
+        </Card>
+
         {/* Loading State */}
-        {isLoading && (
+        {isLoading && canFetch && (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
             <span className="ml-3 text-gray-600">Loading CRON jobs status...</span>
@@ -305,9 +448,21 @@ const CronDashboard = () => {
         {error && (
           <Card className="border-red-200 bg-red-50">
             <CardContent className="pt-6">
-              <div className="flex items-center gap-3 text-red-800">
+              <div className="flex flex-col gap-3 text-red-800">
+                <div className="flex items-center gap-3">
                 <XCircle className="h-5 w-5" />
-                <p>Failed to load CRON jobs status. Please try again.</p>
+                  <p>{errorMessage ?? "Failed to load CRON jobs status. Please try again."}</p>
+                </div>
+                {errorMessage?.toLowerCase().includes("unauthorized") && (
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={handleClearToken}>
+                      Clear saved token
+                    </Button>
+                    <span className="text-sm text-red-700">
+                      Re-enter your admin token to continue.
+                    </span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

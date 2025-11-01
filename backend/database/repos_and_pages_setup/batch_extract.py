@@ -331,12 +331,21 @@ class BatchURLExtractor:
                 )
                 is_pdf_download_fail = "failed to download pdf" in error_str
                 is_recaptcha = "recaptcha" in error_str or "captcha" in error_str
+                is_api_key_invalid = (
+                    (
+                        "api key" in error_str
+                        and ("invalid" in error_str or "not found" in error_str)
+                    )
+                    or "api_key_invalid" in error_str.lower()
+                    or "invalid_api_key" in error_str.lower()
+                )
 
                 if (
                     is_rate_limit
                     or is_quota_exceeded
                     or is_pdf_download_fail
                     or is_recaptcha
+                    or is_api_key_invalid
                 ):
                     # Critical errors - do NOT mark as processed
                     logger.error(

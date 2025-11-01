@@ -385,7 +385,7 @@ async def get_project_github_urls(
                         project_page_url = llm_response["project_page_url"]
 
         except Exception as e:
-            # Re-raise critical errors (rate limiting, quota, PDF download failures, reCAPTCHA)
+            # Re-raise critical errors (rate limiting, quota, PDF download failures, reCAPTCHA, API key errors)
             error_str = str(e).lower()
             is_critical = (
                 "rate limit" in error_str
@@ -394,6 +394,12 @@ async def get_project_github_urls(
                 or "failed to download pdf" in error_str
                 or "recaptcha" in error_str
                 or "captcha" in error_str
+                or (
+                    "api key" in error_str
+                    and ("invalid" in error_str or "not found" in error_str)
+                )
+                or "api_key_invalid" in error_str
+                or "invalid_api_key" in error_str
             )
 
             if is_critical:
@@ -489,12 +495,20 @@ async def _extract_urls_with_llm(
     except Exception as e:
         logger.error(f"LLM extraction failed for {arxiv_id}: {e}")
         # Re-raise critical errors that should stop processing
-        if (
-            "rate limit" in str(e).lower()
+        error_str = str(e).lower()
+        is_critical = (
+            "rate limit" in error_str
             or "429" in str(e)
-            or "quota exceeded" in str(e).lower()
-        ):
-            raise Exception(f"Rate limit or quota error: {e}") from e
+            or "quota exceeded" in error_str
+            or (
+                "api key" in error_str
+                and ("invalid" in error_str or "not found" in error_str)
+            )
+            or "api_key_invalid" in error_str
+            or "invalid_api_key" in error_str
+        )
+        if is_critical:
+            raise Exception(f"Critical error: {e}") from e
         # For other errors, return empty results
         return "", {"github_url": "", "project_page_url": ""}
     finally:

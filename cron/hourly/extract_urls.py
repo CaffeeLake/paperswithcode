@@ -81,6 +81,17 @@ class URLExtractionHourlyJob(DatabaseCronJob):
         self.logger.info(f"  Start year: {self.start_year}")
         self.logger.info(f"  Rate tier: {'Paid' if self.use_paid_tier else 'Free'}")
 
+        # Validate Gemini API key before proceeding
+        gemini_api_key = self.settings.gemini_api_key
+        if not gemini_api_key:
+            self.logger.error("❌ CRITICAL: PWC_GEMINI_API_KEY is not set in keys.env")
+            self.logger.error("   URL extraction requires a valid Gemini API key")
+            raise ValueError("Gemini API key not configured")
+
+        self.logger.info(
+            f"  Gemini API Key: {'✓ Configured' if gemini_api_key else '✗ Missing'}"
+        )
+
         try:
             # Create batch extractor with hourly configuration
             extractor = BatchURLExtractor(
