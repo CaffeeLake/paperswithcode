@@ -21,7 +21,7 @@ from backend.models.database import (
 )
 from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
-from backend.services.dataset_metric_service import DatasetMetricService
+from backend.services.leaderboard_metric_service import LeaderboardMetricService
 
 
 class EvaluationService:
@@ -426,11 +426,11 @@ class EvaluationService:
             DatabaseError: If database operation fails
         """
         try:
-            # Validate metrics against dataset's allowed metrics
-            metric_service = DatasetMetricService(self.db)
+            # Validate metrics against leaderboard's allowed metrics
+            metric_service = LeaderboardMetricService(self.db)
             metric_keys = list(metrics.keys())
-            is_valid, error_message = metric_service.validate_metrics_for_dataset(
-                dataset_id, metric_keys, best_metric
+            is_valid, error_message = metric_service.validate_metrics_for_leaderboard(
+                task_id, dataset_id, metric_keys, best_metric
             )
 
             if not is_valid:
@@ -459,7 +459,12 @@ class EvaluationService:
             self.db.refresh(db_evaluation)
 
             # Recalculate ranks for this leaderboard after creation
-            self.recalculate_ranks(db_evaluation.task_id, db_evaluation.dataset_id)
+            # Recalculate only for the specific metric if best_metric is set
+            self.recalculate_ranks(
+                db_evaluation.task_id,
+                db_evaluation.dataset_id,
+                metric_name=db_evaluation.best_metric,
+            )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
@@ -562,12 +567,25 @@ class EvaluationService:
                 best_metric if best_metric is not None else db_evaluation.best_metric
             )
 
-            # Validate metrics if they are being changed or dataset is changing
-            if metrics is not None or dataset_id is not None or best_metric is not None:
-                metric_service = DatasetMetricService(self.db)
+            # Determine which task to validate against
+            target_task_id = task_id if task_id is not None else old_task_id
+
+            # Validate metrics if they are being changed or task/dataset is changing
+            if (
+                metrics is not None
+                or dataset_id is not None
+                or task_id is not None
+                or best_metric is not None
+            ):
+                metric_service = LeaderboardMetricService(self.db)
                 metric_keys = list(target_metrics.keys())
-                is_valid, error_message = metric_service.validate_metrics_for_dataset(
-                    target_dataset_id, metric_keys, target_best_metric
+                is_valid, error_message = (
+                    metric_service.validate_metrics_for_leaderboard(
+                        target_task_id,
+                        target_dataset_id,
+                        metric_keys,
+                        target_best_metric,
+                    )
                 )
 
                 if not is_valid:
@@ -598,18 +616,47 @@ class EvaluationService:
             self.db.commit()
             self.db.refresh(db_evaluation)
 
+            # Store old best_metric for rank recalculation
+            old_best_metric = (
+                self.db.query(DBEvaluation.best_metric)
+                .filter(DBEvaluation.id == evaluation_id)
+                .scalar()
+            )
+
             # Recalculate ranks for affected leaderboards
             # If task or dataset changed, recalculate both old and new leaderboards
             if (task_id is not None and task_id != old_task_id) or (
                 dataset_id is not None and dataset_id != old_dataset_id
             ):
                 # Recalculate old leaderboard (where evaluation was removed)
-                self.recalculate_ranks(old_task_id, old_dataset_id)
+                self.recalculate_ranks(
+                    old_task_id, old_dataset_id, metric_name=old_best_metric
+                )
                 # Recalculate new leaderboard (where evaluation was added)
-                self.recalculate_ranks(db_evaluation.task_id, db_evaluation.dataset_id)
+                self.recalculate_ranks(
+                    db_evaluation.task_id,
+                    db_evaluation.dataset_id,
+                    metric_name=db_evaluation.best_metric,
+                )
+            elif best_metric is not None and best_metric != old_best_metric:
+                # If best_metric changed, recalculate both old and new metric leaderboards
+                self.recalculate_ranks(
+                    db_evaluation.task_id,
+                    db_evaluation.dataset_id,
+                    metric_name=old_best_metric,
+                )
+                self.recalculate_ranks(
+                    db_evaluation.task_id,
+                    db_evaluation.dataset_id,
+                    metric_name=db_evaluation.best_metric,
+                )
             else:
-                # Only recalculate current leaderboard if metrics or best_metric changed
-                self.recalculate_ranks(db_evaluation.task_id, db_evaluation.dataset_id)
+                # Only recalculate current leaderboard for current metric
+                self.recalculate_ranks(
+                    db_evaluation.task_id,
+                    db_evaluation.dataset_id,
+                    metric_name=db_evaluation.best_metric,
+                )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
@@ -675,15 +722,16 @@ class EvaluationService:
             if not db_evaluation:
                 raise DatabaseError(f"Evaluation {evaluation_id} not found")
 
-            # Store task_id and dataset_id before deletion for rank recalculation
+            # Store task_id, dataset_id, and best_metric before deletion for rank recalculation
             task_id = db_evaluation.task_id
             dataset_id = db_evaluation.dataset_id
+            best_metric = db_evaluation.best_metric
 
             self.db.delete(db_evaluation)
             self.db.commit()
 
             # Recalculate ranks for this leaderboard after deletion
-            self.recalculate_ranks(task_id, dataset_id)
+            self.recalculate_ranks(task_id, dataset_id, metric_name=best_metric)
 
             return True
 
@@ -695,18 +743,24 @@ class EvaluationService:
         self,
         task_id: int,
         dataset_id: int,
+        metric_name: Optional[str] = None,
         uses_additional_data: Optional[bool] = None,
     ) -> int:
         """
-        Recalculate ranks for all evaluations in a specific leaderboard.
+        Recalculate ranks for evaluations in a specific leaderboard.
 
         This method orders evaluations by their best_metric value and assigns ranks accordingly.
         The ranking direction (higher is better vs lower is better) is determined by the
         metrics table. Evaluations with the same metric value get the same rank.
 
+        Leaderboards are now defined by (task, dataset, metric) triples. If metric_name is
+        provided, only recalculates ranks for that specific metric. If None, recalculates
+        for all metrics present in evaluations for this task-dataset pair.
+
         Args:
             task_id: Task ID to recalculate ranks for
             dataset_id: Dataset ID to recalculate ranks for
+            metric_name: Optional metric name to recalculate ranks for. If None, recalculates all.
             uses_additional_data: If specified, only recalculate for evaluations with this value
 
         Returns:
@@ -716,38 +770,57 @@ class EvaluationService:
             DatabaseError: If database operation fails
         """
         try:
-            # Build query for evaluations in this leaderboard
-            query = self.db.query(DBEvaluation).filter(
-                DBEvaluation.task_id == task_id,
-                DBEvaluation.dataset_id == dataset_id,
-            )
-
-            # Optionally filter by uses_additional_data
-            if uses_additional_data is not None:
-                query = query.filter(
-                    DBEvaluation.uses_additional_data == uses_additional_data
+            # If metric_name is provided, recalculate only for that metric
+            # Otherwise, recalculate for all unique metrics in this task-dataset pair
+            if metric_name:
+                metrics_to_process = [metric_name]
+            else:
+                # Get all unique best_metric values for this task-dataset pair
+                unique_metrics = (
+                    self.db.query(DBEvaluation.best_metric)
+                    .filter(
+                        DBEvaluation.task_id == task_id,
+                        DBEvaluation.dataset_id == dataset_id,
+                        DBEvaluation.best_metric.isnot(None),
+                    )
+                    .distinct()
+                    .all()
                 )
+                metrics_to_process = [m[0] for m in unique_metrics]
 
-            # Get all evaluations for this leaderboard
-            evaluations = query.all()
-
-            if not evaluations:
+            if not metrics_to_process:
                 return 0
 
-            # Determine the ranking direction from the metrics table
-            # Get the first evaluation's best_metric to look up direction
-            metric_direction = "higher_is_better"  # Default
-            first_eval_metric = None
-            for eval_obj in evaluations:
-                if eval_obj.best_metric:
-                    first_eval_metric = eval_obj.best_metric
-                    break
+            total_updated = 0
 
-            if first_eval_metric:
+            # Process each metric separately
+            for current_metric in metrics_to_process:
+                # Build query for evaluations in this specific leaderboard (task, dataset, metric)
+                query = self.db.query(DBEvaluation).filter(
+                    DBEvaluation.task_id == task_id,
+                    DBEvaluation.dataset_id == dataset_id,
+                    DBEvaluation.best_metric == current_metric,
+                )
+
+                # Optionally filter by uses_additional_data
+                if uses_additional_data is not None:
+                    query = query.filter(
+                        DBEvaluation.uses_additional_data == uses_additional_data
+                    )
+
+                # Get all evaluations for this leaderboard
+                evaluations = query.all()
+
+                if not evaluations:
+                    continue
+
+                # Determine the ranking direction from the metrics table
+                metric_direction = "higher_is_better"  # Default
+
                 # Query metrics table for ranking direction
                 metric_def = (
                     self.db.query(DBMetric)
-                    .filter(DBMetric.name == first_eval_metric)
+                    .filter(DBMetric.name == current_metric)
                     .first()
                 )
 
@@ -759,71 +832,70 @@ class EvaluationService:
 
                     logger = logging.getLogger(__name__)
                     logger.warning(
-                        f"Metric '{first_eval_metric}' not found in metrics table. "
+                        f"Metric '{current_metric}' not found in metrics table. "
                         f"Defaulting to 'higher_is_better' for ranking."
                     )
 
-            # Extract metric values for sorting - rank ALL evaluations together
-            # (uses_additional_data is displayed as a tag but doesn't affect ranking)
-            eval_scores = []
-            for eval_obj in evaluations:
-                # Get the value of the best_metric from metrics dict
-                metric_value = None
-                if eval_obj.best_metric and eval_obj.metrics:
-                    # Handle both string and numeric metric values
-                    raw_value = eval_obj.metrics.get(eval_obj.best_metric)
-                    if raw_value is not None:
-                        try:
-                            # Convert to float for comparison
-                            metric_value = float(raw_value)
-                        except (ValueError, TypeError):
-                            # If conversion fails, skip this evaluation
-                            pass
+                # Extract metric values for sorting - rank ALL evaluations together
+                # (uses_additional_data is displayed as a tag but doesn't affect ranking)
+                eval_scores = []
+                for eval_obj in evaluations:
+                    # Get the value of the best_metric from metrics dict
+                    metric_value = None
+                    if eval_obj.best_metric and eval_obj.metrics:
+                        # Handle both string and numeric metric values
+                        raw_value = eval_obj.metrics.get(eval_obj.best_metric)
+                        if raw_value is not None:
+                            try:
+                                # Convert to float for comparison
+                                metric_value = float(raw_value)
+                            except (ValueError, TypeError):
+                                # If conversion fails, skip this evaluation
+                                pass
 
-                eval_scores.append((eval_obj, metric_value))
+                    eval_scores.append((eval_obj, metric_value))
 
-            # Sort by metric value based on direction
-            # Place evaluations without valid metric values at the end
-            if metric_direction == "lower_is_better":
-                # For "lower is better" metrics (WER, error rates, perplexity)
-                # Lower values should get rank 1
-                eval_scores.sort(
-                    key=lambda x: (
-                        x[1] is None,
-                        x[1] if x[1] is not None else float("inf"),
+                # Sort by metric value based on direction
+                # Place evaluations without valid metric values at the end
+                if metric_direction == "lower_is_better":
+                    # For "lower is better" metrics (WER, error rates, perplexity)
+                    # Lower values should get rank 1
+                    eval_scores.sort(
+                        key=lambda x: (
+                            x[1] is None,
+                            x[1] if x[1] is not None else float("inf"),
+                        )
                     )
-                )
-            else:
-                # For "higher is better" metrics (AP, accuracy, F1)
-                # Higher values should get rank 1 (default behavior)
-                eval_scores.sort(
-                    key=lambda x: (x[1] is None, -x[1] if x[1] is not None else 0)
-                )
+                else:
+                    # For "higher is better" metrics (AP, accuracy, F1)
+                    # Higher values should get rank 1 (default behavior)
+                    eval_scores.sort(
+                        key=lambda x: (x[1] is None, -x[1] if x[1] is not None else 0)
+                    )
 
-            # Assign ranks (same value = same rank)
-            current_rank = 1
-            previous_score = None
-            updated_count = 0
+                # Assign ranks (same value = same rank)
+                current_rank = 1
+                previous_score = None
 
-            for idx, (eval_obj, score) in enumerate(eval_scores):
-                # Skip evaluations without valid metric values
-                if score is None:
-                    eval_obj.best_rank = None
-                    updated_count += 1
-                    continue
+                for idx, (eval_obj, score) in enumerate(eval_scores):
+                    # Skip evaluations without valid metric values
+                    if score is None:
+                        eval_obj.best_rank = None
+                        total_updated += 1
+                        continue
 
-                # If score is different from previous, update rank
-                if previous_score is not None and score != previous_score:
-                    current_rank = idx + 1
+                    # If score is different from previous, update rank
+                    if previous_score is not None and score != previous_score:
+                        current_rank = idx + 1
 
-                eval_obj.best_rank = current_rank
-                previous_score = score
-                updated_count += 1
+                    eval_obj.best_rank = current_rank
+                    previous_score = score
+                    total_updated += 1
 
             # Commit all rank updates
             self.db.commit()
 
-            return updated_count
+            return total_updated
 
         except Exception as e:
             self.db.rollback()

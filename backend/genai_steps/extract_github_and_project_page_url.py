@@ -387,6 +387,20 @@ async def get_project_github_urls(
         except Exception as e:
             # Re-raise critical errors (rate limiting, quota, PDF download failures, reCAPTCHA, API key errors)
             error_str = str(e).lower()
+            auth_markers = [
+                "api key",
+                "invalid_api_key",
+                "api_key_invalid",
+                "expired",
+                "unauthorized",
+                "forbidden",
+                "permission",
+                "not authenticated",
+                "unauthenticated",
+                "invalid authentication",
+                "key not active",
+                "insufficient authentication",
+            ]
             is_critical = (
                 "rate limit" in error_str
                 or "429" in str(e)
@@ -394,12 +408,7 @@ async def get_project_github_urls(
                 or "failed to download pdf" in error_str
                 or "recaptcha" in error_str
                 or "captcha" in error_str
-                or (
-                    "api key" in error_str
-                    and ("invalid" in error_str or "not found" in error_str)
-                )
-                or "api_key_invalid" in error_str
-                or "invalid_api_key" in error_str
+                or any(marker in error_str for marker in auth_markers)
             )
 
             if is_critical:
@@ -496,16 +505,25 @@ async def _extract_urls_with_llm(
         logger.error(f"LLM extraction failed for {arxiv_id}: {e}")
         # Re-raise critical errors that should stop processing
         error_str = str(e).lower()
+        auth_markers = [
+            "api key",
+            "invalid_api_key",
+            "api_key_invalid",
+            "expired",
+            "unauthorized",
+            "forbidden",
+            "permission",
+            "not authenticated",
+            "unauthenticated",
+            "invalid authentication",
+            "key not active",
+            "insufficient authentication",
+        ]
         is_critical = (
             "rate limit" in error_str
             or "429" in str(e)
             or "quota exceeded" in error_str
-            or (
-                "api key" in error_str
-                and ("invalid" in error_str or "not found" in error_str)
-            )
-            or "api_key_invalid" in error_str
-            or "invalid_api_key" in error_str
+            or any(marker in error_str for marker in auth_markers)
         )
         if is_critical:
             raise Exception(f"Critical error: {e}") from e

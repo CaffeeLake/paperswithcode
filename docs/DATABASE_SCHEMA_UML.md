@@ -2,9 +2,10 @@
 
 ## Overview
 
-This document provides a comprehensive overview of the database schema for the PapersWithCode project, reflecting the current production database state as of September 2025.
+This document provides a comprehensive overview of the database schema for the PapersWithCode project, reflecting the current production database state as of November 2025.
 
 This schema is based on the API client of the legacy [PapersWithCode API](https://paperswithcode-client.readthedocs.io/en/latest/api/index.html), and has been significantly extended with:
+- **Leaderboard Triples**: Leaderboards defined by (task, dataset, metric) triples for precise ranking
 - **Hugging Face Integration**: Author profiles, usernames, and project pages
 - **Citation Tracking**: Semantic Scholar API integration for real-time citation counts
 - **ArXiv Category Classification**: Primary and secondary category tracking
@@ -13,11 +14,12 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
 - **Author Ordering**: Proper first/second author tracking in publications
 
 ## Current Database Statistics
-- **Core Tables**: 16 main entity tables + 6 junction tables
+- **Core Tables**: 16 main entity tables + 7 junction tables
 - **Performance Views**: 6 materialized views for optimized queries
 - **Backup Tables**: 2 backup tables for data migration safety
-- **Indexes**: 51+ indexes for full-text search, filtering, and performance
+- **Indexes**: 55+ indexes for full-text search, filtering, and performance
 - **Data Scale**: Designed to handle millions of papers with real-time updates
+- **Leaderboards**: Defined by (task, dataset, metric) triples for precise ranking
 
 ## Entity Relationship Diagram (UML)
 
@@ -127,21 +129,35 @@ This schema is based on the API client of the legacy [PapersWithCode API](https:
         │              │ (task_id,       │
         │              │  dataset_id)    │
         │              └─────────────────┘
-        │
-        ▼
-┌─────────────────┐           ┌──────────────────┐         ┌─────────────────┐
-│  REPOSITORIES   │           │   EVALUATIONS    │         │     METRICS     │
-├─────────────────┤           ├──────────────────┤         ├─────────────────┤
-│ id (PK)         │           │ id (PK)          │         │ id (PK)         │
-│ url (UNIQUE)    │           │ paper_id (FK)    │         │ name (UNIQUE)   │
-│ owner           │           │ task_id (FK)     │         │ full_name       │
-│ name            │           │ dataset_id (FK)  │         │ direction       │
-│ num_stars       │           │ model_name       │         │ description     │
-│ num_stars_upd_at│           │ methodology      │         │ created_at      │
-│ source          │           │ metrics (JSONB)  │         │ updated_at      │
-│ created_at      │           │ uses_additional  │         └─────────────────┘
-│ updated_at      │           │ best_rank        │                   ▲
-└─────────────────┘           │ best_metric      │───────────────────┘
+        │                       │
+        │                       │
+        │                       ▼
+        │              ┌──────────────────────┐
+        │              │TASK_DATASET_METRICS  │◄─────┐
+        │              ├──────────────────────┤      │
+        │              │ task_id (FK)         │      │
+        │              │ dataset_id (FK)      │      │
+        │              │ metric_id (FK)       │──────┤
+        │              │ created_at           │      │
+        │              │ PRIMARY KEY          │      │
+        │              │ (task_id, dataset_id,│      │
+        │              │  metric_id)          │      │
+        │              └──────────────────────┘      │
+        │                       │                    │
+        ▼                       ▼                    │
+┌─────────────────┐           ┌──────────────────┐  │      ┌─────────────────┐
+│  REPOSITORIES   │           │   EVALUATIONS    │  │      │     METRICS     │
+├─────────────────┤           ├──────────────────┤  │      ├─────────────────┤
+│ id (PK)         │           │ id (PK)          │  │      │ id (PK)         │
+│ url (UNIQUE)    │           │ paper_id (FK)    │  │      │ name (UNIQUE)   │
+│ owner           │           │ task_id (FK)     │  │      │ full_name       │
+│ name            │           │ dataset_id (FK)  │  │      │ direction       │
+│ num_stars       │           │ model_name       │  │      │ description     │
+│ num_stars_upd_at│           │ methodology      │  │      │ created_at      │
+│ source          │           │ metrics (JSONB)  │  │      │ updated_at      │
+│ created_at      │           │ uses_additional  │  │      └─────────────────┘
+│ updated_at      │           │ best_rank        │  │                ▲
+└─────────────────┘           │ best_metric      │──┘                │
         │                     │ external_source  │    (logical reference)
         │                     │ created_at       │
         │                     │ updated_at       │
@@ -813,6 +829,7 @@ CREATE TABLE task_datasets (
 
 **Example Relationships**:
 - ImageNet → Image Classification
+- ImageNet → Image Generation (same dataset, multiple tasks)
 - COCO → Object Detection
 - SQuAD → Question Answering
 - GLUE → Natural Language Understanding
@@ -821,6 +838,52 @@ This allows the system to answer queries like:
 - "What datasets are used for Image Classification?"
 - "What tasks is ImageNet associated with?"
 - Filter datasets by task: `/api/v1/datasets/?task=image-classification`
+
+### 15b. TASK_DATASET_METRICS (NEW: November 2025)
+```sql
+CREATE TABLE task_dataset_metrics (
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+    metric_id BIGINT NOT NULL REFERENCES metrics(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- Composite primary key ensures each (task, dataset, metric) triple is unique
+    PRIMARY KEY (task_id, dataset_id, metric_id)
+);
+```
+
+**Purpose**: Defines leaderboards as (task, dataset, metric) triples. Each triple represents a unique leaderboard with its own ranking.
+
+**Key Concept**: Leaderboards are now defined by triples, not just (task, dataset) pairs. This allows:
+- Different metrics for the same task-dataset pair (e.g., COCO Object Detection can have AP, AP50, AP75 leaderboards)
+- ImageNet can have different metrics for Image Classification vs Image Generation
+- Precise control over which metrics are valid for each leaderboard
+
+**Example Triples**:
+- (Image Classification, ImageNet, Top-1 Accuracy)
+- (Image Classification, ImageNet, Top-5 Accuracy)
+- (Image Generation, ImageNet, FID)
+- (Object Detection, COCO, AP)
+- (Object Detection, COCO, AP50)
+- (Speech Recognition, LibriSpeech, WER)
+
+**Relationship to Evaluations**:
+- Each evaluation belongs to exactly one leaderboard triple
+- `evaluations.best_metric` (string) logically references `metrics.name`
+- Ranks are calculated per triple: evaluations with different `best_metric` values have independent rankings
+- This enables multiple leaderboards per task-dataset pair
+
+**API Endpoints**:
+- `GET /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics` - List allowed metrics for leaderboard
+- `POST /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics` - Add metric to leaderboard
+- `PUT /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics` - Set all metrics for leaderboard
+- `DELETE /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics/{metric_name}` - Remove metric
+
+**Migration from dataset_metrics**:
+The old `dataset_metrics` table (which linked datasets directly to metrics) has been replaced by `task_dataset_metrics`. The migration:
+1. Expanded dataset-metric pairs into task-dataset-metric triples (one triple per task linked to that dataset)
+2. Added triples implied by existing evaluations
+3. Created a compatibility view for backward compatibility during transition
 
 ### 16. PAPER_REPOSITORIES
 ```sql
@@ -857,7 +920,10 @@ CREATE TABLE paper_project_pages (
 - `papers` ↔ `datasets` (via paper_datasets)
 - `papers` ↔ `repositories` (via paper_repositories) **[OPTIMIZED]**
 - `papers` ↔ `project_pages` (via paper_project_pages) **[NORMALIZED]**
-- `tasks` ↔ `datasets` (via task_datasets) **[NEW]** - Direct task-dataset relationships (e.g., ImageNet → Image Classification)
+- `tasks` ↔ `datasets` (via task_datasets) - Direct task-dataset relationships (e.g., ImageNet → Image Classification, Image Generation)
+
+### Many-to-Many-to-Many (Triples)
+- `tasks` ↔ `datasets` ↔ `metrics` (via task_dataset_metrics) **[NEW: November 2025]** - Leaderboard definitions as (task, dataset, metric) triples
 
 ## Indexes for Performance
 
@@ -908,11 +974,18 @@ CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
 CREATE INDEX idx_task_datasets_task_id ON task_datasets(task_id);
 CREATE INDEX idx_task_datasets_dataset_id ON task_datasets(dataset_id);
 
+-- Task-Dataset-Metric triple indexes (leaderboard definitions)
+CREATE INDEX idx_task_dataset_metrics_task_id ON task_dataset_metrics(task_id);
+CREATE INDEX idx_task_dataset_metrics_dataset_id ON task_dataset_metrics(dataset_id);
+CREATE INDEX idx_task_dataset_metrics_metric_id ON task_dataset_metrics(metric_id);
+CREATE INDEX idx_task_dataset_metrics_task_dataset ON task_dataset_metrics(task_id, dataset_id);
+
 -- Metrics indexes
 CREATE INDEX idx_metrics_name ON metrics(name);
 
--- Evaluation indexes
+-- Evaluation indexes (with leaderboard triple support)
 CREATE INDEX idx_evaluations_paper_task_dataset ON evaluations(paper_id, task_id, dataset_id);
+CREATE INDEX idx_evaluations_task_dataset_metric ON evaluations(task_id, dataset_id, best_metric);
 CREATE INDEX idx_evaluations_metrics ON evaluations USING gin(metrics);
 
 -- Repository indexes (optimized structure)
@@ -1215,12 +1288,31 @@ The system now processes the same data with **dramatically fewer resources** whi
 
 ## Schema Evolution Changelog
 
+### Major Updates (November 2025)
+
+#### Leaderboard Triples Architecture
+- ✅ **Added `task_dataset_metrics` junction table**: Defines leaderboards as (task, dataset, metric) triples
+- ✅ **Purpose**: Enable multiple leaderboards per task-dataset pair with different metrics
+- ✅ **Key Concept**: Each triple represents a unique leaderboard with independent ranking
+- ✅ **Examples**:
+  - (Image Classification, ImageNet, Top-1 Accuracy)
+  - (Image Classification, ImageNet, Top-5 Accuracy)
+  - (Image Generation, ImageNet, FID)
+  - (Object Detection, COCO, AP)
+  - (Object Detection, COCO, AP50)
+- ✅ **API Endpoints**: New task-specific metric management at `/api/v1/datasets/{id}/tasks/{task_id}/metrics`
+- ✅ **Service Layer**: New `LeaderboardMetricService` replacing `DatasetMetricService`
+- ✅ **Ranking**: Ranks calculated per triple; evaluations with different `best_metric` have independent rankings
+- ✅ **Migration**: Backfilled from old `dataset_metrics` table and existing evaluations
+- ✅ **Backward Compatibility**: Old `/datasets/{id}/metrics` endpoints deprecated but functional
+- ✅ **Indexes**: Composite indexes on (task_id, dataset_id, metric_id) and (task_id, dataset_id, best_metric)
+
 ### Major Updates (October 2025)
 
 #### Dataset-Task Direct Relationships
 - ✅ **Added `task_datasets` junction table**: Direct many-to-many relationship between tasks and datasets
 - ✅ **Purpose**: Enable queries like "datasets for Image Classification" independent of evaluations
-- ✅ **Examples**: ImageNet → Image Classification, COCO → Object Detection, SQuAD → Question Answering
+- ✅ **Examples**: ImageNet → Image Classification, ImageNet → Image Generation (same dataset, multiple tasks)
 - ✅ **API Support**: Filter datasets by task via `/api/v1/datasets/?task=image-classification`
 - ✅ **Service Layer**: Complete `DatasetService` with filtering, search, and associations
 - ✅ **Router**: Full CRUD endpoints matching legacy PapersWithCode API specification

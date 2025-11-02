@@ -83,13 +83,21 @@ class URLExtractionHourlyJob(DatabaseCronJob):
 
         # Validate Gemini API key before proceeding
         gemini_api_key = self.settings.gemini_api_key
-        if not gemini_api_key:
-            self.logger.error("❌ CRITICAL: PWC_GEMINI_API_KEY is not set in keys.env")
-            self.logger.error("   URL extraction requires a valid Gemini API key")
-            raise ValueError("Gemini API key not configured")
+        openrouter_api_key = self.settings.openrouter_api_key
+        if not gemini_api_key and not openrouter_api_key:
+            self.logger.error(
+                "❌ CRITICAL: Neither PWC_GEMINI_API_KEY nor PWC_OPENROUTER_API_KEY is set in keys.env"
+            )
+            self.logger.error(
+                "   URL extraction requires at least one valid API key (Gemini or OpenRouter)"
+            )
+            raise ValueError("No LLM API key configured")
 
         self.logger.info(
             f"  Gemini API Key: {'✓ Configured' if gemini_api_key else '✗ Missing'}"
+        )
+        self.logger.info(
+            f"  OpenRouter API Key: {'✓ Configured' if openrouter_api_key else '✗ Missing'}"
         )
 
         try:
@@ -130,6 +138,8 @@ class URLExtractionHourlyJob(DatabaseCronJob):
             else:
                 self.logger.info("URL Extraction completed (no papers to process)")
             self.logger.info("=" * 80)
+            if "papers_found" in stats:
+                self.logger.info(f"Papers found: {stats['papers_found']}")
             self.logger.info(f"Papers processed: {stats['papers_processed']}")
             self.logger.info(f"Papers with GitHub: {stats['papers_with_github']}")
             self.logger.info(
@@ -159,6 +169,16 @@ class URLExtractionHourlyJob(DatabaseCronJob):
                 self.logger.info(f"Daily capacity (24/7): ~{daily_capacity} papers")
                 self.logger.info(
                     f"Estimated for 10K papers: {10000 / daily_capacity:.1f} days"
+                )
+
+            # If we had candidates but processed none due to critical errors, fail the job
+            if (
+                stats.get("papers_found", 0) > 0
+                and stats.get("papers_processed", 0) == 0
+                and stats.get("papers_skipped_critical_errors", 0) > 0
+            ):
+                raise RuntimeError(
+                    "URL extraction failed: 0 papers processed due to critical errors"
                 )
 
         except Exception as e:

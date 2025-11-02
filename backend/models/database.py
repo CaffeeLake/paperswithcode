@@ -402,9 +402,6 @@ class Dataset(Base):
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="dataset"
     )
-    metrics: Mapped[List["Metric"]] = relationship(
-        "Metric", secondary="dataset_metrics", back_populates="datasets"
-    )
 
     # Self-referential relationship for parent datasets
     parent_dataset: Mapped[Optional["Dataset"]] = relationship(
@@ -675,11 +672,6 @@ class Metric(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationships
-    datasets: Mapped[List["Dataset"]] = relationship(
-        "Dataset", secondary="dataset_metrics", back_populates="metrics"
-    )
-
     # Indexes
     __table_args__ = (Index("idx_metrics_name", "name"),)
 
@@ -806,11 +798,19 @@ class PaperRepository(Base):
     )
 
 
-class DatasetMetric(Base):
-    """Junction table for datasets and metrics (many-to-many relationship)."""
+class TaskDatasetMetric(Base):
+    """
+    Junction table for task-dataset-metric triples (leaderboard definitions).
 
-    __tablename__ = "dataset_metrics"
+    Each triple (task, dataset, metric) defines a unique leaderboard.
+    For example: (Image Classification, ImageNet, Top-1 Accuracy)
+    """
 
+    __tablename__ = "task_dataset_metrics"
+
+    task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
     dataset_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
     )
@@ -823,6 +823,8 @@ class DatasetMetric(Base):
 
     # Indexes
     __table_args__ = (
-        Index("idx_dataset_metrics_dataset_id", "dataset_id"),
-        Index("idx_dataset_metrics_metric_id", "metric_id"),
+        Index("idx_task_dataset_metrics_task_id", "task_id"),
+        Index("idx_task_dataset_metrics_dataset_id", "dataset_id"),
+        Index("idx_task_dataset_metrics_metric_id", "metric_id"),
+        Index("idx_task_dataset_metrics_task_dataset", "task_id", "dataset_id"),
     )

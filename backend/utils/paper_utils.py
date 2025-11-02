@@ -323,3 +323,59 @@ async def get_comments(arxiv_id: str) -> str:
             comments_string += "\n\nNo comments were found (due to error)."
 
     return comments_string
+
+
+async def get_authors(arxiv_id: str) -> str:
+    """
+    Get the authors of a paper using the Hugging Face API along with metadata like their Hugging Face username, full name, and organizations they are a part of.
+    """
+    authors_string = "No authors were found"
+    if arxiv_id != "":
+        authors_string = f"Authors at huggingface.co/papers/{arxiv_id}:"
+
+        try:
+            headers = build_hf_headers(token=False, user_agent={"is_ci": "true"})
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(
+                    f"https://huggingface.co/api/papers/{arxiv_id}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+            authors = data.get("authors", [])
+            if authors:
+                current_authors_string = ""
+                for author in authors:
+                    author_name = author.get("name")
+                    current_authors_string += f"Author name: {author_name}\n"
+                    # try to get the Hugging Face username
+                    if author.get("user"):
+                        author_hf_username = author.get("user").get("user")
+                        author_full_name = author.get("user").get("fullname")
+                        author_organizations = await get_user_organizations(
+                            username=author_hf_username
+                        )
+                        current_authors_string += (
+                            f"Author Hugging Face user name: {author_hf_username}\n"
+                        )
+                        current_authors_string += (
+                            f"Author Hugging Face full name: {author_full_name}\n"
+                        )
+                        current_authors_string += f"Author Hugging Face organizations: {author_organizations}\n"
+                    else:
+                        current_authors_string += (
+                            "Author Hugging Face user name: not found\n"
+                        )
+                    current_authors_string += "--------------------------------\n"
+                if current_authors_string:
+                    authors_string = current_authors_string
+                else:
+                    authors_string += "\n\nNo valid author content found."
+            else:
+                authors_string += "\n\nNo authors were found in API response."
+
+        except Exception:
+            authors_string += "\n\nNo authors were found (due to error)."
+
+    return authors_string

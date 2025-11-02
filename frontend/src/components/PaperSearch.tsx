@@ -37,7 +37,7 @@ export function PaperSearch() {
 
       try {
         const response = await fetch(
-          `http://167.235.148.241:8000/api/v1/papers/search?q=${encodeURIComponent(query)}&limit=5`
+          `/api/v1/papers/search?q=${encodeURIComponent(query)}&limit=5`
         );
 
         if (!response.ok) {

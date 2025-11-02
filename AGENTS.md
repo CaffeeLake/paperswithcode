@@ -6,6 +6,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 Do not write SUMMARY.md files to summarize code changes. Just implement the code.
 
+Do not write excessive try: except blocks, make sure the code stays simple and easy to read.
+
 Run anything where you need to proceed with further work as a background task in Cursor.
 
 **ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts.** This ensures you use the correct environment variables and virtual environment.

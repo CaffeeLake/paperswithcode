@@ -79,6 +79,7 @@ class BatchURLExtractor:
         )
 
         self.stats = {
+            "papers_found": 0,
             "papers_processed": 0,
             "papers_with_github": 0,
             "papers_with_project_page": 0,
@@ -331,45 +332,121 @@ class BatchURLExtractor:
                 )
                 is_pdf_download_fail = "failed to download pdf" in error_str
                 is_recaptcha = "recaptcha" in error_str or "captcha" in error_str
-                is_api_key_invalid = (
-                    (
-                        "api key" in error_str
-                        and ("invalid" in error_str or "not found" in error_str)
-                    )
-                    or "api_key_invalid" in error_str.lower()
-                    or "invalid_api_key" in error_str.lower()
-                )
 
-                if (
-                    is_rate_limit
-                    or is_quota_exceeded
-                    or is_pdf_download_fail
-                    or is_recaptcha
-                    or is_api_key_invalid
-                ):
-                    # Critical errors - do NOT mark as processed
-                    logger.error(
-                        f"❌ Critical error for {arxiv_id} (will not mark as processed): {e}"
-                    )
-                    self.stats["api_errors"] += 1
-                    self.stats["papers_skipped_critical_errors"] += 1
-                    return {
-                        "paper_id": paper_id,
-                        "arxiv_id": arxiv_id,
-                        "github_url": "",
-                        "project_page_url": "",
-                        "error": str(e),
-                        "success": False,
-                        "should_retry": True,  # Flag for retry
-                    }
+                # Broaden invalid-auth detection to catch more provider messages
+                auth_markers = [
+                    "api key",
+                    "invalid_api_key",
+                    "api_key_invalid",
+                    "expired",
+                    "unauthorized",
+                    "forbidden",
+                    "permission",
+                    "not authenticated",
+                    "unauthenticated",
+                    "invalid authentication",
+                    "key not active",
+                    "insufficient authentication",
+                ]
+                is_api_key_invalid = any(marker in error_str for marker in auth_markers)
+
+                # If Gemini auth failed, try OpenRouter fallback
+                if is_api_key_invalid:
+                    try:
+                        from backend.generators.google_generator import GoogleGenerator
+
+                        if isinstance(self.generator, GoogleGenerator):
+                            logger.warning(
+                                "Gemini authentication failed; attempting OpenRouter fallback"
+                            )
+                            from backend.generators.openrouter_generator import (
+                                OpenRouterGenerator,
+                            )
+
+                            fallback_generator = OpenRouterGenerator()
+                            _, fallback_response = await get_project_github_urls(
+                                arxiv_id=arxiv_id,
+                                session_id=None,
+                                use_reasoning=False,
+                                abstract=abstract,
+                                generator=fallback_generator,
+                            )
+
+                            github_url = (
+                                fallback_response.get("github_url", "")
+                                if fallback_response
+                                else ""
+                            )
+                            project_page_url = (
+                                fallback_response.get("project_page_url", "")
+                                if fallback_response
+                                else ""
+                            )
+                        else:
+                            # Already not using Gemini; treat as critical
+                            raise e
+                    except Exception as fe:
+                        fe_str = str(fe).lower()
+                        is_critical_fallback = (
+                            "rate limit" in fe_str
+                            or "429" in fe_str
+                            or "quota" in fe_str
+                            or "recaptcha" in fe_str
+                            or "captcha" in fe_str
+                            or any(marker in fe_str for marker in auth_markers)
+                        )
+                        if is_critical_fallback:
+                            logger.error(
+                                f"❌ Critical error during OpenRouter fallback for {arxiv_id}: {fe}"
+                            )
+                            self.stats["api_errors"] += 1
+                            self.stats["papers_skipped_critical_errors"] += 1
+                            return {
+                                "paper_id": paper_id,
+                                "arxiv_id": arxiv_id,
+                                "github_url": "",
+                                "project_page_url": "",
+                                "error": str(fe),
+                                "success": False,
+                                "should_retry": True,
+                            }
+                        else:
+                            logger.warning(
+                                f"⚠️  Non-critical error in OpenRouter fallback for {arxiv_id}: {fe}"
+                            )
+                            self.stats["api_errors"] += 1
+                            github_url = ""
+                            project_page_url = ""
                 else:
-                    # Non-critical errors - treat as "no URLs found"
-                    logger.warning(
-                        f"⚠️  Non-critical error for {arxiv_id} (will mark as processed): {e}"
-                    )
-                    self.stats["api_errors"] += 1
-                    github_url = ""
-                    project_page_url = ""
+                    if (
+                        is_rate_limit
+                        or is_quota_exceeded
+                        or is_pdf_download_fail
+                        or is_recaptcha
+                    ):
+                        # Critical errors - do NOT mark as processed
+                        logger.error(
+                            f"❌ Critical error for {arxiv_id} (will not mark as processed): {e}"
+                        )
+                        self.stats["api_errors"] += 1
+                        self.stats["papers_skipped_critical_errors"] += 1
+                        return {
+                            "paper_id": paper_id,
+                            "arxiv_id": arxiv_id,
+                            "github_url": "",
+                            "project_page_url": "",
+                            "error": str(e),
+                            "success": False,
+                            "should_retry": True,  # Flag for retry
+                        }
+                    else:
+                        # Non-critical errors - treat as "no URLs found"
+                        logger.warning(
+                            f"⚠️  Non-critical error for {arxiv_id} (will mark as processed): {e}"
+                        )
+                        self.stats["api_errors"] += 1
+                        github_url = ""
+                        project_page_url = ""
 
             # Save results with appropriate source (only if no critical error)
             source = "ai_extraction"
@@ -531,6 +608,7 @@ class BatchURLExtractor:
         try:
             # Get papers that need processing
             papers = self.get_papers_missing_urls(db, limit)
+            self.stats["papers_found"] = len(papers)
             logger.info(f"📄 Found {len(papers)} papers needing URL extraction")
 
             if not papers:

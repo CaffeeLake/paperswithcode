@@ -19,9 +19,12 @@ from backend.models.api import (
     DatasetMetricLink,
 )
 from backend.services.dataset_service import DatasetService
-from backend.services.dataset_metric_service import DatasetMetricService
+from backend.services.leaderboard_metric_service import LeaderboardMetricService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import DatabaseError
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -285,35 +288,38 @@ async def create_dataset(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-# Dataset-Metric Management Endpoints
+# Leaderboard-Metric Management Endpoints (New: task-dataset-metric triples)
 
 
-@router.get("/{dataset_id}/metrics", response_model=DatasetMetrics)
-async def get_dataset_metrics(
+@router.get("/{dataset_id}/tasks/{task_id}/metrics", response_model=dict)
+async def get_leaderboard_metrics(
     dataset_id: str,
+    task_id: str,
     db: Session = Depends(get_database_session),
 ):
     """
-    Get all allowed metrics for a dataset.
+    Get all allowed metrics for a specific leaderboard (task + dataset).
 
-    Returns the list of metrics that are valid for evaluation submissions
-    on this dataset. These metrics are enforced when creating or updating evaluations.
+    Leaderboards are now defined by (task, dataset, metric) triples. This endpoint
+    returns the list of metrics that are valid for evaluation submissions on this
+    specific leaderboard.
 
     **Example:**
-    - `/api/v1/datasets/6/metrics` - Get allowed metrics for dataset 6
+    - `/api/v1/datasets/6/tasks/12/metrics` - Get allowed metrics for Object Detection on COCO
 
     **Returns:**
     ```json
     {
+        "task_id": "12",
         "dataset_id": "6",
+        "task_name": "Object Detection",
         "dataset_name": "COCO",
         "metrics": [
             {
-                "dataset_id": "6",
                 "metric_id": "1",
                 "metric_name": "AP",
                 "metric_direction": "higher_is_better",
-                "created_at": "2025-10-24T12:00:00Z"
+                "created_at": "2025-11-01T12:00:00Z"
             },
             ...
         ]
@@ -321,16 +327,17 @@ async def get_dataset_metrics(
     ```
     """
     try:
-        # Parse dataset_id
+        # Parse IDs
         try:
             dataset_id_int = int(dataset_id)
+            task_id_int = int(task_id)
         except ValueError:
             raise HTTPException(
-                status_code=400, detail="Invalid dataset ID. Must be an integer."
+                status_code=400, detail="Invalid dataset or task ID. Must be integers."
             )
 
-        service = DatasetMetricService(db)
-        return service.get_dataset_metrics(dataset_id_int)
+        service = LeaderboardMetricService(db)
+        return service.get_leaderboard_metrics(task_id_int, dataset_id_int)
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -340,21 +347,24 @@ async def get_dataset_metrics(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/{dataset_id}/metrics", response_model=DatasetMetricLink, status_code=201)
-async def add_metric_to_dataset(
+@router.post(
+    "/{dataset_id}/tasks/{task_id}/metrics", response_model=dict, status_code=201
+)
+async def add_metric_to_leaderboard(
     dataset_id: str,
+    task_id: str,
     request: DatasetMetricAddRequest,
     db: Session = Depends(get_database_session),
 ):
     """
-    Add a metric to a dataset's allowed metrics list.
+    Add a metric to a leaderboard's allowed metrics list.
 
-    Links a metric to a dataset, allowing evaluations to use this metric
-    when submitting results for this dataset.
+    Links a metric to a specific leaderboard (task + dataset), allowing evaluations
+    to use this metric when submitting results for this leaderboard.
 
     **Example:**
     ```
-    POST /api/v1/datasets/6/metrics
+    POST /api/v1/datasets/6/tasks/12/metrics
     {
         "metric_name": "AP50"
     }
@@ -362,20 +372,23 @@ async def add_metric_to_dataset(
 
     **Returns:**
     - 201 status with the created link
-    - 400 if dataset or metric not found
-    - 409 if metric is already linked to dataset
+    - 400 if task, dataset, or metric not found
+    - 409 if metric is already linked to this leaderboard
     """
     try:
-        # Parse dataset_id
+        # Parse IDs
         try:
             dataset_id_int = int(dataset_id)
+            task_id_int = int(task_id)
         except ValueError:
             raise HTTPException(
-                status_code=400, detail="Invalid dataset ID. Must be an integer."
+                status_code=400, detail="Invalid dataset or task ID. Must be integers."
             )
 
-        service = DatasetMetricService(db)
-        return service.add_metric_to_dataset(dataset_id_int, request.metric_name)
+        service = LeaderboardMetricService(db)
+        return service.add_metric_to_leaderboard(
+            task_id_int, dataset_id_int, request.metric_name
+        )
 
     except ValueError as e:
         if "already linked" in str(e):
@@ -388,41 +401,45 @@ async def add_metric_to_dataset(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.put("/{dataset_id}/metrics", response_model=DatasetMetrics)
-async def set_dataset_metrics(
+@router.put("/{dataset_id}/tasks/{task_id}/metrics", response_model=dict)
+async def set_leaderboard_metrics(
     dataset_id: str,
+    task_id: str,
     request: DatasetMetricSetRequest,
     db: Session = Depends(get_database_session),
 ):
     """
-    Set all allowed metrics for a dataset (replaces existing).
+    Set all allowed metrics for a leaderboard (replaces existing).
 
-    Replaces all existing metric links with the provided list. This is useful
-    for bulk configuration of dataset metrics.
+    Replaces all existing metric links for this specific leaderboard with the
+    provided list. This is useful for bulk configuration of leaderboard metrics.
 
     **Example:**
     ```
-    PUT /api/v1/datasets/6/metrics
+    PUT /api/v1/datasets/6/tasks/12/metrics
     {
         "metric_names": ["AP", "AP50", "AP75", "APs", "APm", "APl"]
     }
     ```
 
     **Returns:**
-    - Updated DatasetMetrics object
-    - 404 if dataset or any metric not found
+    - Updated leaderboard metrics object
+    - 404 if task, dataset, or any metric not found
     """
     try:
-        # Parse dataset_id
+        # Parse IDs
         try:
             dataset_id_int = int(dataset_id)
+            task_id_int = int(task_id)
         except ValueError:
             raise HTTPException(
-                status_code=400, detail="Invalid dataset ID. Must be an integer."
+                status_code=400, detail="Invalid dataset or task ID. Must be integers."
             )
 
-        service = DatasetMetricService(db)
-        return service.set_dataset_metrics(dataset_id_int, request.metric_names)
+        service = LeaderboardMetricService(db)
+        return service.set_leaderboard_metrics(
+            task_id_int, dataset_id_int, request.metric_names
+        )
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -432,25 +449,75 @@ async def set_dataset_metrics(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.delete("/{dataset_id}/metrics/{metric_name}", status_code=204)
-async def remove_metric_from_dataset(
+@router.delete("/{dataset_id}/tasks/{task_id}/metrics/{metric_name}", status_code=204)
+async def remove_metric_from_leaderboard(
     dataset_id: str,
+    task_id: str,
     metric_name: str,
     db: Session = Depends(get_database_session),
 ):
     """
-    Remove a metric from a dataset's allowed metrics list.
+    Remove a metric from a leaderboard's allowed metrics list.
 
-    Unlinks a metric from a dataset. After removal, evaluations can no longer
-    use this metric when submitting results for this dataset.
+    Unlinks a metric from a specific leaderboard. After removal, evaluations can
+    no longer use this metric when submitting results for this leaderboard.
 
     **Example:**
-    - `DELETE /api/v1/datasets/6/metrics/AP50` - Remove AP50 from dataset 6
+    - `DELETE /api/v1/datasets/6/tasks/12/metrics/AP50` - Remove AP50 from Object Detection on COCO
 
     **Returns:**
     - 204 No Content on success
-    - 404 if dataset, metric, or link not found
+    - 404 if task, dataset, metric, or link not found
     """
+    try:
+        # Parse IDs
+        try:
+            dataset_id_int = int(dataset_id)
+            task_id_int = int(task_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid dataset or task ID. Must be integers."
+            )
+
+        service = LeaderboardMetricService(db)
+        service.remove_metric_from_leaderboard(task_id_int, dataset_id_int, metric_name)
+        return None
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# DEPRECATED: Old dataset-level metric endpoints (backward compatibility)
+# These endpoints apply operations to all tasks linked to the dataset
+# Use the new /datasets/{id}/tasks/{task_id}/metrics endpoints instead
+
+
+@router.get("/{dataset_id}/metrics", response_model=DatasetMetrics, deprecated=True)
+async def get_dataset_metrics_deprecated(
+    dataset_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    DEPRECATED: Get all allowed metrics for a dataset (across all tasks).
+
+    **This endpoint is deprecated.** Use `/datasets/{dataset_id}/tasks/{task_id}/metrics` instead.
+
+    Leaderboards are now defined by (task, dataset, metric) triples. This endpoint
+    returns metrics across all tasks for backward compatibility, but may not reflect
+    the actual leaderboard configuration.
+
+    **Migration:** Update your code to use task-specific endpoints:
+    - `/api/v1/datasets/6/tasks/12/metrics` for Object Detection on COCO
+    """
+    logger.warning(
+        f"DEPRECATED endpoint called: GET /datasets/{dataset_id}/metrics. "
+        "Use /datasets/{dataset_id}/tasks/{{task_id}}/metrics instead."
+    )
+
     try:
         # Parse dataset_id
         try:
@@ -460,10 +527,65 @@ async def remove_metric_from_dataset(
                 status_code=400, detail="Invalid dataset ID. Must be an integer."
             )
 
-        service = DatasetMetricService(db)
-        service.remove_metric_from_dataset(dataset_id_int, metric_name)
-        return None
+        # Get all tasks linked to this dataset
+        from backend.models.database import TaskDataset
 
+        task_ids = (
+            db.query(TaskDataset.task_id)
+            .filter(TaskDataset.dataset_id == dataset_id_int)
+            .distinct()
+            .all()
+        )
+
+        if not task_ids:
+            # No tasks linked, return empty metrics
+            from backend.models.database import Dataset as DBDataset
+
+            dataset = db.query(DBDataset).filter(DBDataset.id == dataset_id_int).first()
+            if not dataset:
+                raise HTTPException(status_code=404, detail="Dataset not found")
+
+            return DatasetMetrics(
+                dataset_id=str(dataset_id_int),
+                dataset_name=dataset.name,
+                metrics=[],
+            )
+
+        # Get metrics from all task-dataset pairs
+        service = LeaderboardMetricService(db)
+        all_metrics = {}
+
+        for (task_id,) in task_ids:
+            leaderboard_metrics = service.get_leaderboard_metrics(
+                task_id, dataset_id_int
+            )
+            for metric in leaderboard_metrics["metrics"]:
+                metric_name = metric["metric_name"]
+                if metric_name not in all_metrics:
+                    all_metrics[metric_name] = metric
+
+        # Convert to old format
+        from backend.models.database import Dataset as DBDataset
+
+        dataset = db.query(DBDataset).filter(DBDataset.id == dataset_id_int).first()
+
+        return DatasetMetrics(
+            dataset_id=str(dataset_id_int),
+            dataset_name=dataset.name if dataset else "Unknown",
+            metrics=[
+                DatasetMetricLink(
+                    dataset_id=str(dataset_id_int),
+                    metric_id=m["metric_id"],
+                    metric_name=m["metric_name"],
+                    metric_direction=m["metric_direction"],
+                    created_at=m["created_at"],
+                )
+                for m in all_metrics.values()
+            ],
+        )
+
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

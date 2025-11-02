@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
     openrouter_api_key: str = Field(default="", description="OpenRouter API key")
     openai_api_key: str = Field(default="", description="OpenAI API key")
+    datalab_api_key: str = Field(default="", description="Datalab API key")
 
     # Admin API configuration
     admin_api_token: str = Field(
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ["keys.env", ".env"]  # Load from keys.env first, then .env
+        env_file = ["keys.env"]
         env_prefix = "PWC_"
 
     @property
