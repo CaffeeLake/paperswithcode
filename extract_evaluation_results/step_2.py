@@ -199,8 +199,22 @@ async def find_dataset(
         if filters:
             query = query.filter(and_(*filters))
 
-        # Execute query
-        db_dataset = query.first()
+        # Prioritize exact matches and base datasets (no parent)
+        # First try exact name match (case-insensitive)
+        if dataset_name:
+            exact_match = query.filter(DBDataset.name.ilike(dataset_name)).first()
+            if exact_match:
+                db_dataset = exact_match
+            else:
+                # Try to prioritize base datasets (no parent_dataset_id) and shorter names
+                # Order by: parent_dataset_id NULL first (base datasets), then by name alphabetically
+                db_dataset = query.order_by(
+                    DBDataset.parent_dataset_id.asc().nullsfirst(),
+                    DBDataset.name.asc(),
+                ).first()
+        else:
+            # Execute query without name priority
+            db_dataset = query.first()
 
         if not db_dataset:
             session.close()
@@ -404,7 +418,7 @@ async def main():
         print("No dataset details found in step_1 output")
         return "No dataset details found"
 
-    first_dataset = dataset_details[0]  # Fix: use [0] instead of [1]
+    first_dataset = dataset_details[0]
     print(f"Checking first dataset: {first_dataset}")
 
     # Paper details

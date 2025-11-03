@@ -4,7 +4,8 @@ Main script that orchestrates the evaluation result extraction pipeline.
 This script:
 1. Runs step_1 to extract evaluation results from a paper PDF
 2. Runs step_2 for each dataset mentioned in the results to find whether it is already in the database or not (in parallel)
-3. Optionally runs step_5 to align evaluation results with database IDs and add them to the database
+3. Runs step_3 for datasets not found in step_2 to gather additional information from the web and Hugging Face
+4. Optionally runs step_5 to align evaluation results with database IDs and add them to the database
 
 You can run it like so:
 
@@ -12,7 +13,7 @@ You can run it like so:
 # Run all steps (including step 5)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545
 
-# Run only steps 1 and 2 (skip step 5)
+# Run only steps 1, 2, and 3 (skip step 5)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-step-5
 ```
 
@@ -33,6 +34,7 @@ from backend.services.dataset_service import DatasetService
 
 from extract_evaluation_results.step_1 import step_1
 from extract_evaluation_results.step_2 import step_2, get_paper_details
+from extract_evaluation_results.step_3 import step_3
 # step_5 imported conditionally in run_step_5() to avoid import errors when skipping step 5
 
 logging.basicConfig(level=logging.INFO)
@@ -240,6 +242,58 @@ def align_evaluation_results(
     return aligned_results, ""
 
 
+async def step_3_with_retry(
+    dataset_detail: dict,
+    arxiv_id: str,
+    paper_title: Optional[str],
+    semaphore: asyncio.Semaphore,
+) -> tuple[dict, Union[Optional[dict], Exception]]:
+    """Run step_3 with rate limiting and retry logic."""
+    async with semaphore:
+        dataset_name = dataset_detail.get("dataset_name", "Unknown")
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(
+                    f"Gathering info for dataset '{dataset_name}' (attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+                result = await step_3(
+                    dataset_name=dataset_detail.get("dataset_name"),
+                    arxiv_id=dataset_detail.get("paper_arxiv_id") or arxiv_id,
+                    hf_url=None,
+                    dataset_info=dataset_detail.get("dataset_info"),
+                    paper_title=paper_title,
+                )
+                return (dataset_detail, result)
+
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = (
+                    "429" in error_str
+                    or "rate_limit" in error_str.lower()
+                    or "Rate limit" in error_str
+                )
+
+                if is_rate_limit and attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_BASE_DELAY * (2**attempt)
+                    wait_match = re.search(r"Please try again in ([\d.]+)s", error_str)
+                    if wait_match:
+                        wait_time = float(wait_match.group(1)) + 1.0
+
+                    logger.warning(
+                        f"Rate limit hit for dataset '{dataset_name}'. Retrying in {wait_time:.1f}s"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(
+                        f"Error gathering info for dataset '{dataset_name}': {error_str}"
+                    )
+                    return (dataset_detail, e)
+
+        return (dataset_detail, Exception(f"Failed after {MAX_RETRIES} attempts"))
+
+
 async def run_step_5(
     arxiv_id: str, evaluation_results: list, step_2_results: list
 ) -> tuple[list, Optional[str], Optional[str]]:
@@ -393,6 +447,96 @@ async def run_pipeline(arxiv_id: str, skip_step_5: bool = False) -> dict:
     logger.info("Pipeline completed successfully")
     logger.info("=" * 60)
 
+    # Step 3: Gather information for datasets not found in database
+    step_3_results = []
+    datasets_not_found = []
+
+    for step_2_result in results:
+        if step_2_result.get("success") and step_2_result.get("result"):
+            result_text = str(step_2_result["result"])
+            if "Dataset not found" in result_text:
+                datasets_not_found.append(step_2_result["dataset"])
+
+    if datasets_not_found:
+        logger.info("=" * 60)
+        logger.info(
+            f"STEP 3: Gathering information for {len(datasets_not_found)} datasets not found in database"
+        )
+        logger.info("=" * 60)
+
+        # Get paper title for context
+        paper_title = None
+        try:
+            paper_details = await get_paper_details(arxiv_id)
+            # Extract title from paper_details if available
+            if paper_details:
+                # Try to parse JSON if it's JSON
+                try:
+                    paper_data = json.loads(paper_details)
+                    paper_title = paper_data.get("title")
+                except json.JSONDecodeError:
+                    # If not JSON, try to extract title from text
+                    title_match = re.search(
+                        r"Title:\s*(.+?)(?:\n|$)", paper_details, re.IGNORECASE
+                    )
+                    if title_match:
+                        paper_title = title_match.group(1).strip()
+        except Exception as e:
+            logger.warning(f"Could not get paper title: {e}")
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        step_3_tasks = []
+
+        for idx, dataset_detail in enumerate(datasets_not_found):
+            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+            logger.info(
+                f"Queuing step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
+            )
+
+            task = step_3_with_retry(
+                dataset_detail=dataset_detail,
+                arxiv_id=arxiv_id,
+                paper_title=paper_title,
+                semaphore=semaphore,
+            )
+            step_3_tasks.append(task)
+
+            if idx < len(datasets_not_found) - 1:
+                await asyncio.sleep(DELAY_BETWEEN_STARTS)
+
+        logger.info(f"Running {len(step_3_tasks)} step_3 tasks with rate limiting...")
+        step_3_raw_results = await asyncio.gather(
+            *step_3_tasks, return_exceptions=False
+        )
+
+        # Process step_3 results
+        for idx, (dataset_detail, result) in enumerate(step_3_raw_results):
+            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+
+            if isinstance(result, Exception):
+                logger.error(f"Error in step_3 for dataset {dataset_name}: {result}")
+                step_3_results.append(
+                    {
+                        "dataset": dataset_detail,
+                        "success": False,
+                        "error": str(result),
+                        "result": None,
+                    }
+                )
+            else:
+                logger.info(
+                    f"✓ Completed step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
+                )
+                step_3_results.append(
+                    {
+                        "dataset": dataset_detail,
+                        "success": result is not None,
+                        "result": result.model_dump() if result else None,
+                    }
+                )
+    else:
+        logger.info("STEP 3: Skipped (all datasets found in database)")
+
     # Step 5: Add to database (optional)
     aligned_results = []
     step_5_result = None
@@ -407,6 +551,7 @@ async def run_pipeline(arxiv_id: str, skip_step_5: bool = False) -> dict:
         "success": True,
         "step_1_response": step_1_data,
         "step_2_results": results,
+        "step_3_results": step_3_results,
         "aligned_results": aligned_results,
         "step_5_result": step_5_result,
         "step_5_error": step_5_error,
@@ -463,6 +608,56 @@ def print_summary(result: dict):
                     print("      → Status: NOT found in database")
             elif not step_2_result.get("success"):
                 print(f"      → Error: {step_2_result.get('error', 'Unknown error')}")
+
+    # Step 3 results
+    if result.get("step_3_results"):
+        step_3_results = result["step_3_results"]
+        successful = sum(1 for r in step_3_results if r.get("success"))
+        failed = len(step_3_results) - successful
+
+        print("\nStep 3 Results:")
+        print(f"  - Successfully processed: {successful}")
+        print(f"  - Failed: {failed}")
+
+        for idx, step_3_result in enumerate(step_3_results):
+            dataset_name = step_3_result["dataset"].get(
+                "dataset_name", f"Dataset_{idx}"
+            )
+            status = "✓" if step_3_result.get("success") else "✗"
+            print(f"    {status} {dataset_name}")
+
+            if step_3_result.get("success") and step_3_result.get("result"):
+                dataset_info = step_3_result["result"]
+                print("      → Status: Information gathered")
+                if dataset_info.get("full_name"):
+                    print(f"         Full Name: {dataset_info.get('full_name')}")
+                if dataset_info.get("description"):
+                    desc = dataset_info.get("description")
+                    if len(desc) > 100:
+                        desc = desc[:100] + "..."
+                    print(f"         Description: {desc}")
+                if dataset_info.get("hf_url"):
+                    print(f"         HF URL: {dataset_info.get('hf_url')}")
+                if dataset_info.get("arxiv_id"):
+                    print(f"         ArXiv ID: {dataset_info.get('arxiv_id')}")
+                if dataset_info.get("conference_url"):
+                    print(
+                        f"         Conference URL: {dataset_info.get('conference_url')}"
+                    )
+            elif not step_3_result.get("success"):
+                print(f"      → Error: {step_3_result.get('error', 'Unknown error')}")
+    elif result.get("step_2_results"):
+        # Check if any datasets were not found
+        datasets_not_found = sum(
+            1
+            for r in result["step_2_results"]
+            if r.get("success")
+            and r.get("result")
+            and "Dataset not found" in str(r.get("result"))
+        )
+        if datasets_not_found == 0:
+            print("\nStep 3 Results:")
+            print("  - Skipped (all datasets found in database)")
 
     # Step 5 results
     if result.get("aligned_results"):

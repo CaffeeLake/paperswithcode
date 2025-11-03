@@ -52,7 +52,7 @@ within the field of machine learning and artificial intelligence (AI), greatly i
 ## Task
 
 You are an expert in managing evaluation results in a SQL database.
-A colleague of yours has extracted evaluation results from a paper and identified the datasets, tasks, and metrics.
+A colleague of yours has extracted evaluation results from a paper and identified the datasets, tasks, and metrics from leaderboard tables.
 Your responsibility includes adding these evaluation results to the database.
 
 ## CRITICAL: Understanding Leaderboards as Triples
@@ -92,7 +92,7 @@ Each evaluation result belongs to a specific leaderboard triple via the `best_me
    - paper_id (int): The ID of the paper
    - task_id (int): The ID of the task
    - dataset_id (int): The ID of the dataset
-   - metrics (dict): Dictionary of metric names to values (e.g., {"AP": "44.9", "AP50": "64.7"})
+   - metrics (str): JSON string with dictionary of metric names to values (e.g., '{"AP": "44.9", "AP50": "64.7"}')
    - best_metric (str): The name of the best performing metric (must be in the metrics dict)
 
 5. **Optional Fields**:
@@ -118,7 +118,7 @@ When successfully adding an evaluation, return a JSON string with the evaluation
   "task_id": 2,
   "dataset_id": 72,
   "model_name": "DETR",
-  "metrics": {"AP": "44.9", "AP50": "64.7"},
+  "metrics": "{\"AP\": \"44.9\", \"AP50\": \"64.7\"}",
   "best_metric": "AP",
   "best_rank": 1
 }
@@ -187,7 +187,7 @@ async def add_evaluation_result(
     paper_id: int,
     task_id: int,
     dataset_id: int,
-    metrics: dict,
+    metrics: str,
     best_metric: str,
     model_name: Optional[str] = None,
     methodology: Optional[str] = None,
@@ -204,7 +204,7 @@ async def add_evaluation_result(
         paper_id: The ID of the paper that produced this evaluation
         task_id: The ID of the task being evaluated
         dataset_id: The ID of the dataset used for evaluation
-        metrics: Dictionary of metric names to values (e.g., {"AP": "44.9", "AP50": "64.7"})
+        metrics: JSON string with dictionary of metric names to values (e.g., '{"AP": "44.9", "AP50": "64.7"}')
         best_metric: The name of the best performing metric (must be in the metrics dict)
         model_name: Name of the model/method (optional)
         methodology: Description of the methodology (optional)
@@ -215,10 +215,16 @@ async def add_evaluation_result(
     Returns:
         A success message with evaluation details, or an error message if creation failed.
     """
+    # Parse metrics JSON string
+    try:
+        metrics_dict = json.loads(metrics)
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON format for metrics parameter: {str(e)}"
+
     # Log tool call for debugging
     print(
         f"[TOOL CALL] add_evaluation_result(paper_id={paper_id}, task_id={task_id}, "
-        f"dataset_id={dataset_id}, metrics={metrics}, best_metric={best_metric}, "
+        f"dataset_id={dataset_id}, metrics={metrics_dict}, best_metric={best_metric}, "
         f"model_name={model_name})"
     )
 
@@ -233,7 +239,7 @@ async def add_evaluation_result(
 
         # 2. Validate and normalize best_metric
         # First, check if best_metric is in the metrics dict
-        metric_keys = list(metrics.keys())
+        metric_keys = list(metrics_dict.keys())
         best_metric_lower = best_metric.lower()
 
         # Find matching metric in database (case-insensitive)
@@ -282,7 +288,7 @@ async def add_evaluation_result(
             )
 
         # 4. Validate all metrics exist in database
-        metric_names_to_check = list(metrics.keys())
+        metric_names_to_check = list(metrics_dict.keys())
         invalid_metrics = []
         for metric_name in metric_names_to_check:
             metric_check = (
@@ -300,7 +306,7 @@ async def add_evaluation_result(
 
         # 5. Normalize metric names in the metrics dict to canonical form
         normalized_metrics = {}
-        for metric_key, metric_value in metrics.items():
+        for metric_key, metric_value in metrics_dict.items():
             metric_def = (
                 session.query(DBMetric).filter(DBMetric.name.ilike(metric_key)).first()
             )
@@ -402,6 +408,9 @@ Please add these evaluation results to the database. For each evaluation result:
 2. Validate that all metrics exist in the database
 3. Ensure best_metric is valid and in the metrics dictionary
 4. Add the evaluation result using the add_evaluation_result tool
+
+**IMPORTANT**: When calling add_evaluation_result, convert the metrics dictionary to a JSON string.
+For example, if metrics is {{"AP": "44.9", "AP50": "64.7"}}, pass it as '{{"AP": "44.9", "AP50": "64.7"}}'.
 
 If any evaluation result cannot be added, provide a clear error message explaining why.
 """
