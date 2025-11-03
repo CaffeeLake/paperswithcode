@@ -38,7 +38,7 @@ datalab_client = AsyncDatalabClient(api_key=DATALAB_API_KEY)
 
 instructions_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
-within the field of machine learning and artificial intelligence (AI).
+within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
 
 You are an expert in extracting evaluation results from AI research papers in order to be added to leaderboards.
 
@@ -137,6 +137,7 @@ class EvaluationResult(BaseModel):
 
 class DatasetDetail(BaseModel):
     dataset_name: str
+    dataset_info: str # What you know about this dataset - do not make up information, only use the information provided in the paper
     paper_title: Optional[str] = None # The title of the paper that introduces the dataset (cited in the paper)
     paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
 

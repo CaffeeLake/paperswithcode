@@ -31,7 +31,7 @@ from agents.mcp import MCPServerStdio
 
 dataset_finder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
-within the field of machine learning and artificial intelligence (AI).
+within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
 
 ## Task
 
@@ -91,20 +91,25 @@ Only return "Dataset not found" after you have exhausted ALL possible search str
 
 ## Output Format
 
-Return the dataset details as follows:
-
-```python
-from pydantic import BaseModel
-
-class DatasetDetails(BaseModel):
-    name: str
-    description: str
-    slug: str
-    hf_url: Optional[str] = None
-    arxiv_id: Optional[str] = None
+If the dataset is found in the database, return a JSON string with the dataset information:
+```json
+{
+  "found": true,
+  "id": 72,
+  "name": "ImageNet-1k",
+  "slug": "imagenet-1k",
+  "description": "Dataset description...",
+  "hf_url": "https://huggingface.co/datasets/...",
+  "paper_url": "https://arxiv.org/abs/..."
+}
 ```
 
-Return the dataset details as a JSON string.
+If the dataset is NOT found, return simply:
+```
+Dataset not found
+```
+
+**IMPORTANT**: Extract the dataset information from the find_dataset tool results. When the tool returns "Found dataset: ID=X, Name=Y, Slug=Z...", parse that information and return it as JSON. Do NOT return code blocks or model definitions - only return the JSON data or "Dataset not found".
 """
 
 
@@ -323,10 +328,11 @@ Find the dataset details for the following dataset mentioned in the evaluation r
 {json.dumps(dataset_detail, indent=2)}
 """
 
-    # Set up web search via Exa AI MCP server (optional)
+    # Set up web search via Exa AI MCP server and Hugging Face MCP server (optional)
     exa_api_key = os.getenv("EXA_API_KEY")
     if use_web_search and exa_api_key:
         try:
+            # Set up Exa AI MCP server for web search
             async with MCPServerStdio(
                 name="Exa AI MCP Server",
                 params={
@@ -337,15 +343,28 @@ Find the dataset details for the following dataset mentioned in the evaluation r
                     },
                 },
                 client_session_timeout_seconds=10,
-            ) as server:
-                dataset_finder_agent = await create_dataset_finder_agent(
-                    mcp_servers=[server]
-                )
-                # Run the dataset finder agent
-                result = await Runner.run(dataset_finder_agent, prompt)
-                return result.final_output
+            ) as exa_server:
+                # Set up Hugging Face MCP server
+                async with MCPServerStdio(
+                    name="Hugging Face MCP Server",
+                    params={
+                        "command": "npx",
+                        "args": [
+                            "-y",
+                            "mcp-remote",
+                            "https://huggingface.co/mcp?login",
+                        ],
+                    },
+                    client_session_timeout_seconds=10,
+                ) as hf_server:
+                    dataset_finder_agent = await create_dataset_finder_agent(
+                        mcp_servers=[exa_server, hf_server]
+                    )
+                    # Run the dataset finder agent
+                    result = await Runner.run(dataset_finder_agent, prompt)
+                    return result.final_output
         except Exception as e:
-            print(f"Warning: Could not set up Exa AI MCP server for web search: {e}")
+            print(f"Warning: Could not set up MCP servers for web search: {e}")
             print("Continuing without web search capability...")
 
     # Run without web search

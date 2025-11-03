@@ -22,6 +22,8 @@ from backend.models.api import (
     ProjectPages,
     PaperProjectPage,
     ProjectPageWithPapers,
+    ProjectPageCreateRequest,
+    ProjectPageUpdateRequest,
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -504,3 +506,142 @@ class ProjectPageService:
             raise PaperNotFoundError(f"Invalid paper ID: {paper_id}")
         except Exception as e:
             raise DatabaseError(f"Failed to create project page for paper: {str(e)}")
+
+    def create_project_page(self, request: ProjectPageCreateRequest) -> ProjectPage:
+        """
+        Create a new project page.
+
+        Args:
+            request: ProjectPageCreateRequest with url, is_official, source
+
+        Returns:
+            Created ProjectPage object
+
+        Raises:
+            ValueError: If URL already exists
+            DatabaseError: On database errors
+        """
+        try:
+            # Check if URL already exists
+            existing = (
+                self.db.query(DBProjectPage)
+                .filter(DBProjectPage.url == request.url)
+                .first()
+            )
+            if existing:
+                raise ValueError(
+                    f"Project page with URL '{request.url}' already exists"
+                )
+
+            # Create new project page
+            new_page = DBProjectPage(
+                url=request.url,
+                is_official=request.is_official,
+                source=request.source,
+            )
+
+            self.db.add(new_page)
+            self.db.commit()
+            self.db.refresh(new_page)
+
+            return self._db_project_page_to_api(new_page)
+
+        except ValueError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to create project page: {str(e)}")
+
+    def update_project_page(
+        self, page_id: str, request: ProjectPageUpdateRequest
+    ) -> ProjectPage:
+        """
+        Update an existing project page.
+
+        Args:
+            page_id: Project page ID
+            request: ProjectPageUpdateRequest with optional fields to update
+
+        Returns:
+            Updated ProjectPage object
+
+        Raises:
+            PaperNotFoundError: If project page not found
+            DatabaseError: On database errors
+        """
+        try:
+            project_page = (
+                self.db.query(DBProjectPage)
+                .filter(DBProjectPage.id == int(page_id))
+                .first()
+            )
+
+            if not project_page:
+                raise PaperNotFoundError(f"Project page with ID {page_id} not found")
+
+            # Update fields if provided
+            if request.url is not None:
+                # Check if new URL already exists for a different project page
+                existing = (
+                    self.db.query(DBProjectPage)
+                    .filter(
+                        DBProjectPage.url == request.url,
+                        DBProjectPage.id != int(page_id),
+                    )
+                    .first()
+                )
+                if existing:
+                    raise ValueError(
+                        f"Project page with URL '{request.url}' already exists"
+                    )
+                project_page.url = request.url
+
+            if request.is_official is not None:
+                project_page.is_official = request.is_official
+
+            if request.source is not None:
+                project_page.source = request.source
+
+            self.db.commit()
+            self.db.refresh(project_page)
+
+            return self._db_project_page_to_api(project_page)
+
+        except ValueError:
+            raise
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to update project page: {str(e)}")
+
+    def delete_project_page(self, page_id: str) -> None:
+        """
+        Delete a project page and all its associations.
+
+        Args:
+            page_id: Project page ID
+
+        Raises:
+            PaperNotFoundError: If project page not found
+            DatabaseError: On database errors
+        """
+        try:
+            project_page = (
+                self.db.query(DBProjectPage)
+                .filter(DBProjectPage.id == int(page_id))
+                .first()
+            )
+
+            if not project_page:
+                raise PaperNotFoundError(f"Project page with ID {page_id} not found")
+
+            # Delete the project page (cascade will handle junction table)
+            self.db.delete(project_page)
+            self.db.commit()
+
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to delete project page: {str(e)}")

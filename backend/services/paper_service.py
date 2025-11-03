@@ -1576,3 +1576,88 @@ class PaperService:
             if isinstance(e, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper repositories: {str(e)}")
+
+    def update_paper_project_pages(
+        self, paper_id: int, project_pages: List[Dict[str, Any]]
+    ) -> Paper:
+        """
+        Update the project pages associated with a paper.
+
+        Creates project pages if they don't exist, and establishes the paper-project page
+        associations.
+
+        Args:
+            paper_id: Database paper ID
+            project_pages: List of dicts with 'url' and 'is_official' keys
+
+        Returns:
+            Updated Paper object
+
+        Raises:
+            PaperNotFoundError: If paper is not found
+            DatabaseError: If update fails
+        """
+        try:
+            from backend.models.database import (
+                ProjectPage as DBProjectPage,
+                PaperProjectPage as DBPaperProjectPage,
+            )
+
+            # Verify paper exists
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            # Delete existing paper_project_pages associations
+            self.db.query(DBPaperProjectPage).filter(
+                DBPaperProjectPage.paper_id == paper_id
+            ).delete()
+
+            # Process each project page URL
+            for page_data in project_pages:
+                url = page_data.get("url", "").strip()
+                is_official = page_data.get("is_official", False)
+
+                if not url:
+                    continue
+
+                # Check if project page already exists
+                existing_page = (
+                    self.db.query(DBProjectPage)
+                    .filter(DBProjectPage.url == url)
+                    .first()
+                )
+
+                if existing_page:
+                    # Use existing project page, update is_official if needed
+                    if is_official and not existing_page.is_official:
+                        existing_page.is_official = True
+                    project_page_id = existing_page.id
+                else:
+                    # Create new project page
+                    new_page = DBProjectPage(
+                        url=url,
+                        is_official=is_official,
+                        source="manual",  # Marked as manually added by admin
+                    )
+                    self.db.add(new_page)
+                    self.db.flush()  # Get the ID without committing
+                    project_page_id = new_page.id
+
+                # Create paper-project page association
+                paper_project_page = DBPaperProjectPage(
+                    paper_id=paper_id,
+                    project_page_id=project_page_id,
+                )
+                self.db.add(paper_project_page)
+
+            self.db.commit()
+
+            # Return updated paper
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper project pages: {str(e)}")

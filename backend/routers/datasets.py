@@ -506,12 +506,14 @@ async def get_dataset_metrics_deprecated(
 
     **This endpoint is deprecated.** Use `/datasets/{dataset_id}/tasks/{task_id}/metrics` instead.
 
-    Leaderboards are now defined by (task, dataset, metric) triples. This endpoint
-    returns metrics across all tasks for backward compatibility, but may not reflect
-    the actual leaderboard configuration.
+    Leaderboards are now defined by (task, dataset, metric) triples in the `task_dataset_metrics` table.
+    This endpoint returns metrics across all tasks for backward compatibility by aggregating from
+    the `dataset_metrics_compat` view, which projects triples into dataset→metric pairs.
 
     **Migration:** Update your code to use task-specific endpoints:
     - `/api/v1/datasets/6/tasks/12/metrics` for Object Detection on COCO
+
+    **Note:** This aggregation may not reflect the actual leaderboard configuration for specific tasks.
     """
     logger.warning(
         f"DEPRECATED endpoint called: GET /datasets/{dataset_id}/metrics. "

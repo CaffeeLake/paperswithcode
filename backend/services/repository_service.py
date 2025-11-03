@@ -24,6 +24,8 @@ from backend.models.api import (
     Repository,
     Repositories,
     PaperRepository,
+    RepositoryStarHistory,
+    RepositoryStarHistoryList,
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -968,40 +970,80 @@ class RepositoryService:
             raise DatabaseError(f"Error updating trending score: {str(e)}")
 
     def get_repository_star_history(
-        self, repository_id: int, hours_lookback: int = 168
-    ) -> List[Dict[str, Any]]:
+        self,
+        repository_id: str,
+        limit: Optional[int] = None,
+        since: Optional[datetime] = None,
+        hours_lookback: Optional[int] = None,
+    ) -> RepositoryStarHistoryList:
         """
         Get star count history for a repository.
 
         Args:
             repository_id: Repository ID
-            hours_lookback: Number of hours to look back (default 168 = 7 days)
+            limit: Maximum number of snapshots to return
+            since: Return snapshots after this datetime
+            hours_lookback: Number of hours to look back (overrides since if provided)
 
         Returns:
-            List of historical snapshots with timestamps and star counts
+            RepositoryStarHistoryList with snapshots
         """
         try:
-            from backend.models.database import RepositoryStarHistory
+            from backend.models.database import RepositoryStarHistory as DBStarHistory
 
-            cutoff_time = datetime.now() - timedelta(hours=hours_lookback)
-
-            snapshots = (
-                self.db.query(RepositoryStarHistory)
-                .filter(
-                    RepositoryStarHistory.repository_id == repository_id,
-                    RepositoryStarHistory.snapshot_at >= cutoff_time,
+            # Verify repository exists
+            repo = (
+                self.db.query(DBRepository)
+                .filter(DBRepository.id == int(repository_id))
+                .first()
+            )
+            if not repo:
+                raise PaperNotFoundError(
+                    f"Repository with ID {repository_id} not found"
                 )
-                .order_by(RepositoryStarHistory.snapshot_at.asc())
-                .all()
+
+            # Build query
+            query = self.db.query(DBStarHistory).filter(
+                DBStarHistory.repository_id == int(repository_id)
             )
 
-            return [
-                {
-                    "num_stars": snapshot.num_stars,
-                    "snapshot_at": snapshot.snapshot_at,
-                }
+            # Apply time filter
+            if hours_lookback:
+                cutoff_time = datetime.now() - timedelta(hours=hours_lookback)
+                query = query.filter(DBStarHistory.snapshot_at >= cutoff_time)
+            elif since:
+                query = query.filter(DBStarHistory.snapshot_at >= since)
+
+            # Order by time ascending (oldest first)
+            query = query.order_by(DBStarHistory.snapshot_at.asc())
+
+            # Apply limit
+            if limit:
+                query = query.limit(limit)
+
+            snapshots = query.all()
+
+            # Convert to API models
+            api_snapshots = [
+                RepositoryStarHistory(
+                    id=str(snapshot.id),
+                    repository_id=str(snapshot.repository_id),
+                    num_stars=snapshot.num_stars,
+                    snapshot_at=snapshot.snapshot_at,
+                    created_at=snapshot.created_at,
+                )
                 for snapshot in snapshots
             ]
 
+            return RepositoryStarHistoryList(
+                repository_id=repository_id,
+                count=len(api_snapshots),
+                snapshots=api_snapshots,
+            )
+
+        except PaperNotFoundError:
+            raise
+        except ValueError:
+            raise PaperNotFoundError(f"Invalid repository ID: {repository_id}")
         except Exception as e:
             raise DatabaseError(f"Error fetching star history: {str(e)}")

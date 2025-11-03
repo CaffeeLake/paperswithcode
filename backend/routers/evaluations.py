@@ -129,9 +129,10 @@ async def create_evaluation(
     Creates a new benchmark evaluation result for a paper on a specific task and dataset.
 
     **Metric Validation:**
-    - All metrics in the `metrics` dictionary must be allowed for the specified dataset
+    - All metrics in the `metrics` dictionary must be allowed for the specified leaderboard (task + dataset)
     - The `best_metric` must also be in the allowed metrics list
-    - Use `GET /api/v1/datasets/{dataset_id}/metrics` to see allowed metrics for a dataset
+    - Use `GET /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics` to see allowed metrics for a leaderboard
+    - Leaderboards are defined by (task, dataset, metric) triples in the `task_dataset_metrics` table
 
     **Request Body:**
     ```json
@@ -188,9 +189,9 @@ async def update_evaluation(
     Updates the fields of an existing evaluation. Only provided fields will be updated.
 
     **Metric Validation:**
-    - If updating `metrics` or `dataset_id`, all metrics must be allowed for the dataset
+    - If updating `metrics`, `task_id`, or `dataset_id`, all metrics must be allowed for the leaderboard
     - If updating `best_metric`, it must be in the allowed metrics list
-    - Use `GET /api/v1/datasets/{dataset_id}/metrics` to see allowed metrics
+    - Use `GET /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics` to see allowed metrics for a leaderboard
 
     **Example:**
     ```

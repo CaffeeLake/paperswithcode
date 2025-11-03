@@ -353,6 +353,44 @@ class Repository(BaseModel):
         return str(v)
 
 
+class RepositoryStarHistory(BaseModel):
+    """
+    Repository star history snapshot.
+
+    Represents a historical snapshot of a repository's star count at a specific time.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Star history entry ID")
+    repository_id: str = Field(..., description="Repository ID")
+    num_stars: int = Field(..., description="Number of stars at this snapshot")
+    snapshot_at: datetime = Field(..., description="When this snapshot was taken")
+    created_at: Optional[datetime] = Field(
+        None, description="When this entry was created"
+    )
+
+    @field_validator("id", "repository_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure IDs are always strings."""
+        return str(v)
+
+
+class RepositoryStarHistoryList(BaseModel):
+    """
+    List of repository star history snapshots with metadata.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    repository_id: str = Field(..., description="Repository ID")
+    count: int = Field(..., description="Total number of snapshots")
+    snapshots: List[RepositoryStarHistory] = Field(
+        default_factory=list, description="List of star history snapshots"
+    )
+
+
 class PaperRepository(BaseModel):
     """
     Simple association between a paper and a repository.
@@ -482,6 +520,41 @@ class ProjectPageWithPapers(BaseModel):
     # Relationship metadata (if needed)
     relationships: Optional[List[PaperProjectPage]] = Field(
         None, description="Detailed relationship information"
+    )
+
+
+class ProjectPageCreateRequest(BaseModel):
+    """
+    Request model for creating a new project page.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    url: str = Field(..., description="Full URL to project page")
+    is_official: bool = Field(
+        default=False, description="Whether this is an official project page"
+    )
+    source: str = Field(
+        default="manual",
+        description="Source of the project page data (pwc_archive, ai_extraction, manual, etc.)",
+    )
+
+
+class ProjectPageUpdateRequest(BaseModel):
+    """
+    Request model for updating an existing project page.
+    All fields are optional.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    url: Optional[str] = Field(None, description="Full URL to project page")
+    is_official: Optional[bool] = Field(
+        None, description="Whether this is an official project page"
+    )
+    source: Optional[str] = Field(
+        None,
+        description="Source of the project page data (pwc_archive, ai_extraction, manual, etc.)",
     )
 
 

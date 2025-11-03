@@ -632,6 +632,23 @@ class UpdateRepositoriesRequest(BaseModel):
     )
 
 
+class ProjectPageInput(BaseModel):
+    """Input model for project page data."""
+
+    url: str = Field(..., description="Project page URL")
+    is_official: bool = Field(
+        default=False, description="Whether this is an official project page"
+    )
+
+
+class UpdateProjectPagesRequest(BaseModel):
+    """Request model for updating paper project pages."""
+
+    project_pages: List[ProjectPageInput] = Field(
+        ..., description="List of project pages to associate with the paper"
+    )
+
+
 @router.put(
     "/papers/{paper_id}/repositories",
     response_model=Paper,
@@ -675,6 +692,56 @@ async def update_paper_repositories(
             for repo in request.repositories
         ]
         return service.update_paper_repositories(paper_id, repositories_data)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/papers/{paper_id}/project-pages",
+    response_model=Paper,
+    summary="Update project pages for a paper",
+)
+async def update_paper_project_pages(
+    paper_id: int = Path(..., description="Database paper ID"),
+    request: UpdateProjectPagesRequest = Body(...),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update the project pages associated with a paper.
+
+    This endpoint allows admin users to update which project pages are linked to a paper.
+    It replaces all existing project page associations with the provided list.
+    If a project page URL doesn't exist in the database, it will be created automatically
+    via the updatable `project_pages_api` view.
+
+    **Request Parameters:**
+    - `paper_id`: Database ID of the paper to update
+    - `project_pages`: List of project page objects with URL and is_official flag
+
+    **Returns:**
+    - Updated paper with new project page associations
+
+    **Example:**
+    ```json
+    PUT /api/v1/papers/123/project-pages
+    {
+        "project_pages": [
+            {"url": "https://example.com/project", "is_official": true},
+            {"url": "https://another.com/demo", "is_official": false}
+        ]
+    }
+    ```
+    """
+    try:
+        service = PaperService(db)
+        # Convert Pydantic models to dict for service layer
+        project_pages_data = [
+            {"url": page.url, "is_official": page.is_official}
+            for page in request.project_pages
+        ]
+        return service.update_paper_project_pages(paper_id, project_pages_data)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

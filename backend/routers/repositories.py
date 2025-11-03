@@ -6,6 +6,7 @@ that support the enhanced PapersWithCode functionality.
 """
 
 from typing import Optional, List
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,9 @@ from backend.models.api import (
     ProjectPages,
     PaperProjectPage,
     ProjectPageWithPapers,
+    ProjectPageCreateRequest,
+    ProjectPageUpdateRequest,
+    RepositoryStarHistoryList,
 )
 from backend.services.repository_service import RepositoryService
 from backend.services.project_page_service import ProjectPageService
@@ -141,6 +145,77 @@ async def get_repositories_by_owner_and_name(
 
 
 @router.get(
+    "/repositories/{repository_id}/stars/history",
+    response_model=RepositoryStarHistoryList,
+    summary="Get star count history for a repository",
+)
+async def get_repository_star_history(
+    repository_id: str = Path(..., description="Repository ID"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=1000, description="Maximum number of snapshots to return"
+    ),
+    since: Optional[datetime] = Query(
+        None, description="Return snapshots after this datetime (ISO 8601 format)"
+    ),
+    hours_lookback: Optional[int] = Query(
+        None,
+        ge=1,
+        le=8760,
+        description="Number of hours to look back (overrides 'since' if provided)",
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get historical star count snapshots for a repository.
+
+    This endpoint returns the star count history from the `repository_star_history` table,
+    which is populated by the hourly trending calculation CRON job.
+
+    **Query Parameters:**
+    - `limit`: Maximum number of snapshots to return (default: all)
+    - `since`: Return snapshots after this datetime (ISO 8601 format)
+    - `hours_lookback`: Number of hours to look back (e.g., 24 for last day, 168 for last week)
+
+    **Examples:**
+    - `/api/v1/repositories/123/stars/history?hours_lookback=24` - Last 24 hours
+    - `/api/v1/repositories/123/stars/history?limit=100` - Last 100 snapshots
+    - `/api/v1/repositories/123/stars/history?since=2025-11-01T00:00:00Z` - Since Nov 1, 2025
+
+    **Returns:**
+    ```json
+    {
+        "repository_id": "123",
+        "count": 48,
+        "snapshots": [
+            {
+                "id": "1",
+                "repository_id": "123",
+                "num_stars": 1234,
+                "snapshot_at": "2025-11-01T12:00:00Z",
+                "created_at": "2025-11-01T12:00:05Z"
+            },
+            ...
+        ]
+    }
+    ```
+
+    **Note:** Snapshots are ordered chronologically (oldest first).
+    """
+    try:
+        service = RepositoryService(db)
+        return service.get_repository_star_history(
+            repository_id=repository_id,
+            limit=limit,
+            since=since,
+            hours_lookback=hours_lookback,
+        )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
     "/project-pages/",
     response_model=ProjectPages,
     summary="Get project pages with pagination and filtering",
@@ -198,6 +273,117 @@ async def get_project_page_by_id(
     try:
         service = ProjectPageService(db)
         return service.get_project_page_by_id(page_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/project-pages/",
+    response_model=ProjectPage,
+    status_code=201,
+    summary="Create a new project page",
+)
+async def create_project_page(
+    request: ProjectPageCreateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Create a new project page.
+
+    Creates a new project page with the provided URL and metadata. The URL must be unique.
+
+    **Request Body:**
+    ```json
+    {
+        "url": "https://example.com/project",
+        "is_official": true,
+        "source": "manual"
+    }
+    ```
+
+    **Returns:**
+    - 201: Created project page object with ID
+    - 400: Invalid request or URL already exists
+    - 500: Internal server error
+    """
+    try:
+        service = ProjectPageService(db)
+        return service.create_project_page(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/project-pages/{page_id}",
+    response_model=ProjectPage,
+    summary="Update a project page",
+)
+async def update_project_page(
+    page_id: str = Path(..., description="Project page ID"),
+    request: ProjectPageUpdateRequest = ...,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update an existing project page.
+
+    Updates the fields of an existing project page. Only provided fields will be updated.
+
+    **Example:**
+    ```
+    PUT /api/v1/project-pages/123
+    {
+        "url": "https://new-url.com/project",
+        "is_official": true
+    }
+    ```
+
+    **Returns:**
+    - 200: Updated project page object
+    - 400: Invalid request or URL conflict
+    - 404: Project page not found
+    - 500: Internal server error
+    """
+    try:
+        service = ProjectPageService(db)
+        return service.update_project_page(page_id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/project-pages/{page_id}",
+    status_code=204,
+    summary="Delete a project page",
+)
+async def delete_project_page(
+    page_id: str = Path(..., description="Project page ID"),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Delete a project page.
+
+    Permanently deletes a project page and all its associations with papers.
+
+    **Example:**
+    - `/api/v1/project-pages/123` - Delete project page with ID 123
+
+    **Returns:**
+    - 204 No Content on success
+    - 404: Project page not found
+    - 500: Internal server error
+    """
+    try:
+        service = ProjectPageService(db)
+        service.delete_project_page(page_id)
+        return None
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
