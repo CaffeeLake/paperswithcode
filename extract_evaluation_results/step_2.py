@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 
 from backend.database.connection import db_manager
@@ -306,6 +307,66 @@ def read_step_1_output(filename: str) -> str:
     return file_path.read_text()
 
 
+def validate_agent_result(result_text: str, dataset_name: str) -> str:
+    """Validate that the agent result contains a valid dataset ID.
+
+    This prevents false positives from AI agents that may fabricate dataset IDs.
+    If the result claims a dataset was found, verify the ID actually exists.
+
+    Args:
+        result_text: The result text from the agent
+        dataset_name: The name of the dataset being searched
+
+    Returns:
+        The validated result text, or "Dataset not found" if validation fails
+    """
+    if "Dataset not found" in result_text:
+        return result_text
+
+    # Try to extract dataset ID
+    dataset_id = None
+
+    # Try JSON format
+    try:
+        dataset_info = json.loads(result_text)
+        if isinstance(dataset_info, dict) and dataset_info.get("found"):
+            dataset_id = dataset_info.get("id")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Try tool result format
+    if dataset_id is None:
+        id_match = re.search(r"ID=(\d+)", result_text)
+        if id_match:
+            try:
+                dataset_id = int(id_match.group(1))
+            except ValueError:
+                pass
+
+    # If we found a dataset ID, validate it exists
+    if dataset_id is not None:
+        session = db_manager.session_local()
+        try:
+            from backend.models.database import Dataset as DBDataset
+
+            dataset = (
+                session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+            )
+            if not dataset:
+                print(
+                    f"⚠️  WARNING: Agent claimed dataset '{dataset_name}' was found with ID {dataset_id}, "
+                    f"but this ID does not exist in the database. Rejecting false positive."
+                )
+                return "Dataset not found"
+        except Exception as e:
+            print(f"⚠️  WARNING: Error validating dataset ID {dataset_id}: {e}")
+            return "Dataset not found"
+        finally:
+            session.close()
+
+    return result_text
+
+
 async def step_2(
     arxiv_id: str,
     dataset_detail: dict,
@@ -323,9 +384,10 @@ async def step_2(
         use_web_search: Whether to use Exa AI MCP server for web search
 
     Returns:
-        The result from the dataset finder agent
+        The validated result from the dataset finder agent
     """
-    print(f"Processing dataset: {dataset_detail.get('dataset_name', 'Unknown')}")
+    dataset_name = dataset_detail.get("dataset_name", "Unknown")
+    print(f"Processing dataset: {dataset_name}")
 
     prompt = f"""
 ## Paper details
@@ -376,7 +438,8 @@ Find the dataset details for the following dataset mentioned in the evaluation r
                     )
                     # Run the dataset finder agent
                     result = await Runner.run(dataset_finder_agent, prompt)
-                    return result.final_output
+                    # Validate the result to prevent false positives
+                    return validate_agent_result(result.final_output, dataset_name)
         except Exception as e:
             print(f"Warning: Could not set up MCP servers for web search: {e}")
             print("Continuing without web search capability...")
@@ -384,7 +447,8 @@ Find the dataset details for the following dataset mentioned in the evaluation r
     # Run without web search
     dataset_finder_agent = await create_dataset_finder_agent(mcp_servers=[])
     result = await Runner.run(dataset_finder_agent, prompt)
-    return result.final_output
+    # Validate the result to prevent false positives
+    return validate_agent_result(result.final_output, dataset_name)
 
 
 async def main():

@@ -11,9 +11,33 @@ uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --datase
 from backend.database.connection import db_manager
 from backend.services.dataset_service import DatasetService
 from backend.schemas.dataset_schema import DatasetCreateRequest
-from agents import Agent, function_tool
+from backend.utils.paper_utils import get_title, get_authors, get_abstract
+from agents import Agent, function_tool, Runner
 import argparse
+import asyncio
+import json
+import logging
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+async def get_paper_details(arxiv_id: str) -> str:
+    """Get formatted paper details including title, authors, and abstract."""
+    paper_title = await get_title(arxiv_id)
+    paper_authors = await get_authors(arxiv_id)
+    paper_abstract = await get_abstract(arxiv_id)
+
+    return f"""
+### Title:
+{paper_title}
+### Authors:
+{paper_authors}
+### ArXiv ID
+{arxiv_id}
+### Abstract
+{paper_abstract}
+"""
 
 
 dataset_adder_prompt = """
@@ -203,20 +227,69 @@ async def add_dataset(
         return f"✗ Failed to create dataset: {str(e)}"
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Add a dataset to the database.")
-    parser.add_argument(
-        "--dataset_details",
-        type=str,
-        required=True,
-        help="The details of the dataset to add to the database.",
-    )
-    args = parser.parse_args()
+async def step_4(dataset_details_json: str) -> str:
+    """Add a dataset to the database using the dataset adder agent.
 
+    Args:
+        dataset_details_json: JSON string containing dataset details including:
+            - name: Dataset name (required)
+            - description: Dataset description (required)
+            - task_ids: List of task IDs (required)
+            - full_name: Optional full name
+            - url: Optional main URL
+            - hf_url: Optional Hugging Face URL
+            - paper_url: Optional paper URL
+            - paper_arxiv_id: Optional ArXiv ID of introducing paper (used to fetch paper details)
+
+    Returns:
+        The result from the dataset adder agent
+    """
+    # Parse dataset details
+    try:
+        dataset_details = json.loads(dataset_details_json)
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in dataset_details: {e}"
+
+    # Extract paper ArXiv ID if available
+    paper_arxiv_id = dataset_details.get("paper_arxiv_id")
+
+    # Build prompt
+    prompt_parts = [
+        "Add the following dataset to the database:",
+        json.dumps(dataset_details, indent=2),
+    ]
+
+    # Fetch and include paper details if arxiv_id is available
+    if paper_arxiv_id:
+        try:
+            paper_details = await get_paper_details(paper_arxiv_id)
+            prompt_parts.append("\n## Paper details")
+            prompt_parts.append(paper_details)
+        except Exception as e:
+            logger.warning(f"Could not fetch paper details for {paper_arxiv_id}: {e}")
+
+    prompt = "\n".join(prompt_parts)
+
+    # Create and run the agent
     dataset_adder_agent = Agent(
         name="Dataset Adder",
         instructions=dataset_adder_prompt,
         tools=[add_dataset, get_available_tasks],
     )
 
-    # TODO implement the dataset adder agent
+    result = await Runner.run(dataset_adder_agent, prompt)
+    return result.final_output
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Add a dataset to the database.")
+    parser.add_argument(
+        "--dataset_details",
+        type=str,
+        required=True,
+        help="JSON string containing dataset details (name, description, task_ids, etc.). May include paper_arxiv_id to fetch paper context.",
+    )
+    args = parser.parse_args()
+
+    result = asyncio.run(step_4(args.dataset_details))
+    print("Result:", result)

@@ -44,8 +44,27 @@ from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
 from extract_evaluation_results.step_2 import get_search_parts
+from backend.utils.paper_utils import get_title, get_authors, get_abstract
 
 logger = logging.getLogger(__name__)
+
+
+async def get_paper_details(arxiv_id: str) -> str:
+    """Get formatted paper details including title, authors, and abstract."""
+    paper_title = await get_title(arxiv_id)
+    paper_authors = await get_authors(arxiv_id)
+    paper_abstract = await get_abstract(arxiv_id)
+
+    return f"""
+### Title:
+{paper_title}
+### Authors:
+{paper_authors}
+### ArXiv ID
+{arxiv_id}
+### Abstract
+{paper_abstract}
+"""
 
 
 class DatasetInformation(BaseModel):
@@ -338,13 +357,25 @@ async def step_3(
             f"Gather information about the following dataset: {search_parts}"
         ]
 
+        # Fetch and include paper details if arxiv_id is available
+        if arxiv_id:
+            try:
+                paper_details = await get_paper_details(arxiv_id)
+                prompt_parts.append("\n## Paper details")
+                prompt_parts.append(paper_details)
+            except Exception as e:
+                logger.warning(f"Could not fetch paper details for {arxiv_id}: {e}")
+                # Fallback to just title if available
+                if paper_title:
+                    prompt_parts.append("\n## Paper that introduced the dataset:")
+                    prompt_parts.append(f"Title: {paper_title}")
+        elif paper_title:
+            prompt_parts.append("\n## Paper that introduced the dataset:")
+            prompt_parts.append(f"Title: {paper_title}")
+
         if dataset_info:
             prompt_parts.append("\n## Information extracted from the paper:")
             prompt_parts.append(f"{dataset_info}")
-
-        if paper_title:
-            prompt_parts.append("\n## Paper that introduced the dataset:")
-            prompt_parts.append(f"Title: {paper_title}")
 
         prompt = "\n".join(prompt_parts)
 

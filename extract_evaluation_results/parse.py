@@ -5,19 +5,24 @@ This script:
 1. Runs step_1 to extract evaluation results from a paper PDF
 2. Runs step_2 for each dataset mentioned in the results to find whether it is already in the database or not (in parallel)
 3. Runs step_3 for datasets not found in step_2 to gather additional information from the web and Hugging Face
-4. Optionally runs step_5 to align evaluation results with database IDs and add them to the database
+4. Runs step_4 for datasets gathered in step_3 to add them to the database
+5. Optionally runs step_5 to align evaluation results with database IDs and add them to the database
 
 You can run it like so:
 
 ```bash
-# Run all steps (including step 5)
+# Run all steps (including step 4 and 5)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545
 
-# Run only steps 1, 2, and 3 (skip step 5)
+# Run only steps 1, 2, 3, and 4 (skip step 5)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-step-5
+
+# Run only steps 1, 2, and 3 (skip step 4 and 5 - no database additions)
+uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-addition
 ```
 
-Note: Step 5 only processes papers whose evaluation results are from datasets that are already present in the database.
+Note: Step 5 only processes papers whose evaluation results are from datasets that are already present in the database
+(or were just added in step 4).
 """
 
 import argparse
@@ -35,7 +40,7 @@ from backend.services.dataset_service import DatasetService
 from extract_evaluation_results.step_1 import step_1
 from extract_evaluation_results.step_2 import step_2, get_paper_details
 from extract_evaluation_results.step_3 import step_3
-# step_5 imported conditionally in run_step_5() to avoid import errors when skipping step 5
+# step_4 and step_5 imported conditionally to avoid import errors when skipping steps
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,48 +52,132 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5.0
 
 
-def extract_dataset_id(result_text: str) -> Optional[int]:
-    """Extract dataset ID from step_2 result text."""
+def verify_dataset_id_exists(dataset_id: int) -> bool:
+    """Verify that a dataset ID actually exists in the database.
+
+    This prevents false positives from AI agents that may fabricate dataset IDs.
+
+    Args:
+        dataset_id: The dataset ID to verify
+
+    Returns:
+        True if the dataset exists, False otherwise
+    """
+    session = db_manager.session_local()
+    try:
+        from backend.models.database import Dataset as DBDataset
+
+        dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+        return dataset is not None
+    except Exception as e:
+        logger.error(f"Error verifying dataset ID {dataset_id}: {e}")
+        return False
+    finally:
+        session.close()
+
+
+def extract_dataset_id(result_text: str, validate: bool = True) -> Optional[int]:
+    """Extract dataset ID from step_2 result text.
+
+    Args:
+        result_text: The result text from step_2
+        validate: If True, verify the dataset ID exists in the database
+
+    Returns:
+        Dataset ID if found and valid, None otherwise
+    """
     if "Dataset not found" in result_text:
         return None
+
+    dataset_id = None
 
     # Try JSON format first
     try:
         dataset_info = json.loads(result_text)
         if isinstance(dataset_info, dict) and dataset_info.get("found"):
-            return dataset_info.get("id")
+            dataset_id = dataset_info.get("id")
     except (json.JSONDecodeError, AttributeError):
         pass
 
     # Try tool result format: "Found dataset: ID=X, Name=Y, Slug=Z"
-    id_match = re.search(r"ID=(\d+)", result_text)
-    return int(id_match.group(1)) if id_match else None
+    if dataset_id is None:
+        id_match = re.search(r"ID=(\d+)", result_text)
+        if id_match:
+            try:
+                dataset_id = int(id_match.group(1))
+            except ValueError:
+                pass
+
+    # Validate dataset ID exists in database
+    if dataset_id is not None and validate:
+        if not verify_dataset_id_exists(dataset_id):
+            logger.warning(
+                f"⚠️  FALSE POSITIVE DETECTED: Dataset ID {dataset_id} from agent result "
+                f"does not exist in database. Rejecting fabricated result."
+            )
+            return None
+
+    return dataset_id
 
 
-def parse_dataset_info(result_text: str) -> Optional[dict]:
-    """Parse dataset information from step_2 result."""
+def parse_dataset_info(result_text: str, validate: bool = True) -> Optional[dict]:
+    """Parse dataset information from step_2 result.
+
+    Args:
+        result_text: The result text from step_2
+        validate: If True, verify the dataset ID exists in the database
+
+    Returns:
+        Dictionary with dataset info if found and valid, None otherwise
+    """
     if "Dataset not found" in result_text:
         return None
 
+    dataset_info = None
+
     # Try JSON format
     try:
-        dataset_info = json.loads(result_text)
-        if isinstance(dataset_info, dict) and dataset_info.get("found"):
-            return dataset_info
+        parsed_info = json.loads(result_text)
+        if isinstance(parsed_info, dict) and parsed_info.get("found"):
+            dataset_info = parsed_info
     except (json.JSONDecodeError, AttributeError):
         pass
 
     # Try tool result format
-    if "Found dataset" in result_text:
-        info = {"found": True}
-        for field in ["ID", "Name", "Slug", "HF URL"]:
-            match = re.search(rf"{field}=([^,]+)", result_text)
-            if match:
-                key = field.lower().replace(" ", "_")
-                info[key] = match.group(1).strip()
-        return info if info.get("id") else None
+    if dataset_info is None:
+        if "Found dataset" in result_text:
+            info = {"found": True}
+            for field in ["ID", "Name", "Slug", "HF URL"]:
+                match = re.search(rf"{field}=([^,]+)", result_text)
+                if match:
+                    key = field.lower().replace(" ", "_")
+                    info[key] = match.group(1).strip()
+            if info.get("id"):
+                # Convert ID to int if it's a string
+                try:
+                    info["id"] = int(info["id"])
+                except (ValueError, TypeError):
+                    pass
+                dataset_info = info
 
-    return None
+    # Validate dataset ID exists in database
+    if dataset_info and dataset_info.get("id"):
+        dataset_id = dataset_info.get("id")
+        if isinstance(dataset_id, str):
+            try:
+                dataset_id = int(dataset_id)
+            except ValueError:
+                logger.warning(f"Invalid dataset ID format: {dataset_id}")
+                return None
+
+        if validate and not verify_dataset_id_exists(dataset_id):
+            logger.warning(
+                f"⚠️  FALSE POSITIVE DETECTED: Dataset ID {dataset_id} from agent result "
+                f"does not exist in database. Rejecting fabricated result."
+            )
+            return None
+
+    return dataset_info if dataset_info and dataset_info.get("id") else None
 
 
 async def step_2_with_retry(
@@ -149,8 +238,16 @@ def align_evaluation_results(
     arxiv_id: str,
     evaluation_results: list,
     step_2_results: list,
+    step_4_results: Optional[list] = None,
 ) -> tuple[list, str]:
-    """Align evaluation results with database IDs (paper_id, task_id, dataset_id)."""
+    """Align evaluation results with database IDs (paper_id, task_id, dataset_id).
+
+    Args:
+        arxiv_id: ArXiv ID of the paper
+        evaluation_results: List of evaluation results from step_1
+        step_2_results: List of step_2 results (datasets found in database)
+        step_4_results: List of step_4 results (datasets newly added to database)
+    """
     session = db_manager.session_local()
 
     # Get paper_id
@@ -162,6 +259,7 @@ def align_evaluation_results(
     dataset_name_to_id = {}
     dataset_service = DatasetService(session)
 
+    # Add datasets from step_2 (already in database)
     for step_2_result in step_2_results:
         if not step_2_result.get("success"):
             continue
@@ -171,6 +269,23 @@ def align_evaluation_results(
             dataset_name = step_2_result["dataset"].get("dataset_name", "")
             dataset_name_to_id[dataset_name.lower()] = dataset_id
             logger.info(f"Mapped dataset '{dataset_name}' to ID {dataset_id}")
+
+    # Add datasets from step_4 (newly added to database)
+    if step_4_results:
+        for step_4_result in step_4_results:
+            if not step_4_result.get("success"):
+                continue
+
+            result_text = str(step_4_result.get("result", ""))
+            # Extract dataset ID from step_4 result
+            # Format: "✓ Successfully created dataset: ID=X, Name=Y, Slug=Z"
+            dataset_id = extract_dataset_id(result_text)
+            if dataset_id:
+                dataset_name = step_4_result["dataset"].get("dataset_name", "")
+                dataset_name_to_id[dataset_name.lower()] = dataset_id
+                logger.info(
+                    f"Mapped newly added dataset '{dataset_name}' to ID {dataset_id}"
+                )
 
     if not dataset_name_to_id:
         session.close()
@@ -294,18 +409,110 @@ async def step_3_with_retry(
         return (dataset_detail, Exception(f"Failed after {MAX_RETRIES} attempts"))
 
 
+async def step_4_with_retry(
+    dataset_detail: dict,
+    step_3_result: dict,
+    arxiv_id: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[dict, Union[str, Exception]]:
+    """Run step_4 with rate limiting and retry logic to add dataset to database."""
+    # Import step_4 only when needed (lazy import)
+    from extract_evaluation_results.step_4 import step_4
+
+    async with semaphore:
+        dataset_name = dataset_detail.get("dataset_name", "Unknown")
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(
+                    f"Adding dataset '{dataset_name}' to database (attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+
+                # Build dataset details JSON for step_4
+                # Merge original dataset_detail with step_3 result
+                # Note: task_ids will be determined by the agent based on paper context
+                dataset_details_for_step_4 = {
+                    "name": dataset_detail.get("dataset_name"),
+                    "description": step_3_result.get("description", ""),
+                    "full_name": step_3_result.get("full_name"),
+                    "hf_url": step_3_result.get("hf_url"),
+                    "url": step_3_result.get("conference_url"),
+                    "paper_url": f"https://arxiv.org/abs/{step_3_result.get('arxiv_id')}"
+                    if step_3_result.get("arxiv_id")
+                    else None,
+                    "paper_arxiv_id": step_3_result.get("arxiv_id")
+                    or dataset_detail.get("paper_arxiv_id")
+                    or arxiv_id,
+                }
+
+                # Remove None values
+                dataset_details_for_step_4 = {
+                    k: v for k, v in dataset_details_for_step_4.items() if v is not None
+                }
+
+                # Ensure description is not empty (required field)
+                if not dataset_details_for_step_4.get("description"):
+                    dataset_details_for_step_4["description"] = (
+                        dataset_detail.get("dataset_info", "")
+                        or f"Dataset mentioned in paper {arxiv_id}"
+                    )
+
+                result = await step_4(json.dumps(dataset_details_for_step_4))
+                return (dataset_detail, result)
+
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = (
+                    "429" in error_str
+                    or "rate_limit" in error_str.lower()
+                    or "Rate limit" in error_str
+                )
+
+                if is_rate_limit and attempt < MAX_RETRIES - 1:
+                    wait_time = RETRY_BASE_DELAY * (2**attempt)
+                    wait_match = re.search(r"Please try again in ([\d.]+)s", error_str)
+                    if wait_match:
+                        wait_time = float(wait_match.group(1)) + 1.0
+
+                    logger.warning(
+                        f"Rate limit hit for dataset '{dataset_name}'. Retrying in {wait_time:.1f}s"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(
+                        f"Error adding dataset '{dataset_name}' to database: {error_str}"
+                    )
+                    return (dataset_detail, e)
+
+        return (dataset_detail, Exception(f"Failed after {MAX_RETRIES} attempts"))
+
+
 async def run_step_5(
-    arxiv_id: str, evaluation_results: list, step_2_results: list
+    arxiv_id: str,
+    evaluation_results: list,
+    step_2_results: list,
+    step_4_results: Optional[list] = None,
 ) -> tuple[list, Optional[str], Optional[str]]:
     """Run step 5 to add evaluation results to database.
 
     Returns:
         Tuple of (aligned_results, step_5_result, error_message)
     """
-    if not evaluation_results or not any(
+    # Check if we have datasets in database (from step_2 or step_4)
+    has_datasets = any(
         r.get("success") and extract_dataset_id(str(r.get("result", ""))) is not None
         for r in step_2_results
-    ):
+    ) or (
+        step_4_results
+        and any(
+            r.get("success")
+            and extract_dataset_id(str(r.get("result", ""))) is not None
+            for r in step_4_results
+        )
+    )
+
+    if not evaluation_results or not has_datasets:
         logger.info(
             "Skipping Step 5: No evaluation results or no datasets found in database"
         )
@@ -319,6 +526,7 @@ async def run_step_5(
         arxiv_id=arxiv_id,
         evaluation_results=evaluation_results,
         step_2_results=step_2_results,
+        step_4_results=step_4_results or [],
     )
 
     if alignment_error:
@@ -344,7 +552,9 @@ async def run_step_5(
     return aligned_results, step_5_result, None
 
 
-async def run_pipeline(arxiv_id: str, skip_step_5: bool = False) -> dict:
+async def run_pipeline(
+    arxiv_id: str, skip_step_5: bool = False, skip_addition: bool = False
+) -> dict:
     """Run the complete evaluation extraction pipeline."""
     logger.info(f"Starting pipeline for paper: {arxiv_id}")
 
@@ -537,14 +747,90 @@ async def run_pipeline(arxiv_id: str, skip_step_5: bool = False) -> dict:
     else:
         logger.info("STEP 3: Skipped (all datasets found in database)")
 
+    # Step 4: Add datasets gathered in step_3 to database
+    step_4_results = []
+    datasets_to_add = []
+
+    if skip_addition:
+        logger.info("STEP 4: Skipped (--skip-addition flag enabled)")
+    else:
+        for step_3_result in step_3_results:
+            if step_3_result.get("success") and step_3_result.get("result"):
+                datasets_to_add.append(step_3_result)
+
+        if datasets_to_add:
+            logger.info("=" * 60)
+            logger.info(f"STEP 4: Adding {len(datasets_to_add)} datasets to database")
+            logger.info("=" * 60)
+
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+            step_4_tasks = []
+
+            for idx, step_3_result in enumerate(datasets_to_add):
+                dataset_detail = step_3_result["dataset"]
+                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+                logger.info(
+                    f"Queuing step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
+                )
+
+                task = step_4_with_retry(
+                    dataset_detail=dataset_detail,
+                    step_3_result=step_3_result["result"],
+                    arxiv_id=arxiv_id,
+                    semaphore=semaphore,
+                )
+                step_4_tasks.append(task)
+
+                if idx < len(datasets_to_add) - 1:
+                    await asyncio.sleep(DELAY_BETWEEN_STARTS)
+
+            logger.info(
+                f"Running {len(step_4_tasks)} step_4 tasks with rate limiting..."
+            )
+            step_4_raw_results = await asyncio.gather(
+                *step_4_tasks, return_exceptions=False
+            )
+
+            # Process step_4 results
+            for idx, (dataset_detail, result) in enumerate(step_4_raw_results):
+                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+
+                if isinstance(result, Exception):
+                    logger.error(
+                        f"Error in step_4 for dataset {dataset_name}: {result}"
+                    )
+                    step_4_results.append(
+                        {
+                            "dataset": dataset_detail,
+                            "success": False,
+                            "error": str(result),
+                            "result": None,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"✓ Completed step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
+                    )
+                    step_4_results.append(
+                        {
+                            "dataset": dataset_detail,
+                            "success": "Successfully created dataset" in str(result),
+                            "result": result,
+                        }
+                    )
+        else:
+            logger.info("STEP 4: Skipped (no datasets to add)")
+
     # Step 5: Add to database (optional)
     aligned_results = []
     step_5_result = None
     step_5_error = None
 
-    if not skip_step_5:
+    if skip_addition:
+        logger.info("STEP 5: Skipped (--skip-addition flag enabled)")
+    elif not skip_step_5:
         aligned_results, step_5_result, step_5_error = await run_step_5(
-            arxiv_id, evaluation_results, results
+            arxiv_id, evaluation_results, results, step_4_results
         )
 
     return {
@@ -552,6 +838,7 @@ async def run_pipeline(arxiv_id: str, skip_step_5: bool = False) -> dict:
         "step_1_response": step_1_data,
         "step_2_results": results,
         "step_3_results": step_3_results,
+        "step_4_results": step_4_results,
         "aligned_results": aligned_results,
         "step_5_result": step_5_result,
         "step_5_error": step_5_error,
@@ -659,6 +946,45 @@ def print_summary(result: dict):
             print("\nStep 3 Results:")
             print("  - Skipped (all datasets found in database)")
 
+    # Step 4 results
+    if result.get("step_4_results"):
+        step_4_results = result["step_4_results"]
+        successful = sum(1 for r in step_4_results if r.get("success"))
+        failed = len(step_4_results) - successful
+
+        print("\nStep 4 Results:")
+        print(f"  - Successfully added: {successful}")
+        print(f"  - Failed: {failed}")
+
+        for idx, step_4_result in enumerate(step_4_results):
+            dataset_name = step_4_result["dataset"].get(
+                "dataset_name", f"Dataset_{idx}"
+            )
+            status = "✓" if step_4_result.get("success") else "✗"
+            print(f"    {status} {dataset_name}")
+
+            if step_4_result.get("success") and step_4_result.get("result"):
+                result_text = str(step_4_result["result"])
+                dataset_info = parse_dataset_info(result_text)
+                if dataset_info:
+                    print("      → Status: Added to database")
+                    print(f"         ID: {dataset_info.get('id', 'N/A')}")
+                    print(f"         Name: {dataset_info.get('name', 'Unknown')}")
+                    if dataset_info.get("slug"):
+                        print(f"         Slug: {dataset_info.get('slug')}")
+                else:
+                    print(f"      → Result: {result_text[:200]}...")
+            elif not step_4_result.get("success"):
+                print(f"      → Error: {step_4_result.get('error', 'Unknown error')}")
+    elif result.get("step_3_results"):
+        # Check if any datasets were gathered in step_3
+        datasets_gathered = sum(
+            1 for r in result["step_3_results"] if r.get("success") and r.get("result")
+        )
+        if datasets_gathered == 0:
+            print("\nStep 4 Results:")
+            print("  - Skipped (no datasets gathered in step 3)")
+
     # Step 5 results
     if result.get("aligned_results"):
         print("\nStep 5 Results:")
@@ -692,9 +1018,16 @@ async def main():
         action="store_true",
         help="Skip step 5 (do not add evaluation results to database)",
     )
+    parser.add_argument(
+        "--skip-addition",
+        action="store_true",
+        help="Skip step 4 and step 5 (do not add datasets or evaluation results to database)",
+    )
     args = parser.parse_args()
 
-    result = await run_pipeline(args.arxiv_id, skip_step_5=args.skip_step_5)
+    result = await run_pipeline(
+        args.arxiv_id, skip_step_5=args.skip_step_5, skip_addition=args.skip_addition
+    )
     print_summary(result)
     return result
 
