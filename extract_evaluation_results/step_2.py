@@ -1,17 +1,24 @@
 """
-This script defines an agent that can find dataset details in the database.
+This script finds datasets in the database based on evaluation results extracted from a paper.
+
+It reads the output from step_1 (which extracts evaluation results and dataset details from a paper)
+and uses an AI agent to search for each dataset mentioned in the database. The agent uses multiple
+search strategies including searching by dataset name, ArXiv ID of the introducing paper, and
+Hugging Face URL. It can also use web search for disambiguation when needed.
 
 You can run it like so:
 
 ```bash
-# Find a dataset by name
-uv run --env-file backend/keys.env extract_evaluation_results/step_2.py --dataset_name "COCO"
+# Process a paper (reads step_1 output JSON file from standardized location)
+uv run --env-file backend/keys.env extract_evaluation_results/step_2.py --arxiv_id "2406.09414"
+```
 
-# Find a dataset by ArXiv ID (of the introducing paper)
-uv run --env-file backend/keys.env extract_evaluation_results/step_2.py --arxiv_id "2103.00020"
-
-# Find a dataset by Hugging Face URL
-uv run --env-file backend/keys.env extract_evaluation_results/step_2.py --hf_url "huggingface.co/datasets/imagenet-1k"
+The script will:
+1. Read the step_1 output JSON file from backend/outputs/evaluation_results/{arxiv_id}/step_1.json
+2. Process the first dataset mentioned in the step_1 output
+3. Use an AI agent to search for the dataset in the database using multiple strategies
+4. Return the dataset information if found, or "Dataset not found" if not found
+5. Pretty print the JSON result
 """
 
 import argparse
@@ -22,14 +29,40 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from pydantic import BaseModel
+
 from backend.database.connection import db_manager
 from backend.utils.logging_utils import async_export_txt
-from backend.utils.paper_utils import get_title, get_authors, get_abstract
 
-from sqlalchemy.orm import Session
 
-from agents import Agent, function_tool, Runner
+from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
+
+from extract_evaluation_results.utils import (
+    get_paper_details,
+    get_formatted_tasks_list,
+    find_dataset,
+)
+
+
+class DatasetDetail(BaseModel):
+    dataset_name: str
+    dataset_info: str  # What you know about this dataset - do not make up information, only use the information provided in the paper
+    paper_title: Optional[str] = (
+        None  # The title of the paper that introduces the dataset (cited in the paper)
+    )
+    paper_arxiv_id: Optional[str] = (
+        None  # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
+    )
+
+
+class Step2Response(BaseModel):
+    reasoning: str  # Your reasoning regarding the search for the dataset
+    dataset_found: bool  # Whether the dataset was found in the database
+    dataset_detail: Optional[DatasetDetail] = (
+        None  # The details of the dataset mentioned in the evaluation results
+    )
+
 
 dataset_finder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
@@ -41,6 +74,14 @@ You are an expert in managing datasets used for benchmarking machine learning mo
 A colleague of yours has extracted evaluation results from a paper.
 Your responsibility includes finding whether the dataset mentioned in the evaluation results is already present
 in the database or not. In case the dataset is not yet present, simply return "Dataset not found".
+
+## Context: Available Tasks and Datasets
+
+Below is a list of tasks currently in the database along with their associated datasets. This provides context about the current information landscape of the PapersWithCode app:
+
+{tasks_list}
+
+Use this context to better understand which datasets are already in the database and which tasks they are associated with. This can help you identify if a dataset might already exist under a different name or identify similar datasets.
 
 ## CRITICAL: Preventing Duplicate Datasets
 
@@ -93,394 +134,125 @@ Only return "Dataset not found" after you have exhausted ALL possible search str
 
 ## Output Format
 
-If the dataset is found in the database, return a JSON string with the dataset information:
-```json
-{
-  "found": true,
-  "id": 72,
-  "name": "ImageNet-1k",
-  "slug": "imagenet-1k",
-  "description": "Dataset description...",
-  "hf_url": "https://huggingface.co/datasets/...",
-  "paper_url": "https://arxiv.org/abs/..."
-}
-```
+```python
+class DatasetDetail(BaseModel):
+    dataset_name: str
+    dataset_info: str # What you know about this dataset - do not make up information, only use the information provided in the paper
+    paper_title: Optional[str] = None # The title of the paper that introduces the dataset (cited in the paper)
+    paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
 
-If the dataset is NOT found, return simply:
-```
-Dataset not found
+
+class Step2Response(BaseModel):
+    reasoning: str # Your reasoning regarding the search for the dataset
+    dataset_found: bool # Whether the dataset was found in the database
+    dataset_detail: Optional[DatasetDetail] = None # The details of the dataset mentioned in the evaluation results
 ```
 
 **IMPORTANT**: Extract the dataset information from the find_dataset tool results. When the tool returns "Found dataset: ID=X, Name=Y, Slug=Z...", parse that information and return it as JSON. Do NOT return code blocks or model definitions - only return the JSON data or "Dataset not found".
 """
 
 
-@function_tool
-async def find_dataset(
-    dataset_name: str | None = None,
-    arxiv_id: str | None = None,
-    hf_url: str | None = None,
-) -> str:
-    """Find a dataset in the database by name, ArXiv ID, or Hugging Face URL.
-
-    This tool supports case-insensitive partial matching. You should call this tool multiple times
-    with different search strategies to thoroughly check for existing datasets before concluding
-    that a dataset is not found.
-
-    Args:
-        dataset_name: The name of the dataset to find (case-insensitive partial matching).
-                     Searches in name, full_name, and description fields.
-        arxiv_id: The ArXiv ID of the paper that introduced the dataset (e.g., "2103.00020").
-                 This searches for datasets where the introducing paper has this ArXiv ID.
-                 Version numbers are automatically ignored (e.g., "2103.00020v2" matches "2103.00020").
-        hf_url: The Hugging Face URL of the dataset (partial matching supported).
-               Can be full URL or partial (e.g., "huggingface.co/datasets/imagenet-1k").
-
-    Returns:
-        A JSON string with dataset information if found, or "Dataset not found" if not found.
-
-    Important:
-        - At least one of dataset_name, arxiv_id, or hf_url must be provided.
-        - If multiple parameters are provided, they are combined with AND logic.
-        - Call this tool multiple times with different search strategies to ensure thorough searching.
-        - Try searching by ArXiv ID first (most reliable), then HF URL, then dataset name with variations.
-    """
-    # Log tool call for debugging
-    search_params = []
-    if dataset_name:
-        search_params.append(f"dataset_name='{dataset_name}'")
-    if arxiv_id:
-        search_params.append(f"arxiv_id='{arxiv_id}'")
-    if hf_url:
-        search_params.append(f"hf_url='{hf_url}'")
-    print(f"[TOOL CALL] find_dataset({', '.join(search_params)})")
-
-    if not dataset_name and not arxiv_id and not hf_url:
-        return "Error: At least one search parameter (dataset_name, arxiv_id, or hf_url) must be provided"
-
-    session: Session = db_manager.session_local()
-
-    from backend.models.database import Dataset as DBDataset, Paper as DBPaper
-    from sqlalchemy import and_, or_, select
-
-    try:
-        # Build query with filters
-        query = session.query(DBDataset)
-        filters = []
-
-        # Search by ArXiv ID (of the introducing paper)
-        if arxiv_id:
-            # Normalize arxiv_id (remove version if present)
-            arxiv_base = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
-
-            # Find papers with matching ArXiv ID
-            paper_subquery = (
-                select(DBPaper.id)
-                .filter(DBPaper.arxiv_id.like(f"{arxiv_base}%"))
-                .scalar_subquery()
-            )
-
-            filters.append(DBDataset.introducing_paper_id.in_(paper_subquery))
-
-        # Search by Hugging Face URL
-        if hf_url:
-            # Support partial matching for HF URLs
-            filters.append(DBDataset.hf_url.ilike(f"%{hf_url}%"))
-
-        # Search by dataset name
-        if dataset_name:
-            # Try direct search first
-            name_filters = or_(
-                DBDataset.name.ilike(f"%{dataset_name}%"),
-                DBDataset.full_name.ilike(f"%{dataset_name}%"),
-                DBDataset.description.ilike(f"%{dataset_name}%"),
-            )
-            filters.append(name_filters)
-
-        # Apply all filters
-        if filters:
-            query = query.filter(and_(*filters))
-
-        # Prioritize exact matches and base datasets (no parent)
-        # First try exact name match (case-insensitive)
-        if dataset_name:
-            exact_match = query.filter(DBDataset.name.ilike(dataset_name)).first()
-            if exact_match:
-                db_dataset = exact_match
-            else:
-                # Try to prioritize base datasets (no parent_dataset_id) and shorter names
-                # Order by: parent_dataset_id NULL first (base datasets), then by name alphabetically
-                db_dataset = query.order_by(
-                    DBDataset.parent_dataset_id.asc().nullsfirst(),
-                    DBDataset.name.asc(),
-                ).first()
-        else:
-            # Execute query without name priority
-            db_dataset = query.first()
-
-        if not db_dataset:
-            session.close()
-            result = "Dataset not found"
-            print(f"[TOOL RESULT] {result}")
-            return result
-
-        # Format response with key information
-        response = f"Found dataset: ID={db_dataset.id}, Name={db_dataset.name}, Slug={db_dataset.slug}"
-        if db_dataset.full_name:
-            response += f", Full Name={db_dataset.full_name}"
-        if db_dataset.description:
-            desc_preview = (
-                db_dataset.description[:100] + "..."
-                if len(db_dataset.description) > 100
-                else db_dataset.description
-            )
-            response += f", Description={desc_preview}"
-        if db_dataset.hf_url:
-            response += f", HF URL={db_dataset.hf_url}"
-        if db_dataset.paper_url:
-            response += f", Paper URL={db_dataset.paper_url}"
-
-        session.close()
-        print(f"[TOOL RESULT] {response}")
-        return response
-
-    except Exception as e:
-        session.close()
-        error_msg = f"Error searching for dataset: {str(e)}"
-        print(f"[TOOL RESULT] {error_msg}")
-        return error_msg
-
-
-async def get_search_parts(dataset_name: str, arxiv_id: str, hf_url: str) -> str:
-    search_parts = []
-
-    if not dataset_name and not arxiv_id and not hf_url:
-        raise ValueError(
-            "At least one search parameter (dataset_name, arxiv_id, or hf_url) must be provided"
-        )
-
-    if dataset_name:
-        search_parts.append(f"Dataset name: '{dataset_name}'")
-    if arxiv_id:
-        search_parts.append(f"ArXiv ID: '{arxiv_id}'")
-    if hf_url:
-        search_parts.append(f"HF URL: '{hf_url}'")
-    return " and ".join(search_parts)
-
-
 async def create_dataset_finder_agent(mcp_servers=None) -> Agent:
     """Create the dataset finder agent with optional MCP servers for web search."""
+    # Get tasks list for context
+    tasks_list = get_formatted_tasks_list()
+    # Build prompt with tasks context
+    prompt_with_context = dataset_finder_prompt.format(tasks_list=tasks_list)
+
     return Agent(
         name="Dataset Finder",
-        instructions=dataset_finder_prompt,
+        instructions=prompt_with_context,
         tools=[find_dataset],
         mcp_servers=mcp_servers or [],
+        output_type=Step2Response,
     )
 
 
-async def get_paper_details(arxiv_id: str) -> str:
-    paper_title = await get_title(arxiv_id)
-    paper_authors = await get_authors(arxiv_id)
-    paper_abstract = await get_abstract(arxiv_id)
+def get_output_dir(arxiv_id: str) -> Path:
+    """Get the output directory for a given arxiv_id.
 
-    return f"""
-### Title:
-{paper_title}
-### Authors:
-{paper_authors}
-### ArXiv ID
-{arxiv_id}
-### Abstract
-{paper_abstract}
-"""
-
-
-def read_step_1_output(filename: str) -> str:
-    """Read the step_1 output file."""
-    # Try backend/outputs first, then extract_evaluation_results
+    Returns: backend/outputs/evaluation_results/{arxiv_id}
+    """
     output_dir = Path(__file__).parent.parent / "backend" / "outputs"
-    file_path = output_dir / filename
-    if not file_path.exists():
-        # Fallback to extract_evaluation_results directory
-        file_path = Path(__file__).parent / filename
-    if not file_path.exists():
-        raise FileNotFoundError(f"Could not find step_1 output file: {filename}")
-    return file_path.read_text()
+    eval_results_dir = output_dir / "evaluation_results" / arxiv_id
+    eval_results_dir.mkdir(parents=True, exist_ok=True)
+    return eval_results_dir
 
 
-def verify_dataset_id_exists(dataset_id: int) -> bool:
-    """Verify that a dataset ID actually exists in the database.
+def read_step_1_output(arxiv_id: str) -> str:
+    """Read the step_1 output JSON file from the standardized location.
 
-    This prevents false positives from AI agents that may fabricate dataset IDs.
+    Reads from: backend/outputs/evaluation_results/{arxiv_id}/step_1.json
 
     Args:
-        dataset_id: The dataset ID to verify
+        arxiv_id: The ArXiv ID of the paper
+    """
+    eval_results_dir = get_output_dir(arxiv_id)
+    json_file = eval_results_dir / "step_1.json"
+
+    if not json_file.exists():
+        raise FileNotFoundError(
+            f"Could not find step_1 output file: {json_file}. "
+            f"Run step_1.py first to generate the output."
+        )
+
+    return json_file.read_text()
+
+
+def write_step_2_output(arxiv_id: str, dataset_detail: dict, result: dict) -> None:
+    """Write the step_2 output JSON file to the standardized location.
+
+    Writes to: backend/outputs/evaluation_results/{arxiv_id}/step_2.json
+
+    Args:
+        arxiv_id: The ArXiv ID of the paper
+        dataset_detail: The dataset detail that was processed
+        result: The result dict from step_2 with 'found' and optional 'dataset' keys
+    """
+    eval_results_dir = get_output_dir(arxiv_id)
+    json_file = eval_results_dir / "step_2.json"
+
+    # Format the output as a list with one result (consistent with parse.py format)
+    output_data = [
+        {
+            "dataset": dataset_detail,
+            "success": result.get("found", False),
+            "result": result,
+        }
+    ]
+
+    json_file.write_text(json.dumps(output_data, ensure_ascii=False, indent=2))
+    print(f"✓ Step 2 output written to: {json_file}")
+
+
+def load_dataset_from_db(dataset_id: int) -> Optional[dict]:
+    """Load dataset details from the database by ID.
+
+    Args:
+        dataset_id: The database ID of the dataset
 
     Returns:
-        True if the dataset exists, False otherwise
+        Dictionary with dataset info if found, None otherwise
     """
     session = db_manager.session_local()
     try:
         from backend.models.database import Dataset as DBDataset
 
         dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
-        return dataset is not None
-    except Exception as e:
-        print(f"⚠️  WARNING: Error verifying dataset ID {dataset_id}: {e}")
-        return False
+        if not dataset:
+            return None
+
+        return {
+            "id": dataset.id,
+            "name": dataset.name,
+            "slug": dataset.slug,
+            "full_name": dataset.full_name,
+            "description": dataset.description,
+            "hf_url": dataset.hf_url,
+            "paper_url": dataset.paper_url,
+        }
     finally:
         session.close()
-
-
-def extract_dataset_id_from_result(result_text: str) -> Optional[int]:
-    """Extract dataset ID from agent result text.
-
-    Args:
-        result_text: The result text from the agent
-
-    Returns:
-        Dataset ID if found, None otherwise
-    """
-    if "Dataset not found" in result_text:
-        return None
-
-    dataset_id = None
-
-    # Try JSON format first
-    try:
-        dataset_info = json.loads(result_text)
-        if isinstance(dataset_info, dict) and dataset_info.get("found"):
-            dataset_id = dataset_info.get("id")
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Try tool result format: "Found dataset: ID=X, Name=Y, Slug=Z"
-    if dataset_id is None:
-        id_match = re.search(r"ID=(\d+)", result_text)
-        if id_match:
-            try:
-                dataset_id = int(id_match.group(1))
-            except ValueError:
-                pass
-
-    return dataset_id
-
-
-def extract_dataset_id(result_text: str, validate: bool = True) -> Optional[int]:
-    """Extract dataset ID from step_2 result text.
-
-    This is a convenience function for use by parse.py that optionally validates.
-
-    Args:
-        result_text: The result text from step_2
-        validate: If True, verify the dataset ID exists in the database
-
-    Returns:
-        Dataset ID if found and valid, None otherwise
-    """
-    dataset_id = extract_dataset_id_from_result(result_text)
-
-    # Validate dataset ID exists in database
-    if dataset_id is not None and validate:
-        if not verify_dataset_id_exists(dataset_id):
-            print(
-                f"⚠️  WARNING: Dataset ID {dataset_id} from agent result "
-                f"does not exist in database. Rejecting fabricated result."
-            )
-            return None
-
-    return dataset_id
-
-
-def parse_dataset_info(result_text: str, validate: bool = True) -> Optional[dict]:
-    """Parse dataset information from step_2 result.
-
-    Args:
-        result_text: The result text from step_2
-        validate: If True, verify the dataset ID exists in the database
-
-    Returns:
-        Dictionary with dataset info if found and valid, None otherwise
-    """
-    if "Dataset not found" in result_text:
-        return None
-
-    dataset_info = None
-
-    # Try JSON format
-    try:
-        parsed_info = json.loads(result_text)
-        if isinstance(parsed_info, dict) and parsed_info.get("found"):
-            dataset_info = parsed_info
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Try tool result format
-    if dataset_info is None:
-        if "Found dataset" in result_text:
-            info = {"found": True}
-            for field in ["ID", "Name", "Slug", "HF URL"]:
-                match = re.search(rf"{field}=([^,]+)", result_text)
-                if match:
-                    key = field.lower().replace(" ", "_")
-                    info[key] = match.group(1).strip()
-            if info.get("id"):
-                # Convert ID to int if it's a string
-                try:
-                    info["id"] = int(info["id"])
-                except (ValueError, TypeError):
-                    pass
-                dataset_info = info
-
-    # Validate dataset ID exists in database
-    if dataset_info and dataset_info.get("id"):
-        dataset_id = dataset_info.get("id")
-        if isinstance(dataset_id, str):
-            try:
-                dataset_id = int(dataset_id)
-            except ValueError:
-                print(f"⚠️  WARNING: Invalid dataset ID format: {dataset_id}")
-                return None
-
-        if validate and not verify_dataset_id_exists(dataset_id):
-            print(
-                f"⚠️  WARNING: Dataset ID {dataset_id} from agent result "
-                f"does not exist in database. Rejecting fabricated result."
-            )
-            return None
-
-    return dataset_info if dataset_info and dataset_info.get("id") else None
-
-
-def validate_agent_result(result_text: str, dataset_name: str) -> str:
-    """Validate that the agent result contains a valid dataset ID.
-
-    This prevents false positives from AI agents that may fabricate dataset IDs.
-    If the result claims a dataset was found, verify the ID actually exists.
-
-    Args:
-        result_text: The result text from the agent
-        dataset_name: The name of the dataset being searched
-
-    Returns:
-        The validated result text, or "Dataset not found" if validation fails
-    """
-    if "Dataset not found" in result_text:
-        return result_text
-
-    # Extract dataset ID from the result
-    dataset_id = extract_dataset_id_from_result(result_text)
-
-    # If we found a dataset ID, validate it exists
-    if dataset_id is not None:
-        if not verify_dataset_id_exists(dataset_id):
-            print(
-                f"⚠️  WARNING: Agent claimed dataset '{dataset_name}' was found with ID {dataset_id}, "
-                f"but this ID does not exist in the database. Rejecting false positive."
-            )
-            return "Dataset not found"
-
-    return result_text
 
 
 async def step_2(
@@ -489,7 +261,7 @@ async def step_2(
     evaluation_results: list,
     paper_details: str,
     use_web_search: bool = True,
-) -> str:
+) -> dict:
     """Process a single dataset detail to find it in the database.
 
     Args:
@@ -500,7 +272,7 @@ async def step_2(
         use_web_search: Whether to use Exa AI MCP server for web search
 
     Returns:
-        The validated result from the dataset finder agent
+        Dictionary with 'found' bool and 'dataset' dict (if found)
     """
     dataset_name = dataset_detail.get("dataset_name", "Unknown")
     print(f"Processing dataset: {dataset_name}")
@@ -520,23 +292,65 @@ Find the dataset details for the following dataset mentioned in the evaluation r
 {json.dumps(dataset_detail, indent=2)}
 """
 
-    # Set up web search via Exa AI MCP server and Hugging Face MCP server (optional)
+    # Helper function to run agent and process output
+    async def run_agent_and_process(mcp_servers):
+        dataset_finder_agent = await create_dataset_finder_agent(
+            mcp_servers=mcp_servers
+        )
+        result = await Runner.run(dataset_finder_agent, prompt)
+
+        if not result or not hasattr(result, "final_output"):
+            raise ValueError(f"Agent returned invalid result: {result}")
+
+        final_output = result.final_output
+
+        # Ensure we have a Step2Response object
+        if not isinstance(final_output, Step2Response):
+            raise ValueError(f"Expected Step2Response, got {type(final_output)}")
+
+        # If dataset not found, return early
+        if not final_output.dataset_found:
+            print(f"Dataset '{dataset_name}' not found in database")
+            return {"found": False, "reasoning": final_output.reasoning}
+
+        # Extract dataset ID from reasoning (look for "ID=X" pattern)
+        dataset_id = None
+        id_match = re.search(r"ID[=:](\d+)", final_output.reasoning)
+        if id_match:
+            dataset_id = int(id_match.group(1))
+
+        if not dataset_id:
+            print("⚠️  WARNING: Agent claimed dataset was found but no ID in reasoning")
+            return {"found": False, "reasoning": final_output.reasoning}
+
+        # Load actual dataset from database
+        db_dataset = load_dataset_from_db(dataset_id)
+        if not db_dataset:
+            print(
+                f"⚠️  WARNING: Dataset ID {dataset_id} does not exist in database. Rejecting false positive."
+            )
+            return {"found": False, "reasoning": final_output.reasoning}
+
+        print(f"✓ Found dataset: {db_dataset['name']} (ID: {dataset_id})")
+        return {
+            "found": True,
+            "reasoning": final_output.reasoning,
+            "dataset": db_dataset,
+        }
+
+    # Try with web search first if available
     exa_api_key = os.getenv("EXA_API_KEY")
     if use_web_search and exa_api_key:
         try:
-            # Set up Exa AI MCP server for web search
             async with MCPServerStdio(
                 name="Exa AI MCP Server",
                 params={
                     "command": "npx",
                     "args": ["-y", "mcp-remote", "https://mcp.exa.ai/mcp"],
-                    "env": {
-                        "EXA_API_KEY": exa_api_key,
-                    },
+                    "env": {"EXA_API_KEY": exa_api_key},
                 },
                 client_session_timeout_seconds=10,
             ) as exa_server:
-                # Set up Hugging Face MCP server
                 async with MCPServerStdio(
                     name="Hugging Face MCP Server",
                     params={
@@ -549,27 +363,18 @@ Find the dataset details for the following dataset mentioned in the evaluation r
                     },
                     client_session_timeout_seconds=10,
                 ) as hf_server:
-                    dataset_finder_agent = await create_dataset_finder_agent(
-                        mcp_servers=[exa_server, hf_server]
-                    )
-                    # Run the dataset finder agent
-                    result = await Runner.run(dataset_finder_agent, prompt)
-                    # Validate the result to prevent false positives
-                    return validate_agent_result(result.final_output, dataset_name)
+                    return await run_agent_and_process([exa_server, hf_server])
         except Exception as e:
-            print(f"Warning: Could not set up MCP servers for web search: {e}")
-            print("Continuing without web search capability...")
+            print(f"Warning: Could not set up MCP servers: {e}")
+            print("Continuing without web search...")
 
     # Run without web search
-    dataset_finder_agent = await create_dataset_finder_agent(mcp_servers=[])
-    result = await Runner.run(dataset_finder_agent, prompt)
-    # Validate the result to prevent false positives
-    return validate_agent_result(result.final_output, dataset_name)
+    return await run_agent_and_process([])
 
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Find or add a dataset in the database using a set of AI agents."
+        description="Find datasets in the database based on evaluation results extracted from a paper."
     )
     parser.add_argument(
         "--arxiv_id",
@@ -577,18 +382,12 @@ async def main():
         help="The ArXiv ID of the paper that contains the evaluation results.",
         default="2406.09414",
     )
-    parser.add_argument(
-        "--step_1_output_file",
-        type=str,
-        help="The step_1 output filename to read.",
-        default="step_1_2406.09414.txt",
-    )
     args = parser.parse_args()
 
     arxiv_id = args.arxiv_id
 
-    # Read step_1 output
-    step_1_output = read_step_1_output(args.step_1_output_file)
+    # Read step_1 output from standardized JSON location
+    step_1_output = read_step_1_output(arxiv_id)
     step_1_data = json.loads(step_1_output)
     evaluation_results = step_1_data["evaluation_results"]
     dataset_details = step_1_data["dataset_details"]
@@ -596,7 +395,10 @@ async def main():
     # Focus on the first dataset mentioned
     if not dataset_details:
         print("No dataset details found in step_1 output")
-        return "No dataset details found"
+        # Write empty result to step_2.json
+        empty_result = {"found": False, "reasoning": "No dataset details found"}
+        write_step_2_output(arxiv_id, {}, empty_result)
+        return empty_result
 
     first_dataset = dataset_details[0]
     print(f"Checking first dataset: {first_dataset}")
@@ -625,9 +427,19 @@ async def main():
         paper_details=paper_details,
         use_web_search=use_web_search,
     )
+
+    # Write the result to step_2.json
+    write_step_2_output(arxiv_id, first_dataset, result)
+
     return result
 
 
 if __name__ == "__main__":
     result = asyncio.run(main())
-    print("Result: ", result)
+    if result:
+        print("\n" + "=" * 50)
+        print("RESULT:")
+        print("=" * 50)
+        print(json.dumps(result, indent=2))
+    else:
+        print("No result received")

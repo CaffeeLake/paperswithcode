@@ -1,5 +1,5 @@
 """
-Main script that orchestrates the evaluation result extraction pipeline.
+Main script that orchestrates the evaluation result extraction pipeline (agentic workflow).
 
 This script:
 1. Runs step_1 to extract evaluation results from a paper PDF
@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Optional, Union
 
 from backend.database.connection import db_manager
@@ -40,12 +41,11 @@ from backend.services.dataset_service import DatasetService
 from extract_evaluation_results.step_1 import step_1
 from extract_evaluation_results.step_2 import (
     step_2,
-    get_paper_details,
     extract_dataset_id,
     parse_dataset_info,
 )
 from extract_evaluation_results.step_3 import step_3
-# step_4 and step_5 imported conditionally to avoid import errors when skipping steps
+from extract_evaluation_results.utils import get_paper_details
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,7 +57,33 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5.0
 
 
-# Validation functions are now imported from step_2.py
+# Cache helper functions
+def get_cache_dir(arxiv_id: str) -> Path:
+    """Get the cache directory for a given arxiv_id."""
+    cache_dir = Path("backend/outputs/evaluation_results") / arxiv_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def read_json_if_exists(path: Path) -> Optional[Union[dict, list]]:
+    """Read JSON from path if it exists, otherwise return None."""
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to read cache file {path}: {e}")
+            return None
+    return None
+
+
+def write_json(path: Path, data: Union[dict, list]) -> None:
+    """Write data as JSON to path."""
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def write_text(path: Path, text: str) -> None:
+    """Write text to path."""
+    path.write_text(text)
 
 
 async def step_2_with_retry(
@@ -87,7 +113,18 @@ async def step_2_with_retry(
                 return (dataset_detail, result)
 
             except Exception as e:
+                import traceback
+
                 error_str = str(e)
+                error_type = type(e).__name__
+                error_traceback = traceback.format_exc()
+
+                # Log full error details for debugging
+                logger.error(
+                    f"Error processing dataset '{dataset_name}': {error_type}: {error_str}"
+                )
+                logger.debug(f"Full traceback:\n{error_traceback}")
+
                 is_rate_limit = (
                     "429" in error_str
                     or "rate_limit" in error_str.lower()
@@ -106,10 +143,12 @@ async def step_2_with_retry(
                     await asyncio.sleep(wait_time)
                     continue
                 else:
+                    # Create a more informative error message
+                    error_msg = f"{error_type}: {error_str}"
                     logger.error(
-                        f"Error processing dataset '{dataset_name}': {error_str}"
+                        f"Failed to process dataset '{dataset_name}': {error_msg}"
                     )
-                    return (dataset_detail, e)
+                    return (dataset_detail, Exception(error_msg))
 
         return (dataset_detail, Exception(f"Failed after {MAX_RETRIES} attempts"))
 
@@ -433,26 +472,44 @@ async def run_step_5(
 
 
 async def run_pipeline(
-    arxiv_id: str, skip_step_5: bool = False, skip_addition: bool = False
+    arxiv_id: str,
+    skip_step_5: bool = False,
+    skip_addition: bool = False,
+    resume: bool = False,
 ) -> dict:
     """Run the complete evaluation extraction pipeline."""
     logger.info(f"Starting pipeline for paper: {arxiv_id}")
+    if resume:
+        logger.info("Resume mode enabled: will use cached results when available")
+
+    cache_dir = get_cache_dir(arxiv_id)
 
     # Step 1: Extract evaluation results
     logger.info("=" * 60)
     logger.info("STEP 1: Extracting evaluation results from paper")
     logger.info("=" * 60)
 
-    step_1_response = await step_1(arxiv_id)
-    if step_1_response is None:
-        return {
-            "success": False,
-            "error": "Step 1 failed: Could not extract evaluation results",
-            "step_1_response": None,
-            "step_2_results": [],
-        }
+    step_1_data = None
+    step_1_path = cache_dir / "step_1.json"
 
-    step_1_data = json.loads(step_1_response)
+    if resume:
+        step_1_data = read_json_if_exists(step_1_path)
+        if step_1_data:
+            logger.info("Using cached Step 1 results")
+
+    if not step_1_data:
+        step_1_response = await step_1(arxiv_id)
+        if step_1_response is None:
+            return {
+                "success": False,
+                "error": "Step 1 failed: Could not extract evaluation results",
+                "step_1_response": None,
+                "step_2_results": [],
+            }
+
+        step_1_data = json.loads(step_1_response)
+        write_json(step_1_path, step_1_data)
+        logger.info("Step 1 results cached")
 
     evaluation_results = step_1_data.get("evaluation_results", [])
     dataset_details = step_1_data.get("dataset_details", [])
@@ -476,83 +533,118 @@ async def run_pipeline(
     )
     logger.info("=" * 60)
 
-    paper_details = await get_paper_details(arxiv_id)
-    use_web_search = bool(os.getenv("EXA_API_KEY"))
-    if not use_web_search:
-        logger.warning(
-            "EXA_API_KEY not found. Web search disabled for dataset finding."
-        )
+    step_2_path = cache_dir / "step_2_results.json"
+    results = None
 
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-    tasks = []
+    if resume:
+        results = read_json_if_exists(step_2_path)
+        if results:
+            logger.info(f"Using cached Step 2 results ({len(results)} datasets)")
 
-    for idx, dataset_detail in enumerate(dataset_details):
-        dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
-        logger.info(f"Queuing dataset {idx + 1}/{len(dataset_details)}: {dataset_name}")
-
-        task = step_2_with_retry(
-            arxiv_id=arxiv_id,
-            dataset_detail=dataset_detail,
-            evaluation_results=evaluation_results,
-            paper_details=paper_details,
-            use_web_search=use_web_search,
-            semaphore=semaphore,
-        )
-        tasks.append(task)
-
-        if idx < len(dataset_details) - 1:
-            await asyncio.sleep(DELAY_BETWEEN_STARTS)
-
-    logger.info(f"Running {len(tasks)} dataset processing tasks with rate limiting...")
-    step_2_results = await asyncio.gather(*tasks, return_exceptions=False)
-
-    # Process step_2 results
-    results = []
-    for idx, (dataset_detail, result) in enumerate(step_2_results):
-        dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
-
-        if isinstance(result, Exception):
-            logger.error(f"Error processing dataset {dataset_name}: {result}")
-            results.append(
-                {
-                    "dataset": dataset_detail,
-                    "success": False,
-                    "error": str(result),
-                    "result": None,
-                }
+    if not results:
+        paper_details = await get_paper_details(arxiv_id)
+        use_web_search = bool(os.getenv("EXA_API_KEY"))
+        if not use_web_search:
+            logger.warning(
+                "EXA_API_KEY not found. Web search disabled for dataset finding."
             )
-        else:
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        tasks = []
+
+        for idx, dataset_detail in enumerate(dataset_details):
+            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
             logger.info(
-                f"✓ Completed dataset {idx + 1}/{len(dataset_details)}: {dataset_name}"
+                f"Queuing dataset {idx + 1}/{len(dataset_details)}: {dataset_name}"
             )
-            results.append(
-                {
-                    "dataset": dataset_detail,
-                    "success": True,
-                    "result": result,
-                }
+
+            task = step_2_with_retry(
+                arxiv_id=arxiv_id,
+                dataset_detail=dataset_detail,
+                evaluation_results=evaluation_results,
+                paper_details=paper_details,
+                use_web_search=use_web_search,
+                semaphore=semaphore,
             )
+            tasks.append(task)
+
+            if idx < len(dataset_details) - 1:
+                await asyncio.sleep(DELAY_BETWEEN_STARTS)
+
+        logger.info(
+            f"Running {len(tasks)} dataset processing tasks with rate limiting..."
+        )
+        step_2_results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        # Process step_2 results
+        results = []
+        for idx, (dataset_detail, result) in enumerate(step_2_results):
+            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+
+            if isinstance(result, Exception):
+                logger.error(f"Error processing dataset {dataset_name}: {result}")
+                results.append(
+                    {
+                        "dataset": dataset_detail,
+                        "success": False,
+                        "error": str(result),
+                        "result": None,
+                    }
+                )
+            else:
+                logger.info(
+                    f"✓ Completed dataset {idx + 1}/{len(dataset_details)}: {dataset_name}"
+                )
+                results.append(
+                    {
+                        "dataset": dataset_detail,
+                        "success": True,
+                        "result": result,
+                    }
+                )
+
+        write_json(step_2_path, results)
+        logger.info("Step 2 results cached")
 
     logger.info("=" * 60)
     logger.info("Pipeline completed successfully")
     logger.info("=" * 60)
 
     # Step 3: Gather information for datasets not found in database
-    step_3_results = []
+    step_3_path = cache_dir / "step_3_results.json"
+    step_3_results = None
     datasets_not_found = []
 
     for step_2_result in results:
         if step_2_result.get("success") and step_2_result.get("result"):
             result_text = str(step_2_result["result"])
-            if "Dataset not found" in result_text:
-                datasets_not_found.append(step_2_result["dataset"])
+            # Check if dataset was actually found by parsing the result
+            # parse_dataset_info returns None if dataset not found or if no valid dataset ID found
+            dataset_info = parse_dataset_info(result_text)
+            if dataset_info is None:
+                # Also check for explicit "Dataset not found" string for backward compatibility
+                if "Dataset not found" in result_text:
+                    datasets_not_found.append(step_2_result["dataset"])
+                else:
+                    # If parse_dataset_info returns None and no explicit "Dataset not found",
+                    # it means the agent didn't find a valid dataset ID, so treat as not found
+                    datasets_not_found.append(step_2_result["dataset"])
 
     if datasets_not_found:
-        logger.info("=" * 60)
-        logger.info(
-            f"STEP 3: Gathering information for {len(datasets_not_found)} datasets not found in database"
-        )
-        logger.info("=" * 60)
+        if resume:
+            step_3_results = read_json_if_exists(step_3_path)
+            if step_3_results:
+                logger.info(
+                    f"Using cached Step 3 results ({len(step_3_results)} datasets)"
+                )
+
+        if not step_3_results:
+            step_3_results = []
+            logger.info("=" * 60)
+            logger.info(
+                f"STEP 3: Gathering information for {len(datasets_not_found)} datasets not found in database"
+            )
+            logger.info("=" * 60)
 
         # Get paper title for context
         paper_title = None
@@ -624,94 +716,198 @@ async def run_pipeline(
                         "result": result.model_dump() if result else None,
                     }
                 )
+
+            write_json(step_3_path, step_3_results)
+            logger.info("Step 3 results cached")
     else:
         logger.info("STEP 3: Skipped (all datasets found in database)")
+        if resume:
+            step_3_results = read_json_if_exists(step_3_path)
+            if step_3_results:
+                logger.info(
+                    f"Using cached Step 3 results ({len(step_3_results)} datasets)"
+                )
+
+    if step_3_results is None:
+        step_3_results = []
 
     # Step 4: Add datasets gathered in step_3 to database
-    step_4_results = []
+    step_4_path = cache_dir / "step_4_results.json"
+    step_4_results = None
     datasets_to_add = []
 
     if skip_addition:
         logger.info("STEP 4: Skipped (--skip-addition flag enabled)")
-    else:
-        for step_3_result in step_3_results:
-            if step_3_result.get("success") and step_3_result.get("result"):
-                datasets_to_add.append(step_3_result)
-
-        if datasets_to_add:
-            logger.info("=" * 60)
-            logger.info(f"STEP 4: Adding {len(datasets_to_add)} datasets to database")
-            logger.info("=" * 60)
-
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-            step_4_tasks = []
-
-            for idx, step_3_result in enumerate(datasets_to_add):
-                dataset_detail = step_3_result["dataset"]
-                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+        if resume:
+            step_4_results = read_json_if_exists(step_4_path)
+            if step_4_results:
                 logger.info(
-                    f"Queuing step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
+                    f"Using cached Step 4 results ({len(step_4_results)} datasets)"
+                )
+        if step_4_results is None:
+            step_4_results = []
+    else:
+        if resume:
+            step_4_results = read_json_if_exists(step_4_path)
+            if step_4_results:
+                logger.info(
+                    f"Using cached Step 4 results ({len(step_4_results)} datasets)"
                 )
 
-                task = step_4_with_retry(
-                    dataset_detail=dataset_detail,
-                    step_3_result=step_3_result["result"],
-                    arxiv_id=arxiv_id,
-                    semaphore=semaphore,
+        if not step_4_results:
+            for step_3_result in step_3_results:
+                if step_3_result.get("success") and step_3_result.get("result"):
+                    datasets_to_add.append(step_3_result)
+
+            if datasets_to_add:
+                logger.info("=" * 60)
+                logger.info(
+                    f"STEP 4: Adding {len(datasets_to_add)} datasets to database"
                 )
-                step_4_tasks.append(task)
+                logger.info("=" * 60)
 
-                if idx < len(datasets_to_add) - 1:
-                    await asyncio.sleep(DELAY_BETWEEN_STARTS)
+                semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+                step_4_tasks = []
 
-            logger.info(
-                f"Running {len(step_4_tasks)} step_4 tasks with rate limiting..."
-            )
-            step_4_raw_results = await asyncio.gather(
-                *step_4_tasks, return_exceptions=False
-            )
-
-            # Process step_4 results
-            for idx, (dataset_detail, result) in enumerate(step_4_raw_results):
-                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
-
-                if isinstance(result, Exception):
-                    logger.error(
-                        f"Error in step_4 for dataset {dataset_name}: {result}"
-                    )
-                    step_4_results.append(
-                        {
-                            "dataset": dataset_detail,
-                            "success": False,
-                            "error": str(result),
-                            "result": None,
-                        }
-                    )
-                else:
+                for idx, step_3_result in enumerate(datasets_to_add):
+                    dataset_detail = step_3_result["dataset"]
+                    dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
                     logger.info(
-                        f"✓ Completed step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
+                        f"Queuing step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
                     )
-                    step_4_results.append(
-                        {
-                            "dataset": dataset_detail,
-                            "success": "Successfully created dataset" in str(result),
-                            "result": result,
-                        }
+
+                    task = step_4_with_retry(
+                        dataset_detail=dataset_detail,
+                        step_3_result=step_3_result["result"],
+                        arxiv_id=arxiv_id,
+                        semaphore=semaphore,
                     )
+                    step_4_tasks.append(task)
+
+                    if idx < len(datasets_to_add) - 1:
+                        await asyncio.sleep(DELAY_BETWEEN_STARTS)
+
+                logger.info(
+                    f"Running {len(step_4_tasks)} step_4 tasks with rate limiting..."
+                )
+                step_4_raw_results = await asyncio.gather(
+                    *step_4_tasks, return_exceptions=False
+                )
+
+                # Process step_4 results
+                for idx, (dataset_detail, result) in enumerate(step_4_raw_results):
+                    dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+
+                    if isinstance(result, Exception):
+                        logger.error(
+                            f"Error in step_4 for dataset {dataset_name}: {result}"
+                        )
+                        step_4_results.append(
+                            {
+                                "dataset": dataset_detail,
+                                "success": False,
+                                "error": str(result),
+                                "result": None,
+                            }
+                        )
+                    else:
+                        logger.info(
+                            f"✓ Completed step_4 for dataset {idx + 1}/{len(datasets_to_add)}: {dataset_name}"
+                        )
+                        step_4_results.append(
+                            {
+                                "dataset": dataset_detail,
+                                "success": "Successfully created dataset"
+                                in str(result),
+                                "result": result,
+                            }
+                        )
+
+                write_json(step_4_path, step_4_results)
+                logger.info("Step 4 results cached")
         else:
             logger.info("STEP 4: Skipped (no datasets to add)")
+            if step_4_results is None:
+                step_4_results = []
 
     # Step 5: Add to database (optional)
-    aligned_results = []
+    aligned_results_path = cache_dir / "aligned_results.json"
+    step_5_result_path = cache_dir / "step_5_result.txt"
+    aligned_results = None
     step_5_result = None
     step_5_error = None
 
     if skip_addition:
         logger.info("STEP 5: Skipped (--skip-addition flag enabled)")
+        if resume:
+            aligned_results = read_json_if_exists(aligned_results_path)
+            if step_5_result_path.exists():
+                try:
+                    step_5_result = step_5_result_path.read_text()
+                except IOError as e:
+                    logger.warning(f"Failed to read cached step 5 result: {e}")
+                    step_5_result = None
+            if aligned_results or step_5_result:
+                logger.info("Using cached Step 5 results")
+        if aligned_results is None:
+            aligned_results = []
     elif not skip_step_5:
-        aligned_results, step_5_result, step_5_error = await run_step_5(
-            arxiv_id, evaluation_results, results, step_4_results
+        # Always recompute alignment (it's cheap and depends on current DB state)
+        aligned_results, alignment_error = align_evaluation_results(
+            arxiv_id=arxiv_id,
+            evaluation_results=evaluation_results,
+            step_2_results=results,
+            step_4_results=step_4_results or [],
         )
+
+        if alignment_error:
+            logger.error(f"Alignment failed: {alignment_error}")
+            step_5_error = alignment_error
+            aligned_results = []
+        else:
+            write_json(aligned_results_path, aligned_results)
+
+        # Check cache for step_5_result if resume enabled
+        if resume and aligned_results:
+            cached_step_5_result = None
+            if step_5_result_path.exists():
+                try:
+                    cached_step_5_result = step_5_result_path.read_text()
+                except IOError as e:
+                    logger.warning(f"Failed to read cached step 5 result: {e}")
+
+            if cached_step_5_result:
+                step_5_result = cached_step_5_result
+                logger.info("Using cached Step 5 result")
+            else:
+                # Run step 5 if we have aligned results but no cached result
+                aligned_results, step_5_result, step_5_error = await run_step_5(
+                    arxiv_id, evaluation_results, results, step_4_results
+                )
+                if step_5_result:
+                    write_text(step_5_result_path, step_5_result)
+                    logger.info("Step 5 result cached")
+        elif aligned_results:
+            # Run step 5 normally if not resuming
+            aligned_results, step_5_result, step_5_error = await run_step_5(
+                arxiv_id, evaluation_results, results, step_4_results
+            )
+            if step_5_result:
+                write_text(step_5_result_path, step_5_result)
+                logger.info("Step 5 result cached")
+        else:
+            logger.warning("No evaluation results to add to database")
+            aligned_results = []
+    else:
+        logger.info("STEP 5: Skipped (--skip-step-5 flag enabled)")
+        if resume:
+            aligned_results = read_json_if_exists(aligned_results_path)
+            if aligned_results:
+                logger.info(
+                    f"Using cached aligned results ({len(aligned_results)} results)"
+                )
+        if aligned_results is None:
+            aligned_results = []
 
     return {
         "success": True,
@@ -885,7 +1081,7 @@ def print_summary(result: dict):
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Extract evaluation results from a paper and process datasets."
+        description="Extract evaluation results from a paper and submit them to the database."
     )
     parser.add_argument(
         "--arxiv_id",
@@ -903,10 +1099,18 @@ async def main():
         action="store_true",
         help="Skip step 4 and step 5 (do not add datasets or evaluation results to database)",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from cached results if available (skips re-running completed steps)",
+    )
     args = parser.parse_args()
 
     result = await run_pipeline(
-        args.arxiv_id, skip_step_5=args.skip_step_5, skip_addition=args.skip_addition
+        args.arxiv_id,
+        skip_step_5=args.skip_step_5,
+        skip_addition=args.skip_addition,
+        resume=args.resume,
     )
     print_summary(result)
     return result

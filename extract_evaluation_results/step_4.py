@@ -11,7 +11,6 @@ uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --datase
 from backend.database.connection import db_manager
 from backend.services.dataset_service import DatasetService
 from backend.schemas.dataset_schema import DatasetCreateRequest
-from backend.utils.paper_utils import get_title, get_authors, get_abstract
 from agents import Agent, function_tool, Runner
 import argparse
 import asyncio
@@ -19,28 +18,20 @@ import json
 import logging
 from sqlalchemy.orm import Session
 
+from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
+
 logger = logging.getLogger(__name__)
 
 
-async def get_paper_details(arxiv_id: str) -> str:
-    """Get formatted paper details including title, authors, and abstract."""
-    paper_title = await get_title(arxiv_id)
-    paper_authors = await get_authors(arxiv_id)
-    paper_abstract = await get_abstract(arxiv_id)
+def get_dataset_adder_prompt() -> str:
+    """Get the dataset adder prompt with dynamically fetched tasks list.
+
+    Returns:
+        Formatted prompt string with current tasks from database
+    """
+    tasks_list = get_formatted_tasks_list()
 
     return f"""
-### Title:
-{paper_title}
-### Authors:
-{paper_authors}
-### ArXiv ID
-{arxiv_id}
-### Abstract
-{paper_abstract}
-"""
-
-
-dataset_adder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
 within the field of machine learning and artificial intelligence (AI).
 
@@ -58,51 +49,7 @@ Ensure you provide all relevant information including:
 - hf_url (optional): Hugging Face dataset URL
 - paper_url (optional): URL to the paper that introduced this dataset
 
-AVAILABLE TASKS IN DATABASE:
-============================
-
-Computer Vision:
-- ID: 1  - Image Classification
-- ID: 2  - Object Detection
-- ID: 3  - Image segmentation
-- ID: 4  - OCR
-- ID: 13 - 3D generation
-- ID: 16 - Depth estimation
-- ID: 18 - Image editing
-- ID: 19 - Image generation
-- ID: 25 - Video generation
-- ID: 257 - Object counting
-
-Natural Language Processing:
-- ID: 5  - Language Modeling
-- ID: 6  - Machine Translation
-- ID: 30 - Text classification
-
-Audio:
-- ID: 10 - Audio-Language Models
-- ID: 12 - Automatic Speech Recognition
-- ID: 24 - Text-to-speech
-- ID: 27 - Voice cloning
-- ID: 259 - Audio Classification
-
-General/Multimodal:
-- ID: 7  - Computer Use Agents
-- ID: 8  - Vision-Language Models
-- ID: 9  - Video-Language Models
-- ID: 14 - Agents
-- ID: 15 - Coding Agents
-- ID: 17 - Embedding models
-- ID: 20 - Omni models
-- ID: 21 - Reasoning
-- ID: 22 - Reinforcement Learning
-- ID: 23 - Retrieval
-- ID: 26 - World Models
-- ID: 256 - General
-
-Other:
-- ID: 11 - Robotics
-- ID: 28 - Time-series forecasting
-- ID: 29 - Time-series classification
+{tasks_list}
 
 Example: To add the COCO dataset for Object Detection, use task_ids=[2]
 Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19]
@@ -270,7 +217,8 @@ async def step_4(dataset_details_json: str) -> str:
 
     prompt = "\n".join(prompt_parts)
 
-    # Create and run the agent
+    # Create and run the agent with dynamic prompt
+    dataset_adder_prompt = get_dataset_adder_prompt()
     dataset_adder_agent = Agent(
         name="Dataset Adder",
         instructions=dataset_adder_prompt,

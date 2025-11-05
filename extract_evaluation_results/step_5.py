@@ -33,6 +33,7 @@ from typing import Optional
 from backend.database.connection import db_manager
 from backend.services.evaluation_service import EvaluationService
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
+from backend.services.paper_service import PaperService
 from backend.utils.logging_utils import async_export_txt
 
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from backend.models.database import (
     Metric as DBMetric,
     Paper as DBPaper,
 )
+from extract_evaluation_results.utils import get_formatted_tasks_list
 
 
 evaluation_adder_prompt = """
@@ -54,6 +56,14 @@ within the field of machine learning and artificial intelligence (AI), greatly i
 You are an expert in managing evaluation results in a SQL database.
 A colleague of yours has extracted evaluation results from a paper and identified the datasets, tasks, and metrics from leaderboard tables.
 Your responsibility includes adding these evaluation results to the database.
+
+## Context: Available Tasks and Datasets
+
+Below is a list of tasks currently in the database along with their associated datasets. This provides context about the current information landscape of the PapersWithCode app:
+
+{tasks_list}
+
+Use this context to better understand which tasks and datasets are commonly used together, which can help you validate that the evaluation results are being added to the correct leaderboards.
 
 ## CRITICAL: Understanding Leaderboards as Triples
 
@@ -68,14 +78,14 @@ Each evaluation result belongs to a specific leaderboard triple via the `best_me
 
 ## Important Rules
 
-1. **Duplicate Prevention**: Before adding an evaluation, check if an evaluation already exists with the same:
+1. **Duplicate Prevention** (CRITICAL): Before adding an evaluation, you MUST check if an evaluation already exists. The prompt will include a list of existing evaluations for the paper. Compare each evaluation you're trying to add against this list using the following criteria:
    - paper_id
    - task_id
    - dataset_id
    - model_name
    - best_metric
 
-   If such an evaluation exists, do NOT create a duplicate. Return a message indicating the evaluation already exists.
+   If an evaluation with the same combination of these fields already exists in the list provided, do NOT attempt to add it. Skip it and report that it's a duplicate. The tool `add_evaluation_result` also performs duplicate checking, but you should avoid calling it for duplicates to save API calls and improve efficiency.
 
 2. **Metric Validation**:
    - All metrics in the `metrics` dictionary must exist in the `metrics` table
@@ -357,9 +367,14 @@ async def add_evaluation_result(
 
 async def create_evaluation_adder_agent() -> Agent:
     """Create the evaluation adder agent."""
+    # Get tasks list for context
+    tasks_list = get_formatted_tasks_list()
+    # Build prompt with tasks context
+    prompt_with_context = evaluation_adder_prompt.format(tasks_list=tasks_list)
+
     return Agent(
         name="Evaluation Adder",
-        instructions=evaluation_adder_prompt,
+        instructions=prompt_with_context,
         tools=[add_evaluation_result, get_leaderboard_metrics],
     )
 
@@ -375,6 +390,59 @@ def read_aligned_results_file(filename: str) -> str:
     if not file_path.exists():
         raise FileNotFoundError(f"Could not find aligned results file: {filename}")
     return file_path.read_text()
+
+
+def get_existing_evaluations_for_paper(arxiv_id: str) -> list[dict]:
+    """Get existing evaluation results for a paper by ArXiv ID.
+
+    Args:
+        arxiv_id: The ArXiv ID of the paper
+
+    Returns:
+        List of dictionaries containing existing evaluation details for duplicate detection
+    """
+    session: Session = db_manager.session_local()
+    try:
+        # Get paper_id from arxiv_id
+        paper_service = PaperService(session)
+        try:
+            paper = paper_service.get_paper_by_arxiv_id(arxiv_id)
+            paper_id = int(paper.id)
+        except Exception:
+            # Paper not found, return empty list
+            session.close()
+            return []
+
+        # Get existing evaluations for this paper
+        evaluation_service = EvaluationService(session)
+        evaluations_result = evaluation_service.get_evaluations(
+            paper_id=paper_id,
+            page_size=1000,  # Get all evaluations (reasonable limit)
+        )
+
+        # Format evaluations for duplicate detection
+        existing_evaluations = []
+        for eval_obj in evaluations_result.results:
+            existing_evaluations.append(
+                {
+                    "paper_id": int(eval_obj.paper_id),
+                    "task_id": int(eval_obj.task_id),
+                    "dataset_id": int(eval_obj.dataset_id),
+                    "model_name": eval_obj.model_name,
+                    "best_metric": eval_obj.best_metric,
+                    "metrics": eval_obj.metrics,
+                    "task_name": eval_obj.task_name,
+                    "dataset_name": eval_obj.dataset_name,
+                }
+            )
+
+        session.close()
+        return existing_evaluations
+
+    except Exception as e:
+        session.close()
+        print(f"Error fetching existing evaluations: {e}")
+        return []
 
 
 async def step_5(
@@ -394,9 +462,40 @@ async def step_5(
     """
     print(f"Processing {len(aligned_evaluation_results)} evaluation results")
 
+    # Get existing evaluations for this paper to prevent duplicates
+    existing_evaluations = get_existing_evaluations_for_paper(arxiv_id)
+    print(f"Found {len(existing_evaluations)} existing evaluation(s) for this paper")
+
+    # Format existing evaluations for the prompt
+    existing_evaluations_text = ""
+    if existing_evaluations:
+        existing_evaluations_text = f"""
+## Existing evaluation results for this paper
+
+The following evaluation results already exist in the database for this paper. **DO NOT** add duplicates of these evaluations:
+
+{json.dumps(existing_evaluations, indent=2)}
+
+**Duplicate Detection**: An evaluation is considered a duplicate if it has the same:
+- paper_id
+- task_id
+- dataset_id
+- model_name
+- best_metric
+
+Before adding any evaluation, carefully compare it against the existing evaluations above. If a match is found, skip that evaluation and report that it already exists.
+"""
+    else:
+        existing_evaluations_text = """
+## Existing evaluation results for this paper
+
+No existing evaluation results found for this paper. You can proceed to add all evaluation results.
+"""
+
     prompt = f"""
 ## Paper details
 {paper_details}
+{existing_evaluations_text}
 
 ## Evaluation results to add
 
@@ -404,10 +503,11 @@ The following evaluation results have been extracted and aligned with the databa
 {json.dumps(aligned_evaluation_results, indent=2)}
 
 Please add these evaluation results to the database. For each evaluation result:
-1. Check if it already exists (duplicate check)
-2. Validate that all metrics exist in the database
-3. Ensure best_metric is valid and in the metrics dictionary
-4. Add the evaluation result using the add_evaluation_result tool
+1. **First, check if it already exists** by comparing against the existing evaluations listed above (duplicate check)
+2. If it already exists, skip it and report that it's a duplicate
+3. Validate that all metrics exist in the database
+4. Ensure best_metric is valid and in the metrics dictionary
+5. Add the evaluation result using the add_evaluation_result tool (only if it doesn't already exist)
 
 **IMPORTANT**: When calling add_evaluation_result, convert the metrics dictionary to a JSON string.
 For example, if metrics is {{"AP": "44.9", "AP50": "64.7"}}, pass it as '{{"AP": "44.9", "AP50": "64.7"}}'.
@@ -473,7 +573,7 @@ async def main():
         return "No aligned evaluation results found"
 
     # Get paper details
-    from extract_evaluation_results.step_2 import get_paper_details
+    from extract_evaluation_results.utils import get_paper_details
 
     paper_details = await get_paper_details(arxiv_id)
 

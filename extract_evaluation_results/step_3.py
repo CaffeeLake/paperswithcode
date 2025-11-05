@@ -43,28 +43,9 @@ from pydantic import BaseModel
 from agents import Agent, Runner
 from agents.mcp import MCPServerStdio
 
-from extract_evaluation_results.step_2 import get_search_parts
-from backend.utils.paper_utils import get_title, get_authors, get_abstract
+from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
 
 logger = logging.getLogger(__name__)
-
-
-async def get_paper_details(arxiv_id: str) -> str:
-    """Get formatted paper details including title, authors, and abstract."""
-    paper_title = await get_title(arxiv_id)
-    paper_authors = await get_authors(arxiv_id)
-    paper_abstract = await get_abstract(arxiv_id)
-
-    return f"""
-### Title:
-{paper_title}
-### Authors:
-{paper_authors}
-### ArXiv ID
-{arxiv_id}
-### Abstract
-{paper_abstract}
-"""
 
 
 class DatasetInformation(BaseModel):
@@ -100,6 +81,14 @@ You need to find the following information about the dataset:
 - The conference URL of the dataset, if available (e.g., "https://openaccess.thecvf.com/CVPR2021/papers/Kolesnikov_Decoupled_Attention_Network_for_Vision-Language_Tasks_CVPR_2021_paper.pdf")
 
 Use the provided dataset information as context, but verify and expand on it using web search and Hugging Face.
+
+## Context: Available Tasks and Datasets
+
+Below is a list of tasks currently in the database along with their associated datasets. This provides context about the current information landscape of the PapersWithCode app:
+
+{tasks_list}
+
+Use this context to better understand which tasks are available and which datasets are commonly used for each task. This can help you determine which tasks the dataset should be linked to when it is added to the database.
 
 ## Output format
 ```python
@@ -246,6 +235,23 @@ if __name__ == "__main__":
         )
 
 
+async def get_search_parts(dataset_name: str, arxiv_id: str, hf_url: str) -> str:
+    search_parts = []
+
+    if not dataset_name and not arxiv_id and not hf_url:
+        raise ValueError(
+            "At least one search parameter (dataset_name, arxiv_id, or hf_url) must be provided"
+        )
+
+    if dataset_name:
+        search_parts.append(f"Dataset name: '{dataset_name}'")
+    if arxiv_id:
+        search_parts.append(f"ArXiv ID: '{arxiv_id}'")
+    if hf_url:
+        search_parts.append(f"HF URL: '{hf_url}'")
+    return " and ".join(search_parts)
+
+
 async def step_3(
     dataset_name: Optional[str],
     arxiv_id: Optional[str],
@@ -342,9 +348,15 @@ async def step_3(
                 "To enable it, add HF_TOKEN to backend/keys.env with your Hugging Face API token (starts with hf_)"
             )
 
+        # Create the dataset information agent
+        # Get tasks list for context
+        tasks_list = get_formatted_tasks_list()
+        # Build prompt with tasks context
+        prompt_with_context = dataset_information_prompt.format(tasks_list=tasks_list)
+
         dataset_information_agent = Agent(
             name="Dataset Information Gatherer",
-            instructions=dataset_information_prompt,
+            instructions=prompt_with_context,
             mcp_servers=entered_servers,
             output_type=DatasetInformation,
         )
