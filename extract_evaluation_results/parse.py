@@ -38,7 +38,12 @@ from backend.services.paper_service import PaperService
 from backend.services.dataset_service import DatasetService
 
 from extract_evaluation_results.step_1 import step_1
-from extract_evaluation_results.step_2 import step_2, get_paper_details
+from extract_evaluation_results.step_2 import (
+    step_2,
+    get_paper_details,
+    extract_dataset_id,
+    parse_dataset_info,
+)
 from extract_evaluation_results.step_3 import step_3
 # step_4 and step_5 imported conditionally to avoid import errors when skipping steps
 
@@ -52,132 +57,7 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 5.0
 
 
-def verify_dataset_id_exists(dataset_id: int) -> bool:
-    """Verify that a dataset ID actually exists in the database.
-
-    This prevents false positives from AI agents that may fabricate dataset IDs.
-
-    Args:
-        dataset_id: The dataset ID to verify
-
-    Returns:
-        True if the dataset exists, False otherwise
-    """
-    session = db_manager.session_local()
-    try:
-        from backend.models.database import Dataset as DBDataset
-
-        dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
-        return dataset is not None
-    except Exception as e:
-        logger.error(f"Error verifying dataset ID {dataset_id}: {e}")
-        return False
-    finally:
-        session.close()
-
-
-def extract_dataset_id(result_text: str, validate: bool = True) -> Optional[int]:
-    """Extract dataset ID from step_2 result text.
-
-    Args:
-        result_text: The result text from step_2
-        validate: If True, verify the dataset ID exists in the database
-
-    Returns:
-        Dataset ID if found and valid, None otherwise
-    """
-    if "Dataset not found" in result_text:
-        return None
-
-    dataset_id = None
-
-    # Try JSON format first
-    try:
-        dataset_info = json.loads(result_text)
-        if isinstance(dataset_info, dict) and dataset_info.get("found"):
-            dataset_id = dataset_info.get("id")
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Try tool result format: "Found dataset: ID=X, Name=Y, Slug=Z"
-    if dataset_id is None:
-        id_match = re.search(r"ID=(\d+)", result_text)
-        if id_match:
-            try:
-                dataset_id = int(id_match.group(1))
-            except ValueError:
-                pass
-
-    # Validate dataset ID exists in database
-    if dataset_id is not None and validate:
-        if not verify_dataset_id_exists(dataset_id):
-            logger.warning(
-                f"⚠️  FALSE POSITIVE DETECTED: Dataset ID {dataset_id} from agent result "
-                f"does not exist in database. Rejecting fabricated result."
-            )
-            return None
-
-    return dataset_id
-
-
-def parse_dataset_info(result_text: str, validate: bool = True) -> Optional[dict]:
-    """Parse dataset information from step_2 result.
-
-    Args:
-        result_text: The result text from step_2
-        validate: If True, verify the dataset ID exists in the database
-
-    Returns:
-        Dictionary with dataset info if found and valid, None otherwise
-    """
-    if "Dataset not found" in result_text:
-        return None
-
-    dataset_info = None
-
-    # Try JSON format
-    try:
-        parsed_info = json.loads(result_text)
-        if isinstance(parsed_info, dict) and parsed_info.get("found"):
-            dataset_info = parsed_info
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    # Try tool result format
-    if dataset_info is None:
-        if "Found dataset" in result_text:
-            info = {"found": True}
-            for field in ["ID", "Name", "Slug", "HF URL"]:
-                match = re.search(rf"{field}=([^,]+)", result_text)
-                if match:
-                    key = field.lower().replace(" ", "_")
-                    info[key] = match.group(1).strip()
-            if info.get("id"):
-                # Convert ID to int if it's a string
-                try:
-                    info["id"] = int(info["id"])
-                except (ValueError, TypeError):
-                    pass
-                dataset_info = info
-
-    # Validate dataset ID exists in database
-    if dataset_info and dataset_info.get("id"):
-        dataset_id = dataset_info.get("id")
-        if isinstance(dataset_id, str):
-            try:
-                dataset_id = int(dataset_id)
-            except ValueError:
-                logger.warning(f"Invalid dataset ID format: {dataset_id}")
-                return None
-
-        if validate and not verify_dataset_id_exists(dataset_id):
-            logger.warning(
-                f"⚠️  FALSE POSITIVE DETECTED: Dataset ID {dataset_id} from agent result "
-                f"does not exist in database. Rejecting fabricated result."
-            )
-            return None
-
-    return dataset_info if dataset_info and dataset_info.get("id") else None
+# Validation functions are now imported from step_2.py
 
 
 async def step_2_with_retry(
