@@ -118,6 +118,7 @@ Important notes:
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
 - prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
 - when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
+- **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper. Look for the model name in the paper title, abstract, methodology section, or table captions.
 
 ## Tools Available
 

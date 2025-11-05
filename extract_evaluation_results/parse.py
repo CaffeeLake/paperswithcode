@@ -631,6 +631,7 @@ async def run_pipeline(
                     datasets_not_found.append(step_2_result["dataset"])
 
     if datasets_not_found:
+        # Check for cached results if resuming
         if resume:
             step_3_results = read_json_if_exists(step_3_path)
             if step_3_results:
@@ -638,6 +639,7 @@ async def run_pipeline(
                     f"Using cached Step 3 results ({len(step_3_results)} datasets)"
                 )
 
+        # Only run step_3 if we don't have cached results (or not resuming)
         if not step_3_results:
             step_3_results = []
             logger.info("=" * 60)
@@ -646,79 +648,83 @@ async def run_pipeline(
             )
             logger.info("=" * 60)
 
-        # Get paper title for context
-        paper_title = None
-        try:
-            paper_details = await get_paper_details(arxiv_id)
-            # Extract title from paper_details if available
-            if paper_details:
-                # Try to parse JSON if it's JSON
-                try:
-                    paper_data = json.loads(paper_details)
-                    paper_title = paper_data.get("title")
-                except json.JSONDecodeError:
-                    # If not JSON, try to extract title from text
-                    title_match = re.search(
-                        r"Title:\s*(.+?)(?:\n|$)", paper_details, re.IGNORECASE
-                    )
-                    if title_match:
-                        paper_title = title_match.group(1).strip()
-        except Exception as e:
-            logger.warning(f"Could not get paper title: {e}")
+            # Get paper title for context
+            paper_title = None
+            try:
+                paper_details = await get_paper_details(arxiv_id)
+                # Extract title from paper_details if available
+                if paper_details:
+                    # Try to parse JSON if it's JSON
+                    try:
+                        paper_data = json.loads(paper_details)
+                        paper_title = paper_data.get("title")
+                    except json.JSONDecodeError:
+                        # If not JSON, try to extract title from text
+                        title_match = re.search(
+                            r"Title:\s*(.+?)(?:\n|$)", paper_details, re.IGNORECASE
+                        )
+                        if title_match:
+                            paper_title = title_match.group(1).strip()
+            except Exception as e:
+                logger.warning(f"Could not get paper title: {e}")
 
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-        step_3_tasks = []
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+            step_3_tasks = []
 
-        for idx, dataset_detail in enumerate(datasets_not_found):
-            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
-            logger.info(
-                f"Queuing step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
-            )
-
-            task = step_3_with_retry(
-                dataset_detail=dataset_detail,
-                arxiv_id=arxiv_id,
-                paper_title=paper_title,
-                semaphore=semaphore,
-            )
-            step_3_tasks.append(task)
-
-            if idx < len(datasets_not_found) - 1:
-                await asyncio.sleep(DELAY_BETWEEN_STARTS)
-
-        logger.info(f"Running {len(step_3_tasks)} step_3 tasks with rate limiting...")
-        step_3_raw_results = await asyncio.gather(
-            *step_3_tasks, return_exceptions=False
-        )
-
-        # Process step_3 results
-        for idx, (dataset_detail, result) in enumerate(step_3_raw_results):
-            dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
-
-            if isinstance(result, Exception):
-                logger.error(f"Error in step_3 for dataset {dataset_name}: {result}")
-                step_3_results.append(
-                    {
-                        "dataset": dataset_detail,
-                        "success": False,
-                        "error": str(result),
-                        "result": None,
-                    }
-                )
-            else:
+            for idx, dataset_detail in enumerate(datasets_not_found):
+                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
                 logger.info(
-                    f"✓ Completed step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
-                )
-                step_3_results.append(
-                    {
-                        "dataset": dataset_detail,
-                        "success": result is not None,
-                        "result": result.model_dump() if result else None,
-                    }
+                    f"Queuing step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
                 )
 
-            write_json(step_3_path, step_3_results)
-            logger.info("Step 3 results cached")
+                task = step_3_with_retry(
+                    dataset_detail=dataset_detail,
+                    arxiv_id=arxiv_id,
+                    paper_title=paper_title,
+                    semaphore=semaphore,
+                )
+                step_3_tasks.append(task)
+
+                if idx < len(datasets_not_found) - 1:
+                    await asyncio.sleep(DELAY_BETWEEN_STARTS)
+
+            logger.info(
+                f"Running {len(step_3_tasks)} step_3 tasks with rate limiting..."
+            )
+            step_3_raw_results = await asyncio.gather(
+                *step_3_tasks, return_exceptions=False
+            )
+
+            # Process step_3 results
+            for idx, (dataset_detail, result) in enumerate(step_3_raw_results):
+                dataset_name = dataset_detail.get("dataset_name", f"Dataset_{idx}")
+
+                if isinstance(result, Exception):
+                    logger.error(
+                        f"Error in step_3 for dataset {dataset_name}: {result}"
+                    )
+                    step_3_results.append(
+                        {
+                            "dataset": dataset_detail,
+                            "success": False,
+                            "error": str(result),
+                            "result": None,
+                        }
+                    )
+                else:
+                    logger.info(
+                        f"✓ Completed step_3 for dataset {idx + 1}/{len(datasets_not_found)}: {dataset_name}"
+                    )
+                    step_3_results.append(
+                        {
+                            "dataset": dataset_detail,
+                            "success": result is not None,
+                            "result": result.model_dump() if result else None,
+                        }
+                    )
+
+                write_json(step_3_path, step_3_results)
+                logger.info("Step 3 results cached")
     else:
         logger.info("STEP 3: Skipped (all datasets found in database)")
         if resume:
@@ -793,6 +799,9 @@ async def run_pipeline(
                 step_4_raw_results = await asyncio.gather(
                     *step_4_tasks, return_exceptions=False
                 )
+
+                # Initialize results list
+                step_4_results = []
 
                 # Process step_4 results
                 for idx, (dataset_detail, result) in enumerate(step_4_raw_results):

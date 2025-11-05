@@ -102,7 +102,7 @@ Each evaluation result belongs to a specific leaderboard triple via the `best_me
    - paper_id (int): The ID of the paper
    - task_id (int): The ID of the task
    - dataset_id (int): The ID of the dataset
-   - metrics (str): JSON string with dictionary of metric names to values (e.g., '{"AP": "44.9", "AP50": "64.7"}')
+   - metrics (str): JSON string with dictionary of metric names to values (e.g., '{{"AP": "44.9", "AP50": "64.7"}}')
    - best_metric (str): The name of the best performing metric (must be in the metrics dict)
 
 5. **Optional Fields**:
@@ -121,17 +121,17 @@ for a specific (task, dataset) pair. This helps you choose the correct best_metr
 
 When successfully adding an evaluation, return a JSON string with the evaluation details:
 ```json
-{
+{{
   "success": true,
   "evaluation_id": 123,
   "paper_id": 456,
   "task_id": 2,
   "dataset_id": 72,
   "model_name": "DETR",
-  "metrics": "{\"AP\": \"44.9\", \"AP50\": \"64.7\"}",
+  "metrics": "{{\\"AP\\": \\"44.9\\", \\"AP50\\": \\"64.7\\"}}",
   "best_metric": "AP",
   "best_rank": 1
-}
+}}
 ```
 
 If there's an error (duplicate, invalid metric, etc.), return a clear error message explaining what went wrong.

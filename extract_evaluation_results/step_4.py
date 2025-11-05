@@ -10,7 +10,7 @@ uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --datase
 
 from backend.database.connection import db_manager
 from backend.services.dataset_service import DatasetService
-from backend.schemas.dataset_schema import DatasetCreateRequest
+from backend.models.api import DatasetCreateRequest
 from agents import Agent, function_tool, Runner
 import argparse
 import asyncio

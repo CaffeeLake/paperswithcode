@@ -81,7 +81,7 @@ Below is a list of tasks currently in the database along with their associated d
 
 {tasks_list}
 
-Use this context to better understand which datasets are already in the database and which tasks they are associated with. This can help you identify if a dataset might already exist under a different name or identify similar datasets.
+**IMPORTANT**: This tasks list is ONLY for context and hints. You CANNOT determine if a dataset exists just by seeing it in this list. You MUST use the find_dataset tool to actually retrieve the dataset from the database. Only set dataset_found=True if the find_dataset tool returns "Found dataset: ID=X...".
 
 ## CRITICAL: Preventing Duplicate Datasets
 
@@ -92,7 +92,9 @@ the same dataset as one in the database.
 
 ## Search Strategy
 
-You MUST use the find_dataset tool MULTIPLE TIMES with different search strategies to thoroughly check for existing datasets:
+You MUST use the find_dataset tool MULTIPLE TIMES with different search strategies to thoroughly check for existing datasets.
+
+**DO NOT just reason about datasets from the context list above - you MUST actually call the find_dataset tool!**
 
 1. **First, search by ArXiv ID** (if available): This is the most reliable method. If the dataset details mention an ArXiv ID of the introducing paper, use it:
    - Call find_dataset with arxiv_id parameter
@@ -109,7 +111,11 @@ You MUST use the find_dataset tool MULTIPLE TIMES with different search strategi
    - Try common variations (e.g., "COCO" vs "Coco" vs "coco")
    - Try abbreviations (e.g., "ImageNet" vs "ILSVRC")
    - Try with and without version numbers or suffixes
-   - **IMPORTANT**: If the dataset name contains hyphens or underscores (e.g., "NYU-D", "NYU_v2"), also try searching for just the prefix part (e.g., search for "NYU" when given "NYU-D")
+   - **CRITICAL for hyphenated names**: If the dataset name contains hyphens or underscores (e.g., "NYU-D", "NYU_v2"):
+     * Try the exact name first: "NYU-D"
+     * Try just the prefix: "NYU" (datasets are often stored with shortened names)
+     * Try common version variants: "NYU-D" → also try "NYUv2", "NYU-Depth", "NYUD"
+     * Example: For "NYU-D", you must try: find_dataset("NYU-D"), then find_dataset("NYU"), then find_dataset("NYUv2")
    - Extract meaningful prefixes from compound names (e.g., "NYU-D" → try "NYU", "CIFAR-10" → try "CIFAR")
    - Example: find_dataset(dataset_name="COCO")
 
@@ -131,6 +137,19 @@ You MUST use the find_dataset tool MULTIPLE TIMES with different search strategi
    - This helps avoid both false positives (linking to wrong dataset) and false negatives (missing an existing dataset)
 
 Only return "Dataset not found" after you have exhausted ALL possible search strategies and variations, including web search disambiguation when needed.
+
+## Reporting Your Findings
+
+When you find a dataset using the find_dataset tool:
+1. The tool will return something like: "Found dataset: ID=74, Name=CityScapes, Slug=cityscapes..."
+2. You MUST include this dataset ID in your reasoning field, using the format "ID=X" or "ID: X"
+3. Set dataset_found=True
+4. Example reasoning: "I searched for 'Cityscapes' and found a match in the database: ID=74, Name=CityScapes"
+
+When you don't find a dataset after exhausting all search strategies:
+1. Set dataset_found=False
+2. Explain what searches you tried in your reasoning
+3. Example reasoning: "I searched for 'SomeDataset' using variations X, Y, Z but found no matches in the database."
 
 ## Output Format
 
@@ -253,6 +272,76 @@ def load_dataset_from_db(dataset_id: int) -> Optional[dict]:
         }
     finally:
         session.close()
+
+
+def extract_dataset_id(result: str | dict) -> Optional[int]:
+    """Extract dataset ID from step_2 result.
+
+    Args:
+        result: Either a result dict or a string representation of the result
+
+    Returns:
+        Dataset ID if found, None otherwise
+    """
+    # If result is a dict, check for 'found' and 'dataset' keys
+    if isinstance(result, dict):
+        if result.get("found") and result.get("dataset"):
+            return result["dataset"].get("id")
+        return None
+
+    # If result is a string, try to extract ID using regex
+    result_str = str(result)
+
+    # Try to extract ID from patterns like "ID=123" or "ID: 123"
+    id_match = re.search(r"ID[=:]?\s*(\d+)", result_str, re.IGNORECASE)
+    if id_match:
+        return int(id_match.group(1))
+
+    # Also try to parse as JSON if it looks like a dict string
+    if "{" in result_str:
+        try:
+            parsed = json.loads(result_str)
+            if isinstance(parsed, dict):
+                return extract_dataset_id(parsed)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
+
+
+def parse_dataset_info(result: str | dict) -> Optional[dict]:
+    """Parse dataset information from step_2 result.
+
+    Args:
+        result: Either a result dict or a string representation of the result
+
+    Returns:
+        Dataset info dict if found and valid, None otherwise
+    """
+    # If result is a dict, check if dataset was found
+    if isinstance(result, dict):
+        if not result.get("found"):
+            return None
+
+        dataset_info = result.get("dataset")
+        if dataset_info and dataset_info.get("id"):
+            return dataset_info
+        return None
+
+    # If result is a string, try to extract dataset info
+    result_str = str(result)
+
+    # Check for explicit "not found" messages
+    if "Dataset not found" in result_str or "not found" in result_str.lower():
+        return None
+
+    # Try to extract ID first
+    dataset_id = extract_dataset_id(result_str)
+    if not dataset_id:
+        return None
+
+    # If we have an ID, try to load from database
+    return load_dataset_from_db(dataset_id)
 
 
 async def step_2(
