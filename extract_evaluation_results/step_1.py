@@ -125,9 +125,8 @@ Only include evaluation results out of tables that are included in the paper.
 Only include evaluation results of models that the paper introduces, not evaluation results of models of other works.
 If the paper does not contain any evaluation results, return an empty list.
 
-Each evaluation result should be of the tuple of the form (model_name, dataset_name, metric_name, metric_value).
-
-Make sure to only return evaluation results which are useful for leaderboards (which compare performance across different models on the same datasets), do not include results from ablation tables or other tables.
+Each evaluation result should be of the tuple of the form (table_index, model_name, dataset_name, metric_name, metric_value),
+e.g. (2, "BERT (large)", "GLUE", "Accuracy", "85.4").
 
 Importantly, only the best performing results of the paper on each benchmark should be included, as otherwise we end up with too many evaluation results.
 When a paper includes various model sizes (e.g. tiny, base, large), include only the best performing result of the largest model.
@@ -144,14 +143,15 @@ Your task is to only extract evaluation results from the leaderboard tables.
 
 ## Context: Available Tasks and Datasets
 
-Below is a list of areas and tasks currently in the database along with their associated datasets.
+Below is a list of areas and tasks currently in the database of Hugging Face along with their associated datasets.
 This provides context about the current information landscape for leaderboard data:
 
 {tasks_list}
 
 Use this context to better understand which tasks and datasets are commonly used, which can help you identify relevant evaluation results in the paper.
 
-Important notes:
+## Important Rules
+
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
 - the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
 - prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
@@ -159,8 +159,8 @@ Important notes:
 - when the metric value can be interpreted as a percentage, use "accuracy" as the metric name.
 - **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
 - for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is.
-- **When a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
-- When a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
+- **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
+- when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
 
 ## Tools Available
 
@@ -198,7 +198,7 @@ class DatasetDetail(BaseModel):
     dataset_info: str # What you know about this dataset - do not make up information, only use the information provided in the paper
     split: Optional[str] = None # The split of the dataset e.g. "validation", "test", "train", if mentioned in the paper
     paper_title: Optional[str] = None # The title of the paper that introduces the dataset. If introduced in THIS paper, use the paper title provided in the instructions. If introduced in a cited paper, use that paper's title.
-    paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset. If introduced in THIS paper, use the arxiv_id provided in the instructions. If introduced in a cited paper, use that paper's arxiv_id.
+    paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset, typically found in the citation section at the end of the paper. If introduced in THIS paper, use the arxiv_id provided in the instructions. If introduced in a cited paper, use that paper's arxiv_id.
 
 class Response(BaseModel):
     reasoning: str # Your reasoning regarding the extraction of the dataset details and evaluation results

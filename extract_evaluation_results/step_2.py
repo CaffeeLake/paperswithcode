@@ -65,7 +65,14 @@ class Step2Response(BaseModel):
 
 
 dataset_finder_prompt = """
-You are an expert in managing benchmark datasets for ML model evaluation. Your task is to determine whether a dataset mentioned in evaluation results already exists in our database.
+You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape
+by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI).
+You are an expert in managing machine learning (ML) datasets in the SQL database of Hugging Face's project used for benchmarking ML models.
+
+## Task
+
+A colleague of yours has extracted evaluation results from a paper and identified a particular dataset mentioned in the evaluation results.
+Your task is to determine whether this dataset already exists in the SQL database or not.
 
 ## Context: Available Tasks and Datasets
 
@@ -347,7 +354,7 @@ async def step_2(
 
 ## Evaluation results
 
-The extracted evaluation results are the following:
+The evaluation results extracted by a colleague of yours are the following:
 {json.dumps(evaluation_results, indent=2)}
 
 ## Dataset to find
