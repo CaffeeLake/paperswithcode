@@ -356,6 +356,118 @@ async def get_leaderboard_triples_tool() -> str:
     return result
 
 
+def get_dataset_details_by_id(dataset_id: int) -> str:
+    """Get detailed information about a specific dataset by its ID.
+
+    This function retrieves comprehensive details about a dataset from the database,
+    including associated tasks and metadata. This is useful when you want to learn
+    more about a dataset that was mentioned in get_datasets_for_task results.
+
+    Args:
+        dataset_id: The ID of the dataset to get details for
+
+    Returns:
+        Formatted string with dataset information, or error message if dataset not found
+    """
+    session: Session = db_manager.session_local()
+
+    try:
+        from backend.models.database import Dataset as DBDataset
+        from sqlalchemy.orm import joinedload
+
+        # Query dataset with tasks relationship loaded
+        dataset = (
+            session.query(DBDataset)
+            .options(joinedload(DBDataset.tasks))
+            .filter(DBDataset.id == dataset_id)
+            .first()
+        )
+
+        if not dataset:
+            session.close()
+            return f"Dataset with ID {dataset_id} not found"
+
+        # Format response with comprehensive information
+        response = f"Dataset Details (ID: {dataset_id}):\n"
+        response += "=" * 60 + "\n\n"
+
+        response += f"Name: {dataset.name}\n"
+
+        if dataset.full_name:
+            response += f"Full Name: {dataset.full_name}\n"
+
+        if dataset.slug:
+            response += f"Slug: {dataset.slug}\n"
+
+        if dataset.description:
+            response += f"\nDescription:\n{dataset.description}\n"
+
+        # URLs
+        urls = []
+        if dataset.url:
+            urls.append(f"  - Main URL: {dataset.url}")
+        if dataset.hf_url:
+            urls.append(f"  - Hugging Face: {dataset.hf_url}")
+        if dataset.paper_url:
+            urls.append(f"  - Paper: {dataset.paper_url}")
+
+        if urls:
+            response += "\nURLs:\n" + "\n".join(urls) + "\n"
+
+        # Associated tasks
+        if dataset.tasks:
+            response += f"\nAssociated Tasks ({len(dataset.tasks)}):\n"
+            for task in sorted(dataset.tasks, key=lambda t: t.name):
+                response += f"  - ID: {task.id:<4} - {task.name}"
+                if task.area:
+                    response += f" (Area: {task.area.name})"
+                response += "\n"
+        else:
+            response += "\nAssociated Tasks: None\n"
+
+        session.close()
+        return response
+
+    except Exception as e:
+        session.close()
+        logger.error(f"Error retrieving dataset details for ID {dataset_id}: {str(e)}")
+        return f"Error retrieving dataset details for ID {dataset_id}: {str(e)}"
+
+
+@function_tool
+async def get_dataset_details(dataset_id: int) -> str:
+    """Get detailed information about a specific dataset.
+
+    This tool helps you get comprehensive details about a dataset when you have its ID.
+    Use this after calling get_task_datasets to learn more about a specific dataset
+    that you're interested in.
+
+    Args:
+        dataset_id: The ID of the dataset to get details for
+
+    Returns:
+        A formatted string with dataset information, including:
+        - Dataset name, full name, slug
+        - Description
+        - URLs (main URL, Hugging Face URL, paper URL)
+        - Associated tasks
+        - Total count of associated tasks
+
+    Example:
+        If get_task_datasets returns a list including "ID: 42 - COCO val2017",
+        call get_dataset_details(42) to get more information about that dataset,
+        including its full description, URLs, and what other tasks it's used for.
+    """
+    print(f"[TOOL CALL] get_dataset_details(dataset_id={dataset_id})")
+    result = get_dataset_details_by_id(dataset_id)
+    print(
+        f"[TOOL RESULT] {result[:200]}..."
+        if len(result) > 200
+        else f"[TOOL RESULT] {result}"
+    )
+    return result
+
+
 @function_tool
 async def find_dataset(
     dataset_name: str | None = None,

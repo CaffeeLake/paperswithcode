@@ -15,11 +15,13 @@ import argparse
 import asyncio
 import json
 import logging
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional
 
 from backend.utils.logging_utils import async_export_txt
 from backend.utils.pdf_utils import temp_pdf_download
+from backend.utils.paper_utils import get_title
 
 from datalab_sdk import AsyncDatalabClient
 
@@ -29,6 +31,7 @@ from backend.config import get_settings
 from extract_evaluation_results.utils import (
     get_formatted_tasks_list,
     get_task_datasets,
+    get_dataset_details,
     get_leaderboard_triples_tool,
 )
 
@@ -42,6 +45,39 @@ logger = logging.getLogger(__name__)
 datalab_client = AsyncDatalabClient(api_key=DATALAB_API_KEY)
 
 
+def get_markdown_cache_path(arxiv_id: str) -> Path:
+    """Get the path to the cached markdown file for a given arxiv_id."""
+    # Sanitize arxiv_id for filename (replace / with _)
+    safe_arxiv_id = arxiv_id.replace("/", "_").replace(":", "_")
+    # Create subfolder for this arxiv_id
+    cache_dir = Path("backend/outputs/evaluation_results") / safe_arxiv_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "markdown.md"
+
+
+async def load_cached_markdown(arxiv_id: str) -> Optional[str]:
+    """Load cached markdown if it exists."""
+    cache_path = get_markdown_cache_path(arxiv_id)
+    if cache_path.exists():
+        logger.info(f"Found cached markdown for {arxiv_id} at {cache_path}")
+        try:
+            return cache_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to read cached markdown: {e}")
+            return None
+    return None
+
+
+async def save_markdown_to_cache(arxiv_id: str, markdown: str) -> None:
+    """Save markdown to cache."""
+    cache_path = get_markdown_cache_path(arxiv_id)
+    try:
+        cache_path.write_text(markdown, encoding="utf-8")
+        logger.info(f"Saved markdown to cache: {cache_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save markdown to cache: {e}")
+
+
 class EvaluationResult(BaseModel):
     table_index: int
     model_name: str
@@ -51,13 +87,16 @@ class EvaluationResult(BaseModel):
 
 
 class DatasetDetail(BaseModel):
-    dataset_name: str
+    dataset_name: str  # The name of the dataset as it appears in the paper. Include the split if it covers a particular split of the dataset.
     dataset_info: str  # What you know about this dataset - do not make up information, only use the information provided in the paper
+    split: Optional[str] = (
+        None  # The split of the dataset e.g. "validation", "test", "train", if mentioned in the paper
+    )
     paper_title: Optional[str] = (
-        None  # The title of the paper that introduces the dataset (cited in the paper)
+        None  # The title of the paper that introduces the dataset. If introduced in THIS paper, use the paper title provided in the instructions. If introduced in a cited paper, use that paper's title.
     )
     paper_arxiv_id: Optional[str] = (
-        None  # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
+        None  # The ArXiv ID of the paper that introduces the dataset. If introduced in THIS paper, use the arxiv_id provided in the instructions. If introduced in a cited paper, use that paper's arxiv_id.
     )
 
 
@@ -77,7 +116,7 @@ by creating leaderboards for datasets and tasks within the field of machine lear
 
 You are an expert in extracting evaluation results from AI research papers in order to be added to leaderboards.
 
-We have converted an AI research PDF paper on Arxiv to Markdown.
+We have converted an AI research PDF paper titled {paper_title} with arxiv ID {arxiv_id} to Markdown.
 
 ## Task
 
@@ -90,6 +129,10 @@ Each evaluation result should be of the tuple of the form (model_name, dataset_n
 
 Make sure to only return evaluation results which are useful for leaderboards (which compare performance across different models on the same datasets), do not include results from ablation tables or other tables.
 
+Importantly, only the best performing results of the paper on each benchmark should be included, as otherwise we end up with too many evaluation results.
+When a paper includes various model sizes (e.g. tiny, base, large), include only the best performing result of the largest model.
+Evaluation results of the appendix of a paper should not be included.
+
 ## Tables
 
 Each AI research paper typically contains tables which can be categorized into three categories: leaderboard tables, ablation tables and irrelevant tables:
@@ -98,12 +141,6 @@ Each AI research paper typically contains tables which can be categorized into t
 * Lastly, irrelevant tables include hyperparameters, dataset statistics and other information that is not directly relevant for result extraction.
 
 Your task is to only extract evaluation results from the leaderboard tables.
-
-## Evaluation results
-
-Importantly, only the best performing results of the paper on each benchmark should be included, as otherwise we end up with too many evaluation results.
-When a paper includes various model sizes (e.g. tiny, base, large), include only the best performing result of the largest model.
-Hence, evaluation results of the appendix of a paper should not be included.
 
 ## Context: Available Tasks and Datasets
 
@@ -116,9 +153,14 @@ Use this context to better understand which tasks and datasets are commonly used
 
 Important notes:
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
+- the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
 - prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
 - when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
-- **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper. Look for the model name in the paper title, abstract, methodology section, or table captions.
+- when the metric value can be interpreted as a percentage, use "accuracy" as the metric name.
+- **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
+- for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is.
+- **When a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
+- When a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
 
 ## Tools Available
 
@@ -129,7 +171,13 @@ You have access to tools to help you understand the current state of the databas
    - Understand which datasets are standard for a given task
    - Better match dataset names from the paper to datasets in the database
 
-2. **`get_leaderboard_triples`**: Get all current leaderboards as (area, task, dataset, metric) tuples. Use this when you want to see what evaluation results are already being tracked for specific combinations of tasks, datasets, and metrics. This can help you:
+2. **`get_dataset_details`**: Get detailed information about a specific dataset by its ID. Use this after calling `get_datasets_for_task` to get comprehensive details about a dataset, including:
+   - Full name and description
+   - URLs (main URL, Hugging Face URL, paper URL)
+   - All tasks the dataset is associated with
+   - This helps you understand if a dataset matches what's mentioned in the paper
+
+3. **`get_leaderboard_triples`**: Get all current leaderboards as (area, task, dataset, metric) tuples. Use this when you want to see what evaluation results are already being tracked for specific combinations of tasks, datasets, and metrics. This can help you:
    - Check if there's already a leaderboard for a task-dataset-metric combination
    - Ensure you're extracting results that match existing leaderboard structures
    - Understand which metrics are commonly used for specific datasets
@@ -146,27 +194,31 @@ class EvaluationResult(BaseModel):
     metric_value: str
 
 class DatasetDetail(BaseModel):
-    dataset_name: str
+    dataset_name: str The name of the dataset as it appears in the paper. Include the split in the name if it covers a particular split of the dataset.
     dataset_info: str # What you know about this dataset - do not make up information, only use the information provided in the paper
-    paper_title: Optional[str] = None # The title of the paper that introduces the dataset (cited in the paper)
-    paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
+    split: Optional[str] = None # The split of the dataset e.g. "validation", "test", "train", if mentioned in the paper
+    paper_title: Optional[str] = None # The title of the paper that introduces the dataset. If introduced in THIS paper, use the paper title provided in the instructions. If introduced in a cited paper, use that paper's title.
+    paper_arxiv_id: Optional[str] = None # The ArXiv ID of the paper that introduces the dataset. If introduced in THIS paper, use the arxiv_id provided in the instructions. If introduced in a cited paper, use that paper's arxiv_id.
 
 class Response(BaseModel):
-    reasoning: str # Your reasoning regarding the extraction of the evaluation results and dataset details
-    dataset_details: list[DatasetDetail] # The details of the datasets mentioned in the evaluation results
-    evaluation_results: list[EvaluationResult] # The evaluation results extracted from the paper. Leave as empty list if no evaluation results are found.
+    reasoning: str # Your reasoning regarding the extraction of the dataset details and evaluation results
+    dataset_details: Optional[list[DatasetDetail]] = None # The details of the datasets mentioned in the evaluation results. Leave as empty list if no evaluation results are found.
+    evaluation_results: Optional[list[EvaluationResult]] = None # The evaluation results extracted from the paper. Leave as empty list if no evaluation results are found.
 ```
 
 Return the response as a JSON string. Do not include any other text in your response.
 """
 
 
-async def extract_evaluation_results(paper_markdown: str) -> str:
+async def extract_evaluation_results(paper_markdown: str, arxiv_id: str) -> str:
+    paper_title = await get_title(arxiv_id=arxiv_id)
     # Get tasks list for context
     tasks_list = get_formatted_tasks_list()
 
-    # Build prompt with tasks context
-    instructions_with_context = instructions_prompt.format(tasks_list=tasks_list)
+    # Build prompt with additional context
+    instructions_with_context = instructions_prompt.format(
+        tasks_list=tasks_list, paper_title=paper_title, arxiv_id=arxiv_id
+    )
 
     input_prompt = (
         f"""Here is the paper to extract evaluation results from: {paper_markdown}"""
@@ -179,7 +231,11 @@ async def extract_evaluation_results(paper_markdown: str) -> str:
         agent = Agent(
             name="Evaluation Results Extractor",
             instructions=instructions_with_context,
-            tools=[get_task_datasets, get_leaderboard_triples_tool],
+            tools=[
+                get_task_datasets,
+                get_dataset_details,
+                get_leaderboard_triples_tool,
+            ],
             model="gpt-5-mini",
             output_type=Step1Response,
         )
@@ -236,26 +292,41 @@ async def extract_evaluation_results(paper_markdown: str) -> str:
 
 
 async def step_1(arxiv_id: str):
-    async with temp_pdf_download(arxiv_id=arxiv_id) as (pdf_path, error_message):
-        if pdf_path is None or error_message is not None:
-            logger.warning(f"Failed to download PDF for {arxiv_id}: {error_message}")
-            return None
+    # Check if we have cached markdown first
+    cached_markdown = await load_cached_markdown(arxiv_id)
 
-        # step 1: convert PDF to markdown
-        logger.info(f"Converting PDF to markdown for {arxiv_id}")
-        result = await datalab_client.convert(pdf_path)
-        logger.info(
-            f"PDF conversion completed. Markdown length: {len(result.markdown) if result.markdown else 0}"
-        )
+    if cached_markdown:
+        logger.info(f"Using cached markdown for {arxiv_id}")
+        paper_markdown = cached_markdown
+    else:
+        # Need to download PDF and convert to markdown
+        async with temp_pdf_download(arxiv_id=arxiv_id) as (pdf_path, error_message):
+            if pdf_path is None or error_message is not None:
+                logger.warning(
+                    f"Failed to download PDF for {arxiv_id}: {error_message}"
+                )
+                return None
 
-        # step 2: extract evaluation results
-        logger.info(f"Extracting evaluation results for {arxiv_id}")
-        response = await extract_evaluation_results(result.markdown)
-        await async_export_txt(filename=f"step_1_{arxiv_id}", value=response)
-        logger.info(
-            f"Extraction completed. Response: {response[:200] if response else 'None'}..."
-        )
-        return response
+            # step 1: convert PDF to markdown
+            logger.info(f"Converting PDF to markdown for {arxiv_id}")
+            result = await datalab_client.convert(pdf_path)
+            logger.info(
+                f"PDF conversion completed. Markdown length: {len(result.markdown) if result.markdown else 0}"
+            )
+
+            paper_markdown = result.markdown
+
+            # Save to cache for future use
+            await save_markdown_to_cache(arxiv_id, paper_markdown)
+
+    # step 2: extract evaluation results
+    logger.info(f"Extracting evaluation results for {arxiv_id}")
+    response = await extract_evaluation_results(paper_markdown, arxiv_id)
+    await async_export_txt(filename=f"step_1_{arxiv_id}", value=response)
+    logger.info(
+        f"Extraction completed. Response: {response[:200] if response else 'None'}..."
+    )
+    return response
 
 
 if __name__ == "__main__":

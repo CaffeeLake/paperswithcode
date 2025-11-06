@@ -358,6 +358,7 @@ async def step_3(
             name="Dataset Information Gatherer",
             instructions=prompt_with_context,
             mcp_servers=entered_servers,
+            model="gpt-5-mini",
             output_type=DatasetInformation,
         )
         search_parts = await get_search_parts(

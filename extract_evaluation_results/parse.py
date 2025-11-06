@@ -6,23 +6,24 @@ This script:
 2. Runs step_2 for each dataset mentioned in the results to find whether it is already in the database or not (in parallel)
 3. Runs step_3 for datasets not found in step_2 to gather additional information from the web and Hugging Face
 4. Runs step_4 for datasets gathered in step_3 to add them to the database
-5. Optionally runs step_5 to align evaluation results with database IDs and add them to the database
+5. Runs step_5 to normalize evaluation results datasets using outputs from step_2 and step_4
+6. Optionally runs step_6 to align evaluation results with database IDs and add them to the database
 
 You can run it like so:
 
 ```bash
-# Run all steps (including step 4 and 5)
+# Run all steps (including step 4, 5, and 6)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545
 
-# Run only steps 1, 2, 3, and 4 (skip step 5)
-uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-step-5
+# Run only steps 1, 2, 3, 4, and 5 (skip step 6 - no database insertion)
+uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-step-6
 
-# Run only steps 1, 2, and 3 (skip step 4 and 5 - no database additions)
+# Run only steps 1, 2, and 3 (skip step 4, 5, and 6 - no database additions)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-addition
 ```
 
-Note: Step 5 only processes papers whose evaluation results are from datasets that are already present in the database
-(or were just added in step 4).
+Note: Step 5 normalizes evaluation results datasets. Step 6 only processes papers whose evaluation results are from datasets
+that are already present in the database (or were just added in step 4).
 """
 
 import argparse
@@ -407,16 +408,16 @@ async def step_4_with_retry(
         return (dataset_detail, Exception(f"Failed after {MAX_RETRIES} attempts"))
 
 
-async def run_step_5(
+async def run_step_6(
     arxiv_id: str,
     evaluation_results: list,
     step_2_results: list,
     step_4_results: Optional[list] = None,
 ) -> tuple[list, Optional[str], Optional[str]]:
-    """Run step 5 to add evaluation results to database.
+    """Run step 6 to add evaluation results to database.
 
     Returns:
-        Tuple of (aligned_results, step_5_result, error_message)
+        Tuple of (aligned_results, step_6_result, error_message)
     """
     # Check if we have datasets in database (from step_2 or step_4)
     has_datasets = any(
@@ -433,12 +434,12 @@ async def run_step_5(
 
     if not evaluation_results or not has_datasets:
         logger.info(
-            "Skipping Step 5: No evaluation results or no datasets found in database"
+            "Skipping Step 6: No evaluation results or no datasets found in database"
         )
         return [], None, None
 
     logger.info("=" * 60)
-    logger.info("STEP 5: Aligning evaluation results and adding to database")
+    logger.info("STEP 6: Aligning evaluation results and adding to database")
     logger.info("=" * 60)
 
     aligned_results, alignment_error = align_evaluation_results(
@@ -456,24 +457,24 @@ async def run_step_5(
         logger.warning("No evaluation results to add to database")
         return [], None, None
 
-    # Import step_5 only when needed (lazy import)
-    from extract_evaluation_results.step_5 import step_5
+    # Import step_6 only when needed (lazy import)
+    from extract_evaluation_results.step_6 import step_6
 
     paper_details = await get_paper_details(arxiv_id)
-    step_5_result = await step_5(
+    step_6_result = await step_6(
         arxiv_id=arxiv_id,
         aligned_evaluation_results=aligned_results,
         paper_details=paper_details,
     )
     logger.info(
-        f"Step 5 completed: {step_5_result[:200] if step_5_result else 'No result'}..."
+        f"Step 6 completed: {step_6_result[:200] if step_6_result else 'No result'}..."
     )
-    return aligned_results, step_5_result, None
+    return aligned_results, step_6_result, None
 
 
 async def run_pipeline(
     arxiv_id: str,
-    skip_step_5: bool = False,
+    skip_step_6: bool = False,
     skip_addition: bool = False,
     resume: bool = False,
 ) -> dict:
@@ -839,76 +840,127 @@ async def run_pipeline(
             if step_4_results is None:
                 step_4_results = []
 
-    # Step 5: Add to database (optional)
-    aligned_results_path = cache_dir / "aligned_results.json"
-    step_5_result_path = cache_dir / "step_5_result.txt"
-    aligned_results = None
-    step_5_result = None
-    step_5_error = None
+    # Step 5: Normalize evaluation results datasets
+    step_5_normalized_path = cache_dir / "step_5_normalized.json"
+    normalized_result = None
+    normalized_evaluation_results = evaluation_results  # Default to original
 
     if skip_addition:
         logger.info("STEP 5: Skipped (--skip-addition flag enabled)")
         if resume:
+            normalized_result = read_json_if_exists(step_5_normalized_path)
+            if normalized_result:
+                logger.info("Using cached Step 5 normalized results")
+                normalized_evaluation_results = normalized_result.get(
+                    "normalized", evaluation_results
+                )
+    else:
+        # Check cache first if resuming
+        if resume:
+            normalized_result = read_json_if_exists(step_5_normalized_path)
+            if normalized_result:
+                logger.info("Using cached Step 5 normalized results")
+                normalized_evaluation_results = normalized_result.get(
+                    "normalized", evaluation_results
+                )
+
+        # Run normalization if not cached
+        if not normalized_result:
+            logger.info("=" * 60)
+            logger.info("STEP 5: Normalizing evaluation results datasets")
+            logger.info("=" * 60)
+
+            from extract_evaluation_results.step_5 import normalize_evaluation_datasets
+
+            normalized_result = normalize_evaluation_datasets(
+                arxiv_id=arxiv_id,
+                evaluation_results=evaluation_results,
+                step_2_results=results,
+                step_4_results=step_4_results,
+            )
+
+            write_json(step_5_normalized_path, normalized_result)
+            logger.info("Step 5 normalization results cached")
+
+            normalized_evaluation_results = normalized_result.get(
+                "normalized", evaluation_results
+            )
+            logger.info(
+                f"Step 5 completed: {normalized_result.get('mapped', 0)} mapped, "
+                f"{normalized_result.get('unresolved', 0)} unresolved"
+            )
+
+    # Step 6: Add to database (optional)
+    aligned_results_path = cache_dir / "aligned_results.json"
+    step_6_result_path = cache_dir / "step_6_result.txt"
+    aligned_results = None
+    step_6_result = None
+    step_6_error = None
+
+    if skip_addition:
+        logger.info("STEP 6: Skipped (--skip-addition flag enabled)")
+        if resume:
             aligned_results = read_json_if_exists(aligned_results_path)
-            if step_5_result_path.exists():
+            if step_6_result_path.exists():
                 try:
-                    step_5_result = step_5_result_path.read_text()
+                    step_6_result = step_6_result_path.read_text()
                 except IOError as e:
-                    logger.warning(f"Failed to read cached step 5 result: {e}")
-                    step_5_result = None
-            if aligned_results or step_5_result:
-                logger.info("Using cached Step 5 results")
+                    logger.warning(f"Failed to read cached step 6 result: {e}")
+                    step_6_result = None
+            if aligned_results or step_6_result:
+                logger.info("Using cached Step 6 results")
         if aligned_results is None:
             aligned_results = []
-    elif not skip_step_5:
+    elif not skip_step_6:
         # Always recompute alignment (it's cheap and depends on current DB state)
+        # Use normalized evaluation results instead of original
         aligned_results, alignment_error = align_evaluation_results(
             arxiv_id=arxiv_id,
-            evaluation_results=evaluation_results,
+            evaluation_results=normalized_evaluation_results,
             step_2_results=results,
             step_4_results=step_4_results or [],
         )
 
         if alignment_error:
             logger.error(f"Alignment failed: {alignment_error}")
-            step_5_error = alignment_error
+            step_6_error = alignment_error
             aligned_results = []
         else:
             write_json(aligned_results_path, aligned_results)
 
-        # Check cache for step_5_result if resume enabled
+        # Check cache for step_6_result if resume enabled
         if resume and aligned_results:
-            cached_step_5_result = None
-            if step_5_result_path.exists():
+            cached_step_6_result = None
+            if step_6_result_path.exists():
                 try:
-                    cached_step_5_result = step_5_result_path.read_text()
+                    cached_step_6_result = step_6_result_path.read_text()
                 except IOError as e:
-                    logger.warning(f"Failed to read cached step 5 result: {e}")
+                    logger.warning(f"Failed to read cached step 6 result: {e}")
 
-            if cached_step_5_result:
-                step_5_result = cached_step_5_result
-                logger.info("Using cached Step 5 result")
+            if cached_step_6_result:
+                step_6_result = cached_step_6_result
+                logger.info("Using cached Step 6 result")
             else:
-                # Run step 5 if we have aligned results but no cached result
-                aligned_results, step_5_result, step_5_error = await run_step_5(
-                    arxiv_id, evaluation_results, results, step_4_results
+                # Run step 6 if we have aligned results but no cached result
+                aligned_results, step_6_result, step_6_error = await run_step_6(
+                    arxiv_id, normalized_evaluation_results, results, step_4_results
                 )
-                if step_5_result:
-                    write_text(step_5_result_path, step_5_result)
-                    logger.info("Step 5 result cached")
+                if step_6_result:
+                    write_text(step_6_result_path, step_6_result)
+                    logger.info("Step 6 result cached")
         elif aligned_results:
-            # Run step 5 normally if not resuming
-            aligned_results, step_5_result, step_5_error = await run_step_5(
-                arxiv_id, evaluation_results, results, step_4_results
+            # Run step 6 normally if not resuming
+            aligned_results, step_6_result, step_6_error = await run_step_6(
+                arxiv_id, normalized_evaluation_results, results, step_4_results
             )
-            if step_5_result:
-                write_text(step_5_result_path, step_5_result)
-                logger.info("Step 5 result cached")
+            if step_6_result:
+                write_text(step_6_result_path, step_6_result)
+                logger.info("Step 6 result cached")
         else:
             logger.warning("No evaluation results to add to database")
             aligned_results = []
     else:
-        logger.info("STEP 5: Skipped (--skip-step-5 flag enabled)")
+        logger.info("STEP 6: Skipped (--skip-step-6 flag enabled)")
         if resume:
             aligned_results = read_json_if_exists(aligned_results_path)
             if aligned_results:
@@ -924,9 +976,10 @@ async def run_pipeline(
         "step_2_results": results,
         "step_3_results": step_3_results,
         "step_4_results": step_4_results,
+        "step_5_normalized": normalized_result,
         "aligned_results": aligned_results,
-        "step_5_result": step_5_result,
-        "step_5_error": step_5_error,
+        "step_6_result": step_6_result,
+        "step_6_error": step_6_error,
     }
 
 
@@ -1070,18 +1123,38 @@ def print_summary(result: dict):
             print("\nStep 4 Results:")
             print("  - Skipped (no datasets gathered in step 3)")
 
-    # Step 5 results
+    # Step 5 results (normalization)
+    if result.get("step_5_normalized"):
+        step_5_normalized = result["step_5_normalized"]
+        print("\nStep 5 Results (Normalization):")
+        print(
+            f"  - Total evaluation results: {len(step_5_normalized.get('normalized', []))}"
+        )
+        print(f"  - Successfully mapped: {step_5_normalized.get('mapped', 0)}")
+        print(f"  - Unresolved: {step_5_normalized.get('unresolved', 0)}")
+
+        dataset_mapping = step_5_normalized.get("dataset_mapping", {})
+        if dataset_mapping:
+            print(f"  - Dataset mappings: {len(dataset_mapping)}")
+            for original_name, mapping in list(dataset_mapping.items())[:5]:
+                print(
+                    f"    • '{original_name}' → '{mapping['canonical_name']}' (ID: {mapping['id']})"
+                )
+            if len(dataset_mapping) > 5:
+                print(f"    ... and {len(dataset_mapping) - 5} more")
+
+    # Step 6 results (database insertion)
     if result.get("aligned_results"):
-        print("\nStep 5 Results:")
+        print("\nStep 6 Results (Database Insertion):")
         print(
             f"  - Aligned evaluation results: {len(result.get('aligned_results', []))}"
         )
-        if result.get("step_5_error"):
-            print(f"  - Error: {result['step_5_error']}")
-        elif result.get("step_5_result"):
+        if result.get("step_6_error"):
+            print(f"  - Error: {result['step_6_error']}")
+        elif result.get("step_6_result"):
             print("  - Status: ✓ Evaluation results added to database")
-            result_preview = result["step_5_result"][:300]
-            if len(result["step_5_result"]) > 300:
+            result_preview = result["step_6_result"][:300]
+            if len(result["step_6_result"]) > 300:
                 result_preview += "..."
             print(f"  - Result: {result_preview}")
 
@@ -1099,14 +1172,14 @@ async def main():
         help="The ArXiv ID of the paper to process",
     )
     parser.add_argument(
-        "--skip-step-5",
+        "--skip-step-6",
         action="store_true",
-        help="Skip step 5 (do not add evaluation results to database)",
+        help="Skip step 6 (do not add evaluation results to database)",
     )
     parser.add_argument(
         "--skip-addition",
         action="store_true",
-        help="Skip step 4 and step 5 (do not add datasets or evaluation results to database)",
+        help="Skip step 4, 5, and 6 (do not add datasets, normalize, or add evaluation results to database)",
     )
     parser.add_argument(
         "--resume",
@@ -1117,7 +1190,7 @@ async def main():
 
     result = await run_pipeline(
         args.arxiv_id,
-        skip_step_5=args.skip_step_5,
+        skip_step_6=args.skip_step_6,
         skip_addition=args.skip_addition,
         resume=args.resume,
     )

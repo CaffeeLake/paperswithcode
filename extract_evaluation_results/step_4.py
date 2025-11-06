@@ -223,6 +223,7 @@ async def step_4(dataset_details_json: str) -> str:
         name="Dataset Adder",
         instructions=dataset_adder_prompt,
         tools=[add_dataset, get_available_tasks],
+        model="gpt-5-mini",
     )
 
     result = await Runner.run(dataset_adder_agent, prompt)
