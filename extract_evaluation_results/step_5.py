@@ -25,15 +25,48 @@ import json
 import logging
 from typing import Optional
 
+from pydantic import BaseModel
+
 from extract_evaluation_results.step_2 import (
-    parse_dataset_info,
-    extract_dataset_id,
     get_output_dir,
     read_step_1_output,
+)
+from extract_evaluation_results.dataset_utils import (
+    extract_dataset_id,
+    parse_dataset_info,
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class Step5Input(BaseModel):
+    """Input data for Step5Normalizer."""
+
+    arxiv_id: str
+    evaluation_results: list
+    step_2_results: list
+    step_4_results: Optional[list] = None
+
+
+class Step5Output(BaseModel):
+    """Output data for Step5Normalizer."""
+
+    normalized: list
+    mapped: int
+    unresolved: int
+    dataset_mapping: dict
+
+
+# Helper function for Step5Normalizer
+def _normalize_compute(input_data: Step5Input) -> dict:
+    """Compute function for Step5Normalizer."""
+    return normalize_evaluation_datasets(
+        arxiv_id=input_data.arxiv_id,
+        evaluation_results=input_data.evaluation_results,
+        step_2_results=input_data.step_2_results,
+        step_4_results=input_data.step_4_results,
+    )
 
 
 def normalize_evaluation_datasets(
@@ -64,14 +97,16 @@ def normalize_evaluation_datasets(
 
     # Add datasets from step_2 (already in database)
     for step_2_result in step_2_results:
-        if not step_2_result.get("success"):
+        # Step 2 returns "found" key, not "success"
+        if not step_2_result.get("found"):
             continue
 
-        # Pass the result dict directly to parse_dataset_info (not as string)
-        result = step_2_result.get("result", {})
-        dataset_info = parse_dataset_info(result)
+        # Step 2 result already has the right structure for parse_dataset_info
+        dataset_info = parse_dataset_info(step_2_result)
         if dataset_info and dataset_info.get("id"):
-            original_name = step_2_result["dataset"].get("dataset_name", "")
+            original_name = step_2_result.get("dataset_input", {}).get(
+                "dataset_name", ""
+            )
             dataset_mapping[original_name.lower()] = {
                 "id": dataset_info["id"],
                 "canonical_name": dataset_info.get("name", original_name),
@@ -84,8 +119,45 @@ def normalize_evaluation_datasets(
     # Add datasets from step_4 (newly added to database OR already existing)
     if step_4_results:
         for step_4_result in step_4_results:
-            result_text = str(step_4_result.get("result", ""))
-            original_name = step_4_result["dataset"].get("dataset_name", "")
+            original_name = step_4_result.get("dataset_input", {}).get(
+                "dataset_name", ""
+            )
+            result = step_4_result.get("dataset_details")
+
+            # Check if result is structured Pydantic model (DatasetDetails)
+            if isinstance(result, dict) and "id" in result:
+                # Structured output from DatasetDetails.model_dump()
+                dataset_id = result.get("id")
+                canonical_name = result.get("name", original_name)
+
+                # Process if successful OR if we have a dataset ID
+                if step_4_result.get("success") or dataset_id:
+                    # If already mapped from step_2, check for conflicts
+                    if original_name.lower() in dataset_mapping:
+                        existing_id = dataset_mapping[original_name.lower()]["id"]
+                        if existing_id != dataset_id:
+                            logger.warning(
+                                f"Dataset '{original_name}' mapped to different IDs: "
+                                f"step_2={existing_id}, step_4={dataset_id}. Using step_4."
+                            )
+
+                    source = (
+                        "step_4_added"
+                        if step_4_result.get("success")
+                        else "step_4_existing"
+                    )
+                    dataset_mapping[original_name.lower()] = {
+                        "id": dataset_id,
+                        "canonical_name": canonical_name,
+                        "source": source,
+                    }
+                    logger.info(
+                        f"Mapped '{original_name}' to ID {dataset_id} (from step_4, {'newly added' if step_4_result.get('success') else 'already existed'})"
+                    )
+                continue
+
+            # Fallback: string result (legacy format or error)
+            result_text = str(result) if result else ""
 
             # Check if step_4 says dataset already exists (even if success=False)
             already_exists = (
@@ -94,11 +166,21 @@ def normalize_evaluation_datasets(
                 or "already exists in the database" in result_text.lower()
             )
 
-            # Only process if successful OR if it already exists
-            if not step_4_result.get("success") and not already_exists:
+            # Try to extract dataset ID first - if we can extract an ID, the dataset was created
+            dataset_id = step_4_result.get("dataset_id") or extract_dataset_id(
+                result_text
+            )
+            has_dataset_id = dataset_id is not None
+
+            # Process if successful OR if it already exists OR if we can extract a dataset ID
+            # (the ID extraction indicates the dataset was actually created, even if success flag is wrong)
+            if (
+                not step_4_result.get("success")
+                and not already_exists
+                and not has_dataset_id
+            ):
                 continue
 
-            dataset_id = extract_dataset_id(result_text)
             if dataset_id:
                 # Try to parse full dataset info from result
                 dataset_info = parse_dataset_info(result_text)
@@ -119,7 +201,7 @@ def normalize_evaluation_datasets(
 
                 source = (
                     "step_4_added"
-                    if step_4_result.get("success")
+                    if (step_4_result.get("success") or has_dataset_id)
                     else "step_4_existing"
                 )
                 dataset_mapping[original_name.lower()] = {
@@ -174,6 +256,30 @@ def normalize_evaluation_datasets(
             "dataset_mapping": {},
         }
 
+    # Get paper_id from arxiv_id
+    paper_id = None
+    try:
+        from backend.database.connection import db_manager
+        from backend.models.database import Paper
+
+        session = db_manager.session_local()
+        try:
+            paper = (
+                session.query(Paper).filter(Paper.arxiv_id.like(f"{arxiv_id}%")).first()
+            )
+
+            if paper:
+                paper_id = paper.id
+                logger.info(f"Found paper_id {paper_id} for arxiv_id {arxiv_id}")
+            else:
+                logger.warning(
+                    f"Could not find paper with arxiv_id {arxiv_id} in database"
+                )
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Error looking up paper_id: {e}")
+
     # Normalize evaluation results
     normalized_results = []
     mapped_count = 0
@@ -195,6 +301,54 @@ def normalize_evaluation_datasets(
             normalized_eval["dataset_id"] = mapping["id"]
             normalized_eval["_original_dataset_name"] = dataset_name
             normalized_eval["_mapping_source"] = mapping["source"]
+
+            # Add paper_id
+            if paper_id:
+                normalized_eval["paper_id"] = paper_id
+
+            # Get task_id from dataset's tasks
+            task_id = None
+            try:
+                from backend.database.connection import db_manager
+                from backend.models.database import Dataset as DBDataset
+
+                session = db_manager.session_local()
+                try:
+                    dataset = (
+                        session.query(DBDataset)
+                        .filter(DBDataset.id == mapping["id"])
+                        .first()
+                    )
+
+                    if dataset and dataset.tasks:
+                        # Use the first task associated with the dataset
+                        task_id = dataset.tasks[0].id
+                        logger.debug(
+                            f"Found task_id {task_id} for dataset {dataset.name}"
+                        )
+                finally:
+                    session.close()
+            except Exception as e:
+                logger.error(
+                    f"Error looking up task_id for dataset {mapping['id']}: {e}"
+                )
+
+            if task_id:
+                normalized_eval["task_id"] = task_id
+            else:
+                logger.warning(
+                    f"Could not find task_id for dataset '{mapping['canonical_name']}'"
+                )
+
+            # Convert metric_name/metric_value to metrics dict + best_metric
+            metric_name = normalized_eval.get("metric_name")
+            metric_value = normalized_eval.get("metric_value")
+
+            if metric_name and metric_value:
+                # Create metrics dictionary
+                normalized_eval["metrics"] = {metric_name: metric_value}
+                normalized_eval["best_metric"] = metric_name
+                logger.debug(f"Converted metric: {metric_name}={metric_value}")
 
             normalized_results.append(normalized_eval)
             mapped_count += 1
@@ -224,6 +378,33 @@ def normalize_evaluation_datasets(
             for name, info in dataset_mapping.items()
         },
     }
+
+
+async def step_5(
+    arxiv_id: str,
+    evaluation_results: list,
+    step_2_results: list,
+    step_4_results: Optional[list] = None,
+) -> dict:
+    """
+    Normalize evaluation results datasets (wrapper for Step5Normalizer).
+
+    Args:
+        arxiv_id: The ArXiv ID of the paper
+        evaluation_results: List of evaluation results from step_1
+        step_2_results: List of step_2 results (datasets found in database)
+        step_4_results: Optional list of step_4 results (datasets newly added to database)
+
+    Returns:
+        Dictionary with normalized results and statistics
+    """
+    # Step5 is a deterministic normalization function, so we call it directly
+    return normalize_evaluation_datasets(
+        arxiv_id=arxiv_id,
+        evaluation_results=evaluation_results,
+        step_2_results=step_2_results,
+        step_4_results=step_4_results,
+    )
 
 
 async def main():
@@ -302,3 +483,60 @@ if __name__ == "__main__":
         print(json.dumps(result["normalized"][:3], indent=2))  # Show first 3
         if len(result["normalized"]) > 3:
             print(f"... and {len(result['normalized']) - 3} more")
+
+
+# Workflow integration
+class Step5WorkflowStep:
+    """Workflow step wrapper for Step5."""
+
+    name = "Step5WorkflowStep"
+
+    def __init__(self):
+        from extract_evaluation_results.step_5 import Step5Input, Step5Output
+
+        self.input_model = Step5Input
+        self.output_model = Step5Output
+
+    async def execute(self, state):
+        """
+        Execute Step5 using data from workflow state.
+
+        Reads from state.data:
+        - arxiv_id: str
+        - evaluation_results: list
+        - step_2_results: list
+        - step_4_results: list (optional)
+
+        Writes to state.data:
+        - normalized: list of normalized evaluation results
+        - mapped: int - number of mapped evaluations
+        - unresolved: int - number of unresolved evaluations
+        - dataset_mapping: dict - mapping from original to canonical names
+        - step_5_normalized: dict - complete normalization result
+        """
+        from extract_evaluation_results.step_base import StepResult
+
+        # Build inputs from state.data
+        inputs = {
+            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
+            "evaluation_results": state.data.get("evaluation_results", []),
+            "step_2_results": state.data.get("step_2_results", []),
+            "step_4_results": state.data.get("step_4_results"),
+        }
+
+        # Execute normalization directly (not an agent step)
+        try:
+            result_dict = _normalize_compute(self.input_model(**inputs))
+
+            # Create output model
+            output = self.output_model(**result_dict)
+
+            # Return as StepResult
+            return StepResult(
+                success=True,
+                outputs=output,
+                reasoning=f"Normalized {result_dict.get('mapped', 0)} evaluations, {result_dict.get('unresolved', 0)} unresolved",
+            )
+        except Exception as e:
+            logger.error(f"Step5 failed: {e}", exc_info=True)
+            return StepResult(success=False, error_message=str(e), outputs=None)

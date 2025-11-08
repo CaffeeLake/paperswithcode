@@ -8,13 +8,13 @@ Do not write SUMMARY.md files to summarize code changes. Just implement the code
 
 Do not write excessive try: except blocks, make sure the code stays simple and easy to read.
 
-Run anything where you need to proceed with further work as a background task in Cursor.
+Run anything where you need to proceed with further work as a background task in Cursor. Don't run it in the background if you're actively debugging a script.
 
 **ALWAYS use `uv run --env-file backend/keys.env` when running Python scripts.** This ensures you use the correct environment variables and virtual environment.
 
 Replace statements like `DBPaper.is_latest_version == True` by just `DBPaper.is_latest_version`. Similarly, when you need to write something like `DBPaper.urls_extracted == False`, write `~DBPaper.urls_extracted` instead.
 
-To authenticate and connect to the PostgreSQL database, see `docs/POSTGRESQL_GUIDE.md` for details.
+To authenticate and connect to the PostgreSQL database, see `docs/database.md` for details.
 
 **Hardware**: Everything runs on a Hetzner VPS with 4GB of RAM and 80GB of disk space. Many scripts are optimized to deal with low RAM constraints.
 
@@ -223,12 +223,15 @@ paperswithcode/
 │   ├── arxiv_papers_hf.csv   # Hugging Face papers export
 │   └── paper_task_links_pwc/ # Task-paper associations
 ├── docs/                      # Comprehensive documentation
-│   ├── API_GUIDE_ADDING_DATA.md
-│   ├── ADDING_EVALUATIONS_GUIDE.md
-│   ├── API_EXPANSION_PLAN.md
-│   ├── POSTGRESQL_GUIDE.md
-│   ├── AUTHORS_API_IMPLEMENTATION.md
-│   └── ...
+│   ├── README.md
+│   ├── backend-api.md
+│   ├── data-workflows.md
+│   ├── database.md
+│   ├── deployment.md
+│   ├── frontend.md
+│   ├── keyword-matching.md
+│   ├── operations.md
+│   └── DATABASE_SCHEMA_UML.md
 ├── scripts/                   # Utility scripts
 │   ├── export_tasks_to_csv.py
 │   └── import_tasks_from_csv.py
@@ -734,7 +737,7 @@ uv run --env-file backend/keys.env python backend/database/papers_setup/add_hf_p
 uv run --env-file backend/keys.env python backend/database/papers_setup/add_pwc_papers_streaming.py
 ```
 
-For detailed database setup, see `backend/database/README.md` and `docs/POSTGRESQL_GUIDE.md`.
+For detailed database setup, see `backend/database/README.md` and `docs/database.md`.
 
 ## Development Guidelines
 
@@ -1014,27 +1017,23 @@ For more detailed information, see:
 
 **Backend/API**:
 - `backend/README.md` - Backend setup and development
-- `docs/API_GUIDE_ADDING_DATA.md` - Quick reference for adding data via API
-- `docs/ADDING_EVALUATIONS_GUIDE.md` - Detailed evaluation management
-- `docs/API_EXPANSION_PLAN.md` - Complete API roadmap
-- `docs/AUTHORS_API_IMPLEMENTATION.md` - Authors API details
+- `docs/backend-api.md` - Current FastAPI surface area and service conventions
+- `docs/data-workflows.md` - Dataset and evaluation ingestion workflows
 
 **Database**:
 - `backend/database/README.md` - Database setup guide
-- `docs/POSTGRESQL_GUIDE.md` - PostgreSQL connection and security
+- `docs/database.md` - Connection, security, and admin operations
 - `docs/DATABASE_SCHEMA_UML.md` - Database schema visualization
 
-**CRON Jobs**:
+**CRON Jobs & Ops**:
 - `cron/README.md` - Comprehensive CRON documentation
-- `docs/TRENDING_API.md` - Trending papers feature
+- `docs/operations.md` - Automated jobs, trending pipeline, and monitoring dashboard
 
 **Frontend**:
-- `docs/FRONTEND_TRENDING_UPDATE.md` - Frontend trending integration
-- `docs/LATEX_RENDERING.md` - LaTeX math rendering
+- `docs/frontend.md` - Task pages, admin editing, trending UI, LaTeX titles
 
 **Deployment**:
-- `docs/HTTPS_SETUP.md` - Complete HTTPS setup guide with Nginx and Let's Encrypt
-- `DNS_SETUP_INSTRUCTIONS.md` - Quick DNS configuration instructions
+- `docs/deployment.md` - DNS, HTTPS, and runtime verification
 
 ## HTTPS and Production Deployment
 
@@ -1117,7 +1116,7 @@ Certificates are automatically renewed by systemd timer when they have 30 days o
 - **Nginx config**: `/etc/nginx/sites-available/paperswithcode.co`
 - **SSL certificates**: `/etc/letsencrypt/live/paperswithcode.co/`
 - **Setup script**: `/root/python_projects/paperswithcode/setup_ssl.sh`
-- **Full guide**: `/root/python_projects/paperswithcode/docs/HTTPS_SETUP.md`
+- **Full guide**: `/root/python_projects/paperswithcode/docs/deployment.md`
 
 ### Troubleshooting
 
@@ -1149,7 +1148,7 @@ ps aux | grep -E "uvicorn|vite"
 sudo tail -f /var/log/nginx/paperswithcode_error.log
 ```
 
-For detailed troubleshooting, see `docs/HTTPS_SETUP.md`.
+For detailed troubleshooting, see `docs/deployment.md`.
 
 ## Quick Reference
 

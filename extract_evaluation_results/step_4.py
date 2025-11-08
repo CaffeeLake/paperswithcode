@@ -1,37 +1,80 @@
 """
-This script defines an agent that can add datasets to the database.
+This script defines an agent that can add datasets to the SQL database.
+
+**Key Feature**: This step processes all datasets in parallel internally, running multiple agent
+instances concurrently for improved performance.
 
 You can run it like so:
 
 ```bash
+# Process datasets from step_3 output (reads from standardized location)
+uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --arxiv_id "2406.09414"
+
+# Or add a single dataset directly
 uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --dataset_details "{\"name\": \"COCO\", \"description\": \"COCO is a large-scale object detection, segmentation, and captioning dataset.\", \"task_ids\": [2]}"
 ```
 """
 
-from backend.database.connection import db_manager
-from backend.services.dataset_service import DatasetService
-from backend.models.api import DatasetCreateRequest
-from agents import Agent, function_tool, Runner
 import argparse
 import asyncio
 import json
 import logging
-from sqlalchemy.orm import Session
+from typing import Any, Optional
 
+from pydantic import BaseModel, Field
+
+from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
+from extract_evaluation_results.tools import add_dataset, get_available_tasks
 
 logger = logging.getLogger(__name__)
 
 
-def get_dataset_adder_prompt() -> str:
-    """Get the dataset adder prompt with dynamically fetched tasks list.
+class DatasetDetails(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str
+    hf_url: str
+    paper_url: str
 
-    Returns:
-        Formatted prompt string with current tasks from database
-    """
-    tasks_list = get_formatted_tasks_list()
 
-    return f"""
+class Response(BaseModel):
+    dataset_successfully_added: bool
+    dataset_details: Optional[DatasetDetails] = None
+
+
+# Input and Output models for the new API
+class Step4SingleInput(BaseModel):
+    """Input for a single dataset in Step 4."""
+
+    dataset_details_json: str = Field(
+        description="JSON string containing dataset details to add to the database"
+    )
+
+
+class Step4Input(BaseModel):
+    """Input for Step 4: Dataset Adder - handles multiple datasets."""
+
+    dataset_inputs: list[Step4SingleInput]
+
+
+class Step4SingleResult(BaseModel):
+    """Result for a single dataset addition."""
+
+    dataset_input: dict
+    success: bool
+    dataset_details: Optional[DatasetDetails] = None
+    error_message: Optional[str] = None
+
+
+class Step4Output(BaseModel):
+    """Output from Step 4: Dataset Adder - handles multiple datasets."""
+
+    results: list[Step4SingleResult]
+
+
+dataset_adder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
 within the field of machine learning and artificial intelligence (AI).
 
@@ -52,133 +95,287 @@ Ensure you provide all relevant information including:
 {tasks_list}
 
 Example: To add the COCO dataset for Object Detection, use task_ids=[2]
-Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19]
+Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
+
+## Output format
+
+When a dataset is added successfully, return the details of the dataset in the following Pydantic model:
+```python
+class DatasetDetails(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str
+    hf_url: str
+    paper_url: str
+
+
+class Response(BaseModel):
+    dataset_successfully_added: bool
+    dataset_details: Optional[DatasetDetails] = None # Only complete this if dataset_successfully_added is True
+```
+
+Return the response as a JSON string. Do not include any other text in your response.
 """
 
 
-@function_tool
-async def get_available_tasks() -> str:
-    """Get a list of all available tasks in the database that datasets can be linked to.
+class Step4(AgentStep[Step4Input, Step4Output]):
+    """Agent-based step for adding datasets to the database."""
 
-    Returns:
-        A formatted list of all available tasks with their IDs, names, and areas.
-    """
-    session: Session = db_manager.session_local()
+    input_model = Step4Input
+    output_model = Step4Output
 
-    try:
-        from backend.models.database import Task as DBTask
-
-        tasks = session.query(DBTask).order_by(DBTask.id).all()
-
-        if not tasks:
-            session.close()
-            return "No tasks found in database"
-
-        # Group tasks by area
-        tasks_by_area = {}
-        for task in tasks:
-            area_name = task.area.name if task.area else "Other"
-            if area_name not in tasks_by_area:
-                tasks_by_area[area_name] = []
-            tasks_by_area[area_name].append((task.id, task.name))
-
-        # Format response
-        response = "Available Tasks in Database:\n" + "=" * 60 + "\n\n"
-        for area_name in sorted(tasks_by_area.keys()):
-            response += f"{area_name}:\n"
-            for task_id, task_name in tasks_by_area[area_name]:
-                response += f"  - ID: {task_id:<4} - {task_name}\n"
-            response += "\n"
-
-        response += "=" * 60
-        response += f"\nTotal Tasks: {len(tasks)}"
-
-        session.close()
-        return response
-
-    except Exception as e:
-        session.close()
-        return f"Error retrieving tasks: {str(e)}"
-
-
-@function_tool
-async def add_dataset(
-    name: str,
-    description: str,
-    task_ids: list[int],
-    full_name: str | None = None,
-    url: str | None = None,
-    hf_url: str | None = None,
-    paper_url: str | None = None,
-) -> str:
-    """Add a new dataset to the database and link it to one or more tasks.
-
-    IMPORTANT: Every dataset must be linked to at least one task. Use get_available_tasks() to see all available tasks.
-
-    Args:
-        name: The name of the dataset (required). E.g., "COCO", "ImageNet", "SpeechCommands"
-        description: A description of the dataset (required). Should explain what the dataset contains and its purpose.
-        task_ids: List of task IDs this dataset is used for (required). MUST contain at least one valid task ID.
-                 E.g., [1] for Image Classification, [2] for Object Detection, [1, 19] for multiple tasks.
-                 Use get_available_tasks() to see all available task IDs.
-        full_name: The full name of the dataset (optional). E.g., "Common Objects in Context" for COCO.
-        url: The main URL for the dataset (optional). E.g., official website or documentation.
-        hf_url: Hugging Face dataset URL (optional). E.g., "https://huggingface.co/datasets/..."
-        paper_url: URL to the paper that introduced this dataset (optional). E.g., ArXiv URL.
-
-    Returns:
-        A success message with the created dataset details, or an error message if creation failed.
-    """
-    session: Session = db_manager.session_local()
-    service = DatasetService(session)
-
-    try:
-        # Validate task_ids is not empty
-        if not task_ids or len(task_ids) == 0:
-            session.close()
-            return "✗ Failed to create dataset: task_ids cannot be empty. Every dataset must be linked to at least one task. Use get_available_tasks() to see available tasks."
-
-        # Create the dataset request
-        dataset_request = DatasetCreateRequest(
-            name=name,
-            description=description,
-            task_ids=task_ids,
-            full_name=full_name,
-            url=url,
-            hf_url=hf_url,
-            paper_url=paper_url,
+    def __init__(self):
+        super().__init__(
+            name="Step4: Dataset Adder",
+            description="Adds datasets to the database with comprehensive information",
+            instructions=dataset_adder_prompt,
+            tools=[add_dataset, get_available_tasks],
+            agent_output_type=Response,
+            model="gpt-5-mini",
         )
 
-        # Add the dataset using the service
-        dataset = service.create_dataset(dataset_request)
+    async def _process_single_dataset(
+        self, dataset_input: Step4SingleInput, formatted_instructions: str
+    ) -> Step4SingleResult:
+        """
+        Process a single dataset through the agent.
 
-        # Format success response
-        response = f"✓ Successfully created dataset: ID={dataset.id}, Name={dataset.name}, Slug={dataset.slug}"
-        if dataset.full_name:
-            response += f", Full Name={dataset.full_name}"
-        response += f", Linked to Task IDs={task_ids}"
-        if hf_url:
-            response += f", Hugging Face URL={hf_url}"
+        Args:
+            dataset_input: Single dataset input data
+            formatted_instructions: Pre-formatted instructions with tasks list
 
-        session.close()
-        return response
+        Returns:
+            Step4SingleResult with addition outcome
+        """
+        # Parse dataset details
+        try:
+            dataset_details = json.loads(dataset_input.dataset_details_json)
+        except json.JSONDecodeError as e:
+            return Step4SingleResult(
+                dataset_input={"error": "Invalid JSON"},
+                success=False,
+                dataset_details=None,
+                error_message=f"Invalid JSON in dataset_details: {e}",
+            )
 
-    except ValueError as e:
-        session.close()
-        error_msg = str(e)
-        if "Task IDs not found" in error_msg:
-            return f"✗ Failed to create dataset: {error_msg}. Use get_available_tasks() to see valid task IDs."
-        return f"✗ Failed to create dataset: {error_msg}"
-    except Exception as e:
-        session.close()
-        return f"✗ Failed to create dataset: {str(e)}"
+        dataset_name = dataset_details.get("name", "Unknown")
+
+        try:
+            # Extract paper ArXiv ID if available
+            paper_arxiv_id = dataset_details.get("paper_arxiv_id")
+
+            # Build prompt
+            prompt_parts = [
+                "Add the following dataset to the database:",
+                json.dumps(dataset_details, indent=2),
+            ]
+
+            # Fetch and include paper details if arxiv_id is available
+            if paper_arxiv_id:
+                try:
+                    paper_details = await get_paper_details(paper_arxiv_id)
+                    prompt_parts.append("\n## Paper details")
+                    prompt_parts.append(paper_details)
+                except Exception as e:
+                    logger.warning(
+                        f"Could not fetch paper details for {paper_arxiv_id}: {e}"
+                    )
+
+            prompt = "\n".join(prompt_parts)
+
+            # Run the agent for this dataset
+            print(f"Adding dataset to database: {dataset_name}")
+            agent_response = await self._run_agent(prompt, formatted_instructions)
+
+            # Process the agent output
+            if isinstance(agent_response, Response):
+                if agent_response.dataset_successfully_added:
+                    print(f"✓ Added dataset: {dataset_name}")
+                    return Step4SingleResult(
+                        dataset_input=dataset_details,
+                        success=True,
+                        dataset_details=agent_response.dataset_details,
+                        error_message=None,
+                    )
+                else:
+                    print(f"✗ Failed to add dataset: {dataset_name}")
+                    return Step4SingleResult(
+                        dataset_input=dataset_details,
+                        success=False,
+                        dataset_details=None,
+                        error_message="Agent reported dataset addition failure",
+                    )
+            else:
+                raise ValueError(
+                    f"Unexpected agent output type: {type(agent_response)}"
+                )
+
+        except Exception as e:
+            print(f"Error adding dataset '{dataset_name}': {str(e)}")
+            return Step4SingleResult(
+                dataset_input=dataset_details,
+                success=False,
+                dataset_details=None,
+                error_message=f"Error during addition: {str(e)}",
+            )
+
+    async def run(self, inputs):
+        """
+        Override run to handle parallel processing of multiple datasets.
+        """
+        # Validate inputs if dict provided
+        if isinstance(inputs, dict):
+            try:
+                inputs = Step4Input(**inputs)
+            except Exception as e:
+                from extract_evaluation_results.step_base import StepResult
+
+                return StepResult(
+                    success=False,
+                    error_message=f"Input validation failed: {e}",
+                    outputs=None,
+                )
+
+        try:
+            # Format instructions once (same for all datasets)
+            tasks_list = get_formatted_tasks_list()
+            formatted_instructions = dataset_adder_prompt.format(tasks_list=tasks_list)
+
+            # Process all datasets in parallel
+            tasks = [
+                self._process_single_dataset(
+                    dataset_input=dataset_input,
+                    formatted_instructions=formatted_instructions,
+                )
+                for dataset_input in inputs.dataset_inputs
+            ]
+
+            results = await asyncio.gather(*tasks)
+
+            # Return successful result with all findings
+            from extract_evaluation_results.step_base import StepResult
+
+            return StepResult(
+                success=True,
+                outputs=Step4Output(results=list(results)),
+                error_message=None,
+            )
+
+        except Exception as e:
+            from extract_evaluation_results.step_base import StepResult
+
+            return StepResult(
+                success=False, outputs=None, error_message=f"Step 4 failed: {str(e)}"
+            )
+
+    async def build_agent_prompt(self, inputs: Step4Input) -> str:
+        """
+        Not used in the new parallel implementation.
+        Kept for compatibility with base class signature.
+        """
+        raise NotImplementedError("Use _process_single_dataset instead")
+
+    async def process_agent_output(
+        self, agent_output: Any, inputs: Step4Input
+    ) -> Step4Output:
+        """
+        Not used in the new parallel implementation.
+        Kept for compatibility with base class signature.
+        """
+        raise NotImplementedError("Use _process_single_dataset instead")
+
+    async def format_instructions(self, inputs: Step4Input) -> str:
+        """
+        Format instructions with task context.
+        """
+        # Format instructions with tasks list
+        tasks_list = get_formatted_tasks_list()
+        return dataset_adder_prompt.format(tasks_list=tasks_list)
 
 
-async def step_4(dataset_details_json: str) -> str:
-    """Add a dataset to the database using the dataset adder agent.
+def get_output_dir(arxiv_id: str):
+    """Get the output directory for a given arxiv_id.
+
+    Returns: backend/outputs/evaluation_results/{arxiv_id}
+    """
+    from pathlib import Path
+
+    output_dir = Path(__file__).parent.parent / "backend" / "outputs"
+    eval_results_dir = output_dir / "evaluation_results" / arxiv_id
+    eval_results_dir.mkdir(parents=True, exist_ok=True)
+    return eval_results_dir
+
+
+def read_step_3_output(arxiv_id: str) -> list[dict]:
+    """Read the step_3 output JSON file and extract successfully gathered dataset information.
+
+    Reads from: backend/outputs/evaluation_results/{arxiv_id}/step_3.json
 
     Args:
-        dataset_details_json: JSON string containing dataset details including:
+        arxiv_id: The ArXiv ID of the paper
+
+    Returns:
+        List of dataset detail dicts to add to the database
+    """
+    eval_results_dir = get_output_dir(arxiv_id)
+    json_file = eval_results_dir / "step_3.json"
+
+    if not json_file.exists():
+        raise FileNotFoundError(
+            f"Could not find step_3 output file: {json_file}. "
+            f"Run step_3.py first to generate the output."
+        )
+
+    with open(json_file, "r") as f:
+        step_3_data = json.load(f)
+
+    # Extract datasets that were successfully gathered
+    datasets_to_add = []
+    for item in step_3_data:
+        if item.get("success", False) and item.get("information"):
+            info = item["information"]
+            dataset_input = item.get("dataset_input", {})
+
+            # Build dataset details for adding to database
+            dataset_details = {
+                "name": dataset_input.get(
+                    "dataset_name", info.get("full_name", "Unknown")
+                ),
+                "description": info.get("description", ""),
+                "full_name": info.get("full_name"),
+                "hf_url": info.get("hf_url"),
+                "paper_url": info.get("conference_url"),
+                "paper_arxiv_id": info.get("arxiv_id") or dataset_input.get("arxiv_id"),
+                # Note: task_ids will be inferred by the agent
+                "task_ids": [],  # Agent will determine appropriate task IDs
+            }
+            datasets_to_add.append(dataset_details)
+
+    return datasets_to_add
+
+
+def write_step_4_output(arxiv_id: str, results: list[dict]) -> None:
+    """Write the step_4 output JSON file to the standardized location.
+
+    Writes to: backend/outputs/evaluation_results/{arxiv_id}/step_4.json
+
+    Args:
+        arxiv_id: The ArXiv ID of the paper
+        results: List of result dicts from step_4
+    """
+    eval_results_dir = get_output_dir(arxiv_id)
+    json_file = eval_results_dir / "step_4.json"
+
+    json_file.write_text(json.dumps(results, ensure_ascii=False, indent=2))
+    print(f"✓ Step 4 output written to: {json_file}")
+
+
+async def step_4(dataset_details_list: list[dict]) -> list[dict]:
+    """Add multiple datasets to the database using the dataset adder agent (wrapper for Step4).
+
+    Args:
+        dataset_details_list: List of dataset detail dictionaries, each containing:
             - name: Dataset name (required)
             - description: Dataset description (required)
             - task_ids: List of task IDs (required)
@@ -189,56 +386,233 @@ async def step_4(dataset_details_json: str) -> str:
             - paper_arxiv_id: Optional ArXiv ID of introducing paper (used to fetch paper details)
 
     Returns:
-        The result from the dataset adder agent
+        List of dictionaries, each with 'dataset_input', 'success', 'dataset_details', and 'error_message' keys
     """
-    # Parse dataset details
+    # Convert dicts to Step4SingleInput models
+    single_inputs = [
+        Step4SingleInput(dataset_details_json=json.dumps(details))
+        for details in dataset_details_list
+    ]
+
+    agent = Step4()
+    input_data = Step4Input(dataset_inputs=single_inputs)
+    result = await agent.run(input_data)
+
+    if not result.success:
+        logger.error(f"Step 4 failed: {result.error_message}")
+        # Return error results for all datasets
+        return [
+            {
+                "dataset_input": details,
+                "success": False,
+                "dataset_details": None,
+                "error_message": result.error_message,
+            }
+            for details in dataset_details_list
+        ]
+
+    # result.outputs is now a Step4Output model with a list of Step4SingleResult
+    # Convert to list of dicts for backward compatibility
+    output_list = []
+    for single_result in result.outputs.results:
+        output_dict = {
+            "dataset_input": single_result.dataset_input,
+            "success": single_result.success,
+            "error_message": single_result.error_message,
+        }
+        if single_result.dataset_details:
+            output_dict["dataset_details"] = single_result.dataset_details.model_dump()
+        else:
+            output_dict["dataset_details"] = None
+        output_list.append(output_dict)
+
+    return output_list
+
+
+# Legacy single-dataset wrapper for backward compatibility
+async def step_4_single(dataset_details_json: str) -> Optional[dict]:
+    """Add a single dataset to the database (legacy wrapper for backward compatibility)."""
     try:
         dataset_details = json.loads(dataset_details_json)
     except json.JSONDecodeError as e:
-        return f"Error: Invalid JSON in dataset_details: {e}"
+        logger.error(f"Invalid JSON: {e}")
+        return None
 
-    # Extract paper ArXiv ID if available
-    paper_arxiv_id = dataset_details.get("paper_arxiv_id")
-
-    # Build prompt
-    prompt_parts = [
-        "Add the following dataset to the database:",
-        json.dumps(dataset_details, indent=2),
-    ]
-
-    # Fetch and include paper details if arxiv_id is available
-    if paper_arxiv_id:
-        try:
-            paper_details = await get_paper_details(paper_arxiv_id)
-            prompt_parts.append("\n## Paper details")
-            prompt_parts.append(paper_details)
-        except Exception as e:
-            logger.warning(f"Could not fetch paper details for {paper_arxiv_id}: {e}")
-
-    prompt = "\n".join(prompt_parts)
-
-    # Create and run the agent with dynamic prompt
-    dataset_adder_prompt = get_dataset_adder_prompt()
-    dataset_adder_agent = Agent(
-        name="Dataset Adder",
-        instructions=dataset_adder_prompt,
-        tools=[add_dataset, get_available_tasks],
-        model="gpt-5-mini",
-    )
-
-    result = await Runner.run(dataset_adder_agent, prompt)
-    return result.final_output
+    results = await step_4([dataset_details])
+    if results and results[0]["success"]:
+        return results[0]
+    return None
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Add a dataset to the database.")
+    parser = argparse.ArgumentParser(description="Add datasets to the database.")
+    # New: ArXiv ID parameter to read from step_3 output
+    parser.add_argument(
+        "--arxiv_id",
+        type=str,
+        help="The ArXiv ID of the paper (reads datasets from step_3 output)",
+        default=None,
+    )
     parser.add_argument(
         "--dataset_details",
         type=str,
-        required=True,
-        help="JSON string containing dataset details (name, description, task_ids, etc.). May include paper_arxiv_id to fetch paper context.",
+        help="[Backward compatibility] JSON string containing dataset details (name, description, task_ids, etc.).",
+        default=None,
     )
     args = parser.parse_args()
 
-    result = asyncio.run(step_4(args.dataset_details))
-    print("Result:", result)
+    async def main():
+        # Mode 1: Read from step_3 output (NEW - PREFERRED)
+        if args.arxiv_id:
+            arxiv_id = args.arxiv_id
+            print(f"Reading datasets from step_3 output for ArXiv ID: {arxiv_id}")
+
+            try:
+                datasets_to_add = read_step_3_output(arxiv_id)
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                return []
+
+            if not datasets_to_add:
+                print("No datasets to add (none were successfully gathered in step 3)")
+                write_step_4_output(arxiv_id, [])
+                return []
+
+            print(f"Processing {len(datasets_to_add)} datasets to add to database...")
+            for idx, dataset in enumerate(datasets_to_add, 1):
+                print(f"  {idx}. {dataset.get('name', 'Unknown')}")
+
+            # Process all datasets in parallel
+            results = await step_4(datasets_to_add)
+
+            # Write the results to step_4.json
+            write_step_4_output(arxiv_id, results)
+
+            # Print summary
+            print("\n" + "=" * 50)
+            print("RESULTS SUMMARY:")
+            print("=" * 50)
+            success_count = sum(1 for r in results if r.get("success"))
+            print(
+                f"Successfully added {success_count}/{len(results)} datasets to database\n"
+            )
+            for idx, result in enumerate(results, 1):
+                dataset_name = result.get("dataset_input", {}).get("name", "Unknown")
+                status = "✓" if result.get("success") else "✗"
+                print(f"{idx}. {status} {dataset_name}")
+                if result.get("success") and result.get("dataset_details"):
+                    details = result["dataset_details"]
+                    print(
+                        f"   → Added as: {details.get('name', 'N/A')} (ID: {details.get('id', 'N/A')})"
+                    )
+                elif result.get("error_message"):
+                    print(f"   Error: {result['error_message']}")
+            print("=" * 50)
+
+            return results
+
+        # Mode 2: Single dataset (backward compatibility)
+        elif args.dataset_details:
+            print("Adding single dataset...")
+            result = await step_4_single(args.dataset_details)
+
+            if result:
+                print("\n" + "=" * 50)
+                print("RESULT:")
+                print("=" * 50)
+                print(json.dumps(result, indent=2))
+            else:
+                print("\nFailed to add dataset")
+
+            return [result] if result else []
+        else:
+            parser.error("Must provide either --arxiv_id or --dataset_details")
+
+    # Run main function
+    result = asyncio.run(main())
+    if not result:
+        print("\nNo results received")
+
+
+# Workflow integration
+class Step4WorkflowStep:
+    """Workflow step wrapper for Step4."""
+
+    name = "Step4WorkflowStep"
+
+    def __init__(self):
+        self.step = Step4()
+
+    async def execute(self, state):
+        """
+        Execute Step4 using data from workflow state.
+
+        Reads from state.data:
+        - step_3_results: list of gathered information from step 3
+
+        Writes to state.data:
+        - step_4_results: list of dataset addition results
+        """
+        from extract_evaluation_results.step_base import StepResult
+
+        # Get datasets from step 3 that need to be added
+        step_3_results = state.data.get("step_3_results", [])
+
+        # Build list of datasets to add
+        datasets_to_add = []
+        for step_3_result in step_3_results:
+            if step_3_result.get("success"):
+                dataset_input = step_3_result.get("dataset_input", {})
+                dataset_info = step_3_result.get("information", {})
+
+                # Combine input and gathered information
+                combined = {
+                    "dataset_name": dataset_input.get("dataset_name"),
+                    "dataset_info": dataset_input.get("dataset_info"),
+                    "paper_arxiv_id": dataset_input.get("arxiv_id"),
+                    "paper_title": dataset_input.get("paper_title"),
+                    "description": dataset_info.get("description"),
+                    "full_name": dataset_info.get("full_name"),
+                    "hf_url": dataset_info.get("hf_url"),
+                    "conference_url": dataset_info.get("conference_url"),
+                    "arxiv_id": dataset_info.get("arxiv_id"),
+                }
+                datasets_to_add.append(combined)
+
+        logger.info(f"Step4: Adding {len(datasets_to_add)} datasets to DB")
+
+        # Build inputs from state.data - convert dictionaries to Step4SingleInput format
+        import json
+
+        formatted_inputs = [
+            {"dataset_details_json": json.dumps(dataset)} for dataset in datasets_to_add
+        ]
+        inputs = {"dataset_inputs": formatted_inputs}
+
+        # Execute the step
+        result = await self.step.run(inputs)
+
+        # Rename 'results' to 'step_4_results' to avoid collision with other steps
+        if result.success and result.outputs:
+            from extract_evaluation_results.step_base import StepResult
+
+            output_dict = result.outputs.model_dump()
+            # Rename the key
+            if "results" in output_dict:
+                output_dict["step_4_results"] = output_dict.pop("results")
+
+            # Create new output model with renamed field
+            from pydantic import BaseModel
+
+            class Step4RenamedOutput(BaseModel):
+                step_4_results: list
+
+            renamed_output = Step4RenamedOutput(
+                step_4_results=output_dict["step_4_results"]
+            )
+
+            return StepResult(
+                success=True, outputs=renamed_output, reasoning=result.reasoning
+            )
+
+        return result

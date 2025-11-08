@@ -21,14 +21,18 @@ async def get_user_organizations(username: str) -> list[str]:
     """
     url = f"https://huggingface.co/{username}"
 
-    try:
+    async def _fetch_profile():
         headers = build_hf_headers(token=False, user_agent={"is_ci": "true"})
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(
                 url, timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 response.raise_for_status()
-                html_content = await response.text()
+                return await response.text()
+
+    try:
+        # Shield from cancellation to prevent cancel scope propagation
+        html_content = await asyncio.shield(_fetch_profile())
 
         organizations = []
 
@@ -118,6 +122,9 @@ async def get_user_organizations(username: str) -> list[str]:
 
         return unique_orgs
 
+    except asyncio.CancelledError:
+        print(f"Request cancelled while fetching organizations for user {username}")
+        return []
     except Exception as e:
         print(f"Error fetching organizations for user {username}: {e}")
         return []

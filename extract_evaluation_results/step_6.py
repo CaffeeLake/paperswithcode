@@ -29,24 +29,37 @@ The aligned evaluation results should contain:
 import argparse
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
-from backend.database.connection import db_manager
-from backend.services.evaluation_service import EvaluationService
-from backend.services.leaderboard_metric_service import LeaderboardMetricService
-from backend.services.paper_service import PaperService
-from backend.utils.logging_utils import async_export_txt
-
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from agents import Agent, function_tool, Runner
-from backend.models.database import (
-    Evaluation as DBEvaluation,
-    Metric as DBMetric,
-    Paper as DBPaper,
-)
+from backend.database.connection import db_manager
+from backend.services.evaluation_service import EvaluationService
+from backend.services.paper_service import PaperService
+from backend.utils.logging_utils import async_export_txt
+from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_formatted_tasks_list
+from extract_evaluation_results.tools import (
+    get_leaderboard_metrics,
+    add_evaluation_result,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class EvaluationResult(BaseModel):
+    success: bool
+    evaluation_id: Optional[int] = None
+    paper_id: Optional[int] = None
+    task_id: Optional[int] = None
+    dataset_id: Optional[int] = None
+    model_name: Optional[str] = None
+    metrics: Optional[str] = None
+    best_metric: Optional[str] = None
+    best_rank: Optional[int] = None
 
 
 evaluation_adder_prompt = """
@@ -121,265 +134,120 @@ for a specific (task, dataset) pair. This helps you choose the correct best_metr
 
 ## Output Format
 
-When successfully adding an evaluation, return a JSON string with the evaluation details:
-```json
-{{
-  "success": true,
-  "evaluation_id": 123,
-  "paper_id": 456,
-  "task_id": 2,
-  "dataset_id": 72,
-  "model_name": "DETR",
-  "metrics": "{{\\"AP\\": \\"44.9\\", \\"AP50\\": \\"64.7\\"}}",
-  "best_metric": "AP",
-  "best_rank": 1
-}}
+When successfully adding an evaluation, return the following:
+
+```python
+class EvaluationResult(BaseModel):
+    success: bool
+    evaluation_id: Optional[int] = None
+    paper_id: Optional[int] = None
+    task_id: Optional[int] = None
+    dataset_id: Optional[int] = None
+    model_name: Optional[str] = None
+    metrics: Optional[str] = None
+    best_metric: Optional[str] = None
+    best_rank: Optional[int] = None
 ```
 
-If there's an error (duplicate, invalid metric, etc.), return a clear error message explaining what went wrong.
+Return the response as a JSON string. Do not include any other text in your response.
 
 **IMPORTANT**: Always check for duplicates before attempting to add an evaluation. Use get_leaderboard_metrics to verify valid metrics if needed.
 """
 
 
-@function_tool
-async def get_leaderboard_metrics(task_id: int, dataset_id: int) -> str:
-    """Get the list of allowed metrics for a specific leaderboard (task + dataset).
+class Step6Input(BaseModel):
+    """Input data for Step6."""
 
-    This tool helps you determine which metrics are valid for a given (task, dataset) pair.
-    Each (task, dataset, metric) triple defines a unique leaderboard.
+    arxiv_id: str
+    aligned_evaluation_results: list
+    paper_details: str
 
-    Args:
-        task_id: The ID of the task
-        dataset_id: The ID of the dataset
 
-    Returns:
-        A formatted string with the allowed metrics for this leaderboard, including their directions (higher/lower is better).
-        If no metrics are configured, returns a message indicating all metrics are allowed (backwards compatibility).
-    """
-    session: Session = db_manager.session_local()
-    service = LeaderboardMetricService(session)
+# Output model (alias to EvaluationResult for clarity)
+Step6Output = EvaluationResult
 
-    try:
-        result = service.get_leaderboard_metrics(task_id, dataset_id)
 
-        if not result["metrics"]:
-            response = (
-                f"No specific metrics configured for leaderboard (Task {task_id}, Dataset {dataset_id}). "
-                f"All metrics are allowed (backwards compatibility mode)."
-            )
+class Step6(AgentStep[Step6Input, Step6Output]):
+    """Agent-based step for adding evaluation results to the database."""
+
+    input_model = Step6Input
+    output_model = Step6Output
+
+    def __init__(self):
+        # Format instructions with tasks list
+        tasks_list = get_formatted_tasks_list()
+        formatted_instructions = evaluation_adder_prompt.format(tasks_list=tasks_list)
+
+        super().__init__(
+            name="Step6: Evaluation Adder",
+            description="Adds evaluation results to the database with validation",
+            instructions=formatted_instructions,
+            tools=[add_evaluation_result, get_leaderboard_metrics],
+            model="gpt-5-mini",
+            agent_output_type=EvaluationResult,
+        )
+
+    async def build_agent_prompt(self, inputs: Step6Input) -> str:
+        """
+        Convert Step6Input to agent input prompt.
+        """
+        print(f"Processing {len(inputs.aligned_evaluation_results)} evaluation results")
+
+        # Get existing evaluations for this paper to prevent duplicates
+        existing_evaluations = get_existing_evaluations_for_paper(inputs.arxiv_id)
+        print(
+            f"Found {len(existing_evaluations)} existing evaluation(s) for this paper"
+        )
+
+        # Format existing evaluations for the prompt
+        existing_evaluations_text = ""
+        if existing_evaluations:
+            existing_evaluations_text = f"""
+## Existing evaluation results for this paper
+
+The following evaluation results already exist in the database for this paper. **DO NOT** add duplicates of these evaluations:
+
+{json.dumps(existing_evaluations, indent=2)}
+
+**Duplicate Detection**: An evaluation is considered a duplicate if it has the same:
+- paper_id
+- task_id
+- dataset_id
+- model_name
+- best_metric
+
+Before adding any evaluation, carefully compare it against the existing evaluations above. If a match is found, skip that evaluation and report that it already exists.
+"""
         else:
-            response = f"Allowed metrics for leaderboard (Task {result['task_name']}, Dataset {result['dataset_name']}):\n"
-            for metric in result["metrics"]:
-                direction = (
-                    "higher is better"
-                    if metric["metric_direction"] == "higher_is_better"
-                    else "lower is better"
-                )
-                response += f"  - {metric['metric_name']} ({direction})\n"
+            existing_evaluations_text = """
+## Existing evaluation results for this paper
 
-        session.close()
-        print(f"[TOOL RESULT] {response}")
-        return response
+No existing evaluation results found for this paper. You can proceed to add all evaluation results.
+"""
 
-    except ValueError as e:
-        session.close()
-        error_msg = f"Error: {str(e)}"
-        print(f"[TOOL RESULT] {error_msg}")
-        return error_msg
-    except Exception as e:
-        session.close()
-        error_msg = f"Error retrieving leaderboard metrics: {str(e)}"
-        print(f"[TOOL RESULT] {error_msg}")
-        return error_msg
+        prompt = f"""
+## Paper details
+{inputs.paper_details}
+{existing_evaluations_text}
 
+## Evaluation results to add
 
-@function_tool
-async def add_evaluation_result(
-    paper_id: int,
-    task_id: int,
-    dataset_id: int,
-    metrics: str,
-    best_metric: str,
-    model_name: Optional[str] = None,
-    methodology: Optional[str] = None,
-    uses_additional_data: bool = False,
-    evaluated_on: Optional[str] = None,
-    external_source_url: Optional[str] = None,
-) -> str:
-    """Add a new evaluation result to the database.
+The following evaluation results have been extracted and aligned with the database (paper_id, task_id, dataset_id):
+{json.dumps(inputs.aligned_evaluation_results, indent=2)}
 
-    This tool adds an evaluation result to a specific leaderboard triple (task, dataset, metric).
-    The evaluation will be automatically ranked on the leaderboard defined by (task_id, dataset_id, best_metric).
+Please add these evaluation results to the database. For each evaluation result:
+1. **First, check if it already exists** by comparing against the existing evaluations listed above (duplicate check)
+2. If it already exists, skip it and report that it's a duplicate
+3. Validate that all metrics exist in the database
+4. Ensure best_metric is valid and in the metrics dictionary
+5. Add the evaluation result using the add_evaluation_result tool (only if it doesn't already exist)
 
-    Args:
-        paper_id: The ID of the paper that produced this evaluation
-        task_id: The ID of the task being evaluated
-        dataset_id: The ID of the dataset used for evaluation
-        metrics: JSON string with dictionary of metric names to values (e.g., '{"AP": "44.9", "AP50": "64.7"}')
-        best_metric: The name of the best performing metric (must be in the metrics dict)
-        model_name: Name of the model/method (optional)
-        methodology: Description of the methodology (optional)
-        uses_additional_data: Whether additional data was used beyond the dataset (default: False)
-        evaluated_on: Date when evaluation was performed in YYYY-MM-DD format (optional)
-        external_source_url: URL to external source like a competition (optional)
+**IMPORTANT**: When calling add_evaluation_result, convert the metrics dictionary to a JSON string.
+For example, if metrics is {{"AP": "44.9", "AP50": "64.7"}}, pass it as '{{"AP": "44.9", "AP50": "64.7"}}'.
 
-    Returns:
-        A success message with evaluation details, or an error message if creation failed.
-    """
-    # Parse metrics JSON string
-    try:
-        metrics_dict = json.loads(metrics)
-    except json.JSONDecodeError as e:
-        return f"Error: Invalid JSON format for metrics parameter: {str(e)}"
-
-    # Log tool call for debugging
-    print(
-        f"[TOOL CALL] add_evaluation_result(paper_id={paper_id}, task_id={task_id}, "
-        f"dataset_id={dataset_id}, metrics={metrics_dict}, best_metric={best_metric}, "
-        f"model_name={model_name})"
-    )
-
-    session: Session = db_manager.session_local()
-
-    try:
-        # 1. Check if paper exists
-        paper = session.query(DBPaper).filter(DBPaper.id == paper_id).first()
-        if not paper:
-            session.close()
-            return f"Error: Paper with ID {paper_id} not found in database"
-
-        # 2. Validate and normalize best_metric
-        # First, check if best_metric is in the metrics dict
-        metric_keys = list(metrics_dict.keys())
-        best_metric_lower = best_metric.lower()
-
-        # Find matching metric in database (case-insensitive)
-        metric_def = (
-            session.query(DBMetric).filter(DBMetric.name.ilike(best_metric)).first()
-        )
-        if not metric_def:
-            session.close()
-            return (
-                f"Error: Metric '{best_metric}' not found in metrics table. "
-                f"Available metrics in evaluation: {', '.join(metric_keys)}. "
-                f"Please ensure the metric name is correct and exists in the database."
-            )
-
-        # Use the canonical name from the database
-        normalized_best_metric = metric_def.name
-
-        # Verify best_metric is in the metrics dict (case-insensitive)
-        if not any(key.lower() == best_metric_lower for key in metric_keys):
-            session.close()
-            return (
-                f"Error: best_metric '{best_metric}' must be one of the metrics in the metrics dictionary. "
-                f"Available metrics: {', '.join(metric_keys)}"
-            )
-
-        # 3. Check for duplicates (including best_metric in the key)
-        existing = (
-            session.query(DBEvaluation)
-            .filter(
-                DBEvaluation.paper_id == paper_id,
-                DBEvaluation.task_id == task_id,
-                DBEvaluation.dataset_id == dataset_id,
-                DBEvaluation.model_name == model_name,
-                DBEvaluation.best_metric == normalized_best_metric,
-            )
-            .first()
-        )
-
-        if existing:
-            session.close()
-            return (
-                f"Evaluation already exists: ID={existing.id}, Paper ID={paper_id}, "
-                f"Task ID={task_id}, Dataset ID={dataset_id}, Model='{model_name}', "
-                f"Best Metric='{normalized_best_metric}'. "
-                f"Duplicates are not allowed for the same (paper, task, dataset, model, best_metric) combination."
-            )
-
-        # 4. Validate all metrics exist in database
-        metric_names_to_check = list(metrics_dict.keys())
-        invalid_metrics = []
-        for metric_name in metric_names_to_check:
-            metric_check = (
-                session.query(DBMetric).filter(DBMetric.name.ilike(metric_name)).first()
-            )
-            if not metric_check:
-                invalid_metrics.append(metric_name)
-
-        if invalid_metrics:
-            session.close()
-            return (
-                f"Error: The following metrics are not found in the metrics table: {', '.join(invalid_metrics)}. "
-                f"Please ensure all metric names are correct and exist in the database."
-            )
-
-        # 5. Normalize metric names in the metrics dict to canonical form
-        normalized_metrics = {}
-        for metric_key, metric_value in metrics_dict.items():
-            metric_def = (
-                session.query(DBMetric).filter(DBMetric.name.ilike(metric_key)).first()
-            )
-            if metric_def:
-                normalized_metrics[metric_def.name] = metric_value
-            else:
-                # This shouldn't happen due to validation above, but handle it gracefully
-                normalized_metrics[metric_key] = metric_value
-
-        # 6. Add the evaluation using the service layer
-        evaluation_service = EvaluationService(session)
-        evaluation = evaluation_service.create_evaluation(
-            paper_id=paper_id,
-            task_id=task_id,
-            dataset_id=dataset_id,
-            metrics=normalized_metrics,
-            model_name=model_name,
-            methodology=methodology,
-            uses_additional_data=uses_additional_data,
-            best_metric=normalized_best_metric,
-            evaluated_on=evaluated_on,
-            external_source_url=external_source_url,
-        )
-
-        # Format success response
-        response = (
-            f"✓ Successfully created evaluation: ID={evaluation.id}, Paper ID={paper_id}, "
-            f"Task ID={task_id}, Dataset ID={dataset_id}, Model='{model_name}', "
-            f"Metrics={normalized_metrics}, Best Metric='{normalized_best_metric}', "
-            f"Best Rank={evaluation.best_rank}"
-        )
-
-        session.close()
-        print(f"[TOOL RESULT] {response}")
-        return response
-
-    except ValueError as e:
-        session.close()
-        error_msg = f"Validation error: {str(e)}"
-        print(f"[TOOL RESULT] {error_msg}")
-        return error_msg
-    except Exception as e:
-        session.close()
-        error_msg = f"Error creating evaluation: {str(e)}"
-        print(f"[TOOL RESULT] {error_msg}")
-        return error_msg
-
-
-async def create_evaluation_adder_agent() -> Agent:
-    """Create the evaluation adder agent."""
-    # Get tasks list for context
-    tasks_list = get_formatted_tasks_list()
-    # Build prompt with tasks context
-    prompt_with_context = evaluation_adder_prompt.format(tasks_list=tasks_list)
-
-    return Agent(
-        name="Evaluation Adder",
-        instructions=prompt_with_context,
-        tools=[add_evaluation_result, get_leaderboard_metrics],
-        model="gpt-5-mini",
-    )
+If any evaluation result cannot be added, provide a clear error message explaining why.
+"""
+        return prompt
 
 
 def read_aligned_results_file(filename: str) -> str:
@@ -452,8 +320,8 @@ async def step_6(
     arxiv_id: str,
     aligned_evaluation_results: list,
     paper_details: str,
-) -> str:
-    """Step 6: Process aligned evaluation results to add them to the database.
+) -> Optional[EvaluationResult]:
+    """Step 6: Process aligned evaluation results to add them to the database (wrapper for Step6).
 
     Args:
         arxiv_id: The ArXiv ID of the paper containing the evaluation results
@@ -461,67 +329,22 @@ async def step_6(
         paper_details: Formatted paper details (title, authors, abstract)
 
     Returns:
-        The result from the evaluation adder agent
+        The result from the evaluation adder agent, or None if failed
     """
-    print(f"Processing {len(aligned_evaluation_results)} evaluation results")
+    agent = Step6()
+    input_data = Step6Input(
+        arxiv_id=arxiv_id,
+        aligned_evaluation_results=aligned_evaluation_results,
+        paper_details=paper_details,
+    )
+    result = await agent.run(input_data)
 
-    # Get existing evaluations for this paper to prevent duplicates
-    existing_evaluations = get_existing_evaluations_for_paper(arxiv_id)
-    print(f"Found {len(existing_evaluations)} existing evaluation(s) for this paper")
+    if not result.success:
+        print(f"Step 6 failed: {result.error_message}")
+        return None
 
-    # Format existing evaluations for the prompt
-    existing_evaluations_text = ""
-    if existing_evaluations:
-        existing_evaluations_text = f"""
-## Existing evaluation results for this paper
-
-The following evaluation results already exist in the database for this paper. **DO NOT** add duplicates of these evaluations:
-
-{json.dumps(existing_evaluations, indent=2)}
-
-**Duplicate Detection**: An evaluation is considered a duplicate if it has the same:
-- paper_id
-- task_id
-- dataset_id
-- model_name
-- best_metric
-
-Before adding any evaluation, carefully compare it against the existing evaluations above. If a match is found, skip that evaluation and report that it already exists.
-"""
-    else:
-        existing_evaluations_text = """
-## Existing evaluation results for this paper
-
-No existing evaluation results found for this paper. You can proceed to add all evaluation results.
-"""
-
-    prompt = f"""
-## Paper details
-{paper_details}
-{existing_evaluations_text}
-
-## Evaluation results to add
-
-The following evaluation results have been extracted and aligned with the database (paper_id, task_id, dataset_id):
-{json.dumps(aligned_evaluation_results, indent=2)}
-
-Please add these evaluation results to the database. For each evaluation result:
-1. **First, check if it already exists** by comparing against the existing evaluations listed above (duplicate check)
-2. If it already exists, skip it and report that it's a duplicate
-3. Validate that all metrics exist in the database
-4. Ensure best_metric is valid and in the metrics dictionary
-5. Add the evaluation result using the add_evaluation_result tool (only if it doesn't already exist)
-
-**IMPORTANT**: When calling add_evaluation_result, convert the metrics dictionary to a JSON string.
-For example, if metrics is {{"AP": "44.9", "AP50": "64.7"}}, pass it as '{{"AP": "44.9", "AP50": "64.7"}}'.
-
-If any evaluation result cannot be added, provide a clear error message explaining why.
-"""
-
-    # Run the evaluation adder agent
-    evaluation_adder_agent = await create_evaluation_adder_agent()
-    result = await Runner.run(evaluation_adder_agent, prompt)
-    return result.final_output
+    # result.outputs is now a Step6Output (EvaluationResult) model
+    return result.outputs
 
 
 async def main():
@@ -583,6 +406,7 @@ async def main():
     await async_export_txt(
         filename=f"step_6_{arxiv_id}",
         value=f"Processing {len(aligned_evaluation_results)} evaluation results",
+        arxiv_id=arxiv_id,
     )
 
     # Process the evaluation results
@@ -597,3 +421,117 @@ async def main():
 if __name__ == "__main__":
     result = asyncio.run(main())
     print("Result: ", result)
+
+
+# Workflow integration
+class Step6WorkflowStep:
+    """Workflow step wrapper for Step6."""
+
+    name = "Step6WorkflowStep"
+
+    def __init__(self):
+        self.step = Step6()
+
+    async def execute(self, state):
+        """
+        Execute Step6 using data from workflow state.
+
+        Reads from state.data:
+        - arxiv_id: str
+        - normalized: list (aligned evaluation results from step 5)
+        - paper_details: str (optional, will be generated if not present)
+
+        Writes to state.data:
+        - step_6_result: evaluation result
+        - step_6_error: error message if failed
+        """
+        from extract_evaluation_results.step_base import StepResult
+
+        # Get paper_details if not in state
+        paper_details = state.data.get("paper_details")
+        if not paper_details:
+            from extract_evaluation_results.utils import get_paper_details
+
+            try:
+                # Shield from cancellation to prevent cancel scope propagation
+                paper_details = await asyncio.shield(
+                    get_paper_details(state.data.get("arxiv_id", state.arxiv_id))
+                )
+            except asyncio.CancelledError:
+                logger.warning("get_paper_details was cancelled, using fallback")
+                # Provide minimal paper details as fallback
+                arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
+                paper_details = f"""
+### Title:
+Paper {arxiv_id}
+### Authors:
+Unknown
+### ArXiv ID
+{arxiv_id}
+### Abstract
+No abstract available.
+"""
+
+        # Get aligned results from step 5
+        all_results = state.data.get("normalized", [])
+
+        # Filter out unresolved results (missing required fields)
+        aligned_results = [r for r in all_results if not r.get("_unresolved", False)]
+        unresolved_count = len(all_results) - len(aligned_results)
+
+        if unresolved_count > 0:
+            logger.info(f"Step6: Skipping {unresolved_count} unresolved evaluation(s)")
+        logger.info(f"Step6: Adding {len(aligned_results)} evaluation results to DB")
+
+        # Build inputs from state.data
+        inputs = {
+            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
+            "aligned_evaluation_results": aligned_results,
+            "paper_details": paper_details,
+        }
+
+        # Execute the step with robust cancellation handling
+        # Create a task to isolate from cancellation propagation
+        task = asyncio.create_task(self.step.run(inputs))
+
+        try:
+            # Give the task a brief moment to start
+            await asyncio.sleep(0.1)
+
+            # Shield the task from external cancellation
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Step 6 execution was cancelled externally, waiting for task to complete..."
+            )
+            # The task should continue running despite the cancellation
+            # Wait longer for it to finish (evaluation addition is quick)
+            try:
+                result = await asyncio.wait_for(task, timeout=120.0)
+                logger.info(
+                    "✓ Step 6 completed successfully despite external cancellation"
+                )
+            except asyncio.TimeoutError:
+                logger.error("Step 6 task timed out after 120 seconds")
+                # Cancel the task and wait for it
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False, outputs={}, error_message="Step execution timed out"
+                )
+            except asyncio.CancelledError:
+                logger.error("Step 6 task was cancelled and could not complete")
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False,
+                    outputs={},
+                    error_message="Step execution was cancelled",
+                )
+
+        return result

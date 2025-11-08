@@ -1,7 +1,8 @@
 """
 Utility functions for the evaluation extraction pipeline.
 
-This module consolidates common functions used across multiple steps to avoid duplication.
+This module consolidates common helper functions used across multiple steps to avoid duplication.
+Agent tools (@function_tool) have been moved to tools.py.
 
 To test a function, you can run:
 
@@ -16,7 +17,6 @@ from typing import List, Tuple
 from backend.database.connection import db_manager
 from backend.utils.paper_utils import get_title, get_authors, get_abstract
 from sqlalchemy.orm import Session
-from agents import function_tool
 
 logger = logging.getLogger(__name__)
 
@@ -273,89 +273,6 @@ def get_leaderboard_triples() -> List[Tuple[str, str, str, str]]:
         return []
 
 
-@function_tool
-async def get_task_datasets(task_id: int) -> str:
-    """Get all datasets associated with a specific task.
-
-    This tool helps you look up which datasets are commonly used for a particular task.
-    Use this when you encounter a task mentioned in the paper and want to see what
-    datasets are already in the database for that task.
-
-    Args:
-        task_id: The ID of the task to get datasets for
-
-    Returns:
-        A formatted string with dataset information for the task, including:
-        - Dataset IDs and names
-        - Full names (if available)
-        - Descriptions (if available)
-        - Total count of datasets
-
-    Example:
-        If you see evaluation results for "Image Classification" task (ID: 1),
-        call get_task_datasets(1) to see all ImageNet variants and other datasets
-        commonly used for image classification.
-    """
-    print(f"[TOOL CALL] get_task_datasets(task_id={task_id})")
-    result = get_datasets_for_task(task_id)
-    print(
-        f"[TOOL RESULT] {result[:200]}..."
-        if len(result) > 200
-        else f"[TOOL RESULT] {result}"
-    )
-    return result
-
-
-@function_tool
-async def get_leaderboard_triples_tool() -> str:
-    """Get all current leaderboards as (area, task, dataset, metric) tuples.
-
-    This tool helps you understand which leaderboards currently exist in the database.
-    Use this when you want to see what evaluation results are already being tracked
-    for specific combinations of tasks, datasets, and metrics.
-
-    Returns:
-        A formatted string listing all leaderboards, grouped by area, with format:
-        - Area: Task | Dataset | Metric
-
-    Example:
-        If you see evaluation results in the paper, call get_leaderboard_triples()
-        to check if there's already a leaderboard for that task-dataset-metric combination.
-        This helps ensure you're extracting results that match existing leaderboard structures.
-    """
-    print("[TOOL CALL] get_leaderboard_triples_tool()")
-    triples = get_leaderboard_triples()
-
-    # Format the triples into a readable string
-    if not triples:
-        result = "No leaderboards found in database"
-    else:
-        # Group by area
-        by_area = {}
-        for area, task, dataset, metric in triples:
-            if area not in by_area:
-                by_area[area] = []
-            by_area[area].append((task, dataset, metric))
-
-        result = "CURRENT LEADERBOARDS IN DATABASE:\n"
-        result += "=" * 60 + "\n\n"
-
-        for area in sorted(by_area.keys()):
-            result += f"{area}:\n"
-            for task, dataset, metric in sorted(by_area[area]):
-                result += f"  - {task} | {dataset} | {metric}\n"
-            result += "\n"
-
-        result += f"Total leaderboards: {len(triples)}\n"
-
-    print(
-        f"[TOOL RESULT] {result[:200]}..."
-        if len(result) > 200
-        else f"[TOOL RESULT] {result}"
-    )
-    return result
-
-
 def get_dataset_details_by_id(dataset_id: int) -> str:
     """Get detailed information about a specific dataset by its ID.
 
@@ -434,42 +351,7 @@ def get_dataset_details_by_id(dataset_id: int) -> str:
         return f"Error retrieving dataset details for ID {dataset_id}: {str(e)}"
 
 
-@function_tool
-async def get_dataset_details(dataset_id: int) -> str:
-    """Get detailed information about a specific dataset.
-
-    This tool helps you get comprehensive details about a dataset when you have its ID.
-    Use this after calling get_task_datasets to learn more about a specific dataset
-    that you're interested in.
-
-    Args:
-        dataset_id: The ID of the dataset to get details for
-
-    Returns:
-        A formatted string with dataset information, including:
-        - Dataset name, full name, slug
-        - Description
-        - URLs (main URL, Hugging Face URL, paper URL)
-        - Associated tasks
-        - Total count of associated tasks
-
-    Example:
-        If get_task_datasets returns a list including "ID: 42 - COCO val2017",
-        call get_dataset_details(42) to get more information about that dataset,
-        including its full description, URLs, and what other tasks it's used for.
-    """
-    print(f"[TOOL CALL] get_dataset_details(dataset_id={dataset_id})")
-    result = get_dataset_details_by_id(dataset_id)
-    print(
-        f"[TOOL RESULT] {result[:200]}..."
-        if len(result) > 200
-        else f"[TOOL RESULT] {result}"
-    )
-    return result
-
-
-@function_tool
-async def find_dataset(
+def find_dataset_sync(
     dataset_name: str | None = None,
     arxiv_id: str | None = None,
     hf_url: str | None = None,

@@ -56,3 +56,6 @@ backend/database/repos_and_pages_setup/cache
 
 # Experiments
 experiments/
+
+# Product photography engine
+product-photography-engine/

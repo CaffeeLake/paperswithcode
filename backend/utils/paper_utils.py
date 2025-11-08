@@ -76,16 +76,24 @@ async def _fetch_arxiv_page(arxiv_id: str) -> BeautifulSoup | None:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
 
-    try:
+    async def _do_fetch():
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=10) as response:
                 response.raise_for_status()
-                html_content = await response.text()
+                return await response.text()
+
+    try:
+        # Shield from cancellation to prevent cancel scope propagation from MCP cleanup
+        html_content = await asyncio.shield(_do_fetch())
     except aiohttp.ClientError as e:
         print(f"Error fetching ArXiv page {url}: {e}")
         return None
     except asyncio.TimeoutError:
         print(f"Timeout error fetching ArXiv page {url}")
+        return None
+    except asyncio.CancelledError:
+        # If still cancelled despite shield, return None gracefully
+        print(f"Request cancelled while fetching ArXiv page {url}")
         return None
 
     return BeautifulSoup(html_content, "html.parser")
@@ -156,9 +164,14 @@ async def get_abstract_hf_hub(arxiv_id: str) -> str:
     """
     Get the abstract of a paper using the Hugging Face Hub API.
     """
-    paper_details = await asyncio.to_thread(paper_info, id=arxiv_id)
-    abstract = paper_details.summary
-    return abstract
+    try:
+        # Shield from cancellation to prevent cancel scope propagation
+        paper_details = await asyncio.shield(asyncio.to_thread(paper_info, id=arxiv_id))
+        abstract = paper_details.summary
+        return abstract
+    except asyncio.CancelledError:
+        print(f"Request cancelled while fetching HF Hub abstract for {arxiv_id}")
+        return "No abstract was found."
 
 
 async def get_abstract(arxiv_id: str) -> str:
@@ -181,9 +194,14 @@ async def get_title_hf_hub(arxiv_id: str) -> str:
     """
     Get the title of a paper using the Hugging Face Hub API.
     """
-    paper_details = await asyncio.to_thread(paper_info, id=arxiv_id)
-    title = paper_details.title
-    return title
+    try:
+        # Shield from cancellation to prevent cancel scope propagation
+        paper_details = await asyncio.shield(asyncio.to_thread(paper_info, id=arxiv_id))
+        title = paper_details.title
+        return title
+    except asyncio.CancelledError:
+        print(f"Request cancelled while fetching HF Hub info for {arxiv_id}")
+        return "No title was found."  # Return fallback value instead of crashing
 
 
 async def get_title_arxiv(arxiv_id: str) -> str | None:
@@ -333,7 +351,7 @@ async def get_authors(arxiv_id: str) -> str:
     if arxiv_id != "":
         authors_string = f"Authors at huggingface.co/papers/{arxiv_id}:"
 
-        try:
+        async def _fetch_authors():
             headers = build_hf_headers(token=False, user_agent={"is_ci": "true"})
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(
@@ -341,7 +359,11 @@ async def get_authors(arxiv_id: str) -> str:
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     response.raise_for_status()
-                    data = await response.json()
+                    return await response.json()
+
+        try:
+            # Shield from cancellation to prevent cancel scope propagation
+            data = await asyncio.shield(_fetch_authors())
 
             authors = data.get("authors", [])
             if authors:
@@ -375,6 +397,9 @@ async def get_authors(arxiv_id: str) -> str:
             else:
                 authors_string += "\n\nNo authors were found in API response."
 
+        except asyncio.CancelledError:
+            print(f"Request cancelled while fetching authors for {arxiv_id}")
+            authors_string += "\n\nNo authors were found (request cancelled)."
         except Exception:
             authors_string += "\n\nNo authors were found (due to error)."
 

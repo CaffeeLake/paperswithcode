@@ -1,0 +1,115 @@
+# Data Workflows: Datasets & Evaluations
+
+Guidelines for adding structured benchmark data through the API and service layer.  Always prefer API-first operations—the service stack handles validation, task/dataset linking, and rank recalculation.
+
+## Creating Datasets
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/datasets/" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "name": "Video-MMLU",
+        "full_name": "Video-MMLU: Massive Multi-Discipline Lecture Understanding",
+        "description": "Comprehensive benchmark for evaluating LMMs",
+        "url": "https://enxinsong.com/Video-MMLU-web/",
+        "hf_url": "https://huggingface.co/datasets/Enxin/Video-MMLU",
+        "paper_url": "https://arxiv.org/abs/2504.14693",
+        "task_ids": [9]
+      }'
+```
+
+**Required fields:** `name`, `description`, `url`, `task_ids`.  Optional metadata (modalities, languages, license, introduced_date) is stored if provided.
+
+Service behavior (`DatasetService.create_dataset`):
+- Validates task IDs
+- Generates slug and normalizes URLs
+- Attaches dataset to requested tasks via `task_datasets`
+- Returns the full serialized dataset model
+
+### Verification
+
+```bash
+curl "http://localhost:8000/api/v1/datasets/?name=Video-MMLU"
+curl "http://localhost:8000/api/v1/datasets/?task=9"
+```
+
+For one-off imports, use scripts in `backend/database/datasets_setup/` (remember `uv run --env-file backend/keys.env …`).
+
+## Adding Evaluation Results
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/evaluations/" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "paper_id": 123,
+        "task_id": 12,
+        "dataset_id": 138,
+        "model_name": "DETR-R50",
+        "metrics": {"box AP": "44.9", "AP50": "64.7"},
+        "best_metric": "box AP",
+        "methodology": "End-to-end object detection with transformers"
+      }'
+```
+
+The evaluation service:
+- Ensures the `(task, dataset, metric)` triple is valid via `LeaderboardMetricService`
+- Links datasets to tasks when missing (`task_datasets`)
+- Validates/normalizes metric names (case-insensitive lookup in `metrics` table)
+- Prevents duplicates by checking `(paper_id, task_id, dataset_id, model_name, best_metric)`
+- Recalculates leaderboard ranks (`best_rank`) after inserts/updates/deletes
+
+### Triple Reminder
+
+Leaderboards are keyed on `(task_id, dataset_id, metric_id)`.  Examples:
+- `(Object Detection, COCO, box AP)`
+- `(Image Classification, ImageNet-1k, Top-1 Accuracy)`
+
+If you are unsure which metrics are allowed for a task/dataset pair, use the `LeaderboardMetricService.get_metrics_for_leaderboard` helper or query `task_dataset_metrics`.
+
+### Bulk Imports
+
+- `backend/database/evaluations_setup/` contains scripts with the same service calls used by the API.
+- Always run the validation script afterwards (see below).
+
+## Metric Naming & Direction
+
+- Store canonical metric names (e.g., `box AP`, `AP50`, `WER`).
+- `metrics` table tracks direction (`higher_is_better` / `lower_is_better`).
+- Add missing metrics before ingesting data:
+
+```sql
+INSERT INTO metrics (name, full_name, direction, description)
+VALUES ('WER', 'Word Error Rate', 'lower_is_better', 'Speech recognition metric')
+ON CONFLICT (name) DO NOTHING;
+```
+
+## Validation Script
+
+Run after any batch insert to standardize metric aliases and fill gaps:
+
+```bash
+uv run --env-file backend/keys.env python backend/database/validate_evaluation_metrics.py --fix
+```
+
+Checks performed:
+- Normalizes metric keys (`box mAP` → `box AP`, `AP@50` → `AP50`, …)
+- Ensures `best_metric` matches a key present in `metrics`
+- Recomputes ranks when necessary
+
+## Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| Evaluation missing on task leaderboard | Confirm dataset is linked to task and rerun rank recalculation: `EvaluationService.recalculate_ranks(task_id, dataset_id)`. |
+| Rankings reversed (higher WER looks “better”) | Ensure metric direction is set to `lower_is_better` in `metrics` and rerun validation script. |
+| Duplicate evaluation blocked | Distinguish entries by `best_metric`, or update existing record with PUT/PATCH. |
+| API 422 validation error | Review fields against `backend/models/api.EvaluationCreateRequest`. |
+
+## Related Files
+
+- Service layer: `backend/services/dataset_service.py`, `backend/services/evaluation_service.py`
+- Metric tooling: `backend/database/validate_evaluation_metrics.py`
+- Triple reference: `docs/DATABASE_SCHEMA_UML.md` (`task_dataset_metrics` section)
+- Evaluation ingestion pipeline: `extract_evaluation_results/`
+
+_Last updated: 7 November 2025_

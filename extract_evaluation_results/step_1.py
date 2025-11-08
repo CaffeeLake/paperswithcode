@@ -15,21 +15,19 @@ import argparse
 import asyncio
 import json
 import logging
-from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
-from backend.utils.logging_utils import async_export_txt
 from backend.utils.pdf_utils import temp_pdf_download
 from backend.utils.paper_utils import get_title
 
 from datalab_sdk import AsyncDatalabClient
 
-from agents import Agent, Runner
-
 from backend.config import get_settings
-from extract_evaluation_results.utils import (
-    get_formatted_tasks_list,
+from extract_evaluation_results.io import load_cached_markdown, save_markdown_to_cache
+from extract_evaluation_results.step_base import AgentStep
+from extract_evaluation_results.utils import get_formatted_tasks_list
+from extract_evaluation_results.tools import (
     get_task_datasets,
     get_dataset_details,
     get_leaderboard_triples_tool,
@@ -45,37 +43,13 @@ logger = logging.getLogger(__name__)
 datalab_client = AsyncDatalabClient(api_key=DATALAB_API_KEY)
 
 
-def get_markdown_cache_path(arxiv_id: str) -> Path:
-    """Get the path to the cached markdown file for a given arxiv_id."""
-    # Sanitize arxiv_id for filename (replace / with _)
-    safe_arxiv_id = arxiv_id.replace("/", "_").replace(":", "_")
-    # Create subfolder for this arxiv_id
-    cache_dir = Path("backend/outputs/evaluation_results") / safe_arxiv_id
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "markdown.md"
+# Input and Output models for the new API
+class Step1Input(BaseModel):
+    """Input for Step 1: Evaluation Results Extractor."""
 
-
-async def load_cached_markdown(arxiv_id: str) -> Optional[str]:
-    """Load cached markdown if it exists."""
-    cache_path = get_markdown_cache_path(arxiv_id)
-    if cache_path.exists():
-        logger.info(f"Found cached markdown for {arxiv_id} at {cache_path}")
-        try:
-            return cache_path.read_text(encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"Failed to read cached markdown: {e}")
-            return None
-    return None
-
-
-async def save_markdown_to_cache(arxiv_id: str, markdown: str) -> None:
-    """Save markdown to cache."""
-    cache_path = get_markdown_cache_path(arxiv_id)
-    try:
-        cache_path.write_text(markdown, encoding="utf-8")
-        logger.info(f"Saved markdown to cache: {cache_path}")
-    except Exception as e:
-        logger.warning(f"Failed to save markdown to cache: {e}")
+    arxiv_id: str = Field(
+        description="ArXiv ID of the paper to extract results from (e.g., '2201.03545')"
+    )
 
 
 class EvaluationResult(BaseModel):
@@ -87,27 +61,17 @@ class EvaluationResult(BaseModel):
 
 
 class DatasetDetail(BaseModel):
-    dataset_name: str  # The name of the dataset as it appears in the paper. Include the split if it covers a particular split of the dataset.
-    dataset_info: str  # What you know about this dataset - do not make up information, only use the information provided in the paper
-    split: Optional[str] = (
-        None  # The split of the dataset e.g. "validation", "test", "train", if mentioned in the paper
-    )
-    paper_title: Optional[str] = (
-        None  # The title of the paper that introduces the dataset. If introduced in THIS paper, use the paper title provided in the instructions. If introduced in a cited paper, use that paper's title.
-    )
-    paper_arxiv_id: Optional[str] = (
-        None  # The ArXiv ID of the paper that introduces the dataset. If introduced in THIS paper, use the arxiv_id provided in the instructions. If introduced in a cited paper, use that paper's arxiv_id.
-    )
+    dataset_name: str
+    dataset_info: str
+    split: Optional[str] = None
+    paper_title: Optional[str] = None
+    paper_arxiv_id: Optional[str] = None
 
 
-class Step1Response(BaseModel):
-    reasoning: str  # Your reasoning regarding the extraction of the evaluation results and dataset details
-    dataset_details: list[
-        DatasetDetail
-    ]  # The details of the datasets mentioned in the evaluation results
-    evaluation_results: list[
-        EvaluationResult
-    ]  # The evaluation results extracted from the paper. Leave as empty list if no evaluation results are found.
+class Step1Output(BaseModel):
+    reasoning: str
+    dataset_details: list[DatasetDetail]
+    evaluation_results: list[EvaluationResult]
 
 
 instructions_prompt = """
@@ -210,123 +174,101 @@ Return the response as a JSON string. Do not include any other text in your resp
 """
 
 
-async def extract_evaluation_results(paper_markdown: str, arxiv_id: str) -> str:
-    paper_title = await get_title(arxiv_id=arxiv_id)
-    # Get tasks list for context
-    tasks_list = get_formatted_tasks_list()
+class Step1(AgentStep[Step1Input, Step1Output]):
+    """Agent-based step for extracting evaluation results from a paper."""
 
-    # Build prompt with additional context
-    instructions_with_context = instructions_prompt.format(
-        tasks_list=tasks_list, paper_title=paper_title, arxiv_id=arxiv_id
-    )
+    input_model = Step1Input
+    output_model = Step1Output
 
-    input_prompt = (
-        f"""Here is the paper to extract evaluation results from: {paper_markdown}"""
-    )
-
-    logger.info("Calling OpenAI Agents SDK...")
-
-    try:
-        # Create agent with instructions and tools
-        agent = Agent(
-            name="Evaluation Results Extractor",
-            instructions=instructions_with_context,
+    def __init__(self):
+        super().__init__(
+            name="Step1: Evaluation Results Extractor",
+            description="Extracts evaluation results and dataset details from a research paper",
+            instructions=instructions_prompt,
             tools=[
                 get_task_datasets,
                 get_dataset_details,
                 get_leaderboard_triples_tool,
             ],
+            agent_output_type=Step1Output,
             model="gpt-5-mini",
-            output_type=Step1Response,
         )
 
-        # Run the agent with the paper markdown as input
-        result_obj = await Runner.run(agent, input_prompt)
+    async def build_agent_prompt(self, inputs: Step1Input) -> str:
+        """
+        Convert inputs to agent prompt by downloading and converting PDF to markdown.
+        """
+        arxiv_id = inputs.arxiv_id
 
-        logger.info(f"Runner.run returned: type={type(result_obj)}, value={result_obj}")
+        # Check if we have cached markdown first
+        cached_markdown = await load_cached_markdown(arxiv_id)
 
-        if result_obj is None:
-            logger.error("Agent returned None")
-            return None
+        if cached_markdown:
+            logger.info(f"Using cached markdown for {arxiv_id}")
+            paper_markdown = cached_markdown
+        else:
+            # Need to download PDF and convert to markdown
+            async with temp_pdf_download(arxiv_id=arxiv_id) as (
+                pdf_path,
+                error_message,
+            ):
+                if pdf_path is None or error_message is not None:
+                    logger.warning(
+                        f"Failed to download PDF for {arxiv_id}: {error_message}"
+                    )
+                    raise RuntimeError(f"Failed to download PDF: {error_message}")
 
-        # When using structured output_type, the result is in .final_output
-        # (as seen in step_3.py and other files)
-        if not hasattr(result_obj, "final_output"):
-            logger.error(
-                f"Result object does not have final_output attribute. Type: {type(result_obj)}, Attributes: {dir(result_obj)}"
-            )
-            return None
-
-        response_obj = result_obj.final_output
-
-        logger.info(f"final_output: type={type(response_obj)}, value={response_obj}")
-
-        if response_obj is None:
-            logger.error("result_obj.final_output is None")
-            return None
-
-        # The structured output should be a Step1Response object
-        if not isinstance(response_obj, Step1Response):
-            logger.warning(
-                f"Response object is not Step1Response, got {type(response_obj)}. Trying to serialize anyway..."
-            )
-            # Try to serialize it anyway - might be a dict or other format
-            if isinstance(response_obj, dict):
-                return json.dumps(response_obj)
-            else:
-                logger.error(
-                    f"Cannot serialize response object of type {type(response_obj)}"
+                # Convert PDF to markdown
+                logger.info(f"Converting PDF to markdown for {arxiv_id}")
+                result = await datalab_client.convert(pdf_path)
+                logger.info(
+                    f"PDF conversion completed. Markdown length: {len(result.markdown) if result.markdown else 0}"
                 )
-                return None
 
-        # Serialize the Response object to JSON
-        result_json = response_obj.model_dump_json()
+                paper_markdown = result.markdown
 
-        logger.info(f"Extracted response: {result_json[:200]}...")
-        return result_json
-    except Exception as e:
-        logger.error(
-            f"Error running agent: {type(e).__name__}: {str(e)}", exc_info=True
+                # Save to cache for future use
+                await save_markdown_to_cache(arxiv_id, paper_markdown)
+
+        # Build the input prompt with the paper markdown
+        return f"""Here is the paper to extract evaluation results from: {paper_markdown}"""
+
+    async def format_instructions(self, inputs: Step1Input) -> str:
+        """
+        Format instructions with paper-specific context.
+        """
+        arxiv_id = inputs.arxiv_id
+
+        # Get paper title and tasks list for context
+        paper_title = await get_title(arxiv_id=arxiv_id)
+        tasks_list = get_formatted_tasks_list()
+
+        # Format instructions with context
+        return self.instructions.format(
+            tasks_list=tasks_list, paper_title=paper_title, arxiv_id=arxiv_id
         )
-        raise
 
 
 async def step_1(arxiv_id: str):
-    # Check if we have cached markdown first
-    cached_markdown = await load_cached_markdown(arxiv_id)
+    """
+    Extract evaluation results from a paper (wrapper for Step1).
 
-    if cached_markdown:
-        logger.info(f"Using cached markdown for {arxiv_id}")
-        paper_markdown = cached_markdown
-    else:
-        # Need to download PDF and convert to markdown
-        async with temp_pdf_download(arxiv_id=arxiv_id) as (pdf_path, error_message):
-            if pdf_path is None or error_message is not None:
-                logger.warning(
-                    f"Failed to download PDF for {arxiv_id}: {error_message}"
-                )
-                return None
+    Args:
+        arxiv_id: The ArXiv ID of the paper
 
-            # step 1: convert PDF to markdown
-            logger.info(f"Converting PDF to markdown for {arxiv_id}")
-            result = await datalab_client.convert(pdf_path)
-            logger.info(
-                f"PDF conversion completed. Markdown length: {len(result.markdown) if result.markdown else 0}"
-            )
+    Returns:
+        JSON string with evaluation results and dataset details
+    """
+    step = Step1()
+    result = await step.run({"arxiv_id": arxiv_id})
 
-            paper_markdown = result.markdown
+    if not result.success:
+        logger.error(f"Step 1 failed: {result.error_message}")
+        return None
 
-            # Save to cache for future use
-            await save_markdown_to_cache(arxiv_id, paper_markdown)
-
-    # step 2: extract evaluation results
-    logger.info(f"Extracting evaluation results for {arxiv_id}")
-    response = await extract_evaluation_results(paper_markdown, arxiv_id)
-    await async_export_txt(filename=f"step_1_{arxiv_id}", value=response)
-    logger.info(
-        f"Extraction completed. Response: {response[:200] if response else 'None'}..."
-    )
-    return response
+    # result.outputs is now a Pydantic model (Step1Output)
+    # Serialize it to JSON string
+    return result.outputs.model_dump_json()
 
 
 if __name__ == "__main__":
@@ -351,3 +293,34 @@ if __name__ == "__main__":
 
     # Close clients to avoid unclosed session warnings
     asyncio.run(datalab_client.close())
+
+
+# Workflow integration
+class Step1WorkflowStep:
+    """Workflow step wrapper for Step1."""
+
+    name = "Step1WorkflowStep"
+
+    def __init__(self):
+        self.step = Step1()
+
+    async def execute(self, state):
+        """
+        Execute Step1 using data from workflow state.
+
+        Reads from state.data:
+        - arxiv_id: str
+
+        Writes to state.data:
+        - reasoning: str
+        - dataset_details: list[DatasetDetail]
+        - evaluation_results: list[EvaluationResult]
+        """
+
+        # Build inputs from state.data
+        inputs = {"arxiv_id": state.data.get("arxiv_id", state.arxiv_id)}
+
+        # Execute the step
+        result = await self.step.run(inputs)
+
+        return result

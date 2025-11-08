@@ -6,6 +6,9 @@ and uses an AI agent to search for each dataset mentioned in the database. The a
 search strategies including searching by dataset name, ArXiv ID of the introducing paper, and
 Hugging Face URL. It can also use web search for disambiguation when needed.
 
+**Key Feature**: This step processes all datasets in parallel internally, running multiple agent
+instances concurrently for improved performance.
+
 You can run it like so:
 
 ```bash
@@ -15,53 +18,42 @@ uv run --env-file backend/keys.env extract_evaluation_results/step_2.py --arxiv_
 
 The script will:
 1. Read the step_1 output JSON file from backend/outputs/evaluation_results/{arxiv_id}/step_1.json
-2. Process the first dataset mentioned in the step_1 output
-3. Use an AI agent to search for the dataset in the database using multiple strategies
-4. Return the dataset information if found, or "Dataset not found" if not found
-5. Pretty print the JSON result
+2. Process ALL datasets mentioned in the step_1 output IN PARALLEL
+3. Use an AI agent to search for each dataset in the database using multiple strategies
+4. Return the dataset information if found, or "Dataset not found" if not found for each dataset
+5. Write results to step_2.json and pretty print a summary
 """
 
 import argparse
 import asyncio
 import json
 import os
-import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from backend.database.connection import db_manager
-from backend.utils.logging_utils import async_export_txt
-
-
-from agents import Agent, Runner
-from agents.mcp import MCPServerStdio
-
+from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import (
     get_paper_details,
     get_formatted_tasks_list,
-    find_dataset,
 )
+from extract_evaluation_results.tools import find_dataset
 
 
 class DatasetDetail(BaseModel):
-    dataset_name: str
-    dataset_info: str  # What you know about this dataset - do not make up information, only use the information provided in the paper
-    paper_title: Optional[str] = (
-        None  # The title of the paper that introduces the dataset (cited in the paper)
-    )
-    paper_arxiv_id: Optional[str] = (
-        None  # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
-    )
+    id: int
+    name: str
+    slug: str
+    description: str
+    hf_url: str
+    paper_url: str
 
 
-class Step2Response(BaseModel):
-    reasoning: str  # Your reasoning regarding the search for the dataset
-    dataset_found: bool  # Whether the dataset was found in the database
-    dataset_detail: Optional[DatasetDetail] = (
-        None  # The details of the dataset mentioned in the evaluation results
-    )
+class Response(BaseModel):
+    reasoning: str
+    dataset_found: bool
+    dataset_detail: Optional[DatasetDetail] = None
 
 
 dataset_finder_prompt = """
@@ -71,10 +63,10 @@ You are an expert in managing machine learning (ML) datasets in the SQL database
 
 ## Task
 
-A colleague of yours has extracted evaluation results from a paper and identified a particular dataset mentioned in the evaluation results.
+A colleague of yours has extracted evaluation results from an ArXiv paper and identified a particular dataset mentioned in the evaluation results.
 Your task is to determine whether this dataset already exists in the SQL database or not.
 
-## Context: Available Tasks and Datasets
+## Context: Available Machine Learning Areas, Tasks and Datasets
 
 {tasks_list}
 
@@ -82,9 +74,10 @@ Your task is to determine whether this dataset already exists in the SQL databas
 
 ## CRITICAL Requirements
 
-1. **Prevent Duplicates**: Thoroughly search before concluding a dataset is not found. Duplicates cause data quality issues.
+1. **Prevent Duplicates**: Thoroughly search before concluding a dataset is not found. Duplicates cause data quality issues. Some datasets have multiple versions, e.g. there's SQuAD v1.1 and v2.
 2. **Avoid False Positives**: Ensure the found dataset truly matches the mentioned one.
-3. **Match Dataset Splits**: If the mentioned dataset includes a specific split (e.g., "test", "validation", "train"), the database entry MUST define the same split. A dataset with split "test" is NOT the same as one with split "val" or without a split specified.
+3. **Match Dataset Splits**: Some datasets have multiple splits and are considered different IDs in the database (e.g. there's CityScapes (validation) and CityScapes (test)). Ensure that the found dataset matches the same split as the mentioned dataset.
+A dataset with split "test" is NOT the same as one with split "val" or without a split specified.
 
 ## Search Strategy
 
@@ -112,17 +105,7 @@ Use find_dataset tool MULTIPLE TIMES with different strategies:
    - Verify if similar-named datasets are the same
    - Find official documentation for naming conventions
 
-Only return "Dataset not found" after exhausting ALL search strategies.
-
-## Reporting Results
-
-**When found**:
-- Include dataset ID in reasoning: "Found match in database: ID=X, Name=..."
-- Set dataset_found=True
-
-**When not found**:
-- Set dataset_found=False
-- List search strategies attempted
+Only set dataset_found=False after exhausting ALL search strategies, listing the search strategies attempted in your reasoning.
 
 ## Output format
 
@@ -130,21 +113,19 @@ Use the following Pydantic model to format your response:
 
 ```python
 class DatasetDetail(BaseModel):
-    dataset_name: str
-    dataset_info: str  # What you know about this dataset - do not make up information, only use the information provided in the paper
-    paper_title: Optional[str] = (
-        None  # The title of the paper that introduces the dataset (cited in the paper)
-    )
-    paper_arxiv_id: Optional[str] = (
-        None  # The ArXiv ID of the paper that introduces the dataset (cited in the paper)
-    )
+    id: int  # ID of the dataset in the SQL database
+    name: str  # Name of the dataset in the SQL database
+    slug: str  # Slug of the dataset in the SQL database
+    description: str  # Description of the dataset in the SQL database
+    hf_url: str  # Hugging Face URL of the dataset in the SQL database
+    paper_url: str  # Paper URL of the dataset in the SQL database
 
 
 class Response(BaseModel):
-    reasoning: str  # Your reasoning regarding the search for the dataset
-    dataset_found: bool  # Whether the dataset was found in the database
+    reasoning: str  # Your reasoning regarding the search for the dataset, search strategies attempted and why you set dataset_found=True or False
+    dataset_found: bool  # Whether the dataset was found in the SQL database
     dataset_detail: Optional[DatasetDetail] = (
-        None  # The details of the dataset mentioned in the evaluation results
+        None  # The details of the found dataset, only complete this if dataset_found=True
     )
 ```
 
@@ -152,21 +133,220 @@ Return the response as a JSON string. Do not include any other text in your resp
 """
 
 
-async def create_dataset_finder_agent(mcp_servers=None) -> Agent:
-    """Create the dataset finder agent with optional MCP servers for web search."""
-    # Get tasks list for context
-    tasks_list = get_formatted_tasks_list()
-    # Build prompt with tasks context
-    prompt_with_context = dataset_finder_prompt.format(tasks_list=tasks_list)
+class Step2Input(BaseModel):
+    """Input data for Step2."""
 
-    return Agent(
-        name="Dataset Finder",
-        instructions=prompt_with_context,
-        tools=[find_dataset],
-        model="gpt-5-mini",
-        mcp_servers=mcp_servers or [],
-        output_type=Step2Response,
-    )
+    arxiv_id: str
+    dataset_details: list[dict]
+    evaluation_results: list
+    paper_details: str
+    use_web_search: bool = True
+
+
+class Step2SingleResult(BaseModel):
+    """Result for a single dataset search."""
+
+    dataset_input: dict
+    found: bool
+    reasoning: str
+    dataset: Optional[DatasetDetail] = None
+
+
+class Step2Output(BaseModel):
+    """Output data for Step2 - now handles multiple datasets."""
+
+    results: list[Step2SingleResult]
+    paper_details: str  # Pass paper_details to next steps to avoid refetching
+
+
+class Step2(AgentStep[Step2Input, Step2Output]):
+    """Agent-based step for finding datasets in the database."""
+
+    input_model = Step2Input
+    output_model = Step2Output
+
+    def __init__(self):
+        super().__init__(
+            name="Step2: Dataset Finder",
+            description="Finds datasets in the database based on evaluation results",
+            instructions=dataset_finder_prompt,
+            tools=[find_dataset],
+            agent_output_type=Response,
+            model="gpt-5-mini",
+            mcp_servers=["exa"],
+        )
+
+    async def _process_single_dataset(
+        self,
+        dataset_detail: dict,
+        arxiv_id: str,
+        evaluation_results: list,
+        paper_details: str,
+        formatted_instructions: str,
+    ) -> Step2SingleResult:
+        """
+        Process a single dataset through the agent.
+
+        Args:
+            dataset_detail: Single dataset detail dict
+            arxiv_id: ArXiv ID of the paper
+            evaluation_results: List of evaluation results
+            paper_details: Formatted paper details
+            formatted_instructions: Pre-formatted instructions with tasks list
+
+        Returns:
+            Step2SingleResult with search outcome
+        """
+        dataset_name = dataset_detail.get("dataset_name", "Unknown")
+
+        try:
+            # Build prompt for this specific dataset
+            prompt = f"""
+## Paper details
+{paper_details}
+
+## Evaluation results
+
+The evaluation results extracted by a colleague of yours are the following:
+{json.dumps(evaluation_results, indent=2)}
+
+## Dataset to find
+
+Find the dataset details for the following dataset mentioned in the evaluation results:
+{json.dumps(dataset_detail, indent=2)}
+"""
+
+            # Run the agent for this dataset
+            agent_response = await self._run_agent(prompt, formatted_instructions)
+
+            # Process the agent output
+            if isinstance(agent_response, Response):
+                if not agent_response.dataset_found:
+                    print(f"Dataset '{dataset_name}' not found in database")
+                    return Step2SingleResult(
+                        dataset_input=dataset_detail,
+                        found=False,
+                        reasoning=agent_response.reasoning,
+                        dataset=None,
+                    )
+
+                # Dataset was found
+                print(
+                    f"✓ Found dataset: {agent_response.dataset_detail.name} (ID: {agent_response.dataset_detail.id})"
+                )
+                return Step2SingleResult(
+                    dataset_input=dataset_detail,
+                    found=True,
+                    reasoning=agent_response.reasoning,
+                    dataset=agent_response.dataset_detail,
+                )
+            else:
+                raise ValueError(
+                    f"Unexpected agent output type: {type(agent_response)}"
+                )
+
+        except Exception as e:
+            print(f"Error processing dataset '{dataset_name}': {str(e)}")
+            return Step2SingleResult(
+                dataset_input=dataset_detail,
+                found=False,
+                reasoning=f"Error during search: {str(e)}",
+                dataset=None,
+            )
+
+    async def run(self, inputs):
+        """
+        Override run to handle parallel processing of multiple datasets.
+        """
+        # Validate inputs if dict provided
+        if isinstance(inputs, dict):
+            try:
+                inputs = Step2Input(**inputs)
+            except Exception as e:
+                from extract_evaluation_results.step_base import StepResult
+
+                return StepResult(
+                    success=False,
+                    error_message=f"Input validation failed: {e}",
+                    outputs=None,
+                )
+
+        try:
+            # Set up MCP servers BEFORE parallel processing
+            # This ensures they're set up in the main task context
+            if self._mcp_servers is None:
+                self._mcp_servers = await self._setup_mcp_servers()
+
+            # Format instructions once (same for all datasets)
+            tasks_list = get_formatted_tasks_list()
+            formatted_instructions = self.instructions.format(tasks_list=tasks_list)
+
+            # Process all datasets in parallel
+            tasks = [
+                self._process_single_dataset(
+                    dataset_detail=dataset_detail,
+                    arxiv_id=inputs.arxiv_id,
+                    evaluation_results=inputs.evaluation_results,
+                    paper_details=inputs.paper_details,
+                    formatted_instructions=formatted_instructions,
+                )
+                for dataset_detail in inputs.dataset_details
+            ]
+
+            results = await asyncio.gather(*tasks)
+
+            # Return successful result with all findings
+            from extract_evaluation_results.step_base import StepResult
+
+            return StepResult(
+                success=True,
+                outputs=Step2Output(
+                    results=list(results), paper_details=inputs.paper_details
+                ),
+                error_message=None,
+            )
+
+        except Exception as e:
+            from extract_evaluation_results.step_base import StepResult
+
+            return StepResult(
+                success=False, outputs=None, error_message=f"Step 2 failed: {str(e)}"
+            )
+        finally:
+            # Clean up MCP servers (in the same task context they were set up)
+            # Suppress any cleanup errors as they're non-critical
+            try:
+                await self._cleanup_mcp_servers()
+            except Exception as e:
+                self.logger.debug(f"MCP server cleanup error (non-critical): {e}")
+
+    async def build_agent_prompt(self, inputs: Step2Input) -> str:
+        """
+        Not used in the new parallel implementation.
+        Kept for compatibility with base class signature.
+        """
+        raise NotImplementedError("Use _process_single_dataset instead")
+
+    async def process_agent_output(
+        self, agent_output: Any, inputs: Step2Input
+    ) -> Step2Output:
+        """
+        Not used in the new parallel implementation.
+        Kept for compatibility with base class signature.
+        """
+        raise NotImplementedError("Use _process_single_dataset instead")
+
+    async def format_instructions(self, inputs: Step2Input) -> str:
+        """
+        Format instructions with paper-specific context.
+        """
+        # Format instructions with tasks list
+        tasks_list = get_formatted_tasks_list()
+
+        # Format instructions with context
+        return self.instructions.format(
+            tasks_list=tasks_list,
+        )
 
 
 def get_output_dir(arxiv_id: str) -> Path:
@@ -200,247 +380,87 @@ def read_step_1_output(arxiv_id: str) -> str:
     return json_file.read_text()
 
 
-def write_step_2_output(arxiv_id: str, dataset_detail: dict, result: dict) -> None:
+def write_step_2_output(arxiv_id: str, results: list[dict]) -> None:
     """Write the step_2 output JSON file to the standardized location.
 
     Writes to: backend/outputs/evaluation_results/{arxiv_id}/step_2.json
 
     Args:
         arxiv_id: The ArXiv ID of the paper
-        dataset_detail: The dataset detail that was processed
-        result: The result dict from step_2 with 'found' and optional 'dataset' keys
+        results: List of result dicts, each with 'dataset_input', 'found', 'reasoning', and optional 'dataset' keys
     """
     eval_results_dir = get_output_dir(arxiv_id)
     json_file = eval_results_dir / "step_2.json"
 
-    # Format the output as a list with one result (consistent with parse.py format)
+    # Format the output as a list of results (consistent with parse.py format)
     output_data = [
         {
-            "dataset": dataset_detail,
+            "dataset": result.get("dataset_input", {}),
             "success": result.get("found", False),
             "result": result,
         }
+        for result in results
     ]
 
     json_file.write_text(json.dumps(output_data, ensure_ascii=False, indent=2))
     print(f"✓ Step 2 output written to: {json_file}")
 
 
-def load_dataset_from_db(dataset_id: int) -> Optional[dict]:
-    """Load dataset details from the database by ID.
-
-    Args:
-        dataset_id: The database ID of the dataset
-
-    Returns:
-        Dictionary with dataset info if found, None otherwise
-    """
-    session = db_manager.session_local()
-    try:
-        from backend.models.database import Dataset as DBDataset
-
-        dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
-        if not dataset:
-            return None
-
-        return {
-            "id": dataset.id,
-            "name": dataset.name,
-            "slug": dataset.slug,
-            "full_name": dataset.full_name,
-            "description": dataset.description,
-            "hf_url": dataset.hf_url,
-            "paper_url": dataset.paper_url,
-        }
-    finally:
-        session.close()
-
-
-def extract_dataset_id(result: str | dict) -> Optional[int]:
-    """Extract dataset ID from step_2 result.
-
-    Args:
-        result: Either a result dict or a string representation of the result
-
-    Returns:
-        Dataset ID if found, None otherwise
-    """
-    # If result is a dict, check for 'found' and 'dataset' keys
-    if isinstance(result, dict):
-        if result.get("found") and result.get("dataset"):
-            return result["dataset"].get("id")
-        return None
-
-    # If result is a string, try to extract ID using regex
-    result_str = str(result)
-
-    # Try to extract ID from patterns like "ID=123" or "ID: 123"
-    id_match = re.search(r"ID[=:]?\s*(\d+)", result_str, re.IGNORECASE)
-    if id_match:
-        return int(id_match.group(1))
-
-    # Also try to parse as JSON if it looks like a dict string
-    if "{" in result_str:
-        try:
-            parsed = json.loads(result_str)
-            if isinstance(parsed, dict):
-                return extract_dataset_id(parsed)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    return None
-
-
-def parse_dataset_info(result: str | dict) -> Optional[dict]:
-    """Parse dataset information from step_2 result.
-
-    Args:
-        result: Either a result dict or a string representation of the result
-
-    Returns:
-        Dataset info dict if found and valid, None otherwise
-    """
-    # If result is a dict, check if dataset was found
-    if isinstance(result, dict):
-        if not result.get("found"):
-            return None
-
-        dataset_info = result.get("dataset")
-        if dataset_info and dataset_info.get("id"):
-            return dataset_info
-        return None
-
-    # If result is a string, try to extract dataset info
-    result_str = str(result)
-
-    # Check for explicit "not found" messages
-    if "Dataset not found" in result_str or "not found" in result_str.lower():
-        return None
-
-    # Try to extract ID first
-    dataset_id = extract_dataset_id(result_str)
-    if not dataset_id:
-        return None
-
-    # If we have an ID, try to load from database
-    return load_dataset_from_db(dataset_id)
-
-
 async def step_2(
     arxiv_id: str,
-    dataset_detail: dict,
+    dataset_details: list[dict],
     evaluation_results: list,
     paper_details: str,
     use_web_search: bool = True,
-) -> dict:
-    """Process a single dataset detail to find it in the database.
+) -> list[dict]:
+    """Process multiple dataset details to find them in the database (wrapper for Step2).
 
     Args:
         arxiv_id: The ArXiv ID of the paper containing the evaluation results
-        dataset_detail: A dictionary containing dataset_name, paper_title, paper_arxiv_id
+        dataset_details: List of dictionaries, each containing dataset_name, paper_title, paper_arxiv_id
         evaluation_results: List of evaluation results from step_1
         paper_details: Formatted paper details (title, authors, abstract)
         use_web_search: Whether to use Exa AI MCP server for web search
 
     Returns:
-        Dictionary with 'found' bool and 'dataset' dict (if found)
+        List of dictionaries, each with 'dataset_input', 'found' bool, 'reasoning', and optional 'dataset' dict
     """
-    dataset_name = dataset_detail.get("dataset_name", "Unknown")
-    print(f"Processing dataset: {dataset_name}")
+    agent = Step2()
+    input_data = Step2Input(
+        arxiv_id=arxiv_id,
+        dataset_details=dataset_details,
+        evaluation_results=evaluation_results,
+        paper_details=paper_details,
+        use_web_search=use_web_search,
+    )
+    result = await agent.run(input_data)
 
-    prompt = f"""
-## Paper details
-{paper_details}
+    if not result.success:
+        print(f"Step 2 failed: {result.error_message}")
+        # Return error results for all datasets
+        return [
+            {
+                "dataset_input": dataset_detail,
+                "found": False,
+                "reasoning": result.error_message,
+            }
+            for dataset_detail in dataset_details
+        ]
 
-## Evaluation results
-
-The evaluation results extracted by a colleague of yours are the following:
-{json.dumps(evaluation_results, indent=2)}
-
-## Dataset to find
-
-Find the dataset details for the following dataset mentioned in the evaluation results:
-{json.dumps(dataset_detail, indent=2)}
-"""
-
-    # Helper function to run agent and process output
-    async def run_agent_and_process(mcp_servers):
-        dataset_finder_agent = await create_dataset_finder_agent(
-            mcp_servers=mcp_servers
-        )
-        result = await Runner.run(dataset_finder_agent, prompt)
-
-        if not result or not hasattr(result, "final_output"):
-            raise ValueError(f"Agent returned invalid result: {result}")
-
-        final_output = result.final_output
-
-        # Ensure we have a Step2Response object
-        if not isinstance(final_output, Step2Response):
-            raise ValueError(f"Expected Step2Response, got {type(final_output)}")
-
-        # If dataset not found, return early
-        if not final_output.dataset_found:
-            print(f"Dataset '{dataset_name}' not found in database")
-            return {"found": False, "reasoning": final_output.reasoning}
-
-        # Extract dataset ID from reasoning (look for "ID=X" pattern)
-        dataset_id = None
-        id_match = re.search(r"ID[=:](\d+)", final_output.reasoning)
-        if id_match:
-            dataset_id = int(id_match.group(1))
-
-        if not dataset_id:
-            print("⚠️  WARNING: Agent claimed dataset was found but no ID in reasoning")
-            return {"found": False, "reasoning": final_output.reasoning}
-
-        # Load actual dataset from database
-        db_dataset = load_dataset_from_db(dataset_id)
-        if not db_dataset:
-            print(
-                f"⚠️  WARNING: Dataset ID {dataset_id} does not exist in database. Rejecting false positive."
-            )
-            return {"found": False, "reasoning": final_output.reasoning}
-
-        print(f"✓ Found dataset: {db_dataset['name']} (ID: {dataset_id})")
-        return {
-            "found": True,
-            "reasoning": final_output.reasoning,
-            "dataset": db_dataset,
+    # result.outputs is now a Step2Output model with a list of Step2SingleResult
+    # Convert to list of dicts for backward compatibility
+    output_list = []
+    for single_result in result.outputs.results:
+        output_dict = {
+            "dataset_input": single_result.dataset_input,
+            "found": single_result.found,
+            "reasoning": single_result.reasoning,
         }
+        if single_result.dataset:
+            output_dict["dataset"] = single_result.dataset.model_dump()
+        output_list.append(output_dict)
 
-    # Try with web search first if available
-    exa_api_key = os.getenv("EXA_API_KEY")
-    if use_web_search and exa_api_key:
-        try:
-            async with MCPServerStdio(
-                name="Exa AI MCP Server",
-                params={
-                    "command": "npx",
-                    "args": ["-y", "mcp-remote", "https://mcp.exa.ai/mcp"],
-                    "env": {"EXA_API_KEY": exa_api_key},
-                },
-                client_session_timeout_seconds=10,
-            ) as exa_server:
-                async with MCPServerStdio(
-                    name="Hugging Face MCP Server",
-                    params={
-                        "command": "npx",
-                        "args": [
-                            "-y",
-                            "mcp-remote",
-                            "https://huggingface.co/mcp?login",
-                        ],
-                    },
-                    client_session_timeout_seconds=10,
-                ) as hf_server:
-                    return await run_agent_and_process([exa_server, hf_server])
-        except Exception as e:
-            print(f"Warning: Could not set up MCP servers: {e}")
-            print("Continuing without web search...")
-
-    # Run without web search
-    return await run_agent_and_process([])
+    return output_list
 
 
 async def main():
@@ -463,24 +483,19 @@ async def main():
     evaluation_results = step_1_data["evaluation_results"]
     dataset_details = step_1_data["dataset_details"]
 
-    # Focus on the first dataset mentioned
+    # Check if there are any datasets to process
     if not dataset_details:
         print("No dataset details found in step_1 output")
         # Write empty result to step_2.json
-        empty_result = {"found": False, "reasoning": "No dataset details found"}
-        write_step_2_output(arxiv_id, {}, empty_result)
-        return empty_result
+        write_step_2_output(arxiv_id, [])
+        return []
 
-    first_dataset = dataset_details[0]
-    print(f"Checking first dataset: {first_dataset}")
+    print(f"Processing {len(dataset_details)} datasets in parallel...")
+    for idx, dataset in enumerate(dataset_details, 1):
+        print(f"  {idx}. {dataset.get('dataset_name', 'Unknown')}")
 
     # Paper details
     paper_details = await get_paper_details(arxiv_id)
-
-    await async_export_txt(
-        filename=f"step_2_{arxiv_id}",
-        value=f"Processing dataset: {json.dumps(first_dataset, indent=2)}",
-    )
 
     # Check for EXA_API_KEY
     exa_api_key = os.getenv("EXA_API_KEY")
@@ -490,27 +505,113 @@ async def main():
             "Warning: EXA_API_KEY not found. Web search disabled. Set EXA_API_KEY in backend/keys.env to enable web search for disambiguation."
         )
 
-    # Process the dataset
-    result = await step_2(
+    # Process all datasets in parallel
+    results = await step_2(
         arxiv_id=arxiv_id,
-        dataset_detail=first_dataset,
+        dataset_details=dataset_details,
         evaluation_results=evaluation_results,
         paper_details=paper_details,
         use_web_search=use_web_search,
     )
 
-    # Write the result to step_2.json
-    write_step_2_output(arxiv_id, first_dataset, result)
+    # Write the results to step_2.json
+    write_step_2_output(arxiv_id, results)
 
-    return result
+    return results
 
 
 if __name__ == "__main__":
-    result = asyncio.run(main())
-    if result:
+    results = asyncio.run(main())
+    if results:
         print("\n" + "=" * 50)
-        print("RESULT:")
+        print("RESULTS SUMMARY:")
         print("=" * 50)
-        print(json.dumps(result, indent=2))
+        found_count = sum(1 for r in results if r.get("found"))
+        print(f"Found {found_count}/{len(results)} datasets in database\n")
+        for idx, result in enumerate(results, 1):
+            dataset_name = result.get("dataset_input", {}).get(
+                "dataset_name", "Unknown"
+            )
+            status = "✓" if result.get("found") else "✗"
+            print(f"{idx}. {status} {dataset_name}")
+            if result.get("found") and result.get("dataset"):
+                db_name = result["dataset"].get("name", "Unknown")
+                db_id = result["dataset"].get("id", "N/A")
+                print(f"   → Found as: {db_name} (ID: {db_id})")
+        print("=" * 50)
+        print("\nDetailed results:")
+        print(json.dumps(results, indent=2))
     else:
-        print("No result received")
+        print("No results received")
+
+
+# Workflow integration
+class Step2WorkflowStep:
+    """Workflow step wrapper for Step2."""
+
+    name = "Step2WorkflowStep"
+
+    def __init__(self):
+        self.step = Step2()
+
+    async def execute(self, state):
+        """
+        Execute Step2 using data from workflow state.
+
+        Reads from state.data:
+        - arxiv_id: str
+        - dataset_details: list[dict]
+        - evaluation_results: list
+        - paper_details: str (optional, will be generated if not present)
+        - use_web_search: bool (optional, defaults to True)
+
+        Writes to state.data:
+        - step_2_results: list of search results
+        """
+        from extract_evaluation_results.step_base import StepResult
+
+        # Get paper_details if not in state
+        paper_details = state.data.get("paper_details")
+        if not paper_details:
+            paper_details = await get_paper_details(
+                state.data.get("arxiv_id", state.arxiv_id)
+            )
+
+        # Build inputs from state.data
+        inputs = {
+            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
+            "dataset_details": state.data.get("dataset_details", []),
+            "evaluation_results": state.data.get("evaluation_results", []),
+            "paper_details": paper_details,
+            "use_web_search": state.data.get("use_web_search", True),
+        }
+
+        # Execute the step
+        result = await self.step.run(inputs)
+
+        # Rename 'results' to 'step_2_results' for clarity and preserve paper_details
+        if result.success and result.outputs:
+            from extract_evaluation_results.step_base import StepResult
+
+            output_dict = result.outputs.model_dump()
+            # Rename the key
+            if "results" in output_dict:
+                output_dict["step_2_results"] = output_dict.pop("results")
+
+            # Create new output model with renamed field and paper_details
+            from pydantic import BaseModel
+
+            class Step2RenamedOutput(BaseModel):
+                step_2_results: list
+                paper_details: str
+
+            renamed_output = Step2RenamedOutput(
+                step_2_results=output_dict["step_2_results"],
+                paper_details=output_dict["paper_details"],
+            )
+
+            return StepResult(
+                success=True, outputs=renamed_output, reasoning=result.reasoning
+            )
+
+        return result

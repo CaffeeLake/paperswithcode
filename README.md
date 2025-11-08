@@ -16,7 +16,7 @@ Based on this initial Lovable design: https://lovable.dev/projects/a4609afe-13e0
 
 The site is deployed at **https://paperswithcode.co** with Nginx reverse proxy and Let's Encrypt SSL.
 
-**Setting up HTTPS**: See [SSL_CHECKLIST.md](SSL_CHECKLIST.md) or [DNS_SETUP_INSTRUCTIONS.md](DNS_SETUP_INSTRUCTIONS.md)
+**Setting up HTTPS**: See [`docs/deployment.md`](docs/deployment.md)
 
 ### Development
 
@@ -80,17 +80,18 @@ uv run
 
 ## 📚 Documentation
 
-### HTTPS/SSL Setup
-- **[SSL_CHECKLIST.md](SSL_CHECKLIST.md)** - Step-by-step checklist for SSL setup
-- **[DNS_SETUP_INSTRUCTIONS.md](DNS_SETUP_INSTRUCTIONS.md)** - Quick DNS configuration guide
-- **[HTTPS_SETUP_SUMMARY.md](HTTPS_SETUP_SUMMARY.md)** - Current setup status
-- **[docs/HTTPS_SETUP.md](docs/HTTPS_SETUP.md)** - Complete HTTPS setup guide
-
-### Development
-- **[AGENTS.md](AGENTS.md)** - Complete development guide for AI agents and developers
-- **[backend/README.md](backend/README.md)** - Backend API documentation
-- **[cron/README.md](cron/README.md)** - CRON jobs documentation
-- **[docs/](docs/)** - Additional documentation (API guides, database schema, etc.)
+### Documentation
+- **[docs/deployment.md](docs/deployment.md)** – DNS, HTTPS, and runtime verification
+- **[docs/backend-api.md](docs/backend-api.md)** – FastAPI routers and service conventions
+- **[docs/data-workflows.md](docs/data-workflows.md)** – Dataset/evaluation ingestion
+- **[docs/database.md](docs/database.md)** – PostgreSQL access and security
+- **[docs/operations.md](docs/operations.md)** – Cron jobs, trending pipeline, monitoring
+- **[docs/frontend.md](docs/frontend.md)** – UI feature notes (task leaderboards, admin editing)
+- **[docs/keyword-matching.md](docs/keyword-matching.md)** – Keyword tagging strategy and APIs
+- **[docs/DATABASE_SCHEMA_UML.md](docs/DATABASE_SCHEMA_UML.md)** – Schema reference
+- **[AGENTS.md](AGENTS.md)** – Full development handbook
+- **[backend/README.md](backend/README.md)** – Backend setup
+- **[cron/README.md](cron/README.md)** – Cron job guide
 
 ### Key Scripts
 - **[setup_ssl.sh](setup_ssl.sh)** - Automated SSL certificate setup
