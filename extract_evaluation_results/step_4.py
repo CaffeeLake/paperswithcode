@@ -1,5 +1,5 @@
 """
-This script defines an agent that can add datasets to the SQL database.
+This script defines an agent that can add datasets to the SQL database. It also links the datasets to the appropriate tasks.
 
 **Key Feature**: This step processes all datasets in parallel internally, running multiple agent
 instances concurrently for improved performance.
@@ -25,7 +25,12 @@ from pydantic import BaseModel, Field
 
 from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
-from extract_evaluation_results.tools import add_dataset, get_available_tasks
+from extract_evaluation_results.tools import (
+    add_dataset,
+    get_available_tasks,
+    link_dataset_to_task,
+    get_tasks_by_area,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,8 @@ Ensure you provide all relevant information including:
 - name (required): The name of the dataset
 - description (required): A description of what the dataset contains and its purpose
 - task_ids (required): List of task IDs this dataset is used for (e.g., [1] for Image Classification, [2, 3] for multiple tasks)
+  **NOTE**: If task_ids are provided in the dataset details, use them as-is unless they are clearly incorrect.
+  These task_ids are typically derived from the paper that uses this dataset.
 - full_name (optional): The full name of the dataset
 - url (optional): Main URL for the dataset
 - hf_url (optional): Hugging Face dataset URL
@@ -96,6 +103,20 @@ Ensure you provide all relevant information including:
 
 Example: To add the COCO dataset for Object Detection, use task_ids=[2]
 Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
+
+## Finding and Linking Tasks
+
+Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP").
+This helps you find appropriate task IDs when you're not sure which tasks apply to a dataset.
+
+**IMPORTANT**: After adding a dataset, you MUST verify it has been linked to at least one task.
+If the add_dataset call succeeds but you're unsure about task associations, use link_dataset_to_task
+to explicitly link the dataset to the appropriate task(s).
+
+Example workflow:
+1. Call get_tasks_by_area("Robotics") to find robotics-related tasks
+2. Add dataset with task_ids=[15] (Robotic Manipulation)
+3. If needed, call link_dataset_to_task(dataset_id=230, task_id=15) to ensure the link
 
 ## Output format
 
@@ -130,7 +151,12 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             name="Step4: Dataset Adder",
             description="Adds datasets to the database with comprehensive information",
             instructions=dataset_adder_prompt,
-            tools=[add_dataset, get_available_tasks],
+            tools=[
+                add_dataset,
+                get_available_tasks,
+                link_dataset_to_task,
+                get_tasks_by_area,
+            ],
             agent_output_type=Response,
             model="gpt-5-mini",
         )
@@ -558,6 +584,27 @@ class Step4WorkflowStep:
         # Get datasets from step 3 that need to be added
         step_3_results = state.data.get("step_3_results", [])
 
+        # Get the main paper's arxiv_id and tasks for context
+        main_paper_arxiv_id = state.arxiv_id
+
+        # Fetch the main paper's tasks to suggest as default task_ids for datasets
+        main_paper_task_ids = []
+        try:
+            from backend.database.connection import db_manager
+            from backend.models.database import Paper
+
+            with db_manager.session_local() as db:
+                paper = (
+                    db.query(Paper)
+                    .filter(Paper.arxiv_id == main_paper_arxiv_id)
+                    .first()
+                )
+                if paper and paper.tasks:
+                    main_paper_task_ids = [task.id for task in paper.tasks]
+                    logger.info(f"Main paper tasks: {main_paper_task_ids}")
+        except Exception as e:
+            logger.warning(f"Could not fetch main paper tasks: {e}")
+
         # Build list of datasets to add
         datasets_to_add = []
         for step_3_result in step_3_results:
@@ -566,16 +613,32 @@ class Step4WorkflowStep:
                 dataset_info = step_3_result.get("information", {})
 
                 # Combine input and gathered information
+                # Use main paper's arxiv_id and task_ids to provide context
+                # Sanitize dataset name to remove problematic characters
+                dataset_name = dataset_input.get("dataset_name", "")
+                # Replace special characters that might cause issues with JSON/agent processing
+                # Remove all parentheses, brackets, and arrows to simplify
+                dataset_name = (
+                    dataset_name.replace("→", " to ")
+                    .replace("(", " ")
+                    .replace(")", "")
+                    .replace("[", " ")
+                    .replace("]", "")
+                )
+
                 combined = {
-                    "dataset_name": dataset_input.get("dataset_name"),
+                    "name": dataset_name,
                     "dataset_info": dataset_input.get("dataset_info"),
-                    "paper_arxiv_id": dataset_input.get("arxiv_id"),
+                    "paper_arxiv_id": main_paper_arxiv_id,  # Use main paper for context
                     "paper_title": dataset_input.get("paper_title"),
                     "description": dataset_info.get("description"),
                     "full_name": dataset_info.get("full_name"),
                     "hf_url": dataset_info.get("hf_url"),
                     "conference_url": dataset_info.get("conference_url"),
-                    "arxiv_id": dataset_info.get("arxiv_id"),
+                    "arxiv_id": dataset_info.get(
+                        "arxiv_id"
+                    ),  # Dataset's own arxiv_id if it introduced the dataset
+                    "task_ids": main_paper_task_ids,  # Suggest task_ids from main paper
                 }
                 datasets_to_add.append(combined)
 

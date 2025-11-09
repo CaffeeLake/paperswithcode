@@ -848,7 +848,14 @@ class EvaluationService:
                         if raw_value is not None:
                             try:
                                 # Convert to float for comparison
-                                metric_value = float(raw_value)
+                                # First, handle values that contain "±" (e.g., "88.55 ± 0.04")
+                                if isinstance(raw_value, str) and "±" in raw_value:
+                                    # Extract just the first number before the ±
+                                    metric_value = float(
+                                        raw_value.split("±")[0].strip()
+                                    )
+                                else:
+                                    metric_value = float(raw_value)
                             except (ValueError, TypeError):
                                 # If conversion fails, skip this evaluation
                                 pass

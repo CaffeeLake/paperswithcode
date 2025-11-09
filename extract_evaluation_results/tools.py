@@ -612,6 +612,167 @@ async def add_dataset(
         return f"✗ Failed to create dataset: {str(e)}"
 
 
+@function_tool
+async def link_dataset_to_task(dataset_id: int, task_id: int) -> str:
+    """Link an existing dataset to a task.
+
+    This tool creates a connection between a dataset and a task via the task_datasets
+    junction table. This is useful when you've added a dataset and need to associate it
+    with additional tasks, or when a dataset was created without proper task links.
+
+    Args:
+        dataset_id: The ID of the dataset to link (from add_dataset response or find_dataset)
+        task_id: The ID of the task to link to (from get_available_tasks or get_tasks_by_area)
+
+    Returns:
+        A success message if the link was created or already exists, or an error message if failed.
+
+    Example:
+        If you added a robotics dataset (ID: 230) and want to link it to "Robotic Manipulation" task (ID: 15):
+        link_dataset_to_task(dataset_id=230, task_id=15)
+    """
+    print(
+        f"[TOOL CALL] link_dataset_to_task(dataset_id={dataset_id}, task_id={task_id})"
+    )
+
+    session: Session = db_manager.session_local()
+
+    try:
+        from backend.models.database import TaskDataset
+
+        # Validate dataset exists
+        dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+        if not dataset:
+            session.close()
+            result = f"✗ Dataset with ID {dataset_id} not found"
+            print(f"[TOOL RESULT] {result}")
+            return result
+
+        # Validate task exists
+        task = session.query(DBTask).filter(DBTask.id == task_id).first()
+        if not task:
+            session.close()
+            result = f"✗ Task with ID {task_id} not found"
+            print(f"[TOOL RESULT] {result}")
+            return result
+
+        # Check if link already exists
+        existing_link = (
+            session.query(TaskDataset)
+            .filter(
+                TaskDataset.task_id == task_id,
+                TaskDataset.dataset_id == dataset_id,
+            )
+            .first()
+        )
+
+        if existing_link:
+            session.close()
+            result = f"✓ Dataset '{dataset.name}' (ID: {dataset_id}) is already linked to task '{task.name}' (ID: {task_id})"
+            print(f"[TOOL RESULT] {result}")
+            return result
+
+        # Create the link
+        task_dataset = TaskDataset(task_id=task_id, dataset_id=dataset_id)
+        session.add(task_dataset)
+        session.commit()
+
+        session.close()
+        result = f"✓ Successfully linked dataset '{dataset.name}' (ID: {dataset_id}) to task '{task.name}' (ID: {task_id})"
+        print(f"[TOOL RESULT] {result}")
+        return result
+
+    except Exception as e:
+        session.rollback()
+        session.close()
+        error_msg = f"✗ Failed to link dataset to task: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+@function_tool
+async def get_tasks_by_area(area_name: str) -> str:
+    """Get tasks filtered by research area name.
+
+    This tool helps you find tasks within a specific research area using case-insensitive
+    partial matching. Use this when you know the general domain (e.g., "Robotics",
+    "Computer Vision", "NLP") and want to see all tasks in that area.
+
+    Args:
+        area_name: The name of the research area to search for (case-insensitive, partial matching).
+                  Examples: "Robotics", "Vision", "NLP", "Natural Language", "Speech"
+
+    Returns:
+        A formatted list of tasks in matching area(s), or an error message if no matches found.
+
+    Example:
+        If you're adding a robotics dataset, call get_tasks_by_area("Robotics") to find
+        tasks like "Robotic Manipulation", "Visual Navigation", etc.
+    """
+    print(f"[TOOL CALL] get_tasks_by_area(area_name='{area_name}')")
+
+    session: Session = db_manager.session_local()
+
+    try:
+        # Find areas matching the search string (case-insensitive partial matching)
+        areas = (
+            session.query(DBArea)
+            .filter(DBArea.name.ilike(f"%{area_name}%"))
+            .order_by(DBArea.name)
+            .all()
+        )
+
+        if not areas:
+            session.close()
+            result = f"No research areas found matching '{area_name}'"
+            print(f"[TOOL RESULT] {result}")
+            return result
+
+        # Get tasks for matching areas
+        area_ids = [area.id for area in areas]
+        tasks = (
+            session.query(DBTask)
+            .filter(DBTask.area_id.in_(area_ids))
+            .order_by(DBTask.area_id, DBTask.name)
+            .all()
+        )
+
+        if not tasks:
+            session.close()
+            result = f"No tasks found in area(s) matching '{area_name}'"
+            print(f"[TOOL RESULT] {result}")
+            return result
+
+        # Format response grouped by area
+        response = f"Tasks in area(s) matching '{area_name}':\n"
+        response += "=" * 60 + "\n\n"
+
+        for area in areas:
+            area_tasks = [task for task in tasks if task.area_id == area.id]
+            if area_tasks:
+                response += f"{area.name}:\n"
+                for task in area_tasks:
+                    response += f"  - ID: {task.id:<4} - {task.name}\n"
+                response += "\n"
+
+        response += "=" * 60
+        response += f"\nTotal Tasks: {len(tasks)}"
+
+        session.close()
+        print(
+            f"[TOOL RESULT] {response[:200]}..."
+            if len(response) > 200
+            else f"[TOOL RESULT] {response}"
+        )
+        return response
+
+    except Exception as e:
+        session.close()
+        error_msg = f"Error searching tasks by area: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
 # ============================================================================
 # Evaluation Management Tools
 # ============================================================================
