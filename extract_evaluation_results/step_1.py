@@ -120,11 +120,13 @@ Use this context to better understand which tasks and datasets are commonly used
 - the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
 - prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
 - when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
-- when the metric value can be interpreted as a percentage, use "accuracy" as the metric name.
+- when the metric value can be interpreted as a percentage (scale 0-100%), call the metric "accuracy" instead of "score".
 - **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
 - for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is.
 - **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
 - when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
+- do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks, private datasets, etc.
+- do not include evaluation results which are super specific to the paper/have very little comparisons to other papers.
 
 ## Tools Available
 

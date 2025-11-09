@@ -370,12 +370,38 @@ class AgentStep(Step[InputT, OutputT]):
         if self._mcp_servers is not None:
             for server in self._mcp_servers:
                 try:
-                    await server.__aexit__(None, None, None)
+                    await asyncio.wait_for(
+                        server.__aexit__(None, None, None), timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "MCP server cleanup timed out, forcefully terminating"
+                    )
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                            await asyncio.sleep(0.1)
+                            if server._process.poll() is None:
+                                server._process.kill()
+                    except Exception:
+                        pass
                 except asyncio.CancelledError:
-                    # Cleanup was cancelled, ignore it
-                    self.logger.debug("MCP server cleanup was cancelled")
+                    # Cleanup was cancelled, try to terminate the process
+                    self.logger.debug(
+                        "MCP server cleanup was cancelled, terminating process"
+                    )
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                    except Exception:
+                        pass
                 except Exception as e:
                     self.logger.warning(f"Error closing MCP server: {e}")
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                    except Exception:
+                        pass
             self._mcp_servers = None
 
     async def execute(self, inputs: InputT) -> OutputT:
@@ -420,9 +446,38 @@ class AgentStep(Step[InputT, OutputT]):
             return await self.process_agent_output(agent_output, inputs)
 
         finally:
-            # Clean up MCP servers
+            # Clean up MCP servers with better error handling
             for server in mcp_servers:
                 try:
-                    await server.__aexit__(None, None, None)
+                    await asyncio.wait_for(
+                        server.__aexit__(None, None, None), timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        "MCP server cleanup timed out, forcefully terminating"
+                    )
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                            await asyncio.sleep(0.1)
+                            if server._process.poll() is None:
+                                server._process.kill()
+                    except Exception:
+                        pass
+                except asyncio.CancelledError:
+                    # Cleanup was cancelled, try to terminate the process
+                    self.logger.debug(
+                        "MCP server cleanup was cancelled, terminating process"
+                    )
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                    except Exception:
+                        pass
                 except Exception as e:
                     self.logger.warning(f"Error closing MCP server: {e}")
+                    try:
+                        if hasattr(server, "_process") and server._process:
+                            server._process.terminate()
+                    except Exception:
+                        pass

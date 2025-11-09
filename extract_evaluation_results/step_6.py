@@ -1,29 +1,23 @@
 """
-Step 6: Add evaluation results to the database.
+Step 6: Normalize evaluation results datasets and metrics.
 
-This script defines an agent that can add evaluation results to the database.
+This script normalizes the dataset names and metric names in evaluation results extracted from a paper
+by mapping them to canonical dataset names/IDs and metric names from the database based on the outputs
+of Step 2 (datasets found in database) and Step 4 (datasets newly added to database).
 
 You can run it like so:
 
 ```bash
-# Using a file with aligned evaluation results
-uv run --env-file backend/keys.env extract_evaluation_results/step_6.py --arxiv_id "2406.09414" --aligned_results_file "aligned_results_2406.09414.json"
-
-# Using aligned results as JSON string
-uv run --env-file backend/keys.env extract_evaluation_results/step_6.py --arxiv_id "2406.09414" --aligned_results '[{"paper_id": 123, "task_id": 2, "dataset_id": 72, "metrics": {"AP": "44.9"}, "best_metric": "AP", "model_name": "DETR"}]'
+# Process evaluation results from step_1 using step_2 and step_4 outputs
+uv run --env-file backend/keys.env extract_evaluation_results/step_6.py --arxiv_id "2406.09414"
 ```
 
-The aligned evaluation results should contain:
-- paper_id: The ID of the paper in the database
-- task_id: The ID of the task
-- dataset_id: The ID of the dataset
-- metrics: Dictionary of metric names to values (e.g., {"AP": "44.9", "AP50": "64.7"})
-- best_metric: The name of the best performing metric (must be in the metrics dict)
-- model_name: Optional name of the model/method
-- methodology: Optional description of the methodology
-- uses_additional_data: Optional boolean (default: False)
-- evaluated_on: Optional date in YYYY-MM-DD format
-- external_source_url: Optional URL to external source
+The script will:
+1. Read step_1, step_2, and step_4 outputs from cache
+2. Use an AI agent to normalize dataset names and metric names
+3. Build a mapping from original dataset names to canonical DB dataset names and IDs
+4. Normalize metrics using existing evaluation conventions and common synonyms
+5. Return normalized evaluation results with statistics
 """
 
 import argparse
@@ -31,311 +25,345 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from agents import AgentOutputSchema
 
+from extract_evaluation_results.step_base import AgentStep, StepResult
+from extract_evaluation_results.tools import get_leaderboard_metrics
 from backend.database.connection import db_manager
-from backend.services.evaluation_service import EvaluationService
-from backend.services.paper_service import PaperService
-from backend.utils.logging_utils import async_export_txt
-from extract_evaluation_results.step_base import AgentStep
-from extract_evaluation_results.utils import get_formatted_tasks_list
-from extract_evaluation_results.tools import (
-    get_leaderboard_metrics,
-    add_evaluation_result,
-)
+from backend.models.database import Paper as DBPaper
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-class EvaluationResult(BaseModel):
-    success: bool
-    evaluation_id: Optional[int] = None
-    paper_id: Optional[int] = None
-    task_id: Optional[int] = None
-    dataset_id: Optional[int] = None
-    model_name: Optional[str] = None
-    metrics: Optional[str] = None
-    best_metric: Optional[str] = None
-    best_rank: Optional[int] = None
-
-
-evaluation_adder_prompt = """
-You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
-within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
-
-## Task
-
-You are an expert in managing evaluation results in a SQL database.
-A colleague of yours has extracted evaluation results from a paper and identified the datasets, tasks, and metrics from leaderboard tables.
-Your responsibility includes adding these evaluation results to the database.
-
-## Context: Available Tasks and Datasets
-
-Below is a list of tasks currently in the database along with their associated datasets. This provides context about the current information landscape of the PapersWithCode app:
-
-{tasks_list}
-
-Use this context to better understand which tasks and datasets are commonly used together, which can help you validate that the evaluation results are being added to the correct leaderboards.
-
-## CRITICAL: Understanding Leaderboards as Triples
-
-Leaderboards are defined by **(task, dataset, metric)** triples. For example:
-- (Image Classification, ImageNet-1k, Top-1 Accuracy)
-- (Image Classification, ImageNet-1k, Top-5 Accuracy)
-- (Image Generation, ImageNet-1k, FID)
-- (Object Detection, COCO, AP)
-- (Object Detection, COCO, AP50)
-
-Each evaluation result belongs to a specific leaderboard triple via the `best_metric` field. The same model can have multiple evaluation records for different metrics on the same dataset (e.g., one for AP, one for AP50).
-
-## Important Rules
-
-1. **Duplicate Prevention** (CRITICAL): Before adding an evaluation, you MUST check if an evaluation already exists. The prompt will include a list of existing evaluations for the paper. Compare each evaluation you're trying to add against this list using the following criteria:
-   - paper_id
-   - task_id
-   - dataset_id
-   - model_name
-   - best_metric
-
-   If an evaluation with the same combination of these fields already exists in the list provided, do NOT attempt to add it. Skip it and report that it's a duplicate. The tool `add_evaluation_result` also performs duplicate checking, but you should avoid calling it for duplicates to save API calls and improve efficiency.
-
-2. **Metric Validation**:
-   - All metrics in the `metrics` dictionary must exist in the `metrics` table
-   - The `best_metric` must be one of the metrics in the `metrics` dictionary
-   - Metric names are case-insensitive (e.g., "ap" matches "AP")
-   - Metric names will be normalized to the canonical form from the database
-
-3. **Leaderboard Triple Validation**:
-   - The (task, dataset, metric) triple must be valid
-   - Use `get_leaderboard_metrics` to check which metrics are allowed for a leaderboard
-   - If no metrics are configured for a leaderboard, all metrics are allowed (backwards compatibility)
-
-4. **Required Fields**:
-   - paper_id (int): The ID of the paper
-   - task_id (int): The ID of the task
-   - dataset_id (int): The ID of the dataset
-   - metrics (str): JSON string with dictionary of metric names to values (e.g., '{{"AP": "44.9", "AP50": "64.7"}}')
-   - best_metric (str): The name of the best performing metric (must be in the metrics dict)
-
-5. **Optional Fields**:
-   - model_name (str): Name of the model/method
-   - methodology (str): Description of the methodology
-   - uses_additional_data (bool): Whether additional data was used beyond the dataset
-   - evaluated_on (str): Date when evaluation was performed (YYYY-MM-DD format)
-   - external_source_url (str): URL to external source (e.g., competition)
-
-## Checking Valid Metrics for a Leaderboard
-
-Before adding an evaluation, you can use the get_leaderboard_metrics tool to check which metrics are allowed
-for a specific (task, dataset) pair. This helps you choose the correct best_metric value.
-
-## Output Format
-
-When successfully adding an evaluation, return the following:
-
-```python
-class EvaluationResult(BaseModel):
-    success: bool
-    evaluation_id: Optional[int] = None
-    paper_id: Optional[int] = None
-    task_id: Optional[int] = None
-    dataset_id: Optional[int] = None
-    model_name: Optional[str] = None
-    metrics: Optional[str] = None
-    best_metric: Optional[str] = None
-    best_rank: Optional[int] = None
-```
-
-Return the response as a JSON string. Do not include any other text in your response.
-
-**IMPORTANT**: Always check for duplicates before attempting to add an evaluation. Use get_leaderboard_metrics to verify valid metrics if needed.
-"""
 
 
 class Step6Input(BaseModel):
     """Input data for Step6."""
 
     arxiv_id: str
-    aligned_evaluation_results: list
-    paper_details: str
+    evaluation_results: list[dict[str, Any]]
+    step_2_results: list[dict[str, Any]]
+    step_4_results: Optional[list[dict[str, Any]]] = None
+    step_5_all_metrics: Optional[dict[str, str]] = (
+        None  # Metric name -> direction mapping
+    )
 
 
-# Output model (alias to EvaluationResult for clarity)
-Step6Output = EvaluationResult
+class Step6Output(BaseModel):
+    """Output data for Step6."""
+
+    normalized: list[dict[str, Any]]
+    mapped: int
+    unresolved: int
+    dataset_mapping: dict[str, dict[str, Any]]
+
+
+normalizer_prompt = """
+You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
+
+## Task
+
+You are an expert in normalizing evaluation results extracted from research papers. Your responsibility is to map evaluation results to canonical dataset names, IDs, and metric names from our database.
+
+A colleague has already:
+1. Extracted evaluation results from a paper (Step 1)
+2. Found some datasets in the database (Step 2)
+3. Added missing datasets to the database (Step 4)
+4. Extracted and added metrics to the database (Step 5)
+
+Your job is to normalize ALL evaluation results by:
+1. Mapping dataset names to canonical database names and IDs
+2. Normalizing metric names to match existing leaderboard conventions
+3. Ensuring paper_id and task_id are populated
+4. Marking unresolvable evaluations with _unresolved flag
+
+## Dataset Normalization
+
+Use the step_2_results and step_4_results provided in the prompt to map original dataset names to canonical database information:
+
+- **step_2_results**: Datasets that were found in the database
+  - Look for entries with "found": true
+  - Extract: dataset ID, canonical name, slug, task_ids, metrics_by_task
+  - **CRITICAL**: Use task_ids from step_2_results - these are the correct task associations
+  - Use metrics_by_task to see which metrics are allowed for each task-dataset combination
+
+- **step_4_results**: Datasets that were newly added (or already existed)
+  - Look for entries with "success": true or "dataset_id" field
+  - Extract: dataset ID, canonical name
+
+Create a mapping from original dataset names (case-insensitive) to:
+- `dataset_id`: The database ID
+- `canonical_name`: The official name in the database
+- `task_id`: Use the task_id from step_2_results if available (from dataset.task_ids[0])
+  **CRITICAL**: Always use the task_ids from step_2_results for datasets found in step_2.
+  These are the correct task associations already in the database. Do NOT infer task_ids.
+
+## Metric Normalization
+
+Metrics often have synonyms or variations. Normalize them to canonical names used in existing evaluations.
+
+### Common Metric Synonyms
+
+Learn these standard mappings:
+
+**Object Detection / Instance Segmentation:**
+- "AP" / "Average Precision" / "Box AP" / "Object AP" → "mAP" (most common)
+- "Mask AP" / "Segmentation AP" → "Mask mAP"
+- "AP50" / "AP at IoU=0.50" → "AP50"
+- "AP75" / "AP at IoU=0.75" → "AP75"
+- "APs" / "AP small" → "APs"
+- "APm" / "AP medium" → "APm"
+- "APl" / "AP large" → "APl"
+
+**Image Classification:**
+- "Accuracy" / "Top-1 Accuracy" / "Top-1" → "Top-1 Accuracy"
+- "Top-5" / "Top-5 Accuracy" → "Top-5 Accuracy"
+- "Error Rate" / "Top-1 Error" → "Top-1 Error"
+
+**Speech Recognition:**
+- "WER" / "Word Error Rate" → "WER"
+- "CER" / "Character Error Rate" → "CER"
+
+**Machine Translation / NLG:**
+- "BLEU" / "BLEU-4" → "BLEU"
+- "ROUGE" / "ROUGE-L" → "ROUGE-L"
+
+**Question Answering:**
+- "F1" / "F1 Score" → "F1"
+- "EM" / "Exact Match" → "EM"
+
+### Using get_leaderboard_metrics Tool
+
+For each (task_id, dataset_id) pair, you can call:
+```
+get_leaderboard_metrics(task_id=X, dataset_id=Y)
+```
+
+This will show you:
+- What metric names are actually used in existing evaluations
+- Frequency of each metric name
+- Most common best_metric values
+
+Use this to verify your normalization is correct. If existing evaluations use "mAP" and you see "AP" in the extracted results, normalize to "mAP".
+
+## Required Fields in Normalized Results
+
+Each normalized evaluation must have:
+
+1. **paper_id** (int): Database ID of the paper (lookup from arxiv_id)
+2. **task_id** (int): Database ID of the task (from dataset.tasks[0])
+3. **dataset_id** (int): Database ID of the dataset
+4. **dataset_name** (str): Canonical name from database
+5. **metrics** (dict): Dictionary with normalized metric names → values
+   - Example: {"mAP": "44.9", "AP50": "64.7"}
+6. **best_metric** (str): The primary metric name (normalized)
+7. **model_name** (str, optional): Model/method name if available
+8. **methodology** (str, optional): Methodology description if available
+
+Also include metadata fields:
+- **_original_dataset_name** (str): Original dataset name from extraction
+- **_mapping_source** (str): Where mapping came from ("step_2", "step_4_added", etc.)
+
+## Error Handling
+
+If a dataset or metric cannot be normalized:
+1. Mark the evaluation with `_unresolved: true`
+2. Add `_reason` field explaining why (e.g., "Dataset not found in step_2 or step_4 results")
+3. Still include the evaluation in the normalized list so it can be reviewed
+
+## Output Format
+
+Return a Step6Output with:
+
+```python
+class Step6Output(BaseModel):
+    normalized: list  # List of all normalized evaluation results
+    mapped: int  # Count of successfully mapped evaluations
+    unresolved: int  # Count of evaluations that couldn't be fully normalized
+    dataset_mapping: dict  # Mapping from original names to {id, canonical_name}
+```
+
+The `normalized` list should contain all evaluations (both successfully mapped and unresolved).
+
+## Important Notes
+
+1. **Case-insensitive matching**: "coco" should match "COCO"
+2. **Preserve all fields**: Keep original fields from extracted results plus add normalized ones
+3. **Handle missing data**: If paper_id or task_id cannot be found, mark as unresolved
+4. **Metric verification**: Use get_leaderboard_metrics when uncertain about metric names
+5. **Multiple metrics**: An evaluation can have multiple metrics in the `metrics` dict, but only one `best_metric`
+
+Process ALL evaluation results, even if some cannot be fully normalized. Mark problematic ones with `_unresolved: true` so they can be reviewed manually.
+"""
 
 
 class Step6(AgentStep[Step6Input, Step6Output]):
-    """Agent-based step for adding evaluation results to the database."""
+    """Agent-based normalization of evaluation results."""
 
     input_model = Step6Input
     output_model = Step6Output
 
     def __init__(self):
-        # Format instructions with tasks list
-        tasks_list = get_formatted_tasks_list()
-        formatted_instructions = evaluation_adder_prompt.format(tasks_list=tasks_list)
-
         super().__init__(
-            name="Step6: Evaluation Adder",
-            description="Adds evaluation results to the database with validation",
-            instructions=formatted_instructions,
-            tools=[add_evaluation_result, get_leaderboard_metrics],
+            name="Step6: Evaluation Normalizer",
+            description="Normalizes dataset names and metric names in evaluation results",
+            instructions=normalizer_prompt,
+            tools=[get_leaderboard_metrics],
             model="gpt-5-mini",
-            agent_output_type=EvaluationResult,
+            agent_output_type=AgentOutputSchema(Step6Output, strict_json_schema=False),
         )
 
     async def build_agent_prompt(self, inputs: Step6Input) -> str:
-        """
-        Convert Step6Input to agent input prompt.
-        """
-        print(f"Processing {len(inputs.aligned_evaluation_results)} evaluation results")
-
-        # Get existing evaluations for this paper to prevent duplicates
-        existing_evaluations = get_existing_evaluations_for_paper(inputs.arxiv_id)
-        print(
-            f"Found {len(existing_evaluations)} existing evaluation(s) for this paper"
+        """Convert Step6Input to agent input prompt with context."""
+        logger.info(
+            f"Building prompt for {len(inputs.evaluation_results)} evaluation results"
         )
 
-        # Format existing evaluations for the prompt
-        existing_evaluations_text = ""
-        if existing_evaluations:
-            existing_evaluations_text = f"""
-## Existing evaluation results for this paper
+        # Get paper_id from arxiv_id
+        paper_id = None
+        try:
+            session = db_manager.session_local()
+            try:
+                paper = (
+                    session.query(DBPaper)
+                    .filter(DBPaper.arxiv_id.like(f"{inputs.arxiv_id}%"))
+                    .first()
+                )
+                if paper:
+                    paper_id = paper.id
+                    logger.info(
+                        f"Found paper_id {paper_id} for arxiv_id {inputs.arxiv_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"Could not find paper with arxiv_id {inputs.arxiv_id} in database"
+                    )
+            finally:
+                session.close()
+        except Exception as e:
+            logger.error(f"Error looking up paper_id: {e}")
 
-The following evaluation results already exist in the database for this paper. **DO NOT** add duplicates of these evaluations:
-
-{json.dumps(existing_evaluations, indent=2)}
-
-**Duplicate Detection**: An evaluation is considered a duplicate if it has the same:
-- paper_id
-- task_id
-- dataset_id
-- model_name
-- best_metric
-
-Before adding any evaluation, carefully compare it against the existing evaluations above. If a match is found, skip that evaluation and report that it already exists.
-"""
+        # Format step_2 results
+        step_2_text = "### Step 2 Results (Datasets Found in Database)\n\n"
+        if inputs.step_2_results:
+            step_2_text += "```json\n"
+            step_2_text += json.dumps(inputs.step_2_results, indent=2)
+            step_2_text += "\n```\n"
         else:
-            existing_evaluations_text = """
-## Existing evaluation results for this paper
+            step_2_text += "No datasets found in step 2.\n"
 
-No existing evaluation results found for this paper. You can proceed to add all evaluation results.
-"""
+        # Format step_4 results
+        step_4_text = "\n### Step 4 Results (Datasets Newly Added to Database)\n\n"
+        if inputs.step_4_results:
+            step_4_text += "```json\n"
+            step_4_text += json.dumps(inputs.step_4_results, indent=2)
+            step_4_text += "\n```\n"
+        else:
+            step_4_text += "No new datasets added in step 4.\n"
 
+        # Format step_5 results (metrics)
+        step_5_text = "\n### Step 5 Results (Metrics in Database)\n\n"
+        if inputs.step_5_all_metrics:
+            step_5_text += "The following metrics are now available in the database with their directions:\n\n"
+            step_5_text += "```json\n"
+            step_5_text += json.dumps(inputs.step_5_all_metrics, indent=2)
+            step_5_text += "\n```\n"
+            step_5_text += "\nUse these metric names and directions when normalizing evaluation results.\n"
+        else:
+            step_5_text += "No metrics information from step 5. Use get_leaderboard_metrics to check metric names.\n"
+
+        # Format evaluation results
+        eval_text = "\n### Evaluation Results to Normalize\n\n"
+        eval_text += f"Paper ArXiv ID: {inputs.arxiv_id}\n"
+        if paper_id:
+            eval_text += f"Paper Database ID: {paper_id}\n"
+        else:
+            eval_text += (
+                "Paper Database ID: NOT FOUND (evaluations will be unresolved)\n"
+            )
+        eval_text += f"\nTotal evaluation results: {len(inputs.evaluation_results)}\n\n"
+        eval_text += "```json\n"
+        eval_text += json.dumps(inputs.evaluation_results, indent=2)
+        eval_text += "\n```\n"
+
+        # Construct full prompt
         prompt = f"""
-## Paper details
-{inputs.paper_details}
-{existing_evaluations_text}
+{step_2_text}
+{step_4_text}
+{step_5_text}
+{eval_text}
 
-## Evaluation results to add
+## Your Task
 
-The following evaluation results have been extracted and aligned with the database (paper_id, task_id, dataset_id):
-{json.dumps(inputs.aligned_evaluation_results, indent=2)}
+Normalize ALL {len(inputs.evaluation_results)} evaluation results above by:
 
-Please add these evaluation results to the database. For each evaluation result:
-1. **First, check if it already exists** by comparing against the existing evaluations listed above (duplicate check)
-2. If it already exists, skip it and report that it's a duplicate
-3. Validate that all metrics exist in the database
-4. Ensure best_metric is valid and in the metrics dictionary
-5. Add the evaluation result using the add_evaluation_result tool (only if it doesn't already exist)
+1. **Dataset Mapping**: Use step_2 and step_4 results to map each dataset name to its database ID and canonical name
+2. **Metric Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
+   - Use get_leaderboard_metrics(task_id, dataset_id) to check what metrics are used
+3. **Field Population**: Ensure paper_id ({"available: " + str(paper_id) if paper_id else "NOT FOUND"}), task_id, dataset_id, dataset_name are set
+4. **Error Handling**: Mark unresolvable evaluations with _unresolved: true
 
-**IMPORTANT**: When calling add_evaluation_result, convert the metrics dictionary to a JSON string.
-For example, if metrics is {{"AP": "44.9", "AP50": "64.7"}}, pass it as '{{"AP": "44.9", "AP50": "64.7"}}'.
+Return a Step6Output with:
+- `normalized`: List of all normalized evaluation results (including unresolved ones)
+- `mapped`: Count of successfully normalized evaluations
+- `unresolved`: Count of evaluations that couldn't be fully normalized
+- `dataset_mapping`: Dictionary from original dataset names to {{id, canonical_name}}
 
-If any evaluation result cannot be added, provide a clear error message explaining why.
+Process every evaluation result. Do not skip any.
 """
+
         return prompt
 
 
-def read_aligned_results_file(filename: str) -> str:
-    """Read the aligned evaluation results file."""
-    # Try backend/outputs first, then extract_evaluation_results
-    output_dir = Path(__file__).parent.parent / "backend" / "outputs"
-    file_path = output_dir / filename
-    if not file_path.exists():
-        # Fallback to extract_evaluation_results directory
-        file_path = Path(__file__).parent / filename
-    if not file_path.exists():
-        raise FileNotFoundError(f"Could not find aligned results file: {filename}")
-    return file_path.read_text()
+# Standardized output directory functions
+def get_output_dir(arxiv_id: str) -> Path:
+    """Get the output directory for a given ArXiv ID."""
+    base_dir = (
+        Path(__file__).parent.parent / "backend" / "outputs" / "evaluation_results"
+    )
+    output_dir = base_dir / arxiv_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
-def get_existing_evaluations_for_paper(arxiv_id: str) -> list[dict]:
-    """Get existing evaluation results for a paper by ArXiv ID.
-
-    Args:
-        arxiv_id: The ArXiv ID of the paper
-
-    Returns:
-        List of dictionaries containing existing evaluation details for duplicate detection
-    """
-    session: Session = db_manager.session_local()
-    try:
-        # Get paper_id from arxiv_id
-        paper_service = PaperService(session)
-        try:
-            paper = paper_service.get_paper_by_arxiv_id(arxiv_id)
-            paper_id = int(paper.id)
-        except Exception:
-            # Paper not found, return empty list
-            session.close()
-            return []
-
-        # Get existing evaluations for this paper
-        evaluation_service = EvaluationService(session)
-        evaluations_result = evaluation_service.get_evaluations(
-            paper_id=paper_id,
-            page_size=1000,  # Get all evaluations (reasonable limit)
-        )
-
-        # Format evaluations for duplicate detection
-        existing_evaluations = []
-        for eval_obj in evaluations_result.results:
-            existing_evaluations.append(
-                {
-                    "paper_id": int(eval_obj.paper_id),
-                    "task_id": int(eval_obj.task_id),
-                    "dataset_id": int(eval_obj.dataset_id),
-                    "model_name": eval_obj.model_name,
-                    "best_metric": eval_obj.best_metric,
-                    "metrics": eval_obj.metrics,
-                    "task_name": eval_obj.task_name,
-                    "dataset_name": eval_obj.dataset_name,
-                }
-            )
-
-        session.close()
-        return existing_evaluations
-
-    except Exception as e:
-        session.close()
-        print(f"Error fetching existing evaluations: {e}")
-        return []
+def read_step_1_output(arxiv_id: str) -> str:
+    """Read step_1 output from standardized location."""
+    output_dir = get_output_dir(arxiv_id)
+    step_1_path = output_dir / "step_1.json"
+    if not step_1_path.exists():
+        raise FileNotFoundError(f"step_1 output not found at {step_1_path}")
+    return step_1_path.read_text()
 
 
 async def step_6(
     arxiv_id: str,
-    aligned_evaluation_results: list,
-    paper_details: str,
-) -> Optional[EvaluationResult]:
-    """Step 6: Process aligned evaluation results to add them to the database (wrapper for Step6).
+    evaluation_results: list,
+    step_2_results: list,
+    step_4_results: Optional[list] = None,
+    step_5_all_metrics: Optional[dict] = None,
+) -> Optional[Step6Output]:
+    """
+    Normalize evaluation results datasets and metrics (wrapper for Step6).
 
     Args:
-        arxiv_id: The ArXiv ID of the paper containing the evaluation results
-        aligned_evaluation_results: List of aligned evaluation results with paper_id, task_id, dataset_id
-        paper_details: Formatted paper details (title, authors, abstract)
+        arxiv_id: The ArXiv ID of the paper
+        evaluation_results: List of evaluation results from step_1
+        step_2_results: List of step_2 results (datasets found in database)
+        step_4_results: Optional list of step_4 results (datasets newly added to database)
+        step_5_all_metrics: Optional dict of metric name -> direction from step_5
 
     Returns:
-        The result from the evaluation adder agent, or None if failed
+        Step6Output with normalized results and statistics, or None if failed
     """
     agent = Step6()
     input_data = Step6Input(
         arxiv_id=arxiv_id,
-        aligned_evaluation_results=aligned_evaluation_results,
-        paper_details=paper_details,
+        evaluation_results=evaluation_results,
+        step_2_results=step_2_results,
+        step_4_results=step_4_results,
+        step_5_all_metrics=step_5_all_metrics,
     )
     result = await agent.run(input_data)
 
@@ -343,13 +371,12 @@ async def step_6(
         print(f"Step 6 failed: {result.error_message}")
         return None
 
-    # result.outputs is now a Step6Output (EvaluationResult) model
     return result.outputs
 
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Add evaluation results to the database using a set of AI agents."
+        description="Normalize evaluation results datasets and metrics using AI agent."
     )
     parser.add_argument(
         "--arxiv_id",
@@ -357,70 +384,86 @@ async def main():
         help="The ArXiv ID of the paper that contains the evaluation results.",
         default="2406.09414",
     )
-    parser.add_argument(
-        "--aligned_results_file",
-        type=str,
-        help="The file containing aligned evaluation results (JSON format with paper_id, task_id, dataset_id).",
-        default=None,
-    )
-    parser.add_argument(
-        "--aligned_results",
-        type=str,
-        help="Aligned evaluation results as JSON string (alternative to --aligned_results_file).",
-        default=None,
-    )
     args = parser.parse_args()
 
     arxiv_id = args.arxiv_id
 
-    # Get aligned evaluation results from file or direct input
-    if args.aligned_results_file:
-        aligned_results_content = read_aligned_results_file(args.aligned_results_file)
-        aligned_results_data = json.loads(aligned_results_content)
-        # Try different possible keys
-        aligned_evaluation_results = aligned_results_data.get(
-            "aligned_evaluation_results",
-            aligned_results_data.get("evaluation_results", []),
-        )
-    elif args.aligned_results:
-        aligned_results_data = json.loads(args.aligned_results)
-        aligned_evaluation_results = aligned_results_data.get(
-            "aligned_evaluation_results",
-            aligned_results_data if isinstance(aligned_results_data, list) else [],
-        )
+    # Read step_1 output
+    step_1_output = read_step_1_output(arxiv_id)
+    step_1_data = json.loads(step_1_output)
+    evaluation_results = step_1_data.get("evaluation_results", [])
+
+    if not evaluation_results:
+        print("No evaluation results found in step_1 output")
+        return {"normalized": [], "mapped": 0, "unresolved": 0, "dataset_mapping": {}}
+
+    # Read step_2 output
+    output_dir = get_output_dir(arxiv_id)
+    step_2_path = output_dir / "step_2_results.json"
+    if not step_2_path.exists():
+        print(f"Warning: step_2 output not found at {step_2_path}")
+        step_2_results = []
     else:
-        print(
-            "Error: Either --aligned_results_file or --aligned_results must be provided"
-        )
-        return "Error: No aligned evaluation results provided"
+        step_2_results = json.loads(step_2_path.read_text())
 
-    if not aligned_evaluation_results:
-        print("No aligned evaluation results found")
-        return "No aligned evaluation results found"
+    # Read step_4 output (optional)
+    step_4_path = output_dir / "step_4_results.json"
+    if step_4_path.exists():
+        step_4_results = json.loads(step_4_path.read_text())
+    else:
+        step_4_results = []
 
-    # Get paper details
-    from extract_evaluation_results.utils import get_paper_details
+    # Read step_5 output (optional)
+    step_5_path = output_dir / "step_5_metrics.json"
+    step_5_all_metrics = None
+    if step_5_path.exists():
+        step_5_data = json.loads(step_5_path.read_text())
+        step_5_all_metrics = step_5_data.get("all_metrics")
 
-    paper_details = await get_paper_details(arxiv_id)
-
-    await async_export_txt(
-        filename=f"step_6_{arxiv_id}",
-        value=f"Processing {len(aligned_evaluation_results)} evaluation results",
-        arxiv_id=arxiv_id,
-    )
-
-    # Process the evaluation results
+    # Run normalization
     result = await step_6(
         arxiv_id=arxiv_id,
-        aligned_evaluation_results=aligned_evaluation_results,
-        paper_details=paper_details,
+        evaluation_results=evaluation_results,
+        step_2_results=step_2_results,
+        step_4_results=step_4_results,
+        step_5_all_metrics=step_5_all_metrics,
     )
+
+    if not result:
+        print("Normalization failed")
+        return None
+
+    # Write output
+    output_path = output_dir / "step_6_normalized.json"
+    output_path.write_text(
+        json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
+    )
+    print(f"✓ Normalized results written to: {output_path}")
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("NORMALIZATION SUMMARY")
+    print("=" * 60)
+    print(f"Total evaluation results: {len(evaluation_results)}")
+    print(f"Successfully mapped: {result.mapped}")
+    print(f"Unresolved: {result.unresolved}")
+    print(f"\nDataset mappings used: {len(result.dataset_mapping)}")
+    for original_name, mapping in result.dataset_mapping.items():
+        print(
+            f"  - '{original_name}' -> '{mapping['canonical_name']}' (ID: {mapping['id']})"
+        )
+    print("=" * 60)
+
     return result
 
 
 if __name__ == "__main__":
     result = asyncio.run(main())
-    print("Result: ", result)
+    if result:
+        print("\nNormalized evaluation results:")
+        print(json.dumps(result.normalized[:3], indent=2))  # Show first 3
+        if len(result.normalized) > 3:
+            print(f"... and {len(result.normalized) - 3} more")
 
 
 # Workflow integration
@@ -438,100 +481,41 @@ class Step6WorkflowStep:
 
         Reads from state.data:
         - arxiv_id: str
-        - normalized: list (aligned evaluation results from step 5)
-        - paper_details: str (optional, will be generated if not present)
+        - evaluation_results: list
+        - step_2_results: list
+        - step_4_results: list (optional)
+        - all_metrics: dict (optional, from step_5)
 
         Writes to state.data:
-        - step_6_result: evaluation result
-        - step_6_error: error message if failed
+        - normalized: list of normalized evaluation results
+        - mapped: int - number of mapped evaluations
+        - unresolved: int - number of unresolved evaluations
+        - dataset_mapping: dict - mapping from original to canonical names
+        - step_6_normalized: dict - complete normalization result
         """
-        from extract_evaluation_results.step_base import StepResult
-
-        # Get paper_details if not in state
-        paper_details = state.data.get("paper_details")
-        if not paper_details:
-            from extract_evaluation_results.utils import get_paper_details
-
-            try:
-                # Shield from cancellation to prevent cancel scope propagation
-                paper_details = await asyncio.shield(
-                    get_paper_details(state.data.get("arxiv_id", state.arxiv_id))
-                )
-            except asyncio.CancelledError:
-                logger.warning("get_paper_details was cancelled, using fallback")
-                # Provide minimal paper details as fallback
-                arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
-                paper_details = f"""
-### Title:
-Paper {arxiv_id}
-### Authors:
-Unknown
-### ArXiv ID
-{arxiv_id}
-### Abstract
-No abstract available.
-"""
-
-        # Get aligned results from step 5
-        all_results = state.data.get("normalized", [])
-
-        # Filter out unresolved results (missing required fields)
-        aligned_results = [r for r in all_results if not r.get("_unresolved", False)]
-        unresolved_count = len(all_results) - len(aligned_results)
-
-        if unresolved_count > 0:
-            logger.info(f"Step6: Skipping {unresolved_count} unresolved evaluation(s)")
-        logger.info(f"Step6: Adding {len(aligned_results)} evaluation results to DB")
-
         # Build inputs from state.data
+        evaluation_results = state.data.get("evaluation_results", [])
+
+        # Early return if no evaluation results to process
+        if not evaluation_results:
+            logger.info("No evaluation results to normalize. Skipping Step 6.")
+            empty_output = Step6Output(
+                normalized=[], mapped=0, unresolved=0, dataset_mapping={}
+            )
+            return StepResult(
+                success=True,
+                outputs=empty_output,
+            )
+
         inputs = {
             "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
-            "aligned_evaluation_results": aligned_results,
-            "paper_details": paper_details,
+            "evaluation_results": evaluation_results,
+            "step_2_results": state.data.get("step_2_results", []),
+            "step_4_results": state.data.get("step_4_results"),
+            "step_5_all_metrics": state.data.get("all_metrics"),
         }
 
-        # Execute the step with robust cancellation handling
-        # Create a task to isolate from cancellation propagation
-        task = asyncio.create_task(self.step.run(inputs))
-
-        try:
-            # Give the task a brief moment to start
-            await asyncio.sleep(0.1)
-
-            # Shield the task from external cancellation
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            logger.warning(
-                "Step 6 execution was cancelled externally, waiting for task to complete..."
-            )
-            # The task should continue running despite the cancellation
-            # Wait longer for it to finish (evaluation addition is quick)
-            try:
-                result = await asyncio.wait_for(task, timeout=120.0)
-                logger.info(
-                    "✓ Step 6 completed successfully despite external cancellation"
-                )
-            except asyncio.TimeoutError:
-                logger.error("Step 6 task timed out after 120 seconds")
-                # Cancel the task and wait for it
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                from extract_evaluation_results.step_base import StepResult
-
-                result = StepResult(
-                    success=False, outputs={}, error_message="Step execution timed out"
-                )
-            except asyncio.CancelledError:
-                logger.error("Step 6 task was cancelled and could not complete")
-                from extract_evaluation_results.step_base import StepResult
-
-                result = StepResult(
-                    success=False,
-                    outputs={},
-                    error_message="Step execution was cancelled",
-                )
+        # Execute the agent step
+        result = await self.step.run(inputs)
 
         return result

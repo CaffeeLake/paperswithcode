@@ -224,7 +224,6 @@ The following summarizes the live structure. See the database for full DDL.
 - TASK_DATASETS(task_id, dataset_id) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 
-Compatibility (legacy): DATASET_METRICS(dataset_id, metric_id, created_at) PK(dataset_id, metric_id) — retained for backward compatibility.
 
 ## Views (current)
 
@@ -235,7 +234,6 @@ Compatibility (legacy): DATASET_METRICS(dataset_id, metric_id, created_at) PK(da
 - dataset_hierarchies — recursive tree with levels and path
 - datasets_with_parent — handy join view
 - project_pages_api — updatable view over project_pages (INSTEAD OF triggers)
-- dataset_metrics_compat — dataset→metric projection derived from task_dataset_metrics
 - papers_with_authors — present (grants)
 
 ## Functions & Triggers
@@ -248,7 +246,6 @@ Compatibility (legacy): DATASET_METRICS(dataset_id, metric_id, created_at) PK(da
 ## Notes & Guidance
 
 - Leaderboards: Use TASK_DATASET_METRICS triples for defining valid metric leaderboards per task/dataset.
-- DATASET_METRICS remains for compatibility; prefer the triples. The dataset_metrics_compat view projects triples into dataset→metric pairs when needed.
 - Project pages: is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - Repositories: single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
 

@@ -16,9 +16,9 @@ from sqlalchemy import and_
 from backend.database.connection import DatabaseManager
 from backend.models.database import (
     Dataset as DBDataset,
-    DatasetMetric as DBDatasetMetric,
     Metric as DBMetric,
     TaskDataset,
+    TaskDatasetMetric,
 )
 
 # Configuration
@@ -50,7 +50,7 @@ def get_audio_classification_datasets(session):
 
 def check_metric_already_linked(session, dataset_id, metric_name):
     """
-    Check if a metric is already linked to a dataset.
+    Check if a metric is already linked to a dataset-task combination.
 
     Args:
         session: Database session
@@ -66,13 +66,14 @@ def check_metric_already_linked(session, dataset_id, metric_name):
     if not metric:
         return False
 
-    # Check if link exists in dataset_metrics junction table
+    # Check if link exists in task_dataset_metrics junction table
     link = (
-        session.query(DBDatasetMetric)
+        session.query(TaskDatasetMetric)
         .filter(
             and_(
-                DBDatasetMetric.dataset_id == dataset_id,
-                DBDatasetMetric.metric_id == metric.id,
+                TaskDatasetMetric.dataset_id == dataset_id,
+                TaskDatasetMetric.task_id == TASK_ID,
+                TaskDatasetMetric.metric_id == metric.id,
             )
         )
         .first()

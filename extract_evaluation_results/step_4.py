@@ -83,8 +83,10 @@ dataset_adder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
 within the field of machine learning and artificial intelligence (AI).
 
-You are an expert in managing datasets in the database. Your responsibility includes
+You are an expert in managing datasets in the SQL database of Hugging Face's leaderboards project. Your responsibility includes
 adding new datasets to the database with comprehensive information when requested.
+
+## Available tools
 
 When adding a new dataset, use the add_dataset tool.
 **IMPORTANT**: Every dataset MUST be linked to one or more tasks.
@@ -92,8 +94,12 @@ Ensure you provide all relevant information including:
 - name (required): The name of the dataset
 - description (required): A description of what the dataset contains and its purpose
 - task_ids (required): List of task IDs this dataset is used for (e.g., [1] for Image Classification, [2, 3] for multiple tasks)
-  **NOTE**: If task_ids are provided in the dataset details, use them as-is unless they are clearly incorrect.
-  These task_ids are typically derived from the paper that uses this dataset.
+  **CRITICAL**: Infer task_ids based on the dataset's purpose and description, NOT from the paper's tasks.
+  - For math/reasoning datasets (e.g., AIME, GPQA) → use Language Modeling or General tasks
+  - For vision datasets → use Computer Vision tasks
+  - For speech/audio datasets → use Speech/Audio tasks
+  - For multimodal datasets → use appropriate multimodal tasks
+  - Only use suggested_task_ids if they genuinely match the dataset's purpose
 - full_name (optional): The full name of the dataset
 - url (optional): Main URL for the dataset
 - hf_url (optional): Hugging Face dataset URL
@@ -103,6 +109,10 @@ Ensure you provide all relevant information including:
 
 Example: To add the COCO dataset for Object Detection, use task_ids=[2]
 Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
+
+## Notes
+
+
 
 ## Finding and Linking Tasks
 
@@ -266,7 +276,10 @@ class Step4(AgentStep[Step4Input, Step4Output]):
         try:
             # Format instructions once (same for all datasets)
             tasks_list = get_formatted_tasks_list()
-            formatted_instructions = dataset_adder_prompt.format(tasks_list=tasks_list)
+            # Use string replacement instead of .format() to avoid issues with curly braces in tasks_list
+            formatted_instructions = dataset_adder_prompt.replace(
+                "{tasks_list}", tasks_list
+            )
 
             # Process all datasets in parallel
             tasks = [
@@ -277,23 +290,63 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                 for dataset_input in inputs.dataset_inputs
             ]
 
-            results = await asyncio.gather(*tasks)
+            # Use gather with return_exceptions to prevent cancellation propagation
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Check if any tasks were cancelled or raised exceptions
+            successful_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, asyncio.CancelledError):
+                    logger.warning(f"Task {i} was cancelled")
+                    # Create a failed result for this dataset
+                    successful_results.append(
+                        Step4SingleResult(
+                            dataset_input={},
+                            success=False,
+                            dataset_details=None,
+                            error_message="Task was cancelled",
+                        )
+                    )
+                elif isinstance(result, Exception):
+                    logger.error(f"Task {i} raised exception: {result}")
+                    successful_results.append(
+                        Step4SingleResult(
+                            dataset_input={},
+                            success=False,
+                            dataset_details=None,
+                            error_message=str(result),
+                        )
+                    )
+                else:
+                    successful_results.append(result)
 
             # Return successful result with all findings
             from extract_evaluation_results.step_base import StepResult
 
             return StepResult(
                 success=True,
-                outputs=Step4Output(results=list(results)),
+                outputs=Step4Output(results=successful_results),
                 error_message=None,
             )
 
+        except asyncio.CancelledError:
+            # Handle cancellation gracefully
+            logger.warning("Step 4 was cancelled, cleaning up...")
+            await self._cleanup_mcp_servers()
+            from extract_evaluation_results.step_base import StepResult
+
+            return StepResult(
+                success=False, outputs=None, error_message="Step 4 was cancelled"
+            )
         except Exception as e:
             from extract_evaluation_results.step_base import StepResult
 
             return StepResult(
                 success=False, outputs=None, error_message=f"Step 4 failed: {str(e)}"
             )
+        finally:
+            # Always cleanup MCP servers
+            await self._cleanup_mcp_servers()
 
     async def build_agent_prompt(self, inputs: Step4Input) -> str:
         """
@@ -317,7 +370,8 @@ class Step4(AgentStep[Step4Input, Step4Output]):
         """
         # Format instructions with tasks list
         tasks_list = get_formatted_tasks_list()
-        return dataset_adder_prompt.format(tasks_list=tasks_list)
+        # Use string replacement instead of .format() to avoid issues with curly braces in tasks_list
+        return dataset_adder_prompt.replace("{tasks_list}", tasks_list)
 
 
 def get_output_dir(arxiv_id: str):
@@ -606,19 +660,41 @@ class Step4WorkflowStep:
             logger.warning(f"Could not fetch main paper tasks: {e}")
 
         # Build list of datasets to add
+        # CRITICAL: Only process datasets that step_2 confirmed don't exist
+        step_2_results = state.data.get("step_2_results", [])
+
+        # Build a set of dataset names that were found in step_2
+        found_dataset_names = set()
+        for step_2_result in step_2_results:
+            if step_2_result.get("found"):
+                dataset_name = step_2_result.get("dataset_input", {}).get(
+                    "dataset_name", ""
+                )
+                if dataset_name:
+                    found_dataset_names.add(dataset_name.lower().strip())
+                    # Also check sanitized version
+                    sanitized = (
+                        dataset_name.replace("→", " to ")
+                        .replace("(", " ")
+                        .replace(")", "")
+                        .replace("[", " ")
+                        .replace("]", "")
+                        .lower()
+                        .strip()
+                    )
+                    found_dataset_names.add(sanitized)
+
         datasets_to_add = []
         for step_3_result in step_3_results:
             if step_3_result.get("success"):
                 dataset_input = step_3_result.get("dataset_input", {})
                 dataset_info = step_3_result.get("information", {})
 
-                # Combine input and gathered information
-                # Use main paper's arxiv_id and task_ids to provide context
                 # Sanitize dataset name to remove problematic characters
                 dataset_name = dataset_input.get("dataset_name", "")
                 # Replace special characters that might cause issues with JSON/agent processing
                 # Remove all parentheses, brackets, and arrows to simplify
-                dataset_name = (
+                sanitized_name = (
                     dataset_name.replace("→", " to ")
                     .replace("(", " ")
                     .replace(")", "")
@@ -626,6 +702,20 @@ class Step4WorkflowStep:
                     .replace("]", "")
                 )
 
+                # CRITICAL: Only add datasets that step_2 confirmed don't exist
+                # If step_2 found it, skip it (it already exists with correct task associations)
+                if (
+                    dataset_name.lower().strip() in found_dataset_names
+                    or sanitized_name.lower().strip() in found_dataset_names
+                ):
+                    logger.info(
+                        f"Skipping {dataset_name} - already found in step_2, should not be added"
+                    )
+                    continue
+
+                # Combine input and gathered information
+                # IMPORTANT: Do NOT pre-fill task_ids with paper's tasks
+                # Let the agent infer appropriate tasks based on dataset description
                 combined = {
                     "name": dataset_name,
                     "dataset_info": dataset_input.get("dataset_info"),
@@ -638,15 +728,17 @@ class Step4WorkflowStep:
                     "arxiv_id": dataset_info.get(
                         "arxiv_id"
                     ),  # Dataset's own arxiv_id if it introduced the dataset
-                    "task_ids": main_paper_task_ids,  # Suggest task_ids from main paper
+                    # Do NOT pre-fill task_ids - let agent infer based on dataset purpose
+                    # Only provide paper's tasks as context/hint, not as requirement
+                    "suggested_task_ids": main_paper_task_ids
+                    if main_paper_task_ids
+                    else [],
                 }
                 datasets_to_add.append(combined)
 
         logger.info(f"Step4: Adding {len(datasets_to_add)} datasets to DB")
 
         # Build inputs from state.data - convert dictionaries to Step4SingleInput format
-        import json
-
         formatted_inputs = [
             {"dataset_details_json": json.dumps(dataset)} for dataset in datasets_to_add
         ]

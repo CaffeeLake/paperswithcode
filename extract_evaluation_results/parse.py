@@ -3,30 +3,30 @@ Main script that orchestrates the evaluation result extraction pipeline (agentic
 
 This script runs a generic pipeline with configurable steps:
 1. Step 1: Extract evaluation results from a paper PDF
-2. Step 2: Find datasets in the database (parallel)
+2. Step 2: Find mentioned datasets in the database (parallel)
 3. Step 3: Gather additional information from the web and Hugging Face for datasets not found
 4. Step 4: Add new datasets to the database
-5. Step 5: Normalize evaluation results datasets using outputs from step 2 and step 4
-6. Step 6: Align evaluation results with database IDs and add them to the database
+5. Step 5: Manage metrics (extract and add to database)
+6. Step 6: Normalize evaluation results datasets using outputs from step 2 and step 4
+7. Step 7: Add evaluation results to the database
 
 You can run it like so:
 
 ```bash
-# Run all steps (including step 4, 5, and 6)
+# Run all steps (including step 4, 5, 6, and 7)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545
 
-# Run only steps 1, 2, 3, 4, and 5 (skip step 6 - no database insertion)
+# Run only steps 1, 2, 3, 4, 5, and 6 (skip step 7 - no evaluation database insertion)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-step-6
 
-# Run only steps 1, 2, and 3 (skip step 4, 5, and 6 - no database additions)
+# Run only steps 1, 2, and 3 (skip step 4, 5, 6, and 7 - no database additions)
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --skip-addition
 
 # Resume from cached results if available
 uv run --env-file backend/keys.env extract_evaluation_results/parse.py --arxiv_id 2201.03545 --resume
 ```
 
-Note: Step 5 normalizes evaluation results datasets. Step 6 only processes papers whose evaluation results are from datasets
-that are already present in the database (or were just added in step 4).
+Note: Step 6 normalizes evaluation results. Step 7 adds evaluation results to the database.
 """
 
 import argparse
@@ -40,6 +40,7 @@ from extract_evaluation_results.step_3 import Step3WorkflowStep
 from extract_evaluation_results.step_4 import Step4WorkflowStep
 from extract_evaluation_results.step_5 import Step5WorkflowStep
 from extract_evaluation_results.step_6 import Step6WorkflowStep
+from extract_evaluation_results.step_7 import Step7WorkflowStep
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -114,14 +115,22 @@ def print_summary(state) -> None:
                 print(f"    ... and {len(mapping) - 3} more")
 
     # Step 6
-    step_6_result = state.data.get("step_6_result")
-    step_6_error = state.data.get("step_6_error")
     if normalized:
-        print(f"\nStep 6: {len(normalized)} evaluation results aligned")
-        if step_6_error:
-            print(f"  Error: {step_6_error}")
-        elif step_6_result:
-            print("  ✓ Added to database")
+        print(f"\nStep 6: {len(normalized)} evaluation results normalized")
+
+    # Step 7
+    step_7_result = state.data.get("step_7_result")
+    step_7_error = state.data.get("step_7_error")
+    if step_7_result:
+        added_count = step_7_result.get("added_count", 0)
+        skipped_count = step_7_result.get("skipped_count", 0)
+        print(
+            f"\nStep 7: {added_count} evaluations added, {skipped_count} skipped (duplicates)"
+        )
+        if step_7_error:
+            print(f"  Error: {step_7_error}")
+    elif step_7_error:
+        print(f"\nStep 7: Failed - {step_7_error}")
 
     print("=" * 60)
 
@@ -160,6 +169,7 @@ async def run_pipeline(
         Step4WorkflowStep(),
         Step5WorkflowStep(),
         Step6WorkflowStep(),
+        Step7WorkflowStep(),
     ]
 
     workflow = Workflow(steps)
@@ -182,6 +192,8 @@ async def run_pipeline(
         "aligned_results": state.data.get("normalized", []),
         "step_6_result": state.data.get("step_6_result"),
         "step_6_error": state.data.get("step_6_error"),
+        "step_7_result": state.data.get("step_7_result"),
+        "step_7_error": state.data.get("step_7_error"),
         "error": state.error,
         "message": state.message,
     }
@@ -256,6 +268,8 @@ async def main():
     state.data["dataset_mapping"] = step_5_normalized.get("dataset_mapping", {})
     state.data["step_6_result"] = result.get("step_6_result")
     state.data["step_6_error"] = result.get("step_6_error")
+    state.data["step_7_result"] = result.get("step_7_result")
+    state.data["step_7_error"] = result.get("step_7_error")
 
     print_summary(state)
     return result

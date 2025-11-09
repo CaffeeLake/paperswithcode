@@ -1,8 +1,8 @@
 """
-This script finds datasets in the database based on evaluation results extracted from a paper.
+This script uses an AI agent to find datasets in the database based on evaluation results extracted from a paper.
 
 It reads the output from step_1 (which extracts evaluation results and dataset details from a paper)
-and uses an AI agent to search for each dataset mentioned in the database. The agent uses multiple
+and uses an AI agent to search for each mentioned dataset in the database. The agent uses multiple
 search strategies including searching by dataset name, ArXiv ID of the introducing paper, and
 Hugging Face URL. It can also use web search for disambiguation when needed.
 
@@ -33,6 +33,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from agents import AgentOutputSchema
+
 from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import (
     get_paper_details,
@@ -48,6 +50,7 @@ class DatasetDetail(BaseModel):
     description: str
     hf_url: str
     paper_url: str
+    task_ids: list[int]
 
 
 class Response(BaseModel):
@@ -70,7 +73,12 @@ Your task is to determine whether this dataset already exists in the SQL databas
 
 {tasks_list}
 
-**IMPORTANT**: This list is ONLY for context. You MUST use the find_dataset tool to verify existence. Only set dataset_found=True if find_dataset returns "Found dataset: ID=X...".
+## Available tools
+
+You have access to the following tools which can help you determine if the dataset exists in the database:
+
+- find_dataset
+- web_search
 
 ## CRITICAL Requirements
 
@@ -79,9 +87,16 @@ Your task is to determine whether this dataset already exists in the SQL databas
 3. **Match Dataset Splits**: Some datasets have multiple splits and are considered different IDs in the database (e.g. there's CityScapes (validation) and CityScapes (test)). Ensure that the found dataset matches the same split as the mentioned dataset.
 A dataset with split "test" is NOT the same as one with split "val" or without a split specified.
 
+**IMPORTANT**: This list is ONLY for context. You MUST use the find_dataset tool to verify existence. Only set dataset_found=True if find_dataset returns "Found dataset: ID=X...".
+
+**CRITICAL**: When a dataset is found, you MUST also call get_dataset_tasks_and_metrics(dataset_id=X) to retrieve:
+- The task_ids associated with this dataset
+
+This information is essential for correctly linking evaluation results to the right tasks and ensuring metrics are valid.
+
 ## Search Strategy
 
-Use find_dataset tool MULTIPLE TIMES with different strategies:
+Use the find_dataset tool MULTIPLE TIMES with different strategies:
 
 1. **Search by ArXiv ID** (most reliable if available):
    - find_dataset(arxiv_id="2103.00020")
@@ -119,6 +134,7 @@ class DatasetDetail(BaseModel):
     description: str  # Description of the dataset in the SQL database
     hf_url: str  # Hugging Face URL of the dataset in the SQL database
     paper_url: str  # Paper URL of the dataset in the SQL database
+    task_ids: list[int] # List of task IDs associated with this dataset
 
 
 class Response(BaseModel):
@@ -171,7 +187,7 @@ class Step2(AgentStep[Step2Input, Step2Output]):
             description="Finds datasets in the database based on evaluation results",
             instructions=dataset_finder_prompt,
             tools=[find_dataset],
-            agent_output_type=Response,
+            agent_output_type=AgentOutputSchema(Response, strict_json_schema=False),
             model="gpt-5-mini",
             mcp_servers=["exa"],
         )
@@ -230,15 +246,33 @@ Find the dataset details for the following dataset mentioned in the evaluation r
                         dataset=None,
                     )
 
-                # Dataset was found
+                # Dataset was found - ensure task_ids are populated
+                dataset_detail_result = agent_response.dataset_detail
+
+                # If agent didn't populate task_ids, fetch them directly from database
+                if not dataset_detail_result.task_ids:
+                    from backend.database.connection import db_manager
+                    from backend.services.dataset_service import DatasetService
+
+                    session = db_manager.session_local()
+                    try:
+                        dataset_service = DatasetService(session)
+                        task_ids = dataset_service.get_dataset_tasks(
+                            dataset_detail_result.id
+                        )
+                        dataset_detail_result.task_ids = task_ids
+                    finally:
+                        session.close()
+
                 print(
-                    f"✓ Found dataset: {agent_response.dataset_detail.name} (ID: {agent_response.dataset_detail.id})"
+                    f"✓ Found dataset: {dataset_detail_result.name} (ID: {dataset_detail_result.id}, "
+                    f"tasks: {dataset_detail_result.task_ids})"
                 )
                 return Step2SingleResult(
                     dataset_input=dataset_detail,
                     found=True,
                     reasoning=agent_response.reasoning,
-                    dataset=agent_response.dataset_detail,
+                    dataset=dataset_detail_result,
                 )
             else:
                 raise ValueError(
@@ -279,7 +313,10 @@ Find the dataset details for the following dataset mentioned in the evaluation r
 
             # Format instructions once (same for all datasets)
             tasks_list = get_formatted_tasks_list()
-            formatted_instructions = self.instructions.format(tasks_list=tasks_list)
+            # Use string replacement instead of .format() to avoid issues with curly braces in tasks_list
+            formatted_instructions = self.instructions.replace(
+                "{tasks_list}", tasks_list
+            )
 
             # Process all datasets in parallel
             tasks = [
@@ -343,10 +380,8 @@ Find the dataset details for the following dataset mentioned in the evaluation r
         # Format instructions with tasks list
         tasks_list = get_formatted_tasks_list()
 
-        # Format instructions with context
-        return self.instructions.format(
-            tasks_list=tasks_list,
-        )
+        # Use string replacement instead of .format() to avoid issues with curly braces in tasks_list
+        return self.instructions.replace("{tasks_list}", tasks_list)
 
 
 def get_output_dir(arxiv_id: str) -> Path:

@@ -24,7 +24,8 @@ class WorkflowOptions:
     arxiv_id: str
     resume: bool = False
     skip_addition: bool = False
-    skip_step_6: bool = False
+    skip_step_6: bool = False  # Deprecated: use skip_step_7
+    skip_step_7: bool = False
 
 
 @dataclass
@@ -129,17 +130,32 @@ class Workflow:
         """
         step_name = step.name.lower()
 
-        # Skip steps 4, 5, 6 if skip_addition is True
+        # Skip steps 4, 5, 6, 7 if skip_addition is True
+        # (dataset addition, metrics management, normalization, evaluation addition)
         if options.skip_addition:
             if any(
                 s in step_name
-                for s in ["step_4", "step_5", "step_6", "step4", "step5", "step6"]
+                for s in [
+                    "step_4",
+                    "step_5",
+                    "step_6",
+                    "step_7",
+                    "step4",
+                    "step5",
+                    "step6",
+                    "step7",
+                ]
             ):
                 return True
 
-        # Skip step 6 if skip_step_6 is True
+        # Skip step 7 if skip_step_7 is True
+        if options.skip_step_7:
+            if "step_7" in step_name or "step7" in step_name:
+                return True
+
+        # Backward compatibility: skip_step_6 now skips step_7 (evaluation addition)
         if options.skip_step_6:
-            if "step_6" in step_name or "step6" in step_name:
+            if "step_7" in step_name or "step7" in step_name:
                 return True
 
         return False
@@ -236,7 +252,7 @@ class Workflow:
 
         self.logger.info(f"Starting workflow for arxiv_id: {options.arxiv_id}")
         self.logger.info(
-            f"Options: resume={options.resume}, skip_addition={options.skip_addition}, skip_step_6={options.skip_step_6}"
+            f"Options: resume={options.resume}, skip_addition={options.skip_addition}, skip_step_7={options.skip_step_7}"
         )
 
         # Execute steps sequentially

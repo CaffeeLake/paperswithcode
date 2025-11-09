@@ -406,7 +406,7 @@ async def find_dataset(
 
     session: Session = db_manager.session_local()
 
-    from sqlalchemy import and_, or_, select
+    from sqlalchemy import and_, case, or_, select
 
     try:
         # Build query with filters
@@ -434,7 +434,7 @@ async def find_dataset(
 
         # Search by dataset name
         if dataset_name:
-            # Try direct search first
+            # Standard name search (searches in name, full_name, description)
             name_filters = or_(
                 DBDataset.name.ilike(f"%{dataset_name}%"),
                 DBDataset.full_name.ilike(f"%{dataset_name}%"),
@@ -446,17 +446,30 @@ async def find_dataset(
         if filters:
             query = query.filter(and_(*filters))
 
-        # Prioritize exact matches and base datasets (no parent)
-        # First try exact name match (case-insensitive)
+        # Prioritize exact matches, then name matches over description matches
         if dataset_name:
+            # First try exact name match (case-insensitive)
             exact_match = query.filter(DBDataset.name.ilike(dataset_name)).first()
             if exact_match:
                 db_dataset = exact_match
             else:
-                # Try to prioritize base datasets (no parent_dataset_id) and shorter names
-                # Order by: parent_dataset_id NULL first (base datasets), then by name alphabetically
+                # Create a CASE expression to prioritize name matches over description matches
+                # 1 = name/full_name match, 0 = description-only match
+                name_match_priority = case(
+                    (
+                        or_(
+                            DBDataset.name.ilike(f"%{dataset_name}%"),
+                            DBDataset.full_name.ilike(f"%{dataset_name}%"),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+
+                # Prioritize: name matches first, then base datasets, then alphabetically
                 db_dataset = query.order_by(
-                    DBDataset.parent_dataset_id.asc().nullsfirst(),
+                    name_match_priority.desc(),  # Name matches first
+                    DBDataset.parent_dataset_id.asc().nullsfirst(),  # Base datasets first
                     DBDataset.name.asc(),
                 ).first()
         else:
@@ -492,6 +505,76 @@ async def find_dataset(
     except Exception as e:
         session.close()
         error_msg = f"Error searching for dataset: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+@function_tool
+async def get_dataset_tasks_and_metrics(dataset_id: int) -> str:
+    """Get task associations and metrics for a dataset.
+
+    When a dataset is found, use this tool to get:
+    - List of task IDs associated with the dataset
+    - Metrics allowed for each task-dataset combination
+
+    Note: Metrics are now linked at the task-dataset level (task_dataset_metrics table).
+    Leaderboards are defined by (task, dataset, metric) triples.
+
+    Args:
+        dataset_id: The ID of the dataset
+
+    Returns:
+        JSON string with task_ids list and metrics_by_task dict
+    """
+    print(f"[TOOL CALL] get_dataset_tasks_and_metrics(dataset_id={dataset_id})")
+
+    session: Session = db_manager.session_local()
+
+    try:
+        from backend.services.dataset_service import DatasetService
+
+        # Get task IDs
+        dataset_service = DatasetService(session)
+        task_ids = dataset_service.get_dataset_tasks(dataset_id)
+
+        # Get metrics for each task-dataset combination (from task_dataset_metrics)
+        metrics_by_task = {}
+        for task_id in task_ids:
+            from backend.services.leaderboard_metric_service import (
+                LeaderboardMetricService,
+            )
+
+            metric_service = LeaderboardMetricService(session)
+            try:
+                leaderboard_metrics = metric_service.get_leaderboard_metrics(
+                    task_id, dataset_id
+                )
+                metrics_by_task[task_id] = [
+                    {
+                        "metric_id": m["metric_id"],
+                        "metric_name": m["metric_name"],
+                        "metric_direction": m["metric_direction"],
+                    }
+                    for m in leaderboard_metrics.get("metrics", [])
+                ]
+            except Exception:
+                # If no metrics configured, return empty list (allows all metrics)
+                metrics_by_task[task_id] = []
+
+        result = {"task_ids": task_ids, "metrics_by_task": metrics_by_task}
+
+        session.close()
+        result_str = json.dumps(result, indent=2)
+        print(
+            f"[TOOL RESULT] {result_str[:200]}..."
+            if len(result_str) > 200
+            else f"[TOOL RESULT] {result_str}"
+        )
+        return result_str
+
+    except Exception as e:
+        session.close()
+        error_msg = f"Error retrieving tasks and metrics: {str(e)}"
         print(f"[TOOL RESULT] {error_msg}")
         return error_msg
 
@@ -999,5 +1082,173 @@ async def add_evaluation_result(
     except Exception as e:
         session.close()
         error_msg = f"Error creating evaluation: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+# ============================================================================
+# Metric Management Tools
+# ============================================================================
+
+
+@function_tool
+async def get_existing_metrics() -> str:
+    """Get all metrics currently in the database with their directions.
+
+    This tool retrieves all metric definitions from the database, including
+    their names, full names, directions, and descriptions. Use this to check
+    which metrics already exist before attempting to add new ones.
+
+    Returns:
+        A formatted string with all metrics in the database, including:
+        - Metric name (short form like "WER", "AP")
+        - Full name (e.g., "Word Error Rate")
+        - Direction (higher_is_better or lower_is_better)
+        - Description (if available)
+        - Total count of metrics
+
+    Example:
+        Use this when you need to validate that metrics extracted from a paper
+        already exist in the database, or to check if you need to add new metrics.
+    """
+    print("[TOOL CALL] get_existing_metrics()")
+    session: Session = db_manager.session_local()
+
+    try:
+        # Query all metrics, ordered by name
+        metrics = session.query(DBMetric).order_by(DBMetric.name).all()
+
+        if not metrics:
+            session.close()
+            return "No metrics found in database"
+
+        # Format response
+        response = "Metrics in Database:\n"
+        response += "=" * 80 + "\n\n"
+
+        for metric in metrics:
+            response += f"- {metric.name}"
+            if metric.full_name:
+                response += f" ({metric.full_name})"
+            response += f"\n  Direction: {metric.direction}"
+            if metric.description:
+                desc_preview = (
+                    metric.description[:100] + "..."
+                    if len(metric.description) > 100
+                    else metric.description
+                )
+                response += f"\n  Description: {desc_preview}"
+            response += "\n"
+
+        response += f"\nTotal: {len(metrics)} metric(s)"
+
+        session.close()
+        print(f"[TOOL RESULT] Found {len(metrics)} metrics")
+        return response
+
+    except Exception as e:
+        session.close()
+        error_msg = f"Error retrieving metrics: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+@function_tool
+async def add_metric(
+    name: str,
+    full_name: str,
+    direction: str = "higher_is_better",
+    description: Optional[str] = None,
+) -> str:
+    """Add a new metric to the database.
+
+    This tool adds a new metric definition to the metrics SQL table. Metrics define
+    evaluation measures and whether higher or lower values are better.
+
+    Args:
+        name: Short metric name (e.g., "Accuracy", "WER", "AP", "F1", "BLEU"). Start with a capital letter.
+        full_name: Full metric name (e.g., "Word Error Rate", "Average Precision")
+        direction: Ranking direction - must be either "higher_is_better" or "lower_is_better". Default is "higher_is_better".
+        description: Optional description of what the metric measures
+
+    Returns:
+        A success message with metric details if added successfully,
+        or an error message if the metric already exists or validation fails.
+
+    Important Notes:
+        - Metric names are case-sensitive in the database
+        - The direction must be exactly "higher_is_better" or "lower_is_better"
+        - Duplicate metric names are not allowed
+        - Common patterns:
+          * "higher_is_better": Accuracy, Precision, Recall, F1, AP, AUC, BLEU, ROUGE
+          * "lower_is_better": Error rates (WER, CER), Perplexity, Latency
+        - Loss is not considered a metric.
+
+    Example:
+        To add a Word Error Rate metric:
+        add_metric(
+            name="WER",
+            full_name="Word Error Rate",
+            direction="lower_is_better",
+            description="Percentage of words incorrectly transcribed"
+        )
+    """
+    print(
+        f"[TOOL CALL] add_metric(name={name}, full_name={full_name}, direction={direction})"
+    )
+    session: Session = db_manager.session_local()
+
+    try:
+        # Validate direction
+        valid_directions = ["higher_is_better", "lower_is_better"]
+        if direction not in valid_directions:
+            session.close()
+            return (
+                f"Error: Invalid direction '{direction}'. "
+                f"Must be one of: {', '.join(valid_directions)}"
+            )
+
+        # Check for duplicates (case-insensitive)
+        existing = session.query(DBMetric).filter(DBMetric.name.ilike(name)).first()
+        if existing:
+            session.close()
+            return (
+                f"Metric '{name}' already exists in database (ID: {existing.id}, "
+                f"Direction: {existing.direction}). Duplicates are not allowed."
+            )
+
+        # Create new metric
+        new_metric = DBMetric(
+            name=name,
+            full_name=full_name,
+            direction=direction,
+            description=description,
+        )
+
+        session.add(new_metric)
+        session.commit()
+        session.refresh(new_metric)
+
+        metric_id = new_metric.id
+
+        response = (
+            f"✓ Successfully added metric: ID={metric_id}, Name='{name}', "
+            f"Full Name='{full_name}', Direction='{direction}'"
+        )
+        if description:
+            response += (
+                f", Description='{description[:50]}...'"
+                if len(description) > 50
+                else f", Description='{description}'"
+            )
+
+        session.close()
+        print(f"[TOOL RESULT] {response}")
+        return response
+
+    except Exception as e:
+        session.rollback()
+        session.close()
+        error_msg = f"Error adding metric: {str(e)}"
         print(f"[TOOL RESULT] {error_msg}")
         return error_msg

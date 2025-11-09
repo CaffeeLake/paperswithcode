@@ -1,23 +1,24 @@
 """
-Step 5: Normalize evaluation results datasets and metrics.
+Step 5: Extract and manage metrics from evaluation results.
 
-This script normalizes the dataset names and metric names in evaluation results extracted from a paper
-by mapping them to canonical dataset names/IDs and metric names from the database based on the outputs
-of Step 2 (datasets found in database) and Step 4 (datasets newly added to database).
+This script extracts unique metric names from evaluation results and ensures they exist
+in the database. If metrics are missing, it intelligently determines their direction
+(higher_is_better or lower_is_better) and adds them to the database.
 
 You can run it like so:
 
 ```bash
-# Process evaluation results from step_1 using step_2 and step_4 outputs
+# Process evaluation results from step_1 to extract and add metrics
 uv run --env-file backend/keys.env extract_evaluation_results/step_5.py --arxiv_id "2406.09414"
 ```
 
 The script will:
-1. Read step_1, step_2, and step_4 outputs from cache
-2. Use an AI agent to normalize dataset names and metric names
-3. Build a mapping from original dataset names to canonical DB dataset names and IDs
-4. Normalize metrics using existing evaluation conventions and common synonyms
-5. Return normalized evaluation results with statistics
+1. Read step_1 output (evaluation results) from cache
+2. Extract all unique metric names from evaluation results
+3. Query database for existing metrics
+4. Identify missing metrics and determine their direction
+5. Add missing metrics to the database
+6. Return summary of found and added metrics
 """
 
 import argparse
@@ -30,10 +31,8 @@ from typing import Any, Optional
 from pydantic import BaseModel
 from agents import AgentOutputSchema
 
-from extract_evaluation_results.step_base import AgentStep
-from extract_evaluation_results.tools import get_leaderboard_metrics
-from backend.database.connection import db_manager
-from backend.models.database import Paper as DBPaper
+from extract_evaluation_results.step_base import AgentStep, StepResult
+from extract_evaluation_results.tools import get_existing_metrics, add_metric
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,126 +43,101 @@ class Step5Input(BaseModel):
 
     arxiv_id: str
     evaluation_results: list[dict[str, Any]]
-    step_2_results: list[dict[str, Any]]
-    step_4_results: Optional[list[dict[str, Any]]] = None
 
 
 class Step5Output(BaseModel):
     """Output data for Step5."""
 
-    normalized: list[dict[str, Any]]
-    mapped: int
-    unresolved: int
-    dataset_mapping: dict[str, dict[str, Any]]
+    metrics_found: list[dict[str, Any]]  # Metrics already in DB
+    metrics_added: list[dict[str, Any]]  # Newly added metrics
+    total_unique_metrics: int
+    all_metrics: dict[str, str]  # name -> direction mapping
 
 
-normalizer_prompt = """
+metrics_manager_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
 
 ## Task
 
-You are an expert in normalizing evaluation results extracted from research papers. Your responsibility is to map evaluation results to canonical dataset names, IDs, and metric names from our database.
+You are an expert in managing evaluation metrics in a SQL database. Your responsibility is to extract metric names from evaluation results and ensure all metrics exist in the database with correct directions (higher_is_better or lower_is_better).
 
-A colleague has already:
-1. Extracted evaluation results from a paper (Step 1)
-2. Found some datasets in the database (Step 2)
-3. Added missing datasets to the database (Step 4)
+A colleague has extracted evaluation results from a paper (Step 1), and now you need to:
+1. Extract all unique metric names from the evaluation results
+2. Check which metrics already exist in the database
+3. Identify missing metrics
+4. Determine the correct direction for each missing metric
+5. Add missing metrics to the database
 
-Your job is to normalize ALL evaluation results by:
-1. Mapping dataset names to canonical database names and IDs
-2. Normalizing metric names to match existing leaderboard conventions
-3. Ensuring paper_id and task_id are populated
-4. Marking unresolvable evaluations with _unresolved flag
+## Understanding Metric Directions
 
-## Dataset Normalization
+Metrics have two types of directions:
 
-Use the step_2_results and step_4_results provided in the prompt to map original dataset names to canonical database information:
+### Higher is Better (higher_is_better)
+Metrics where higher values indicate better performance:
+- **Accuracy** measures: Accuracy, Top-1 Accuracy, Top-5 Accuracy, Precision, Recall, F1, F-Score
+- **Detection metrics**: AP, mAP, Average Precision, Mean Average Precision, AP50, AP75, APs, APm, APl
+- **Segmentation**: IoU, Intersection over Union, Dice, Mask AP
+- **Translation/Generation**: BLEU, ROUGE, ROUGE-L, ROUGE-1, ROUGE-2, METEOR, CIDEr
+- **Ranking**: AUC, Area Under Curve, NDCG, Mean Reciprocal Rank, MRR
+- **Scores**: Score, Accuracy Score, Exact Match (EM), Correlation
 
-- **step_2_results**: Datasets that were found in the database
-  - Look for entries with "found": true
-  - Extract: dataset ID, canonical name, slug
+### Lower is Better (lower_is_better)
+Metrics where lower values indicate better performance:
+- **Error rates**: Error, Error Rate, Top-1 Error, Top-5 Error, WER (Word Error Rate), CER (Character Error Rate)
+- **Loss**: Loss, Cross Entropy, BCE, MSE, MAE, RMSE
+- **Distance**: Distance, L1, L2, Euclidean Distance
+- **Time/Efficiency**: Latency, Inference Time, FLOPs, Parameters, Memory
+- **Perplexity**: Perplexity, PPL
 
-- **step_4_results**: Datasets that were newly added (or already existed)
-  - Look for entries with "success": true or "dataset_id" field
-  - Extract: dataset ID, canonical name
+## Metric Name Normalization
 
-Create a mapping from original dataset names (case-insensitive) to:
-- `dataset_id`: The database ID
-- `canonical_name`: The official name in the database
-- `task_id`: The first task associated with the dataset (from dataset.tasks)
+When adding metrics, use standard naming conventions:
+- Use common abbreviations: "WER" not "Word Error Rate" as the name
+- Keep consistent casing: "AP", "mAP", "BLEU", "ROUGE-L"
+- Full name goes in the `full_name` field
+- For compound metrics like "AP50", if it's a variation of AP, still mark it as higher_is_better
 
-## Metric Normalization
+## Pattern-Based Direction Detection
 
-Metrics often have synonyms or variations. Normalize them to canonical names used in existing evaluations.
+Use these patterns to determine direction:
 
-### Common Metric Synonyms
+**Lower is better if name contains:**
+- "error", "loss", "perplexity", "latency", "time"
+- Specifically "WER", "CER", "rate" (in context of error)
 
-Learn these standard mappings:
+**Higher is better if name contains:**
+- "accuracy", "precision", "recall", "f1", "f-score"
+- "ap" (average precision), "auc", "iou", "dice"
+- "bleu", "rouge", "meteor", "cider"
+- "score", "match" (exact match)
 
-**Object Detection / Instance Segmentation:**
-- "AP" / "Average Precision" / "Box AP" / "Object AP" → "mAP" (most common)
-- "Mask AP" / "Segmentation AP" → "Mask mAP"
-- "AP50" / "AP at IoU=0.50" → "AP50"
-- "AP75" / "AP at IoU=0.75" → "AP75"
-- "APs" / "AP small" → "APs"
-- "APm" / "AP medium" → "APm"
-- "APl" / "AP large" → "APl"
+**Default**: If uncertain, default to "higher_is_better" and add a note in the description.
 
-**Image Classification:**
-- "Accuracy" / "Top-1 Accuracy" / "Top-1" → "Top-1 Accuracy"
-- "Top-5" / "Top-5 Accuracy" → "Top-5 Accuracy"
-- "Error Rate" / "Top-1 Error" → "Top-1 Error"
+## Tools Available
 
-**Speech Recognition:**
-- "WER" / "Word Error Rate" → "WER"
-- "CER" / "Character Error Rate" → "CER"
+### get_existing_metrics()
+Call this tool to retrieve all metrics currently in the database with their names, directions, and descriptions.
 
-**Machine Translation / NLG:**
-- "BLEU" / "BLEU-4" → "BLEU"
-- "ROUGE" / "ROUGE-L" → "ROUGE-L"
+### add_metric(name, full_name, direction, description)
+Call this tool to add a new metric to the database.
 
-**Question Answering:**
-- "F1" / "F1 Score" → "F1"
-- "EM" / "Exact Match" → "EM"
+Args:
+- name: Short metric name (e.g., "WER", "AP", "F1")
+- full_name: Full descriptive name (e.g., "Word Error Rate")
+- direction: Either "higher_is_better" or "lower_is_better"
+- description: Optional description of what the metric measures
 
-### Using get_leaderboard_metrics Tool
+## Workflow
 
-For each (task_id, dataset_id) pair, you can call:
-```
-get_leaderboard_metrics(task_id=X, dataset_id=Y)
-```
-
-This will show you:
-- What metric names are actually used in existing evaluations
-- Frequency of each metric name
-- Most common best_metric values
-
-Use this to verify your normalization is correct. If existing evaluations use "mAP" and you see "AP" in the extracted results, normalize to "mAP".
-
-## Required Fields in Normalized Results
-
-Each normalized evaluation must have:
-
-1. **paper_id** (int): Database ID of the paper (lookup from arxiv_id)
-2. **task_id** (int): Database ID of the task (from dataset.tasks[0])
-3. **dataset_id** (int): Database ID of the dataset
-4. **dataset_name** (str): Canonical name from database
-5. **metrics** (dict): Dictionary with normalized metric names → values
-   - Example: {"mAP": "44.9", "AP50": "64.7"}
-6. **best_metric** (str): The primary metric name (normalized)
-7. **model_name** (str, optional): Model/method name if available
-8. **methodology** (str, optional): Methodology description if available
-
-Also include metadata fields:
-- **_original_dataset_name** (str): Original dataset name from extraction
-- **_mapping_source** (str): Where mapping came from ("step_2", "step_4_added", etc.)
-
-## Error Handling
-
-If a dataset or metric cannot be normalized:
-1. Mark the evaluation with `_unresolved: true`
-2. Add `_reason` field explaining why (e.g., "Dataset not found in step_2 or step_4 results")
-3. Still include the evaluation in the normalized list so it can be reviewed
+1. First, call `get_existing_metrics()` to see what metrics are already in the database
+2. Extract all unique metric names from the evaluation results provided
+3. Compare extracted metrics against existing metrics (case-insensitive)
+4. For each missing metric:
+   a. Determine the correct direction based on patterns above
+   b. Generate a full_name (expand abbreviations if known)
+   c. Create a description (optional but helpful)
+   d. Call `add_metric()` to add it to the database
+5. Return a summary in the Step5Output format
 
 ## Output Format
 
@@ -171,38 +145,39 @@ Return a Step5Output with:
 
 ```python
 class Step5Output(BaseModel):
-    normalized: list  # List of all normalized evaluation results
-    mapped: int  # Count of successfully mapped evaluations
-    unresolved: int  # Count of evaluations that couldn't be fully normalized
-    dataset_mapping: dict  # Mapping from original names to {id, canonical_name}
+    metrics_found: list[dict]  # Metrics that already existed
+                               # Format: [{"name": "AP", "direction": "higher_is_better"}, ...]
+    metrics_added: list[dict]  # Metrics that were added
+                               # Format: [{"name": "WER", "direction": "lower_is_better"}, ...]
+    total_unique_metrics: int  # Total number of unique metrics in evaluation results
+    all_metrics: dict[str, str]  # Complete mapping: name -> direction
+                                 # Format: {"AP": "higher_is_better", "WER": "lower_is_better"}
 ```
-
-The `normalized` list should contain all evaluations (both successfully mapped and unresolved).
 
 ## Important Notes
 
-1. **Case-insensitive matching**: "coco" should match "COCO"
-2. **Preserve all fields**: Keep original fields from extracted results plus add normalized ones
-3. **Handle missing data**: If paper_id or task_id cannot be found, mark as unresolved
-4. **Metric verification**: Use get_leaderboard_metrics when uncertain about metric names
-5. **Multiple metrics**: An evaluation can have multiple metrics in the `metrics` dict, but only one `best_metric`
+1. **Case-insensitive matching**: "ap" should match "AP" in the database
+2. **Be comprehensive**: Extract ALL metric names from ALL evaluation results
+3. **Avoid duplicates**: Don't try to add metrics that already exist
+4. **Consistent naming**: Use standard abbreviations for metric names
+5. **Document uncertainty**: If unsure about direction, add a note in description
 
-Process ALL evaluation results, even if some cannot be fully normalized. Mark problematic ones with `_unresolved: true` so they can be reviewed manually.
+Process ALL metrics found in the evaluation results. Your output will be used by subsequent steps to validate and normalize evaluation results before adding them to the database.
 """
 
 
 class Step5(AgentStep[Step5Input, Step5Output]):
-    """Agent-based normalization of evaluation results."""
+    """Agent-based metrics extraction and management."""
 
     input_model = Step5Input
     output_model = Step5Output
 
     def __init__(self):
         super().__init__(
-            name="Step5: Evaluation Normalizer",
-            description="Normalizes dataset names and metric names in evaluation results",
-            instructions=normalizer_prompt,
-            tools=[get_leaderboard_metrics],
+            name="Step5: Metrics Manager",
+            description="Extracts metrics from evaluation results and manages them in the database",
+            instructions=metrics_manager_prompt,
+            tools=[get_existing_metrics, add_metric],
             model="gpt-5-mini",
             agent_output_type=AgentOutputSchema(Step5Output, strict_json_schema=False),
         )
@@ -213,85 +188,42 @@ class Step5(AgentStep[Step5Input, Step5Output]):
             f"Building prompt for {len(inputs.evaluation_results)} evaluation results"
         )
 
-        # Get paper_id from arxiv_id
-        paper_id = None
-        try:
-            session = db_manager.session_local()
-            try:
-                paper = (
-                    session.query(DBPaper)
-                    .filter(DBPaper.arxiv_id.like(f"{inputs.arxiv_id}%"))
-                    .first()
-                )
-                if paper:
-                    paper_id = paper.id
-                    logger.info(
-                        f"Found paper_id {paper_id} for arxiv_id {inputs.arxiv_id}"
-                    )
-                else:
-                    logger.warning(
-                        f"Could not find paper with arxiv_id {inputs.arxiv_id} in database"
-                    )
-            finally:
-                session.close()
-        except Exception as e:
-            logger.error(f"Error looking up paper_id: {e}")
-
-        # Format step_2 results
-        step_2_text = "### Step 2 Results (Datasets Found in Database)\n\n"
-        if inputs.step_2_results:
-            step_2_text += "```json\n"
-            step_2_text += json.dumps(inputs.step_2_results, indent=2)
-            step_2_text += "\n```\n"
-        else:
-            step_2_text += "No datasets found in step 2.\n"
-
-        # Format step_4 results
-        step_4_text = "\n### Step 4 Results (Datasets Newly Added to Database)\n\n"
-        if inputs.step_4_results:
-            step_4_text += "```json\n"
-            step_4_text += json.dumps(inputs.step_4_results, indent=2)
-            step_4_text += "\n```\n"
-        else:
-            step_4_text += "No new datasets added in step 4.\n"
-
         # Format evaluation results
-        eval_text = "\n### Evaluation Results to Normalize\n\n"
+        eval_text = "### Evaluation Results with Metrics\n\n"
         eval_text += f"Paper ArXiv ID: {inputs.arxiv_id}\n"
-        if paper_id:
-            eval_text += f"Paper Database ID: {paper_id}\n"
-        else:
-            eval_text += (
-                "Paper Database ID: NOT FOUND (evaluations will be unresolved)\n"
-            )
-        eval_text += f"\nTotal evaluation results: {len(inputs.evaluation_results)}\n\n"
+        eval_text += f"Total evaluation results: {len(inputs.evaluation_results)}\n\n"
+
+        # Show metrics in context
+        eval_text += "Below are the evaluation results. Extract all unique metric names from the 'metrics' fields:\n\n"
         eval_text += "```json\n"
         eval_text += json.dumps(inputs.evaluation_results, indent=2)
         eval_text += "\n```\n"
 
         # Construct full prompt
         prompt = f"""
-{step_2_text}
-{step_4_text}
 {eval_text}
 
 ## Your Task
 
-Normalize ALL {len(inputs.evaluation_results)} evaluation results above by:
+Process the {len(inputs.evaluation_results)} evaluation results above:
 
-1. **Dataset Mapping**: Use step_2 and step_4 results to map each dataset name to its database ID and canonical name
-2. **Metric Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
-   - Use get_leaderboard_metrics(task_id, dataset_id) to check what metrics are used
-3. **Field Population**: Ensure paper_id ({"available: " + str(paper_id) if paper_id else "NOT FOUND"}), task_id, dataset_id, dataset_name are set
-4. **Error Handling**: Mark unresolvable evaluations with _unresolved: true
+1. **Call get_existing_metrics()** to see what metrics are already in the database
+2. **Extract all unique metric names** from the evaluation results' 'metrics' fields
+   - Each evaluation result has a 'metrics' dict like {{"AP": "44.9", "AP50": "64.7"}}
+   - Extract all keys from all metrics dicts
+3. **Compare extracted metrics against existing metrics** (case-insensitive comparison)
+4. **For each missing metric:**
+   - Determine direction using the patterns described in the instructions
+   - Generate a full_name (expand abbreviations if you know them)
+   - Create a helpful description (optional)
+   - Call add_metric() to add it to the database
+5. **Return Step5Output** with:
+   - metrics_found: List of metrics that already existed
+   - metrics_added: List of metrics that were newly added
+   - total_unique_metrics: Total count of unique metrics found
+   - all_metrics: Complete mapping of metric name -> direction
 
-Return a Step5Output with:
-- `normalized`: List of all normalized evaluation results (including unresolved ones)
-- `mapped`: Count of successfully normalized evaluations
-- `unresolved`: Count of evaluations that couldn't be fully normalized
-- `dataset_mapping`: Dictionary from original dataset names to {{id, canonical_name}}
-
-Process every evaluation result. Do not skip any.
+Process every unique metric. Don't skip any.
 """
 
         return prompt
@@ -320,27 +252,21 @@ def read_step_1_output(arxiv_id: str) -> str:
 async def step_5(
     arxiv_id: str,
     evaluation_results: list,
-    step_2_results: list,
-    step_4_results: Optional[list] = None,
 ) -> Optional[Step5Output]:
     """
-    Normalize evaluation results datasets and metrics (wrapper for Step5).
+    Extract and manage metrics from evaluation results (wrapper for Step5).
 
     Args:
         arxiv_id: The ArXiv ID of the paper
         evaluation_results: List of evaluation results from step_1
-        step_2_results: List of step_2 results (datasets found in database)
-        step_4_results: Optional list of step_4 results (datasets newly added to database)
 
     Returns:
-        Step5Output with normalized results and statistics, or None if failed
+        Step5Output with metrics summary, or None if failed
     """
     agent = Step5()
     input_data = Step5Input(
         arxiv_id=arxiv_id,
         evaluation_results=evaluation_results,
-        step_2_results=step_2_results,
-        step_4_results=step_4_results,
     )
     result = await agent.run(input_data)
 
@@ -353,7 +279,7 @@ async def step_5(
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Normalize evaluation results datasets and metrics using AI agent."
+        description="Extract and manage metrics from evaluation results using AI agent."
     )
     parser.add_argument(
         "--arxiv_id",
@@ -372,55 +298,52 @@ async def main():
 
     if not evaluation_results:
         print("No evaluation results found in step_1 output")
-        return {"normalized": [], "mapped": 0, "unresolved": 0, "dataset_mapping": {}}
+        return {
+            "metrics_found": [],
+            "metrics_added": [],
+            "total_unique_metrics": 0,
+            "all_metrics": {},
+        }
 
-    # Read step_2 output
-    output_dir = get_output_dir(arxiv_id)
-    step_2_path = output_dir / "step_2_results.json"
-    if not step_2_path.exists():
-        print(f"Warning: step_2 output not found at {step_2_path}")
-        step_2_results = []
-    else:
-        step_2_results = json.loads(step_2_path.read_text())
-
-    # Read step_4 output (optional)
-    step_4_path = output_dir / "step_4_results.json"
-    if step_4_path.exists():
-        step_4_results = json.loads(step_4_path.read_text())
-    else:
-        step_4_results = []
-
-    # Run normalization
+    # Run metrics management
     result = await step_5(
         arxiv_id=arxiv_id,
         evaluation_results=evaluation_results,
-        step_2_results=step_2_results,
-        step_4_results=step_4_results,
     )
 
     if not result:
-        print("Normalization failed")
+        print("Metrics management failed")
         return None
 
     # Write output
-    output_path = output_dir / "step_5_normalized.json"
+    output_dir = get_output_dir(arxiv_id)
+    output_path = output_dir / "step_5_metrics.json"
     output_path.write_text(
         json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
     )
-    print(f"✓ Normalized results written to: {output_path}")
+    print(f"✓ Metrics summary written to: {output_path}")
 
     # Print summary
     print("\n" + "=" * 60)
-    print("NORMALIZATION SUMMARY")
+    print("METRICS SUMMARY")
     print("=" * 60)
-    print(f"Total evaluation results: {len(evaluation_results)}")
-    print(f"Successfully mapped: {result.mapped}")
-    print(f"Unresolved: {result.unresolved}")
-    print(f"\nDataset mappings used: {len(result.dataset_mapping)}")
-    for original_name, mapping in result.dataset_mapping.items():
-        print(
-            f"  - '{original_name}' -> '{mapping['canonical_name']}' (ID: {mapping['id']})"
-        )
+    print(f"Total unique metrics found: {result.total_unique_metrics}")
+    print(f"Metrics already in database: {len(result.metrics_found)}")
+    print(f"Metrics newly added: {len(result.metrics_added)}")
+
+    if result.metrics_found:
+        print("\n✓ Metrics found in database:")
+        for metric in result.metrics_found:
+            print(f"  - {metric['name']} ({metric['direction']})")
+
+    if result.metrics_added:
+        print("\n✓ Metrics newly added:")
+        for metric in result.metrics_added:
+            print(f"  - {metric['name']} ({metric['direction']})")
+
+    print("\n" + "All metrics mapping:")
+    for name, direction in result.all_metrics.items():
+        print(f"  {name}: {direction}")
     print("=" * 60)
 
     return result
@@ -429,10 +352,7 @@ async def main():
 if __name__ == "__main__":
     result = asyncio.run(main())
     if result:
-        print("\nNormalized evaluation results:")
-        print(json.dumps(result.normalized[:3], indent=2))  # Show first 3
-        if len(result.normalized) > 3:
-            print(f"... and {len(result.normalized) - 3} more")
+        print("\n✓ Step 5 completed successfully")
 
 
 # Workflow integration
@@ -450,23 +370,34 @@ class Step5WorkflowStep:
 
         Reads from state.data:
         - arxiv_id: str
-        - evaluation_results: list
-        - step_2_results: list
-        - step_4_results: list (optional)
+        - evaluation_results: list (from Step 1)
 
         Writes to state.data:
-        - normalized: list of normalized evaluation results
-        - mapped: int - number of mapped evaluations
-        - unresolved: int - number of unresolved evaluations
-        - dataset_mapping: dict - mapping from original to canonical names
-        - step_5_normalized: dict - complete normalization result
+        - metrics_found: list - metrics already in database
+        - metrics_added: list - newly added metrics
+        - total_unique_metrics: int - total unique metrics count
+        - all_metrics: dict - name -> direction mapping
         """
         # Build inputs from state.data
+        evaluation_results = state.data.get("evaluation_results", [])
+
+        # Early return if no evaluation results to process
+        if not evaluation_results:
+            logger.info("No evaluation results to process. Skipping Step 5.")
+            empty_output = Step5Output(
+                metrics_found=[],
+                metrics_added=[],
+                total_unique_metrics=0,
+                all_metrics={},
+            )
+            return StepResult(
+                success=True,
+                outputs=empty_output,
+            )
+
         inputs = {
             "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
-            "evaluation_results": state.data.get("evaluation_results", []),
-            "step_2_results": state.data.get("step_2_results", []),
-            "step_4_results": state.data.get("step_4_results"),
+            "evaluation_results": evaluation_results,
         }
 
         # Execute the agent step
