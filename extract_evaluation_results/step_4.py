@@ -27,8 +27,6 @@ from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
 from extract_evaluation_results.tools import (
     add_dataset,
-    get_available_tasks,
-    link_dataset_to_task,
     get_tasks_by_area,
 )
 
@@ -40,8 +38,9 @@ class DatasetDetails(BaseModel):
     name: str
     slug: str
     description: str
-    hf_url: str
-    paper_url: str
+    task_ids: list[int]
+    hf_url: Optional[str] = None
+    paper_url: Optional[str] = None
 
 
 class Response(BaseModel):
@@ -86,9 +85,12 @@ within the field of machine learning and artificial intelligence (AI).
 You are an expert in managing datasets in the SQL database of Hugging Face's leaderboards project. Your responsibility includes
 adding new datasets to the database with comprehensive information when requested.
 
-## Available tools
+A colleague of yours has extracted evaluation results from an ArXiv paper and identified a particular dataset mentioned in the evaluation results which is not yet added to the SQL database.
+Your task is to add this dataset to the database.
+Another colleague of yours has fetched the paper details from the web/Hugging Faceand will provide you with the required information.
 
-When adding a new dataset, use the add_dataset tool.
+## Important notes
+
 **IMPORTANT**: Every dataset MUST be linked to one or more tasks.
 Ensure you provide all relevant information including:
 - name (required): The name of the dataset
@@ -107,26 +109,17 @@ Ensure you provide all relevant information including:
 
 {tasks_list}
 
-Example: To add the COCO dataset for Object Detection, use task_ids=[2]
-Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
-
-## Notes
-
-
-
 ## Finding and Linking Tasks
 
-Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP").
+Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP", ...).
 This helps you find appropriate task IDs when you're not sure which tasks apply to a dataset.
 
-**IMPORTANT**: After adding a dataset, you MUST verify it has been linked to at least one task.
-If the add_dataset call succeeds but you're unsure about task associations, use link_dataset_to_task
-to explicitly link the dataset to the appropriate task(s).
-
 Example workflow:
-1. Call get_tasks_by_area("Robotics") to find robotics-related tasks
-2. Add dataset with task_ids=[15] (Robotic Manipulation)
-3. If needed, call link_dataset_to_task(dataset_id=230, task_id=15) to ensure the link
+1. Call get_tasks_by_area("Other") to find task IDs of the "Other" area
+2. Call the `add_dataset` tool to add the dataset to the database with task_ids=[15]
+
+Example: To add the COCO dataset for Object Detection, use task_ids=[2]
+Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
 
 ## Output format
 
@@ -137,8 +130,9 @@ class DatasetDetails(BaseModel):
     name: str
     slug: str
     description: str
-    hf_url: str
-    paper_url: str
+    task_ids: list[int]
+    hf_url: Optional[str] = None
+    paper_url: Optional[str] = None
 
 
 class Response(BaseModel):
@@ -163,8 +157,6 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             instructions=dataset_adder_prompt,
             tools=[
                 add_dataset,
-                get_available_tasks,
-                link_dataset_to_task,
                 get_tasks_by_area,
             ],
             agent_output_type=Response,
@@ -203,7 +195,7 @@ class Step4(AgentStep[Step4Input, Step4Output]):
 
             # Build prompt
             prompt_parts = [
-                "Add the following dataset to the database:",
+                "Add the following dataset to the database. The dataset details are as follows:",
                 json.dumps(dataset_details, indent=2),
             ]
 

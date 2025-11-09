@@ -452,6 +452,60 @@ def parse_dataset_details(dataset_details_input: str) -> dict:
             )
 
 
+async def step_3(
+    dataset_inputs: list[dict],
+) -> list[dict]:
+    """Gather information about multiple datasets from the web and Hugging Face (wrapper for Step3).
+
+    Args:
+        dataset_inputs: List of dataset input dictionaries, each containing:
+            - dataset_name (optional): Name of the dataset
+            - arxiv_id (optional): ArXiv ID of the paper that introduced the dataset
+            - hf_url (optional): Hugging Face URL of the dataset
+            - dataset_info (optional): Additional information about the dataset
+            - paper_title (optional): Title of the paper that introduced the dataset
+
+    Returns:
+        List of dictionaries, each with 'dataset_input', 'success', 'information', and 'error_message' keys
+    """
+    # Convert dicts to Step3SingleInput models
+    single_inputs = [Step3SingleInput(**input_dict) for input_dict in dataset_inputs]
+
+    agent = Step3()
+    input_data = Step3Input(dataset_inputs=single_inputs)
+    result = await agent.run(input_data)
+
+    if not result.success:
+        logger.error(f"Step 3 failed: {result.error_message}")
+        # Return error results for all datasets
+        return [
+            {
+                "dataset_input": input_dict,
+                "success": False,
+                "information": None,
+                "error_message": result.error_message,
+            }
+            for input_dict in dataset_inputs
+        ]
+
+    # result.outputs is now a Step3Output model with a list of Step3SingleResult
+    # Convert to list of dicts for backward compatibility
+    output_list = []
+    for single_result in result.outputs.results:
+        output_dict = {
+            "dataset_input": single_result.dataset_input.model_dump(),
+            "success": single_result.success,
+            "error_message": single_result.error_message,
+        }
+        if single_result.information:
+            output_dict["information"] = single_result.information.model_dump()
+        else:
+            output_dict["information"] = None
+        output_list.append(output_dict)
+
+    return output_list
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Gather information about datasets from the web and Hugging Face."
@@ -609,60 +663,6 @@ if __name__ == "__main__":
     result = asyncio.run(main())
     if not result:
         print("\nNo results received")
-
-
-async def step_3(
-    dataset_inputs: list[dict],
-) -> list[dict]:
-    """Gather information about multiple datasets from the web and Hugging Face (wrapper for Step3).
-
-    Args:
-        dataset_inputs: List of dataset input dictionaries, each containing:
-            - dataset_name (optional): Name of the dataset
-            - arxiv_id (optional): ArXiv ID of the paper that introduced the dataset
-            - hf_url (optional): Hugging Face URL of the dataset
-            - dataset_info (optional): Additional information about the dataset
-            - paper_title (optional): Title of the paper that introduced the dataset
-
-    Returns:
-        List of dictionaries, each with 'dataset_input', 'success', 'information', and 'error_message' keys
-    """
-    # Convert dicts to Step3SingleInput models
-    single_inputs = [Step3SingleInput(**input_dict) for input_dict in dataset_inputs]
-
-    agent = Step3()
-    input_data = Step3Input(dataset_inputs=single_inputs)
-    result = await agent.run(input_data)
-
-    if not result.success:
-        logger.error(f"Step 3 failed: {result.error_message}")
-        # Return error results for all datasets
-        return [
-            {
-                "dataset_input": input_dict,
-                "success": False,
-                "information": None,
-                "error_message": result.error_message,
-            }
-            for input_dict in dataset_inputs
-        ]
-
-    # result.outputs is now a Step3Output model with a list of Step3SingleResult
-    # Convert to list of dicts for backward compatibility
-    output_list = []
-    for single_result in result.outputs.results:
-        output_dict = {
-            "dataset_input": single_result.dataset_input.model_dump(),
-            "success": single_result.success,
-            "error_message": single_result.error_message,
-        }
-        if single_result.information:
-            output_dict["information"] = single_result.information.model_dump()
-        else:
-            output_dict["information"] = None
-        output_list.append(output_dict)
-
-    return output_list
 
 
 # Legacy single-dataset wrapper for backward compatibility
