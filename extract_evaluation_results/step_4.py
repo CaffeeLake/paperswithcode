@@ -91,17 +91,35 @@ Another colleague of yours has fetched the paper details from the web/Hugging Fa
 
 ## Important notes
 
-**IMPORTANT**: Every dataset MUST be linked to one or more tasks.
+**CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. Do NOT link datasets to multiple tasks unless the dataset is truly exceptional (like ImageNet which genuinely serves multiple distinct purposes).
+
 Ensure you provide all relevant information including:
 - name (required): The name of the dataset
 - description (required): A description of what the dataset contains and its purpose
-- task_ids (required): List of task IDs this dataset is used for (e.g., [1] for Image Classification, [2, 3] for multiple tasks)
-  **CRITICAL**: Infer task_ids based on the dataset's purpose and description, NOT from the paper's tasks.
-  - For math/reasoning datasets (e.g., AIME, GPQA) → use Language Modeling or General tasks
-  - For vision datasets → use Computer Vision tasks
-  - For speech/audio datasets → use Speech/Audio tasks
-  - For multimodal datasets → use appropriate multimodal tasks
-  - Only use suggested_task_ids if they genuinely match the dataset's purpose
+- task_ids (required): List containing EXACTLY ONE task ID (e.g., [1] for Image Classification)
+  **CRITICAL**: Choose the SINGLE most appropriate task based on the dataset's PRIMARY purpose and description, NOT from the paper's tasks.
+
+  **Task Selection Guidelines**:
+  - For math/reasoning datasets (e.g., AIME, GPQA, MMLU) → use "Language Modeling"
+  - For vision-only datasets (e.g., Oxford-IIIT Pets) → use "Image Classification" or other Computer Vision tasks
+  - For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
+  - For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video-Language Models"
+  - For vision-language datasets (e.g., MMMU, AI2D) → use "Vision-Language Models"
+  - For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
+  - For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
+  - For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"
+  - For OCR datasets → use "OCR"
+  - **If no specific task fits**: Use the "other" task (find it by calling get_tasks_by_area("Other") and look for the task named "other"). This is a valid fallback option for datasets that don't clearly fit into any of the standard categories.
+  - Only use suggested_task_ids if they genuinely match the dataset's PRIMARY purpose
+
+  **Examples of correct single-task linking**:
+  - LVBench → task_ids=[Video-Language Models task ID]
+  - MMLU → task_ids=[Language Modeling task ID]
+  - Oxford-IIIT Pets → task_ids=[Image Classification task ID]
+  - OmniBench → task_ids=[Omni models task ID]
+  - MMMU → task_ids=[Vision-Language Models task ID]
+  - CALVIN → task_ids=[Robotics task ID]
+
 - full_name (optional): The full name of the dataset
 - url (optional): Main URL for the dataset
 - hf_url (optional): Hugging Face dataset URL
@@ -111,15 +129,32 @@ Ensure you provide all relevant information including:
 
 ## Finding and Linking Tasks
 
-Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP", ...).
-This helps you find appropriate task IDs when you're not sure which tasks apply to a dataset.
+Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP", "Other", ...).
+This helps you find appropriate task IDs when you're not sure which task applies to a dataset.
 
-Example workflow:
-1. Call get_tasks_by_area("Other") to find task IDs of the "Other" area
-2. Call the `add_dataset` tool to add the dataset to the database with task_ids=[15]
+**Using the "other" task as fallback**:
+If you cannot find a specific task that matches the dataset's purpose after searching through relevant areas, use the "other" task as a fallback:
+1. Call get_tasks_by_area("Other") to find tasks in the "Other" area
+2. Look for the task named "other" in the results
+3. Use that task ID when adding the dataset
 
-Example: To add the COCO dataset for Object Detection, use task_ids=[2]
-Example: To add ImageNet for both Image Classification and Image Generation, use task_ids=[1, 19].
+Example workflow for specific tasks:
+1. Call get_tasks_by_area("Computer Vision") to find Computer Vision task IDs
+2. Call the `add_dataset` tool to add the dataset to the database with task_ids=[task_id] (single task ID in a list)
+
+Example workflow for fallback to "other":
+1. Search relevant areas but find no good match
+2. Call get_tasks_by_area("Other") to find the "other" task
+3. Call the `add_dataset` tool with task_ids=[other_task_id] (the "other" task ID)
+
+Example: To add the COCO dataset for Object Detection, use task_ids=[2] (single task)
+Example: To add Oxford-IIIT Pets for Image Classification, use task_ids=[1] (single task)
+Example: To add LVBench for Video-Language Models, use task_ids=[Video-Language Models task ID] (single task)
+Example: To add MMLU for Language Modeling, use task_ids=[Language Modeling task ID] (single task)
+Example: To add OmniBench for Omni models, use task_ids=[Omni models task ID] (single task)
+Example: To add a dataset that doesn't fit any standard category, use task_ids=[other_task_id] (the "other" task from the "Other" area)
+
+**Note**: Only in extremely rare cases (like ImageNet which genuinely serves multiple distinct purposes) should you link to multiple tasks. For 99% of datasets, choose the single most appropriate task. If no specific task fits, use the "other" task rather than forcing an incorrect match.
 
 ## Output format
 
