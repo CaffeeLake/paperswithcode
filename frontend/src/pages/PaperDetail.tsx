@@ -148,9 +148,12 @@ const PaperDetail = () => {
         if (evalItem.operation === 'delete' && evalItem.id) {
           try {
             await deleteEvaluation(evalItem.id);
-          } catch (error: any) {
+          } catch (error: unknown) {
             // If the evaluation doesn't exist (404), that's fine - it's already gone
-            if (error?.status !== 404) {
+            const status = typeof error === 'object' && error !== null && 'status' in error
+              ? (error as { status?: number }).status
+              : undefined;
+            if (status !== 404) {
               throw error;
             }
             console.log(`Evaluation ${evalItem.id} already deleted or not found`);
@@ -429,6 +432,54 @@ const PaperDetail = () => {
     return allDatasetsForEvals?.results || [];
   };
 
+  // Group evaluations by task
+  const evaluationsByTask = useMemo(() => {
+    if (!evaluations) return [];
+
+    const grouped = new Map<string, { evaluations: APIEvaluation[]; metrics: Set<string> }>();
+
+    evaluations.forEach(evaluation => {
+      const taskId = evaluation.task_id;
+      if (!grouped.has(taskId)) {
+        grouped.set(taskId, { evaluations: [], metrics: new Set<string>() });
+      }
+
+      const taskGroup = grouped.get(taskId)!;
+      taskGroup.evaluations.push(evaluation);
+
+      if (evaluation.metrics) {
+        Object.keys(evaluation.metrics).forEach(metric => taskGroup.metrics.add(metric));
+      }
+    });
+
+    return Array.from(grouped.entries()).map(([taskId, group]) => {
+      const taskName = group.evaluations[0]?.task_name ||
+        allTasksDataForEvals?.results?.find((t: APITask) => t.id === taskId)?.name ||
+        `Task ${taskId}`;
+
+      const taskGroup = {
+        taskId,
+        taskName,
+        evaluations: group.evaluations,
+        metrics: Array.from(group.metrics).sort(),
+      };
+
+      return taskGroup;
+    }).sort((a, b) => a.taskName.localeCompare(b.taskName));
+  }, [evaluations, allTasksDataForEvals]);
+
+  // Determine the maximum number of metric columns across all task groups.
+  const maxMetricCount = useMemo(() => {
+    if (!evaluationsByTask.length) {
+      return 0;
+    }
+
+    return evaluationsByTask.reduce(
+      (max, group) => (group.metrics.length > max ? group.metrics.length : max),
+      0
+    );
+  }, [evaluationsByTask]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background">
@@ -656,97 +707,141 @@ const PaperDetail = () => {
                       </div>
                     )}
 
-                    {/* Evaluation Table */}
-                    <div className="overflow-x-auto">
-                      <table className="w-full">
-                        <thead>
-                          <tr className="border-b border-border">
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Task</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
-                            {/* Dynamic metric columns - get all unique metrics from all evaluations */}
-                            {Array.from(new Set(
-                              evaluations.flatMap(e => Object.keys(e.metrics || {}))
-                            )).sort().map(metric => (
-                              <th key={metric} className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
-                                {metric}
-                              </th>
-                            ))}
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Rank</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {evaluations.map((evaluation, idx) => {
-                            // Get task name - prefer from evaluation, fallback to lookup
-                            const taskName = evaluation.task_name || (() => {
-                              const task = allTasksDataForEvals?.results?.find(
-                                (t: APITask) => t.id === evaluation.task_id
-                              );
-                              return task?.name || `Task ${evaluation.task_id}`;
-                            })();
+                    {/* Calculate column widths once for all tables to ensure consistent alignment */}
+                    {/* Dataset: 20%, Model: 20%, Metrics: evenly distributed from remaining 40%, Rank: 10%, Benchmark: 10% */}
+                    {(() => {
+                      const remainingForMetrics = 100 - 20 - 20 - 10 - 10; // 40%
+                      const metricWidth = maxMetricCount > 0
+                        ? `${remainingForMetrics / maxMetricCount}%`
+                        : '0%';
 
-                            // Get dataset name and slug - prefer from evaluation, fallback to lookup
-                            const datasetName = evaluation.dataset_name || (() => {
-                              const dataset = allDatasetsData?.results?.find(
-                                (d: APIDataset) => d.id === evaluation.dataset_id
-                              );
-                              return dataset?.name || `Dataset ${evaluation.dataset_id}`;
-                            })();
+                      // Create a consistent column template for all tables
+                      const colgroupTemplate = (
+                        <>
+                          <col style={{ width: '20%' }} />
+                          <col style={{ width: '20%' }} />
+                          {Array.from({ length: maxMetricCount }).map((_, metricIndex) => (
+                            <col key={`metric-${metricIndex}`} style={{ width: metricWidth }} />
+                          ))}
+                          <col style={{ width: '10%' }} />
+                          <col style={{ width: '10%' }} />
+                        </>
+                      );
 
-                            // Get dataset slug - now available directly from evaluation
-                            const datasetSlug = evaluation.dataset_slug || (() => {
-                              const dataset = allDatasetsData?.results?.find(
-                                (d: APIDataset) => d.id === evaluation.dataset_id
-                              );
-                              return dataset?.slug || `dataset-${evaluation.dataset_id}`;
-                            })();
-
-                            // Get all unique metrics across all evaluations for consistent columns
-                            const allMetrics = Array.from(new Set(
-                              evaluations.flatMap(e => Object.keys(e.metrics || {}))
-                            )).sort();
+                      return (
+                        <div className="w-full">
+                          {/* Evaluation Tables - One per Task */}
+                          {evaluationsByTask.map((taskGroup, taskGroupIdx) => {
+                            const taskMetrics = taskGroup.metrics;
 
                             return (
-                              <tr key={evaluation.id} className={`${idx < evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
-                                <td className="py-4 px-4">{taskName}</td>
-                                <td className="py-4 px-4">{datasetName}</td>
-                                <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
-                                {/* Dynamic metric value columns */}
-                                {allMetrics.map(metric => {
-                                  const value = evaluation.metrics[metric];
-                                  return (
-                                    <td key={metric} className="py-4 px-4">
-                                      {value !== undefined && value !== null ? (
-                                        <span className="font-semibold">
-                                          {typeof value === 'number' ? value.toFixed(2) : value}
-                                        </span>
-                                      ) : (
-                                        <span className="text-muted-foreground">-</span>
-                                      )}
-                                    </td>
-                                  );
-                                })}
-                                <td className="py-4 px-4 font-semibold">
-                                  {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
-                                </td>
-                                <td className="py-4 px-4">
-                                  <Button
-                                    size="sm"
-                                    className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
-                                    asChild
-                                  >
-                                    <Link to={`/benchmark/${datasetSlug}`}>
-                                      See all
-                                    </Link>
-                                  </Button>
-                                </td>
-                              </tr>
+                              <div key={taskGroup.taskId} className={taskGroupIdx > 0 ? 'mt-8' : ''}>
+                                {/* Task Heading */}
+                                <h3 className="text-lg font-semibold mb-4 text-foreground">{taskGroup.taskName}</h3>
+
+                                {/* Evaluation Table with fixed layout for column alignment */}
+                                <div className="overflow-x-auto w-full">
+                                  <table className="w-full" style={{ tableLayout: 'fixed', width: '100%' }}>
+                                    <colgroup>
+                                      {colgroupTemplate}
+                                    </colgroup>
+                                    <thead>
+                                      <tr className="border-b border-border">
+                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
+                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                                        {/* Render a fixed number of metric columns to keep alignment consistent */}
+                                        {Array.from({ length: maxMetricCount }).map((_, metricIndex) => {
+                                          const metricName = taskMetrics[metricIndex];
+                                          const hasMetric = Boolean(metricName);
+
+                                          return (
+                                            <th
+                                              key={`metric-header-${metricIndex}`}
+                                              className={`text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap ${hasMetric ? '' : 'text-transparent select-none'}`}
+                                              aria-hidden={!hasMetric}
+                                            >
+                                              {hasMetric ? metricName : 'Metric'}
+                                            </th>
+                                          );
+                                        })}
+                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Rank</th>
+                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {taskGroup.evaluations.map((evaluation, idx) => {
+                                        // Get dataset name and slug - prefer from evaluation, fallback to lookup
+                                        const datasetName = evaluation.dataset_name || (() => {
+                                          const dataset = allDatasetsData?.results?.find(
+                                            (d: Dataset) => d.id === evaluation.dataset_id
+                                          );
+                                          return dataset?.name || `Dataset ${evaluation.dataset_id}`;
+                                        })();
+
+                                        // Get dataset slug - now available directly from evaluation
+                                        const datasetSlug = evaluation.dataset_slug || (() => {
+                                          const dataset = allDatasetsData?.results?.find(
+                                            (d: Dataset) => d.id === evaluation.dataset_id
+                                          );
+                                          return dataset?.slug || `dataset-${evaluation.dataset_id}`;
+                                        })();
+
+                                        return (
+                                          <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
+                                            <td className="py-4 px-4">{datasetName}</td>
+                                            <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
+                                            {/* Render a fixed number of metric columns, padding with invisible placeholders when needed */}
+                                            {Array.from({ length: maxMetricCount }).map((_, metricIndex) => {
+                                              const metricName = taskMetrics[metricIndex];
+                                              const hasMetric = Boolean(metricName);
+                                              const value = metricName ? evaluation.metrics?.[metricName] : undefined;
+
+                                              return (
+                                                <td
+                                                  key={`metric-cell-${evaluation.id}-${metricIndex}`}
+                                                  className={`py-4 px-4 ${hasMetric ? '' : 'text-transparent select-none'}`}
+                                                  aria-hidden={!hasMetric}
+                                                >
+                                                  {hasMetric ? (
+                                                    value !== undefined && value !== null ? (
+                                                      <span className="font-semibold">
+                                                        {typeof value === 'number' ? value.toFixed(2) : value}
+                                                      </span>
+                                                    ) : (
+                                                      <span className="text-muted-foreground">-</span>
+                                                    )
+                                                  ) : (
+                                                    'Metric'
+                                                  )}
+                                                </td>
+                                              );
+                                            })}
+                                            <td className="py-4 px-4 font-semibold">
+                                              {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
+                                            </td>
+                                            <td className="py-4 px-4">
+                                              <Button
+                                                size="sm"
+                                                className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
+                                                asChild
+                                              >
+                                                <Link to={`/benchmark/${datasetSlug}`}>
+                                                  See all
+                                                </Link>
+                                              </Button>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
                             );
                           })}
-                        </tbody>
-                      </table>
-                    </div>
+                        </div>
+                      );
+                    })()}
                   </>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
