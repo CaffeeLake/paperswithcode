@@ -512,8 +512,8 @@ class TaskService:
 
             return Papers(
                 count=total_count,
-                next=next_page,
-                previous=previous_page,
+                next_page=next_page,
+                previous_page=previous_page,
                 results=papers,
             )
 

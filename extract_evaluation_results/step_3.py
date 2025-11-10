@@ -48,6 +48,7 @@ from pydantic import BaseModel
 
 from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
+from extract_evaluation_results.tools import get_tasks_by_area
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 class DatasetInformation(BaseModel):
     description: str
     full_name: str
+    task_id: int
     hf_url: Optional[str] = None
     conference_url: Optional[str] = None
     arxiv_id: Optional[str] = None
@@ -68,8 +70,8 @@ within the field of machine learning and artificial intelligence (AI), titled th
 
 A colleague of yours has extracted evaluation results from an ArXiv paper and identified a particular dataset mentioned in the evaluation results.
 This dataset is not yet added to the SQL database of Hugging Face's project.
-You will be given information about this dataset, and your task is to gather comprehensive information about this dataset by searching the web and Hugging Face, so that
-it can be added to the SQL database.
+You will be given some context about this dataset based on the paper, and your task is to gather comprehensive information about this dataset by searching the web and Hugging Face,
+so that it can be added to the SQL database.
 
 You will be provided with:
 - The dataset name (as mentioned in the paper)
@@ -77,18 +79,70 @@ You will be provided with:
 - Potentially the title of the paper that introduced the dataset, as found in the citation section at the end of the paper
 - Potentially the ArXiv ID of the paper that introduced the dataset, as found in the citation section at the end of the paper
 
-**IMPORTANT CONSTRAINT**: You have a maximum of 15 turns. Be efficient with your tool calls and prioritize the most essential information.
-
 You need to find the following information about the dataset:
 - A comprehensive description of the dataset
 - The full name of the dataset
+- The task_id (REQUIRED): The ID of the SINGLE most appropriate task this dataset should be linked to. You MUST determine this - use the "Other" task as fallback if no specific task matches.
 - The Hugging Face URL of the dataset, if available
 - The ArXiv ID of the paper that introduced the dataset, if available (e.g., "2103.00020")
 - The conference URL of the dataset, if available (e.g., "https://openaccess.thecvf.com/CVPR2021/papers/Kolesnikov_Decoupled_Attention_Network_for_Vision-Language_Tasks_CVPR_2021_paper.pdf")
 
 Use the provided dataset information as context, but verify and expand on it using web search and Hugging Face.
 
-Strategy: Start with 2-3 focused searches to gather core information, then refine if needed. Prioritize finding the description, full_name, and at least one URL (HF or ArXiv).
+Strategy: Start with 2-3 focused searches to gather core information, then refine if needed. Prioritize finding the description, full_name, task_id, and at least one URL (HF or ArXiv).
+**IMPORTANT CONSTRAINT**: You have a maximum of 15 turns. Be efficient with your tool calls and prioritize the most essential information.
+
+## Task Selection (CRITICAL)
+
+**CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. You MUST determine the appropriate task_id as part of gathering information. Do NOT link datasets to multiple tasks unless the dataset is truly exceptional (like ImageNet which genuinely serves multiple distinct purposes).
+
+**Task Selection Guidelines**:
+- For math/reasoning datasets (e.g., AIME, GPQA, MMLU) → use "Language Modeling"
+- For vision-only datasets (e.g., Oxford-IIIT Pets) → use "Image Classification" or other Computer Vision tasks
+- For video classification/action recognition datasets (e.g., Kinetics-400, Something-Something V2, UCF101, HMDB-51) → use "Image Classification" (video classification is similar to image classification but for video frames)
+- For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
+- For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video-Language Models"
+- For vision-language datasets (e.g., MMMU, AI2D) → use "Vision-Language Models"
+- For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
+- For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
+- For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"
+- For OCR datasets → use "OCR"
+- **If no specific task fits**: Use the "other" task (find it by calling get_tasks_by_area("Other") and look for the task named "other"). This is a valid fallback option for datasets that don't clearly fit into any of the standard categories.
+
+**Examples of correct single-task linking**:
+- LVBench → task_id=[Video-Language Models task ID]
+- MMLU → task_id=[Language Modeling task ID]
+- Oxford-IIIT Pets → task_id=[Image Classification task ID]
+- Kinetics-400 → task_id=[Image Classification task ID] (video classification)
+- UCF101 → task_id=[Image Classification task ID] (video classification)
+- Something-Something V2 → task_id=[Image Classification task ID] (video classification)
+- OmniBench → task_id=[Omni models task ID]
+- MMMU → task_id=[Vision-Language Models task ID]
+- CALVIN → task_id=[Robotics task ID]
+
+## Finding and Linking Tasks
+
+Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP", "Other", ...).
+This helps you find appropriate task IDs when you're not sure which task applies to a dataset.
+
+**Using the "other" task as fallback**:
+If you cannot find a specific task that matches the dataset's purpose after searching through relevant areas, use the "other" task as a fallback:
+1. Call get_tasks_by_area("Other") to find tasks in the "Other" area
+2. Look for the task named "other" in the results
+3. Use that task ID as the task_id
+
+Example workflow for specific tasks:
+1. Call get_tasks_by_area("Computer Vision") to find Computer Vision task IDs
+2. Select the most appropriate task_id based on the dataset's PRIMARY purpose
+
+Example workflow for fallback to "other":
+1. Search relevant areas but find no good match
+2. Call get_tasks_by_area("Other") to find the "other" task
+3. Use that task ID as the task_id
+
+**Note**: Only in extremely rare cases (like ImageNet which genuinely serves multiple distinct purposes) should you link to multiple tasks.
+For 99% of datasets, choose the single most appropriate task. If no specific task fits, use the "other" task rather than forcing an incorrect match.
+You MUST always provide a task_id - it is a required field.
 
 ## Context: Available Tasks and Datasets
 
@@ -96,7 +150,7 @@ Below is a list of machine learning tasks currently in the database along with t
 
 {tasks_list}
 
-Use this context to better understand which tasks are available and which datasets are commonly used for each task. This can help you determine which tasks the dataset should be linked to when it is added to the database.
+Use this context to better understand which tasks are available and which datasets are commonly used for each task. This helps you determine the appropriate task_id for the dataset.
 
 ## Output format
 ```python
@@ -105,6 +159,7 @@ from pydantic import BaseModel
 class DatasetInformation(BaseModel):
     description: str
     full_name: str
+    task_id: int
     hf_url: Optional[str] = None
     conference_url: Optional[str] = None
     arxiv_id: Optional[str] = None
@@ -113,6 +168,7 @@ class DatasetInformation(BaseModel):
 Return the information as a JSON string.
 Do not make up information, only use the information provided in the web search and Hugging Face.
 Gather the essential information efficiently - prioritize quality over exhaustive searches.
+You MUST always include the task_id field - it is required.
 """
 
 
@@ -121,7 +177,6 @@ class Step3SingleInput(BaseModel):
 
     dataset_name: Optional[str] = None
     arxiv_id: Optional[str] = None
-    hf_url: Optional[str] = None
     dataset_info: Optional[str] = None
     paper_title: Optional[str] = None
 
@@ -158,7 +213,7 @@ class Step3(AgentStep[Step3Input, Step3Output]):
             name="Step3: Dataset Information Gatherer",
             description="Gathers information about datasets from the web and Hugging Face",
             instructions=dataset_information_prompt,
-            tools=[],  # No tools - search performed via MCP servers
+            tools=[get_tasks_by_area],  # Added get_tasks_by_area for task selection
             agent_output_type=DatasetInformation,
             model="gpt-5-mini",
             mcp_servers=["exa", "huggingface"],  # Exa required, HF optional
@@ -186,8 +241,6 @@ class Step3(AgentStep[Step3Input, Step3Output]):
                 search_parts.append(f"Dataset name: '{dataset_input.dataset_name}'")
             if dataset_input.arxiv_id:
                 search_parts.append(f"ArXiv ID: '{dataset_input.arxiv_id}'")
-            if dataset_input.hf_url:
-                search_parts.append(f"HF URL: '{dataset_input.hf_url}'")
 
             if not search_parts:
                 return Step3SingleResult(
@@ -382,7 +435,6 @@ def read_step_2_output(arxiv_id: str) -> list[dict]:
                 "arxiv_id": dataset_detail.get("paper_arxiv_id"),
                 "dataset_info": dataset_detail.get("dataset_info"),
                 "paper_title": dataset_detail.get("paper_title"),
-                "hf_url": None,  # Not typically in dataset_detail
             }
             not_found_datasets.append(dataset_input)
 
@@ -461,7 +513,6 @@ async def step_3(
         dataset_inputs: List of dataset input dictionaries, each containing:
             - dataset_name (optional): Name of the dataset
             - arxiv_id (optional): ArXiv ID of the paper that introduced the dataset
-            - hf_url (optional): Hugging Face URL of the dataset
             - dataset_info (optional): Additional information about the dataset
             - paper_title (optional): Title of the paper that introduced the dataset
 
@@ -529,29 +580,10 @@ if __name__ == "__main__":
         help="Path to JSON file containing dataset_details or step_1 output file.",
         default=None,
     )
-    # Backward compatibility: keep individual parameters for single dataset
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        help="[Backward compatibility] The name of the dataset.",
-        default=None,
-    )
-    parser.add_argument(
-        "--paper_arxiv_id",
-        type=str,
-        help="[Backward compatibility] The ArXiv ID of the paper that introduced the dataset.",
-        default=None,
-    )
-    parser.add_argument(
-        "--hf_url",
-        type=str,
-        help="[Backward compatibility] The Hugging Face URL of the dataset.",
-        default=None,
-    )
     args = parser.parse_args()
 
     async def main():
-        # Mode 1: Read from step_2 output (NEW - PREFERRED)
+        # Mode 1: Read from step_2 output
         if args.arxiv_id:
             arxiv_id = args.arxiv_id
             print(f"Reading datasets from step_2 output for ArXiv ID: {arxiv_id}")
@@ -611,23 +643,13 @@ if __name__ == "__main__":
         elif args.dataset_details_file:
             dataset_detail = parse_dataset_details(args.dataset_details_file)
 
-        # Extract values from dataset_detail or use backward compatibility parameters
+        # Extract values from dataset_detail
         if dataset_detail:
             dataset_input = {
                 "dataset_name": dataset_detail.get("dataset_name"),
                 "arxiv_id": dataset_detail.get("paper_arxiv_id"),
-                "hf_url": None,
                 "dataset_info": dataset_detail.get("dataset_info", ""),
                 "paper_title": dataset_detail.get("paper_title"),
-            }
-        else:
-            # Backward compatibility mode
-            dataset_input = {
-                "dataset_name": args.dataset_name,
-                "arxiv_id": args.paper_arxiv_id,
-                "hf_url": args.hf_url,
-                "dataset_info": None,
-                "paper_title": None,
             }
 
         # Check if at least one search parameter is provided
@@ -635,13 +657,11 @@ if __name__ == "__main__":
             [
                 dataset_input.get("dataset_name"),
                 dataset_input.get("arxiv_id"),
-                dataset_input.get("hf_url"),
             ]
         ):
             parser.error(
                 "Must provide either --arxiv_id (to read from step_2 output) or "
-                "--dataset_details/--dataset_details_file or at least one of "
-                "--dataset_name, --paper_arxiv_id, or --hf_url"
+                "--dataset_details/--dataset_details_file"
             )
 
         # Process single dataset (backward compatibility)

@@ -1,5 +1,5 @@
 """
-This script defines an agent that can add datasets to the SQL database. It also links the datasets to the appropriate tasks.
+This script defines an agent that can add datasets to the SQL database.
 
 **Key Feature**: This step processes all datasets in parallel internally, running multiple agent
 instances concurrently for improved performance.
@@ -82,79 +82,29 @@ dataset_adder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
 within the field of machine learning and artificial intelligence (AI).
 
+## Task
+
 You are an expert in managing datasets in the SQL database of Hugging Face's leaderboards project. Your responsibility includes
 adding new datasets to the database with comprehensive information when requested.
 
 A colleague of yours has extracted evaluation results from an ArXiv paper and identified a particular dataset mentioned in the evaluation results which is not yet added to the SQL database.
+Another colleague of yours has gathered comprehensive information about the dataset (including description, full name, URLs, and the appropriate task_id) and will provide you with the required information.
 Your task is to add this dataset to the database.
-Another colleague of yours has fetched the paper details from the web/Hugging Faceand will provide you with the required information.
 
 ## Important notes
 
-**CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. Do NOT link datasets to multiple tasks unless the dataset is truly exceptional (like ImageNet which genuinely serves multiple distinct purposes).
+**CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. The task_id has already been determined by your colleague in the previous step - use the provided task_ids as-is.
 
 Ensure you provide all relevant information including:
 - name (required): The name of the dataset
 - description (required): A description of what the dataset contains and its purpose
-- task_ids (required): List containing EXACTLY ONE task ID (e.g., [1] for Image Classification)
-  **CRITICAL**: Choose the SINGLE most appropriate task based on the dataset's PRIMARY purpose and description, NOT from the paper's tasks.
-
-  **Task Selection Guidelines**:
-  - For math/reasoning datasets (e.g., AIME, GPQA, MMLU) → use "Language Modeling"
-  - For vision-only datasets (e.g., Oxford-IIIT Pets) → use "Image Classification" or other Computer Vision tasks
-  - For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
-  - For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video-Language Models"
-  - For vision-language datasets (e.g., MMMU, AI2D) → use "Vision-Language Models"
-  - For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
-  - For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
-  - For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"
-  - For OCR datasets → use "OCR"
-  - **If no specific task fits**: Use the "other" task (find it by calling get_tasks_by_area("Other") and look for the task named "other"). This is a valid fallback option for datasets that don't clearly fit into any of the standard categories.
-  - Only use suggested_task_ids if they genuinely match the dataset's PRIMARY purpose
-
-  **Examples of correct single-task linking**:
-  - LVBench → task_ids=[Video-Language Models task ID]
-  - MMLU → task_ids=[Language Modeling task ID]
-  - Oxford-IIIT Pets → task_ids=[Image Classification task ID]
-  - OmniBench → task_ids=[Omni models task ID]
-  - MMMU → task_ids=[Vision-Language Models task ID]
-  - CALVIN → task_ids=[Robotics task ID]
-
+- task_ids (required): List containing EXACTLY ONE task ID (e.g., [1] for Image Classification). This has already been determined - use the provided task_ids directly.
 - full_name (optional): The full name of the dataset
 - url (optional): Main URL for the dataset
 - hf_url (optional): Hugging Face dataset URL
 - paper_url (optional): URL to the paper that introduced this dataset
 
 {tasks_list}
-
-## Finding and Linking Tasks
-
-Use get_tasks_by_area to search for tasks by research area (e.g., "Robotics", "Computer Vision", "NLP", "Other", ...).
-This helps you find appropriate task IDs when you're not sure which task applies to a dataset.
-
-**Using the "other" task as fallback**:
-If you cannot find a specific task that matches the dataset's purpose after searching through relevant areas, use the "other" task as a fallback:
-1. Call get_tasks_by_area("Other") to find tasks in the "Other" area
-2. Look for the task named "other" in the results
-3. Use that task ID when adding the dataset
-
-Example workflow for specific tasks:
-1. Call get_tasks_by_area("Computer Vision") to find Computer Vision task IDs
-2. Call the `add_dataset` tool to add the dataset to the database with task_ids=[task_id] (single task ID in a list)
-
-Example workflow for fallback to "other":
-1. Search relevant areas but find no good match
-2. Call get_tasks_by_area("Other") to find the "other" task
-3. Call the `add_dataset` tool with task_ids=[other_task_id] (the "other" task ID)
-
-Example: To add the COCO dataset for Object Detection, use task_ids=[2] (single task)
-Example: To add Oxford-IIIT Pets for Image Classification, use task_ids=[1] (single task)
-Example: To add LVBench for Video-Language Models, use task_ids=[Video-Language Models task ID] (single task)
-Example: To add MMLU for Language Modeling, use task_ids=[Language Modeling task ID] (single task)
-Example: To add OmniBench for Omni models, use task_ids=[Omni models task ID] (single task)
-Example: To add a dataset that doesn't fit any standard category, use task_ids=[other_task_id] (the "other" task from the "Other" area)
-
-**Note**: Only in extremely rare cases (like ImageNet which genuinely serves multiple distinct purposes) should you link to multiple tasks. For 99% of datasets, choose the single most appropriate task. If no specific task fits, use the "other" task rather than forcing an incorrect match.
 
 ## Output format
 
@@ -308,17 +258,45 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                 "{tasks_list}", tasks_list
             )
 
-            # Process all datasets in parallel
-            tasks = [
-                self._process_single_dataset(
-                    dataset_input=dataset_input,
-                    formatted_instructions=formatted_instructions,
+            # Process all datasets in parallel - create actual Task objects
+            task_objects = [
+                asyncio.create_task(
+                    self._process_single_dataset(
+                        dataset_input=dataset_input,
+                        formatted_instructions=formatted_instructions,
+                    )
                 )
                 for dataset_input in inputs.dataset_inputs
             ]
 
             # Use gather with return_exceptions to prevent cancellation propagation
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Shield from external cancellation to allow tasks to complete even if step is cancelled
+            try:
+                results = await asyncio.gather(*task_objects, return_exceptions=True)
+            except asyncio.CancelledError:
+                # If gather is cancelled, wait for tasks to complete with a timeout
+                logger.warning("Gather was cancelled, waiting for tasks to complete...")
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*task_objects, return_exceptions=True),
+                        timeout=300.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Tasks timed out after 300 seconds")
+                    # Cancel all tasks and create error results
+                    for task in task_objects:
+                        task.cancel()
+                    # Wait for cancellation to complete
+                    await asyncio.gather(*task_objects, return_exceptions=True)
+                    results = [
+                        Step4SingleResult(
+                            dataset_input={},
+                            success=False,
+                            dataset_details=None,
+                            error_message="Task timed out",
+                        )
+                        for _ in task_objects
+                    ]
 
             # Check if any tasks were cancelled or raised exceptions
             successful_results = []
@@ -359,7 +337,6 @@ class Step4(AgentStep[Step4Input, Step4Output]):
         except asyncio.CancelledError:
             # Handle cancellation gracefully
             logger.warning("Step 4 was cancelled, cleaning up...")
-            await self._cleanup_mcp_servers()
             from extract_evaluation_results.step_base import StepResult
 
             return StepResult(
@@ -371,9 +348,6 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             return StepResult(
                 success=False, outputs=None, error_message=f"Step 4 failed: {str(e)}"
             )
-        finally:
-            # Always cleanup MCP servers
-            await self._cleanup_mcp_servers()
 
     async def build_agent_prompt(self, inputs: Step4Input) -> str:
         """
@@ -444,6 +418,15 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
             info = item["information"]
             dataset_input = item.get("dataset_input", {})
 
+            # Extract task_id from step_3 output (required field)
+            task_id = info.get("task_id")
+            if task_id is None:
+                # This should not happen if step_3 succeeded, but handle gracefully
+                logger.warning(
+                    f"Missing task_id for dataset {dataset_input.get('dataset_name', 'Unknown')} from step_3 output"
+                )
+                continue
+
             # Build dataset details for adding to database
             dataset_details = {
                 "name": dataset_input.get(
@@ -454,8 +437,7 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
                 "hf_url": info.get("hf_url"),
                 "paper_url": info.get("conference_url"),
                 "paper_arxiv_id": info.get("arxiv_id") or dataset_input.get("arxiv_id"),
-                # Note: task_ids will be inferred by the agent
-                "task_ids": [],  # Agent will determine appropriate task IDs
+                "task_ids": [task_id],  # Use task_id from step_3
             }
             datasets_to_add.append(dataset_details)
 
@@ -665,26 +647,8 @@ class Step4WorkflowStep:
         # Get datasets from step 3 that need to be added
         step_3_results = state.data.get("step_3_results", [])
 
-        # Get the main paper's arxiv_id and tasks for context
+        # Get the main paper's arxiv_id for context
         main_paper_arxiv_id = state.arxiv_id
-
-        # Fetch the main paper's tasks to suggest as default task_ids for datasets
-        main_paper_task_ids = []
-        try:
-            from backend.database.connection import db_manager
-            from backend.models.database import Paper
-
-            with db_manager.session_local() as db:
-                paper = (
-                    db.query(Paper)
-                    .filter(Paper.arxiv_id == main_paper_arxiv_id)
-                    .first()
-                )
-                if paper and paper.tasks:
-                    main_paper_task_ids = [task.id for task in paper.tasks]
-                    logger.info(f"Main paper tasks: {main_paper_task_ids}")
-        except Exception as e:
-            logger.warning(f"Could not fetch main paper tasks: {e}")
 
         # Build list of datasets to add
         # CRITICAL: Only process datasets that step_2 confirmed don't exist
@@ -740,9 +704,16 @@ class Step4WorkflowStep:
                     )
                     continue
 
+                # Extract task_id from step_3 output (required field)
+                task_id = dataset_info.get("task_id")
+                if task_id is None:
+                    logger.warning(
+                        f"Missing task_id for dataset {dataset_name} from step_3 output, skipping"
+                    )
+                    continue
+
                 # Combine input and gathered information
-                # IMPORTANT: Do NOT pre-fill task_ids with paper's tasks
-                # Let the agent infer appropriate tasks based on dataset description
+                # task_id is already determined by step_3
                 combined = {
                     "name": dataset_name,
                     "dataset_info": dataset_input.get("dataset_info"),
@@ -755,11 +726,7 @@ class Step4WorkflowStep:
                     "arxiv_id": dataset_info.get(
                         "arxiv_id"
                     ),  # Dataset's own arxiv_id if it introduced the dataset
-                    # Do NOT pre-fill task_ids - let agent infer based on dataset purpose
-                    # Only provide paper's tasks as context/hint, not as requirement
-                    "suggested_task_ids": main_paper_task_ids
-                    if main_paper_task_ids
-                    else [],
+                    "task_ids": [task_id],  # Use task_id from step_3
                 }
                 datasets_to_add.append(combined)
 

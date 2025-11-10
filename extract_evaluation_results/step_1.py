@@ -126,7 +126,7 @@ Use this context to better understand which tasks and datasets are commonly used
 - **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
 - when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
 - do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks, private datasets, etc.
-- do not include evaluation results which are super specific to the paper/have very little comparisons to other papers.
+- do not include evaluation results which are unique to the paper/have very little comparisons to other papers.
 
 ## Tools Available
 
