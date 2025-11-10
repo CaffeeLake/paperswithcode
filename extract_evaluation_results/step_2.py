@@ -62,6 +62,8 @@ class Response(BaseModel):
 dataset_finder_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape
 by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI).
+This way, people can track progress of state-of-the-art models over time.
+
 You are an expert in managing machine learning (ML) datasets in the SQL database of Hugging Face's project used for benchmarking ML models.
 
 ## Task

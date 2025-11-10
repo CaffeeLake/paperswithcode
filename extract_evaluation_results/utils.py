@@ -38,12 +38,12 @@ async def get_paper_details(arxiv_id: str) -> str:
     paper_abstract = await get_abstract(arxiv_id)
 
     return f"""
-### Title:
-{paper_title}
+### Arxiv ID: {arxiv_id}
+### Title: {paper_title}
+
 ### Authors:
 {paper_authors}
-### ArXiv ID
-{arxiv_id}
+
 ### Abstract
 {paper_abstract}
 """
@@ -83,6 +83,8 @@ def get_formatted_tasks_list() -> str:
         # Group tasks by area with their datasets
         tasks_by_area = {}
         total_datasets = 0
+        # Track all tasks with their dataset counts for top 5 ranking
+        tasks_with_counts = []
 
         for task in tasks:
             area_name = task.area.name if task.area else "Other"
@@ -93,20 +95,25 @@ def get_formatted_tasks_list() -> str:
             dataset_names = (
                 [dataset.name for dataset in task.datasets] if task.datasets else []
             )
-            total_datasets += len(dataset_names)
+            dataset_count = len(dataset_names)
+            total_datasets += dataset_count
 
             tasks_by_area[area_name].append((task.id, task.name, dataset_names))
+            # Store task info with dataset count for ranking
+            tasks_with_counts.append((task.id, task.name, area_name, dataset_count))
 
-        # Format response to match the original hardcoded format, but with datasets
-        response = "AVAILABLE TASKS IN DATABASE:\n"
-        response += "============================\n\n"
+        # Format response as proper Markdown
+        response = "## Available tasks in the database, by area:\n\n"
 
         for area_name in sorted(tasks_by_area.keys()):
-            response += f"{area_name}:\n"
-            for task_id, task_name, dataset_names in tasks_by_area[area_name]:
-                response += f"- ID: {task_id:<4} - {task_name}"
+            # Use ### for area headings
+            response += f"### {area_name}\n\n"
 
-                # Add datasets if available
+            for task_id, task_name, dataset_names in tasks_by_area[area_name]:
+                # Task as main list item
+                response += f"- **ID: {task_id}** - {task_name}\n"
+
+                # Add datasets as a single sub-bullet point
                 if dataset_names:
                     # Limit to first 5 datasets to keep output manageable
                     if len(dataset_names) <= 5:
@@ -116,19 +123,32 @@ def get_formatted_tasks_list() -> str:
                             ", ".join(dataset_names[:5])
                             + f" (+{len(dataset_names) - 5} more)"
                         )
-                    response += f"\n  └─ Datasets: {datasets_str}"
+                    response += f"  - Datasets: {datasets_str}\n"
                 else:
-                    response += "\n  └─ Datasets: None"
+                    response += "  - Datasets: *None*\n"
 
-                response += "\n"
             response += "\n"
 
-        response += "=" * 60
-        response += f"\nTotal Tasks: {len(tasks)}"
-        response += f"\nTotal Dataset-Task Links: {total_datasets}"
-        response += "\n\n"
-        response += "Note: This shows datasets currently linked to each task. "
-        response += "When adding a new dataset, link it to the appropriate task(s) based on its purpose."
+        # Summary section as Markdown
+        response += "---\n\n"
+        response += f"**Total Areas:** {len(tasks_by_area)}\n\n"
+        response += f"**Total Tasks:** {len(tasks)}\n\n"
+        response += f"**Total Dataset-Task Links:** {total_datasets}\n\n"
+
+        # Top 5 tasks with most datasets
+        top_tasks = sorted(tasks_with_counts, key=lambda x: x[3], reverse=True)[:5]
+        if top_tasks:
+            response += "### Top 5 Tasks by Dataset Count\n\n"
+            response += "| Rank | Task ID | Task Name | Area | Dataset Count |\n"
+            response += "|------|---------|-----------|------|---------------|\n"
+            for rank, (task_id, task_name, area_name, dataset_count) in enumerate(
+                top_tasks, 1
+            ):
+                response += f"| {rank} | {task_id} | {task_name} | {area_name} | {dataset_count} |\n"
+            response += "\n"
+
+        response += "*Note: This shows datasets currently linked to each task. "
+        response += "When adding a new dataset, link it to the appropriate task(s) based on its purpose.*"
 
         session.close()
         return response
@@ -489,9 +509,13 @@ def find_dataset_sync(
 if __name__ == "__main__":
     print(get_formatted_tasks_list())
     print("\n" + "=" * 60 + "\n")
-    print("CURRENT LEADERBOARDS:")
-    print("=" * 60 + "\n")
-    triples = get_leaderboard_triples()
-    for area, task, dataset, metric in triples:
-        print(f"{area} | {task} | {dataset} | {metric}")
-    print(f"\nTotal leaderboards: {len(triples)}")
+    # print("CURRENT LEADERBOARDS:")
+    # print("=" * 60 + "\n")
+    # triples = get_leaderboard_triples()
+    # for area, task, dataset, metric in triples:
+    #     print(f"{area} | {task} | {dataset} | {metric}")
+    # print(f"\nTotal leaderboards: {len(triples)}")
+    import asyncio
+
+    result = asyncio.run(get_paper_details("2103.00020"))
+    print(result)

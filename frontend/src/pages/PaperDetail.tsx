@@ -25,6 +25,16 @@ interface Task {
   slug?: string;
 }
 
+interface TaskEvaluationsGroup {
+  taskId: string;
+  taskName: string;
+  evaluations: APIEvaluation[];
+  metrics: string[];
+  totalMetricsCount: number;
+}
+
+const MAX_VISIBLE_METRICS = 6;
+
 const PaperDetail = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
   const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
@@ -433,7 +443,7 @@ const PaperDetail = () => {
   };
 
   // Group evaluations by task
-  const evaluationsByTask = useMemo(() => {
+  const evaluationsByTask = useMemo<TaskEvaluationsGroup[]>(() => {
     if (!evaluations) return [];
 
     const grouped = new Map<string, { evaluations: APIEvaluation[]; metrics: Set<string> }>();
@@ -457,11 +467,15 @@ const PaperDetail = () => {
         allTasksDataForEvals?.results?.find((t: APITask) => t.id === taskId)?.name ||
         `Task ${taskId}`;
 
+      const sortedMetrics = Array.from(group.metrics).sort();
+      const visibleMetrics = sortedMetrics.slice(0, MAX_VISIBLE_METRICS);
+
       const taskGroup = {
         taskId,
         taskName,
         evaluations: group.evaluations,
-        metrics: Array.from(group.metrics).sort(),
+        metrics: visibleMetrics,
+        totalMetricsCount: sortedMetrics.length,
       };
 
       return taskGroup;
@@ -480,21 +494,24 @@ const PaperDetail = () => {
     );
   }, [evaluationsByTask]);
 
-  const columnWidths = useMemo(() => {
-    const dataset = 24;
-    const model = 20;
-    const rank = 8;
-    const benchmark = 14;
-    const metricsShare = Math.max(100 - dataset - model - rank - benchmark, 0);
+  // Calculate column widths for a specific number of metrics
+  const calculateColumnWidths = (metricCount: number) => {
+    const totalColumns = metricCount + 4; // dataset, model, rank, benchmark
+    const columnWidth = totalColumns > 0 ? 100 / totalColumns : 25; // default evenly spread
 
     return {
-      dataset,
-      model,
-      rank,
-      benchmark,
-      metric: maxMetricCount > 0 ? metricsShare / maxMetricCount : 0,
+      dataset: columnWidth,
+      model: columnWidth,
+      rank: columnWidth,
+      benchmark: columnWidth,
+      metric: columnWidth,
+      datasetMinWidth: '140px',
+      modelMinWidth: '140px',
+      metricMinWidth: '90px',
+      rankMinWidth: '70px',
+      benchmarkMinWidth: '120px',
     };
-  }, [maxMetricCount]);
+  };
 
   if (isLoading) {
     return (
@@ -723,139 +740,123 @@ const PaperDetail = () => {
                       </div>
                     )}
 
-                    {/* Calculate column widths once for all tables to ensure consistent alignment */}
-                    {(() => {
-                      const colgroupTemplate = (
-                        <>
-                          <col style={{ width: `${columnWidths.dataset}%`, minWidth: '180px' }} />
-                          <col style={{ width: `${columnWidths.model}%`, minWidth: '160px' }} />
-                          {Array.from({ length: maxMetricCount }).map((_, metricIndex) => (
-                            <col
-                              key={`metric-${metricIndex}`}
-                              style={{ width: `${columnWidths.metric}%`, minWidth: '110px' }}
-                            />
-                          ))}
-                          <col style={{ width: `${columnWidths.rank}%`, minWidth: '72px' }} />
-                          <col style={{ width: `${columnWidths.benchmark}%`, minWidth: '140px' }} />
-                        </>
-                      );
+                    {/* Evaluation Tables - One per Task */}
+                    <div className="w-full">
+                      {evaluationsByTask.map((taskGroup, taskGroupIdx) => {
+                        const taskMetrics = taskGroup.metrics;
+                        const taskMetricCount = taskMetrics.length;
+                        const columnWidths = calculateColumnWidths(taskMetricCount);
 
-                      return (
-                        <div className="w-full">
-                          {/* Evaluation Tables - One per Task */}
-                          {evaluationsByTask.map((taskGroup, taskGroupIdx) => {
-                            const taskMetrics = taskGroup.metrics;
+                        return (
+                          <div key={taskGroup.taskId} className={taskGroupIdx > 0 ? 'mt-8' : ''}>
+                            {/* Task Heading */}
+                            <h3 className="text-lg font-semibold mb-4 text-foreground">{taskGroup.taskName}</h3>
 
-                            return (
-                              <div key={taskGroup.taskId} className={taskGroupIdx > 0 ? 'mt-8' : ''}>
-                                {/* Task Heading */}
-                                <h3 className="text-lg font-semibold mb-4 text-foreground">{taskGroup.taskName}</h3>
+                            {/* Evaluation Table with fixed layout for column alignment */}
+                            <div className="overflow-x-auto w-full">
+                              <table className="w-full" style={{ tableLayout: 'fixed', width: '100%' }}>
+                                <colgroup>
+                                  <col style={{ width: `${columnWidths.dataset}%`, minWidth: columnWidths.datasetMinWidth }} />
+                                  <col style={{ width: `${columnWidths.model}%`, minWidth: columnWidths.modelMinWidth }} />
+                                  {taskMetrics.map((_, metricIndex) => (
+                                    <col
+                                      key={`metric-col-${metricIndex}`}
+                                      style={{ width: `${columnWidths.metric}%`, minWidth: columnWidths.metricMinWidth }}
+                                    />
+                                  ))}
+                                  <col style={{ width: `${columnWidths.rank}%`, minWidth: columnWidths.rankMinWidth }} />
+                                  <col style={{ width: `${columnWidths.benchmark}%`, minWidth: columnWidths.benchmarkMinWidth }} />
+                                </colgroup>
+                                <thead>
+                                  <tr className="border-b border-border">
+                                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
+                                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                                    {/* Render actual metric columns only */}
+                                    {taskMetrics.map((metricName, metricIndex) => (
+                                      <th
+                                        key={`metric-header-${metricIndex}`}
+                                        className={`py-3 px-3 font-medium text-muted-foreground whitespace-normal break-words leading-tight text-right ${taskMetricCount <= 2 ? '' : 'text-xs'}`}
+                                      >
+                                        {metricName}
+                                      </th>
+                                    ))}
+                                    <th className="text-center py-3 px-4 font-medium text-muted-foreground">Rank</th>
+                                    <th className="text-right py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {taskGroup.evaluations.map((evaluation, idx) => {
+                                    // Get dataset name and slug - prefer from evaluation, fallback to lookup
+                                    const datasetName = evaluation.dataset_name || (() => {
+                                      const dataset = allDatasetsData?.results?.find(
+                                        (d: Dataset) => d.id === evaluation.dataset_id
+                                      );
+                                      return dataset?.name || `Dataset ${evaluation.dataset_id}`;
+                                    })();
 
-                                {/* Evaluation Table with fixed layout for column alignment */}
-                                <div className="overflow-x-auto w-full">
-                                  <table className="w-full" style={{ tableLayout: 'fixed', width: '100%' }}>
-                                    <colgroup>
-                                      {colgroupTemplate}
-                                    </colgroup>
-                                    <thead>
-                                      <tr className="border-b border-border">
-                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
-                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
-                                        {/* Render a fixed number of metric columns to keep alignment consistent */}
-                                        {Array.from({ length: maxMetricCount }).map((_, metricIndex) => {
-                                          const metricName = taskMetrics[metricIndex];
-                                          const hasMetric = Boolean(metricName);
+                                    // Get dataset slug - now available directly from evaluation
+                                    const datasetSlug = evaluation.dataset_slug || (() => {
+                                      const dataset = allDatasetsData?.results?.find(
+                                        (d: Dataset) => d.id === evaluation.dataset_id
+                                      );
+                                      return dataset?.slug || `dataset-${evaluation.dataset_id}`;
+                                    })();
+
+                                    return (
+                                      <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
+                                        <td className="py-4 px-4">{datasetName}</td>
+                                        <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
+                                        {/* Render actual metric values only */}
+                                        {taskMetrics.map((metricName, metricIndex) => {
+                                          const value = evaluation.metrics?.[metricName];
+                                          const hasValue = value !== undefined && value !== null && value !== '';
 
                                           return (
-                                            <th
-                                              key={`metric-header-${metricIndex}`}
-                                              className={`py-3 px-4 font-medium text-muted-foreground whitespace-nowrap text-right ${hasMetric ? '' : 'text-transparent select-none'}`}
-                                              aria-hidden={!hasMetric}
+                                            <td
+                                              key={`metric-cell-${evaluation.id}-${metricIndex}`}
+                                              className={`py-3 px-3 text-right ${taskMetricCount <= 2 ? '' : 'text-sm'}`}
                                             >
-                                              {hasMetric ? metricName : 'Metric'}
-                                            </th>
+                                              {hasValue ? (
+                                                <span className={`font-semibold ${taskMetricCount <= 2 ? '' : 'text-sm'}`}>
+                                                  {typeof value === 'number' ? value.toFixed(2) : value}
+                                                </span>
+                                              ) : (
+                                                <span className="text-muted-foreground">-</span>
+                                              )}
+                                            </td>
                                           );
                                         })}
-                                        <th className="text-center py-3 px-4 font-medium text-muted-foreground">Rank</th>
-                                        <th className="text-right py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                                        <td className="py-4 px-4 font-semibold text-center">
+                                          {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
+                                        </td>
+                                        <td className="py-4 px-4 min-w-[120px]">
+                                          <div className="flex justify-end">
+                                            <Button
+                                              size="sm"
+                                              className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
+                                              asChild
+                                            >
+                                              <Link to={`/benchmark/${datasetSlug}`}>
+                                                See all
+                                              </Link>
+                                            </Button>
+                                          </div>
+                                        </td>
                                       </tr>
-                                    </thead>
-                                    <tbody>
-                                      {taskGroup.evaluations.map((evaluation, idx) => {
-                                        // Get dataset name and slug - prefer from evaluation, fallback to lookup
-                                        const datasetName = evaluation.dataset_name || (() => {
-                                          const dataset = allDatasetsData?.results?.find(
-                                            (d: Dataset) => d.id === evaluation.dataset_id
-                                          );
-                                          return dataset?.name || `Dataset ${evaluation.dataset_id}`;
-                                        })();
-
-                                        // Get dataset slug - now available directly from evaluation
-                                        const datasetSlug = evaluation.dataset_slug || (() => {
-                                          const dataset = allDatasetsData?.results?.find(
-                                            (d: Dataset) => d.id === evaluation.dataset_id
-                                          );
-                                          return dataset?.slug || `dataset-${evaluation.dataset_id}`;
-                                        })();
-
-                                        return (
-                                          <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
-                                            <td className="py-4 px-4">{datasetName}</td>
-                                            <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
-                                            {/* Render a fixed number of metric columns, padding with invisible placeholders when needed */}
-                                            {Array.from({ length: maxMetricCount }).map((_, metricIndex) => {
-                                              const metricName = taskMetrics[metricIndex];
-                                              const hasMetric = Boolean(metricName);
-                                              const value = metricName ? evaluation.metrics?.[metricName] : undefined;
-
-                                              return (
-                                                <td
-                                                  key={`metric-cell-${evaluation.id}-${metricIndex}`}
-                                                  className={`py-4 px-4 text-right ${hasMetric ? '' : 'text-transparent select-none'}`}
-                                                  aria-hidden={!hasMetric}
-                                                >
-                                                  {hasMetric ? (
-                                                    value !== undefined && value !== null ? (
-                                                      <span className="font-semibold">
-                                                        {typeof value === 'number' ? value.toFixed(2) : value}
-                                                      </span>
-                                                    ) : (
-                                                      <span className="text-muted-foreground">-</span>
-                                                    )
-                                                  ) : (
-                                                    'Metric'
-                                                  )}
-                                                </td>
-                                              );
-                                            })}
-                                            <td className="py-4 px-4 font-semibold text-center">
-                                              {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
-                                            </td>
-                                            <td className="py-4 px-4 min-w-[140px]">
-                                              <div className="flex justify-end">
-                                                <Button
-                                                  size="sm"
-                                                  className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
-                                                  asChild
-                                                >
-                                                  <Link to={`/benchmark/${datasetSlug}`}>
-                                                    See all
-                                                  </Link>
-                                                </Button>
-                                              </div>
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                              {taskGroup.totalMetricsCount > MAX_VISIBLE_METRICS && (
+                                <p className="text-xs text-muted-foreground mt-2">
+                                  Showing up to {MAX_VISIBLE_METRICS} metrics here. Visit the benchmark for the full list.
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">

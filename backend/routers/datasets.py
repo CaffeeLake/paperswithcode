@@ -13,6 +13,7 @@ from backend.models.api import (
     Dataset,
     Datasets,
     DatasetCreateRequest,
+    DatasetUpdateRequest,
     DatasetMetrics,
     DatasetMetricAddRequest,
     DatasetMetricSetRequest,
@@ -280,6 +281,66 @@ async def create_dataset(
             raise HTTPException(status_code=404, detail=str(e))
         elif "already exists" in str(e):
             raise HTTPException(status_code=409, detail=str(e))
+        else:
+            raise HTTPException(status_code=400, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.put("/{dataset_id}", response_model=Dataset)
+async def update_dataset(
+    dataset_id: str,
+    request: DatasetUpdateRequest,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update an existing dataset.
+
+    Updates fields of an existing dataset. Only provided fields will be updated.
+    Fields not included in the request will remain unchanged.
+
+    **Request Body:**
+    ```json
+    {
+        "hf_url": "https://huggingface.co/datasets/depth-anything/DA-2K",
+        "description": "Updated description"
+    }
+    ```
+
+    **Example:**
+    - `PUT /api/v1/datasets/277` - Update dataset with ID 277
+    - `PUT /api/v1/datasets/da-2k` - Update dataset with slug "da-2k"
+
+    **Returns:**
+    - Updated dataset object
+    - 404 if dataset not found
+    - 500 on server error
+    """
+    try:
+        service = DatasetService(db)
+
+        # Try to parse as integer ID first
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            # Not an integer, treat as slug and look up dataset ID
+            dataset = service.get_dataset_by_slug(dataset_id)
+            if not dataset:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Dataset with slug '{dataset_id}' not found",
+                )
+            dataset_id_int = int(dataset.id)
+
+        return service.update_dataset(dataset_id_int, request)
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        if "not found" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
         else:
             raise HTTPException(status_code=400, detail=str(e))
     except DatabaseError as e:

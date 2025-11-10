@@ -64,7 +64,7 @@ class DatasetInformation(BaseModel):
 
 dataset_information_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks
-within the field of machine learning and artificial intelligence (AI), titled the PapersWithCode project.
+within the field of machine learning and artificial intelligence (AI), titled the PapersWithCode project. This way, people can track progress of state-of-the-art models over time.
 
 ## Task
 

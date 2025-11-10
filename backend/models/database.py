@@ -646,12 +646,15 @@ class Evaluation(Base):
 
 class Metric(Base):
     """
-    Metric definitions with ranking direction.
+    Metric definitions with ranking direction and scale.
 
     Defines evaluation metrics and whether they should rank with higher or lower values as better.
+    Also tracks the canonical scale for metric values to help normalize them correctly.
+
     Examples:
     - Higher is better: AP, accuracy, F1, BLEU
     - Lower is better: WER, error rates, perplexity
+    - Scale examples: "0-1" (ratios/decimals), "0-100" (percentages), "unbounded" (loss functions)
     """
 
     __tablename__ = "metrics"
@@ -662,6 +665,9 @@ class Metric(Base):
     direction: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # "higher_is_better" or "lower_is_better"
+    scale: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )  # e.g., "0-1", "0-100", "percentage", "milliseconds", "unbounded"
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timestamps

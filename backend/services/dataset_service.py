@@ -16,7 +16,12 @@ from backend.models.database import (
     Task as DBTask,
     Evaluation as DBEvaluation,
 )
-from backend.models.api import Dataset, Datasets, DatasetCreateRequest
+from backend.models.api import (
+    Dataset,
+    Datasets,
+    DatasetCreateRequest,
+    DatasetUpdateRequest,
+)
 from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
 
@@ -543,3 +548,102 @@ class DatasetService:
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to create dataset: {str(e)}")
+
+    def update_dataset(self, dataset_id: int, request: DatasetUpdateRequest) -> Dataset:
+        """
+        Update an existing dataset.
+
+        Args:
+            dataset_id: Dataset ID to update
+            request: DatasetUpdateRequest with fields to update
+
+        Returns:
+            Updated Dataset object
+
+        Raises:
+            DatabaseError: If database operation fails
+            ValueError: If dataset not found
+        """
+        try:
+            # Get the existing dataset
+            db_dataset = (
+                self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+            )
+            if not db_dataset:
+                raise ValueError(f"Dataset with ID {dataset_id} not found")
+
+            # Update only provided fields
+            if request.name is not None:
+                db_dataset.name = request.name
+                # Regenerate slug if name changes
+                db_dataset.slug = slugify(request.name)
+
+            if request.full_name is not None:
+                db_dataset.full_name = request.full_name
+
+            if request.description is not None:
+                db_dataset.description = request.description
+
+            if request.url is not None:
+                db_dataset.url = request.url
+
+            if request.hf_url is not None:
+                db_dataset.hf_url = request.hf_url
+
+            if request.paper_url is not None:
+                db_dataset.paper_url = request.paper_url
+
+            # Additional PWC fields
+            if request.short_description is not None:
+                db_dataset.short_description = request.short_description
+
+            if request.homepage is not None:
+                db_dataset.homepage = request.homepage
+
+            if request.image_url is not None:
+                db_dataset.image_url = request.image_url
+
+            if request.thumbnail_url is not None:
+                db_dataset.thumbnail_url = request.thumbnail_url
+
+            if request.verified_image_url is not None:
+                db_dataset.verified_image_url = request.verified_image_url
+
+            if request.license_name is not None:
+                db_dataset.license_name = request.license_name
+
+            if request.license_url is not None:
+                db_dataset.license_url = request.license_url
+
+            if request.introduced_date is not None:
+                db_dataset.introduced_date = request.introduced_date
+
+            if request.modalities is not None:
+                db_dataset.modalities = request.modalities
+
+            if request.languages is not None:
+                db_dataset.languages = request.languages
+
+            if request.variants is not None:
+                db_dataset.variants = request.variants
+
+            if request.num_papers is not None:
+                db_dataset.num_papers = request.num_papers
+
+            if request.warning is not None:
+                db_dataset.warning = request.warning
+
+            if request.pwc_url is not None:
+                db_dataset.pwc_url = request.pwc_url
+
+            self.db.commit()
+
+            # Return the updated dataset using the existing get_dataset method
+            return self.get_dataset(db_dataset.id)
+
+        except ValueError as e:
+            self.db.rollback()
+            raise e
+        except Exception as e:
+            self.db.rollback()
+            raise DatabaseError(f"Failed to update dataset: {str(e)}")

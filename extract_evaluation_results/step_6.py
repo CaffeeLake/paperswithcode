@@ -39,6 +39,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class MetricInfo(BaseModel):
+    """Metric information with direction and scale."""
+
+    direction: str
+    scale: Optional[str] = None
+
+
 class Step6Input(BaseModel):
     """Input data for Step6."""
 
@@ -46,8 +53,8 @@ class Step6Input(BaseModel):
     evaluation_results: list[dict[str, Any]]
     step_2_results: list[dict[str, Any]]
     step_4_results: Optional[list[dict[str, Any]]] = None
-    step_5_all_metrics: Optional[dict[str, str]] = (
-        None  # Metric name -> direction mapping
+    step_5_all_metrics: Optional[dict[str, MetricInfo]] = (
+        None  # Metric name -> {"direction": ..., "scale": ...} mapping
     )
 
 
@@ -62,6 +69,7 @@ class Step6Output(BaseModel):
 
 normalizer_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
+This way, people can track progress of state-of-the-art models over time.
 
 ## Task
 
@@ -76,8 +84,9 @@ A colleague has already:
 Your job is to normalize ALL evaluation results by:
 1. Mapping dataset names to canonical database names and IDs
 2. Normalizing metric names to match existing leaderboard conventions
-3. Ensuring paper_id and task_id are populated
-4. Marking unresolvable evaluations with _unresolved flag
+3. Normalizing metric VALUES to match the canonical scale from the database
+4. Ensuring paper_id and task_id are populated
+5. Marking unresolvable evaluations with _unresolved flag
 
 ## Dataset Normalization
 
@@ -103,6 +112,8 @@ Create a mapping from original dataset names (case-insensitive) to:
 ## Metric Normalization
 
 Metrics often have synonyms or variations. Normalize them to canonical names used in existing evaluations.
+
+Additionally, metric VALUES must be normalized to match the canonical scale stored in the database.
 
 ### Common Metric Synonyms
 
@@ -133,6 +144,69 @@ Learn these standard mappings:
 **Question Answering:**
 - "F1" / "F1 Score" → "F1"
 - "EM" / "Exact Match" → "EM"
+
+### Metric Value Scale Normalization
+
+**CRITICAL**: After Step 5, each metric has a canonical scale in the database (from step_5_all_metrics).
+You MUST normalize metric values to match this canonical scale.
+
+#### Scale Conversion Rules:
+
+**From 0-100 to 0-1** (when database scale is "0-1" but paper uses percentage):
+- If metric scale is "0-1" and value > 1.0, divide by 100
+- Example: AbsRel = 4.3 (paper) → 0.043 (database, scale "0-1")
+- Example: delta1 = 98.5 (paper) → 0.985 (database, scale "0-1")
+
+**From 0-1 to 0-100** (when database scale is "0-100" but paper uses decimal):
+- If metric scale is "0-100" and value < 1.0, multiply by 100
+- Example: mIoU = 0.63 (paper) → 63.0 (database, scale "0-100")
+- Example: Top-1 Accuracy = 0.884 (paper) → 88.4 (database, scale "0-100")
+
+**No conversion needed** (when scales match):
+- If metric scale is "0-100" and value is 85.3 → keep 85.3
+- If metric scale is "0-1" and value is 0.043 → keep 0.043
+- If metric scale is "unbounded" → keep as-is (no fixed range)
+
+#### How to Apply Scale Normalization:
+
+1. **Get metric info from step_5_all_metrics**: For each metric name, find its direction and scale
+2. **Check current value**: Is the value in the correct scale?
+3. **Convert if needed**:
+   - Metric scale "0-1" + value > 1.0 → divide by 100
+   - Metric scale "0-100" + value < 1.0 → multiply by 100
+   - Otherwise keep as-is
+4. **Update metrics dict**: Replace old values with normalized values
+
+#### Important Notes:
+
+- **Preserve precision**: When converting, keep reasonable precision (e.g., 0.043 not 0.043000000)
+- **Apply to ALL metrics**: Check and convert every metric in the metrics dict, not just best_metric
+- **String format**: Metric values are strings in the database, so "0.043" not 0.043
+- **Document conversion**: If you convert a value, you can add a note like "_scale_converted": true
+
+#### Examples:
+
+**Example 1: Depth Estimation (AbsRel)**
+```
+Paper: {"AbsRel": "4.3"}
+Database scale for AbsRel: "0-1"
+Normalized: {"AbsRel": "0.043"}  (4.3 / 100 = 0.043)
+```
+
+**Example 2: Semantic Segmentation (mIoU)**
+```
+Paper: {"mIoU": "63.0"}
+Database scale for mIoU: "0-100"
+Normalized: {"mIoU": "63.0"}  (no conversion, already correct scale)
+```
+
+**Example 3: Mixed scales in one evaluation**
+```
+Paper: {"AbsRel": "4.3", "delta1": "98.5", "RMSE": "0.123"}
+Database scales: AbsRel="0-1", delta1="0-1", RMSE="0-1"
+Normalized: {"AbsRel": "0.043", "delta1": "0.985", "RMSE": "0.123"}
+(First two converted, last one already correct)
+```
 
 ### Using get_leaderboard_metrics Tool
 
@@ -266,11 +340,17 @@ class Step6(AgentStep[Step6Input, Step6Output]):
         # Format step_5 results (metrics)
         step_5_text = "\n### Step 5 Results (Metrics in Database)\n\n"
         if inputs.step_5_all_metrics:
-            step_5_text += "The following metrics are now available in the database with their directions:\n\n"
+            step_5_text += "The following metrics are now available in the database with their directions and scales:\n\n"
             step_5_text += "```json\n"
-            step_5_text += json.dumps(inputs.step_5_all_metrics, indent=2)
+            # Convert MetricInfo objects to dicts for JSON serialization
+            metrics_dict = {
+                name: metric.model_dump() if hasattr(metric, "model_dump") else metric
+                for name, metric in inputs.step_5_all_metrics.items()
+            }
+            step_5_text += json.dumps(metrics_dict, indent=2)
             step_5_text += "\n```\n"
-            step_5_text += "\nUse these metric names and directions when normalizing evaluation results.\n"
+            step_5_text += "\nUse these metric names, directions, and scales when normalizing evaluation results.\n"
+            step_5_text += "IMPORTANT: Normalize metric VALUES to match the canonical scale shown above.\n"
         else:
             step_5_text += "No metrics information from step 5. Use get_leaderboard_metrics to check metric names.\n"
 
@@ -300,10 +380,14 @@ class Step6(AgentStep[Step6Input, Step6Output]):
 Normalize ALL {len(inputs.evaluation_results)} evaluation results above by:
 
 1. **Dataset Mapping**: Use step_2 and step_4 results to map each dataset name to its database ID and canonical name
-2. **Metric Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
+2. **Metric Name Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
    - Use get_leaderboard_metrics(task_id, dataset_id) to check what metrics are used
-3. **Field Population**: Ensure paper_id ({"available: " + str(paper_id) if paper_id else "NOT FOUND"}), task_id, dataset_id, dataset_name are set
-4. **Error Handling**: Mark unresolvable evaluations with _unresolved: true
+3. **Metric Value Normalization**: Normalize metric VALUES to match the canonical scale from step_5
+   - Use step_5_all_metrics to get the scale for each metric
+   - Convert values if needed (e.g., 4.3 → 0.043 for AbsRel with scale "0-1")
+   - Apply to ALL metrics in the metrics dict
+4. **Field Population**: Ensure paper_id ({"available: " + str(paper_id) if paper_id else "NOT FOUND"}), task_id, dataset_id, dataset_name are set
+5. **Error Handling**: Mark unresolvable evaluations with _unresolved: true
 
 Return a Step6Output with:
 - `normalized`: List of all normalized evaluation results (including unresolved ones)

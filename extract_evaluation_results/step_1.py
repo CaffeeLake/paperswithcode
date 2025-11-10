@@ -76,7 +76,8 @@ class Step1Output(BaseModel):
 
 instructions_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape
-by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI).
+by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), titled the PapersWithCode project.
+This way, people can track progress of state-of-the-art models over time.
 
 You are an expert in extracting evaluation results from AI research papers in order to be added to leaderboards.
 
@@ -93,7 +94,7 @@ Each evaluation result should be of the tuple of the form (table_index, model_na
 e.g. (2, "BERT (large)", "GLUE", "Accuracy", "85.4").
 
 Importantly, only the best performing results of the paper on each benchmark should be included, as otherwise we end up with too many evaluation results.
-When a paper includes various model sizes (e.g. tiny, base, large), include only the best performing result of the largest model.
+For example, when a paper includes various model sizes (e.g. tiny, base, large), include only the best performing result of the largest model.
 Evaluation results of the appendix of a paper should not be included.
 
 ## Tables
@@ -105,7 +106,7 @@ Each AI research paper typically contains tables which can be categorized into t
 
 Your task is to only extract evaluation results from the leaderboard tables.
 
-## Context: Available Tasks and Datasets
+## Context: Available Areas and Tasks
 
 Below is a list of areas and tasks currently in the database of Hugging Face along with their associated datasets.
 This provides context about the current information landscape for leaderboard data:
@@ -119,14 +120,16 @@ Use this context to better understand which tasks and datasets are commonly used
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
 - the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
 - prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
+- include at most 2 different metrics per dataset.
 - when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
-- when the metric value can be interpreted as a percentage (scale 0-100%), call the metric "accuracy" instead of "score".
+- when the metric value can be interpreted as a percentage (scale 0-100), call the metric "accuracy" instead of "score".
 - **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
-- for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is.
+- for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is. Include the method in the model name in case the model is combined with a certain method (e.g. "DINOv3-7B with Mask-RCNN head")
 - **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
 - when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
-- do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks, private datasets, etc.
+- do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks at Google/Meta/etc., private datasets which contain sensitive data, etc.
 - do not include evaluation results which are unique to the paper/have very little comparisons to other papers.
+- **do not include evaluation results on small, ad-hoc evaluation sets constructed by the paper's authors solely for demonstrating their model**. These are typically small custom benchmarks (e.g., "100 challenging translation cases", "novel logical reasoning problems") that are not intended to be reusable community benchmarks. Focus on established, publicly available benchmarks that are used across multiple papers and form part of standard evaluation suites.
 
 ## Tools Available
 
@@ -160,7 +163,7 @@ class EvaluationResult(BaseModel):
     metric_value: str
 
 class DatasetDetail(BaseModel):
-    dataset_name: str The name of the dataset as it appears in the paper. Include the split in the name if it covers a particular split of the dataset.
+    dataset_name: str # The name of the dataset as it appears in the paper. Include the split in the name if it covers a particular split of the dataset.
     dataset_info: str # What you know about this dataset - do not make up information, only use the information provided in the paper
     split: Optional[str] = None # The split of the dataset e.g. "validation", "test", "train", if mentioned in the paper
     paper_title: Optional[str] = None # The title of the paper that introduces the dataset. If introduced in THIS paper, use the paper title provided in the instructions. If introduced in a cited paper, use that paper's title.

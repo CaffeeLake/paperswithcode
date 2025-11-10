@@ -45,17 +45,26 @@ class Step5Input(BaseModel):
     evaluation_results: list[dict[str, Any]]
 
 
+class MetricInfo(BaseModel):
+    """Metric information with direction and scale."""
+
+    direction: str
+    scale: Optional[str] = None
+
+
 class Step5Output(BaseModel):
     """Output data for Step5."""
 
-    metrics_found: list[dict[str, Any]]  # Metrics already in DB
-    metrics_added: list[dict[str, Any]]  # Newly added metrics
+    metrics_found: list[dict[str, Any]]  # Metrics already in DB (with scale)
+    metrics_added: list[dict[str, Any]]  # Newly added metrics (with scale)
     total_unique_metrics: int
-    all_metrics: dict[str, str]  # name -> direction mapping
+    all_metrics: dict[str, MetricInfo]  # name -> {"direction": ..., "scale": ...}
 
 
 metrics_manager_prompt = """
-You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
+You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape
+by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), greatly inspired by the PapersWithCode project.
+This way, people can track progress of state-of-the-art models over time.
 
 ## Task
 
@@ -68,9 +77,9 @@ A colleague has extracted evaluation results from a paper (Step 1), and now you 
 4. Determine the correct direction for each missing metric
 5. Add missing metrics to the database
 
-## Understanding Metric Directions
+## Understanding Metric Directions and Scales
 
-Metrics have two types of directions:
+Metrics have two key attributes: direction (higher/lower is better) and scale (canonical value range).
 
 ### Higher is Better (higher_is_better)
 Metrics where higher values indicate better performance:
@@ -88,6 +97,57 @@ Metrics where lower values indicate better performance:
 - **Distance**: Distance, L1, L2, Euclidean Distance
 - **Time/Efficiency**: Latency, Inference Time, FLOPs, Parameters, Memory
 - **Perplexity**: Perplexity, PPL
+- **Depth estimation errors**: AbsRel, SqRel, RMSE (as ratio), RMSElog
+
+## Understanding Metric Scales
+
+The scale defines the canonical value range for a metric in our database. This is crucial for normalizing values from papers.
+
+### Common Scale Types:
+
+**"0-1" scale** (ratios, decimals):
+- **Depth estimation errors**: AbsRel (Absolute Relative Error), SqRel, RMSE (as ratio)
+- **Depth accuracy**: delta1, delta2, delta3 (threshold accuracies)
+- **Segmentation ratios**: IoU (when reported as decimal like 0.85)
+- **Classification**: Some papers report accuracy as 0.85 instead of 85%
+- **AUC**: Area Under Curve (always 0-1)
+
+**"0-100" scale** (percentages):
+- **Classification**: Top-1 Accuracy, Top-5 Accuracy, Accuracy (typically reported as 85.3%)
+- **Detection**: mAP, AP, AP50, AP75 (typically reported as 44.9%)
+- **Segmentation**: mIoU, Mask AP (typically reported as 63.0%)
+- **Speech**: WER, CER (typically reported as 5.2%, meaning 5.2% error)
+- **NLG**: BLEU, ROUGE, METEOR (often reported on 0-100 scale)
+- **Precision/Recall/F1**: Often reported as percentages (85.3% means 85.3)
+
+**"percentage"** (synonym for "0-100"):
+- Use "percentage" for metrics explicitly described as percentages
+
+**"unbounded"** (no fixed range):
+- **Loss functions**: Cross Entropy, BCE (can be any positive number)
+- **Error metrics**: MAE, MSE (depends on data scale)
+- **Quality metrics**: FID, IS, LPIPS (no fixed upper bound)
+- **Perplexity**: PPL (can be any positive number)
+
+### How to Determine Scale:
+
+1. **Check metric semantics**: AbsRel is a relative error (ratio) → "0-1"
+2. **Common conventions**: mIoU is typically percentage → "0-100"
+3. **Error ratios vs percentages**:
+   - If error is relative (divided by ground truth) → "0-1"
+   - If error is reported as % (like WER) → "0-100"
+4. **When uncertain**: Use "0-100" for most accuracy/precision metrics, "0-1" for ratios
+
+### Examples:
+
+- **AbsRel**: "0-1" (absolute relative error is a ratio: |pred - gt| / gt)
+- **delta1**: "0-1" (threshold accuracy: % of predictions within threshold, as decimal)
+- **mIoU**: "0-100" (mean IoU reported as percentage like 63.0%)
+- **Top-1 Accuracy**: "0-100" (reported as 88.4%, not 0.884)
+- **WER**: "0-100" (word error rate reported as 5.2%, not 0.052)
+- **F1**: "0-100" (typically reported as 85.3%, not 0.853)
+- **AUC**: "0-1" (always between 0 and 1)
+- **FID**: "unbounded" (can be any positive number)
 
 ## Metric Name Normalization
 
@@ -118,13 +178,14 @@ Use these patterns to determine direction:
 ### get_existing_metrics()
 Call this tool to retrieve all metrics currently in the database with their names, directions, and descriptions.
 
-### add_metric(name, full_name, direction, description)
+### add_metric(name, full_name, direction, scale, description)
 Call this tool to add a new metric to the database.
 
 Args:
-- name: Short metric name (e.g., "WER", "AP", "F1")
-- full_name: Full descriptive name (e.g., "Word Error Rate")
+- name: Short metric name (e.g., "WER", "AP", "F1", "AbsRel")
+- full_name: Full descriptive name (e.g., "Word Error Rate", "Absolute Relative Error")
 - direction: Either "higher_is_better" or "lower_is_better"
+- scale: Canonical scale - "0-1", "0-100", "percentage", "unbounded", etc. (optional but recommended)
 - description: Optional description of what the metric measures
 
 ## Workflow
@@ -134,9 +195,10 @@ Args:
 3. Compare extracted metrics against existing metrics (case-insensitive)
 4. For each missing metric:
    a. Determine the correct direction based on patterns above
-   b. Generate a full_name (expand abbreviations if known)
-   c. Create a description (optional but helpful)
-   d. Call `add_metric()` to add it to the database
+   b. Determine the canonical scale based on metric type and conventions
+   c. Generate a full_name (expand abbreviations if known)
+   d. Create a description (optional but helpful)
+   e. Call `add_metric()` to add it to the database with scale parameter
 5. Return a summary in the Step5Output format
 
 ## Output Format
@@ -146,12 +208,13 @@ Return a Step5Output with:
 ```python
 class Step5Output(BaseModel):
     metrics_found: list[dict]  # Metrics that already existed
-                               # Format: [{"name": "AP", "direction": "higher_is_better"}, ...]
+                               # Format: [{"name": "AP", "direction": "higher_is_better", "scale": "0-100"}, ...]
     metrics_added: list[dict]  # Metrics that were added
-                               # Format: [{"name": "WER", "direction": "lower_is_better"}, ...]
+                               # Format: [{"name": "AbsRel", "direction": "lower_is_better", "scale": "0-1"}, ...]
     total_unique_metrics: int  # Total number of unique metrics in evaluation results
-    all_metrics: dict[str, str]  # Complete mapping: name -> direction
-                                 # Format: {"AP": "higher_is_better", "WER": "lower_is_better"}
+    all_metrics: dict[str, dict]  # Complete mapping: name -> {direction, scale}
+                                  # Format: {"AP": {"direction": "higher_is_better", "scale": "0-100"},
+                                  #          "AbsRel": {"direction": "lower_is_better", "scale": "0-1"}}
 ```
 
 ## Important Notes
@@ -160,7 +223,9 @@ class Step5Output(BaseModel):
 2. **Be comprehensive**: Extract ALL metric names from ALL evaluation results
 3. **Avoid duplicates**: Don't try to add metrics that already exist
 4. **Consistent naming**: Use standard abbreviations for metric names
-5. **Document uncertainty**: If unsure about direction, add a note in description
+5. **Document uncertainty**: If unsure about direction or scale, add a note in description
+6. **Scale is important**: Always determine and include the canonical scale for new metrics
+7. **Include scale in output**: Even for existing metrics, include their scale in the output
 
 Process ALL metrics found in the evaluation results. Your output will be used by subsequent steps to validate and normalize evaluation results before adding them to the database.
 """
@@ -214,14 +279,15 @@ Process the {len(inputs.evaluation_results)} evaluation results above:
 3. **Compare extracted metrics against existing metrics** (case-insensitive comparison)
 4. **For each missing metric:**
    - Determine direction using the patterns described in the instructions
+   - Determine the canonical scale based on metric type and conventions
    - Generate a full_name (expand abbreviations if you know them)
    - Create a helpful description (optional)
-   - Call add_metric() to add it to the database
+   - Call add_metric() with scale parameter to add it to the database
 5. **Return Step5Output** with:
-   - metrics_found: List of metrics that already existed
-   - metrics_added: List of metrics that were newly added
+   - metrics_found: List of metrics that already existed (include direction AND scale)
+   - metrics_added: List of metrics that were newly added (include direction AND scale)
    - total_unique_metrics: Total count of unique metrics found
-   - all_metrics: Complete mapping of metric name -> direction
+   - all_metrics: Complete mapping of metric name -> {{direction, scale}}
 
 Process every unique metric. Don't skip any.
 """

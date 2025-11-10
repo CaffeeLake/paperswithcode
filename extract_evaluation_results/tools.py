@@ -1131,6 +1131,8 @@ async def get_existing_metrics() -> str:
             if metric.full_name:
                 response += f" ({metric.full_name})"
             response += f"\n  Direction: {metric.direction}"
+            if metric.scale:
+                response += f"\n  Scale: {metric.scale}"
             if metric.description:
                 desc_preview = (
                     metric.description[:100] + "..."
@@ -1158,17 +1160,25 @@ async def add_metric(
     name: str,
     full_name: str,
     direction: str = "higher_is_better",
+    scale: Optional[str] = None,
     description: Optional[str] = None,
 ) -> str:
     """Add a new metric to the database.
 
     This tool adds a new metric definition to the metrics SQL table. Metrics define
-    evaluation measures and whether higher or lower values are better.
+    evaluation measures, whether higher or lower values are better, and the canonical scale.
 
     Args:
         name: Short metric name (e.g., "Accuracy", "WER", "AP", "F1", "BLEU"). Start with a capital letter.
         full_name: Full metric name (e.g., "Word Error Rate", "Average Precision")
         direction: Ranking direction - must be either "higher_is_better" or "lower_is_better". Default is "higher_is_better".
+        scale: Canonical scale for metric values. Examples:
+               - "0-1": Ratios and decimals (e.g., AbsRel, IoU, F1 as decimal)
+               - "0-100": Percentages (e.g., mIoU, Top-1 Accuracy, WER)
+               - "percentage": Synonym for "0-100"
+               - "unbounded": Loss functions, MAE, MSE, FID
+               - "milliseconds", "seconds": Time-based metrics
+               Leave None if scale is context-dependent or unknown.
         description: Optional description of what the metric measures
 
     Returns:
@@ -1178,23 +1188,27 @@ async def add_metric(
     Important Notes:
         - Metric names are case-sensitive in the database
         - The direction must be exactly "higher_is_better" or "lower_is_better"
+        - The scale helps normalize values from papers to database format
         - Duplicate metric names are not allowed
         - Common patterns:
-          * "higher_is_better": Accuracy, Precision, Recall, F1, AP, AUC, BLEU, ROUGE
-          * "lower_is_better": Error rates (WER, CER), Perplexity, Latency
+          * "higher_is_better" + "0-100": Accuracy, Precision, Recall, mAP, BLEU
+          * "lower_is_better" + "0-100": WER, CER, Error Rate
+          * "higher_is_better" + "0-1": IoU, AUC, F1 (as decimal)
+          * "lower_is_better" + "0-1": AbsRel, RMSE (as ratio)
         - Loss is not considered a metric.
 
     Example:
-        To add a Word Error Rate metric:
+        To add an AbsRel metric for depth estimation:
         add_metric(
-            name="WER",
-            full_name="Word Error Rate",
+            name="AbsRel",
+            full_name="Absolute Relative Error",
             direction="lower_is_better",
-            description="Percentage of words incorrectly transcribed"
+            scale="0-1",
+            description="Absolute relative error for depth estimation, typically on 0-1 scale"
         )
     """
     print(
-        f"[TOOL CALL] add_metric(name={name}, full_name={full_name}, direction={direction})"
+        f"[TOOL CALL] add_metric(name={name}, full_name={full_name}, direction={direction}, scale={scale})"
     )
     session: Session = db_manager.session_local()
 
@@ -1214,7 +1228,7 @@ async def add_metric(
             session.close()
             return (
                 f"Metric '{name}' already exists in database (ID: {existing.id}, "
-                f"Direction: {existing.direction}). Duplicates are not allowed."
+                f"Direction: {existing.direction}, Scale: {existing.scale}). Duplicates are not allowed."
             )
 
         # Create new metric
@@ -1222,6 +1236,7 @@ async def add_metric(
             name=name,
             full_name=full_name,
             direction=direction,
+            scale=scale,
             description=description,
         )
 
@@ -1235,6 +1250,8 @@ async def add_metric(
             f"✓ Successfully added metric: ID={metric_id}, Name='{name}', "
             f"Full Name='{full_name}', Direction='{direction}'"
         )
+        if scale:
+            response += f", Scale='{scale}'"
         if description:
             response += (
                 f", Description='{description[:50]}...'"

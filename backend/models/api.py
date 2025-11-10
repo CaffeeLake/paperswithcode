@@ -1166,9 +1166,10 @@ class EvaluationUpdateRequest(BaseModel):
 
 class Metric(BaseModel):
     """
-    Metric definition with ranking direction.
+    Metric definition with ranking direction and scale.
 
     Defines evaluation metrics and whether they should rank with higher or lower values as better.
+    Also includes the canonical scale for proper value normalization.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -1178,6 +1179,10 @@ class Metric(BaseModel):
     full_name: Optional[str] = Field(None, description="Full metric name")
     direction: str = Field(
         ..., description="Ranking direction: 'higher_is_better' or 'lower_is_better'"
+    )
+    scale: Optional[str] = Field(
+        None,
+        description="Canonical scale for metric values (e.g., '0-1', '0-100', 'percentage', 'unbounded')",
     )
     description: Optional[str] = Field(None, description="Metric description")
     created_at: datetime = Field(..., description="Timestamp when record was created")
