@@ -587,6 +587,7 @@ class ApiClient {
     paper_id?: number;
     task_id?: number;
     dataset_id?: number;
+    best_metric?: string;
     ordering?: string;
   }): Promise<PaginatedResponse<Evaluation>> {
     const searchParams = new URLSearchParams();
@@ -597,6 +598,7 @@ class ApiClient {
     if (params?.paper_id) searchParams.append('paper_id', params.paper_id.toString());
     if (params?.task_id) searchParams.append('task_id', params.task_id.toString());
     if (params?.dataset_id) searchParams.append('dataset_id', params.dataset_id.toString());
+    if (params?.best_metric) searchParams.append('best_metric', params.best_metric);
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/evaluations/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -612,9 +614,10 @@ class ApiClient {
     return response.results;
   }
 
-  async getEvaluationsByDataset(datasetId: string): Promise<Evaluation[]> {
+  async getEvaluationsByDataset(datasetId: string, bestMetric?: string): Promise<Evaluation[]> {
     const response = await this.getEvaluations({
       dataset_id: parseInt(datasetId),
+      best_metric: bestMetric,
       page_size: 100,
       ordering: 'best_rank'  // Sort by rank ascending (rank 1 first)
     });

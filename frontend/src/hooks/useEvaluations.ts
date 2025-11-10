@@ -23,12 +23,16 @@ export function useEvaluationsByPaper(paperId: string | undefined, enabled: bool
 /**
  * Fetch all evaluations for a specific dataset (for benchmark leaderboards)
  */
-export function useEvaluationsByDataset(datasetId: string | undefined, enabled: boolean = true) {
+export function useEvaluationsByDataset(
+  datasetId: string | undefined,
+  bestMetric?: string,
+  enabled: boolean = true
+) {
   return useQuery({
-    queryKey: ['evaluations', 'dataset', datasetId],
+    queryKey: ['evaluations', 'dataset', datasetId, bestMetric],
     queryFn: () => {
       if (!datasetId) throw new Error('Dataset ID is required');
-      return getEvaluationsByDataset(datasetId);
+      return getEvaluationsByDataset(datasetId, bestMetric);
     },
     enabled: enabled && !!datasetId,
     staleTime: 5 * 60 * 1000, // 5 minutes

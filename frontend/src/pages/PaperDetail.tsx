@@ -480,6 +480,22 @@ const PaperDetail = () => {
     );
   }, [evaluationsByTask]);
 
+  const columnWidths = useMemo(() => {
+    const dataset = 24;
+    const model = 20;
+    const rank = 8;
+    const benchmark = 14;
+    const metricsShare = Math.max(100 - dataset - model - rank - benchmark, 0);
+
+    return {
+      dataset,
+      model,
+      rank,
+      benchmark,
+      metric: maxMetricCount > 0 ? metricsShare / maxMetricCount : 0,
+    };
+  }, [maxMetricCount]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background">
@@ -708,23 +724,19 @@ const PaperDetail = () => {
                     )}
 
                     {/* Calculate column widths once for all tables to ensure consistent alignment */}
-                    {/* Dataset: 20%, Model: 20%, Metrics: evenly distributed from remaining 40%, Rank: 10%, Benchmark: 10% */}
                     {(() => {
-                      const remainingForMetrics = 100 - 20 - 20 - 10 - 10; // 40%
-                      const metricWidth = maxMetricCount > 0
-                        ? `${remainingForMetrics / maxMetricCount}%`
-                        : '0%';
-
-                      // Create a consistent column template for all tables
                       const colgroupTemplate = (
                         <>
-                          <col style={{ width: '20%' }} />
-                          <col style={{ width: '20%' }} />
+                          <col style={{ width: `${columnWidths.dataset}%`, minWidth: '180px' }} />
+                          <col style={{ width: `${columnWidths.model}%`, minWidth: '160px' }} />
                           {Array.from({ length: maxMetricCount }).map((_, metricIndex) => (
-                            <col key={`metric-${metricIndex}`} style={{ width: metricWidth }} />
+                            <col
+                              key={`metric-${metricIndex}`}
+                              style={{ width: `${columnWidths.metric}%`, minWidth: '110px' }}
+                            />
                           ))}
-                          <col style={{ width: '10%' }} />
-                          <col style={{ width: '10%' }} />
+                          <col style={{ width: `${columnWidths.rank}%`, minWidth: '72px' }} />
+                          <col style={{ width: `${columnWidths.benchmark}%`, minWidth: '140px' }} />
                         </>
                       );
 
@@ -757,15 +769,15 @@ const PaperDetail = () => {
                                           return (
                                             <th
                                               key={`metric-header-${metricIndex}`}
-                                              className={`text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap ${hasMetric ? '' : 'text-transparent select-none'}`}
+                                              className={`py-3 px-4 font-medium text-muted-foreground whitespace-nowrap text-right ${hasMetric ? '' : 'text-transparent select-none'}`}
                                               aria-hidden={!hasMetric}
                                             >
                                               {hasMetric ? metricName : 'Metric'}
                                             </th>
                                           );
                                         })}
-                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Rank</th>
-                                        <th className="text-left py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                                        <th className="text-center py-3 px-4 font-medium text-muted-foreground">Rank</th>
+                                        <th className="text-right py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -799,7 +811,7 @@ const PaperDetail = () => {
                                               return (
                                                 <td
                                                   key={`metric-cell-${evaluation.id}-${metricIndex}`}
-                                                  className={`py-4 px-4 ${hasMetric ? '' : 'text-transparent select-none'}`}
+                                                  className={`py-4 px-4 text-right ${hasMetric ? '' : 'text-transparent select-none'}`}
                                                   aria-hidden={!hasMetric}
                                                 >
                                                   {hasMetric ? (
@@ -816,19 +828,21 @@ const PaperDetail = () => {
                                                 </td>
                                               );
                                             })}
-                                            <td className="py-4 px-4 font-semibold">
+                                            <td className="py-4 px-4 font-semibold text-center">
                                               {evaluation.best_rank ? `# ${evaluation.best_rank}` : '-'}
                                             </td>
-                                            <td className="py-4 px-4">
-                                              <Button
-                                                size="sm"
-                                                className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
-                                                asChild
-                                              >
-                                                <Link to={`/benchmark/${datasetSlug}`}>
-                                                  See all
-                                                </Link>
-                                              </Button>
+                                            <td className="py-4 px-4 min-w-[140px]">
+                                              <div className="flex justify-end">
+                                                <Button
+                                                  size="sm"
+                                                  className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
+                                                  asChild
+                                                >
+                                                  <Link to={`/benchmark/${datasetSlug}`}>
+                                                    See all
+                                                  </Link>
+                                                </Button>
+                                              </div>
                                             </td>
                                           </tr>
                                         );

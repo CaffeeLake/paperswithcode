@@ -9,7 +9,7 @@ import { useEvaluationsByDataset } from "@/hooks/useEvaluations";
 import { useMetricDirections } from "@/hooks/useMetrics";
 import { getTasks, getPaper, type Task, type Paper, type Evaluation } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Dot } from 'recharts';
 import {
   Select,
@@ -23,6 +23,15 @@ interface EvaluationWithPaperAndTask extends Evaluation {
   paper?: Paper;
   task?: Task;
 }
+
+const normalizeIdentifier = (value?: string | null) => {
+  if (!value) return '';
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+};
+
+const matchesImageNet1k = (value?: string | null) => normalizeIdentifier(value) === 'imagenet1k';
+
+const isTop1MetricName = (metricName: string) => /top[-_\s]?1(?=[^\d]|$)/i.test(metricName);
 
 const Benchmark = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
@@ -49,7 +58,7 @@ const Benchmark = () => {
     }
 
     if (dataset?.paper_url) {
-      const match = dataset.paper_url.match(/arxiv\.org\/(?:abs|pdf)\/([\w\.\-]+)/i);
+      const match = dataset.paper_url.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+)/i);
       if (match && match[1]) {
         return match[1].replace(/\.pdf$/i, '');
       }
@@ -61,7 +70,8 @@ const Benchmark = () => {
   // Fetch evaluations for this dataset
   const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByDataset(
     dataset?.id,
-    !!dataset?.id
+    undefined,  // bestMetric - not filtering by specific metric
+    !!dataset?.id  // enabled - only fetch when dataset is loaded
   );
 
   // Fetch metric directions for correct sorting
@@ -84,23 +94,120 @@ const Benchmark = () => {
     );
   }, [tasksData]);
 
-  // Get available metrics across all evaluations (these will be our table columns)
-  const availableMetrics = useMemo(() => {
-    if (!evaluations || evaluations.length === 0) return [];
-    const metricsSet = new Set<string>();
-    evaluations.forEach(e => {
-      Object.keys(e.metrics || {}).forEach(metric => metricsSet.add(metric));
+  const isImageNet1kDataset = useMemo(() => {
+    return (
+      matchesImageNet1k(dataset?.slug) ||
+      matchesImageNet1k(dataset?.name) ||
+      matchesImageNet1k(dataset?.full_name)
+    );
+  }, [dataset?.slug, dataset?.name, dataset?.full_name]);
+
+  const getDisplayMetricName = useCallback((metric?: string | null) => {
+    if (!metric) return undefined;
+    if (isImageNet1kDataset && isTop1MetricName(metric)) {
+      return 'Accuracy';
+    }
+    return metric;
+  }, [isImageNet1kDataset]);
+
+  const metricDisplayConfig = useMemo(() => {
+    if (!evaluations || evaluations.length === 0) {
+      return {
+        displayMetrics: [] as string[],
+        displayToOriginal: {} as Record<string, string[]>,
+      };
+    }
+
+    const displayToOriginal = new Map<string, Set<string>>();
+
+    evaluations.forEach(evaluation => {
+      Object.keys(evaluation.metrics || {}).forEach(originalMetric => {
+        const displayMetric = getDisplayMetricName(originalMetric) ?? originalMetric;
+        const existing = displayToOriginal.get(displayMetric);
+        if (existing) {
+          existing.add(originalMetric);
+        } else {
+          displayToOriginal.set(displayMetric, new Set([originalMetric]));
+        }
+      });
     });
-    // Sort metrics alphabetically for consistent column order
-    return Array.from(metricsSet).sort();
-  }, [evaluations]);
+
+    const displayMetrics = Array.from(displayToOriginal.keys()).sort();
+    const displayToOriginalObject: Record<string, string[]> = {};
+
+    displayToOriginal.forEach((originalSet, displayName) => {
+      let originalMetrics = Array.from(originalSet);
+      if (displayName.toLowerCase() === 'accuracy') {
+        originalMetrics = originalMetrics.sort((a, b) => {
+          const weight = (name: string) => {
+            const lower = name.toLowerCase();
+            if (lower === 'accuracy') return 0;
+            if (isTop1MetricName(name)) return 1;
+            return 2;
+          };
+          return weight(a) - weight(b);
+        });
+      }
+      displayToOriginalObject[displayName] = originalMetrics;
+    });
+
+    return {
+      displayMetrics,
+      displayToOriginal: displayToOriginalObject,
+    };
+  }, [evaluations, getDisplayMetricName]);
+
+  const availableMetrics = metricDisplayConfig.displayMetrics;
+  const metricOriginalNameLookup = metricDisplayConfig.displayToOriginal;
+
+  const getDisplayMetricValue = useCallback((evaluation: Evaluation, displayMetric: string) => {
+    if (!evaluation.metrics) return undefined;
+    const directValue = evaluation.metrics[displayMetric];
+    if (directValue !== undefined && directValue !== null && directValue !== '') {
+      return directValue;
+    }
+
+    const fallbackKeys = metricOriginalNameLookup[displayMetric];
+    if (fallbackKeys) {
+      for (const key of fallbackKeys) {
+        const fallbackValue = evaluation.metrics[key];
+        if (fallbackValue !== undefined && fallbackValue !== null && fallbackValue !== '') {
+          return fallbackValue;
+        }
+      }
+    }
+
+    return undefined;
+  }, [metricOriginalNameLookup]);
+
+  const getMetricDirection = useCallback((displayMetric: string) => {
+    if (metricDirections[displayMetric]) {
+      return metricDirections[displayMetric];
+    }
+    const fallbackKeys = metricOriginalNameLookup[displayMetric];
+    if (fallbackKeys) {
+      for (const key of fallbackKeys) {
+        if (metricDirections[key]) {
+          return metricDirections[key];
+        }
+      }
+    }
+    return 'higher_is_better';
+  }, [metricDirections, metricOriginalNameLookup]);
 
   // Set default selected metric for sorting (use best_metric from first evaluation)
   useEffect(() => {
-    if (availableMetrics.length > 0 && !selectedMetric) {
-      setSelectedMetric(evaluations?.[0]?.best_metric || availableMetrics[0]);
+    if (availableMetrics.length === 0) {
+      return;
     }
-  }, [availableMetrics, selectedMetric, evaluations]);
+
+    const mappedBestMetric = getDisplayMetricName(evaluations?.[0]?.best_metric);
+    const defaultMetric = mappedBestMetric || availableMetrics[0];
+
+    if (!selectedMetric || !availableMetrics.includes(selectedMetric)) {
+      setSelectedMetric(defaultMetric);
+    }
+  }, [availableMetrics, selectedMetric, evaluations, getDisplayMetricName]);
 
   // Auto-sync sortBy to 'score' when a metric is selected and we're not explicitly using rank/date
   useEffect(() => {
@@ -134,10 +241,30 @@ const Benchmark = () => {
     if (!evaluations) return [];
 
     // Get the metric to sort by (for score-based sorting)
-    const sortMetric = selectedMetric || evaluations[0]?.best_metric || availableMetrics[0];
+    const sortMetric = selectedMetric || getDisplayMetricName(evaluations[0]?.best_metric) || availableMetrics[0];
+
+    // IMPORTANT: Filter evaluations to only show those where best_metric matches the selected metric
+    // This ensures that ranks are meaningful (ranks are calculated per metric)
+    // When viewing AbsRel leaderboard, only show evaluations ranked by AbsRel, not by other metrics
+    const originalMetricNames = metricOriginalNameLookup[sortMetric] || [sortMetric];
+    const filteredEvaluations = evaluations.filter(e =>
+      e.best_metric && originalMetricNames.includes(e.best_metric)
+    );
+
+    if (!sortMetric) {
+      return filteredEvaluations.map(e => ({
+        ...e,
+        sortValue: 0,
+        year: e.evaluated_on
+          ? new Date(e.evaluated_on).getFullYear()
+          : e.paper_published_date
+            ? new Date(e.paper_published_date).getFullYear()
+            : null
+      }));
+    }
 
     // Get the metric's natural direction (default to higher_is_better if not found)
-    const naturalDirection = sortMetric ? (metricDirections[sortMetric] || 'higher_is_better') : 'higher_is_better';
+    const naturalDirection = getMetricDirection(sortMetric);
 
     // Determine effective sort direction for metric-based sorting
     let effectiveDirection: 'asc' | 'desc';
@@ -150,12 +277,19 @@ const Benchmark = () => {
     }
 
     // Map evaluations to include computed values
-    return evaluations
+    return filteredEvaluations
       .map(e => {
         // Get value for the selected sort metric
-        const sortValue = sortMetric && e.metrics[sortMetric]
-          ? parseFloat(String(e.metrics[sortMetric]))
-          : 0;
+        const rawSortValue = getDisplayMetricValue(e, sortMetric);
+        let sortValue = 0;
+        if (rawSortValue !== undefined && rawSortValue !== null && rawSortValue !== '') {
+          if (typeof rawSortValue === 'number') {
+            sortValue = rawSortValue;
+          } else {
+            const parsed = parseFloat(rawSortValue);
+            sortValue = Number.isFinite(parsed) ? parsed : 0;
+          }
+        }
 
         return {
           ...e,
@@ -201,7 +335,17 @@ const Benchmark = () => {
           return b.sortValue - a.sortValue;
         }
       });
-  }, [evaluations, selectedMetric, sortBy, availableMetrics, metricDirections, sortDirection]);
+  }, [
+    evaluations,
+    selectedMetric,
+    sortBy,
+    availableMetrics,
+    sortDirection,
+    getDisplayMetricName,
+    getMetricDirection,
+    getDisplayMetricValue,
+    metricOriginalNameLookup
+  ]);
 
   // Prepare chart data - show best result per paper over time
   const chartData = useMemo(() => {
@@ -502,7 +646,7 @@ const Benchmark = () => {
                     {/* Dynamic metric columns */}
                     {availableMetrics.map(metric => {
                       const isSelected = metric === selectedMetric;
-                      const naturalDirection = metricDirections[metric] || 'higher_is_better';
+                      const naturalDirection = getMetricDirection(metric);
 
                       // Determine which arrow to show based on current sort state
                       // Arrow meanings: ↑ = ascending (small to large), ↓ = descending (large to small)
@@ -565,7 +709,7 @@ const Benchmark = () => {
                         </td>
                         {/* Dynamic metric value columns */}
                         {availableMetrics.map(metric => {
-                          const value = evaluation.metrics[metric];
+                          const value = getDisplayMetricValue(evaluation, metric);
                           return (
                             <td key={metric} className="py-4 px-4">
                               {value !== undefined && value !== null ? (

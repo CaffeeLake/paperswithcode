@@ -165,6 +165,7 @@ class EvaluationService:
         paper_id: Optional[int] = None,
         task_id: Optional[int] = None,
         dataset_id: Optional[int] = None,
+        best_metric: Optional[str] = None,
         order_by: str = "created_at",
         order_dir: str = "desc",
     ) -> Evaluations:
@@ -178,6 +179,7 @@ class EvaluationService:
             paper_id: Filter by paper ID
             task_id: Filter by task ID
             dataset_id: Filter by dataset ID
+            best_metric: Filter by best metric name (e.g., 'AbsRel', 'delta1')
             order_by: Field to order by (created_at, best_rank, evaluated_on)
             order_dir: Order direction (asc, desc)
 
@@ -213,6 +215,9 @@ class EvaluationService:
 
             if dataset_id is not None:
                 query = query.filter(DBEvaluation.dataset_id == dataset_id)
+
+            if best_metric is not None:
+                query = query.filter(DBEvaluation.best_metric == best_metric)
 
             # Get total count before pagination
             total_count = query.count()

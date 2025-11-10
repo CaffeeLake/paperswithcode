@@ -34,6 +34,9 @@ async def list_evaluations(
     paper_id: Optional[int] = Query(None, description="Filter by paper ID"),
     task_id: Optional[int] = Query(None, description="Filter by task ID"),
     dataset_id: Optional[int] = Query(None, description="Filter by dataset ID"),
+    best_metric: Optional[str] = Query(
+        None, description="Filter by best metric (e.g., 'AbsRel', 'delta1')"
+    ),
     ordering: Optional[str] = Query(
         "-created_at",
         description="Order by field: created_at, best_rank, evaluated_on (prefix with '-' for descending)",
@@ -78,6 +81,7 @@ async def list_evaluations(
             paper_id=paper_id,
             task_id=task_id,
             dataset_id=dataset_id,
+            best_metric=best_metric,
             order_by=order_by,
             order_dir=order_dir,
         )
