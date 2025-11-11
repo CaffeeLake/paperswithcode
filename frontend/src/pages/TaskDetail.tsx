@@ -586,7 +586,16 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
     <Card>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.28%' }} />
+              <col style={{ width: '14.32%' }} />
+            </colgroup>
             <thead>
               <tr className="border-b bg-muted/30">
                 <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Trend</th>

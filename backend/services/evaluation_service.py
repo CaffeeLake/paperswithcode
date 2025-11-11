@@ -110,6 +110,97 @@ class EvaluationService:
         except Exception:
             return None
 
+    def _validate_dataset_task_consistency(
+        self, task_id: int, dataset_id: int
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate that the task is consistent with the dataset's officially linked tasks.
+
+        For datasets linked to a single task, the evaluation must use that task.
+        For datasets linked to multiple tasks (e.g., ImageNet), any of those tasks is allowed.
+        For datasets not yet linked to any task, this validation is skipped.
+
+        Args:
+            task_id: Task ID to validate
+            dataset_id: Dataset ID
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        try:
+            # Get all officially linked tasks for this dataset
+            official_task_links = (
+                self.db.query(TaskDataset)
+                .filter(TaskDataset.dataset_id == dataset_id)
+                .all()
+            )
+
+            # If dataset is not linked to any tasks yet, allow any task
+            # (This handles new datasets that haven't been properly set up yet)
+            if not official_task_links:
+                return True, None
+
+            official_task_ids = {link.task_id for link in official_task_links}
+
+            # If dataset is linked to multiple tasks, it's a legitimate multi-task dataset
+            # Allow any of those tasks
+            if len(official_task_ids) > 1:
+                if task_id in official_task_ids:
+                    return True, None
+                else:
+                    # Get task and dataset names for error message
+                    task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+                    dataset = (
+                        self.db.query(DBDataset)
+                        .filter(DBDataset.id == dataset_id)
+                        .first()
+                    )
+                    official_tasks = (
+                        self.db.query(DBTask)
+                        .filter(DBTask.id.in_(official_task_ids))
+                        .all()
+                    )
+                    task_names = ", ".join([t.name for t in official_tasks])
+
+                    return False, (
+                        f"Dataset '{dataset.name if dataset else dataset_id}' is a multi-task dataset "
+                        f"linked to: {task_names}. "
+                        f"Task '{task.name if task else task_id}' is not one of these tasks. "
+                        f"Please use one of the officially linked tasks."
+                    )
+
+            # Dataset is linked to exactly one task - enforce consistency
+            official_task_id = list(official_task_ids)[0]
+            if task_id != official_task_id:
+                # Get task and dataset names for error message
+                task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+                dataset = (
+                    self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+                )
+                official_task = (
+                    self.db.query(DBTask).filter(DBTask.id == official_task_id).first()
+                )
+
+                return False, (
+                    f"Task mismatch for dataset '{dataset.name if dataset else dataset_id}'. "
+                    f"This dataset is officially linked to task '{official_task.name if official_task else official_task_id}' "
+                    f"but you're trying to use task '{task.name if task else task_id}'. "
+                    f"Please use the correct task to maintain consistent leaderboards."
+                )
+
+            return True, None
+
+        except Exception as e:
+            # If validation fails due to an error, log it but don't block the operation
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Error validating dataset-task consistency for dataset {dataset_id}, task {task_id}: {str(e)}"
+            )
+            # In case of error, allow the operation to proceed
+            return True, None
+
     def _link_dataset_to_task(self, task_id: int, dataset_id: int) -> bool:
         """
         Link a dataset to a task via the task_datasets junction table.
@@ -431,6 +522,13 @@ class EvaluationService:
             DatabaseError: If database operation fails
         """
         try:
+            # Validate that the task is consistent with the dataset's officially linked tasks
+            is_valid, error_message = self._validate_dataset_task_consistency(
+                task_id, dataset_id
+            )
+            if not is_valid:
+                raise ValueError(error_message)
+
             # Validate metrics against leaderboard's allowed metrics
             metric_service = LeaderboardMetricService(self.db)
             metric_keys = list(metrics.keys())
@@ -574,6 +672,14 @@ class EvaluationService:
 
             # Determine which task to validate against
             target_task_id = task_id if task_id is not None else old_task_id
+
+            # Validate dataset-task consistency if task or dataset is changing
+            if task_id is not None or dataset_id is not None:
+                is_valid, error_message = self._validate_dataset_task_consistency(
+                    target_task_id, target_dataset_id
+                )
+                if not is_valid:
+                    raise ValueError(error_message)
 
             # Validate metrics if they are being changed or task/dataset is changing
             if (

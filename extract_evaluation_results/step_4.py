@@ -277,17 +277,24 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                 # If gather is cancelled, wait for tasks to complete with a timeout
                 logger.warning("Gather was cancelled, waiting for tasks to complete...")
                 try:
-                    results = await asyncio.wait_for(
-                        asyncio.gather(*task_objects, return_exceptions=True),
-                        timeout=300.0,
+                    # Use shield to protect the gather from further cancellation
+                    results = await asyncio.shield(
+                        asyncio.wait_for(
+                            asyncio.gather(*task_objects, return_exceptions=True),
+                            timeout=300.0,
+                        )
                     )
                 except asyncio.TimeoutError:
                     logger.error("Tasks timed out after 300 seconds")
                     # Cancel all tasks and create error results
                     for task in task_objects:
-                        task.cancel()
-                    # Wait for cancellation to complete
-                    await asyncio.gather(*task_objects, return_exceptions=True)
+                        if not task.done():
+                            task.cancel()
+                    # Wait for cancellation to complete (ignore CancelledError)
+                    try:
+                        await asyncio.gather(*task_objects, return_exceptions=True)
+                    except Exception:
+                        pass  # Ignore any errors during cleanup
                     results = [
                         Step4SingleResult(
                             dataset_input={},
@@ -297,6 +304,36 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                         )
                         for _ in task_objects
                     ]
+                except asyncio.CancelledError:
+                    # Even the shielded wait was cancelled - tasks may still be running
+                    logger.warning(
+                        "Shielded wait was also cancelled, checking task status..."
+                    )
+                    # Check which tasks completed and which didn't
+                    results = []
+                    for task in task_objects:
+                        if task.done():
+                            try:
+                                results.append(task.result())
+                            except Exception as e:
+                                results.append(e)
+                        else:
+                            # Task is still running but we're being cancelled
+                            # Cancel it and add error result
+                            task.cancel()
+                            results.append(
+                                Step4SingleResult(
+                                    dataset_input={},
+                                    success=False,
+                                    dataset_details=None,
+                                    error_message="Task was cancelled",
+                                )
+                            )
+                    # Wait briefly for cancellations to propagate
+                    try:
+                        await asyncio.gather(*task_objects, return_exceptions=True)
+                    except Exception:
+                        pass
 
             # Check if any tasks were cancelled or raised exceptions
             successful_results = []
@@ -738,8 +775,48 @@ class Step4WorkflowStep:
         ]
         inputs = {"dataset_inputs": formatted_inputs}
 
-        # Execute the step
-        result = await self.step.run(inputs)
+        # Create task and shield from cancellation (same pattern as Step 5 and Step 7)
+        task = asyncio.create_task(self.step.run(inputs))
+
+        try:
+            # Give the task a brief moment to start
+            await asyncio.sleep(0.1)
+
+            # Shield the task from external cancellation
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Step 4 execution was cancelled externally, waiting for task to complete..."
+            )
+            # The task should continue running despite the cancellation
+            # Wait longer for it to finish (dataset addition can take time)
+            try:
+                result = await asyncio.wait_for(task, timeout=300.0)
+                logger.info(
+                    "✓ Step 4 completed successfully despite external cancellation"
+                )
+            except asyncio.TimeoutError:
+                logger.error("Step 4 task timed out after 300 seconds")
+                # Cancel the task and wait for it
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False, outputs={}, error_message="Step execution timed out"
+                )
+            except asyncio.CancelledError:
+                logger.error("Step 4 task was cancelled and could not complete")
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False,
+                    outputs={},
+                    error_message="Step execution was cancelled",
+                )
 
         # Rename 'results' to 'step_4_results' to avoid collision with other steps
         if result.success and result.outputs:

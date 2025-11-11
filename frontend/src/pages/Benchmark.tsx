@@ -638,11 +638,21 @@ const Benchmark = () => {
               </div>
             ) : processedEvaluations.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+                <colgroup>
+                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                  {availableMetrics.map((_, idx) => (
+                    <col key={idx} style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                  ))}
+                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
+                </colgroup>
                 <thead>
                   <tr className="border-b border-border">
                     <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground min-w-[200px]">Model</th>
+                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
                     {/* Dynamic metric columns */}
                     {availableMetrics.map(metric => {
                       const isSelected = metric === selectedMetric;

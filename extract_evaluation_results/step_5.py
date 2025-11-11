@@ -466,7 +466,47 @@ class Step5WorkflowStep:
             "evaluation_results": evaluation_results,
         }
 
-        # Execute the agent step
-        result = await self.step.run(inputs)
+        # Create task and shield from cancellation
+        task = asyncio.create_task(self.step.run(inputs))
+
+        try:
+            # Give the task a brief moment to start
+            await asyncio.sleep(0.1)
+
+            # Shield the task from external cancellation
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Step 5 execution was cancelled externally, waiting for task to complete..."
+            )
+            # The task should continue running despite the cancellation
+            # Wait longer for it to finish
+            try:
+                result = await asyncio.wait_for(task, timeout=300.0)
+                logger.info(
+                    "✓ Step 5 completed successfully despite external cancellation"
+                )
+            except asyncio.TimeoutError:
+                logger.error("Step 5 task timed out after 300 seconds")
+                # Cancel the task and wait for it
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False, outputs={}, error_message="Step execution timed out"
+                )
+            except asyncio.CancelledError:
+                logger.error("Step 5 task was cancelled and could not complete")
+                from extract_evaluation_results.step_base import StepResult
+
+                result = StepResult(
+                    success=False,
+                    outputs={},
+                    error_message="Step execution was cancelled",
+                )
 
         return result
