@@ -135,6 +135,19 @@ def get_or_create_evaluation(
         db.commit()
         db.refresh(existing)
 
+        # Recalculate ranks for this leaderboard after update
+        from backend.services.evaluation_service import EvaluationService
+
+        service = EvaluationService(db)
+        service.recalculate_ranks(
+            task_id=task_id,
+            dataset_id=dataset_id,
+            metric_name=best_metric or existing.best_metric,
+        )
+
+        # Refresh to get updated rank
+        db.refresh(existing)
+
         return existing
 
     else:
@@ -159,6 +172,19 @@ def get_or_create_evaluation(
 
         db.add(evaluation)
         db.commit()
+        db.refresh(evaluation)
+
+        # Recalculate ranks for this leaderboard after creation
+        from backend.services.evaluation_service import EvaluationService
+
+        service = EvaluationService(db)
+        service.recalculate_ranks(
+            task_id=task_id,
+            dataset_id=dataset_id,
+            metric_name=best_metric,
+        )
+
+        # Refresh to get updated rank
         db.refresh(evaluation)
 
         return evaluation
@@ -222,6 +248,9 @@ def bulk_create_evaluations_with_consolidation(
     created_count = 0
     merged_count = len(evaluations_data) - len(grouped)
 
+    # Track leaderboards that need rank recalculation
+    affected_leaderboards = set()
+
     # Create evaluations
     batch = []
     for eval_data in grouped.values():
@@ -229,7 +258,28 @@ def bulk_create_evaluations_with_consolidation(
         batch.append(eval)
         created_count += 1
 
+        # Track this leaderboard for rank recalculation
+        affected_leaderboards.add((eval.task_id, eval.dataset_id, eval.best_metric))
+
         if len(batch) >= commit_batch_size:
             batch = []
+
+    # Recalculate ranks for all affected leaderboards
+    from backend.services.evaluation_service import EvaluationService
+
+    service = EvaluationService(db)
+
+    logger.info(f"Recalculating ranks for {len(affected_leaderboards)} leaderboards...")
+    for task_id, dataset_id, best_metric in affected_leaderboards:
+        try:
+            service.recalculate_ranks(
+                task_id=task_id,
+                dataset_id=dataset_id,
+                metric_name=best_metric,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to recalculate ranks for task={task_id}, dataset={dataset_id}, metric={best_metric}: {e}"
+            )
 
     return created_count, merged_count

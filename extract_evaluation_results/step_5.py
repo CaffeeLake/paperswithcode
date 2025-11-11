@@ -486,6 +486,7 @@ class Step5WorkflowStep:
                 logger.info(
                     "✓ Step 5 completed successfully despite external cancellation"
                 )
+                # Don't re-raise the CancelledError since the task completed successfully
             except asyncio.TimeoutError:
                 logger.error("Step 5 task timed out after 300 seconds")
                 # Cancel the task and wait for it
@@ -501,12 +502,29 @@ class Step5WorkflowStep:
                 )
             except asyncio.CancelledError:
                 logger.error("Step 5 task was cancelled and could not complete")
-                from extract_evaluation_results.step_base import StepResult
+                # Check if the task actually completed despite the cancellation
+                if task.done() and not task.cancelled():
+                    try:
+                        result = task.result()
+                        logger.info(
+                            "✓ Task completed successfully despite cancellation signal"
+                        )
+                    except Exception as e:
+                        logger.error(f"Task failed with exception: {e}")
+                        from extract_evaluation_results.step_base import StepResult
 
-                result = StepResult(
-                    success=False,
-                    outputs={},
-                    error_message="Step execution was cancelled",
-                )
+                        result = StepResult(
+                            success=False,
+                            outputs={},
+                            error_message=f"Step execution failed: {str(e)}",
+                        )
+                else:
+                    from extract_evaluation_results.step_base import StepResult
+
+                    result = StepResult(
+                        success=False,
+                        outputs={},
+                        error_message="Step execution was cancelled",
+                    )
 
         return result

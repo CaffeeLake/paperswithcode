@@ -696,6 +696,98 @@ async def add_dataset(
 
 
 @function_tool
+async def update_dataset(
+    dataset_id: int,
+    description: str | None = None,
+    full_name: str | None = None,
+    url: str | None = None,
+    hf_url: str | None = None,
+    paper_url: str | None = None,
+) -> str:
+    """Update an existing dataset in the database with new information.
+
+    Use this tool to enrich existing datasets with missing descriptions, URLs, or other metadata.
+    Only provided fields will be updated; omitted fields remain unchanged.
+
+    Args:
+        dataset_id: The ID of the dataset to update (required). Use find_dataset() to get the dataset ID.
+        description: Updated description of the dataset (optional). Should explain what the dataset contains and its purpose.
+        full_name: Updated full name of the dataset (optional). E.g., "Common Objects in Context" for COCO.
+        url: Updated main URL for the dataset (optional). E.g., official website or documentation.
+        hf_url: Updated Hugging Face dataset URL (optional). E.g., "https://huggingface.co/datasets/..."
+        paper_url: Updated URL to the paper that introduced this dataset (optional). E.g., ArXiv URL or conference paper URL.
+
+    Returns:
+        A success message with the updated dataset details, or an error message if update failed.
+
+    Example:
+        To add a missing HF URL to dataset ID 31 (MMMU):
+        update_dataset(dataset_id=31, hf_url="https://huggingface.co/datasets/MMMU/MMMU")
+    """
+    session: Session = db_manager.session_local()
+    service = DatasetService(session)
+
+    try:
+        # Check if dataset exists
+        dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+        if not dataset:
+            session.close()
+            return (
+                f"✗ Failed to update dataset: Dataset with ID {dataset_id} not found."
+            )
+
+        # Build the update request with only provided fields
+        from backend.models.api import DatasetUpdateRequest
+
+        update_data = {}
+        if description is not None:
+            update_data["description"] = description
+        if full_name is not None:
+            update_data["full_name"] = full_name
+        if url is not None:
+            update_data["url"] = url
+        if hf_url is not None:
+            update_data["hf_url"] = hf_url
+        if paper_url is not None:
+            update_data["paper_url"] = paper_url
+
+        if not update_data:
+            session.close()
+            return "✗ No fields provided to update. Please specify at least one field to update."
+
+        update_request = DatasetUpdateRequest(**update_data)
+
+        # Update the dataset using the service
+        updated_dataset = service.update_dataset(dataset_id, update_request)
+
+        # Format success response
+        response = f"✓ Successfully updated dataset: ID={updated_dataset.id}, Name={updated_dataset.name}"
+        updated_fields = []
+        if description is not None:
+            updated_fields.append("description")
+        if full_name is not None:
+            updated_fields.append("full_name")
+        if url is not None:
+            updated_fields.append("url")
+        if hf_url is not None:
+            updated_fields.append(f"hf_url={hf_url}")
+        if paper_url is not None:
+            updated_fields.append(f"paper_url={paper_url}")
+
+        response += f", Updated fields: {', '.join(updated_fields)}"
+
+        session.close()
+        return response
+
+    except ValueError as e:
+        session.close()
+        return f"✗ Failed to update dataset: {str(e)}"
+    except Exception as e:
+        session.close()
+        return f"✗ Failed to update dataset: {str(e)}"
+
+
+@function_tool
 async def link_dataset_to_task(dataset_id: int, task_id: int) -> str:
     """Link an existing dataset to a task.
 

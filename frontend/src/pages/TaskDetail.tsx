@@ -586,25 +586,16 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
     <Card>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
-          <table className="w-full" style={{ tableLayout: 'fixed' }}>
-            <colgroup>
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.28%' }} />
-              <col style={{ width: '14.32%' }} />
-            </colgroup>
+          <table className="w-full">
             <thead>
               <tr className="border-b bg-muted/30">
-                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Trend</th>
-                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Dataset</th>
-                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Best Method</th>
-                <th className="p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper Title</th>
-                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper</th>
-                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Code</th>
-                <th className="p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Compare</th>
+                <th className="w-12 p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Trend</th>
+                <th className="min-w-[100px] max-w-[140px] p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Dataset</th>
+                <th className="min-w-[140px] max-w-[200px] p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Best Method</th>
+                <th className="min-w-[280px] max-w-[450px] p-4 text-left text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper Title</th>
+                <th className="w-20 p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Paper</th>
+                <th className="w-20 p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Code</th>
+                <th className="w-28 p-4 text-center text-sm font-semibold text-muted-foreground uppercase tracking-wider">Compare</th>
               </tr>
             </thead>
             <tbody>
@@ -615,30 +606,37 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
 
                 return (
                   <tr key={item.datasetId} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${index % 2 === 0 ? 'bg-background' : 'bg-muted/5'}`}>
-                    <td className="p-4">
+                    <td className="w-12 p-4">
                       <div className="flex items-center justify-center">
                         {getTrendIcon(item.trend)}
                       </div>
                     </td>
-                    <td className="p-4">
-                      <div className="font-medium text-base">{item.datasetName}</div>
+                    <td className="min-w-[100px] max-w-[140px] p-4 align-top">
+                      <div className="font-medium text-base truncate block" title={item.datasetName}>
+                        {item.datasetName}
+                      </div>
                       {metricsStr && (
-                        <div className="text-xs text-muted-foreground mt-1">{metricsStr}</div>
+                        <div className="text-xs text-muted-foreground mt-1 truncate block" title={metricsStr}>
+                          {metricsStr}
+                        </div>
                       )}
                     </td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
+                    <td className="min-w-[140px] max-w-[200px] p-4 align-top">
+                      <div className="flex items-center gap-2 min-w-0">
                         <Badge variant="outline" className="bg-yellow-50 text-yellow-800 border-yellow-300">
                           🏆
                         </Badge>
-                        <span className="font-medium">{item.modelName}</span>
+                        <span className="font-medium truncate flex-1" title={item.modelName}>
+                          {item.modelName}
+                        </span>
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="min-w-[280px] max-w-[450px] p-4 align-top">
                       {item.paperTitle && item.paperArxivId ? (
                         <Link
                           to={`/paper/${item.paperArxivId}`}
-                          className="text-blue-600 hover:text-blue-800 hover:underline"
+                          className="block text-blue-600 hover:text-blue-800 hover:underline truncate"
+                          title={item.paperTitle}
                         >
                           {item.paperTitle}
                         </Link>
@@ -646,7 +644,7 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
                         <span className="text-muted-foreground italic">No paper linked</span>
                       )}
                     </td>
-                    <td className="p-4 text-center">
+                    <td className="w-20 p-4 text-center whitespace-nowrap">
                       {item.paperArxivId ? (
                         <Link to={`/paper/${item.paperArxivId}`}>
                           <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
@@ -659,7 +657,7 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
                         </Button>
                       )}
                     </td>
-                    <td className="p-4 text-center">
+                    <td className="w-20 p-4 text-center whitespace-nowrap">
                       {item.codeUrl ? (
                         <a href={item.codeUrl} target="_blank" rel="noopener noreferrer">
                           <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
@@ -672,7 +670,7 @@ const LeaderboardsTable = ({ datasets, taskId }: LeaderboardsTableProps) => {
                         </Button>
                       )}
                     </td>
-                    <td className="p-4 text-center">
+                    <td className="w-28 p-4 text-center whitespace-nowrap">
                       {item.datasetSlug ? (
                         <Link to={`/benchmark/${item.datasetSlug}`}>
                           <Button variant="outline" size="sm" className="text-xs">

@@ -130,6 +130,8 @@ Use this context to better understand which tasks and datasets are commonly used
 - do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks at Google/Meta/etc., private datasets which contain sensitive data, etc.
 - do not include evaluation results which are unique to the paper/have very little comparisons to other papers.
 - **do not include evaluation results on small, ad-hoc evaluation sets constructed by the paper's authors solely for demonstrating their model**. These are typically small custom benchmarks (e.g., "100 challenging translation cases", "novel logical reasoning problems") that are not intended to be reusable community benchmarks. Focus on established, publicly available benchmarks that are used across multiple papers and form part of standard evaluation suites.
+- when there are evaluation results for both "base" and "instruct" versions, prefer the "instruct" version if it's available.
+- do not include "ensemble" models in the evaluation results, only individual model results.
 
 ## Tools Available
 

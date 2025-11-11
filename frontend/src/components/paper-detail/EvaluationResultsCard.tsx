@@ -22,6 +22,38 @@ interface EvaluationResultsCardProps {
 
 const MAX_VISIBLE_METRICS = 6;
 
+const getNameCharLimits = (metricCount: number) => {
+  if (metricCount <= 2) {
+    return { dataset: Number.POSITIVE_INFINITY, model: Number.POSITIVE_INFINITY };
+  }
+
+  if (metricCount <= 4) {
+    return { dataset: 60, model: 60 };
+  }
+
+  if (metricCount === 5) {
+    return { dataset: 48, model: 48 };
+  }
+
+  return { dataset: 40, model: 40 };
+};
+
+const truncateText = (text: string | null | undefined, maxChars: number) => {
+  if (!text) {
+    return text ?? "";
+  }
+
+  if (!Number.isFinite(maxChars) || text.length <= maxChars) {
+    return text;
+  }
+
+  if (maxChars <= 3) {
+    return `${text.slice(0, maxChars)}...`;
+  }
+
+  return `${text.slice(0, maxChars - 3).trimEnd()}...`;
+};
+
 export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: EvaluationResultsCardProps) {
   // Fetch tasks and datasets to display names instead of IDs
   const { data: allTasksDataForEvals } = useQuery({
@@ -76,34 +108,46 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
     }).sort((a, b) => a.taskName.localeCompare(b.taskName));
   }, [evaluations, allTasksDataForEvals]);
 
-  // Determine the maximum number of metric columns across all task groups
-  const maxMetricCount = useMemo(() => {
-    if (!evaluationsByTask.length) {
-      return 0;
-    }
-
-    return evaluationsByTask.reduce(
-      (max, group) => (group.metrics.length > max ? group.metrics.length : max),
-      0
-    );
-  }, [evaluationsByTask]);
-
   // Calculate column widths for a specific number of metrics
-  const calculateColumnWidths = (metricCount: number) => {
-    const totalColumns = metricCount + 4; // dataset, model, rank, benchmark
-    const columnWidth = totalColumns > 0 ? 100 / totalColumns : 25; // default evenly spread
+const calculateColumnWidths = (metricCount: number) => {
+    const rankWidth = 8;
+    const benchmarkWidth = 12;
+
+    const datasetWidth =
+    metricCount <= 2 ? 26 :
+    metricCount <= 4 ? 22 :
+    metricCount <= 5 ? 19 :
+    18;
+
+    const modelWidth = datasetWidth;
+
+    const reservedWidth = datasetWidth + modelWidth + rankWidth + benchmarkWidth;
+    const remainingWidth = Math.max(0, 100 - reservedWidth);
+    const metricWidth = metricCount > 0 ? remainingWidth / metricCount : remainingWidth;
 
     return {
-      dataset: columnWidth,
-      model: columnWidth,
-      rank: columnWidth,
-      benchmark: columnWidth,
-      metric: columnWidth,
-      datasetMinWidth: '140px',
-      modelMinWidth: '140px',
-      metricMinWidth: '90px',
-      rankMinWidth: '70px',
-      benchmarkMinWidth: '120px',
+      dataset: datasetWidth,
+      model: modelWidth,
+      rank: rankWidth,
+      benchmark: benchmarkWidth,
+      metric: metricWidth,
+    datasetMinWidth:
+      metricCount <= 2 ? '220px' :
+      metricCount <= 4 ? '170px' :
+      metricCount <= 5 ? '150px' :
+      '140px',
+    modelMinWidth:
+      metricCount <= 2 ? '220px' :
+      metricCount <= 4 ? '170px' :
+      metricCount <= 5 ? '150px' :
+      '140px',
+    metricMinWidth:
+      metricCount <= 2 ? '120px' :
+      metricCount <= 4 ? '105px' :
+      metricCount <= 5 ? '95px' :
+      '90px',
+    rankMinWidth: '72px',
+    benchmarkMinWidth: '118px',
     };
   };
 
@@ -148,7 +192,8 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
               {evaluationsByTask.map((taskGroup, taskGroupIdx) => {
                 const taskMetrics = taskGroup.metrics;
                 const taskMetricCount = taskMetrics.length;
-                const columnWidths = calculateColumnWidths(maxMetricCount);
+                const columnWidths = calculateColumnWidths(taskMetricCount);
+                const nameCharLimits = getNameCharLimits(taskMetricCount);
 
                 return (
                   <div key={taskGroup.taskId} className={taskGroupIdx > 0 ? 'mt-8' : ''}>
@@ -157,7 +202,7 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
 
                     {/* Evaluation Table with fixed layout for column alignment */}
                     <div className="overflow-x-auto w-full">
-                      <table className="w-full" style={{ tableLayout: 'fixed', width: '100%' }}>
+                      <table className="w-full table-fixed">
                         <colgroup>
                           <col style={{ width: `${columnWidths.dataset}%`, minWidth: columnWidths.datasetMinWidth }} />
                           <col style={{ width: `${columnWidths.model}%`, minWidth: columnWidths.modelMinWidth }} />
@@ -172,19 +217,32 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
                         </colgroup>
                         <thead>
                           <tr className="border-b border-border">
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Dataset</th>
-                            <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                              Dataset
+                            </th>
+                            <th className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                              Model
+                            </th>
                             {/* Render actual metric columns only */}
-                            {taskMetrics.map((metricName, metricIndex) => (
-                              <th
-                                key={`metric-header-${metricIndex}`}
-                                className={`py-3 px-3 font-medium text-muted-foreground whitespace-normal break-words leading-tight text-right ${taskMetricCount <= 2 ? '' : 'text-xs'}`}
-                              >
-                                {metricName}
-                              </th>
-                            ))}
-                            <th className="text-center py-3 px-4 font-medium text-muted-foreground">Rank</th>
-                            <th className="text-right py-3 px-4 font-medium text-muted-foreground">Benchmark</th>
+                            {taskMetrics.map((metricName, metricIndex) => {
+                              const headerClassName = `py-3 px-3 font-medium text-muted-foreground whitespace-normal break-words leading-tight text-right ${
+                                taskMetricCount <= 2 ? '' : 'text-xs'
+                              }`;
+                              return (
+                                <th
+                                  key={`metric-header-${metricIndex}`}
+                                  className={headerClassName}
+                                >
+                                  {metricName}
+                                </th>
+                              );
+                            })}
+                            <th className="text-center py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                              Rank
+                            </th>
+                            <th className="text-right py-3 px-4 font-medium text-muted-foreground whitespace-nowrap">
+                              Benchmark
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -207,8 +265,16 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
 
                             return (
                               <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
-                                <td className="py-4 px-4">{datasetName}</td>
-                                <td className="py-4 px-4 font-medium">{evaluation.model_name || 'N/A'}</td>
+                                <td className="py-4 px-4 text-sm">
+                                  <div className="truncate" title={datasetName}>
+                                    {truncateText(datasetName, nameCharLimits.dataset)}
+                                  </div>
+                                </td>
+                                <td className="py-4 px-4 font-medium text-sm">
+                                  <div className="truncate" title={evaluation.model_name || 'N/A'}>
+                                    {truncateText(evaluation.model_name || 'N/A', nameCharLimits.model)}
+                                  </div>
+                                </td>
                                 {/* Render actual metric values only */}
                                 {taskMetrics.map((metricName, metricIndex) => {
                                   const value = evaluation.metrics?.[metricName];
@@ -217,9 +283,9 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
                                   return (
                                     <td
                                       key={`metric-cell-${evaluation.id}-${metricIndex}`}
-                                      className={`py-3 px-3 text-right ${taskMetricCount <= 2 ? '' : 'text-sm'}`}
+                                      className={`py-3 px-3 text-right whitespace-nowrap ${taskMetricCount <= 2 ? '' : 'text-sm'}`}
                                     >
-                                      {hasValue ? (
+                                      {metricName && hasValue ? (
                                         <span className={`font-semibold ${taskMetricCount <= 2 ? '' : 'text-sm'}`}>
                                           {typeof value === 'number' ? value.toFixed(2) : value}
                                         </span>
@@ -236,7 +302,7 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
                                   <div className="flex justify-end">
                                     <Button
                                       size="sm"
-                                      className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-4"
+                                      className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-3"
                                       asChild
                                     >
                                       <Link to={`/benchmark/${datasetSlug}`}>

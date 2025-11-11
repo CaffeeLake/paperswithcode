@@ -1014,6 +1014,9 @@ class DatasetUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, description="Dataset description")
     url: Optional[str] = Field(None, description="Dataset URL")
     hf_url: Optional[str] = Field(None, description="Hugging Face dataset URL")
+    paper_url: Optional[str] = Field(
+        None, description="URL to paper that introduced this dataset"
+    )
 
     # Additional PWC fields
     short_description: Optional[str] = Field(

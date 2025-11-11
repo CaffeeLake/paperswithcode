@@ -224,6 +224,16 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                     f"Unexpected agent output type: {type(agent_response)}"
                 )
 
+        except asyncio.CancelledError as e:
+            logger.warning(
+                "Agent run cancelled while adding dataset '%s': %s", dataset_name, e
+            )
+            return Step4SingleResult(
+                dataset_input=dataset_details,
+                success=False,
+                dataset_details=None,
+                error_message="Agent run was cancelled before completion",
+            )
         except Exception as e:
             print(f"Error adding dataset '{dataset_name}': {str(e)}")
             return Step4SingleResult(
@@ -373,12 +383,45 @@ class Step4(AgentStep[Step4Input, Step4Output]):
 
         except asyncio.CancelledError:
             # Handle cancellation gracefully
-            logger.warning("Step 4 was cancelled, cleaning up...")
-            from extract_evaluation_results.step_base import StepResult
+            logger.warning("Step 4 was cancelled, checking if tasks completed...")
+            # Check if all tasks actually completed despite the cancellation
+            all_done = all(task.done() for task in task_objects)
+            if all_done:
+                logger.info("✓ All tasks completed successfully despite cancellation")
+                # Collect results from completed tasks
+                successful_results = []
+                for i, task in enumerate(task_objects):
+                    try:
+                        result = task.result()
+                        successful_results.append(result)
+                    except Exception as e:
+                        logger.error(f"Task {i} raised exception: {e}")
+                        successful_results.append(
+                            Step4SingleResult(
+                                dataset_input={},
+                                success=False,
+                                dataset_details=None,
+                                error_message=str(e),
+                            )
+                        )
 
-            return StepResult(
-                success=False, outputs=None, error_message="Step 4 was cancelled"
-            )
+                # Return successful result with all findings
+                from extract_evaluation_results.step_base import StepResult
+
+                return StepResult(
+                    success=True,
+                    outputs=Step4Output(results=successful_results),
+                    error_message=None,
+                )
+            else:
+                logger.warning("Some tasks did not complete")
+                from extract_evaluation_results.step_base import StepResult
+
+                return StepResult(
+                    success=False,
+                    outputs=None,
+                    error_message="Step 4 was cancelled before completion",
+                )
         except Exception as e:
             from extract_evaluation_results.step_base import StepResult
 
@@ -795,6 +838,7 @@ class Step4WorkflowStep:
                 logger.info(
                     "✓ Step 4 completed successfully despite external cancellation"
                 )
+                # Don't re-raise the CancelledError since the task completed successfully
             except asyncio.TimeoutError:
                 logger.error("Step 4 task timed out after 300 seconds")
                 # Cancel the task and wait for it
@@ -810,13 +854,30 @@ class Step4WorkflowStep:
                 )
             except asyncio.CancelledError:
                 logger.error("Step 4 task was cancelled and could not complete")
-                from extract_evaluation_results.step_base import StepResult
+                # Check if the task actually completed despite the cancellation
+                if task.done() and not task.cancelled():
+                    try:
+                        result = task.result()
+                        logger.info(
+                            "✓ Task completed successfully despite cancellation signal"
+                        )
+                    except Exception as e:
+                        logger.error(f"Task failed with exception: {e}")
+                        from extract_evaluation_results.step_base import StepResult
 
-                result = StepResult(
-                    success=False,
-                    outputs={},
-                    error_message="Step execution was cancelled",
-                )
+                        result = StepResult(
+                            success=False,
+                            outputs={},
+                            error_message=f"Step execution failed: {str(e)}",
+                        )
+                else:
+                    from extract_evaluation_results.step_base import StepResult
+
+                    result = StepResult(
+                        success=False,
+                        outputs={},
+                        error_message="Step execution was cancelled",
+                    )
 
         # Rename 'results' to 'step_4_results' to avoid collision with other steps
         if result.success and result.outputs:

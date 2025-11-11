@@ -133,10 +133,43 @@ class URLExtractionHourlyJob(DatabaseCronJob):
 
             # Log final statistics
             self.logger.info("=" * 80)
-            if stats.get("papers_processed", 0) > 0:
+
+            # Check for API key failures before logging completion
+            papers_found = stats.get("papers_found", 0)
+            papers_processed = stats.get("papers_processed", 0)
+            papers_skipped_critical = stats.get("papers_skipped_critical_errors", 0)
+
+            # Detect API key failures: if we found papers but all failed with critical errors
+            if (
+                papers_found > 0
+                and papers_processed == 0
+                and papers_skipped_critical > 0
+            ):
+                error_msg = (
+                    f"URL extraction FAILED: Found {papers_found} papers but processed 0 "
+                    f"due to {papers_skipped_critical} critical errors (likely invalid API keys)"
+                )
+                self.logger.error("=" * 80)
+                self.logger.error(error_msg)
+                self.logger.error("=" * 80)
+                self.logger.error("This usually indicates:")
+                self.logger.error("  1. Invalid or expired Gemini/OpenRouter API keys")
+                self.logger.error("  2. API quota exceeded")
+                self.logger.error("  3. Network/authentication issues")
+                raise RuntimeError(error_msg)
+
+            # Normal completion logging
+            if papers_processed > 0:
                 self.logger.info("URL Extraction completed successfully")
-            else:
+            elif papers_found == 0:
                 self.logger.info("URL Extraction completed (no papers to process)")
+            else:
+                # Edge case: papers found but processed 0 without critical errors
+                self.logger.warning(
+                    f"URL Extraction completed but processed 0 papers "
+                    f"(found {papers_found}, skipped {papers_skipped_critical} critical errors)"
+                )
+
             self.logger.info("=" * 80)
             if "papers_found" in stats:
                 self.logger.info(f"Papers found: {stats['papers_found']}")
@@ -169,16 +202,6 @@ class URLExtractionHourlyJob(DatabaseCronJob):
                 self.logger.info(f"Daily capacity (24/7): ~{daily_capacity} papers")
                 self.logger.info(
                     f"Estimated for 10K papers: {10000 / daily_capacity:.1f} days"
-                )
-
-            # If we had candidates but processed none due to critical errors, fail the job
-            if (
-                stats.get("papers_found", 0) > 0
-                and stats.get("papers_processed", 0) == 0
-                and stats.get("papers_skipped_critical_errors", 0) > 0
-            ):
-                raise RuntimeError(
-                    "URL extraction failed: 0 papers processed due to critical errors"
                 )
 
         except Exception as e:

@@ -657,9 +657,10 @@ class EvaluationService:
             if not db_evaluation:
                 raise DatabaseError(f"Evaluation {evaluation_id} not found")
 
-            # Store old task_id and dataset_id for rank recalculation
+            # Store old task_id, dataset_id, and best_metric for rank recalculation
             old_task_id = db_evaluation.task_id
             old_dataset_id = db_evaluation.dataset_id
+            old_best_metric = db_evaluation.best_metric
 
             # Determine which dataset to validate against
             target_dataset_id = dataset_id if dataset_id is not None else old_dataset_id
@@ -726,13 +727,6 @@ class EvaluationService:
 
             self.db.commit()
             self.db.refresh(db_evaluation)
-
-            # Store old best_metric for rank recalculation
-            old_best_metric = (
-                self.db.query(DBEvaluation.best_metric)
-                .filter(DBEvaluation.id == evaluation_id)
-                .scalar()
-            )
 
             # Recalculate ranks for affected leaderboards
             # If task or dataset changed, recalculate both old and new leaderboards

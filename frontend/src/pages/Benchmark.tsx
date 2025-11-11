@@ -243,13 +243,18 @@ const Benchmark = () => {
     // Get the metric to sort by (for score-based sorting)
     const sortMetric = selectedMetric || getDisplayMetricName(evaluations[0]?.best_metric) || availableMetrics[0];
 
-    // IMPORTANT: Filter evaluations to only show those where best_metric matches the selected metric
-    // This ensures that ranks are meaningful (ranks are calculated per metric)
-    // When viewing AbsRel leaderboard, only show evaluations ranked by AbsRel, not by other metrics
+    // Filter evaluations to show those that have the selected metric value
+    // This allows viewing all metrics even if they're not the best_metric for that evaluation
     const originalMetricNames = metricOriginalNameLookup[sortMetric] || [sortMetric];
-    const filteredEvaluations = evaluations.filter(e =>
-      e.best_metric && originalMetricNames.includes(e.best_metric)
-    );
+    const filteredEvaluations = evaluations.filter(e => {
+      if (!e.metrics) return false;
+      // Check if evaluation has the selected metric (or any of its original names)
+      return originalMetricNames.some(metricName =>
+        e.metrics[metricName] !== undefined &&
+        e.metrics[metricName] !== null &&
+        e.metrics[metricName] !== ''
+      );
+    });
 
     if (!sortMetric) {
       return filteredEvaluations.map(e => ({
@@ -276,65 +281,117 @@ const Benchmark = () => {
       effectiveDirection = sortDirection;
     }
 
+    // Check if best_metric matches the selected metric (for rank-based sorting)
+    const bestMetricMatches = sortMetric && originalMetricNames.some(name =>
+      filteredEvaluations.some(e => e.best_metric === name)
+    );
+
     // Map evaluations to include computed values
-    return filteredEvaluations
-      .map(e => {
-        // Get value for the selected sort metric
-        const rawSortValue = getDisplayMetricValue(e, sortMetric);
-        let sortValue = 0;
-        if (rawSortValue !== undefined && rawSortValue !== null && rawSortValue !== '') {
-          if (typeof rawSortValue === 'number') {
-            sortValue = rawSortValue;
-          } else {
-            const parsed = parseFloat(rawSortValue);
-            sortValue = Number.isFinite(parsed) ? parsed : 0;
-          }
+    const mappedEvaluations = filteredEvaluations.map(e => {
+      // Get value for the selected sort metric
+      const rawSortValue = getDisplayMetricValue(e, sortMetric);
+      let sortValue = 0;
+      if (rawSortValue !== undefined && rawSortValue !== null && rawSortValue !== '') {
+        if (typeof rawSortValue === 'number') {
+          sortValue = rawSortValue;
+        } else {
+          const parsed = parseFloat(rawSortValue);
+          sortValue = Number.isFinite(parsed) ? parsed : 0;
         }
+      }
 
-        return {
-          ...e,
-          sortValue,
-          year: e.evaluated_on
-            ? new Date(e.evaluated_on).getFullYear()
-            : e.paper_published_date
-              ? new Date(e.paper_published_date).getFullYear()
-              : null
-        };
-      })
-      .sort((a, b) => {
-        // SORTING LOGIC: Handle three modes - rank, date, and score
+      // Check if this evaluation's best_metric matches the selected metric
+      const bestMetricMatchesSelected = sortMetric && originalMetricNames.includes(e.best_metric || '');
 
-        if (sortBy === 'rank') {
-          // Mode 1: Sort by best_rank (ascending - lower rank number is better)
+      return {
+        ...e,
+        sortValue,
+        bestMetricMatchesSelected,
+        year: e.evaluated_on
+          ? new Date(e.evaluated_on).getFullYear()
+          : e.paper_published_date
+            ? new Date(e.paper_published_date).getFullYear()
+            : null
+      };
+    });
+
+    // Sort evaluations
+    const sortedEvaluations = mappedEvaluations.sort((a, b) => {
+      // SORTING LOGIC: Handle three modes - rank, date, and score
+
+      if (sortBy === 'rank') {
+        // Mode 1: Sort by rank
+        // If best_metric matches selected metric, use best_rank
+        // Otherwise, calculate ranks client-side based on metric value
+        if (bestMetricMatches && a.bestMetricMatchesSelected && b.bestMetricMatchesSelected) {
+          // Both have best_rank for this metric - use it
           const rankA = a.best_rank ?? Number.MAX_SAFE_INTEGER;
           const rankB = b.best_rank ?? Number.MAX_SAFE_INTEGER;
           if (rankA !== rankB) {
             return rankA - rankB;
           }
-          // Tiebreaker: use metric value with current direction
-          if (effectiveDirection === 'asc') {
-            return a.sortValue - b.sortValue;
-          } else {
-            return b.sortValue - a.sortValue;
-          }
         }
-
-        if (sortBy === 'date') {
-          // Mode 2: Sort by date (most recent first)
-          const dateA = a.evaluated_on || a.paper_published_date || 0;
-          const dateB = b.evaluated_on || b.paper_published_date || 0;
-          return new Date(dateB).getTime() - new Date(dateA).getTime();
-        }
-
-        // Mode 3: Sort by selected metric value using effective direction
+        // Fall through to metric value sorting as tiebreaker or when ranks aren't available
         if (effectiveDirection === 'asc') {
-          // Ascending: lower values first (e.g., for WER, lower is better)
           return a.sortValue - b.sortValue;
         } else {
-          // Descending: higher values first (e.g., for Accuracy, higher is better)
           return b.sortValue - a.sortValue;
         }
-      });
+      }
+
+      if (sortBy === 'date') {
+        // Mode 2: Sort by date (most recent first)
+        const dateA = a.evaluated_on || a.paper_published_date || 0;
+        const dateB = b.evaluated_on || b.paper_published_date || 0;
+        return new Date(dateB).getTime() - new Date(dateA).getTime();
+      }
+
+      // Mode 3: Sort by selected metric value using effective direction
+      if (effectiveDirection === 'asc') {
+        // Ascending: lower values first (e.g., for WER, lower is better)
+        return a.sortValue - b.sortValue;
+      } else {
+        // Descending: higher values first (e.g., for Accuracy, higher is better)
+        return b.sortValue - a.sortValue;
+      }
+    });
+
+    // Calculate ranks client-side when needed (for display purposes)
+    // Ranks are calculated based on the sorted order and metric values
+    return sortedEvaluations.map((e, index) => {
+      // Calculate rank based on position in sorted list
+      // If multiple evaluations have the same value, they get the same rank
+      let calculatedRank = index + 1;
+      if (index > 0) {
+        const prevEval = sortedEvaluations[index - 1];
+        // If previous evaluation has the same sort value, use same rank
+        if (Math.abs(prevEval.sortValue - e.sortValue) < 0.0001 && e.sortValue !== 0) {
+          // Find the first evaluation with this value to get its rank
+          const firstWithSameValue = sortedEvaluations.findIndex(ev =>
+            Math.abs(ev.sortValue - e.sortValue) < 0.0001
+          );
+          calculatedRank = firstWithSameValue + 1;
+        }
+      }
+
+      // Use best_rank if best_metric matches and we're sorting by rank, otherwise use calculated rank
+      // When sorting by score or date, show the original best_rank if available
+      let displayRank: number | null | undefined;
+      if (sortBy === 'rank') {
+        // When sorting by rank: use best_rank if best_metric matches, otherwise calculate
+        displayRank = (e.bestMetricMatchesSelected && e.best_rank !== null && e.best_rank !== undefined)
+          ? e.best_rank
+          : calculatedRank;
+      } else {
+        // When sorting by score or date: keep original best_rank
+        displayRank = e.best_rank;
+      }
+
+      return {
+        ...e,
+        best_rank: displayRank
+      };
+    });
   }, [
     evaluations,
     selectedMetric,
@@ -638,21 +695,15 @@ const Benchmark = () => {
               </div>
             ) : processedEvaluations.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
-                <colgroup>
-                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                  {availableMetrics.map((_, idx) => (
-                    <col key={idx} style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                  ))}
-                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                  <col style={{ width: `${100 / (availableMetrics.length + 4)}%` }} />
-                </colgroup>
+              <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-3 px-2 font-medium text-muted-foreground">Rank</th>
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Model</th>
+                    <th className="w-16 whitespace-nowrap text-center py-3 px-2 font-medium text-muted-foreground">
+                      Rank
+                    </th>
+                    <th className="min-w-[200px] text-left py-3 px-4 font-medium text-muted-foreground truncate">
+                      Model
+                    </th>
                     {/* Dynamic metric columns */}
                     {availableMetrics.map(metric => {
                       const isSelected = metric === selectedMetric;
@@ -687,7 +738,7 @@ const Benchmark = () => {
                       return (
                         <th
                           key={metric}
-                          className="text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
+                          className="min-w-[100px] max-w-[120px] text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
                           onClick={() => handleMetricClick(metric)}
                           title={`Click to sort by ${metric}. ${naturalDirection === 'lower_is_better' ? 'Lower is better' : 'Higher is better'}${isSelected && sortBy === 'score' ? ` (currently sorted ${sortDirection === 'asc' ? 'ascending' : sortDirection === 'desc' ? 'descending' : 'by default'})` : ''}`}
                         >
@@ -700,9 +751,15 @@ const Benchmark = () => {
                         </th>
                       );
                     })}
-                    <th className="text-left py-3 px-4 font-medium text-muted-foreground">Paper</th>
-                    <th className="text-center py-3 px-4 font-medium text-muted-foreground">Code</th>
-                    <th className="text-center py-3 px-4 font-medium text-muted-foreground">Year</th>
+                    <th className="min-w-[200px] max-w-[300px] text-left py-3 px-4 font-medium text-muted-foreground">
+                      Paper
+                    </th>
+                    <th className="w-20 whitespace-nowrap text-center py-3 px-4 font-medium text-muted-foreground">
+                      Code
+                    </th>
+                    <th className="w-20 whitespace-nowrap text-center py-3 px-4 font-medium text-muted-foreground">
+                      Year
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -711,17 +768,25 @@ const Benchmark = () => {
 
                       return (
                         <tr key={evaluation.id} className="border-b border-border hover:bg-muted/20">
-                        <td className="py-4 px-2">
-                          <div className="text-center font-medium">{rank}</div>
+                        <td className="w-16 whitespace-nowrap py-4 px-2 text-center">
+                          <div className="font-medium">{rank}</div>
                         </td>
-                        <td className="py-4 px-4">
-                          <div className="font-medium">{evaluation.model_name || 'Unknown Model'}</div>
+                        <td className="min-w-[200px] py-4 px-4">
+                          <div
+                            className="font-medium truncate"
+                            title={evaluation.model_name || undefined}
+                          >
+                            {evaluation.model_name || 'Unknown Model'}
+                          </div>
                         </td>
                         {/* Dynamic metric value columns */}
                         {availableMetrics.map(metric => {
                           const value = getDisplayMetricValue(evaluation, metric);
                           return (
-                            <td key={metric} className="py-4 px-4">
+                            <td
+                              key={metric}
+                              className="min-w-[100px] max-w-[120px] whitespace-nowrap py-4 px-4"
+                            >
                               {value !== undefined && value !== null ? (
                                 <div className="font-semibold">
                                   {typeof value === 'number' ? value.toFixed(2) : value}
@@ -732,11 +797,11 @@ const Benchmark = () => {
                             </td>
                           );
                         })}
-                        <td className="py-4 px-4">
+                        <td className="min-w-[200px] max-w-[300px] py-4 px-4">
                           {evaluation.paper_title && evaluation.paper_arxiv_id ? (
                             <Link
                               to={`/paper/${evaluation.paper_arxiv_id}`}
-                              className="text-primary hover:underline text-sm"
+                              className="block truncate text-sm text-primary hover:underline"
                             >
                               {evaluation.paper_title.length > 50
                                 ? `${evaluation.paper_title.substring(0, 50)}...`
@@ -754,7 +819,7 @@ const Benchmark = () => {
                             <span className="text-muted-foreground text-sm">N/A</span>
                           )}
                         </td>
-                        <td className="py-4 px-4 text-center">
+                        <td className="w-20 whitespace-nowrap py-4 px-4 text-center">
                           {evaluation.code_url ? (
                             <a
                               href={evaluation.code_url}
@@ -769,7 +834,7 @@ const Benchmark = () => {
                             <span className="text-muted-foreground text-xs">-</span>
                           )}
                         </td>
-                        <td className="py-4 px-4 text-center">
+                        <td className="w-20 whitespace-nowrap py-4 px-4 text-center">
                           <span className="text-muted-foreground">
                             {evaluation.year || (evaluation.evaluated_on ? new Date(evaluation.evaluated_on).getFullYear() : '-')}
                           </span>

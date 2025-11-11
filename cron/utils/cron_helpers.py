@@ -349,14 +349,25 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 status["status"] = "success"
                 found_completion = True
                 break
-            elif "failed" in line and (
-                "job failed" in line.lower() or "error" in line.lower()
+            elif "failed" in line.lower() and (
+                "job failed" in line.lower()
+                or "cron job failed" in line.lower()
+                or "extraction failed" in line.lower()
+                or "url extraction failed" in line.lower()
+                or "critical error" in line.lower()
+                or "invalid api key" in line.lower()
+                or "api key" in line.lower()
+                and "invalid" in line.lower()
             ):
                 status["status"] = "failed"
                 found_failure = True
                 # Try to extract error message
                 if "Error:" in line:
                     status["error"] = line.split("Error:")[-1].strip()
+                elif "FAILED:" in line:
+                    status["error"] = line.split("FAILED:")[-1].strip()
+                elif "failed:" in line.lower():
+                    status["error"] = line.split(":")[-1].strip()
                 break
 
         # If we found a recent start but no completion/failure, and process is running, it's running
@@ -503,7 +514,38 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 + work_metrics.get("repository_urls_updated", 0)
                 + work_metrics.get("repos_updated", 0)
             )
-            if total_work == 0:
+
+            # Special check for extract_urls: if papers were found but all skipped due to critical errors
+            papers_found = work_metrics.get("papers_found", 0)
+            papers_processed = work_metrics.get("papers_processed", 0)
+            papers_skipped_critical = None
+
+            # Try to extract papers_skipped_critical_errors from log
+            for line in lines:
+                if "Papers skipped (critical errors):" in line:
+                    import re
+
+                    match = re.search(
+                        r"Papers skipped \(critical errors\):\s*(\d+)", line
+                    )
+                    if match:
+                        papers_skipped_critical = int(match.group(1))
+                        break
+
+            # If we found papers but processed none due to critical errors, mark as failed
+            if (
+                papers_found > 0
+                and papers_processed == 0
+                and papers_skipped_critical is not None
+                and papers_skipped_critical > 0
+            ):
+                status["status"] = "failed"
+                status["error"] = (
+                    f"Found {papers_found} papers but processed 0 due to "
+                    f"{papers_skipped_critical} critical errors (likely invalid API keys)"
+                )
+                found_failure = True
+            elif total_work == 0:
                 status["status"] = "success_no_work"
                 status["work_summary"] = (
                     "Completed successfully but no items to process"
