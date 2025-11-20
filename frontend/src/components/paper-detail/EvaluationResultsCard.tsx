@@ -263,6 +263,22 @@ const calculateColumnWidths = (metricCount: number) => {
                               return dataset?.slug || `dataset-${evaluation.dataset_id}`;
                             })();
 
+                            // Get task slug - prefer from task data, fallback to generating from name or using ID
+                            const taskSlug = (() => {
+                              const task = allTasksDataForEvals?.results?.find(
+                                (t: APITask) => t.id === evaluation.task_id
+                              );
+                              if (task?.slug) {
+                                return task.slug;
+                              }
+                              // Fallback: generate slug from task name or use task ID
+                              if (task?.name) {
+                                return task.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                              }
+                              // Last resort: use task ID
+                              return evaluation.task_id;
+                            })();
+
                             return (
                               <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
                                 <td className="py-4 px-4 text-sm">
@@ -305,7 +321,7 @@ const calculateColumnWidths = (metricCount: number) => {
                                       className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-full px-3"
                                       asChild
                                     >
-                                      <Link to={`/benchmark/${datasetSlug}`}>
+                                      <Link to={`/benchmark/${datasetSlug}?task=${taskSlug}`}>
                                         See all
                                       </Link>
                                     </Button>

@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import Header from "@/components/Header";
 import { ArrowLeft, Trophy, Calendar, Github, ExternalLink, Loader2, BookOpen } from "lucide-react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import { useDatasetBySlug } from "@/hooks/useDatasets";
 import { useEvaluationsByDataset } from "@/hooks/useEvaluations";
 import { useMetricDirections } from "@/hooks/useMetrics";
@@ -35,6 +35,7 @@ const isTop1MetricName = (metricName: string) => /top[-_\s]?1(?=[^\d]|$)/i.test(
 
 const Benchmark = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
+  const [searchParams] = useSearchParams();
 
   // Filter states
   const [selectedMetric, setSelectedMetric] = useState<string>('');
@@ -52,6 +53,50 @@ const Benchmark = () => {
     queryFn: () => getDatasetTasks(dataset!.id),
     enabled: !!dataset?.id,
   });
+
+  // Sync URL task parameter with selectedTaskId state
+  useEffect(() => {
+    const taskParam = searchParams.get('task');
+    if (!taskParam || !datasetTasks || datasetTasks.length === 0) {
+      // If no task parameter or tasks not loaded yet, keep current state (or default to 'all')
+      if (!taskParam && selectedTaskId === 'all') {
+        return; // Already at default, no need to update
+      }
+      if (!taskParam) {
+        setSelectedTaskId('all');
+      }
+      return;
+    }
+
+    // Try to find task by slug first
+    let matchedTask = datasetTasks.find(
+      (task: Task) => task.slug?.toLowerCase() === taskParam.toLowerCase()
+    );
+
+    // If not found by slug, try by ID
+    if (!matchedTask) {
+      matchedTask = datasetTasks.find(
+        (task: Task) => task.id === taskParam
+      );
+    }
+
+    // If still not found, try matching by generated slug from name
+    if (!matchedTask) {
+      const normalizedParam = taskParam.toLowerCase().replace(/[^a-z0-9]/g, '');
+      matchedTask = datasetTasks.find((task: Task) => {
+        if (!task.name) return false;
+        const normalizedName = task.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return normalizedName === normalizedParam;
+      });
+    }
+
+    if (matchedTask) {
+      setSelectedTaskId(matchedTask.id);
+    } else {
+      // Task parameter doesn't match any dataset task, fallback to 'all'
+      setSelectedTaskId('all');
+    }
+  }, [searchParams, datasetTasks, selectedTaskId]);
 
   // Fetch introducing paper details when available
   const { data: introducingPaper } = useQuery({
