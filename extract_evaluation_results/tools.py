@@ -514,54 +514,74 @@ async def get_dataset_tasks_and_metrics(dataset_id: int) -> str:
     """Get task associations and metrics for a dataset.
 
     When a dataset is found, use this tool to get:
-    - List of task IDs associated with the dataset
-    - Metrics allowed for each task-dataset combination
+    - Tasks and metrics associated with the dataset (inferred from evaluation results)
 
-    Note: Metrics are now linked at the task-dataset level (task_dataset_metrics table).
-    Leaderboards are defined by (task, dataset, metric) triples.
+    Note: Tasks and metrics are inferred from evaluation results. Each evaluation contains
+    (task_id, dataset_id, metrics JSONB) where metrics is a dictionary of metric names to values.
 
     Args:
         dataset_id: The ID of the dataset
 
     Returns:
-        JSON string with task_ids list and metrics_by_task dict
+        JSON string with task_metrics dict mapping task_id to list of metrics
     """
     print(f"[TOOL CALL] get_dataset_tasks_and_metrics(dataset_id={dataset_id})")
 
     session: Session = db_manager.session_local()
 
     try:
-        from backend.services.dataset_service import DatasetService
+        # Get all evaluations for this dataset
+        evaluations = (
+            session.query(DBEvaluation.task_id, DBEvaluation.metrics)
+            .filter(DBEvaluation.dataset_id == dataset_id)
+            .all()
+        )
 
-        # Get task IDs
-        dataset_service = DatasetService(session)
-        task_ids = dataset_service.get_dataset_tasks(dataset_id)
+        # Group metrics by task_id
+        task_metrics: dict[int, set[str]] = {}
+        for task_id, metrics_json in evaluations:
+            if task_id not in task_metrics:
+                task_metrics[task_id] = set()
 
-        # Get metrics for each task-dataset combination (from task_dataset_metrics)
-        metrics_by_task = {}
-        for task_id in task_ids:
-            from backend.services.leaderboard_metric_service import (
-                LeaderboardMetricService,
-            )
+            # Extract metric names (keys) from metrics JSONB field
+            if isinstance(metrics_json, dict):
+                task_metrics[task_id].update(metrics_json.keys())
 
-            metric_service = LeaderboardMetricService(session)
-            try:
-                leaderboard_metrics = metric_service.get_leaderboard_metrics(
-                    task_id, dataset_id
+        # Convert sets to lists and optionally look up metric details
+        # Also look up task names
+        result_task_metrics: dict[int, dict] = {}
+        for task_id, metric_names in task_metrics.items():
+            # Get task name
+            task = session.query(DBTask).filter(DBTask.id == task_id).first()
+            task_name = task.name if task else f"Task {task_id}"
+
+            metric_list = []
+            for metric_name in sorted(metric_names):
+                # Try to look up metric details from metrics table
+                metric = (
+                    session.query(DBMetric).filter(DBMetric.name == metric_name).first()
                 )
-                metrics_by_task[task_id] = [
-                    {
-                        "metric_id": m["metric_id"],
-                        "metric_name": m["metric_name"],
-                        "metric_direction": m["metric_direction"],
-                    }
-                    for m in leaderboard_metrics.get("metrics", [])
-                ]
-            except Exception:
-                # If no metrics configured, return empty list (allows all metrics)
-                metrics_by_task[task_id] = []
+                if metric:
+                    metric_list.append(
+                        {
+                            "metric_id": metric.id,
+                            "metric_name": metric.name,
+                            "metric_direction": metric.direction,
+                        }
+                    )
+                else:
+                    # If metric not found in metrics table, just include the name
+                    metric_list.append(
+                        {
+                            "metric_name": metric_name,
+                        }
+                    )
+            result_task_metrics[task_id] = {
+                "task_name": task_name,
+                "metrics": metric_list,
+            }
 
-        result = {"task_ids": task_ids, "metrics_by_task": metrics_by_task}
+        result = {"task_metrics": result_task_metrics}
 
         session.close()
         result_str = json.dumps(result, indent=2)
@@ -626,22 +646,16 @@ async def get_available_tasks() -> str:
 async def add_dataset(
     name: str,
     description: str,
-    task_ids: list[int],
     full_name: str | None = None,
     url: str | None = None,
     hf_url: str | None = None,
     paper_url: str | None = None,
 ) -> str:
-    """Add a new dataset to the database and link it to one or more tasks.
-
-    IMPORTANT: Every dataset must be linked to at least one task. Use get_available_tasks() to see all available tasks.
+    """Add a new dataset to the database.
 
     Args:
         name: The name of the dataset (required). E.g., "COCO", "ImageNet", "SpeechCommands"
         description: A description of the dataset (required). Should explain what the dataset contains and its purpose.
-        task_ids: List of task IDs this dataset is used for (required). MUST contain at least one valid task ID.
-                 E.g., [1] for Image Classification, [2] for Object Detection, [1, 19] for multiple tasks.
-                 Use get_available_tasks() to see all available task IDs.
         full_name: The full name of the dataset (optional). E.g., "Common Objects in Context" for COCO.
         url: The main URL for the dataset (optional). E.g., official website or documentation.
         hf_url: Hugging Face dataset URL (optional). E.g., "https://huggingface.co/datasets/..."
@@ -654,16 +668,12 @@ async def add_dataset(
     service = DatasetService(session)
 
     try:
-        # Validate task_ids is not empty
-        if not task_ids or len(task_ids) == 0:
-            session.close()
-            return "✗ Failed to create dataset: task_ids cannot be empty. Every dataset must be linked to at least one task. Use get_available_tasks() to see available tasks."
-
-        # Create the dataset request
+        # Create the dataset request with empty task_ids list
+        # Task-dataset relationships are now established via (task, dataset, metric) tuples in evaluations
         dataset_request = DatasetCreateRequest(
             name=name,
             description=description,
-            task_ids=task_ids,
+            task_ids=[],  # Empty list - datasets are no longer directly linked to tasks
             full_name=full_name,
             url=url,
             hf_url=hf_url,
@@ -677,7 +687,6 @@ async def add_dataset(
         response = f"✓ Successfully created dataset: ID={dataset.id}, Name={dataset.name}, Slug={dataset.slug}"
         if dataset.full_name:
             response += f", Full Name={dataset.full_name}"
-        response += f", Linked to Task IDs={task_ids}"
         if hf_url:
             response += f", Hugging Face URL={hf_url}"
 
@@ -687,8 +696,6 @@ async def add_dataset(
     except ValueError as e:
         session.close()
         error_msg = str(e)
-        if "Task IDs not found" in error_msg:
-            return f"✗ Failed to create dataset: {error_msg}. Use get_available_tasks() to see valid task IDs."
         return f"✗ Failed to create dataset: {error_msg}"
     except Exception as e:
         session.close()

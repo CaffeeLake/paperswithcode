@@ -11,7 +11,7 @@ You can run it like so:
 uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --arxiv_id "2406.09414"
 
 # Or add a single dataset directly
-uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --dataset_details "{\"name\": \"COCO\", \"description\": \"COCO is a large-scale object detection, segmentation, and captioning dataset.\", \"task_ids\": [2]}"
+uv run --env-file backend/keys.env extract_evaluation_results/step_4.py --dataset_details "{\"name\": \"COCO\", \"description\": \"COCO is a large-scale object detection, segmentation, and captioning dataset.\"}"
 ```
 """
 
@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from extract_evaluation_results.step_base import AgentStep
+from extract_evaluation_results.step_base import AgentStep, StepResult
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
 from extract_evaluation_results.tools import (
     add_dataset,
@@ -37,12 +37,24 @@ from extract_evaluation_results.tools import (
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_dataset_name(name: str) -> str:
+    """Sanitize dataset name by removing problematic characters."""
+    return (
+        name.replace("→", " to ")
+        .replace("(", " ")
+        .replace(")", "")
+        .replace("[", " ")
+        .replace("]", "")
+        .lower()
+        .strip()
+    )
+
+
 class DatasetDetails(BaseModel):
     id: int
     name: str
     slug: str
     description: str
-    task_ids: list[int]
     hf_url: Optional[str] = None
     paper_url: Optional[str] = None
 
@@ -76,6 +88,18 @@ class Step4SingleResult(BaseModel):
     error_message: Optional[str] = None
 
 
+def _create_error_result(
+    error_message: str, dataset_input: dict = None
+) -> Step4SingleResult:
+    """Create a standardized error result."""
+    return Step4SingleResult(
+        dataset_input=dataset_input or {},
+        success=False,
+        dataset_details=None,
+        error_message=error_message,
+    )
+
+
 class Step4Output(BaseModel):
     """Output from Step 4: Dataset Adder - handles multiple datasets."""
 
@@ -92,7 +116,7 @@ You are an expert in managing datasets in the SQL database of Hugging Face's lea
 adding new datasets to the database with comprehensive information when requested.
 
 A colleague of yours has extracted evaluation results from an ArXiv paper and identified a particular dataset mentioned in the evaluation results which is not yet added to the SQL database.
-Another colleague of yours has gathered comprehensive information about the dataset (including description, full name, URLs, and the appropriate task_id) and will provide you with the required information.
+Another colleague of yours has gathered comprehensive information about the dataset (including description, full name, URLs) and will provide you with the required information.
 Your task is to add this dataset to the database.
 
 ## CRITICAL: Prevent Duplicate Datasets
@@ -126,7 +150,6 @@ Step 2: Since found=true, return:
     "name": "RefCOCO",
     "slug": "refcoco",
     "description": "...",
-    "task_ids": [42, 43],
     "hf_url": "...",
     "paper_url": "..."
   }
@@ -135,12 +158,11 @@ Step 2: Since found=true, return:
 
 ## Important notes
 
-**CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. The task_id has already been determined by your colleague in the previous step - use the provided task_ids as-is.
+Datasets are no longer directly linked to tasks. Task-dataset relationships are established via (task, dataset, metric) tuples when evaluations are added to the database.
 
 Ensure you provide all relevant information including:
 - name (required): The name of the dataset
 - description (required): A description of what the dataset contains and its purpose
-- task_ids (required): List containing EXACTLY ONE task ID (e.g., [1] for Image Classification). This has already been determined - use the provided task_ids directly.
 - full_name (optional): The full name of the dataset
 - url (optional): Main URL for the dataset
 - hf_url (optional): Hugging Face dataset URL
@@ -157,7 +179,6 @@ class DatasetDetails(BaseModel):
     name: str
     slug: str
     description: str
-    task_ids: list[int]
     hf_url: Optional[str] = None
     paper_url: Optional[str] = None
 
@@ -208,11 +229,9 @@ class Step4(AgentStep[Step4Input, Step4Output]):
         try:
             dataset_details = json.loads(dataset_input.dataset_details_json)
         except json.JSONDecodeError as e:
-            return Step4SingleResult(
+            return _create_error_result(
+                f"Invalid JSON in dataset_details: {e}",
                 dataset_input={"error": "Invalid JSON"},
-                success=False,
-                dataset_details=None,
-                error_message=f"Invalid JSON in dataset_details: {e}",
             )
 
         dataset_name = dataset_details.get("name", "Unknown")
@@ -271,19 +290,15 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             logger.warning(
                 "Agent run cancelled while adding dataset '%s': %s", dataset_name, e
             )
-            return Step4SingleResult(
+            return _create_error_result(
+                "Agent run was cancelled before completion",
                 dataset_input=dataset_details,
-                success=False,
-                dataset_details=None,
-                error_message="Agent run was cancelled before completion",
             )
         except Exception as e:
             print(f"Error adding dataset '{dataset_name}': {str(e)}")
-            return Step4SingleResult(
+            return _create_error_result(
+                f"Error during addition: {str(e)}",
                 dataset_input=dataset_details,
-                success=False,
-                dataset_details=None,
-                error_message=f"Error during addition: {str(e)}",
             )
 
     async def run(self, inputs):
@@ -295,8 +310,6 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             try:
                 inputs = Step4Input(**inputs)
             except Exception as e:
-                from extract_evaluation_results.step_base import StepResult
-
                 return StepResult(
                     success=False,
                     error_message=f"Input validation failed: {e}",
@@ -351,13 +364,7 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                     except Exception:
                         pass  # Ignore any errors during cleanup
                     results = [
-                        Step4SingleResult(
-                            dataset_input={},
-                            success=False,
-                            dataset_details=None,
-                            error_message="Task timed out",
-                        )
-                        for _ in task_objects
+                        _create_error_result("Task timed out") for _ in task_objects
                     ]
                 except asyncio.CancelledError:
                     # Even the shielded wait was cancelled - tasks may still be running
@@ -376,14 +383,7 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                             # Task is still running but we're being cancelled
                             # Cancel it and add error result
                             task.cancel()
-                            results.append(
-                                Step4SingleResult(
-                                    dataset_input={},
-                                    success=False,
-                                    dataset_details=None,
-                                    error_message="Task was cancelled",
-                                )
-                            )
+                            results.append(_create_error_result("Task was cancelled"))
                     # Wait briefly for cancellations to propagate
                     try:
                         await asyncio.gather(*task_objects, return_exceptions=True)
@@ -395,31 +395,16 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             for i, result in enumerate(results):
                 if isinstance(result, asyncio.CancelledError):
                     logger.warning(f"Task {i} was cancelled")
-                    # Create a failed result for this dataset
                     successful_results.append(
-                        Step4SingleResult(
-                            dataset_input={},
-                            success=False,
-                            dataset_details=None,
-                            error_message="Task was cancelled",
-                        )
+                        _create_error_result("Task was cancelled")
                     )
                 elif isinstance(result, Exception):
                     logger.error(f"Task {i} raised exception: {result}")
-                    successful_results.append(
-                        Step4SingleResult(
-                            dataset_input={},
-                            success=False,
-                            dataset_details=None,
-                            error_message=str(result),
-                        )
-                    )
+                    successful_results.append(_create_error_result(str(result)))
                 else:
                     successful_results.append(result)
 
             # Return successful result with all findings
-            from extract_evaluation_results.step_base import StepResult
-
             return StepResult(
                 success=True,
                 outputs=Step4Output(results=successful_results),
@@ -448,18 +433,9 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                         successful_results.append(result)
                     except Exception as e:
                         logger.error(f"Task {i} raised exception: {e}")
-                        successful_results.append(
-                            Step4SingleResult(
-                                dataset_input={},
-                                success=False,
-                                dataset_details=None,
-                                error_message=str(e),
-                            )
-                        )
+                        successful_results.append(_create_error_result(str(e)))
 
                 # Return successful result with all findings
-                from extract_evaluation_results.step_base import StepResult
-
                 return StepResult(
                     success=True,
                     outputs=Step4Output(results=successful_results),
@@ -467,16 +443,12 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                 )
             else:
                 logger.warning("Some tasks did not complete")
-                from extract_evaluation_results.step_base import StepResult
-
                 return StepResult(
                     success=False,
                     outputs=None,
                     error_message="Step 4 was cancelled before completion",
                 )
         except Exception as e:
-            from extract_evaluation_results.step_base import StepResult
-
             return StepResult(
                 success=False, outputs=None, error_message=f"Step 4 failed: {str(e)}"
             )
@@ -557,15 +529,6 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
             info = item["information"]
             dataset_input = item.get("dataset_input", {})
 
-            # Extract task_id from step_3 output (required field)
-            task_id = info.get("task_id")
-            if task_id is None:
-                # This should not happen if step_3 succeeded, but handle gracefully
-                logger.warning(
-                    f"Missing task_id for dataset {dataset_input.get('dataset_name', 'Unknown')} from step_3 output"
-                )
-                continue
-
             # Build dataset details for adding to database
             dataset_details = {
                 "name": dataset_input.get(
@@ -576,7 +539,6 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
                 "hf_url": info.get("hf_url"),
                 "paper_url": info.get("conference_url"),
                 "paper_arxiv_id": info.get("arxiv_id") or dataset_input.get("arxiv_id"),
-                "task_ids": [task_id],  # Use task_id from step_3
             }
             datasets_to_add.append(dataset_details)
 
@@ -606,7 +568,6 @@ async def step_4(dataset_details_list: list[dict]) -> list[dict]:
         dataset_details_list: List of dataset detail dictionaries, each containing:
             - name: Dataset name (required)
             - description: Dataset description (required)
-            - task_ids: List of task IDs (required)
             - full_name: Optional full name
             - url: Optional main URL
             - hf_url: Optional Hugging Face URL
@@ -639,22 +600,18 @@ async def step_4(dataset_details_list: list[dict]) -> list[dict]:
             for details in dataset_details_list
         ]
 
-    # result.outputs is now a Step4Output model with a list of Step4SingleResult
-    # Convert to list of dicts for backward compatibility
-    output_list = []
-    for single_result in result.outputs.results:
-        output_dict = {
-            "dataset_input": single_result.dataset_input,
-            "success": single_result.success,
-            "error_message": single_result.error_message,
+    # Convert Step4SingleResult to dicts for backward compatibility
+    return [
+        {
+            "dataset_input": r.dataset_input,
+            "success": r.success,
+            "error_message": r.error_message,
+            "dataset_details": r.dataset_details.model_dump()
+            if r.dataset_details
+            else None,
         }
-        if single_result.dataset_details:
-            output_dict["dataset_details"] = single_result.dataset_details.model_dump()
-        else:
-            output_dict["dataset_details"] = None
-        output_list.append(output_dict)
-
-    return output_list
+        for r in result.outputs.results
+    ]
 
 
 # Legacy single-dataset wrapper for backward compatibility
@@ -684,7 +641,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_details",
         type=str,
-        help="[Backward compatibility] JSON string containing dataset details (name, description, task_ids, etc.).",
+        help="[Backward compatibility] JSON string containing dataset details (name, description, etc.).",
         default=None,
     )
     args = parser.parse_args()
@@ -803,17 +760,7 @@ class Step4WorkflowStep:
                 )
                 if dataset_name:
                     found_dataset_names.add(dataset_name.lower().strip())
-                    # Also check sanitized version
-                    sanitized = (
-                        dataset_name.replace("→", " to ")
-                        .replace("(", " ")
-                        .replace(")", "")
-                        .replace("[", " ")
-                        .replace("]", "")
-                        .lower()
-                        .strip()
-                    )
-                    found_dataset_names.add(sanitized)
+                    found_dataset_names.add(_sanitize_dataset_name(dataset_name))
 
         datasets_to_add = []
         for step_3_result in step_3_results:
@@ -821,39 +768,21 @@ class Step4WorkflowStep:
                 dataset_input = step_3_result.get("dataset_input", {})
                 dataset_info = step_3_result.get("information", {})
 
-                # Sanitize dataset name to remove problematic characters
                 dataset_name = dataset_input.get("dataset_name", "")
-                # Replace special characters that might cause issues with JSON/agent processing
-                # Remove all parentheses, brackets, and arrows to simplify
-                sanitized_name = (
-                    dataset_name.replace("→", " to ")
-                    .replace("(", " ")
-                    .replace(")", "")
-                    .replace("[", " ")
-                    .replace("]", "")
-                )
+                sanitized_name = _sanitize_dataset_name(dataset_name)
 
                 # CRITICAL: Only add datasets that step_2 confirmed don't exist
-                # If step_2 found it, skip it (it already exists with correct task associations)
+                # If step_2 found it, skip it (it already exists)
                 if (
                     dataset_name.lower().strip() in found_dataset_names
-                    or sanitized_name.lower().strip() in found_dataset_names
+                    or sanitized_name in found_dataset_names
                 ):
                     logger.info(
                         f"Skipping {dataset_name} - already found in step_2, should not be added"
                     )
                     continue
 
-                # Extract task_id from step_3 output (required field)
-                task_id = dataset_info.get("task_id")
-                if task_id is None:
-                    logger.warning(
-                        f"Missing task_id for dataset {dataset_name} from step_3 output, skipping"
-                    )
-                    continue
-
                 # Combine input and gathered information
-                # task_id is already determined by step_3
                 combined = {
                     "name": dataset_name,
                     "dataset_info": dataset_input.get("dataset_info"),
@@ -866,7 +795,6 @@ class Step4WorkflowStep:
                     "arxiv_id": dataset_info.get(
                         "arxiv_id"
                     ),  # Dataset's own arxiv_id if it introduced the dataset
-                    "task_ids": [task_id],  # Use task_id from step_3
                 }
                 datasets_to_add.append(combined)
 
@@ -881,8 +809,10 @@ class Step4WorkflowStep:
             class Step4RenamedOutput(BaseModel):
                 step_4_results: list
 
-            empty_output = Step4RenamedOutput(step_4_results=[])
-            return StepResult(success=True, outputs=empty_output)
+            return StepResult(
+                success=True,
+                outputs=Step4RenamedOutput(step_4_results=[]),
+            )
 
         # Run step_4.py in an isolated subprocess so that cancellation scopes from the agent
         # do not interfere with the main workflow coroutine.
@@ -894,16 +824,12 @@ class Step4WorkflowStep:
         ]
         subprocess.run(cmd, check=True, cwd=self.project_root)
 
-        if step4_path.exists():
-            step4_data = json.loads(step4_path.read_text())
-        else:
-            step4_data = []
+        step4_data = json.loads(step4_path.read_text()) if step4_path.exists() else []
 
         class Step4RenamedOutput(BaseModel):
             step_4_results: list
 
-        renamed_output = Step4RenamedOutput(step_4_results=step4_data)
-
-        from extract_evaluation_results.step_base import StepResult
-
-        return StepResult(success=True, outputs=renamed_output)
+        return StepResult(
+            success=True,
+            outputs=Step4RenamedOutput(step_4_results=step4_data),
+        )
