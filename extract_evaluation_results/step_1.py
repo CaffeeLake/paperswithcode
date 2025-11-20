@@ -117,21 +117,42 @@ Use this context to better understand which tasks and datasets are commonly used
 
 ## Important Rules
 
+- prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
+
+#### Metric rules
+
+- include at most 2 different metrics per dataset.
+- when the metric value can be interpreted as a percentage (scale 0-100), call the metric "accuracy" instead of "score".
+- metric names must be actual metrics, NOT dataset names. The `metric_name` field should contain the actual metric being measured (e.g., "Accuracy", "Score", "mAP", "F1", "BLEU", "WER", "Overall", etc.), NOT the dataset name.
+  - If a table column header is the dataset name (e.g., "MMBench", "MMMU", "MM-Vet"), look for the actual metric name in the column header or table caption. Common metrics include: Accuracy, Score, Overall, AP, mAP, F1, BLEU, ROUGE, WER, etc.
+  - If the metric name is unclear from the table, use the generic "Accuracy" based on the value range (0-100 typically means Accuracy). If the value range looks different from 0-100, use the generic "Score".
+- when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
+
+#### Model rules
+
+- for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is. Include the method in the model name in case the model is combined with a certain method (e.g. "DINOv3-7B with Mask-RCNN head")
+- **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
+- when there are evaluation results for both "base" and "instruct" versions, prefer the "instruct" version if it's available.
+- do not include "ensemble" models in the evaluation results, only individual model results.
+
+#### Dataset rules
+
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
 - the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
-- prefer simple dataset and metric names, and bias towards including details in the model name rather than the dataset/metric
-- include at most 2 different metrics per dataset.
-- when there's an "overall" column in a table, prefer to include the overall result rather than the results for each individual part of the dataset.
-- when the metric value can be interpreted as a percentage (scale 0-100), call the metric "accuracy" instead of "score".
-- **NEVER use "Ours" or similar terms as model names**. Always extract the actual model name from the paper.
-- for model names, prefer the template "Model Name (Model Size)" if available e.g. "BERT (large)", otherwise use the model name as is. Include the method in the model name in case the model is combined with a certain method (e.g. "DINOv3-7B with Mask-RCNN head")
 - **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
 - when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
 - do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks at Google/Meta/etc., private datasets which contain sensitive data, etc.
 - do not include evaluation results which are unique to the paper/have very little comparisons to other papers.
 - **do not include evaluation results on small, ad-hoc evaluation sets constructed by the paper's authors solely for demonstrating their model**. These are typically small custom benchmarks (e.g., "100 challenging translation cases", "novel logical reasoning problems") that are not intended to be reusable community benchmarks. Focus on established, publicly available benchmarks that are used across multiple papers and form part of standard evaluation suites.
-- when there are evaluation results for both "base" and "instruct" versions, prefer the "instruct" version if it's available.
-- do not include "ensemble" models in the evaluation results, only individual model results.
+- **do not include vague, generic, or aggregate dataset names** such as:
+  - "Language benchmarks (overall)"
+  - "Vision benchmarks (average)"
+  - "Overall benchmarks"
+  - "Combined datasets"
+  - "Average across all datasets"
+  - Any dataset name that is simply an aggregation/average of multiple benchmarks without being a specific named benchmark itself
+  - Dataset names that only contain generic terms like "overall", "average", "combined", "aggregate", "summary" without a specific benchmark name
+- **Always use specific, named benchmarks** (e.g., "MMLU", "GSM8K", "COCO", "ImageNet") rather than aggregate categories
 
 ## Tools Available
 
@@ -215,6 +236,7 @@ class Step1(AgentStep[Step1Input, Step1Output]):
             paper_markdown = cached_markdown
         else:
             # Need to download PDF and convert to markdown
+            paper_markdown = None
             async with temp_pdf_download(arxiv_id=arxiv_id) as (
                 pdf_path,
                 error_message,
@@ -227,17 +249,44 @@ class Step1(AgentStep[Step1Input, Step1Output]):
 
                 # Convert PDF to markdown
                 logger.info(f"Converting PDF to markdown for {arxiv_id}")
-                result = await datalab_client.convert(pdf_path)
-                logger.info(
-                    f"PDF conversion completed. Markdown length: {len(result.markdown) if result.markdown else 0}"
-                )
+                try:
+                    result = await datalab_client.convert(pdf_path)
+                    logger.info(
+                        f"PDF conversion completed. Result type: {type(result)}, "
+                        f"Markdown length: {len(result.markdown) if result.markdown else 0}, "
+                        f"Has markdown: {result.markdown is not None}"
+                    )
 
-                paper_markdown = result.markdown
+                    # Check for errors in the result
+                    if hasattr(result, "error") and result.error:
+                        logger.error(f"PDF conversion error: {result.error}")
+                        raise RuntimeError(f"PDF conversion failed: {result.error}")
+
+                    if result.markdown is None or len(result.markdown) == 0:
+                        error_msg = (
+                            f"PDF conversion returned empty markdown for {arxiv_id}"
+                        )
+                        if hasattr(result, "error"):
+                            error_msg += f" (error: {result.error})"
+                        raise RuntimeError(error_msg)
+
+                    paper_markdown = result.markdown
+                except Exception as e:
+                    logger.error(
+                        f"Exception during PDF conversion: {type(e).__name__}: {e}"
+                    )
+                    # Re-raise with more context but preserve original exception
+                    raise RuntimeError(
+                        f"PDF conversion failed for {arxiv_id}: {type(e).__name__}: {e}"
+                    ) from e
 
                 # Save to cache for future use
                 await save_markdown_to_cache(arxiv_id, paper_markdown)
 
         # Build the input prompt with the paper markdown
+        if paper_markdown is None:
+            raise RuntimeError(f"Failed to obtain markdown for paper {arxiv_id}")
+
         return f"""Here is the paper to extract evaluation results from: {paper_markdown}"""
 
     async def format_instructions(self, inputs: Step1Input) -> str:

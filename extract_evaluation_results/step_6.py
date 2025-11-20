@@ -24,6 +24,8 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -105,9 +107,14 @@ Use the step_2_results and step_4_results provided in the prompt to map original
 Create a mapping from original dataset names (case-insensitive) to:
 - `dataset_id`: The database ID
 - `canonical_name`: The official name in the database
-- `task_id`: Use the task_id from step_2_results if available (from dataset.task_ids[0])
-  **CRITICAL**: Always use the task_ids from step_2_results for datasets found in step_2.
-  These are the correct task associations already in the database. Do NOT infer task_ids.
+- `task_id`: Intelligently select the appropriate task_id from step_2_results based on context:
+  **CRITICAL**: Datasets can support multiple tasks (e.g., COCO/LVIS for both Object Detection and Instance Segmentation).
+  Look at the evaluation context to determine the correct task:
+  - If metrics are bbox-focused (AP, AP50, mAP for boxes) → likely Object Detection (task_id=2)
+  - If metrics are mask-focused (Mask AP, Mask mAP) → likely Instance Segmentation (task_id=3)
+  - If only one task_id is available in dataset.task_ids, use that one
+  - If multiple task_ids are available, analyze the metrics and model name to select the most appropriate one
+  - Use metrics_by_task to see which task allows which metrics for the dataset
 
 ## Metric Normalization
 
@@ -120,7 +127,10 @@ Additionally, metric VALUES must be normalized to match the canonical scale stor
 Learn these standard mappings:
 
 **Object Detection / Instance Segmentation:**
-- "AP" / "Average Precision" / "Box AP" / "Object AP" → "mAP" (most common)
+- **CRITICAL**: "AP" / "Average Precision" / "Box AP" / "Object AP" → **ALWAYS "mAP"**
+  - For Object Detection (task_id=2), "AP" in papers means mean Average Precision
+  - This applies to ALL object detection datasets, even new ones without existing conventions
+  - Only exception: specific variants like AP50, AP75, APs, APm, APl (keep these as-is)
 - "Mask AP" / "Segmentation AP" → "Mask mAP"
 - "AP50" / "AP at IoU=0.50" → "AP50"
 - "AP75" / "AP at IoU=0.75" → "AP75"
@@ -227,7 +237,7 @@ Use this to verify your normalization is correct. If existing evaluations use "m
 Each normalized evaluation must have:
 
 1. **paper_id** (int): Database ID of the paper (lookup from arxiv_id)
-2. **task_id** (int): Database ID of the task (from dataset.tasks[0])
+2. **task_id** (int): Database ID of the task (intelligently selected from available dataset.task_ids based on evaluation context - see Dataset Normalization section)
 3. **dataset_id** (int): Database ID of the dataset
 4. **dataset_name** (str): Canonical name from database
 5. **metrics** (dict): Dictionary with normalized metric names → values
@@ -268,6 +278,7 @@ The `normalized` list should contain all evaluations (both successfully mapped a
 3. **Handle missing data**: If paper_id or task_id cannot be found, mark as unresolved
 4. **Metric verification**: Use get_leaderboard_metrics when uncertain about metric names
 5. **Multiple metrics**: An evaluation can have multiple metrics in the `metrics` dict, but only one `best_metric`
+6. **Related metrics consolidation**: If a paper reports multiple related metrics for the same dataset (e.g., "MME-P" and "MME-S" for the MME dataset), create separate evaluation entries for each. These will be automatically consolidated into a single evaluation with multiple metrics in post-processing.
 
 Process ALL evaluation results, even if some cannot be fully normalized. Mark problematic ones with `_unresolved: true` so they can be reviewed manually.
 """
@@ -382,6 +393,7 @@ Normalize ALL {len(inputs.evaluation_results)} evaluation results above by:
 1. **Dataset Mapping**: Use step_2 and step_4 results to map each dataset name to its database ID and canonical name
 2. **Metric Name Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
    - Use get_leaderboard_metrics(task_id, dataset_id) to check what metrics are used
+   - For Object Detection tasks, ALWAYS convert "AP" to "mAP" (even for new datasets)
 3. **Metric Value Normalization**: Normalize metric VALUES to match the canonical scale from step_5
    - Use step_5_all_metrics to get the scale for each metric
    - Convert values if needed (e.g., 4.3 → 0.043 for AbsRel with scale "0-1")
@@ -399,6 +411,102 @@ Process every evaluation result. Do not skip any.
 """
 
         return prompt
+
+
+def normalize_model_name(model_name: str) -> str:
+    """Normalize model name for grouping (lowercase, strip whitespace)."""
+    if not model_name:
+        return ""
+    return model_name.strip().lower()
+
+
+def should_consolidate_models(name1: str, name2: str) -> bool:
+    """Check if two model names should be consolidated."""
+    norm1 = normalize_model_name(name1)
+    norm2 = normalize_model_name(name2)
+
+    # If normalized names are identical, consolidate
+    if norm1 == norm2:
+        return True
+
+    # Use fuzzy matching for minor differences (e.g., typos, punctuation)
+    from difflib import SequenceMatcher
+
+    similarity = SequenceMatcher(None, norm1, norm2).ratio()
+
+    # High threshold (0.95) to only consolidate very similar names
+    return similarity >= 0.95
+
+
+def consolidate_evaluations(normalized_evals: list[dict]) -> list[dict]:
+    """
+    Consolidate evaluations with same (paper_id, task_id, dataset_id, model_name)
+    by merging their metrics into a single evaluation.
+
+    Args:
+        normalized_evals: List of normalized evaluation dictionaries
+
+    Returns:
+        List of consolidated evaluations with merged metrics
+    """
+    # Group by (paper_id, task_id, dataset_id, normalized_model_name)
+    groups = {}
+
+    for eval_result in normalized_evals:
+        # Skip unresolved evaluations
+        if eval_result.get("_unresolved"):
+            continue
+
+        key = (
+            eval_result.get("paper_id"),
+            eval_result.get("task_id"),
+            eval_result.get("dataset_id"),
+            normalize_model_name(eval_result.get("model_name", "")),
+        )
+
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(eval_result)
+
+    # Consolidate each group
+    consolidated = []
+
+    for (paper_id, task_id, dataset_id, _), evals in groups.items():
+        if len(evals) == 1:
+            # No consolidation needed
+            consolidated.append(evals[0])
+            continue
+
+        # Merge metrics from all evaluations in the group
+        merged_metrics = {}
+        original_names = []
+
+        for eval_result in evals:
+            metrics = eval_result.get("metrics", {})
+            merged_metrics.update(metrics)
+
+            if "_original_dataset_name" in eval_result:
+                original_names.append(eval_result["_original_dataset_name"])
+
+        # Use the first evaluation as the base
+        base_eval = evals[0].copy()
+        base_eval["metrics"] = merged_metrics
+
+        # Keep the first best_metric or use a heuristic
+        # (Could be enhanced to choose based on metric importance)
+
+        # Add consolidation metadata
+        base_eval["_consolidated_from"] = len(evals)
+        base_eval["_original_dataset_names"] = original_names
+
+        consolidated.append(base_eval)
+
+    # Add back unresolved evaluations
+    for eval_result in normalized_evals:
+        if eval_result.get("_unresolved"):
+            consolidated.append(eval_result)
+
+    return consolidated
 
 
 # Standardized output directory functions
@@ -455,6 +563,14 @@ async def step_6(
         print(f"Step 6 failed: {result.error_message}")
         return None
 
+    # Consolidate evaluations with same dataset
+    consolidated = consolidate_evaluations(result.outputs.normalized)
+
+    # Update the output with consolidated results
+    result.outputs.normalized = consolidated
+    result.outputs.mapped = len([e for e in consolidated if not e.get("_unresolved")])
+    result.outputs.unresolved = len([e for e in consolidated if e.get("_unresolved")])
+
     return result.outputs
 
 
@@ -483,26 +599,37 @@ async def main():
 
     # Read step_2 output
     output_dir = get_output_dir(arxiv_id)
-    step_2_path = output_dir / "step_2_results.json"
+    step_2_path = output_dir / "step_2.json"
     if not step_2_path.exists():
         print(f"Warning: step_2 output not found at {step_2_path}")
         step_2_results = []
     else:
-        step_2_results = json.loads(step_2_path.read_text())
+        step_2_data = json.loads(step_2_path.read_text())
+        step_2_results = step_2_data.get("step_2_results", [])
 
     # Read step_4 output (optional)
-    step_4_path = output_dir / "step_4_results.json"
+    step_4_path = output_dir / "step_4.json"
     if step_4_path.exists():
-        step_4_results = json.loads(step_4_path.read_text())
+        step_4_data = json.loads(step_4_path.read_text())
+        if isinstance(step_4_data, dict):
+            step_4_results = step_4_data.get("step_4_results", [])
+        else:
+            step_4_results = step_4_data
     else:
         step_4_results = []
 
     # Read step_5 output (optional)
-    step_5_path = output_dir / "step_5_metrics.json"
     step_5_all_metrics = None
-    if step_5_path.exists():
-        step_5_data = json.loads(step_5_path.read_text())
-        step_5_all_metrics = step_5_data.get("all_metrics")
+    step_5_candidates = [
+        output_dir / "step_5_metrics.json",
+        output_dir / "step_5.json",
+    ]
+    for step_5_path in step_5_candidates:
+        if step_5_path.exists():
+            step_5_data = json.loads(step_5_path.read_text())
+            if isinstance(step_5_data, dict):
+                step_5_all_metrics = step_5_data.get("all_metrics")
+            break
 
     # Run normalization
     result = await step_6(
@@ -533,8 +660,9 @@ async def main():
     print(f"Unresolved: {result.unresolved}")
     print(f"\nDataset mappings used: {len(result.dataset_mapping)}")
     for original_name, mapping in result.dataset_mapping.items():
+        dataset_id = mapping.get("dataset_id") or mapping.get("id")
         print(
-            f"  - '{original_name}' -> '{mapping['canonical_name']}' (ID: {mapping['id']})"
+            f"  - '{original_name}' -> '{mapping['canonical_name']}' (ID: {dataset_id})"
         )
     print("=" * 60)
 
@@ -557,7 +685,7 @@ class Step6WorkflowStep:
     name = "Step6WorkflowStep"
 
     def __init__(self):
-        self.step = Step6()
+        self.project_root = Path(__file__).resolve().parents[1]
 
     async def execute(self, state):
         """
@@ -591,15 +719,46 @@ class Step6WorkflowStep:
                 outputs=empty_output,
             )
 
-        inputs = {
-            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
-            "evaluation_results": evaluation_results,
-            "step_2_results": state.data.get("step_2_results", []),
-            "step_4_results": state.data.get("step_4_results"),
-            "step_5_all_metrics": state.data.get("all_metrics"),
-        }
+        arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
 
-        # Execute the agent step
-        result = await self.step.run(inputs)
+        cmd = [
+            sys.executable,
+            "extract_evaluation_results/step_6.py",
+            "--arxiv_id",
+            arxiv_id,
+        ]
 
-        return result
+        try:
+            subprocess.run(cmd, check=True, cwd=self.project_root)
+        except subprocess.CalledProcessError as exc:
+            logger.error("Step 6 subprocess failed: %s", exc)
+            return StepResult(
+                success=False,
+                outputs=None,
+                error_message=f"Step 6 subprocess failed with exit code {exc.returncode}",
+            )
+
+        output_dir = get_output_dir(arxiv_id)
+        output_path = output_dir / "step_6_normalized.json"
+
+        if output_path.exists():
+            try:
+                step6_data = json.loads(output_path.read_text())
+                output = Step6Output.model_validate(step6_data)
+            except Exception as exc:
+                logger.error("Failed to parse Step 6 output: %s", exc)
+                return StepResult(
+                    success=False,
+                    outputs=None,
+                    error_message=f"Failed to parse Step 6 output: {exc}",
+                )
+        else:
+            logger.warning(
+                "Step 6 output file not found at %s, returning empty result",
+                output_path,
+            )
+            output = Step6Output(
+                normalized=[], mapped=0, unresolved=0, dataset_mapping={}
+            )
+
+        return StepResult(success=True, outputs=output)

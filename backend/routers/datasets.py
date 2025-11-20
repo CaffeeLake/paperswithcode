@@ -155,6 +155,87 @@ async def get_dataset(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@router.get("/{dataset_id}/tasks/")
+async def get_dataset_tasks(
+    dataset_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get tasks associated with a specific dataset.
+
+    Returns a list of tasks that have evaluations on this dataset.
+
+    **Example:**
+    - `/api/v1/datasets/6/tasks/` - Get tasks for dataset 6
+    """
+    try:
+        # Parse dataset_id (can be ID or slug)
+        try:
+            dataset_id_int = int(dataset_id)
+        except ValueError:
+            # Try to resolve slug to ID
+            dataset_service = DatasetService(db)
+            dataset = dataset_service.get_dataset_by_slug(dataset_id)
+            if not dataset:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Dataset with slug '{dataset_id}' not found",
+                )
+            dataset_id_int = int(dataset.id)
+
+        # Get tasks for this dataset via task_dataset_metrics
+        from backend.models.database import Task as DBTask, TaskDatasetMetric
+        from backend.models.api import Task
+
+        tasks_query = (
+            db.query(DBTask)
+            .join(TaskDatasetMetric, DBTask.id == TaskDatasetMetric.task_id)
+            .filter(TaskDatasetMetric.dataset_id == dataset_id_int)
+            .distinct()
+            .order_by(DBTask.name)
+            .all()
+        )
+
+        # Convert to API models
+        tasks = []
+        for task in tasks_query:
+            # Get paper count for this task
+            from backend.models.database import PaperTask
+            from sqlalchemy import func
+
+            paper_count = (
+                db.query(func.count(PaperTask.paper_id))
+                .filter(PaperTask.task_id == task.id)
+                .scalar()
+                or 0
+            )
+
+            task_dict = {
+                "id": str(task.id),
+                "name": task.name,
+                "description": task.description,
+                "slug": task.slug,
+                "keywords": task.keywords,
+                "parent_id": str(task.parent_id) if task.parent_id else None,
+                "area_id": str(task.area_id) if task.area_id else None,
+                "level": task.level,
+                "paper_count": paper_count,
+                "image_url": task.image_url,
+                "image_credit": task.image_credit,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+            }
+            tasks.append(Task(**task_dict))
+
+        return {"count": len(tasks), "results": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting tasks for dataset: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 @router.get("/{dataset_id}/evaluations/", response_model=dict)
 async def get_dataset_evaluations(
     dataset_id: str,

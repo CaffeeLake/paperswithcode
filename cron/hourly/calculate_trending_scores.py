@@ -32,6 +32,7 @@ from typing import Optional
 from sqlalchemy import text
 
 from backend.database.connection import db_manager
+from cron.utils.cron_helpers import DatabaseCronJob
 
 
 # EMA smoothing factor (0.15 means 85% weight on previous score, 15% on new data)
@@ -41,14 +42,8 @@ ALPHA = 0.15
 MIN_HOURS_BETWEEN_SNAPSHOTS = 0.5
 
 
-def log(message: str):
-    """Memory-efficient logging - print and flush immediately."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{timestamp} - {message}", flush=True)
-
-
 def get_repositories_needing_trending_update(
-    session, batch_size: int = 100, update_threshold_hours: int = 1
+    session, batch_size: int = 100, update_threshold_hours: int = 1, logger=None
 ) -> list:
     """
     Get repositories that need trending score updates.
@@ -62,6 +57,7 @@ def get_repositories_needing_trending_update(
         session: Database session
         batch_size: Number of repositories to process
         update_threshold_hours: Only update if last update was more than N hours ago
+        logger: Optional logger instance
 
     Returns:
         List of repository IDs
@@ -100,13 +96,16 @@ def get_repositories_needing_trending_update(
         return [row[0] for row in result]
 
     except Exception as e:
-        log(f"Error fetching repositories needing update: {e}")
+        if logger:
+            logger.error(f"Error fetching repositories needing update: {e}")
         return []
     finally:
         gc.collect()
 
 
-def get_repository_snapshots(session, repository_id: int, limit: int = 2) -> list:
+def get_repository_snapshots(
+    session, repository_id: int, limit: int = 2, logger=None
+) -> list:
     """
     Get the most recent snapshots for a repository.
 
@@ -114,6 +113,7 @@ def get_repository_snapshots(session, repository_id: int, limit: int = 2) -> lis
         session: Database session
         repository_id: Repository ID
         limit: Number of snapshots to retrieve (default 2: current + previous)
+        logger: Optional logger instance
 
     Returns:
         List of snapshot tuples (num_stars, snapshot_at)
@@ -138,19 +138,25 @@ def get_repository_snapshots(session, repository_id: int, limit: int = 2) -> lis
         return result
 
     except Exception as e:
-        log(f"Error fetching snapshots for repository {repository_id}: {e}")
+        if logger:
+            logger.error(
+                f"Error fetching snapshots for repository {repository_id}: {e}"
+            )
         return []
     finally:
         gc.collect()
 
 
-def get_current_trending_score(session, repository_id: int) -> Optional[float]:
+def get_current_trending_score(
+    session, repository_id: int, logger=None
+) -> Optional[float]:
     """
     Get the current trending score for a repository.
 
     Args:
         session: Database session
         repository_id: Repository ID
+        logger: Optional logger instance
 
     Returns:
         Current trending score or None
@@ -170,7 +176,10 @@ def get_current_trending_score(session, repository_id: int) -> Optional[float]:
         return float(result[0]) if result and result[0] is not None else None
 
     except Exception as e:
-        log(f"Error fetching trending score for repository {repository_id}: {e}")
+        if logger:
+            logger.error(
+                f"Error fetching trending score for repository {repository_id}: {e}"
+            )
         return None
     finally:
         gc.collect()
@@ -227,7 +236,7 @@ def calculate_ema_trending_score(
 
 
 def update_repository_trending_score(
-    session, repository_id: int, trending_score: float
+    session, repository_id: int, trending_score: float, logger=None
 ) -> bool:
     """
     Update the trending score for a repository.
@@ -236,6 +245,7 @@ def update_repository_trending_score(
         session: Database session
         repository_id: Repository ID
         trending_score: New trending score
+        logger: Optional logger instance
 
     Returns:
         True if successful, False otherwise
@@ -263,32 +273,42 @@ def update_repository_trending_score(
 
     except Exception as e:
         session.rollback()
-        log(f"Error updating trending score for repository {repository_id}: {e}")
+        if logger:
+            logger.error(
+                f"Error updating trending score for repository {repository_id}: {e}"
+            )
         return False
     finally:
         gc.collect()
 
 
-def process_repository_trending(session, repository_id: int) -> Optional[dict]:
+def process_repository_trending(
+    session, repository_id: int, logger=None
+) -> Optional[dict]:
     """
     Process trending score calculation for a single repository.
 
     Args:
         session: Database session
         repository_id: Repository ID
+        logger: Optional logger instance
 
     Returns:
         Dictionary with calculation results or None if failed
     """
     try:
         # Get the two most recent snapshots
-        snapshots = get_repository_snapshots(session, repository_id, limit=2)
+        snapshots = get_repository_snapshots(
+            session, repository_id, limit=2, logger=logger
+        )
 
         if len(snapshots) < 2:
             # Not enough history to calculate velocity
             # If we have 1 snapshot, initialize trending score to 0
             if len(snapshots) == 1:
-                update_repository_trending_score(session, repository_id, 0.0)
+                update_repository_trending_score(
+                    session, repository_id, 0.0, logger=logger
+                )
                 return {
                     "repository_id": repository_id,
                     "trending_score": 0.0,
@@ -315,7 +335,9 @@ def process_repository_trending(session, repository_id: int) -> Optional[dict]:
         )
 
         # Get previous trending score
-        previous_trending_score = get_current_trending_score(session, repository_id)
+        previous_trending_score = get_current_trending_score(
+            session, repository_id, logger=logger
+        )
 
         # Calculate new EMA trending score
         new_trending_score = calculate_ema_trending_score(
@@ -324,7 +346,7 @@ def process_repository_trending(session, repository_id: int) -> Optional[dict]:
 
         # Update database
         success = update_repository_trending_score(
-            session, repository_id, new_trending_score
+            session, repository_id, new_trending_score, logger=logger
         )
 
         if success:
@@ -342,7 +364,8 @@ def process_repository_trending(session, repository_id: int) -> Optional[dict]:
             return None
 
     except Exception as e:
-        log(f"Error processing repository {repository_id}: {e}")
+        if logger:
+            logger.error(f"Error processing repository {repository_id}: {e}")
         return None
     finally:
         gc.collect()
@@ -363,130 +386,148 @@ def check_memory_usage() -> int:
         return 1000  # Default fallback
 
 
-def main():
-    """Main execution function for trending score calculation."""
-    log("=" * 80)
-    log("Starting Trending Score Calculation (EMA)")
-    log("=" * 80)
+class TrendingScoresCalculationJob(DatabaseCronJob):
+    """Hourly job to calculate trending scores for GitHub repositories using EMA."""
 
-    # Initialize database session
-    session = None
+    def __init__(self):
+        super().__init__(job_name="calculate_trending_scores", log_level="INFO")
 
-    try:
-        session = db_manager.session_local()
-        log("Database session initialized")
+    def run(self):
+        """Main execution logic for trending score calculation."""
+        self.logger.info("=" * 80)
+        self.logger.info("Starting Trending Score Calculation (EMA)")
+        self.logger.info("=" * 80)
 
-        # Configuration
-        batch_size = 500  # Process 500 repositories per batch
-        update_threshold_hours = 1  # Only update if last update was > 1 hour ago
-        max_batches = 100  # Maximum number of batches to process
-        min_memory_mb = 200  # Stop if less than 200MB available
+        # Initialize database session
+        session = None
 
-        log("Configuration:")
-        log(f"  - Batch size: {batch_size}")
-        log(f"  - Update threshold: {update_threshold_hours} hours")
-        log(f"  - Alpha (smoothing factor): {ALPHA}")
-        log(f"  - Min hours between snapshots: {MIN_HOURS_BETWEEN_SNAPSHOTS}")
+        try:
+            session = db_manager.session_local()
+            self.logger.info("Database session initialized")
 
-        total_processed = 0
-        total_updated = 0
-        total_insufficient_history = 0
-        start_time = time.time()
-        max_runtime = 55 * 60  # 55 minutes max
+            # Configuration
+            batch_size = 500  # Process 500 repositories per batch
+            update_threshold_hours = 1  # Only update if last update was > 1 hour ago
+            max_batches = 100  # Maximum number of batches to process
+            min_memory_mb = 200  # Stop if less than 200MB available
 
-        for batch_num in range(max_batches):
-            # Check runtime limit
-            if time.time() - start_time > max_runtime:
-                log("Runtime limit reached - stopping")
-                break
-
-            # Check memory availability
-            available_memory = check_memory_usage()
-            if available_memory < min_memory_mb:
-                log(f"Low memory ({available_memory}MB) - stopping to prevent OOM")
-                break
-
-            # Get repositories needing update
-            repository_ids = get_repositories_needing_trending_update(
-                session, batch_size, update_threshold_hours
+            self.logger.info("Configuration:")
+            self.logger.info(f"  - Batch size: {batch_size}")
+            self.logger.info(f"  - Update threshold: {update_threshold_hours} hours")
+            self.logger.info(f"  - Alpha (smoothing factor): {ALPHA}")
+            self.logger.info(
+                f"  - Min hours between snapshots: {MIN_HOURS_BETWEEN_SNAPSHOTS}"
             )
 
-            if not repository_ids:
-                log("No more repositories to process")
-                break
+            total_processed = 0
+            total_updated = 0
+            total_insufficient_history = 0
+            start_time = time.time()
+            max_runtime = 55 * 60  # 55 minutes max
 
-            log(f"Batch {batch_num + 1}: Processing {len(repository_ids)} repositories")
+            for batch_num in range(max_batches):
+                # Check runtime limit
+                if time.time() - start_time > max_runtime:
+                    self.logger.info("Runtime limit reached - stopping")
+                    break
 
-            batch_updated = 0
-            batch_insufficient = 0
+                # Check memory availability
+                available_memory = check_memory_usage()
+                if available_memory < min_memory_mb:
+                    self.logger.warning(
+                        f"Low memory ({available_memory}MB) - stopping to prevent OOM"
+                    )
+                    break
 
-            for repo_id in repository_ids:
-                result = process_repository_trending(session, repo_id)
+                # Get repositories needing update
+                repository_ids = get_repositories_needing_trending_update(
+                    session, batch_size, update_threshold_hours, logger=self.logger
+                )
 
-                if result:
-                    total_processed += 1
+                if not repository_ids:
+                    self.logger.info("No more repositories to process")
+                    break
 
-                    if result.get("reason") == "insufficient_history":
-                        batch_insufficient += 1
-                        total_insufficient_history += 1
-                    else:
-                        batch_updated += 1
-                        total_updated += 1
+                self.logger.info(
+                    f"Batch {batch_num + 1}: Processing {len(repository_ids)} repositories"
+                )
 
-                        # Log detailed update for interesting changes
-                        if (
-                            result.get("stars_gained", 0) > 0
-                            or result.get("new_trending_score", 0) > 0.1
-                        ):
-                            prev_score = result.get("previous_trending_score")
-                            prev_score_str = (
-                                f"{prev_score:.4f}" if prev_score is not None else "N/A"
-                            )
-                            log(
-                                f"  Repo {repo_id}: {result['previous_stars']} → {result['current_stars']} stars "
-                                f"({result['stars_gained']:+d} in {result['hours_elapsed']:.1f}h) | "
-                                f"Velocity: {result['raw_stars_per_hour']:.4f} stars/h | "
-                                f"Trending: {prev_score_str} → {result['new_trending_score']:.4f}"
-                            )
+                batch_updated = 0
+                batch_insufficient = 0
 
-            log(
-                f"Batch {batch_num + 1} complete: {batch_updated} updated, {batch_insufficient} insufficient history"
-            )
+                for repo_id in repository_ids:
+                    result = process_repository_trending(
+                        session, repo_id, logger=self.logger
+                    )
 
-            # If batch was not full, we've processed all available repositories
-            if len(repository_ids) < batch_size:
-                log("All available repositories processed")
-                break
+                    if result:
+                        total_processed += 1
 
-            # Garbage collection between batches
-            gc.collect()
+                        if result.get("reason") == "insufficient_history":
+                            batch_insufficient += 1
+                            total_insufficient_history += 1
+                        else:
+                            batch_updated += 1
+                            total_updated += 1
 
-            # Small delay to prevent overloading
-            time.sleep(0.1)
+                            # Log detailed update for interesting changes
+                            if (
+                                result.get("stars_gained", 0) > 0
+                                or result.get("new_trending_score", 0) > 0.1
+                            ):
+                                prev_score = result.get("previous_trending_score")
+                                prev_score_str = (
+                                    f"{prev_score:.4f}"
+                                    if prev_score is not None
+                                    else "N/A"
+                                )
+                                self.logger.info(
+                                    f"  Repo {repo_id}: {result['previous_stars']} → {result['current_stars']} stars "
+                                    f"({result['stars_gained']:+d} in {result['hours_elapsed']:.1f}h) | "
+                                    f"Velocity: {result['raw_stars_per_hour']:.4f} stars/h | "
+                                    f"Trending: {prev_score_str} → {result['new_trending_score']:.4f}"
+                                )
 
-        # Final summary
-        elapsed = (time.time() - start_time) / 60
-        final_memory = check_memory_usage()
+                self.logger.info(
+                    f"Batch {batch_num + 1} complete: {batch_updated} updated, {batch_insufficient} insufficient history"
+                )
 
-        log("=" * 80)
-        log("Trending Score Calculation Completed")
-        log("=" * 80)
-        log(f"Total repositories processed: {total_processed}")
-        log(f"Trending scores updated: {total_updated}")
-        log(f"Insufficient history: {total_insufficient_history}")
-        log(f"Runtime: {elapsed:.1f} minutes")
-        log(f"Final memory available: {final_memory}MB")
-        log("=" * 80)
+                # If batch was not full, we've processed all available repositories
+                if len(repository_ids) < batch_size:
+                    self.logger.info("All available repositories processed")
+                    break
 
-    except Exception as e:
-        log(f"Fatal error: {e}")
-        sys.exit(1)
-    finally:
-        # Clean up database session
-        if session:
-            session.close()
-            log("Database session closed")
+                # Garbage collection between batches
+                gc.collect()
+
+                # Small delay to prevent overloading
+                time.sleep(0.1)
+
+            # Final summary
+            elapsed = (time.time() - start_time) / 60
+            final_memory = check_memory_usage()
+
+            self.logger.info("=" * 80)
+            self.logger.info("Trending Score Calculation Completed")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Total repositories processed: {total_processed}")
+            self.logger.info(f"Trending scores updated: {total_updated}")
+            self.logger.info(f"Insufficient history: {total_insufficient_history}")
+            self.logger.info(f"Runtime: {elapsed:.1f} minutes")
+            self.logger.info(f"Final memory available: {final_memory}MB")
+            self.logger.info("=" * 80)
+
+        except Exception as e:
+            self.logger.error(f"Fatal error: {e}")
+            raise
+        finally:
+            # Clean up database session
+            if session:
+                session.close()
+                self.logger.info("Database session closed")
 
 
 if __name__ == "__main__":
-    main()
+    job = TrendingScoresCalculationJob()
+    success = job.execute()
+    sys.exit(0 if success else 1)

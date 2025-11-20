@@ -7,7 +7,7 @@ import { useParams, Link } from "react-router-dom";
 import { useDatasetBySlug } from "@/hooks/useDatasets";
 import { useEvaluationsByDataset } from "@/hooks/useEvaluations";
 import { useMetricDirections } from "@/hooks/useMetrics";
-import { getTasks, getPaper, type Task, type Paper, type Evaluation } from "@/lib/api";
+import { getTasks, getPaper, getDatasetTasks, type Task, type Paper, type Evaluation } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Dot } from 'recharts';
@@ -41,9 +41,17 @@ const Benchmark = () => {
   const [sortBy, setSortBy] = useState<string>('rank');
   const [modelFilter, setModelFilter] = useState<string>('all');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | 'default'>('default');
+  const [selectedTaskId, setSelectedTaskId] = useState<string>('all');
 
   // Fetch dataset by slug
   const { data: dataset, isLoading: datasetLoading, error: datasetError } = useDatasetBySlug(datasetSlug);
+
+  // Fetch tasks for this dataset
+  const { data: datasetTasks, isLoading: tasksLoading } = useQuery({
+    queryKey: ['dataset-tasks', dataset?.id],
+    queryFn: () => getDatasetTasks(dataset!.id),
+    enabled: !!dataset?.id,
+  });
 
   // Fetch introducing paper details when available
   const { data: introducingPaper } = useQuery({
@@ -240,21 +248,20 @@ const Benchmark = () => {
   const processedEvaluations = useMemo(() => {
     if (!evaluations) return [];
 
-    // Get the metric to sort by (for score-based sorting)
-    const sortMetric = selectedMetric || getDisplayMetricName(evaluations[0]?.best_metric) || availableMetrics[0];
+    // Filter evaluations by selected task (if not 'all')
+    const taskFilteredEvaluations = selectedTaskId === 'all'
+      ? evaluations
+      : evaluations.filter(e => e.task_id === selectedTaskId);
 
-    // Filter evaluations to show those that have the selected metric value
-    // This allows viewing all metrics even if they're not the best_metric for that evaluation
+    // Get the metric to sort by (for score-based sorting)
+    const sortMetric = selectedMetric || getDisplayMetricName(taskFilteredEvaluations[0]?.best_metric) || availableMetrics[0];
+
+    // Get original metric names for the selected display metric
     const originalMetricNames = metricOriginalNameLookup[sortMetric] || [sortMetric];
-    const filteredEvaluations = evaluations.filter(e => {
-      if (!e.metrics) return false;
-      // Check if evaluation has the selected metric (or any of its original names)
-      return originalMetricNames.some(metricName =>
-        e.metrics[metricName] !== undefined &&
-        e.metrics[metricName] !== null &&
-        e.metrics[metricName] !== ''
-      );
-    });
+
+    // Don't filter evaluations - show all evaluations with all their metrics
+    // This allows users to see all metric columns populated simultaneously
+    const filteredEvaluations = taskFilteredEvaluations;
 
     if (!sortMetric) {
       return filteredEvaluations.map(e => ({
@@ -332,6 +339,13 @@ const Benchmark = () => {
           }
         }
         // Fall through to metric value sorting as tiebreaker or when ranks aren't available
+        // But first check if either evaluation is missing the metric value
+        const aHasValue = getDisplayMetricValue(a, sortMetric) !== undefined;
+        const bHasValue = getDisplayMetricValue(b, sortMetric) !== undefined;
+        if (!aHasValue && bHasValue) return 1; // a goes to bottom
+        if (aHasValue && !bHasValue) return -1; // b goes to bottom
+        if (!aHasValue && !bHasValue) return 0; // both missing, equal
+
         if (effectiveDirection === 'asc') {
           return a.sortValue - b.sortValue;
         } else {
@@ -347,6 +361,13 @@ const Benchmark = () => {
       }
 
       // Mode 3: Sort by selected metric value using effective direction
+      // Check if either evaluation is missing the metric value
+      const aHasValue = getDisplayMetricValue(a, sortMetric) !== undefined;
+      const bHasValue = getDisplayMetricValue(b, sortMetric) !== undefined;
+      if (!aHasValue && bHasValue) return 1; // a goes to bottom
+      if (aHasValue && !bHasValue) return -1; // b goes to bottom
+      if (!aHasValue && !bHasValue) return 0; // both missing, equal
+
       if (effectiveDirection === 'asc') {
         // Ascending: lower values first (e.g., for WER, lower is better)
         return a.sortValue - b.sortValue;
@@ -398,6 +419,7 @@ const Benchmark = () => {
     sortBy,
     availableMetrics,
     sortDirection,
+    selectedTaskId,
     getDisplayMetricName,
     getMetricDirection,
     getDisplayMetricValue,
@@ -411,6 +433,7 @@ const Benchmark = () => {
     // Filter evaluations with valid dates
     const evaluationsWithDates = processedEvaluations
       .filter(e => e.evaluated_on || e.paper_published_date)
+      .filter(e => e.sortValue > 0)  // Only include evaluations with valid scores
       .map(e => {
         const dateStr = e.evaluated_on || e.paper_published_date;
         const dateTimestamp = new Date(dateStr!).getTime();
@@ -685,10 +708,31 @@ const Benchmark = () => {
         {/* Current Rankings Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Leaderboard</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>Leaderboard</CardTitle>
+              {/* Task Selector */}
+              {datasetTasks && datasetTasks.length > 1 && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-muted-foreground">Task:</span>
+                  <Select value={selectedTaskId} onValueChange={setSelectedTaskId}>
+                    <SelectTrigger className="w-[280px] h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Tasks</SelectItem>
+                      {datasetTasks.map(task => (
+                        <SelectItem key={task.id} value={task.id.toString()}>
+                          {task.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
-            {evaluationsLoading ? (
+            {evaluationsLoading || tasksLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin mr-2" />
                 <span>Loading evaluations...</span>
@@ -704,6 +748,12 @@ const Benchmark = () => {
                     <th className="min-w-[200px] text-left py-3 px-4 font-medium text-muted-foreground truncate">
                       Model
                     </th>
+                    {/* Task column (only when showing all tasks) */}
+                    {selectedTaskId === 'all' && datasetTasks && datasetTasks.length > 1 && (
+                      <th className="min-w-[160px] text-left py-3 px-4 font-medium text-muted-foreground">
+                        Task
+                      </th>
+                    )}
                     {/* Dynamic metric columns */}
                     {availableMetrics.map(metric => {
                       const isSelected = metric === selectedMetric;
@@ -738,15 +788,15 @@ const Benchmark = () => {
                       return (
                         <th
                           key={metric}
-                          className="min-w-[100px] max-w-[120px] text-left py-3 px-4 font-medium text-muted-foreground whitespace-nowrap cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
+                          className="min-w-[120px] text-left py-3 px-4 font-medium text-muted-foreground cursor-pointer hover:text-foreground hover:bg-muted/50 transition-colors select-none"
                           onClick={() => handleMetricClick(metric)}
                           title={`Click to sort by ${metric}. ${naturalDirection === 'lower_is_better' ? 'Lower is better' : 'Higher is better'}${isSelected && sortBy === 'score' ? ` (currently sorted ${sortDirection === 'asc' ? 'ascending' : sortDirection === 'desc' ? 'descending' : 'by default'})` : ''}`}
                         >
                           <div className="flex items-center gap-1">
-                            <span className={isSelected && sortBy === 'score' ? 'font-bold text-foreground' : ''}>
+                            <span className={`break-words ${isSelected && sortBy === 'score' ? 'font-bold text-foreground' : ''}`}>
                               {metric}
                             </span>
-                            <span className={`text-base ${arrowColor}`}>{displayArrow}</span>
+                            <span className={`text-base flex-shrink-0 ${arrowColor}`}>{displayArrow}</span>
                           </div>
                         </th>
                       );
@@ -779,13 +829,21 @@ const Benchmark = () => {
                             {evaluation.model_name || 'Unknown Model'}
                           </div>
                         </td>
+                        {/* Task column (only when showing all tasks) */}
+                        {selectedTaskId === 'all' && datasetTasks && datasetTasks.length > 1 && (
+                          <td className="min-w-[160px] py-4 px-4">
+                            <div className="text-sm text-muted-foreground truncate">
+                              {taskMap[evaluation.task_id] || evaluation.task_name || 'Unknown Task'}
+                            </div>
+                          </td>
+                        )}
                         {/* Dynamic metric value columns */}
                         {availableMetrics.map(metric => {
                           const value = getDisplayMetricValue(evaluation, metric);
                           return (
                             <td
                               key={metric}
-                              className="min-w-[100px] max-w-[120px] whitespace-nowrap py-4 px-4"
+                              className="min-w-[120px] whitespace-nowrap py-4 px-4"
                             >
                               {value !== undefined && value !== null ? (
                                 <div className="font-semibold">

@@ -12,7 +12,7 @@ from sqlalchemy import func, desc, asc, or_
 from backend.models.database import (
     Dataset as DBDataset,
     PaperDataset,
-    TaskDataset,
+    TaskDatasetMetric,
     Task as DBTask,
     Evaluation as DBEvaluation,
 )
@@ -63,15 +63,20 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Base query with paper count
+            # Base query with paper count and task count
+            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
             query = (
                 self.db.query(
                     DBDataset,
                     func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(TaskDataset.task_id).label("task_count"),
+                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
+                        "task_count"
+                    ),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
+                .outerjoin(
+                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
+                )
                 .group_by(DBDataset.id)
             )
 
@@ -97,12 +102,12 @@ class DatasetService:
                 query = query.filter(DBDataset.full_name.ilike(f"%{full_name}%"))
 
             if task_id is not None:
-                # Filter datasets by task association
+                # Filter datasets by task association via task_dataset_metrics
                 query = query.filter(
                     DBDataset.id.in_(
-                        self.db.query(TaskDataset.dataset_id).filter(
-                            TaskDataset.task_id == task_id
-                        )
+                        self.db.query(TaskDatasetMetric.dataset_id)
+                        .filter(TaskDatasetMetric.task_id == task_id)
+                        .distinct()
                     )
                 )
 
@@ -207,14 +212,19 @@ class DatasetService:
         """
         try:
             # Query dataset with counts
+            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
             result = (
                 self.db.query(
                     DBDataset,
                     func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(TaskDataset.task_id).label("task_count"),
+                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
+                        "task_count"
+                    ),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
+                .outerjoin(
+                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
+                )
                 .filter(DBDataset.id == dataset_id)
                 .group_by(DBDataset.id)
                 .first()
@@ -290,14 +300,19 @@ class DatasetService:
         """
         try:
             # Query dataset with counts
+            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
             result = (
                 self.db.query(
                     DBDataset,
                     func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(TaskDataset.task_id).label("task_count"),
+                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
+                        "task_count"
+                    ),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
+                .outerjoin(
+                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
+                )
                 .filter(DBDataset.slug == slug)
                 .group_by(DBDataset.id)
                 .first()
@@ -393,21 +408,23 @@ class DatasetService:
 
     def get_dataset_tasks(self, dataset_id: int) -> List[int]:
         """
-        Get tasks associated with a specific dataset.
+        Get tasks associated with a specific dataset via task_dataset_metrics.
 
         Args:
             dataset_id: Dataset ID
 
         Returns:
-            List of task IDs
+            List of unique task IDs
 
         Raises:
             DatabaseError: If database query fails
         """
         try:
+            # Get distinct task IDs from task_dataset_metrics
             task_ids = (
-                self.db.query(TaskDataset.task_id)
-                .filter(TaskDataset.dataset_id == dataset_id)
+                self.db.query(TaskDatasetMetric.task_id)
+                .filter(TaskDatasetMetric.dataset_id == dataset_id)
+                .distinct()
                 .all()
             )
 
@@ -530,14 +547,12 @@ class DatasetService:
             )
 
             self.db.add(db_dataset)
-            self.db.flush()  # Get the ID without committing
-
-            # Create task-dataset relationships
-            for task_id in request.task_ids:
-                task_dataset = TaskDataset(task_id=task_id, dataset_id=db_dataset.id)
-                self.db.add(task_dataset)
-
             self.db.commit()
+
+            # Note: Task-dataset relationships are now defined via TASK_DATASET_METRICS.
+            # If task_ids were provided in the request, use the leaderboard metrics API
+            # (/api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics) to define metrics
+            # for each task-dataset pair.
 
             # Return the created dataset using the existing get_dataset method
             return self.get_dataset(db_dataset.id)

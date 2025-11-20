@@ -350,103 +350,42 @@ class BatchURLExtractor:
                 ]
                 is_api_key_invalid = any(marker in error_str for marker in auth_markers)
 
-                # If Gemini auth failed, try OpenRouter fallback
-                if is_api_key_invalid:
-                    try:
-                        from backend.generators.google_generator import GoogleGenerator
-
-                        if isinstance(self.generator, GoogleGenerator):
-                            logger.warning(
-                                "Gemini authentication failed; attempting OpenRouter fallback"
-                            )
-                            from backend.generators.openrouter_generator import (
-                                OpenRouterGenerator,
-                            )
-
-                            fallback_generator = OpenRouterGenerator()
-                            _, fallback_response = await get_project_github_urls(
-                                arxiv_id=arxiv_id,
-                                session_id=None,
-                                use_reasoning=False,
-                                abstract=abstract,
-                                generator=fallback_generator,
-                            )
-
-                            github_url = (
-                                fallback_response.get("github_url", "")
-                                if fallback_response
-                                else ""
-                            )
-                            project_page_url = (
-                                fallback_response.get("project_page_url", "")
-                                if fallback_response
-                                else ""
-                            )
-                        else:
-                            # Already not using Gemini; treat as critical
-                            raise e
-                    except Exception as fe:
-                        fe_str = str(fe).lower()
-                        is_critical_fallback = (
-                            "rate limit" in fe_str
-                            or "429" in fe_str
-                            or "quota" in fe_str
-                            or "recaptcha" in fe_str
-                            or "captcha" in fe_str
-                            or any(marker in fe_str for marker in auth_markers)
-                        )
-                        if is_critical_fallback:
-                            logger.error(
-                                f"❌ Critical error during OpenRouter fallback for {arxiv_id}: {fe}"
-                            )
-                            self.stats["api_errors"] += 1
-                            self.stats["papers_skipped_critical_errors"] += 1
-                            return {
-                                "paper_id": paper_id,
-                                "arxiv_id": arxiv_id,
-                                "github_url": "",
-                                "project_page_url": "",
-                                "error": str(fe),
-                                "success": False,
-                                "should_retry": True,
-                            }
-                        else:
-                            logger.warning(
-                                f"⚠️  Non-critical error in OpenRouter fallback for {arxiv_id}: {fe}"
-                            )
-                            self.stats["api_errors"] += 1
-                            github_url = ""
-                            project_page_url = ""
+                # Check if it's a critical error that should stop processing this paper
+                if (
+                    is_rate_limit
+                    or is_quota_exceeded
+                    or is_pdf_download_fail
+                    or is_recaptcha
+                    or is_api_key_invalid
+                ):
+                    # Critical errors - do NOT mark as processed
+                    error_type = (
+                        "API authentication"
+                        if is_api_key_invalid
+                        else "rate limit/quota/PDF"
+                    )
+                    logger.error(
+                        f"❌ Critical error ({error_type}) for {arxiv_id} (will not mark as processed): {e}"
+                    )
+                    self.stats["api_errors"] += 1
+                    self.stats["papers_skipped_critical_errors"] += 1
+                    return {
+                        "paper_id": paper_id,
+                        "arxiv_id": arxiv_id,
+                        "github_url": "",
+                        "project_page_url": "",
+                        "error": str(e),
+                        "success": False,
+                        "should_retry": True,  # Flag for retry
+                    }
                 else:
-                    if (
-                        is_rate_limit
-                        or is_quota_exceeded
-                        or is_pdf_download_fail
-                        or is_recaptcha
-                    ):
-                        # Critical errors - do NOT mark as processed
-                        logger.error(
-                            f"❌ Critical error for {arxiv_id} (will not mark as processed): {e}"
-                        )
-                        self.stats["api_errors"] += 1
-                        self.stats["papers_skipped_critical_errors"] += 1
-                        return {
-                            "paper_id": paper_id,
-                            "arxiv_id": arxiv_id,
-                            "github_url": "",
-                            "project_page_url": "",
-                            "error": str(e),
-                            "success": False,
-                            "should_retry": True,  # Flag for retry
-                        }
-                    else:
-                        # Non-critical errors - treat as "no URLs found"
-                        logger.warning(
-                            f"⚠️  Non-critical error for {arxiv_id} (will mark as processed): {e}"
-                        )
-                        self.stats["api_errors"] += 1
-                        github_url = ""
-                        project_page_url = ""
+                    # Non-critical errors - treat as "no URLs found"
+                    logger.warning(
+                        f"⚠️  Non-critical error for {arxiv_id} (will mark as processed): {e}"
+                    )
+                    self.stats["api_errors"] += 1
+                    github_url = ""
+                    project_page_url = ""
 
             # Save results with appropriate source (only if no critical error)
             source = "ai_extraction"

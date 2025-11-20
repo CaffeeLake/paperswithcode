@@ -25,6 +25,8 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,7 +34,11 @@ from pydantic import BaseModel
 from agents import AgentOutputSchema
 
 from extract_evaluation_results.step_base import AgentStep, StepResult
-from extract_evaluation_results.tools import get_existing_metrics, add_metric
+from extract_evaluation_results.tools import (
+    get_existing_metrics,
+    add_metric,
+    get_all_dataset_names,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -226,8 +232,9 @@ class Step5Output(BaseModel):
 5. **Document uncertainty**: If unsure about direction or scale, add a note in description
 6. **Scale is important**: Always determine and include the canonical scale for new metrics
 7. **Include scale in output**: Even for existing metrics, include their scale in the output
+8. **CRITICAL: Filter out dataset names**: Sometimes Step 1 incorrectly extracts dataset names as metric names (e.g., "MMBench", "MMMU", "MM-Vet", "MathVista", "MMVP"). Before adding a metric, call `get_all_dataset_names()` to check if the metric name is actually a dataset name. If it matches a dataset name, DO NOT add it as a metric - skip it and exclude it from your output. Dataset names should never be added as metrics.
 
-Process ALL metrics found in the evaluation results. Your output will be used by subsequent steps to validate and normalize evaluation results before adding them to the database.
+Process ALL metrics found in the evaluation results, but EXCLUDE any that are actually dataset names. Your output will be used by subsequent steps to validate and normalize evaluation results before adding them to the database.
 """
 
 
@@ -242,7 +249,7 @@ class Step5(AgentStep[Step5Input, Step5Output]):
             name="Step5: Metrics Manager",
             description="Extracts metrics from evaluation results and manages them in the database",
             instructions=metrics_manager_prompt,
-            tools=[get_existing_metrics, add_metric],
+            tools=[get_existing_metrics, add_metric, get_all_dataset_names],
             model="gpt-5-mini",
             agent_output_type=AgentOutputSchema(Step5Output, strict_json_schema=False),
         )
@@ -273,23 +280,25 @@ class Step5(AgentStep[Step5Input, Step5Output]):
 Process the {len(inputs.evaluation_results)} evaluation results above:
 
 1. **Call get_existing_metrics()** to see what metrics are already in the database
-2. **Extract all unique metric names** from the evaluation results' 'metrics' fields
-   - Each evaluation result has a 'metrics' dict like {{"AP": "44.9", "AP50": "64.7"}}
-   - Extract all keys from all metrics dicts
-3. **Compare extracted metrics against existing metrics** (case-insensitive comparison)
-4. **For each missing metric:**
+2. **Call get_all_dataset_names()** to get all dataset names (CRITICAL: to filter out dataset names incorrectly used as metrics)
+3. **Extract all unique metric names** from the evaluation results
+   - Each evaluation result has a 'metric_name' field (not a 'metrics' dict)
+   - Extract all unique values from the 'metric_name' field across all evaluation results
+4. **Filter out dataset names**: For each extracted metric name, check if it matches any dataset name (case-insensitive). If it matches a dataset name, SKIP it - do not add it as a metric.
+5. **Compare extracted metrics against existing metrics** (case-insensitive comparison)
+6. **For each missing metric (that is NOT a dataset name):**
    - Determine direction using the patterns described in the instructions
    - Determine the canonical scale based on metric type and conventions
    - Generate a full_name (expand abbreviations if you know them)
    - Create a helpful description (optional)
    - Call add_metric() with scale parameter to add it to the database
-5. **Return Step5Output** with:
+7. **Return Step5Output** with:
    - metrics_found: List of metrics that already existed (include direction AND scale)
    - metrics_added: List of metrics that were newly added (include direction AND scale)
-   - total_unique_metrics: Total count of unique metrics found
-   - all_metrics: Complete mapping of metric name -> {{direction, scale}}
+   - total_unique_metrics: Total count of unique metrics found (EXCLUDING dataset names)
+   - all_metrics: Complete mapping of metric name -> {{direction, scale}} (EXCLUDING dataset names)
 
-Process every unique metric. Don't skip any.
+Process every unique metric, but EXCLUDE any that are dataset names. Dataset names like "MMBench", "MMMU", "MM-Vet", "MathVista", "MMVP" should NOT be added as metrics.
 """
 
         return prompt
@@ -428,7 +437,7 @@ class Step5WorkflowStep:
     name = "Step5WorkflowStep"
 
     def __init__(self):
-        self.step = Step5()
+        self.project_root = Path(__file__).resolve().parents[1]
 
     async def execute(self, state):
         """
@@ -444,7 +453,6 @@ class Step5WorkflowStep:
         - total_unique_metrics: int - total unique metrics count
         - all_metrics: dict - name -> direction mapping
         """
-        # Build inputs from state.data
         evaluation_results = state.data.get("evaluation_results", [])
 
         # Early return if no evaluation results to process
@@ -461,70 +469,29 @@ class Step5WorkflowStep:
                 outputs=empty_output,
             )
 
-        inputs = {
-            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
-            "evaluation_results": evaluation_results,
-        }
+        arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
 
-        # Create task and shield from cancellation
-        task = asyncio.create_task(self.step.run(inputs))
+        # Execute step_5.py via subprocess to isolate cancellation scopes from the agent runtime
+        cmd = [
+            sys.executable,
+            "extract_evaluation_results/step_5.py",
+            "--arxiv_id",
+            arxiv_id,
+        ]
+        subprocess.run(cmd, check=True, cwd=self.project_root)
 
-        try:
-            # Give the task a brief moment to start
-            await asyncio.sleep(0.1)
+        output_dir = get_output_dir(arxiv_id)
+        metrics_path = output_dir / "step_5_metrics.json"
 
-            # Shield the task from external cancellation
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            logger.warning(
-                "Step 5 execution was cancelled externally, waiting for task to complete..."
+        if metrics_path.exists():
+            metrics_data = json.loads(metrics_path.read_text())
+            output = Step5Output.model_validate(metrics_data)
+        else:
+            output = Step5Output(
+                metrics_found=[],
+                metrics_added=[],
+                total_unique_metrics=0,
+                all_metrics={},
             )
-            # The task should continue running despite the cancellation
-            # Wait longer for it to finish
-            try:
-                result = await asyncio.wait_for(task, timeout=300.0)
-                logger.info(
-                    "✓ Step 5 completed successfully despite external cancellation"
-                )
-                # Don't re-raise the CancelledError since the task completed successfully
-            except asyncio.TimeoutError:
-                logger.error("Step 5 task timed out after 300 seconds")
-                # Cancel the task and wait for it
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                from extract_evaluation_results.step_base import StepResult
 
-                result = StepResult(
-                    success=False, outputs={}, error_message="Step execution timed out"
-                )
-            except asyncio.CancelledError:
-                logger.error("Step 5 task was cancelled and could not complete")
-                # Check if the task actually completed despite the cancellation
-                if task.done() and not task.cancelled():
-                    try:
-                        result = task.result()
-                        logger.info(
-                            "✓ Task completed successfully despite cancellation signal"
-                        )
-                    except Exception as e:
-                        logger.error(f"Task failed with exception: {e}")
-                        from extract_evaluation_results.step_base import StepResult
-
-                        result = StepResult(
-                            success=False,
-                            outputs={},
-                            error_message=f"Step execution failed: {str(e)}",
-                        )
-                else:
-                    from extract_evaluation_results.step_base import StepResult
-
-                    result = StepResult(
-                        success=False,
-                        outputs={},
-                        error_message="Step execution was cancelled",
-                    )
-
-        return result
+        return StepResult(success=True, outputs=output)

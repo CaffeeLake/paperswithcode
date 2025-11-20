@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from extract_evaluation_results.io import get_cache_dir
-from extract_evaluation_results.step_base import StepResult
+from extract_evaluation_results.step_base import StepResult, clear_cancelled_state
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +291,12 @@ class Workflow:
             # Execute the step
             self.logger.info(f"[{i + 1}/{len(self.steps)}] Executing {step_name}...")
 
+            # Clear any lingering cancellation from previous async operations
+            clear_cancelled_state(
+                logger=self.logger,
+                context=f"executing {step_name}",
+            )
+
             try:
                 result = await step.execute(state)
 
@@ -363,6 +369,11 @@ class Workflow:
         step_name = step.name
 
         self.logger.info(f"Executing single step: {step_name}")
+
+        clear_cancelled_state(
+            logger=self.logger,
+            context=f"executing {step_name}",
+        )
 
         try:
             result = await step.execute(state)

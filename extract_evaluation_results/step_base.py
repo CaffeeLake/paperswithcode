@@ -25,6 +25,29 @@ InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
 
+def clear_cancelled_state(
+    logger: Optional[logging.Logger] = None, context: str = ""
+) -> int:
+    """
+    Clear pending cancellation requests on the current task (Python 3.11+).
+
+    Returns the number of cancellation requests removed so callers can log this.
+    """
+    current_task = asyncio.current_task()
+    if current_task is None or not hasattr(current_task, "uncancel"):
+        return 0
+
+    removed = current_task.uncancel()
+    if removed and logger:
+        if context:
+            logger.debug(
+                "Removed %d pending cancellation(s) while handling %s", removed, context
+            )
+        else:
+            logger.debug("Removed %d pending cancellation(s) on current task", removed)
+    return removed
+
+
 def create_mcp_server(server_name: str) -> Optional[MCPServerStdio]:
     """
     Factory function to create MCP servers by name.
@@ -174,6 +197,16 @@ class Step(ABC, Generic[InputT, OutputT]):
                 success=True,
                 outputs=outputs,
             )
+        except asyncio.CancelledError as e:
+            clear_cancelled_state(
+                logger=self.logger, context=f"{self.name} execution cancelled"
+            )
+            self.logger.warning(f"[{self.name}] Cancelled: {e!s}")
+            return StepResult(
+                success=False,
+                error_message="Step execution was cancelled",
+                outputs=None,
+            )
         except Exception as e:
             self.logger.error(f"[{self.name}] Exception: {e}", exc_info=True)
             return StepResult(
@@ -207,6 +240,7 @@ class AgentStep(Step[InputT, OutputT]):
         agent_output_type: Optional[type[BaseModel]] = None,
         model: str = "gpt-5-mini",
         mcp_servers: Optional[List[str]] = None,
+        max_turns: int = 15,
     ):
         """
         Initialize an AgentStep.
@@ -219,6 +253,7 @@ class AgentStep(Step[InputT, OutputT]):
             agent_output_type: Pydantic model for structured output (can differ from output_model)
             model: OpenAI model to use
             mcp_servers: List of MCP server names to use
+            max_turns: Maximum number of agent turns (default: 15)
         """
         super().__init__(name=name, description=description)
         self.instructions = instructions
@@ -226,6 +261,7 @@ class AgentStep(Step[InputT, OutputT]):
         self.agent_output_type = agent_output_type or self.output_model
         self.model = model
         self.mcp_server_names = mcp_servers or []
+        self.max_turns = max_turns
         self._mcp_servers = None  # Cache MCP servers for reuse in parallel processing
 
     @abstractmethod
@@ -345,7 +381,7 @@ class AgentStep(Step[InputT, OutputT]):
             )
 
             # Run agent
-            result = await Runner.run(agent, prompt, max_turns=15)
+            result = await Runner.run(agent, prompt, max_turns=self.max_turns)
 
             if result is None:
                 raise RuntimeError("Agent returned None")
@@ -387,9 +423,13 @@ class AgentStep(Step[InputT, OutputT]):
                         pass
                 except asyncio.CancelledError:
                     # Cleanup was cancelled, try to terminate the process
-                    self.logger.debug(
-                        "MCP server cleanup was cancelled, terminating process"
+                    removed = clear_cancelled_state(
+                        logger=self.logger, context="MCP server cleanup"
                     )
+                    if removed == 0:
+                        self.logger.debug(
+                            "MCP server cleanup was cancelled, terminating process"
+                        )
                     try:
                         if hasattr(server, "_process") and server._process:
                             server._process.terminate()
@@ -427,8 +467,10 @@ class AgentStep(Step[InputT, OutputT]):
             prompt = await self.build_agent_prompt(inputs)
 
             # Run agent
-            self.logger.debug(f"Running agent with model {self.model}")
-            result = await Runner.run(agent, prompt, max_turns=15)
+            self.logger.debug(
+                f"Running agent with model {self.model}, max_turns={self.max_turns}"
+            )
+            result = await Runner.run(agent, prompt, max_turns=self.max_turns)
 
             if result is None:
                 raise RuntimeError("Agent returned None")
@@ -466,9 +508,13 @@ class AgentStep(Step[InputT, OutputT]):
                         pass
                 except asyncio.CancelledError:
                     # Cleanup was cancelled, try to terminate the process
-                    self.logger.debug(
-                        "MCP server cleanup was cancelled, terminating process"
+                    removed = clear_cancelled_state(
+                        logger=self.logger, context="MCP server cleanup"
                     )
+                    if removed == 0:
+                        self.logger.debug(
+                            "MCP server cleanup was cancelled, terminating process"
+                        )
                     try:
                         if hasattr(server, "_process") and server._process:
                             server._process.terminate()

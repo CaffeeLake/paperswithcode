@@ -103,6 +103,7 @@ Strategy: Start with 2-3 focused searches to gather core information, then refin
 - For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
 - For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video-Language Models"
 - For vision-language datasets (e.g., MMMU, AI2D) → use "Vision-Language Models"
+- **For text-to-image (T2I) generation datasets** (e.g., TIIF-Bench, OneIG-Bench, COCO, ImageNet-1k when used for generation, GenEval, LongText-Bench, CVTG-2K, OmniContext) → use "Image Generation" (NOT "Vision-Language Models")
 - For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
 - For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
 - For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"
@@ -118,6 +119,7 @@ Strategy: Start with 2-3 focused searches to gather core information, then refin
 - Something-Something V2 → task_id=[Image Classification task ID] (video classification)
 - OmniBench → task_id=[Omni models task ID]
 - MMMU → task_id=[Vision-Language Models task ID]
+- GenEval → task_id=[Image Generation task ID] (text-to-image generation benchmark)
 - CALVIN → task_id=[Robotics task ID]
 
 ## Finding and Linking Tasks

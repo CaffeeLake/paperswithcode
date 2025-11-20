@@ -40,7 +40,7 @@ from extract_evaluation_results.utils import (
     get_paper_details,
     get_formatted_tasks_list,
 )
-from extract_evaluation_results.tools import find_dataset
+from extract_evaluation_results.tools import find_dataset, get_dataset_tasks_and_metrics
 
 
 class DatasetDetail(BaseModel):
@@ -51,6 +51,7 @@ class DatasetDetail(BaseModel):
     hf_url: str
     paper_url: str
     task_ids: list[int]
+    metrics_by_task: dict[int, list[dict]] = {}
 
 
 class Response(BaseModel):
@@ -80,6 +81,7 @@ Your task is to determine whether this dataset already exists in the SQL databas
 You have access to the following tools which can help you determine if the dataset exists in the database:
 
 - find_dataset
+- get_dataset_tasks_and_metrics
 - web_search
 
 ## CRITICAL Requirements
@@ -93,8 +95,9 @@ A dataset with split "test" is NOT the same as one with split "val" or without a
 
 **CRITICAL**: When a dataset is found, you MUST also call get_dataset_tasks_and_metrics(dataset_id=X) to retrieve:
 - The task_ids associated with this dataset
+- The metrics_by_task (allowed metrics for each task-dataset combination)
 
-This information is essential for correctly linking evaluation results to the right tasks and ensuring metrics are valid.
+This information is essential for correctly linking evaluation results to the right tasks and ensuring only valid metrics are used in subsequent steps.
 
 ## Search Strategy
 
@@ -136,7 +139,8 @@ class DatasetDetail(BaseModel):
     description: str  # Description of the dataset in the SQL database
     hf_url: str  # Hugging Face URL of the dataset in the SQL database
     paper_url: str  # Paper URL of the dataset in the SQL database
-    task_ids: list[int] # List of task IDs associated with this dataset
+    task_ids: list[int]  # List of task IDs associated with this dataset
+    metrics_by_task: dict[int, list[dict]]  # Allowed metrics for each task (from get_dataset_tasks_and_metrics)
 
 
 class Response(BaseModel):
@@ -183,16 +187,126 @@ class Step2(AgentStep[Step2Input, Step2Output]):
     input_model = Step2Input
     output_model = Step2Output
 
-    def __init__(self):
+    def __init__(self, max_retries: int = 2, retry_delay: int = 5):
+        """
+        Initialize Step2 with retry configuration.
+
+        Args:
+            max_retries: Maximum number of retry attempts for MCP timeouts (default: 2)
+            retry_delay: Base delay in seconds between retries (default: 5, increases exponentially)
+        """
         super().__init__(
             name="Step2: Dataset Finder",
             description="Finds datasets in the database based on evaluation results",
             instructions=dataset_finder_prompt,
-            tools=[find_dataset],
+            tools=[find_dataset, get_dataset_tasks_and_metrics],
             agent_output_type=AgentOutputSchema(Response, strict_json_schema=False),
             model="gpt-5-mini",
             mcp_servers=["exa"],
         )
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    def _direct_database_search(
+        self, dataset_name: str, arxiv_id: Optional[str] = None
+    ) -> Optional[DatasetDetail]:
+        """
+        Direct database search without MCP/agent.
+        Fallback when MCP server is unavailable or timing out.
+
+        Args:
+            dataset_name: Name of the dataset to search for
+            arxiv_id: Optional ArXiv ID of the introducing paper
+
+        Returns:
+            DatasetDetail if found, None otherwise
+        """
+        from backend.database.connection import db_manager
+        from backend.models.database import (
+            Dataset as DBDataset,
+            Evaluation as DBEvaluation,
+        )
+        from backend.services.leaderboard_metric_service import LeaderboardMetricService
+
+        session = db_manager.session_local()
+        try:
+            metric_service = LeaderboardMetricService(session)
+
+            # Try multiple search strategies
+            dataset = None
+
+            # 1. Exact name match (case-insensitive)
+            dataset = (
+                session.query(DBDataset)
+                .filter(DBDataset.name.ilike(dataset_name))
+                .first()
+            )
+
+            if not dataset:
+                # 2. Partial name match (base name without parentheses)
+                base_name = dataset_name.split("(")[0].strip()
+                candidates = (
+                    session.query(DBDataset)
+                    .filter(DBDataset.name.ilike(f"{base_name}%"))
+                    .all()
+                )
+
+                # Verify exact base name match (avoid "COCO" matching "RefCOCO")
+                for candidate in candidates:
+                    candidate_base = candidate.name.split("(")[0].strip()
+                    if candidate_base.lower() == base_name.lower():
+                        dataset = candidate
+                        break
+
+            if not dataset and arxiv_id:
+                # 3. Search by ArXiv ID
+                dataset = (
+                    session.query(DBDataset)
+                    .filter(DBDataset.paper_url.ilike(f"%{arxiv_id}%"))
+                    .first()
+                )
+
+            if not dataset:
+                return None
+
+            # Get task_ids from evaluation results
+            task_id_tuples = (
+                session.query(DBEvaluation.task_id)
+                .filter(DBEvaluation.dataset_id == dataset.id)
+                .distinct()
+                .all()
+            )
+            task_ids = [t[0] for t in task_id_tuples]
+
+            metrics_by_task = {}
+            for task_id in task_ids:
+                try:
+                    leaderboard_metrics = metric_service.get_leaderboard_metrics(
+                        task_id, dataset.id
+                    )
+                    metrics_by_task[task_id] = [
+                        {
+                            "metric_id": m["metric_id"],
+                            "metric_name": m["metric_name"],
+                            "metric_direction": m["metric_direction"],
+                        }
+                        for m in leaderboard_metrics.get("metrics", [])
+                    ]
+                except Exception:
+                    metrics_by_task[task_id] = []
+
+            return DatasetDetail(
+                id=dataset.id,
+                name=dataset.name,
+                slug=dataset.slug,
+                description=dataset.description or "",
+                hf_url=dataset.hf_url or "",
+                paper_url=dataset.paper_url or "",
+                task_ids=task_ids,
+                metrics_by_task=metrics_by_task,
+            )
+        finally:
+            session.close()
 
     async def _process_single_dataset(
         self,
@@ -203,7 +317,7 @@ class Step2(AgentStep[Step2Input, Step2Output]):
         formatted_instructions: str,
     ) -> Step2SingleResult:
         """
-        Process a single dataset through the agent.
+        Process a single dataset through the agent with retry logic and database fallback.
 
         Args:
             dataset_detail: Single dataset detail dict
@@ -217,9 +331,11 @@ class Step2(AgentStep[Step2Input, Step2Output]):
         """
         dataset_name = dataset_detail.get("dataset_name", "Unknown")
 
-        try:
-            # Build prompt for this specific dataset
-            prompt = f"""
+        # Retry loop for handling MCP timeouts
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Build prompt for this specific dataset
+                prompt = f"""
 ## Paper details
 {paper_details}
 
@@ -234,61 +350,187 @@ Find the dataset details for the following dataset mentioned in the evaluation r
 {json.dumps(dataset_detail, indent=2)}
 """
 
-            # Run the agent for this dataset
-            agent_response = await self._run_agent(prompt, formatted_instructions)
+                # Run the agent for this dataset
+                agent_response = await self._run_agent(prompt, formatted_instructions)
 
-            # Process the agent output
-            if isinstance(agent_response, Response):
-                if not agent_response.dataset_found:
-                    print(f"Dataset '{dataset_name}' not found in database")
+                # Process the agent output
+                if isinstance(agent_response, Response):
+                    if not agent_response.dataset_found:
+                        print(f"Dataset '{dataset_name}' not found in database")
+                        return Step2SingleResult(
+                            dataset_input=dataset_detail,
+                            found=False,
+                            reasoning=agent_response.reasoning,
+                            dataset=None,
+                        )
+
+                    # Dataset was found - ensure task_ids and metrics_by_task are populated
+                    dataset_detail_result = agent_response.dataset_detail
+
+                    # If agent didn't populate task_ids or metrics_by_task, fetch them directly from database
+                    if (
+                        not dataset_detail_result.task_ids
+                        or not dataset_detail_result.metrics_by_task
+                    ):
+                        from backend.database.connection import db_manager
+                        from backend.models.database import Evaluation as DBEvaluation
+                        from backend.services.leaderboard_metric_service import (
+                            LeaderboardMetricService,
+                        )
+
+                        session = db_manager.session_local()
+                        try:
+                            metric_service = LeaderboardMetricService(session)
+
+                            # Get task_ids if not populated
+                            if not dataset_detail_result.task_ids:
+                                task_id_tuples = (
+                                    session.query(DBEvaluation.task_id)
+                                    .filter(
+                                        DBEvaluation.dataset_id
+                                        == dataset_detail_result.id
+                                    )
+                                    .distinct()
+                                    .all()
+                                )
+                                task_ids = [t[0] for t in task_id_tuples]
+                                dataset_detail_result.task_ids = task_ids
+
+                            # Get metrics_by_task if not populated
+                            if not dataset_detail_result.metrics_by_task:
+                                metrics_by_task = {}
+                                for task_id in dataset_detail_result.task_ids:
+                                    try:
+                                        leaderboard_metrics = (
+                                            metric_service.get_leaderboard_metrics(
+                                                task_id, dataset_detail_result.id
+                                            )
+                                        )
+                                        metrics_by_task[task_id] = [
+                                            {
+                                                "metric_id": m["metric_id"],
+                                                "metric_name": m["metric_name"],
+                                                "metric_direction": m[
+                                                    "metric_direction"
+                                                ],
+                                            }
+                                            for m in leaderboard_metrics.get(
+                                                "metrics", []
+                                            )
+                                        ]
+                                    except Exception:
+                                        # If no metrics configured, return empty list (allows all metrics)
+                                        metrics_by_task[task_id] = []
+                                dataset_detail_result.metrics_by_task = metrics_by_task
+                        finally:
+                            session.close()
+
+                    print(
+                        f"✓ Found dataset: {dataset_detail_result.name} (ID: {dataset_detail_result.id}, "
+                        f"tasks: {dataset_detail_result.task_ids})"
+                    )
                     return Step2SingleResult(
                         dataset_input=dataset_detail,
-                        found=False,
+                        found=True,
                         reasoning=agent_response.reasoning,
-                        dataset=None,
+                        dataset=dataset_detail_result,
+                    )
+                else:
+                    raise ValueError(
+                        f"Unexpected agent output type: {type(agent_response)}"
                     )
 
-                # Dataset was found - ensure task_ids are populated
-                dataset_detail_result = agent_response.dataset_detail
+            except asyncio.TimeoutError:
+                if attempt < self.max_retries:
+                    wait_time = self.retry_delay * (attempt + 1)
+                    self.logger.warning(
+                        f"⚠ Timeout searching for '{dataset_name}' "
+                        f"(attempt {attempt + 1}/{self.max_retries + 1}), "
+                        f"retrying in {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(
+                        f"✗ Failed to search for '{dataset_name}' after {self.max_retries + 1} attempts"
+                    )
+                    # Fall through to fallback logic
 
-                # If agent didn't populate task_ids, fetch them directly from database
-                if not dataset_detail_result.task_ids:
-                    from backend.database.connection import db_manager
-                    from backend.services.dataset_service import DatasetService
-
-                    session = db_manager.session_local()
-                    try:
-                        dataset_service = DatasetService(session)
-                        task_ids = dataset_service.get_dataset_tasks(
-                            dataset_detail_result.id
+            except Exception as e:
+                # Handle MCP timeout errors (string-based detection)
+                error_str = str(e).lower()
+                if "timed out" in error_str or "timeout" in error_str:
+                    if attempt < self.max_retries:
+                        wait_time = self.retry_delay * (attempt + 1)
+                        self.logger.warning(
+                            f"⚠ MCP timeout for '{dataset_name}' "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1}), "
+                            f"retrying in {wait_time}s..."
                         )
-                        dataset_detail_result.task_ids = task_ids
-                    finally:
-                        session.close()
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        # All retries exhausted - try direct database search
+                        self.logger.warning(
+                            f"⚠ All MCP attempts failed for '{dataset_name}', "
+                            f"falling back to direct database search..."
+                        )
 
-                print(
-                    f"✓ Found dataset: {dataset_detail_result.name} (ID: {dataset_detail_result.id}, "
-                    f"tasks: {dataset_detail_result.task_ids})"
-                )
+                        try:
+                            dataset_detail_result = self._direct_database_search(
+                                dataset_name,
+                                arxiv_id=dataset_detail.get("paper_arxiv_id"),
+                            )
+
+                            if dataset_detail_result:
+                                print(
+                                    f"✓ Found dataset via direct DB search: {dataset_detail_result.name} "
+                                    f"(ID: {dataset_detail_result.id}, tasks: {dataset_detail_result.task_ids})"
+                                )
+                                return Step2SingleResult(
+                                    dataset_input=dataset_detail,
+                                    found=True,
+                                    reasoning=(
+                                        f"Found via direct database search after MCP timeout. "
+                                        f"Searched by name: '{dataset_name}'"
+                                    ),
+                                    dataset=dataset_detail_result,
+                                )
+                            else:
+                                print(
+                                    f"✗ Dataset '{dataset_name}' not found even with direct DB search"
+                                )
+                                return Step2SingleResult(
+                                    dataset_input=dataset_detail,
+                                    found=False,
+                                    reasoning=(
+                                        f"MCP server timed out after {self.max_retries + 1} attempts. "
+                                        f"Direct database search also found no match."
+                                    ),
+                                    dataset=None,
+                                )
+                        except Exception as fallback_error:
+                            self.logger.error(
+                                f"Direct database search also failed: {fallback_error}"
+                            )
+                            return Step2SingleResult(
+                                dataset_input=dataset_detail,
+                                found=False,
+                                reasoning=f"MCP timeout and direct DB search failed: {fallback_error}",
+                                dataset=None,
+                            )
+
+                # Other exceptions - not a timeout
+                print(f"Error processing dataset '{dataset_name}': {str(e)}")
                 return Step2SingleResult(
                     dataset_input=dataset_detail,
-                    found=True,
-                    reasoning=agent_response.reasoning,
-                    dataset=dataset_detail_result,
-                )
-            else:
-                raise ValueError(
-                    f"Unexpected agent output type: {type(agent_response)}"
+                    found=False,
+                    reasoning=f"Error during search: {str(e)}",
+                    dataset=None,
                 )
 
-        except Exception as e:
-            print(f"Error processing dataset '{dataset_name}': {str(e)}")
-            return Step2SingleResult(
-                dataset_input=dataset_detail,
-                found=False,
-                reasoning=f"Error during search: {str(e)}",
-                dataset=None,
-            )
+        # Should never reach here (loop always returns or raises)
+        raise RuntimeError(f"Exhausted all retry attempts for dataset '{dataset_name}'")
 
     async def run(self, inputs):
         """

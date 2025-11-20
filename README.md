@@ -110,4 +110,5 @@ uv run
 
 - all services should be checked to see if they are in line with the database schema (see also models.py)
 - all cron jobs and batch_extract.py should leverage the services instead of manually writing SQL queries
-- check datasets linked to multiple tasks and update step_4.py to only link it to one (datasets linked to multiple tasks is really exceptional)
+- when searching a dataset, thoroughly check which metric used to evaluate the dataset, and then use a separate agent to add the metric to the database/see if it already exists in the database.
+- often adds "average", "overall" as metrics => should just be a single "Score" metric (higher is better or lower is better), or "OmniContext Score" for example with a specific scale like 0-10.

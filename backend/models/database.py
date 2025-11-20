@@ -243,9 +243,7 @@ class Task(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_tasks", back_populates="tasks"
     )
-    datasets: Mapped[List["Dataset"]] = relationship(
-        "Dataset", secondary="task_datasets", back_populates="tasks"
-    )
+    # Note: Task-dataset relationships are inferred from task_dataset_metrics, not a direct relationship
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="task"
     )
@@ -396,9 +394,7 @@ class Dataset(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_datasets", back_populates="datasets"
     )
-    tasks: Mapped[List["Task"]] = relationship(
-        "Task", secondary="task_datasets", back_populates="datasets"
-    )
+    # Note: Dataset-task relationships are inferred from task_dataset_metrics, not a direct relationship
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="dataset"
     )
@@ -762,25 +758,6 @@ class PaperDataset(Base):
     __table_args__ = (
         Index("idx_paper_datasets_paper_id", "paper_id"),
         Index("idx_paper_datasets_dataset_id", "dataset_id"),
-    )
-
-
-class TaskDataset(Base):
-    """Junction table for tasks and datasets (many-to-many relationship)."""
-
-    __tablename__ = "task_datasets"
-
-    task_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
-    )
-    dataset_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
-    )
-
-    # Indexes
-    __table_args__ = (
-        Index("idx_task_datasets_task_id", "task_id"),
-        Index("idx_task_datasets_dataset_id", "dataset_id"),
     )
 
 

@@ -16,7 +16,7 @@ from backend.models.database import (
     Dataset as DBDataset,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
-    TaskDataset,
+    TaskDatasetMetric,
     Metric as DBMetric,
 )
 from backend.models.api import Evaluation, Evaluations
@@ -114,11 +114,10 @@ class EvaluationService:
         self, task_id: int, dataset_id: int
     ) -> tuple[bool, Optional[str]]:
         """
-        Validate that the task is consistent with the dataset's officially linked tasks.
+        Validate that the task-dataset pair has metrics defined (i.e., is a valid leaderboard).
 
-        For datasets linked to a single task, the evaluation must use that task.
-        For datasets linked to multiple tasks (e.g., ImageNet), any of those tasks is allowed.
-        For datasets not yet linked to any task, this validation is skipped.
+        A (task, dataset) pair is valid if it has at least one metric defined in
+        TASK_DATASET_METRICS. This ensures evaluations are only added to defined leaderboards.
 
         Args:
             task_id: Task ID to validate
@@ -128,64 +127,27 @@ class EvaluationService:
             Tuple of (is_valid, error_message)
         """
         try:
-            # Get all officially linked tasks for this dataset
-            official_task_links = (
-                self.db.query(TaskDataset)
-                .filter(TaskDataset.dataset_id == dataset_id)
-                .all()
+            # Check if this task-dataset pair has any metrics defined
+            has_metrics = (
+                self.db.query(TaskDatasetMetric)
+                .filter(
+                    TaskDatasetMetric.task_id == task_id,
+                    TaskDatasetMetric.dataset_id == dataset_id,
+                )
+                .first()
             )
 
-            # If dataset is not linked to any tasks yet, allow any task
-            # (This handles new datasets that haven't been properly set up yet)
-            if not official_task_links:
-                return True, None
-
-            official_task_ids = {link.task_id for link in official_task_links}
-
-            # If dataset is linked to multiple tasks, it's a legitimate multi-task dataset
-            # Allow any of those tasks
-            if len(official_task_ids) > 1:
-                if task_id in official_task_ids:
-                    return True, None
-                else:
-                    # Get task and dataset names for error message
-                    task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
-                    dataset = (
-                        self.db.query(DBDataset)
-                        .filter(DBDataset.id == dataset_id)
-                        .first()
-                    )
-                    official_tasks = (
-                        self.db.query(DBTask)
-                        .filter(DBTask.id.in_(official_task_ids))
-                        .all()
-                    )
-                    task_names = ", ".join([t.name for t in official_tasks])
-
-                    return False, (
-                        f"Dataset '{dataset.name if dataset else dataset_id}' is a multi-task dataset "
-                        f"linked to: {task_names}. "
-                        f"Task '{task.name if task else task_id}' is not one of these tasks. "
-                        f"Please use one of the officially linked tasks."
-                    )
-
-            # Dataset is linked to exactly one task - enforce consistency
-            official_task_id = list(official_task_ids)[0]
-            if task_id != official_task_id:
+            if not has_metrics:
                 # Get task and dataset names for error message
                 task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
                 dataset = (
                     self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
                 )
-                official_task = (
-                    self.db.query(DBTask).filter(DBTask.id == official_task_id).first()
-                )
 
                 return False, (
-                    f"Task mismatch for dataset '{dataset.name if dataset else dataset_id}'. "
-                    f"This dataset is officially linked to task '{official_task.name if official_task else official_task_id}' "
-                    f"but you're trying to use task '{task.name if task else task_id}'. "
-                    f"Please use the correct task to maintain consistent leaderboards."
+                    f"No leaderboard defined for task '{task.name if task else task_id}' "
+                    f"and dataset '{dataset.name if dataset else dataset_id}'. "
+                    f"Please define metrics for this task-dataset pair before adding evaluations."
                 )
 
             return True, None
@@ -200,53 +162,6 @@ class EvaluationService:
             )
             # In case of error, allow the operation to proceed
             return True, None
-
-    def _link_dataset_to_task(self, task_id: int, dataset_id: int) -> bool:
-        """
-        Link a dataset to a task via the task_datasets junction table.
-
-        This ensures the dataset appears in the task's leaderboards section.
-        If the link already exists, this method does nothing.
-
-        Args:
-            task_id: Task ID
-            dataset_id: Dataset ID
-
-        Returns:
-            True if the link was created or already exists
-        """
-        try:
-            # Check if link already exists
-            existing_link = (
-                self.db.query(TaskDataset)
-                .filter(
-                    TaskDataset.task_id == task_id,
-                    TaskDataset.dataset_id == dataset_id,
-                )
-                .first()
-            )
-
-            if existing_link:
-                return True
-
-            # Create the link
-            task_dataset = TaskDataset(task_id=task_id, dataset_id=dataset_id)
-
-            self.db.add(task_dataset)
-            self.db.flush()  # Flush to DB without committing (will commit with evaluation)
-
-            return True
-        except Exception as e:
-            # Log the error for debugging purposes
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.error(
-                f"Failed to link dataset {dataset_id} to task {task_id}: {str(e)}"
-            )
-            # If linking fails, we still want the evaluation to succeed
-            # The dataset can be linked manually later if needed
-            return False
 
     def get_evaluations(
         self,
@@ -538,10 +453,6 @@ class EvaluationService:
 
             if not is_valid:
                 raise ValueError(error_message)
-
-            # Link the dataset to the task if not already linked
-            # This ensures the dataset appears in the task's leaderboards section
-            self._link_dataset_to_task(task_id, dataset_id)
 
             db_evaluation = DBEvaluation(
                 paper_id=paper_id,

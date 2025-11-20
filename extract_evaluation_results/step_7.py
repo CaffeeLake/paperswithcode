@@ -30,8 +30,10 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -45,9 +47,15 @@ from extract_evaluation_results.utils import get_formatted_tasks_list
 from extract_evaluation_results.tools import (
     get_leaderboard_metrics,
     add_evaluation_result,
+    add_metric_to_leaderboard,
 )
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUTS_BASE = PROJECT_ROOT / "backend" / "outputs"
+STEP7_INPUT_FILENAME = "step_7_aligned_results.json"
+STEP7_OUTPUT_FILENAME = "step_7_cli.json"
 
 
 class EvaluationResult(BaseModel):
@@ -90,6 +98,36 @@ Leaderboards are defined by **(task, dataset, metric)** triples. For example:
 - (Object Detection, COCO, AP50)
 
 Each evaluation result belongs to a specific leaderboard triple via the `best_metric` field. The same model can have multiple evaluation records for different metrics on the same dataset (e.g., one for AP, one for AP50).
+
+## Leaderboard Auto-Creation (CRITICAL)
+
+Before adding an evaluation, you MUST ensure the leaderboard exists:
+
+1. **Check Leaderboard**: Use `get_leaderboard_metrics(task_id, dataset_id)` to check if metrics are configured
+2. **Create if Missing**: If the result shows "No specific metrics configured" (empty metrics list), create leaderboard entries:
+   - Extract all metric names from the `metrics` dictionary in the evaluation result
+   - For each metric name, call `add_metric_to_leaderboard(task_id, dataset_id, metric_name)`
+   - This ensures the leaderboard is properly configured before adding evaluations
+3. **Then Add Evaluation**: Once leaderboard is configured, proceed with `add_evaluation_result`
+
+**Example Flow**:
+```
+1. Check: get_leaderboard_metrics(task_id=13, dataset_id=384)
+   → Returns: "No specific metrics configured for leaderboard"
+
+2. Create leaderboard for metrics in evaluation: {{"PSNR": "21.33", "SSIM": "0.711"}}
+   → Call: add_metric_to_leaderboard(task_id=13, dataset_id=384, metric_name="PSNR")
+   → Call: add_metric_to_leaderboard(task_id=13, dataset_id=384, metric_name="SSIM")
+
+3. Add evaluation: add_evaluation_result(...)
+   → Now succeeds!
+```
+
+**When to create leaderboards**:
+- Always check first with `get_leaderboard_metrics`
+- Only create if "No specific metrics configured" appears in the result
+- Create entries for ALL metrics in the evaluation's `metrics` dictionary
+- After creating leaderboard entries, proceed with adding the evaluation
 
 ## Important Rules
 
@@ -182,9 +220,14 @@ class Step7(AgentStep[Step7Input, Step7Output]):
             name="Step7: Evaluation Adder",
             description="Adds evaluation results to the database with validation",
             instructions=formatted_instructions,
-            tools=[add_evaluation_result, get_leaderboard_metrics],
+            tools=[
+                add_evaluation_result,
+                get_leaderboard_metrics,
+                add_metric_to_leaderboard,
+            ],
             model="gpt-5-mini",
             agent_output_type=EvaluationResult,
+            max_turns=30,  # Increased for processing multiple evaluation results
         )
 
     async def build_agent_prompt(self, inputs: Step7Input) -> str:
@@ -252,15 +295,72 @@ If any evaluation result cannot be added, provide a clear error message explaini
 
 def read_aligned_results_file(filename: str) -> str:
     """Read the aligned evaluation results file."""
-    # Try backend/outputs first, then extract_evaluation_results
-    output_dir = Path(__file__).parent.parent / "backend" / "outputs"
-    file_path = output_dir / filename
-    if not file_path.exists():
-        # Fallback to extract_evaluation_results directory
-        file_path = Path(__file__).parent / filename
+    # Handle absolute paths
+    if Path(filename).is_absolute():
+        file_path = Path(filename)
+    # Handle relative paths that start with "backend/"
+    elif filename.startswith("backend/"):
+        file_path = PROJECT_ROOT / filename
+    # Handle relative paths that start with "extract_evaluation_results/"
+    elif filename.startswith("extract_evaluation_results/"):
+        file_path = PROJECT_ROOT / filename
+    # Handle just filenames - try in OUTPUTS_BASE first
+    else:
+        output_dir = OUTPUTS_BASE
+        file_path = output_dir / filename
+        if not file_path.exists():
+            # Fallback to extract_evaluation_results directory
+            file_path = Path(__file__).parent / filename
+
     if not file_path.exists():
         raise FileNotFoundError(f"Could not find aligned results file: {filename}")
     return file_path.read_text()
+
+
+def get_output_dir(arxiv_id: str) -> Path:
+    """Return (and create) the output directory for an ArXiv ID."""
+    output_dir = OUTPUTS_BASE / "evaluation_results" / arxiv_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def write_step_7_cli_output(arxiv_id: str, payload: dict) -> Path:
+    """Write the Step 7 CLI output payload to disk for downstream consumers."""
+    output_dir = get_output_dir(arxiv_id)
+    output_path = output_dir / STEP7_OUTPUT_FILENAME
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    logger.info("Step 7 CLI output written to %s", output_path)
+    return output_path
+
+
+def extract_aligned_results(data: Any) -> list:
+    """Normalize aligned results payloads from various keys."""
+    if isinstance(data, dict):
+        for key in (
+            "aligned_evaluation_results",
+            "normalized",
+            "evaluation_results",
+            "results",
+        ):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    elif isinstance(data, list):
+        return data
+    return []
+
+
+def filter_aligned_results(aligned_results: list[dict]) -> list[dict]:
+    """Remove unresolved entries before processing."""
+    filtered = [
+        result
+        for result in aligned_results
+        if isinstance(result, dict) and not result.get("_unresolved", False)
+    ]
+    skipped = len(aligned_results) - len(filtered)
+    if skipped > 0:
+        logger.info("Filtered %d unresolved evaluation(s) from Step 7 input", skipped)
+    return filtered
 
 
 def get_existing_evaluations_for_paper(arxiv_id: str) -> list[dict]:
@@ -374,29 +474,29 @@ async def main():
     arxiv_id = args.arxiv_id
 
     # Get aligned evaluation results from file or direct input
+    aligned_evaluation_results: list[dict] = []
     if args.aligned_results_file:
         aligned_results_content = read_aligned_results_file(args.aligned_results_file)
         aligned_results_data = json.loads(aligned_results_content)
-        # Try different possible keys
-        aligned_evaluation_results = aligned_results_data.get(
-            "aligned_evaluation_results",
-            aligned_results_data.get("evaluation_results", []),
-        )
+        aligned_evaluation_results = extract_aligned_results(aligned_results_data)
     elif args.aligned_results:
         aligned_results_data = json.loads(args.aligned_results)
-        aligned_evaluation_results = aligned_results_data.get(
-            "aligned_evaluation_results",
-            aligned_results_data if isinstance(aligned_results_data, list) else [],
-        )
+        aligned_evaluation_results = extract_aligned_results(aligned_results_data)
     else:
-        print(
+        message = (
             "Error: Either --aligned_results_file or --aligned_results must be provided"
         )
-        return "Error: No aligned evaluation results provided"
+        print(message)
+        write_step_7_cli_output(arxiv_id, {"success": False, "error_message": message})
+        return {"success": False, "error_message": message}
+
+    aligned_evaluation_results = filter_aligned_results(aligned_evaluation_results)
 
     if not aligned_evaluation_results:
-        print("No aligned evaluation results found")
-        return "No aligned evaluation results found"
+        message = "No aligned evaluation results found"
+        print(message)
+        write_step_7_cli_output(arxiv_id, {"success": False, "error_message": message})
+        return {"success": False, "error_message": message}
 
     # Get paper details
     from extract_evaluation_results.utils import get_paper_details
@@ -415,7 +515,14 @@ async def main():
         aligned_evaluation_results=aligned_evaluation_results,
         paper_details=paper_details,
     )
-    return result
+
+    if not result:
+        payload = {"success": False, "error_message": "Step 7 agent failed"}
+    else:
+        payload = result.model_dump()
+
+    write_step_7_cli_output(arxiv_id, payload)
+    return payload
 
 
 if __name__ == "__main__":
@@ -424,13 +531,20 @@ if __name__ == "__main__":
 
 
 # Workflow integration
+class Step7WorkflowOutput(BaseModel):
+    """Workflow-friendly wrapper for Step 7 results."""
+
+    step_7_result: Optional[dict] = None
+    step_7_error: Optional[str] = None
+
+
 class Step7WorkflowStep:
     """Workflow step wrapper for Step7."""
 
     name = "Step7WorkflowStep"
 
     def __init__(self):
-        self.step = Step7()
+        self.project_root = PROJECT_ROOT
 
     async def execute(self, state):
         """
@@ -439,127 +553,93 @@ class Step7WorkflowStep:
         Reads from state.data:
         - arxiv_id: str
         - normalized: list (aligned evaluation results from step 6)
-        - paper_details: str (optional, will be generated if not present)
 
         Writes to state.data:
-        - step_7_result: evaluation result
+        - step_7_result: dict with evaluation insertion details
         - step_7_error: error message if failed
         """
         from extract_evaluation_results.step_base import StepResult
 
-        # Get paper_details if not in state
-        paper_details = state.data.get("paper_details")
-        if not paper_details:
-            from extract_evaluation_results.utils import get_paper_details
+        arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
+        normalized_results = state.data.get("normalized", []) or []
+        aligned_results = filter_aligned_results(normalized_results)
 
-            try:
-                # Shield from cancellation to prevent cancel scope propagation
-                paper_details = await asyncio.shield(
-                    get_paper_details(state.data.get("arxiv_id", state.arxiv_id))
-                )
-            except asyncio.CancelledError:
-                logger.warning("get_paper_details was cancelled, using fallback")
-                # Provide minimal paper details as fallback
-                arxiv_id = state.data.get("arxiv_id", state.arxiv_id)
-                paper_details = f"""
-### Title:
-Paper {arxiv_id}
-### Authors:
-Unknown
-### ArXiv ID
-{arxiv_id}
-### Abstract
-No abstract available.
-"""
-
-        # Get aligned results from step 6
-        all_results = state.data.get("normalized", [])
-
-        # Filter out unresolved results (missing required fields)
-        aligned_results = [r for r in all_results if not r.get("_unresolved", False)]
-        unresolved_count = len(all_results) - len(aligned_results)
-
-        if unresolved_count > 0:
-            logger.info(f"Step7: Skipping {unresolved_count} unresolved evaluation(s)")
-        logger.info(f"Step7: Adding {len(aligned_results)} evaluation results to DB")
-
-        # Early return if no aligned results to process
         if not aligned_results:
             logger.info("No aligned evaluation results to add. Skipping Step 7.")
-            from extract_evaluation_results.step_base import StepResult
+            payload = {
+                "success": True,
+                "message": "No aligned evaluation results to add",
+            }
+            write_step_7_cli_output(arxiv_id, payload)
+            output = Step7WorkflowOutput(step_7_result=payload, step_7_error=None)
+            return StepResult(success=True, outputs=output)
 
-            return StepResult(
-                success=True,
-                outputs=EvaluationResult(success=True),
-            )
+        output_dir = get_output_dir(arxiv_id)
+        input_path = output_dir / STEP7_INPUT_FILENAME
+        input_payload = {"aligned_evaluation_results": aligned_results}
+        input_path.write_text(json.dumps(input_payload, ensure_ascii=False, indent=2))
+        logger.info(
+            "Step7: Prepared %d aligned evaluation(s) at %s",
+            len(aligned_results),
+            input_path,
+        )
 
-        # Build inputs from state.data
-        inputs = {
-            "arxiv_id": state.data.get("arxiv_id", state.arxiv_id),
-            "aligned_evaluation_results": aligned_results,
-            "paper_details": paper_details,
-        }
-
-        # Execute the step with robust cancellation handling
-        # Create a task to isolate from cancellation propagation
-        task = asyncio.create_task(self.step.run(inputs))
+        cmd = [
+            sys.executable,
+            "extract_evaluation_results/step_7.py",
+            "--arxiv_id",
+            arxiv_id,
+            "--aligned_results_file",
+            str(input_path.relative_to(self.project_root)),
+        ]
 
         try:
-            # Give the task a brief moment to start
-            await asyncio.sleep(0.1)
-
-            # Shield the task from external cancellation
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            logger.warning(
-                "Step 7 execution was cancelled externally, waiting for task to complete..."
+            subprocess.run(cmd, check=True, cwd=self.project_root)
+        except subprocess.CalledProcessError as exc:
+            error_message = f"Step 7 subprocess failed with exit code {exc.returncode}"
+            logger.error(error_message)
+            output = Step7WorkflowOutput(step_7_result=None, step_7_error=error_message)
+            return StepResult(
+                success=False,
+                outputs=output,
+                error_message=error_message,
             )
-            # The task should continue running despite the cancellation
-            # Wait longer for it to finish (evaluation addition is quick)
-            try:
-                result = await asyncio.wait_for(task, timeout=120.0)
-                logger.info(
-                    "✓ Step 7 completed successfully despite external cancellation"
-                )
-                # Don't re-raise the CancelledError since the task completed successfully
-            except asyncio.TimeoutError:
-                logger.error("Step 7 task timed out after 120 seconds")
-                # Cancel the task and wait for it
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                from extract_evaluation_results.step_base import StepResult
 
-                result = StepResult(
-                    success=False, outputs={}, error_message="Step execution timed out"
-                )
-            except asyncio.CancelledError:
-                logger.error("Step 7 task was cancelled and could not complete")
-                # Check if the task actually completed despite the cancellation
-                if task.done() and not task.cancelled():
-                    try:
-                        result = task.result()
-                        logger.info(
-                            "✓ Task completed successfully despite cancellation signal"
-                        )
-                    except Exception as e:
-                        logger.error(f"Task failed with exception: {e}")
-                        from extract_evaluation_results.step_base import StepResult
+        cli_output_path = output_dir / STEP7_OUTPUT_FILENAME
+        if not cli_output_path.exists():
+            error_message = f"Step 7 output file not found at {cli_output_path}"
+            logger.error(error_message)
+            output = Step7WorkflowOutput(step_7_result=None, step_7_error=error_message)
+            return StepResult(
+                success=False,
+                outputs=output,
+                error_message=error_message,
+            )
 
-                        result = StepResult(
-                            success=False,
-                            outputs={},
-                            error_message=f"Step execution failed: {str(e)}",
-                        )
-                else:
-                    from extract_evaluation_results.step_base import StepResult
+        try:
+            cli_data = json.loads(cli_output_path.read_text())
+        except Exception as exc:
+            error_message = f"Failed to parse Step 7 output: {exc}"
+            logger.error(error_message)
+            output = Step7WorkflowOutput(step_7_result=None, step_7_error=error_message)
+            return StepResult(
+                success=False,
+                outputs=output,
+                error_message=error_message,
+            )
 
-                    result = StepResult(
-                        success=False,
-                        outputs={},
-                        error_message="Step execution was cancelled",
-                    )
+        step_success = cli_data.get("success")
+        if step_success is None:
+            step_success = bool(cli_data)
 
-        return result
+        error_message = None if step_success else cli_data.get("error_message")
+        output = Step7WorkflowOutput(
+            step_7_result=cli_data or None,
+            step_7_error=error_message,
+        )
+
+        return StepResult(
+            success=bool(step_success),
+            outputs=output,
+            error_message=error_message or "",
+        )

@@ -19,6 +19,9 @@ import argparse
 import asyncio
 import json
 import logging
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -27,6 +30,7 @@ from extract_evaluation_results.step_base import AgentStep
 from extract_evaluation_results.utils import get_paper_details, get_formatted_tasks_list
 from extract_evaluation_results.tools import (
     add_dataset,
+    check_existing_dataset,
     get_tasks_by_area,
 )
 
@@ -91,6 +95,44 @@ A colleague of yours has extracted evaluation results from an ArXiv paper and id
 Another colleague of yours has gathered comprehensive information about the dataset (including description, full name, URLs, and the appropriate task_id) and will provide you with the required information.
 Your task is to add this dataset to the database.
 
+## CRITICAL: Prevent Duplicate Datasets
+
+**BEFORE adding any dataset, you MUST use the `check_existing_dataset` tool to verify it doesn't already exist.**
+
+Steps to follow:
+1. **Check for existence**: Call `check_existing_dataset(dataset_name="<name>")` with the dataset name
+2. **If found** (response has `"found": true`):
+   - DO NOT add the dataset again
+   - Set `dataset_successfully_added = False` (since we're not adding, it already exists)
+   - Extract the dataset details from the check_existing_dataset response
+   - Return those details in `dataset_details` field with the existing dataset's information
+3. **If not found** (response has `"found": false`):
+   - Proceed with adding the dataset using the `add_dataset` tool
+   - Set `dataset_successfully_added = True`
+   - Return the newly created dataset details
+
+**Example workflow:**
+```
+User: Add dataset "RefCOCO"
+
+Step 1: check_existing_dataset("RefCOCO")
+Response: {"found": true, "dataset": {"id": 12, "name": "RefCOCO", ...}}
+
+Step 2: Since found=true, return:
+{
+  "dataset_successfully_added": false,
+  "dataset_details": {
+    "id": 12,
+    "name": "RefCOCO",
+    "slug": "refcoco",
+    "description": "...",
+    "task_ids": [42, 43],
+    "hf_url": "...",
+    "paper_url": "..."
+  }
+}
+```
+
 ## Important notes
 
 **CRITICAL**: Every dataset MUST be linked to EXACTLY ONE task. The task_id has already been determined by your colleague in the previous step - use the provided task_ids as-is.
@@ -108,7 +150,7 @@ Ensure you provide all relevant information including:
 
 ## Output format
 
-When a dataset is added successfully, return the details of the dataset in the following Pydantic model:
+When a dataset is processed (either found existing or added new), return the details in the following Pydantic model:
 ```python
 class DatasetDetails(BaseModel):
     id: int
@@ -121,8 +163,8 @@ class DatasetDetails(BaseModel):
 
 
 class Response(BaseModel):
-    dataset_successfully_added: bool
-    dataset_details: Optional[DatasetDetails] = None # Only complete this if dataset_successfully_added is True
+    dataset_successfully_added: bool  # True if newly added, False if already existed
+    dataset_details: Optional[DatasetDetails] = None  # Dataset details (existing or newly added)
 ```
 
 Return the response as a JSON string. Do not include any other text in your response.
@@ -141,6 +183,7 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             description="Adds datasets to the database with comprehensive information",
             instructions=dataset_adder_prompt,
             tools=[
+                check_existing_dataset,  # ✨ Check for duplicates before adding
                 add_dataset,
                 get_tasks_by_area,
             ],
@@ -279,10 +322,12 @@ class Step4(AgentStep[Step4Input, Step4Output]):
                 for dataset_input in inputs.dataset_inputs
             ]
 
-            # Use gather with return_exceptions to prevent cancellation propagation
-            # Shield from external cancellation to allow tasks to complete even if step is cancelled
+            # Use gather with return_exceptions to collect per-dataset results
+            # Shield the gather so external cancellations don't abort in-progress tasks prematurely
             try:
-                results = await asyncio.gather(*task_objects, return_exceptions=True)
+                results = await asyncio.shield(
+                    asyncio.gather(*task_objects, return_exceptions=True)
+                )
             except asyncio.CancelledError:
                 # If gather is cancelled, wait for tasks to complete with a timeout
                 logger.warning("Gather was cancelled, waiting for tasks to complete...")
@@ -382,6 +427,13 @@ class Step4(AgentStep[Step4Input, Step4Output]):
             )
 
         except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and hasattr(current_task, "uncancel"):
+                removed = current_task.uncancel()
+                if removed:
+                    logger.debug(
+                        "Step 4 run: removed %d pending cancellation(s)", removed
+                    )
             # Handle cancellation gracefully
             logger.warning("Step 4 was cancelled, checking if tasks completed...")
             # Check if all tasks actually completed despite the cancellation
@@ -491,9 +543,16 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
     with open(json_file, "r") as f:
         step_3_data = json.load(f)
 
+    # Extract step_3_results list from the dictionary
+    # step_3.json has structure: {"step_3_results": [...]}
+    step_3_results = step_3_data.get("step_3_results", [])
+    if not step_3_results and isinstance(step_3_data, list):
+        # Fallback: if it's already a list (backward compatibility)
+        step_3_results = step_3_data
+
     # Extract datasets that were successfully gathered
     datasets_to_add = []
-    for item in step_3_data:
+    for item in step_3_results:
         if item.get("success", False) and item.get("information"):
             info = item["information"]
             dataset_input = item.get("dataset_input", {})
@@ -711,6 +770,7 @@ class Step4WorkflowStep:
 
     def __init__(self):
         self.step = Step4()
+        self.project_root = Path(__file__).resolve().parents[1]
 
     async def execute(self, state):
         """
@@ -812,94 +872,38 @@ class Step4WorkflowStep:
 
         logger.info(f"Step4: Adding {len(datasets_to_add)} datasets to DB")
 
-        # Build inputs from state.data - convert dictionaries to Step4SingleInput format
-        formatted_inputs = [
-            {"dataset_details_json": json.dumps(dataset)} for dataset in datasets_to_add
-        ]
-        inputs = {"dataset_inputs": formatted_inputs}
+        # If no datasets need to be added, return an empty result set
+        target_dir = get_output_dir(state.arxiv_id)
+        step4_path = target_dir / "step_4.json"
 
-        # Create task and shield from cancellation (same pattern as Step 5 and Step 7)
-        task = asyncio.create_task(self.step.run(inputs))
-
-        try:
-            # Give the task a brief moment to start
-            await asyncio.sleep(0.1)
-
-            # Shield the task from external cancellation
-            result = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            logger.warning(
-                "Step 4 execution was cancelled externally, waiting for task to complete..."
-            )
-            # The task should continue running despite the cancellation
-            # Wait longer for it to finish (dataset addition can take time)
-            try:
-                result = await asyncio.wait_for(task, timeout=300.0)
-                logger.info(
-                    "✓ Step 4 completed successfully despite external cancellation"
-                )
-                # Don't re-raise the CancelledError since the task completed successfully
-            except asyncio.TimeoutError:
-                logger.error("Step 4 task timed out after 300 seconds")
-                # Cancel the task and wait for it
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                from extract_evaluation_results.step_base import StepResult
-
-                result = StepResult(
-                    success=False, outputs={}, error_message="Step execution timed out"
-                )
-            except asyncio.CancelledError:
-                logger.error("Step 4 task was cancelled and could not complete")
-                # Check if the task actually completed despite the cancellation
-                if task.done() and not task.cancelled():
-                    try:
-                        result = task.result()
-                        logger.info(
-                            "✓ Task completed successfully despite cancellation signal"
-                        )
-                    except Exception as e:
-                        logger.error(f"Task failed with exception: {e}")
-                        from extract_evaluation_results.step_base import StepResult
-
-                        result = StepResult(
-                            success=False,
-                            outputs={},
-                            error_message=f"Step execution failed: {str(e)}",
-                        )
-                else:
-                    from extract_evaluation_results.step_base import StepResult
-
-                    result = StepResult(
-                        success=False,
-                        outputs={},
-                        error_message="Step execution was cancelled",
-                    )
-
-        # Rename 'results' to 'step_4_results' to avoid collision with other steps
-        if result.success and result.outputs:
-            from extract_evaluation_results.step_base import StepResult
-
-            output_dict = result.outputs.model_dump()
-            # Rename the key
-            if "results" in output_dict:
-                output_dict["step_4_results"] = output_dict.pop("results")
-
-            # Create new output model with renamed field
-            from pydantic import BaseModel
+        if not datasets_to_add:
 
             class Step4RenamedOutput(BaseModel):
                 step_4_results: list
 
-            renamed_output = Step4RenamedOutput(
-                step_4_results=output_dict["step_4_results"]
-            )
+            empty_output = Step4RenamedOutput(step_4_results=[])
+            return StepResult(success=True, outputs=empty_output)
 
-            return StepResult(
-                success=True, outputs=renamed_output, reasoning=result.reasoning
-            )
+        # Run step_4.py in an isolated subprocess so that cancellation scopes from the agent
+        # do not interfere with the main workflow coroutine.
+        cmd = [
+            sys.executable,
+            "extract_evaluation_results/step_4.py",
+            "--arxiv_id",
+            state.arxiv_id,
+        ]
+        subprocess.run(cmd, check=True, cwd=self.project_root)
 
-        return result
+        if step4_path.exists():
+            step4_data = json.loads(step4_path.read_text())
+        else:
+            step4_data = []
+
+        class Step4RenamedOutput(BaseModel):
+            step_4_results: list
+
+        renamed_output = Step4RenamedOutput(step_4_results=step4_data)
+
+        from extract_evaluation_results.step_base import StepResult
+
+        return StepResult(success=True, outputs=renamed_output)

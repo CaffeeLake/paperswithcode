@@ -791,20 +791,25 @@ async def update_dataset(
 async def link_dataset_to_task(dataset_id: int, task_id: int) -> str:
     """Link an existing dataset to a task.
 
-    This tool creates a connection between a dataset and a task via the task_datasets
-    junction table. This is useful when you've added a dataset and need to associate it
-    with additional tasks, or when a dataset was created without proper task links.
+    Note: Task-dataset relationships are now managed through TASK_DATASET_METRICS.
+    The relationship will be automatically created when you add metrics to the leaderboard
+    using add_metric_to_leaderboard(task_id, dataset_id, metric_name).
+
+    This function validates that both the dataset and task exist and can be linked.
 
     Args:
         dataset_id: The ID of the dataset to link (from add_dataset response or find_dataset)
         task_id: The ID of the task to link to (from get_available_tasks or get_tasks_by_area)
 
     Returns:
-        A success message if the link was created or already exists, or an error message if failed.
+        A success message if validation passes, or an error message if failed.
 
     Example:
-        If you added a robotics dataset (ID: 230) and want to link it to "Robotic Manipulation" task (ID: 15):
+        To link dataset 230 to task 15, first validate the link:
         link_dataset_to_task(dataset_id=230, task_id=15)
+
+        Then add metrics to create the actual leaderboard:
+        add_metric_to_leaderboard(task_id=15, dataset_id=230, metric_name="Accuracy")
     """
     print(
         f"[TOOL CALL] link_dataset_to_task(dataset_id={dataset_id}, task_id={task_id})"
@@ -813,8 +818,6 @@ async def link_dataset_to_task(dataset_id: int, task_id: int) -> str:
     session: Session = db_manager.session_local()
 
     try:
-        from backend.models.database import TaskDataset
-
         # Validate dataset exists
         dataset = session.query(DBDataset).filter(DBDataset.id == dataset_id).first()
         if not dataset:
@@ -831,36 +834,35 @@ async def link_dataset_to_task(dataset_id: int, task_id: int) -> str:
             print(f"[TOOL RESULT] {result}")
             return result
 
-        # Check if link already exists
-        existing_link = (
-            session.query(TaskDataset)
+        # Check if any metrics already link this task-dataset pair
+        from backend.models.database import TaskDatasetMetric as DBTaskDatasetMetric
+
+        existing_metrics = (
+            session.query(DBTaskDatasetMetric)
             .filter(
-                TaskDataset.task_id == task_id,
-                TaskDataset.dataset_id == dataset_id,
+                DBTaskDatasetMetric.task_id == task_id,
+                DBTaskDatasetMetric.dataset_id == dataset_id,
             )
-            .first()
+            .count()
         )
 
-        if existing_link:
-            session.close()
-            result = f"✓ Dataset '{dataset.name}' (ID: {dataset_id}) is already linked to task '{task.name}' (ID: {task_id})"
+        session.close()
+
+        if existing_metrics > 0:
+            result = f"✓ Dataset '{dataset.name}' (ID: {dataset_id}) is already linked to task '{task.name}' (ID: {task_id}) via {existing_metrics} metric(s)"
+            print(f"[TOOL RESULT] {result}")
+            return result
+        else:
+            result = (
+                f"✓ Validated: Dataset '{dataset.name}' (ID: {dataset_id}) and task '{task.name}' (ID: {task_id}) exist. "
+                f"To complete the link, add metrics using add_metric_to_leaderboard(task_id={task_id}, dataset_id={dataset_id}, metric_name='...')"
+            )
             print(f"[TOOL RESULT] {result}")
             return result
 
-        # Create the link
-        task_dataset = TaskDataset(task_id=task_id, dataset_id=dataset_id)
-        session.add(task_dataset)
-        session.commit()
-
-        session.close()
-        result = f"✓ Successfully linked dataset '{dataset.name}' (ID: {dataset_id}) to task '{task.name}' (ID: {task_id})"
-        print(f"[TOOL RESULT] {result}")
-        return result
-
     except Exception as e:
-        session.rollback()
         session.close()
-        error_msg = f"✗ Failed to link dataset to task: {str(e)}"
+        error_msg = f"✗ Failed to validate dataset-task link: {str(e)}"
         print(f"[TOOL RESULT] {error_msg}")
         return error_msg
 
@@ -1001,6 +1003,57 @@ async def get_leaderboard_metrics(task_id: int, dataset_id: int) -> str:
     except Exception as e:
         session.close()
         error_msg = f"Error retrieving leaderboard metrics: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+@function_tool
+async def add_metric_to_leaderboard(
+    task_id: int, dataset_id: int, metric_name: str
+) -> str:
+    """Add a metric to a leaderboard's allowed metrics list.
+
+    This creates a leaderboard triple (task, dataset, metric) that allows
+    evaluations to be added for this specific combination.
+
+    Args:
+        task_id: The ID of the task
+        dataset_id: The ID of the dataset
+        metric_name: The name of the metric to add (e.g., 'AP', 'PSNR', 'SSIM')
+
+    Returns:
+        A success message with details, or an error message if creation failed.
+    """
+    print(
+        f"[TOOL CALL] add_metric_to_leaderboard(task_id={task_id}, dataset_id={dataset_id}, metric_name={metric_name})"
+    )
+
+    session: Session = db_manager.session_local()
+    service = LeaderboardMetricService(session)
+
+    try:
+        service.add_metric_to_leaderboard(task_id, dataset_id, metric_name)
+        session.close()
+
+        result = f"✓ Successfully added metric '{metric_name}' to leaderboard (Task ID: {task_id}, Dataset ID: {dataset_id})"
+        print(f"[TOOL RESULT] {result}")
+        return result
+
+    except ValueError as e:
+        # Already exists - this is OK (idempotent)
+        if "already linked" in str(e).lower():
+            session.close()
+            result = f"✓ Metric '{metric_name}' already exists for leaderboard (Task ID: {task_id}, Dataset ID: {dataset_id})"
+            print(f"[TOOL RESULT] {result}")
+            return result
+        else:
+            session.close()
+            error_msg = f"✗ Error adding metric to leaderboard: {str(e)}"
+            print(f"[TOOL RESULT] {error_msg}")
+            return error_msg
+    except Exception as e:
+        session.close()
+        error_msg = f"✗ Error adding metric to leaderboard: {str(e)}"
         print(f"[TOOL RESULT] {error_msg}")
         return error_msg
 
@@ -1245,6 +1298,170 @@ async def get_existing_metrics() -> str:
         error_msg = f"Error retrieving metrics: {str(e)}"
         print(f"[TOOL RESULT] {error_msg}")
         return error_msg
+
+
+@function_tool
+async def get_all_dataset_names() -> str:
+    """Get all dataset names currently in the database.
+
+    This tool retrieves all dataset names from the database. Use this to check
+    if a metric name is actually a dataset name (which should be filtered out).
+
+    Returns:
+        A formatted string with all dataset names in the database, one per line.
+        This helps identify when a metric name is actually a dataset name that
+        should not be added as a metric.
+
+    Example:
+        Use this when you suspect a metric name might actually be a dataset name.
+        For example, if you see "MMBench" as a metric name, check if it's a dataset first.
+    """
+    print("[TOOL CALL] get_all_dataset_names()")
+    session: Session = db_manager.session_local()
+
+    try:
+        # Query all dataset names, ordered by name
+        datasets = session.query(DBDataset.name).order_by(DBDataset.name).all()
+
+        if not datasets:
+            session.close()
+            return "No datasets found in database"
+
+        # Format response as a simple list
+        dataset_names = [ds.name for ds in datasets]
+        response = "Dataset Names in Database:\n"
+        response += "=" * 80 + "\n\n"
+        response += "\n".join(f"- {name}" for name in dataset_names)
+        response += f"\n\nTotal: {len(dataset_names)} dataset(s)"
+
+        session.close()
+        print(f"[TOOL RESULT] Found {len(dataset_names)} datasets")
+        return response
+
+    except Exception as e:
+        session.close()
+        error_msg = f"Error retrieving dataset names: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        return error_msg
+
+
+@function_tool
+async def check_existing_dataset(dataset_name: str) -> str:
+    """Check if a dataset already exists in the database before adding it.
+
+    **CRITICAL**: Use this tool BEFORE attempting to add any dataset to prevent duplicates.
+    This performs thorough matching including exact name matches and base name matching
+    (ignoring parenthetical descriptions).
+
+    Args:
+        dataset_name: The name of the dataset to check for (e.g., "RefCOCO", "COCO val2017")
+
+    Returns:
+        JSON string with search results:
+        - If found: {"found": true, "dataset": {id, name, slug, description, hf_url, paper_url, task_ids}}
+        - If not found: {"found": false, "dataset": null}
+
+    Example:
+        Before adding "RefCOCO (referring expressions)", call:
+        check_existing_dataset("RefCOCO")
+
+        Response if found:
+        {
+          "found": true,
+          "dataset": {
+            "id": 12,
+            "name": "RefCOCO",
+            "slug": "refcoco",
+            "description": "Referring expression dataset...",
+            "hf_url": "https://huggingface.co/datasets/refcoco",
+            "paper_url": "https://arxiv.org/abs/1608.00272",
+            "task_ids": [42, 43]
+          }
+        }
+    """
+    print(f"[TOOL CALL] check_existing_dataset(dataset_name='{dataset_name}')")
+
+    session: Session = db_manager.session_local()
+
+    try:
+        # Extract base name (remove parenthetical descriptions)
+        base_name = dataset_name.split("(")[0].strip()
+
+        # Try exact match first (case-insensitive)
+        exact = (
+            session.query(DBDataset).filter(DBDataset.name.ilike(dataset_name)).first()
+        )
+
+        if exact:
+            # Get task_ids and populate result
+            dataset_service = DatasetService(session)
+            task_ids = dataset_service.get_dataset_tasks(exact.id)
+
+            result = {
+                "found": True,
+                "dataset": {
+                    "id": exact.id,
+                    "name": exact.name,
+                    "slug": exact.slug,
+                    "description": exact.description or "",
+                    "hf_url": exact.hf_url or "",
+                    "paper_url": exact.paper_url or "",
+                    "task_ids": task_ids,
+                },
+            }
+            result_str = json.dumps(result, indent=2)
+            print(f"[TOOL RESULT] Found exact match: {exact.name} (ID: {exact.id})")
+            session.close()
+            return result_str
+
+        # Try base name match (e.g., "RefCOCO" matches "RefCOCO (test)")
+        base_match = (
+            session.query(DBDataset)
+            .filter(DBDataset.name.ilike(f"{base_name}%"))
+            .first()
+        )
+
+        if base_match:
+            # Verify this is a real match (not just substring)
+            # e.g., "COCO" shouldn't match "RefCOCO"
+            db_base = base_match.name.split("(")[0].strip()
+            if db_base.lower() == base_name.lower():
+                # Get task_ids and populate result
+                dataset_service = DatasetService(session)
+                task_ids = dataset_service.get_dataset_tasks(base_match.id)
+
+                result = {
+                    "found": True,
+                    "dataset": {
+                        "id": base_match.id,
+                        "name": base_match.name,
+                        "slug": base_match.slug,
+                        "description": base_match.description or "",
+                        "hf_url": base_match.hf_url or "",
+                        "paper_url": base_match.paper_url or "",
+                        "task_ids": task_ids,
+                    },
+                }
+                result_str = json.dumps(result, indent=2)
+                print(
+                    f"[TOOL RESULT] Found base name match: {base_match.name} (ID: {base_match.id})"
+                )
+                session.close()
+                return result_str
+
+        # Not found
+        result = {"found": False, "dataset": None}
+        result_str = json.dumps(result, indent=2)
+        print(f"[TOOL RESULT] Dataset '{dataset_name}' not found in database")
+        session.close()
+        return result_str
+
+    except Exception as e:
+        session.close()
+        error_msg = f"Error checking for existing dataset: {str(e)}"
+        print(f"[TOOL RESULT] {error_msg}")
+        # Return error as JSON for consistent parsing
+        return json.dumps({"found": False, "dataset": None, "error": error_msg})
 
 
 @function_tool

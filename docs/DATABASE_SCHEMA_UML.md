@@ -65,21 +65,21 @@ Key capabilities:
                          │ created/updated│
                          └───────────────┘
 
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────────┐
-│ PAPER_DATASETS  │     │   DATASETS      │◄────┤     TASK_DATASETS       │
-├─────────────────┤     ├─────────────────┤     ├─────────────────────────┤
-│ paper_id (FK)   │     │ id (PK)         │     │ task_id (FK)            │
-│ dataset_id (FK) │     │ name            │     │ dataset_id (FK)         │
-│ PK (paper,ds)   │     │ slug (UNIQUE)   │     │ PK (task,dataset)       │
-└─────────────────┘     │ rich metadata   │     └─────────────────────────┘
+┌─────────────────┐     ┌─────────────────┐
+│ PAPER_DATASETS  │     │   DATASETS      │
+├─────────────────┤     ├─────────────────┤
+│ paper_id (FK)   │     │ id (PK)         │
+│ dataset_id (FK) │     │ name            │
+│ PK (paper,ds)   │     │ slug (UNIQUE)   │
+└─────────────────┘     │ rich metadata   │
                         │ parent_dataset  │
                         │ variants/splits │
                         │ licensing       │
                         │ modalities/lang │
                         │ created/updated │
-└─────────────────┘
-        │
-        ▼
+                        └─────────────────┘
+                                │
+                                ▼
                     ┌───────────────────────────────┐
                     │     TASK_DATASET_METRICS      │
                     ├───────────────────────────────┤
@@ -87,6 +87,7 @@ Key capabilities:
                     │ dataset_id (FK)               │
                     │ metric_id (FK)                │
                     │ PK (task,dataset,metric)      │
+                    │ (Defines leaderboards)        │
                     └───────────────────────────────┘
                                 │
                                 ▼
@@ -221,8 +222,9 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_DATASETS(paper_id, dataset_id) PK(paper_id, dataset_id)
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
-- TASK_DATASETS(task_id, dataset_id) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
+
+**Note:** Task-dataset relationships are defined via TASK_DATASET_METRICS. A (task, dataset) pair is valid if it has at least one metric defined. This table serves as both the junction table and the leaderboard definition table.
 
 
 ## Views (current)
@@ -245,8 +247,9 @@ The following summarizes the live structure. See the database for full DDL.
 
 ## Notes & Guidance
 
-- Leaderboards: Use TASK_DATASET_METRICS triples for defining valid metric leaderboards per task/dataset.
-- Project pages: is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
-- Repositories: single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
+- **Leaderboards:** TASK_DATASET_METRICS defines all valid leaderboards. A (task, dataset) pair is valid if it has at least one metric defined. This aligns with the legacy PapersWithCode design where leaderboards are defined by (task, dataset, metrics) triples.
+- **Task-Dataset Relationships:** There is NO direct TASK_DATASETS junction table. Relationships are inferred from TASK_DATASET_METRICS. To get datasets for a task, query distinct dataset_ids from TASK_DATASET_METRICS where task_id matches.
+- **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
+- **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
 
 This document is synchronized with the live schema via schema dump and table descriptions.

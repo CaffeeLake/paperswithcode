@@ -269,6 +269,11 @@ class ApiClient {
     return this.request<Paper>(endpoint);
   }
 
+  async indexPaperFromArxiv(arxivId: string): Promise<Paper> {
+    const endpoint = `/papers/index/${arxivId}`;
+    return this.request<Paper>(endpoint, { method: 'POST' });
+  }
+
   async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
     const searchParams = new URLSearchParams();
     taskIds.forEach(id => searchParams.append('task_ids', id.toString()));
@@ -579,6 +584,11 @@ class ApiClient {
     return this.request<Dataset>(`/datasets/${slug}`);
   }
 
+  async getDatasetTasks(datasetId: string): Promise<Task[]> {
+    const response = await this.request<PaginatedResponse<Task>>(`/datasets/${datasetId}/tasks/`);
+    return response.results;
+  }
+
   // Evaluations API
   async getEvaluations(params?: {
     page?: number;
@@ -735,6 +745,7 @@ export const apiClient = new ApiClient();
 export const getPapers = apiClient.getPapers.bind(apiClient);
 export const getPaper = apiClient.getPaper.bind(apiClient);
 export const getPaperByArxivId = apiClient.getPaperByArxivId.bind(apiClient);
+export const indexPaperFromArxiv = apiClient.indexPaperFromArxiv.bind(apiClient);
 export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
 export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);
@@ -759,6 +770,7 @@ export const getMethodPapers = apiClient.getMethodPapers.bind(apiClient);
 export const getDatasets = apiClient.getDatasets.bind(apiClient);
 export const getDataset = apiClient.getDataset.bind(apiClient);
 export const getDatasetBySlug = apiClient.getDatasetBySlug.bind(apiClient);
+export const getDatasetTasks = apiClient.getDatasetTasks.bind(apiClient);
 export const getEvaluations = apiClient.getEvaluations.bind(apiClient);
 export const getEvaluation = apiClient.getEvaluation.bind(apiClient);
 export const getEvaluationsByPaper = apiClient.getEvaluationsByPaper.bind(apiClient);

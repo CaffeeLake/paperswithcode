@@ -1,4 +1,4 @@
-import { ExternalLink, BookOpen, Database, Zap, Bookmark, Globe, Quote, Loader2 } from "lucide-react";
+import { ExternalLink, BookOpen, Database, Zap, Bookmark, Globe, Quote, Loader2, FileText, CheckCircle, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { EditMethodsDialog } from "@/components/paper-detail/EditMethodsDialog";
 import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositoriesDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
 import { EvaluationResultsCard } from "@/components/paper-detail/EvaluationResultsCard";
+import { indexPaperFromArxiv } from "@/lib/api";
 
 // Type definitions
 interface Task {
@@ -26,13 +27,18 @@ interface Task {
 
 const PaperDetail = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
-  const { data: paper, isLoading, error } = usePaperByArxivId(arxivId || "", !!arxivId);
+  const { data: paper, isLoading, error, refetch } = usePaperByArxivId(arxivId || "", !!arxivId);
   const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(paper?.arxiv_id);
   const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByPaper(paper?.id, !!paper?.id);
 
   // Author display state
   const [showAllAuthors, setShowAllAuthors] = useState(false);
   const AUTHOR_DISPLAY_LIMIT = 30;
+
+  // Indexing state
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [indexingStatus, setIndexingStatus] = useState<'idle' | 'indexing' | 'success' | 'error'>('idle');
+  const [indexingError, setIndexingError] = useState<string | null>(null);
 
   // Admin editing state
   const {
@@ -45,6 +51,46 @@ const PaperDetail = () => {
     isEditingEvaluations,
     setIsEditingEvaluations,
   } = usePaperEditState();
+
+  const handleIndexPaper = async () => {
+    if (!arxivId) return;
+
+    setIsIndexing(true);
+    setIndexingStatus('indexing');
+    setIndexingError(null);
+
+    try {
+      await indexPaperFromArxiv(arxivId);
+      setIndexingStatus('success');
+
+      // Reload the page after a brief delay to show the newly indexed paper
+      setTimeout(() => {
+        refetch();
+      }, 1500);
+    } catch (err) {
+      console.error('Error indexing paper:', err);
+      setIndexingStatus('error');
+
+      // Extract error message from response
+      let errorMessage = 'Failed to index paper';
+      if (err && typeof err === 'object' && 'response' in err) {
+        const error = err as { response?: string };
+        if (error.response) {
+          try {
+            const errorData = JSON.parse(error.response);
+            errorMessage = errorData.detail || errorMessage;
+          } catch {
+            errorMessage = error.response;
+          }
+        }
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      }
+
+      setIndexingError(errorMessage);
+      setIsIndexing(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -68,14 +114,83 @@ const PaperDetail = () => {
         <Header />
         <div className="container mx-auto px-4 py-8">
           <div className="flex items-center justify-center min-h-[400px]">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold mb-2">Paper Not Found</h2>
-              <p className="text-muted-foreground mb-4">
-                {error?.message || "The requested paper could not be found."}
-              </p>
-              <Link to="/papers">
-                <Button>Browse Papers</Button>
-              </Link>
+            <div className="text-center max-w-xl">
+              {indexingStatus === 'success' ? (
+                <div className="space-y-4">
+                  <CheckCircle className="w-16 h-16 text-green-500 mx-auto" />
+                  <h2 className="text-2xl font-bold mb-2">Paper Indexed Successfully!</h2>
+                  <p className="text-muted-foreground mb-4">
+                    Reloading page to display the paper...
+                  </p>
+                  <div className="flex items-center justify-center space-x-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Loading...</span>
+                  </div>
+                </div>
+              ) : indexingStatus === 'indexing' ? (
+                <div className="space-y-4">
+                  <Loader2 className="w-16 h-16 animate-spin text-primary mx-auto" />
+                  <h2 className="text-2xl font-bold mb-2">Indexing Paper from ArXiv</h2>
+                  <p className="text-muted-foreground mb-4">
+                    Fetching paper metadata and adding to database...
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    This may take a few seconds
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <FileText className="w-16 h-16 text-muted-foreground mx-auto" />
+                  <h2 className="text-2xl font-bold mb-2">Paper Not Found</h2>
+                  <p className="text-muted-foreground mb-4">
+                    This paper hasn't been indexed yet.
+                  </p>
+
+                  {arxivId && (
+                    <div className="space-y-4">
+                      <p className="text-sm text-muted-foreground">
+                        ArXiv ID: <span className="font-mono font-semibold">{arxivId}</span>
+                      </p>
+
+                      {indexingStatus === 'error' && indexingError && (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                          <div className="flex items-start space-x-2">
+                            <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
+                            <div className="text-left">
+                              <p className="text-sm font-semibold text-red-900">Indexing Failed</p>
+                              <p className="text-sm text-red-700 mt-1">{indexingError}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <Button
+                        onClick={handleIndexPaper}
+                        disabled={isIndexing}
+                        className="space-x-2"
+                      >
+                        {isIndexing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Indexing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <FileText className="w-4 h-4" />
+                            <span>Index from ArXiv</span>
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="pt-4">
+                    <Link to="/papers">
+                      <Button variant="outline">Browse Papers</Button>
+                    </Link>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

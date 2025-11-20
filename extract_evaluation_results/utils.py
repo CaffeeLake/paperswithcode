@@ -63,15 +63,18 @@ def get_formatted_tasks_list() -> str:
     session: Session = db_manager.session_local()
 
     try:
-        from backend.models.database import Task as DBTask, Area as DBArea
-        from sqlalchemy.orm import joinedload
+        from backend.models.database import (
+            Task as DBTask,
+            Area as DBArea,
+            Dataset as DBDataset,
+            TaskDatasetMetric as DBTaskDatasetMetric,
+        )
+        from sqlalchemy import distinct
 
-        # Query all tasks with their areas and datasets, ordered by area name and task ID
-        # Use joinedload to efficiently load datasets relationship
+        # Query all tasks with their areas, ordered by area name and task ID
         tasks = (
             session.query(DBTask)
             .join(DBArea, DBTask.area_id == DBArea.id, isouter=True)
-            .options(joinedload(DBTask.datasets))
             .order_by(DBArea.name.asc().nullsfirst(), DBTask.id.asc())
             .all()
         )
@@ -91,10 +94,16 @@ def get_formatted_tasks_list() -> str:
             if area_name not in tasks_by_area:
                 tasks_by_area[area_name] = []
 
-            # Get dataset names for this task
-            dataset_names = (
-                [dataset.name for dataset in task.datasets] if task.datasets else []
+            # Get dataset names for this task through task_dataset_metrics
+            dataset_query = (
+                session.query(distinct(DBDataset.name))
+                .join(
+                    DBTaskDatasetMetric, DBDataset.id == DBTaskDatasetMetric.dataset_id
+                )
+                .filter(DBTaskDatasetMetric.task_id == task.id)
+                .order_by(DBDataset.name)
             )
+            dataset_names = [row[0] for row in dataset_query.all()]
             dataset_count = len(dataset_names)
             total_datasets += dataset_count
 

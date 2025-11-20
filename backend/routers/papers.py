@@ -19,7 +19,9 @@ from backend.models.api import (
     PaperVersions,
     VersionComparison,
 )
+from backend.models.database import Paper as DBPaper, Author, PaperAuthor
 from backend.services.paper_service import PaperService
+from backend.services.arxiv_service import ArxivService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import validate_arxiv_id, validate_version
 
@@ -441,6 +443,152 @@ async def compare_paper_versions(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/papers/index/{arxiv_id}",
+    response_model=Paper,
+    summary="Index a paper from ArXiv by ID",
+)
+async def index_paper_from_arxiv(
+    arxiv_id: str = Path(..., description="ArXiv ID (e.g., '2511.08544')"),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Fetch paper from ArXiv API and add to database.
+
+    This endpoint:
+    - Validates the ArXiv ID format
+    - Fetches metadata from ArXiv API
+    - Saves paper to database with authors
+    - Returns the complete paper object
+
+    Returns:
+    - 200: Successfully indexed paper (returns Paper object)
+    - 400: Invalid ArXiv ID format
+    - 404: Paper not found on ArXiv
+    - 409: Paper already exists in database
+    - 500: Server error (ArXiv API unavailable, database error, etc.)
+    """
+    # Validate ArXiv ID format
+    if not validate_arxiv_id(arxiv_id):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid ArXiv ID format: {arxiv_id}"
+        )
+
+    try:
+        paper_service = PaperService(db)
+
+        # Check if paper already exists
+        try:
+            existing_paper = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
+            if existing_paper:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Paper with ArXiv ID {arxiv_id} already exists in database",
+                )
+        except PaperNotFoundError:
+            # Good, paper doesn't exist yet
+            pass
+
+        # Fetch metadata from ArXiv
+        arxiv_service = ArxivService()
+        metadata = await arxiv_service.get_paper_metadata(arxiv_id)
+
+        if not metadata.success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Paper not found on ArXiv or ArXiv API error: {metadata.error_message}",
+            )
+
+        # Prepare paper data
+        paper_data = {
+            "arxiv_id": metadata.arxiv_id,
+            "title": metadata.title,
+            "abstract": metadata.abstract,
+            "version": metadata.version,
+            "date_published": metadata.published.date() if metadata.published else None,
+            "primary_category": metadata.primary_category,
+            "all_categories": metadata.categories,
+            "is_latest_version": True,
+        }
+
+        # Add paper to database
+        paper_id = paper_service.add_paper(paper_data)
+
+        if not paper_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to add paper to database (may already exist)",
+            )
+
+        # Get the paper object
+        db_paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+
+        if not db_paper:
+            raise HTTPException(
+                status_code=500, detail="Paper was added but could not be retrieved"
+            )
+
+        # Add authors if available
+        if metadata.authors:
+            await add_authors_to_paper(db, db_paper, metadata.authors)
+
+        # Return the complete paper object
+        return paper_service.get_paper_by_id(paper_id, include_resources=True)
+
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error indexing paper: {str(e)}")
+
+
+async def add_authors_to_paper(
+    session: Session, paper: DBPaper, author_names: list[str]
+):
+    """
+    Add authors to a paper.
+
+    Args:
+        session: Database session
+        paper: Paper database object
+        author_names: List of author names from ArXiv
+    """
+    from backend.database.authors_setup.populate_missing_authors_from_arxiv import (
+        ArxivAuthorNameParser,
+    )
+
+    parser = ArxivAuthorNameParser()
+
+    for order, full_name in enumerate(author_names, start=1):
+        # Parse author name
+        name = parser.parse_name(full_name)
+
+        # Find or create author
+        author = session.query(Author).filter(Author.name == name).first()
+
+        if not author:
+            author = Author(name=name)
+            session.add(author)
+            session.flush()  # Get the ID
+
+        # Check if link already exists
+        existing_link = (
+            session.query(PaperAuthor)
+            .filter(
+                PaperAuthor.paper_id == paper.id, PaperAuthor.author_id == author.id
+            )
+            .first()
+        )
+
+        if not existing_link:
+            paper_author = PaperAuthor(
+                paper_id=paper.id, author_id=author.id, author_order=order
+            )
+            session.add(paper_author)
+
+    session.commit()
 
 
 @router.post(
