@@ -120,6 +120,20 @@ Create a mapping from original dataset names (case-insensitive) to:
 
 Metrics often have synonyms or variations. Normalize them to canonical names used in existing evaluations.
 
+**Key Principle**: If a metric value can be interpreted as an existing metric used in the leaderboard, use that existing metric rather than keeping the paper's metric name.
+For example, if a paper reports "Accuracy" for DocVQA but the leaderboard uses "ANLS" and the value (e.g., 92.6) makes sense as ANLS, normalize to "ANLS".
+
+### Metric Value Cleaning
+
+**CRITICAL**: Strip confidence intervals and uncertainty values from metric values. Only keep the main numeric value.
+
+- Remove `±` (plus-minus) symbols and everything after them
+- Examples:
+  - `"89.0 ±4.8"` → `"89.0"`
+  - `"78.8 ±3.6"` → `"78.8"`
+  - `"95.2 ±9.1"` → `"95.2"`
+- Apply this cleaning to ALL metric values before normalization
+
 Additionally, metric VALUES must be normalized to match the canonical scale stored in the database.
 
 ### Common Metric Synonyms
@@ -154,6 +168,17 @@ Learn these standard mappings:
 **Question Answering:**
 - "F1" / "F1 Score" → "F1"
 - "EM" / "Exact Match" → "EM"
+
+**Document VQA / Vision-Language:**
+- **CRITICAL**: For DocVQA dataset, "Accuracy" / "Acc" → **ALWAYS "ANLS"**
+  - DocVQA uses ANLS (Average Normalized Levenshtein Similarity) as its standard metric
+  - If a paper reports "Accuracy" for DocVQA, it should be normalized to "ANLS"
+
+**Coding Tasks (Code Generation, Code Completion, etc.):**
+- **CRITICAL**: "Accuracy" / "Acc" → **ALWAYS "pass@1"** for coding benchmarks
+  - For coding tasks (e.g., MBPP, HumanEval), "Accuracy" and "pass@1" mean the same thing
+  - Always prefer "pass@1" if both metrics are encountered (consolidate to "pass@1")
+  - This applies to all coding task datasets, not just specific ones
 
 ### Metric Value Scale Normalization
 
@@ -220,7 +245,7 @@ Normalized: {"AbsRel": "0.043", "delta1": "0.985", "RMSE": "0.123"}
 
 ### Using get_leaderboard_metrics Tool
 
-For each (task_id, dataset_id) pair, you can call:
+**CRITICAL**: For each (task_id, dataset_id) pair, you MUST call:
 ```
 get_leaderboard_metrics(task_id=X, dataset_id=Y)
 ```
@@ -229,8 +254,19 @@ This will show you:
 - What metric names are actually used in existing evaluations
 - Frequency of each metric name
 - Most common best_metric values
+- **Allowed metrics for the leaderboard** (if configured)
 
-Use this to verify your normalization is correct. If existing evaluations use "mAP" and you see "AP" in the extracted results, normalize to "mAP".
+**MANDATORY RULES**:
+1. **If the tool shows specific allowed metrics**, those are AUTHORITATIVE. You MUST normalize the extracted metric name to match one of the allowed metrics.
+   - Example: If DocVQA shows "ANLS" as the only allowed metric, and the paper reports "Accuracy", you MUST normalize it to "ANLS"
+   - Example: If a dataset shows "mAP" as the most common metric, and the paper reports "AP", normalize to "mAP"
+2. **If the tool shows no specific allowed metrics** (backwards compatibility mode), use the most common metric name from existing evaluations
+3. **Always verify**: After calling the tool, check if your normalized metric name matches what's actually used in the leaderboard
+
+**Examples**:
+- Paper reports "Accuracy" for DocVQA → Tool shows "ANLS" is allowed → Normalize to "ANLS"
+- Paper reports "AP" for COCO → Tool shows "mAP" is most common → Normalize to "mAP"
+- Paper reports "Top-1" for ImageNet → Tool shows "Top-1 Accuracy" is most common → Normalize to "Top-1 Accuracy"
 
 ## Required Fields in Normalized Results
 
@@ -392,12 +428,19 @@ Normalize ALL {len(inputs.evaluation_results)} evaluation results above by:
 
 1. **Dataset Mapping**: Use step_2 and step_4 results to map each dataset name to its database ID and canonical name
 2. **Metric Name Normalization**: Normalize metric names using common synonyms and existing leaderboard conventions
-   - Use get_leaderboard_metrics(task_id, dataset_id) to check what metrics are used
+   - **MANDATORY**: Call get_leaderboard_metrics(task_id, dataset_id) for EACH evaluation result to check what metrics are actually used
+   - **CRITICAL**: If the tool shows specific allowed metrics, you MUST use one of those metrics. If the extracted metric name doesn't match, normalize it to match the allowed metric.
+     - Example: If DocVQA shows "ANLS" as allowed and paper reports "Accuracy", normalize to "ANLS"
+     - Example: If COCO shows "mAP" as most common and paper reports "AP", normalize to "mAP"
    - For Object Detection tasks, ALWAYS convert "AP" to "mAP" (even for new datasets)
-3. **Metric Value Normalization**: Normalize metric VALUES to match the canonical scale from step_5
-   - Use step_5_all_metrics to get the scale for each metric
-   - Convert values if needed (e.g., 4.3 → 0.043 for AbsRel with scale "0-1")
-   - Apply to ALL metrics in the metrics dict
+   - Use the most common metric name from existing evaluations if no specific allowed metrics are shown
+3. **Metric Value Cleaning and Normalization**:
+   - **First, clean metric values**: Strip confidence intervals (remove `±` and everything after it)
+     - Example: `"89.0 ±4.8"` → `"89.0"`
+   - **Then, normalize metric VALUES** to match the canonical scale from step_5
+     - Use step_5_all_metrics to get the scale for each metric
+     - Convert values if needed (e.g., 4.3 → 0.043 for AbsRel with scale "0-1")
+   - Apply cleaning and normalization to ALL metrics in the metrics dict
 4. **Field Population**: Ensure paper_id ({"available: " + str(paper_id) if paper_id else "NOT FOUND"}), task_id, dataset_id, dataset_name are set
 5. **Error Handling**: Mark unresolvable evaluations with _unresolved: true
 
@@ -605,7 +648,14 @@ async def main():
         step_2_results = []
     else:
         step_2_data = json.loads(step_2_path.read_text())
-        step_2_results = step_2_data.get("step_2_results", [])
+        # Handle both list format and dict format
+        if isinstance(step_2_data, list):
+            # Extract the "result" field from each entry
+            step_2_results = [
+                item.get("result", item) for item in step_2_data if item.get("success")
+            ]
+        else:
+            step_2_results = step_2_data.get("step_2_results", [])
 
     # Read step_4 output (optional)
     step_4_path = output_dir / "step_4.json"

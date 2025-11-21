@@ -76,8 +76,8 @@ class Step1Output(BaseModel):
 
 instructions_prompt = """
 You are part of the community science team at Hugging Face, whose goal is to provide a comprehensive overview of the AI research landscape
-by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), titled the PapersWithCode project.
-This way, people can track progress of state-of-the-art models over time.
+by creating leaderboards for datasets and tasks within the field of machine learning and artificial intelligence (AI), inspired by the
+PapersWithCode project. This way, people can track progress of state-of-the-art models over time.
 
 You are an expert in extracting evaluation results from AI research papers in order to be added to leaderboards.
 
@@ -108,7 +108,7 @@ Your task is to only extract evaluation results from the leaderboard tables.
 
 ## Context: Available Areas and Tasks
 
-Below is a list of areas and tasks currently in the database of Hugging Face along with their associated datasets.
+Below is a list of machine learning areas and tasks currently in the database of Hugging Face along with their associated datasets.
 This provides context about the current information landscape for leaderboard data:
 
 {tasks_list}
@@ -139,9 +139,9 @@ Use this context to better understand which tasks and datasets are commonly used
 
 - when authors specify the COCO dataset and it's unclear which COCO dataset exactly, assume it's COCO val2017.
 - the validation split is different from the test split. If a split is mentioned, include this in the `dataset_info` field of the dataset details. Consider different splits as different datasets.
-- **when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id})**, populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
+- when a dataset is introduced in THIS paper (arxiv ID: {arxiv_id}), populate the `paper_title` field with "{paper_title}" and the `paper_arxiv_id` field with "{arxiv_id}". Only use this for datasets that are explicitly stated as new/introduced/proposed in this paper.
 - when a dataset is introduced in a different paper that is cited, extract that paper's title and arxiv_id from the citation.
-- do not include evaluation results for datasets that are not publicly available. For example, internal benchmarks at Google/Meta/etc., private datasets which contain sensitive data, etc.
+- do not include evaluation results for datasets that are not publicly available. For example, in-house benchmarks at Google/Meta/etc., private datasets which contain sensitive data, etc.
 - do not include evaluation results which are unique to the paper/have very little comparisons to other papers.
 - **do not include evaluation results on small, ad-hoc evaluation sets constructed by the paper's authors solely for demonstrating their model**. These are typically small custom benchmarks (e.g., "100 challenging translation cases", "novel logical reasoning problems") that are not intended to be reusable community benchmarks. Focus on established, publicly available benchmarks that are used across multiple papers and form part of standard evaluation suites.
 - **do not include vague, generic, or aggregate dataset names** such as:
@@ -156,7 +156,7 @@ Use this context to better understand which tasks and datasets are commonly used
 
 ## Tools Available
 
-You have access to tools to help you understand the current state of the database:
+You have access to tools to help you understand the current landscape of the database:
 
 1. **`get_datasets_for_task`**: Get all datasets associated with a specific task. Use this when you need to look up which datasets are commonly used for a particular task. This can help you:
    - Identify if a dataset mentioned in the paper is already in the database
@@ -169,7 +169,7 @@ You have access to tools to help you understand the current state of the databas
    - All tasks the dataset is associated with
    - This helps you understand if a dataset matches what's mentioned in the paper
 
-3. **`get_leaderboard_triples`**: Get all current leaderboards as (area, task, dataset, metric) tuples. Use this when you want to see what evaluation results are already being tracked for specific combinations of tasks, datasets, and metrics. This can help you:
+3. **`get_leaderboard_triples`**: Get all current evaluation results as (area, task, dataset, metric) tuples. Use this when you want to see what evaluation results are already being tracked for specific combinations of tasks, datasets, and metrics. This can help you:
    - Check if there's already a leaderboard for a task-dataset-metric combination
    - Ensure you're extracting results that match existing leaderboard structures
    - Understand which metrics are commonly used for specific datasets

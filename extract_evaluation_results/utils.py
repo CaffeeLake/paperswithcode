@@ -172,7 +172,8 @@ def get_datasets_for_task(task_id: int) -> str:
     """Get all datasets associated with a specific task.
 
     This function queries the database to find all datasets that are linked to
-    a given task. This is useful for understanding which datasets are commonly
+    a given task through the task_dataset_metrics table (which defines leaderboards).
+    This is useful for understanding which datasets are commonly
     used for a particular task when extracting evaluation results.
 
     Args:
@@ -184,23 +185,27 @@ def get_datasets_for_task(task_id: int) -> str:
     session: Session = db_manager.session_local()
 
     try:
-        from backend.models.database import Task as DBTask
-
-        # Check if task exists and load datasets relationship
-        from sqlalchemy.orm import joinedload
-
-        task = (
-            session.query(DBTask)
-            .options(joinedload(DBTask.datasets))
-            .filter(DBTask.id == task_id)
-            .first()
+        from backend.models.database import (
+            Task as DBTask,
+            Dataset as DBDataset,
+            TaskDatasetMetric as DBTaskDatasetMetric,
         )
+
+        # Check if task exists
+        task = session.query(DBTask).filter(DBTask.id == task_id).first()
         if not task:
             session.close()
             return f"Task with ID {task_id} not found"
 
-        # Get datasets from the relationship and sort by name
-        datasets = sorted(task.datasets, key=lambda d: d.name) if task.datasets else []
+        # Get datasets through task_dataset_metrics (correct way according to schema)
+        datasets_query = (
+            session.query(DBDataset)
+            .join(DBTaskDatasetMetric, DBDataset.id == DBTaskDatasetMetric.dataset_id)
+            .filter(DBTaskDatasetMetric.task_id == task_id)
+            .distinct()
+            .order_by(DBDataset.name)
+        )
+        datasets = datasets_query.all()
 
         if not datasets:
             session.close()
@@ -517,14 +522,14 @@ def find_dataset_sync(
 
 if __name__ == "__main__":
     print(get_formatted_tasks_list())
-    print("\n" + "=" * 60 + "\n")
+    # print("\n" + "=" * 60 + "\n")
     # print("CURRENT LEADERBOARDS:")
     # print("=" * 60 + "\n")
     # triples = get_leaderboard_triples()
     # for area, task, dataset, metric in triples:
     #     print(f"{area} | {task} | {dataset} | {metric}")
     # print(f"\nTotal leaderboards: {len(triples)}")
-    import asyncio
+    # import asyncio
 
-    result = asyncio.run(get_paper_details("2103.00020"))
-    print(result)
+    # result = asyncio.run(get_paper_details("2103.00020"))
+    # print(result)

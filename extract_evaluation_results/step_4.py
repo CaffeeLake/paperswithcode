@@ -516,11 +516,13 @@ def read_step_3_output(arxiv_id: str) -> list[dict]:
         step_3_data = json.load(f)
 
     # Extract step_3_results list from the dictionary
-    # step_3.json has structure: {"step_3_results": [...]}
-    step_3_results = step_3_data.get("step_3_results", [])
-    if not step_3_results and isinstance(step_3_data, list):
-        # Fallback: if it's already a list (backward compatibility)
+    # step_3.json can have structure: {"step_3_results": [...]} or be a list directly
+    if isinstance(step_3_data, list):
+        # If it's already a list (backward compatibility)
         step_3_results = step_3_data
+    else:
+        # If it's a dict, extract step_3_results
+        step_3_results = step_3_data.get("step_3_results", [])
 
     # Extract datasets that were successfully gathered
     datasets_to_add = []

@@ -75,6 +75,9 @@ Your task is to determine whether this dataset already exists in the SQL databas
 
 ## Context: Available Machine Learning Areas, Tasks and Datasets
 
+Below is a list of machine learning areas and tasks currently in the database of Hugging Face along with their associated datasets.
+This provides context about the current information landscape for leaderboard data:
+
 {tasks_list}
 
 ## Available tools
@@ -89,8 +92,19 @@ You have access to the following tools which can help you determine if the datas
 
 1. **Prevent Duplicates**: Thoroughly search before concluding a dataset is not found. Duplicates cause data quality issues. Some datasets have multiple versions, e.g. there's SQuAD v1.1 and v2.
 2. **Avoid False Positives**: Ensure the found dataset truly matches the mentioned one.
-3. **Match Dataset Splits**: Some datasets have multiple splits and are considered different IDs in the database (e.g. there's CityScapes (validation) and CityScapes (test)). Ensure that the found dataset matches the same split as the mentioned dataset.
-A dataset with split "test" is NOT the same as one with split "val" or without a split specified.
+3. **Match the task**: **THIS IS CRITICAL** - You will receive `dataset_info` from step 1 that describes what task the paper is evaluating. You MUST ensure the found dataset in the database covers the EXACT SAME task.
+   - Read the `dataset_info` field carefully to understand what task is being evaluated (e.g., "instance segmentation", "object detection", "machine translation", etc.)
+   - When you find a dataset using find_dataset, carefully read its description to see what task it covers
+   - If the database description says the dataset is for a DIFFERENT task than what the paper is evaluating, you MUST set dataset_found=False
+   - Examples of task mismatches:
+     - Paper evaluates "instance segmentation" but database description says "object detection" → WRONG MATCH, set dataset_found=False
+   - Matching the name is NOT enough - you MUST verify the task matches by reading the description
+   - If you find a dataset with the same name but for a different task, explain in your reasoning that a separate dataset for the correct task should be created
+4. **Match Dataset Splits**: Split matching should be handled intelligently:
+   - **If split-specific datasets exist in the database** (e.g., "CityScapes (validation)" and "CityScapes (test)" are separate entries), you MUST match the exact split. A dataset with split "test" is NOT the same as one with split "val".
+   - **If no split-specific dataset exists** but the task and dataset name match, you SHOULD accept the general dataset even if the split isn't explicitly mentioned in the name. The split information can be handled in evaluation metadata.
+   - **Priority**: Task matching is MORE IMPORTANT than split matching. If you find a dataset that matches the task and name but the split isn't explicitly in the name, and there's no split-specific variant available, accept it rather than creating a duplicate.
+   - Only search extensively for split-specific variants if you first find a general dataset that matches the task.
 
 **IMPORTANT**: This list is ONLY for context. You MUST use the find_dataset tool to verify existence. Only set dataset_found=True if find_dataset returns "Found dataset: ID=X...".
 
@@ -212,6 +226,7 @@ class Step2(AgentStep[Step2Input, Step2Output]):
     ) -> dict[int, dict]:
         """
         Extract task_metrics from evaluation results for a dataset.
+        Also includes tasks from TaskDatasetMetric table (officially linked tasks).
 
         Args:
             session: Database session
@@ -224,6 +239,7 @@ class Step2(AgentStep[Step2Input, Step2Output]):
             Evaluation as DBEvaluation,
             Metric as DBMetric,
             Task as DBTask,
+            TaskDatasetMetric,
         )
 
         # Get all evaluations for this dataset
@@ -241,6 +257,18 @@ class Step2(AgentStep[Step2Input, Step2Output]):
             # Extract metric names (keys) from metrics JSONB field
             if isinstance(metrics_json, dict):
                 task_metrics[task_id].update(metrics_json.keys())
+
+        # Also get officially linked tasks from TaskDatasetMetric
+        # This ensures we include tasks even if there are no evaluations yet
+        official_tasks = (
+            session.query(TaskDatasetMetric.task_id)
+            .filter(TaskDatasetMetric.dataset_id == dataset_id)
+            .distinct()
+            .all()
+        )
+        for (task_id,) in official_tasks:
+            if task_id not in task_metrics:
+                task_metrics[task_id] = set()
 
         # Convert sets to lists and look up task/metric details
         result_task_metrics: dict[int, dict] = {}
@@ -385,7 +413,9 @@ The evaluation results extracted by a colleague of yours are the following:
 ## Dataset to find
 
 Find the dataset details for the following dataset mentioned in the evaluation results:
-{json.dumps(dataset_detail, indent=2)}"""
+{json.dumps(dataset_detail, indent=2)}
+
+**CRITICAL**: Pay special attention to the `dataset_info` field above - it describes what task the paper is evaluating (e.g., "instance segmentation", "object detection", "edge detection"). When you find a dataset in the database, you MUST verify that its description indicates it covers the SAME task. If the database description says it covers a different task, set dataset_found=False."""
 
                 # Run the agent for this dataset
                 agent_response = await self._run_agent(prompt, formatted_instructions)
