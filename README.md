@@ -110,5 +110,10 @@ uv run
 
 - all services should be checked to see if they are in line with the database schema (see also models.py)
 - all cron jobs and batch_extract.py should leverage the services instead of manually writing SQL queries
+
+## Improving extraction of evaluation results
+
+- use pass@1 instead of accuracy on coding benchmarks
 - when searching a dataset, thoroughly check which metric used to evaluate the dataset, and then use a separate agent to add the metric to the database/see if it already exists in the database.
 - often adds "average", "overall" as metrics => should just be a single "Score" metric (higher is better or lower is better), or "OmniContext Score" for example with a specific scale like 0-10.
+- messes up the dataset, e.g. for the Qwen2.5 paper, it links "LongBench-Chat" to the "LongBenchv2" dataset, which is a separate dataset. Step 2 requires an improvement by better matching the dataset details of the paper (e.g. description, arxiv id) to the existing dataset in the database.

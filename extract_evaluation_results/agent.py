@@ -121,7 +121,7 @@ async def run_agent(arxiv_id: str) -> Response:
         name="Parse Script Runner",
         instructions=instructions_prompt,
         tools=[LocalShellTool()],
-        model="gpt-4o",
+        model="gpt-5-minis",
         output_type=Response,
     )
 

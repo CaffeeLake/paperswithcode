@@ -3,8 +3,18 @@
 # PapersWithCode Services Startup Script
 # Manages both backend (FastAPI) and frontend (Vite) services
 # Includes process cleanup, health checks, and proper logging
+#
+# Usage:
+#   ./start_services.sh          - Start services and detach (recommended for production)
+#   ./start_services.sh --monitor - Start services and monitor them (will stop on disconnect)
 
 set -e  # Exit on any error
+
+# Check for monitor mode
+MONITOR_MODE=false
+if [ "$1" = "--monitor" ] || [ "$1" = "-m" ]; then
+    MONITOR_MODE=true
+fi
 
 # Ensure backend starts in production mode unless explicitly overridden
 export PWC_ENVIRONMENT="${PWC_ENVIRONMENT:-production}"
@@ -34,6 +44,11 @@ echo -e "${BLUE}====================================${NC}"
 echo -e "Project Root: ${CYAN}$PROJECT_ROOT${NC}"
 echo -e "Backend Port: ${CYAN}$BACKEND_PORT${NC}"
 echo -e "Frontend Port: ${CYAN}$FRONTEND_PORT${NC}"
+if [ "$MONITOR_MODE" = true ]; then
+    echo -e "Mode: ${YELLOW}Monitor (services will stop when script exits)${NC}"
+else
+    echo -e "Mode: ${GREEN}Detached (services will persist after disconnect)${NC}"
+fi
 echo ""
 
 # Function to check if a port is in use
@@ -123,7 +138,7 @@ check_service_health() {
     fi
 }
 
-# Cleanup function
+# Cleanup function (only used in monitor mode)
 cleanup() {
     echo -e "\n${YELLOW}🛑 Shutting down services...${NC}"
     kill_port_processes $BACKEND_PORT "Backend"
@@ -133,8 +148,10 @@ cleanup() {
     echo -e "${GREEN}✅ Cleanup completed${NC}"
 }
 
-# Set up signal handlers
-trap cleanup EXIT INT TERM
+# Only set up signal handlers in monitor mode
+if [ "$MONITOR_MODE" = true ]; then
+    trap cleanup EXIT INT TERM
+fi
 
 echo -e "${PURPLE}🧹 Cleaning up existing processes...${NC}"
 
@@ -225,33 +242,42 @@ echo -e "   Backend: ${CYAN}$BACKEND_LOG${NC}"
 echo -e "   Frontend: ${CYAN}$FRONTEND_LOG${NC}"
 echo ""
 echo -e "${YELLOW}🛑 To stop services:${NC}"
-echo -e "   Press ${CYAN}Ctrl+C${NC} or run: ${CYAN}./stop_services.sh${NC}"
+echo -e "   Run: ${CYAN}./stop_services.sh${NC}"
 echo ""
 
-# Monitor services (optional - can be interrupted)
-echo -e "${BLUE}🔍 Monitoring services... (Press Ctrl+C to stop)${NC}"
-echo -e "${YELLOW}   Use 'tail -f $BACKEND_LOG' to monitor backend logs${NC}"
-echo -e "${YELLOW}   Use 'tail -f $FRONTEND_LOG' to monitor frontend logs${NC}"
-echo ""
+# Only monitor in monitor mode
+if [ "$MONITOR_MODE" = true ]; then
+    echo -e "${BLUE}🔍 Monitoring services... (Press Ctrl+C to stop)${NC}"
+    echo -e "${YELLOW}   Use 'tail -f $BACKEND_LOG' to monitor backend logs${NC}"
+    echo -e "${YELLOW}   Use 'tail -f $FRONTEND_LOG' to monitor frontend logs${NC}"
+    echo ""
 
-# Keep script running to maintain processes
-while true; do
-    # Check if processes are still running
-    if ! kill -0 $BACKEND_PID 2>/dev/null; then
-        echo -e "${RED}❌ Backend process died (PID: $BACKEND_PID)${NC}"
-        echo -e "${YELLOW}📋 Recent backend logs:${NC}"
-        tail -10 "$BACKEND_LOG" || echo "No backend logs available"
-        break
-    fi
+    # Keep script running to maintain processes
+    while true; do
+        # Check if processes are still running
+        if ! kill -0 $BACKEND_PID 2>/dev/null; then
+            echo -e "${RED}❌ Backend process died (PID: $BACKEND_PID)${NC}"
+            echo -e "${YELLOW}📋 Recent backend logs:${NC}"
+            tail -10 "$BACKEND_LOG" || echo "No backend logs available"
+            break
+        fi
 
-    if ! kill -0 $FRONTEND_PID 2>/dev/null; then
-        echo -e "${RED}❌ Frontend process died (PID: $FRONTEND_PID)${NC}"
-        echo -e "${YELLOW}📋 Recent frontend logs:${NC}"
-        tail -10 "$FRONTEND_LOG" || echo "No frontend logs available"
-        break
-    fi
+        if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+            echo -e "${RED}❌ Frontend process died (PID: $FRONTEND_PID)${NC}"
+            echo -e "${YELLOW}📋 Recent frontend logs:${NC}"
+            tail -10 "$FRONTEND_LOG" || echo "No frontend logs available"
+            break
+        fi
 
-    sleep 10
-done
+        sleep 10
+    done
 
-echo -e "${YELLOW}🛑 Service monitoring stopped${NC}"
+    echo -e "${YELLOW}🛑 Service monitoring stopped${NC}"
+else
+    echo -e "${GREEN}✨ Services are running in the background!${NC}"
+    echo -e "${YELLOW}   They will continue running after you disconnect from SSH.${NC}"
+    echo ""
+    echo -e "${YELLOW}📋 To monitor logs:${NC}"
+    echo -e "   Backend:  ${CYAN}tail -f $BACKEND_LOG${NC}"
+    echo -e "   Frontend: ${CYAN}tail -f $FRONTEND_LOG${NC}"
+fi
