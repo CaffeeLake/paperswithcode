@@ -46,6 +46,9 @@ arxiv_sources/
 # Cursor rules
 *.cursor/*
 
+# Claude / Cursor agent worktrees and metadata
+.claude/
+
 # Outputs
 backend/outputs/
 

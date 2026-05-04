@@ -142,6 +142,8 @@ The following summarizes the live structure. See the database for full DDL.
 - date_published, proceeding, conference, conference_url_abs, conference_url_pdf
 - citation_count, semantic_scholar_id, citation_updated_at
 - primary_category, all_categories[], urls_extracted
+- tldr (TEXT, NULL — frontend v2 TL;DR panel; no generation pipeline yet)
+- num_pages (INTEGER, NULL — source PDF page count; not surfaced in UI yet)
 - created_at, updated_at
 - Indexes: title/abstract full-text, arxiv_id, date, conference, latest flag, version, citation count, categories, urls_extracted (incl. partial cs.% index)
 

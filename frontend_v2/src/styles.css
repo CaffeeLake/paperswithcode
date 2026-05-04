@@ -1716,3 +1716,118 @@ html { scroll-behavior: smooth; }
   vertical-align: middle;
   box-shadow: 0 0 0 2px oklch(0.92 0.07 60);
 }
+
+/* ============================================================================
+ * v2-frontend additions for components introduced during the migration
+ *   - mobile hamburger menu
+ *   - inline ApiStatus badge in the header
+ *   - /papers list search input
+ *   - <select> for paper-version dropdown on the detail view
+ * ============================================================================ */
+
+.header-status {
+  display: flex;
+  align-items: center;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.mobile-menu-btn {
+  display: none;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.mobile-menu-btn:hover {
+  background: var(--bg-subtle);
+}
+
+.mobile-nav-drawer {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 24, 20, 0.4);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+}
+.mobile-nav-panel {
+  width: min(320px, 80vw);
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--hairline-strong);
+  padding: 24px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: 100vh;
+  overflow-y: auto;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.06);
+}
+.mobile-nav-link {
+  font-family: var(--serif);
+  font-size: 17px;
+  padding: 12px 4px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--hairline);
+}
+.mobile-nav-link.active {
+  color: var(--accent-text);
+  font-style: italic;
+}
+
+@media (max-width: 880px) {
+  .nav, .search-trigger { display: none; }
+  .mobile-menu-btn { display: inline-flex; }
+}
+
+/* Papers list search input */
+.papers-search-row {
+  display: flex;
+  margin-top: 12px;
+  margin-bottom: 24px;
+}
+.papers-search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-elevated);
+  padding: 10px 14px;
+  border-radius: 4px;
+  flex: 1;
+  max-width: 600px;
+  color: var(--ink-faint);
+}
+.papers-search-input-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.papers-search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink);
+}
+.papers-search-input::placeholder {
+  color: var(--ink-faint);
+}
+
+/* Version dropdown */
+.version-select {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.version-select:hover {
+  border-color: var(--accent);
+}

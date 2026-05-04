@@ -1,0 +1,55 @@
+/*
+ * Tailwind/shadcn base layer for *new* surfaces only (admin dialogs, toasts, mobile
+ * hamburger sheet, loading/error/empty states). The v2 visual system is owned by
+ * `styles.css`. The two CSS files coexist; styles.css is loaded after this so its
+ * tokens (--ink / --bg / --accent / --serif / --mono) take precedence.
+ *
+ * PLAN.md §10.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    /* renamed from --accent to avoid clashing with v2's oklch --accent */
+    --accent-tw: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+
+    --radius: 0.5rem;
+  }
+}
+
+/* Scope tailwind border on shadcn surfaces only — applying it to * conflicts with
+ * v2's hand-rolled CSS that relies on element-specific borders. */
+@layer base {
+  [data-shadcn] * {
+    @apply border-border;
+  }
+}

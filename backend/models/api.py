@@ -85,6 +85,15 @@ class Paper(BaseModel):
         default=False, description="Whether URLs have been extracted for this paper"
     )
 
+    # Frontend v2 schema additions (PLAN.md §11). Schema-only; no data ingestion in this migration.
+    tldr: Optional[str] = Field(
+        None,
+        description="AI-generated TL;DR summary (frontend v2 PaperDetailView panel)",
+    )
+    num_pages: Optional[int] = Field(
+        None, description="Page count of the source PDF (frontend v2)"
+    )
+
     # Associated resources (optional, populated when requested)
     repositories: Optional[List["Repository"]] = Field(
         None, description="GitHub repositories associated with this paper"

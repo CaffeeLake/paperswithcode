@@ -79,6 +79,12 @@ class Paper(Base):
     # URL extraction tracking
     urls_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Frontend v2 schema additions (PLAN.md §11). Schema-only; no data ingestion in this migration.
+    # tldr      -> AI-generated summary surfaced in PaperDetailView "TL;DR" panel.
+    # num_pages -> source PDF page count; not surfaced in UI yet.
+    tldr: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    num_pages: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
