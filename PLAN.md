@@ -13,7 +13,7 @@ isProject: false
 
 `frontend_v2/` is a **design prototype**, not an application. It is ~6 files of vanilla JSX rendering hardcoded fixtures (`PAPERS`, `DOMAINS`, `METHODS`, `BENCHMARKS`, `DOMAIN_DETAILS`, etc.) inside [src/data.js](frontend_v2/src/data.js). The visual system is excellent and worth keeping; the application plumbing all has to be built from scratch and reconciled with the existing backend's data model.
 
-The migration bar is **feature parity with v1 + redesign + introduce real auth**: every existing route and capability must work under the v2 visual system before cutover, and the existing unauthenticated write endpoints are gated by GitHub OAuth as part of this migration. Admin dialogs are not in the v2 design at all and ship behind that auth gate; everything else (`/papers`, `/cron-dashboard`, multi-version UI, LaTeX rendering, long-author toggle, loading/error/empty states, toasts, mobile hamburger, API-status indicator, thumbnail generation) is a hard requirement for cutover.
+The migration bar is **feature parity with v1 + redesign**: every existing route and capability must work under the v2 visual system before cutover. Admin dialogs are not in the v2 design at all but still ship (matching v1) — they remain unauthenticated for now, like in production today. Real auth is carved out as a separate follow-up workstream tracked in [AUTH.md](AUTH.md). Everything else (`/papers`, `/cron-dashboard`, multi-version UI, LaTeX rendering, long-author toggle, loading/error/empty states, toasts, mobile hamburger, API-status indicator, thumbnail generation) is a hard requirement for cutover.
 
 The gaps fall into **13 sections**, listed below — the first 9 mirror the original analysis (build/tooling, TS, routing, data model, API client, search, parity-required pages, admin, UX), and the new §10–§13 capture decisions made during planning (styling system, schema additions, backend gaps, cutover plan).
 
@@ -76,7 +76,6 @@ Required routes (v2 *"tag"* pages are backend **task** pages; v2 *"modality grou
 <Route path="/methods/:methodSlug"     element={<MethodDetailView />} />  // 'method'
 <Route path="/benchmark/:datasetSlug"  element={<BenchmarkDetailView />} />
 <Route path="/cron-dashboard"          element={<CronDashboard />} />     // REQUIRED — see Q-CRON for design fit
-<Route path="/admin/login"             element={<AdminLogin />} />        // REQUIRED — see §8.1 for OAuth flow
 <Route path="*"                        element={<NotFound />} />
 ```
 
@@ -153,9 +152,9 @@ Backend `Paper` (from [frontend/src/lib/api.ts](frontend/src/lib/api.ts) lines 3
 | `submitter` | **Drop entirely** — no UI affordance | remove from PaperCard / PaperDetailView |
 | `comments` | **Drop entirely** — no UI affordance | remove count chip from PaperCard |
 | `upvote button` (interactive toggle) | **Drop entirely** — v1 has no equivalent toggle, no backend support, out of migration scope. Future work could add it back as a real feature if needed. | remove `upvotes` state + `upvote(paperId)` handler from `App.jsx`; remove `onUpvote`/`upvotes` prop chain from `FeedView`/`TagBrowseView`/`MethodDetailView`/`PaperDetailView`/`SearchOverlay`; remove the upvote button from `PaperCard` |
-| `institution` | **Schema added (M2M), no data ingestion this migration** | hide chip when `paper.institutions` is empty (= always, initially) |
+| `institution` | **Dropped entirely** — no schema, no UI affordance | remove the institution chip from PaperCard; deferred to a future migration |
 | `tldr` | **Schema added (`papers.tldr TEXT NULL`), no generation pipeline this migration** | hide "TL;DR · AI-generated" panel when null |
-| `upvotes` | **Schema added (`papers.hf_upvotes INTEGER NULL`), no ingestion this migration** | hide upvote count chip when null |
+| `upvotes` (count chip) | **Dropped entirely** — no schema, no UI affordance | remove the upvote count chip from PaperCard; could be added back later as a real feature alongside the upvote button |
 | `pdfPages` | **Schema added (`papers.num_pages INTEGER NULL`), no ingestion this migration** | replace v2's hand-drawn `PdfThumbnail` SVG with real `PaperThumbnail` regardless; don't surface page count |
 | `github` | Sum of stars across `repositories.filter(is_official)` + most-starred link, mirroring [Papers.tsx](frontend/src/pages/Papers.tsx) | transform helper |
 | `project` | `project_pages[0]?.url` | transform helper |
@@ -287,7 +286,7 @@ All three pages below are **hard requirements** for cutover (per migration philo
 
 ## 8. Admin / write features
 
-Migration philosophy keeps these as a **hard requirement, but gated by real authentication** (they are not in the v2 design at all). Currently in [PaperDetail.tsx](frontend/src/pages/PaperDetail.tsx) and the [paper-detail/](frontend/src/components/paper-detail/) subfolder:
+Migration philosophy keeps these as a **hard requirement** (they are not in the v2 design at all, but the v1 site has them today). Currently in [PaperDetail.tsx](frontend/src/pages/PaperDetail.tsx) and the [paper-detail/](frontend/src/components/paper-detail/) subfolder:
 
 - `EditTasksDialog` — edit which tasks a paper belongs to (`PUT /papers/:id/tasks`).
 - `EditMethodsDialog` — same for methods.
@@ -300,56 +299,7 @@ These ports use raw shadcn components (per Q8 = S1, hybrid styling), so they wil
 
 The same goes for the `Methodology`, `best_metric`, `Evaluated on (date)`, and `Methodology` fields in `Evaluation` — none of these surface in v2's leaderboard but they remain available via the admin dialogs.
 
-### 8.1 Authentication (Q-ADMIN + Q-AUTH resolved)
-
-This migration introduces real auth on the backend and admin-gate UI on the frontend. The current state is no auth on either side; this is the moment to formalize.
-
-**Identity model: GitHub OAuth with a username allowlist** (option U4).
-
-- New env vars in `backend/keys.env`:
-  - `PWC_GITHUB_OAUTH_CLIENT_ID` — single OAuth App (see "GitHub OAuth App setup" below)
-  - `PWC_GITHUB_OAUTH_CLIENT_SECRET`
-  - `PWC_JWT_SECRET` — 32-byte random hex used to sign the session JWT and the OAuth `state` JWT
-  - `PWC_ADMIN_GITHUB_USERNAMES` — comma-separated allowlist (e.g., `nielsrogge`)
-
-**Backend changes (new `backend/routers/auth.py` and middleware):**
-
-- `GET /api/v1/auth/github/login` — generates a short-lived (5 min) `state` JWT containing `{nonce, host}` where `host` is the originating request host (`paperswithcode.co` or `staging.paperswithcode.co`); redirects to GitHub OAuth `authorize` URL with `client_id` + `redirect_uri` (computed from the originating host) + `state` + `scope=read:user`.
-- `GET /api/v1/auth/github/callback?code=...&state=...` — verifies the `state` JWT signature and confirms `state.host` matches the incoming request host (CSRF defense without a sessions table); exchanges code for GitHub access token; fetches `/user` to get the username; checks allowlist; issues a signed session JWT; sets it as an `httpOnly` + `Secure` + `SameSite=Lax` cookie named `pwc_admin_session` with `Domain` set to the **originating host** (i.e. `Domain=paperswithcode.co` for prod requests, `Domain=staging.paperswithcode.co` for staging requests — separate cookies per environment).
-- `POST /api/v1/auth/logout` — clears the cookie (with the matching `Domain`).
-- `GET /api/v1/auth/me` — returns `{username, is_admin: true}` if cookie valid; 401 otherwise.
-- New auth dependency `require_admin(request)` injected into every write endpoint (`POST/PUT/DELETE` on papers/datasets/evaluations/etc.).
-
-**Token mechanism**: signed JWT (HS256, secret in `PWC_JWT_SECRET` env var; generate once with `openssl rand -hex 32`). Stateless — no sessions table needed. Expiry: 30 days. No refresh token; user re-logs after expiry (rare event for a single operator). No rotation policy initially; rotating the secret invalidates all existing sessions, which is acceptable.
-
-**CSRF protection**: relies on `SameSite=Lax` cookie behavior + the `state` JWT host check on the OAuth callback — sufficient for our threat model (single operator, no cross-site embeds). No explicit CSRF token header on write endpoints. If the threat model changes, add a CSRF token via `Set-Cookie: csrf-token=...; SameSite=Strict; HttpOnly=false` issued at login + required `X-CSRF-Token` header on writes.
-
-**GitHub OAuth App setup** (one-time, manual):
-
-- Create a single OAuth App in GitHub Developer Settings named "PapersWithCode Admin".
-- Register **two callback URLs**: `https://paperswithcode.co/api/v1/auth/github/callback` and `https://staging.paperswithcode.co/api/v1/auth/github/callback`.
-- Single `client_id` / `client_secret` pair shared by both environments. The backend chooses the correct `redirect_uri` based on the originating request host.
-
-**Cookie scope rationale (separate per environment):** prod auth is rare and stable; staging auth is frequently broken during dev. A shared `Domain=.paperswithcode.co` cookie would mean every broken staging deploy could invalidate the operator's prod session, and a stale staging JWT could persist into prod after secret rotation. Separate cookies cost nothing and isolate failure modes.
-
-**CORS update** (in `backend/config.py`):
-
-- `Settings.cors_allowed_origins` must include `https://staging.paperswithcode.co` regardless of `is_production`. Recommended: introduce a `PWC_ENVIRONMENT=staging` mode that returns `["https://paperswithcode.co", "https://www.paperswithcode.co", "https://staging.paperswithcode.co"]`, and have the staging deploy set that env var. Simpler alternative: unconditionally include staging in the prod list — the only cost is that a leaked staging cert would be acceptable as a CORS origin in prod, which is not a meaningful threat for our setup.
-- `allow_credentials=True` is already set in `backend/main.py` — no change needed.
-
-**Frontend changes:**
-
-- New auth context (React Context, not React Query — auth is global state) holding `{user: User | null, isLoading: boolean, logout: () => void}`. Initial state populated by calling `/api/v1/auth/me` on app mount.
-- "Log in with GitHub" button: **only on `/admin/login` route, not in the main header** — admin UI is invisible to non-admin users browsing the site.
-- 401 from any write request → clear auth context, redirect to `/admin/login`.
-- Edit dialogs and admin-only buttons are conditionally rendered based on `user?.is_admin`.
-- API client (`lib/api.ts`) sends `credentials: 'include'` on all fetches so the cookie travels.
-
-**`/admin/login`** is a new route with the v2 header chrome, a centered "Log in with GitHub" button, and (after auth) an "Operator panel" listing the editing entry points. Admin tools elsewhere in the site (edit dialogs on PaperDetailView) are also unlocked by the same auth state.
-
-**Single-operator allowlist (accepted risk).** `PWC_ADMIN_GITHUB_USERNAMES` will hold a single GitHub username for this migration; no second admin, no CLI escape hatch (the operator's GitHub account stability is treated as the source of truth). If that account is ever lost or GitHub OAuth itself breaks, recovery requires SSH-into-VPS + temporarily disabling `require_admin` in code or directly editing the database. Acceptable trade-off given a single-operator project. Multi-admin support / migration to a DB-backed users table is tracked as a deferred follow-up in §12.1.
-
-**CRON jobs are unaffected by auth:** all current CRON jobs (`cron/hourly/*.py`, `cron/daily/import_hf_daily_papers.py`) call only external APIs (HuggingFace, GitHub, Semantic Scholar) and write to PostgreSQL **directly via SQLAlchemy** — they do not call our own `/api/v1/*` endpoints. Verified by `grep` over `cron/`. So no admin bypass key, no service token, no `Authorization` header is required for CRON. The only HTTP write paths gated by `require_admin` are UI-driven (edit dialogs + `indexPaperFromArxiv` from `PaperDetail.tsx`).
+**Authentication is deferred** to a separate follow-up workstream — see [AUTH.md](AUTH.md). Until that lands, the admin dialogs and `indexPaperFromArxiv` ship visible to everyone, exactly as they do in v1 today (the v1 frontend never had an auth gate either). Adding the auth gate later is a small, isolated change: add a `require_admin` dependency to the existing write endpoints, add an `AuthContext` on the frontend that conditionally renders the admin-only buttons, ship a `/admin/login` route. None of that is on the cutover critical path.
 
 ## 9. UX features visible in v1, missing or mocked in v2
 
@@ -387,12 +337,12 @@ Pure schema work; **no data ingestion in this migration**. Each surface in the U
 
 ### 11.0 Migration mechanism
 
-Follows the existing convention in [backend/database/migrations/](backend/database/migrations/) (raw SQL file + per-migration Python runner script, e.g. [run_add_trending_score.py](backend/database/migrations/run_add_trending_score.py)). **No Alembic** — introducing it is a separate workstream and adds zero value for the 5 statements below.
+Follows the existing convention in [backend/database/migrations/](backend/database/migrations/) (raw SQL file + per-migration Python runner script, e.g. [run_add_trending_score.py](backend/database/migrations/run_add_trending_score.py)). **No Alembic** — introducing it is a separate workstream and adds zero value for the handful of statements below.
 
 Three new files in `backend/database/migrations/`:
 
-1. `add_v2_schema.sql` — all five DDL statements (3 `papers` columns + `institutions` table + `paper_institutions` junction) in one idempotent file using `IF NOT EXISTS`.
-2. `run_add_v2_schema.py` — wraps it like `run_add_trending_score.py`: opens a `db_manager.session_local()`, executes the file as one transaction, then runs verification queries against `information_schema.columns` for each new column/table.
+1. `add_v2_schema.sql` — two DDL statements (2 `papers` columns) in one idempotent file using `IF NOT EXISTS`.
+2. `run_add_v2_schema.py` — wraps it like `run_add_trending_score.py`: opens a `db_manager.session_local()`, executes the file as one transaction, then runs verification queries against `information_schema.columns` for each new column.
 3. `insert_canonical_methods.sql` — inserts the 3 missing `Method` rows (`attention`, `vit`, `mixture-of-experts`) needed by §4.3 figure resolution. Fully-curated stubs (not minimal placeholders) so the method-detail pages don't render half-empty on day one. `image_url` is `NULL` so §4.3 tier 1 dictionary figures (`AttentionFig`, `ViTFig`, `MoEFig`) win unimpeded. `paper_count` is left at 0; the existing keyword-matching CRON pipeline recomputes it once `keywords` are added later via the admin UI. `area_id` chosen via subquery on `areas.name` for robustness.
 
    ```sql
@@ -441,50 +391,32 @@ Three new files in `backend/database/migrations/`:
 
 Plus a code-side update in the same change:
 
-4. `backend/models/database.py` — new SQLAlchemy `Mapped` columns on `DBPaper` (`tldr: Optional[str]`, `num_pages: Optional[int]`, `hf_upvotes: Optional[int]`); new `DBInstitution` and `DBPaperInstitution` ORM classes.
-5. `backend/models/api.py` — new optional fields on the `Paper` Pydantic schema; new `Institution` schema; `Paper.institutions: Optional[List[Institution]] = None`.
+4. `backend/models/database.py` — new SQLAlchemy `Mapped` columns on `DBPaper` (`tldr: Optional[str]`, `num_pages: Optional[int]`).
+5. `backend/models/api.py` — new optional fields on the `Paper` Pydantic schema.
 
 ### 11.1 New columns on `papers`
 
 ```sql
 ALTER TABLE papers ADD COLUMN IF NOT EXISTS tldr TEXT NULL;
 ALTER TABLE papers ADD COLUMN IF NOT EXISTS num_pages INTEGER NULL;
-ALTER TABLE papers ADD COLUMN IF NOT EXISTS hf_upvotes INTEGER NULL;
 ```
 
 - `tldr` — AI-generated summary surfaced in v2's `PaperDetailView` "TL;DR · AI-generated" panel. Generation pipeline (model choice, generation source, schedule, backfill) is a follow-up project.
 - `num_pages` — page count of the source PDF. The v2 `PdfThumbnail` mock has a `pdfPages` field; we don't surface this number in the UI under feature parity, but the column exists for future use. Capture is trivial later from `extract_urls.py` (PyMuPDF already loaded).
-- `hf_upvotes` — Hugging Face Daily Papers upvote count. Already returned by HF API during `import_hf_daily_papers.py` but currently discarded; wiring it up is a one-line follow-up for new papers, plus a backfill for the ~3K HF-Daily papers we already have. **Surfaced as a display-only count chip on `PaperCard` once populated; no interactive toggle (v2's upvote button is dropped — see §4.1).** Hidden when null.
 
-### 11.2 New `institutions` table + `paper_institutions` junction
+Hugging Face upvote counts are **not** stored this migration — the upvote count chip is dropped from `PaperCard` outright (§4.1). Adding `hf_upvotes` back is straightforward whenever a real upvote feature is built.
 
-```sql
-CREATE TABLE IF NOT EXISTS institutions (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    -- Future fields (not added now): slug, ror_id, country, url, logo_url
-    UNIQUE (name)
-);
+### 11.2 Institutions deferred
 
-CREATE TABLE IF NOT EXISTS paper_institutions (
-    paper_id        INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
-    institution_id  INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
-    -- Future field (not added now): position INTEGER -- ordering / primary affiliation
-    PRIMARY KEY (paper_id, institution_id)
-);
-```
-
-- Existing `backend/genai_steps/extract_orgs.py` LLM pipeline already returns lists like `["AI Centre, UCL", "Huawei Noah's Ark Lab, UK"]` — the future ingestion pipeline plugs into that.
-- Open question for the future ingestion project: **canonicalization** (raw strings, fuzzy match, ROR API lookup, LLM judge, manual curation) and **primary-institution selection** for the v2 paper card. Not part of this migration.
-- Until ingestion ships, `paper.institutions` is always empty; the v2 institution chip on `PaperCard` is hidden.
+Institutions (an `institutions` table + `paper_institutions` junction + UI chip on `PaperCard`) are **out of scope for this migration** — no schema work, no UI surface. The v2 `PaperCard` mock had a single `institution` string field per paper; that chip is dropped from the rendered card outright (§4.1). When institutions are added back as a real feature in a follow-up project, that follow-up owns: M2M schema (likely with `slug`, `ror_id`, `country`, `url`, `logo_url`), canonicalization strategy (raw strings → fuzzy match → ROR API lookup → LLM judge → manual curation), primary-institution selection for cards, and the ingestion pipeline (likely plugging into the existing `backend/genai_steps/extract_orgs.py` LLM pipeline that already returns lists like `["AI Centre, UCL", "Huawei Noah's Ark Lab, UK"]`).
 
 ### 11.3 `docs/DATABASE_SCHEMA_UML.md` update
 
-The schema doc is updated alongside the migration to reflect the new `papers` columns and the `institutions` / `paper_institutions` tables.
+The schema doc is updated alongside the migration to reflect the new `papers` columns.
 
 ## Open questions
 
-All previously-open questions are now resolved. The original Q1, Q1b, Q2, Q3, Q4 and the in-flight Q-FIG, Q-VERSION, Q-PAPERS, Q-CRON, Q-ADMIN, Q-AUTH, Q-LATEX, Q-CUTOVER are captured in §4.1, §4.2, §4.3, §6, §7, §8, §8.1, §9, §10, §11, §13.
+All previously-open questions are now resolved. The original Q1, Q1b, Q2, Q3, Q4 and the in-flight Q-FIG, Q-VERSION, Q-PAPERS, Q-CRON, Q-LATEX, Q-CUTOVER are captured in §4.1, §4.2, §4.3, §6, §7, §8, §9, §10, §11, §13. Q-ADMIN / Q-AUTH are captured in [AUTH.md](AUTH.md).
 
 If new ambiguities surface during implementation, they should be added back here.
 
@@ -503,9 +435,9 @@ The corrected mapping (areas = v2 domains, tasks = v2 tasks) lines up almost per
 - **Tests.** No automated test strategy is in scope for this migration (no frontend unit tests, no E2E, no Playwright). Manual smoke-test checklist in §13.4 is the only verification path. Adding tests is a separate workstream.
 - **Analytics + error tracking.** No Sentry, no Plausible/GA, no logging integration for the frontend. The site currently has none either, so no regression. Worth adding later.
 - **Accessibility audit.** No formal a11y pass. v2's hand-rolled custom components (segmented controls, custom dropdowns inside `views.jsx`) are likely keyboard-trap and screen-reader-poor. shadcn primitives used for new surfaces (admin dialogs, toasts) are accessible by default, so the *new* surfaces meet a baseline. Full audit deferred.
-- **Hugging Face upvote button as a real feature.** v2's interactive `upvote(paperId)` is dropped (§4.1). If user voting is later desired, build it as a real workstream: anonymous voting via cookie or admin-only, `upvotes` table, rate-limiting, abuse mitigation.
+- **Hugging Face upvote button + count chip as real features.** v2's interactive `upvote(paperId)` is dropped (§4.1) and the display-only count chip is dropped too. If user voting is later desired, build it as a real workstream: anonymous voting via cookie or admin-only, `upvotes` table, rate-limiting, abuse mitigation. Or, separately, just store `hf_upvotes` from the HF Daily Papers API and surface a read-only count chip — that's a one-column-and-one-ingestion-line follow-up.
 - **Switch production frontend from `npm run dev` to a built `dist/`.** The current [start_services.sh](start_services.sh) script invokes `npm run dev` for prod ([line 211](start_services.sh#L211)) — i.e., production traffic is served by Vite's dev server with HMR enabled. This pre-dates the v2 migration and remains as-is post-cutover (§13.2 step 5). Long-term, edit `start_services.sh` to run `npm run build && npm run preview -- --port 8080` (or serve `dist/` via nginx directly, removing Vite from the prod path entirely). Out of scope for this migration to keep cutover risk minimal; tracked here as a deferred ops cleanup.
-- **Multi-admin support / users table.** Current setup is single-operator via `PWC_ADMIN_GITHUB_USERNAMES` env var (§8.1). If admin count grows past ~5, or audit logging / role scopes / a UI to manage admins becomes desirable, migrate to a `users` DB table with `github_username`, `is_admin`, `created_at` columns. Out of scope for this migration.
+- **Real authentication on write endpoints.** Currently no auth — admin dialogs and `indexPaperFromArxiv` are visible to everyone, matching v1 today. GitHub OAuth + admin allowlist is fully designed and tracked in [AUTH.md](AUTH.md); deferred to a follow-up workstream after cutover.
 - **Automated, off-host DB backups via Hugging Face Storage Buckets.** The VPS hosts the only copy of the production DB. This migration adds manual `pg_dump` checkpoints only (§13.0). Long-term plan: a daily CRON job `cron/daily/backup_database.py` that streams `pg_dump -F c paperswithcode_hf` directly to a private HF bucket via `hf buckets cp -` (stdin streaming — important on the 4 GB RAM VPS to avoid materializing the dump on disk). Date-stamped paths (`hf://buckets/<owner>/pwc-backups/YYYY-MM-DD.dump`) because [HF buckets are non-versioned/mutable](https://huggingface.co/docs/hub/storage-buckets) — overwriting one file would give a 1-deep restore window. Rolling retention: last 7 daily + last 4 weekly + last 12 monthly. Auth reuses `PWC_HF_TOKEN`. Off-host (geographically separate from Hetzner) provides real DR. Fits within HF free tier for a few-GB private bucket. Out of scope for this migration; tracked here so the manual `pg_dump` checkpoints aren't mistaken for a long-term solution.
 
 ## 13. Cutover plan (Q-CUTOVER resolved)
@@ -535,7 +467,7 @@ The §13.2 cutover window must not start before the corresponding checkpoint fil
 
 ### 13.0.5 Backend rollout commands (schema first, then code)
 
-The §13.2 cutover prerequisites (#3 schema, #4 auth router) reference "deployed to production" without commands. Here's the literal sequence the operator runs on the VPS, in order. **Schema first, then code** — the new SQLAlchemy models in `backend/models/database.py` reference the new columns/tables, so deploying the code first against an unmigrated DB would crash on first query. A few seconds of read-API downtime per restart is acceptable (no users yet); zero-downtime backend restart is deferred per §12.1.
+The §13.2 cutover prerequisite #3 (schema) references "deployed to production" without commands. Here's the literal sequence the operator runs on the VPS, in order. **Schema first, then code** — the new SQLAlchemy models in `backend/models/database.py` reference the new columns, so deploying the code first against an unmigrated DB would crash on first query. A few seconds of read-API downtime per restart is acceptable (no users yet); zero-downtime backend restart is deferred per §12.1.
 
 ```bash
 cd /root/python_projects/paperswithcode
@@ -547,7 +479,7 @@ pg_dump -U paperswithcode_user -F c paperswithcode_hf \
 
 # (2) Pull latest code (still on prod backend until restart)
 git pull origin main
-uv sync                                                              # install PyJWT, httpx if not already present
+uv sync
 
 # (3) Run schema migrations (idempotent; safe to re-run)
 uv run --env-file backend/keys.env python backend/database/migrations/run_add_v2_schema.py
@@ -560,21 +492,14 @@ pg_dump -U paperswithcode_user -F c paperswithcode_hf \
 psql -U paperswithcode_user -d paperswithcode_hf \
   -f backend/database/migrations/insert_canonical_methods.sql
 
-# (6) Edit backend/keys.env — add the four new auth env vars:
-#       PWC_JWT_SECRET            (generate via: openssl rand -hex 32)
-#       PWC_GITHUB_OAUTH_CLIENT_ID
-#       PWC_GITHUB_OAUTH_CLIENT_SECRET
-#       PWC_ADMIN_GITHUB_USERNAMES
-
-# (7) Restart backend so the new auth router and schema-aware models go live
+# (6) Restart backend so the schema-aware models go live
 ./stop_services.sh && ./start_services.sh
 
-# (8) Smoke test the auth router (read endpoints unaffected; auth /me returns 401 unauthenticated)
-curl https://paperswithcode.co/api/v1/auth/me                        # → 401
-curl https://paperswithcode.co/api/v1/papers/recent?limit=1          # → 200, schema fields tldr/num_pages/hf_upvotes appear as null
+# (7) Smoke test
+curl https://paperswithcode.co/api/v1/papers/recent?limit=1          # → 200, schema fields tldr/num_pages appear as null
 ```
 
-After step 8 succeeds, the backend prerequisites for cutover are met. The cutover window itself (§13.2) only touches the frontend folder — the backend keeps running uninterrupted through the rename.
+After step 7 succeeds, the backend prerequisites for cutover are met. The cutover window itself (§13.2) only touches the frontend folder — the backend keeps running uninterrupted through the rename.
 
 ### 13.1 Staging (CD2)
 
@@ -603,10 +528,9 @@ Pre-cutover (1-2 days before):
 1. All items in [progress.md](progress.md) are marked `done`.
 2. Smoke-test checklist (§13.4) passes on `staging.paperswithcode.co`.
 3. Backend schema additions (§11) deployed to production via `backend/database/migrations/run_add_v2_schema.py` + `insert_canonical_methods.sql`. UI hides null fields gracefully — safe to deploy any time.
-4. Backend auth router (§8.1) deployed to production. Public read endpoints unaffected. CRON jobs require no changes (they bypass HTTP entirely; verified in §8.1).
-5. `start_services.sh` ports unchanged (frontend on 8080, backend on 8000) — no script edits needed.
-6. Final operator checklist read, rollback steps rehearsed.
-7. **(Day before cutover)** in the still-named `frontend_v2/` folder: `npm ci && npm run build`. Verify `frontend_v2/dist/` is non-empty and timestamped recent. This is the slow step (2-5 min); doing it ahead of time keeps the cutover window genuinely short.
+4. `start_services.sh` ports unchanged (frontend on 8080, backend on 8000) — no script edits needed.
+5. Final operator checklist read, rollback steps rehearsed.
+6. **(Day before cutover)** in the still-named `frontend_v2/` folder: `npm ci && npm run build`. Verify `frontend_v2/dist/` is non-empty and timestamped recent. This is the slow step (2-5 min); doing it ahead of time keeps the cutover window genuinely short.
 
 Cutover window (~5 minutes total, ~30s actual downtime):
 1. `cd /root/python_projects/paperswithcode`
@@ -644,33 +568,31 @@ Run against staging pre-cutover, against production post-cutover:
 5. `/methods` renders 4 area sections; sorted by paper_count desc within each
 6. `/methods/:slug` renders MethodFigure correctly: tier 1 dictionary for canonical slugs, tier 2 image_url for the rest, GenericFig fallback
 7. `/benchmark/:datasetSlug` renders leaderboard (sorted by best_rank) + SOTA progression chart (running best by published date)
-8. `/cron-dashboard` renders inside v2 chrome with raw shadcn body; admin-gated
+8. `/cron-dashboard` renders inside v2 chrome with raw shadcn body
 9. ⌘K opens search overlay; debounced `/papers/search` calls work; results clickable
-10. `/admin/login` renders "Log in with GitHub" button; OAuth round-trip succeeds; non-allowlisted users get rejected; allowlisted users land in operator panel
-11. After login, edit dialogs visible on PaperDetailView; PUT/POST/DELETE writes succeed
-12. Mobile width (<1100px) shows hamburger; nav drawer opens
-13. Toast notifications appear on edit success/failure
-14. API status indicator green when backend healthy
-15. Thumbnails load from `/api/thumbnails/`; missing thumbnails fall back to `PdfThumbnail` SVG
-16. On staging, edit a v2 source file → HMR updates the page over wss without a full reload (browser DevTools Network shows the `wss://staging.paperswithcode.co/...` connection live, no polling fallback)
+10. Edit dialogs visible on PaperDetailView (no auth gate yet — see [AUTH.md](AUTH.md)); PUT/POST/DELETE writes succeed
+11. Mobile width (<1100px) shows hamburger; nav drawer opens
+12. Toast notifications appear on edit success/failure
+13. API status indicator green when backend healthy
+14. Thumbnails load from `/api/thumbnails/`; missing thumbnails fall back to `PdfThumbnail` SVG
+15. On staging, edit a v2 source file → HMR updates the page over wss without a full reload (browser DevTools Network shows the `wss://staging.paperswithcode.co/...` connection live, no polling fallback)
 
 ## Suggested implementation order
 
 The work below is roughly ordered so that each step unblocks the next without dead-end branches.
 
-1. **Backend schema (§11)** — write `add_v2_schema.sql` + `run_add_v2_schema.py` (per existing convention; no Alembic) for `papers.tldr` / `papers.num_pages` / `papers.hf_upvotes` + `institutions` + `paper_institutions`. Write `insert_canonical_methods.sql` for the 3 missing `Method` rows (`attention`, `vit`, `mixture-of-experts`). Update SQLAlchemy + Pydantic models to expose nullable fields and the `Institution` schema. Update `docs/DATABASE_SCHEMA_UML.md`. No data ingestion.
-2. **Backend auth (§8.1)** — register one GitHub OAuth App with two callback URLs (prod + staging). Generate `PWC_JWT_SECRET` via `openssl rand -hex 32`. Write `backend/routers/auth.py` with the `/login`, `/callback`, `/logout`, `/me` endpoints; `state` JWT for CSRF; per-environment cookie `Domain`. Add `require_admin` dependency to every write endpoint. Extend `Settings.cors_allowed_origins` to include staging. Test the full OAuth round-trip via browser against staging. CRON jobs require no changes — they bypass HTTP entirely.
-3. **Foundation** — port dependencies into `frontend_v2/`, `vite.config.ts` proxy + port 8081 (for staging), `tsconfig`, `eslint`. Convert files to `.tsx`/`.ts`. App still renders mock data after this step.
-4. **Staging URL** — set up `staging.paperswithcode.co` nginx block + Let's Encrypt cert (per §13.1). frontend_v2 dev server runs on port 8081 with HMR over wss to staging domain. Live preview is now available.
-5. **Routing** — install `react-router-dom`, replace App-level state with the route table above. URL deep-linking works against mock data.
-6. **API client + QueryClient** — port `lib/api.ts` and the `hooks/` directory. Verify against the running backend with `curl`.
-7. **Replace `data.js` with hooks** — Papers / Tasks / Areas / Methods / Datasets / Evaluations. Drop `submitter` / `comments` / pdfPages-as-content from the UI; hide `tldr` / `institution` / `hf_upvotes` until backed by data.
-8. **Detail pages** — `PaperDetailView`, `TagBrowseView` (= task detail), `MethodDetailView` (figure resolution = dictionary → image_url → GenericFig), `BenchmarkDetailView` swap to real data via `transformPaperForUI` and friends.
-9. **Browse page** — `TagsIndexView` (areas → their tasks) wires to `getAreas()` + `getAreaTasks()`, rendering the 6 backend areas verbatim.
-10. **Search** — replace overlay's in-memory filter with debounced `/papers/search` calls (papers-only); keep v2's full-screen overlay layout.
-11. **Polish** — loading/error/empty states (raw shadcn Skeleton/Loader2/Alert), KaTeX with §9 compatibility CSS (`katex-overrides.css`), long-author handling, toast notifications, mobile hamburger, thumbnail fallback, multi-version selector inline in meta line, API-status indicator.
-12. **`/papers`** — clone of FeedView with title swap, period switcher as date filter, inline search, infinite scroll. Conference filter dropped.
-13. **`/cron-dashboard`** — port `CronDashboard.tsx` as-is inside v2's `<Header>` chrome, body keeps raw shadcn.
-14. **Admin** — port edit dialogs from `paper-detail/` and `indexPaperFromArxiv`. New `/admin/login` route with "Log in with GitHub". Auth Context. 401 handling.
-15. **Cutover (per §13.2)** — atomic folder rename, restart services, smoke-test, commit. Frontend_legacy stays running on port 8081 for 1-week rollback insurance (§13.3).
-16. **Cleanup (1 week post-cutover)** — delete `frontend_legacy/` folder and the `legacy.paperswithcode.co` nginx block. Rollback path closed.
+1. **Backend schema (§11)** — write `add_v2_schema.sql` + `run_add_v2_schema.py` (per existing convention; no Alembic) for `papers.tldr` / `papers.num_pages`. Write `insert_canonical_methods.sql` for the 3 missing `Method` rows (`attention`, `vit`, `mixture-of-experts`). Update SQLAlchemy + Pydantic models to expose the nullable fields. Update `docs/DATABASE_SCHEMA_UML.md`. No data ingestion. Institutions and `hf_upvotes` deferred entirely (§11.2).
+2. **Foundation** — port dependencies into `frontend_v2/`, `vite.config.ts` proxy + port 8081 (for staging), `tsconfig`, `eslint`. Convert files to `.tsx`/`.ts`. App still renders mock data after this step.
+3. **Staging URL** — set up `staging.paperswithcode.co` nginx block + Let's Encrypt cert (per §13.1). frontend_v2 dev server runs on port 8081 with HMR over wss to staging domain. Live preview is now available.
+4. **Routing** — install `react-router-dom`, replace App-level state with the route table above. URL deep-linking works against mock data.
+5. **API client + QueryClient** — port `lib/api.ts` and the `hooks/` directory. Verify against the running backend with `curl`.
+6. **Replace `data.js` with hooks** — Papers / Tasks / Areas / Methods / Datasets / Evaluations. Drop `submitter` / `comments` / `institution` / `upvotes` (count chip) / pdfPages-as-content from the UI; hide `tldr` until backed by data.
+7. **Detail pages** — `PaperDetailView`, `TagBrowseView` (= task detail), `MethodDetailView` (figure resolution = dictionary → image_url → GenericFig), `BenchmarkDetailView` swap to real data via `transformPaperForUI` and friends.
+8. **Browse page** — `TagsIndexView` (areas → their tasks) wires to `getAreas()` + `getAreaTasks()`, rendering the 6 backend areas verbatim.
+9. **Search** — replace overlay's in-memory filter with debounced `/papers/search` calls (papers-only); keep v2's full-screen overlay layout.
+10. **Polish** — loading/error/empty states (raw shadcn Skeleton/Loader2/Alert), KaTeX with §9 compatibility CSS (`katex-overrides.css`), long-author handling, toast notifications, mobile hamburger, thumbnail fallback, multi-version selector inline in meta line, API-status indicator.
+11. **`/papers`** — clone of FeedView with title swap, period switcher as date filter, inline search, infinite scroll. Conference filter dropped.
+12. **`/cron-dashboard`** — port `CronDashboard.tsx` as-is inside v2's `<Header>` chrome, body keeps raw shadcn.
+13. **Admin** — port edit dialogs from `paper-detail/` and `indexPaperFromArxiv`. No auth gate this migration (matches v1) — add later per [AUTH.md](AUTH.md).
+14. **Cutover (per §13.2)** — atomic folder rename, restart services, smoke-test, commit. Frontend_legacy stays running on port 8081 for 1-week rollback insurance (§13.3).
+15. **Cleanup (1 week post-cutover)** — delete `frontend_legacy/` folder and the `legacy.paperswithcode.co` nginx block. Rollback path closed.
