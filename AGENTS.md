@@ -589,31 +589,24 @@ uv run --env-file backend/keys.env cron/manage_cron.py status import_hf_daily_pa
 tail -f cron/logs/update_github_stars_$(date +%Y%m%d).log
 ```
 
-### Setting Up CRON Jobs
+### Scheduling CRON Jobs (GitHub Actions)
 
-Edit your crontab with `crontab -e`:
+Production scheduling lives in **GitHub Actions** under `.github/workflows/cron-*.yml`. Each workflow loads an SSH deploy key and runs the corresponding script on the Hetzner VPS via `ssh`. The Python entrypoints under `cron/hourly/` and `cron/daily/` are unchanged and continue to read `backend/keys.env` on the VPS.
 
-```bash
-# PapersWithCode CRON Jobs - Hourly High-Performance Updates (RECOMMENDED)
+| Workflow | Schedule (UTC) | Runs on VPS |
+|----------|---------------|-------------|
+| `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | `cron/daily/import_hf_daily_papers.py` |
+| `cron-update-github-stars.yml` | `0 * * * *` | `cron/run_github_stars.sh` |
+| `cron-calculate-trending-scores.yml` | `30 * * * *` | `cron/run_trending_scores.sh` |
+| `cron-update-citations.yml` | `30 * * * *` | `cron/run_citations_hourly.sh` |
+| `cron-extract-urls.yml` | `45 * * * *` | `cron/run_extract_urls_hourly.sh` |
 
-# Import HF papers (Tue-Sat at 3:00 AM UTC)
-0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
+Required GitHub repository secrets:
+- `VPS_HOST` - VPS hostname or IP
+- `VPS_USER` - SSH user on the VPS (e.g. `root`)
+- `VPS_SSH_PRIVATE_KEY` - private half of an ed25519 key whose public half is in the VPS's `~/.ssh/authorized_keys`
 
-# Hourly GitHub stars update (4,500 repos/hour)
-0 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_github_stars.py
-
-# Hourly trending calculation (500 repos/hour)
-15 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/calculate_trending_scores.py
-
-# Hourly citation update (2,800 papers/hour)
-30 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/update_citations.py
-
-# Hourly URL extraction (50 papers/hour, AI-powered)
-45 * * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/hourly/extract_urls.py
-
-# Clean up old logs weekly (Saturdays at 1:00 AM UTC)
-0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup
-```
+Each workflow can be triggered manually from the Actions tab via `workflow_dispatch`. Logs stream live in the GitHub Actions UI; the Python scripts also keep writing dated logs to `cron/logs/` on the VPS.
 
 **Performance with hourly jobs**:
 - GitHub stars: Complete update in ~15 hours (vs. 66 days with daily)

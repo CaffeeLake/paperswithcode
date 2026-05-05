@@ -129,9 +129,9 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     id: t.arxiv_id,
     dbId: t.paper_id,
     title: t.title,
-    abstract: "",
-    authors: [],
-    tags: [], // The trending endpoint emits task names, not slugs — drop in cards.
+    abstract: t.abstract || "",
+    authors: t.authors || [],
+    tags: (t.tasks || []).map((x) => x.slug).filter(Boolean),
     citations: 0,
     github: t.repository?.num_stars ?? null,
     githubUrl: t.repository?.url ?? null,

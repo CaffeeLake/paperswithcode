@@ -1,0 +1,30 @@
+name: Cron - Import HF Daily Papers
+
+on:
+  schedule:
+    # Tue-Sat 03:00 UTC (papers are submitted Mon-Fri on HF; we import the previous day)
+    - cron: "0 3 * * 2-6"
+  workflow_dispatch: {}
+
+concurrency:
+  group: cron-import-hf-daily-papers
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Load SSH key into agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run import_hf_daily_papers on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=yes \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              'cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py'

@@ -175,7 +175,7 @@ export interface TrendingPaper {
   title: string;
   date_published: string | null;
   thumbnail_url?: string;
-  tasks?: string[];  // Array of task names
+  tasks?: Array<{ name: string; slug: string }>;
   repository: {
     id: string;
     url: string;

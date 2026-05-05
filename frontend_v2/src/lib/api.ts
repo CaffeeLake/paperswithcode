@@ -173,9 +173,11 @@ export interface TrendingPaper {
   paper_id: string;
   arxiv_id: string;
   title: string;
+  abstract: string | null;
+  authors: string[];
   date_published: string | null;
   thumbnail_url?: string;
-  tasks?: string[];  // Array of task names
+  tasks?: Array<{ name: string; slug: string }>;
   repository: {
     id: string;
     url: string;

@@ -129,7 +129,7 @@ const transformTrendingPaperForUI = (paper: TrendingPaper, index: number) => {
     date: paper.date_published ? formatDate(paper.date_published) : 'Unknown',
     githubStars: paper.repository.num_stars,
     starsPerHour: paper.trending.velocity_24h,
-    tags: paper.tasks || [], // Use tasks from API response
+    tags: (paper.tasks || []).map(t => t.name), // Use task names from API response
     thumbnailUrl: paper.thumbnail_url, // Pass through thumbnail URL from API
     arxivId: paper.arxiv_id,
     githubUrl: paper.repository.url,

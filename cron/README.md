@@ -182,52 +182,43 @@ uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
 uv run --env-file backend/keys.env cron/manage_cron.py test extract_urls
 ```
 
-### 5. Install CRON Jobs
+### 5. Schedule the Jobs (GitHub Actions)
 
-Edit your crontab with `crontab -e` and add these entries:
+Production scheduling now runs from **GitHub Actions** (not from the VPS crontab). Each job has its own workflow under [.github/workflows/](../.github/workflows/) which SSHes into the Hetzner VPS and runs the existing wrapper script / Python entrypoint there. The Python code, environment file, and database connection are unchanged.
 
-**RECOMMENDED: High-Performance Hourly Jobs**
+| Workflow | Schedule (UTC) | Runs on VPS |
+|----------|---------------|-------------|
+| `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | `cron/daily/import_hf_daily_papers.py` |
+| `cron-update-github-stars.yml` | `0 * * * *` | `cron/run_github_stars.sh` |
+| `cron-calculate-trending-scores.yml` | `30 * * * *` | `cron/run_trending_scores.sh` |
+| `cron-update-citations.yml` | `30 * * * *` | `cron/run_citations_hourly.sh` |
+| `cron-extract-urls.yml` | `45 * * * *` | `cron/run_extract_urls_hourly.sh` |
+
+Required GitHub repository secrets:
+
+- `VPS_HOST` - VPS hostname or IP (e.g. `167.235.148.241`)
+- `VPS_USER` - SSH user on the VPS (e.g. `root`)
+- `VPS_SSH_PRIVATE_KEY` - private half of an ed25519 deploy key whose public half is in `~/.ssh/authorized_keys` on the VPS
+
+One-time SSH key setup on the VPS:
+
 ```bash
-# PapersWithCode CRON Jobs - Hourly High-Performance Updates
-# RECOMMENDED for production - processes data 33-108x faster than daily jobs
-
-# Hugging Face papers import at 3:00 AM UTC (Tuesday to Saturday only)
-# Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
-0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
-
-# Hourly GitHub stars update - OPTIMIZED (4,500 repos/hour, all repos, 7-day refresh)
-0 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_github_stars_optimized.sh
-
-# Hourly GitHub stars trending (500 repos/hour, recent papers, 1-2 hour refresh) - NEW
-15 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_github_stars_trending.sh
-
-# Hourly citation count update (2,800 papers/hour) - RECOMMENDED
-30 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_citations_hourly.sh
-
-# Hourly URL extraction (50 papers/hour) - AI-powered GitHub and project page extraction
-45 * * * * cd /root/python_projects/paperswithcode && /root/python_projects/paperswithcode/cron/run_extract_urls_hourly.sh
-
-# Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
-0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup
+ssh-keygen -t ed25519 -C "github-actions-cron" -f ~/.ssh/gha_cron -N ""
+cat ~/.ssh/gha_cron.pub >> /root/.ssh/authorized_keys
+# then copy the contents of ~/.ssh/gha_cron into the VPS_SSH_PRIVATE_KEY repo secret
 ```
 
-**Alternative: Conservative Daily Jobs (Legacy)**
+Each workflow can also be triggered ad-hoc via the GitHub Actions UI (`workflow_dispatch`).
+
+**Local crontab (legacy)** - kept here for reference only. The previous on-VPS crontab below is no longer the source of truth and should be removed via `crontab -e` once the GitHub Actions workflows are confirmed green:
+
 ```bash
-# PapersWithCode CRON Jobs - Daily Conservative Updates
-# Use only for development/testing or if you prefer lower API usage
-
-# Hugging Face papers import at 3:00 AM UTC (Tuesday to Saturday only)
-# Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
+# Hugging Face papers import (Tue-Sat 03:00 UTC)
 0 3 * * 2-6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py
-
-# Daily GitHub stars update at 4:00 AM UTC (1,000 repos/day)
-0 4 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/update_github_stars.py
-
-# Daily citation count update at 5:00 AM UTC (2,000 papers/day)
-0 5 * * * cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/daily/update_citations.py
-
-# Optional: Clean up old logs weekly on Saturdays at 1:00 AM UTC
-0 1 * * 6 cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env cron/manage_cron.py cleanup
+0 * * * *  /root/python_projects/paperswithcode/cron/run_github_stars.sh
+30 * * * * /root/python_projects/paperswithcode/cron/run_trending_scores.sh
+30 * * * * /root/python_projects/paperswithcode/cron/run_citations_hourly.sh
+45 * * * * /root/python_projects/paperswithcode/cron/run_extract_urls_hourly.sh
 ```
 
 ## 📋 Available CRON Jobs

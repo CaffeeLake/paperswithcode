@@ -204,7 +204,8 @@ async def get_trending_papers(
                 COALESCE(velocity_24h, 0) as velocity_24h,
                 COALESCE(trending_score, 0) as trending_score,
                 COALESCE(stars_gained_24h, 0) as stars_gained_24h,
-                paper_age_days
+                paper_age_days,
+                abstract
             FROM trending_papers_24h
             WHERE paper_age_days <= :max_age_days
             AND (:min_velocity IS NULL OR COALESCE(velocity_24h, 0) >= :min_velocity)
@@ -225,10 +226,11 @@ async def get_trending_papers(
         paper_ids = [row[0] for row in results]
 
         # Fetch tasks for all papers in one query for efficiency
-        tasks_dict = {}
+        tasks_dict: Dict[Any, List[Dict[str, Any]]] = {}
+        authors_dict: Dict[Any, List[str]] = {}
         if paper_ids:
             tasks_query = text("""
-                SELECT pt.paper_id, t.name
+                SELECT pt.paper_id, t.name, t.slug
                 FROM paper_tasks pt
                 JOIN tasks t ON pt.task_id = t.id
                 WHERE pt.paper_id = ANY(:paper_ids)
@@ -240,10 +242,24 @@ async def get_trending_papers(
             # Organize tasks by paper_id
             for task_row in tasks_results:
                 paper_id = task_row[0]
-                task_name = task_row[1]
-                if paper_id not in tasks_dict:
-                    tasks_dict[paper_id] = []
-                tasks_dict[paper_id].append(task_name)
+                tasks_dict.setdefault(paper_id, []).append(
+                    {"name": task_row[1], "slug": task_row[2]}
+                )
+
+            authors_query = text("""
+                SELECT pa.paper_id, a.name
+                FROM paper_authors pa
+                JOIN authors a ON pa.author_id = a.id
+                WHERE pa.paper_id = ANY(:paper_ids)
+                ORDER BY pa.paper_id, pa.author_order
+            """)
+
+            authors_results = db.execute(
+                authors_query, {"paper_ids": paper_ids}
+            ).fetchall()
+
+            for author_row in authors_results:
+                authors_dict.setdefault(author_row[0], []).append(author_row[1])
 
         papers = []
         for row in results:
@@ -266,6 +282,8 @@ async def get_trending_papers(
                     "paper_id": str(paper_id),
                     "arxiv_id": arxiv_id,
                     "title": row[2],
+                    "abstract": row[13],
+                    "authors": authors_dict.get(paper_id, []),
                     "date_published": row[3].isoformat() if row[3] else None,
                     "thumbnail_url": thumbnail_url,
                     "tasks": paper_tasks,  # Add tasks to the response
