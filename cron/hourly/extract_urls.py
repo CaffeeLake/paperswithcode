@@ -75,7 +75,7 @@ class URLExtractionHourlyJob(DatabaseCronJob):
 
         gemini_api_key = self.settings.gemini_api_key
 
-        # Check if Gemini API key is configured (we're not using OpenRouter fallback)
+        # Check if Gemini API key is configured.
         if not gemini_api_key:
             raise ValueError(
                 "No Gemini API key configured. URL extraction requires PWC_GEMINI_API_KEY in keys.env"

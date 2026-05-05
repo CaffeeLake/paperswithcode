@@ -119,7 +119,7 @@ def show_job_status(job_name: str = None, date: str = None):
 
                         # Map script names to actual log file names
                         log_name_mapping = {
-                            "update_github_stars_optimized": "github_stars_optimized",
+                            "update_github_stars": "github_stars_cron",
                             "update_citations": "update_citations_hourly",
                             "extract_urls": "extract_urls_hourly",
                             "calculate_trending_scores": "calculate_trending_scores",
@@ -152,7 +152,7 @@ def test_job(job_name: str):
 
     # Find the job script
     job_script = None
-    categories = ["daily", "weekly", "monthly"]
+    categories = ["hourly", "daily", "weekly", "monthly"]
 
     for category in categories:
         script_path = cron_dir / category / f"{job_name}.py"

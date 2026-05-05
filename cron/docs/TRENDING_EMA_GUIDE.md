@@ -317,22 +317,14 @@ LIMIT 50;
    uv run --env-file backend/keys.env cron/hourly/calculate_trending_scores.py
    ```
 
-3. **Update crontab**:
+3. **Schedule the current jobs**:
    ```cron
-   # Old entries (remove these)
-   # 0 * * * * /usr/bin/flock -n /tmp/github_stars_optimized.lock uv run --env-file ...
-   # 0 * * * * /usr/bin/flock -n /tmp/github_stars_trending.lock uv run --env-file ...
-
-   # New entries (add these)
    0 * * * * /usr/bin/flock -n /tmp/github_stars.lock uv run --env-file backend/keys.env cron/hourly/update_github_stars.py >> /var/log/cron/github_stars.log 2>&1
-   30 * * * * /usr/bin/flock -n /tmp/trending_scores.lock uv run --env-file backend/keys.env cron/hourly/calculate_trending_scores.py >> /var/log/cron/trending_scores.log 2>&1
+   15 * * * * /usr/bin/flock -n /tmp/trending_scores.lock uv run --env-file backend/keys.env cron/hourly/calculate_trending_scores.py >> /var/log/cron/trending_scores.log 2>&1
    ```
 
-4. **Remove old scripts**:
-   ```bash
-   rm cron/hourly/update_github_stars_optimized.py
-   rm cron/hourly/update_github_stars_trending.py
-   ```
+GitHub Actions is the production scheduler in this repository; the crontab
+example is only useful for manual VPS scheduling.
 
 ---
 

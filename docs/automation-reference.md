@@ -25,8 +25,8 @@ Recommended for production; more efficient than legacy daily batches.
 
 - **Typical schedule**: hourly
 - **Scope**: recent papers missing extracted URLs
-- **Features**: OpenRouter (e.g. Gemini) on PDFs; sets `urls_extracted`; `source='ai_extraction'`; tuned for low RAM
-- **Requires**: `PWC_OPENROUTER_API_KEY` in `backend/keys.env`
+- **Features**: Gemini on PDFs; sets `urls_extracted`; `source='ai_extraction'`; tuned for low RAM
+- **Requires**: `PWC_GEMINI_API_KEY` in `backend/keys.env`
 - **Command**: `uv run --env-file backend/keys.env cron/hourly/extract_urls.py`
 
 ### 4. Trending scores (`calculate_trending_scores.py`)
@@ -63,7 +63,7 @@ Workflows live under `.github/workflows/cron-*.yml`. Each run SSHs to the Hetzne
 |----------|----------------|-------------|
 | `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | `cron/daily/import_hf_daily_papers.py` |
 | `cron-update-github-stars.yml` | `0 * * * *` | `cron/run_github_stars.sh` |
-| `cron-calculate-trending-scores.yml` | `30 * * * *` | `cron/run_trending_scores.sh` |
+| `cron-calculate-trending-scores.yml` | `15 * * * *` | `cron/run_trending_scores.sh` |
 | `cron-update-citations.yml` | `30 * * * *` | `cron/run_citations_hourly.sh` |
 | `cron-extract-urls.yml` | `45 * * * *` | `cron/run_extract_urls_hourly.sh` |
 
@@ -95,7 +95,7 @@ uv run --env-file backend/keys.env python backend/genai_steps/extract_github_and
 `backend/keys.env`:
 
 ```bash
-PWC_OPENROUTER_API_KEY=sk-or-v1-your-key-here
+PWC_GEMINI_API_KEY=your-gemini-key-here
 ```
 
 Further reading: `cron/README.md`, `backend/genai_steps/`.

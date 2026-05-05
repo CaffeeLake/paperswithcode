@@ -56,6 +56,7 @@ backend/outputs/
 backend/few_shot_pdfs_cache/
 backend/database/logs/
 backend/database/repos_and_pages_setup/cache
+cron/backfill/checkpoint.json
 
 # Experiments
 experiments/

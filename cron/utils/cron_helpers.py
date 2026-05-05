@@ -290,10 +290,8 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
             ]
 
             # Add specific mappings for known jobs
-            if job_name == "github_stars_optimized":
-                search_patterns.extend(
-                    ["update_github_stars_optimized", "github.*stars"]
-                )
+            if job_name == "github_stars_cron":
+                search_patterns.extend(["update_github_stars", "github_stars"])
             elif job_name == "update_citations_hourly":
                 search_patterns.extend(["update_citations", "citations"])
 

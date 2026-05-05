@@ -123,11 +123,10 @@ async def get_cron_status(
 
     # Map script names to actual log file names
     log_name_mapping = {
-        "update_github_stars_optimized": "github_stars_optimized",
         "update_github_stars": "github_stars_cron",
         "update_citations": "update_citations_hourly",
         "extract_urls": "extract_urls_hourly",
-        "calculate_trending_scores": "trending_scores_cron",
+        "calculate_trending_scores": "calculate_trending_scores",
     }
 
     # Process each category
@@ -285,7 +284,8 @@ async def get_cron_health():
 
     # Define critical jobs that must be running
     critical_jobs = [
-        "github_stars_optimized",
+        "github_stars_cron",
+        "calculate_trending_scores",
         "update_citations_hourly",
         "extract_urls_hourly",
     ]
