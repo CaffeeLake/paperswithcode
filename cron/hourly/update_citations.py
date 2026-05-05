@@ -1,18 +1,16 @@
 """
 Hourly Citation Count Update CRON Job
 
-Optimized version that processes ~2,800 papers per hour while staying well within
-Semantic Scholar's API limits. This allows us to process the entire papers database
-much faster than the daily version.
+Optimized version that processes a bounded chunk of papers each hour while staying
+within Semantic Scholar's API limits.
 
 Rate Limits (Semantic Scholar API):
 - 1 request per second across all endpoints
 - Must stay below this threshold to avoid rejected requests
 
 Optimized Strategy:
-- Process 2,800 papers per hour (77% of theoretical 3,600/hour limit)
-- Use optimized rate limiting (1.3s between requests = 2,769 req/hour)
-- Conservative buffer to handle API variations and retries
+- Process at most 1,500 papers per run so the next hourly tick is not skipped
+- Use conservative rate limiting with buffer for API variations and retries
 - Prioritize papers that haven't been updated recently
 - Efficient async processing with proper error handling
 - Skip papers updated within the last 30 days (configurable)
@@ -20,9 +18,8 @@ Optimized Strategy:
 Schedule: Hourly (every hour)
 Dependencies: PostgreSQL, Semantic Scholar API
 
-Performance Improvement:
-- Daily version: 2,000 papers/day = 730K papers/year
-- Hourly version: 2,800 papers/hour = 24.5M papers/year (33x faster!)
+Performance:
+- Bounded hourly runs keep GitHub Actions and VPS load predictable under throttling
 """
 
 import sys
@@ -65,21 +62,21 @@ class CitationHourlyUpdateJob(DatabaseCronJob):
         self.paper_service = PaperService(self.db_session)
 
         # Semantic Scholar API configuration
-        self.api_key = "6Wa5zD2S3HahK5AAjMRnr6n31usSpq1a3gpksOQa"
+        self.api_key = self.settings.semantic_scholar_api_key
         self.base_url = "https://api.semanticscholar.org/graph/v1"
 
-        # Optimized rate limiting for hourly runs (77% of theoretical max)
-        self.request_delay = 1.3  # 1.3 seconds between requests (2,769 req/hour)
+        # Conservative hourly bounds leave room for Semantic Scholar throttling.
+        self.request_delay = 1.5
         self.batch_size = 100  # Larger batches for efficiency
-        self.max_papers_per_run = 2800  # Use 77% of hourly theoretical limit
+        self.max_papers_per_run = 1500
         self.request_timeout = 10.0  # Shorter timeout for hourly jobs
         self.update_threshold_days = (
             7  # Only update papers older than this (reduced for more frequent updates)
         )
         self.chunk_size = 500  # Process papers in smaller chunks to reduce memory usage
 
-        # Timeout protection (90 minutes max - should complete in < 60 minutes normally)
-        self.max_runtime_seconds = 90 * 60
+        # Timeout protection: keep each hourly tick bounded.
+        self.max_runtime_seconds = 45 * 60
         self.shutdown_requested = False
 
         # Register signal handlers for graceful shutdown

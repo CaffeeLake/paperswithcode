@@ -25,7 +25,7 @@ Processing Logic:
 - Critical errors (rate limits, PDF failures) do NOT mark paper as processed
 
 Schedule: Hourly (every hour)
-Dependencies: PostgreSQL, OpenRouter API, ArXiv access
+Dependencies: PostgreSQL, Gemini API, ArXiv access
 
 Performance:
 - Free tier: 50 papers/hour max (can run 1 hour/day)

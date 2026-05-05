@@ -1,27 +1,26 @@
 # GitHub Actions Workflows
 
-This directory contains GitHub Actions workflows for managing the PapersWithCode database and ArXiv synchronization.
+This directory contains GitHub Actions workflows for running production cron jobs on the VPS and smoke-testing the current database layer.
 
 ## Workflows
 
-### 1. Daily ArXiv Sync (`arxiv-sync.yml`)
+### Cron workflows (`cron-*.yml`)
 
-**Purpose**: Automatically sync new papers from ArXiv API daily.
+**Purpose**: Trigger the active production maintenance jobs over SSH on the VPS.
 
-**Schedule**: Runs daily at 6:00 AM UTC
+**Schedules**:
+- `cron-update-github-stars.yml`: hourly at `:00`
+- `cron-calculate-trending-scores.yml`: hourly at `:15`
+- `cron-update-citations.yml`: hourly at `:30`
+- `cron-extract-urls.yml`: hourly at `:45`
+- `cron-import-hf-daily-papers.yml`: Tue-Sat at 03:00 UTC
 
-**Manual Trigger**: Can be triggered manually with optional parameters:
-- `start_date`: Custom start date (YYYY-MM-DD)
-- `end_date`: Custom end date (YYYY-MM-DD)
-- `dry_run`: Fetch papers without inserting them
+**What they do**:
+- Load the VPS SSH key from GitHub Actions secrets.
+- Add the VPS host key to `known_hosts`.
+- Run the corresponding script from `/root/python_projects/paperswithcode` on the VPS.
 
-**What it does**:
-- Sets up PostgreSQL database with test data
-- Runs ArXiv sync script to fetch new papers
-- Generates sync report with statistics
-- Uploads logs as artifacts
-
-### 2. Test Database System (`test-database.yml`)
+### Test Database System (`test-database.yml`)
 
 **Purpose**: Test database functionality on code changes.
 
@@ -31,49 +30,27 @@ This directory contains GitHub Actions workflows for managing the PapersWithCode
 - Manual trigger
 
 **What it does**:
-- Sets up clean PostgreSQL database
-- Tests database connection class
-- Runs ArXiv sync with limited data
-- Runs full test suite
-- Verifies database state and queries
-
-### 3. Import Papers Data (`import-papers.yml`)
-
-**Purpose**: Manual import of papers data (for initial setup or bulk imports).
-
-**Trigger**: Manual only
-
-**Parameters**:
-- `data_source`: Choose data source (papers-with-abstracts.json or custom)
-- `limit`: Limit number of papers (for testing)
-- `batch_size`: Processing batch size (default: 1000)
-- `force_reimport`: Clear existing data before import
-
-**What it does**:
-- Sets up PostgreSQL database
-- Optionally clears existing data
-- Imports papers from specified data source
-- Generates detailed import report
+- Starts a clean PostgreSQL service.
+- Uses `backend.database.connection` and SQLAlchemy models to create/drop tables.
+- Inserts and queries a sample `Paper` row.
 
 ## Database Configuration
 
-All workflows use these environment variables for database connection:
-- `DB_HOST`: Database host (localhost in CI)
-- `DB_PORT`: Database port (5432)
-- `DB_NAME`: Database name (paperswithcode)
-- `DB_USER`: Database user (postgres in CI)
-- `DB_PASSWORD`: Database password (postgres in CI)
+Database code reads `PWC_`-prefixed environment variables:
+- `PWC_DB_HOST`: Database host (localhost in CI)
+- `PWC_DB_PORT`: Database port (5432)
+- `PWC_DB_NAME`: Database name (`paperswithcode_hf` in CI)
+- `PWC_DB_USER`: Database user (postgres in CI)
+- `PWC_DB_PASSWORD`: Database password (postgres in CI)
 
 ## Production Setup
 
 For production deployment, you'll need to:
 
 1. **Set up database secrets** in your repository:
-   - `DB_HOST`: Your production database host
-   - `DB_PORT`: Your production database port
-   - `DB_NAME`: Your production database name
-   - `DB_USER`: Your production database user
-   - `DB_PASSWORD`: Your production database password
+   - `VPS_SSH_PRIVATE_KEY`
+   - `VPS_HOST`
+   - `VPS_USER`
 
 2. **Modify workflows** to use production database instead of test PostgreSQL service
 
@@ -81,8 +58,8 @@ For production deployment, you'll need to:
 
 ## Monitoring
 
-- **Logs**: All workflows upload logs as artifacts
-- **Reports**: Sync and import workflows generate detailed reports
+- **Logs**: Cron job logs are written on the VPS under `cron/logs/`
+- **Reports**: GitHub Actions shows cron trigger status and SSH wrapper failures
 - **Notifications**: Configure GitHub notifications for workflow failures
 
 ## Local Testing
@@ -91,11 +68,5 @@ To test the workflows locally:
 
 ```bash
 # Test database connection
-uv run python backend/database/db_connection.py
-
-# Test ArXiv sync
-uv run python backend/database/test_arxiv_sync.py
-
-# Test import (with sample data)
-uv run python backend/database/import_papers.py --limit 100
+uv run --env-file backend/keys.env python -m backend.database.connection test
 ```

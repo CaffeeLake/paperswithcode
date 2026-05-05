@@ -89,7 +89,7 @@ uv run
 - **[docs/frontend.md](docs/frontend.md)** – UI feature notes (task leaderboards, admin editing)
 - **[docs/keyword-matching.md](docs/keyword-matching.md)** – Keyword tagging strategy and APIs
 - **[docs/DATABASE_SCHEMA_UML.md](docs/DATABASE_SCHEMA_UML.md)** – Schema reference
-- **[AGENTS.md](AGENTS.md)** – Full development handbook
+- **[AGENTS.md](AGENTS.md)** – Concise agent quickstart and links to `docs/`
 - **[backend/README.md](backend/README.md)** – Backend setup
 - **[cron/README.md](cron/README.md)** – Cron job guide
 
