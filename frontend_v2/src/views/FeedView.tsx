@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useMemo } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
 import { apiClient } from "@/lib/api";
@@ -18,9 +18,23 @@ const SORT_OPTIONS: Array<[SortKey, string]> = [
   ["cited", "most cited"],
 ];
 
+const parseSort = (value: string | null): SortKey => {
+  if (value === "new" || value === "cited" || value === "trending") {
+    return value;
+  }
+  return "trending";
+};
+
 const FeedView: React.FC = () => {
-  const [sortBy, setSortBy] = useState<SortKey>("trending");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sortBy = parseSort(searchParams.get("sort"));
   const { period, setPeriod, publishedAfter } = usePeriodFilter("This Week");
+
+  const setSortBy = (nextSort: SortKey) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("sort", nextSort);
+    setSearchParams(next);
+  };
 
   // Sidebar: top tasks by paper count.
   const topTasks = useQuery({

@@ -7,8 +7,9 @@ export function ApiStatus() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['health'],
     queryFn: () => apiClient.healthCheck(),
-    refetchInterval: 30000, // Check every 30 seconds
-    retry: 3,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+    refetchOnWindowFocus: false,
   });
 
   if (isLoading) {

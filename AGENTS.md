@@ -80,7 +80,7 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 
 ## Quick reference
 
-**Local URLs**: API `http://localhost:8000/api/v1/` • Vite devoften `http://localhost:5173/` • API docs `http://localhost:8000/docs`
+**Local URLs**: API `http://localhost:8000/api/v1/` • Vite dev often `http://localhost:5173/` • API docs `http://localhost:8000/docs` • v2 preview currently `http://167.235.148.241:8081/` until staging DNS/HTTPS is finished
 
 **Common tasks**
 
