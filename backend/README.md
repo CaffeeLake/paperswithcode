@@ -259,6 +259,10 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_MAX_PAGE_SIZE` | 500 | Maximum pagination size |
 | `PWC_APP_DOMAIN` | paperswithcode.ai | Domain for URL generation |
 | `PWC_HF_TOKEN` | | Hugging Face API token (increases rate limits) |
+| `PWC_THUMBNAIL_STORAGE_BACKEND` | local | Thumbnail storage backend: `local` or `hf_bucket` |
+| `PWC_THUMBNAIL_HF_BUCKET_ID` | | Private Hugging Face bucket ID for thumbnail storage |
+| `PWC_THUMBNAIL_HF_BUCKET_PREFIX` | thumbnails | Prefix inside the thumbnail bucket |
+| `PWC_THUMBNAIL_TEMP_CACHE_DIR` | ./thumbnail_cache | Small local cache for bucket-backed thumbnail responses |
 | `PWC_GITHUB_TOKEN` | | GitHub API token (increases rate limits) |
 
 ## Production Deployment

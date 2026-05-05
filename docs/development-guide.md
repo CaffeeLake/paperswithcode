@@ -157,14 +157,14 @@ export function usePapers(query: string) {
 
 ## New CRON jobs
 
-1. Follow `cron/README.md`
-2. Subclass `DatabaseCronJob` in `cron/utils/cron_helpers.py`
+1. Follow `.github/workflows/scripts/README.md`
+2. Subclass `DatabaseCronJob` in `.github/workflows/scripts/utils/cron_helpers.py`
 3. Log with timestamps and summary stats
-4. Register in `cron/manage_cron.py` where applicable
-5. Test: `uv run --env-file backend/keys.env cron/manage_cron.py test <job_name>`
+4. Register in `.github/workflows/scripts/manage_cron.py` where applicable
+5. Test: `uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test <job_name>`
 
 ```python
-from cron.utils.cron_helpers import DatabaseCronJob
+from scripts.utils.cron_helpers import DatabaseCronJob
 
 class MyCronJob(DatabaseCronJob):
     def __init__(self):
@@ -187,7 +187,7 @@ if __name__ == "__main__":
 
 **Backend**: exercise `/docs` or `curl`; `uv run --env-file backend/keys.env python backend/tests/test_*.py` as relevant.
 
-**CRON**: test via `manage_cron.py`; inspect `cron/logs/`.
+**CRON**: test via `manage_cron.py`; inspect `.github/workflows/scripts/logs/`.
 
 ## Testing examples
 
@@ -199,7 +199,7 @@ curl -X POST "http://localhost:8000/api/v1/datasets/" \
   -d '{"name": "Test", "description": "Test dataset", "url": "https://test.com", "task_ids": [1]}'
 
 uv run --env-file backend/keys.env python backend/tests/test_authors_api.py
-uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test update_citations
 ```
 
 ## Routing (frontend)

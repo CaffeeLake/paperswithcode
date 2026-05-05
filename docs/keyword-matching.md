@@ -14,7 +14,7 @@
 
 | File | Strategy | Purpose |
 | --- | --- | --- |
-| `cron/daily/import_hf_daily_papers.py` | simple + longest | Auto-tag new Hugging Face papers with tasks/methods. |
+| `.github/workflows/scripts/daily/import_hf_daily_papers.py` | simple + longest | Auto-tag new Hugging Face papers with tasks/methods. |
 | `backend/database/tasks_setup/link_papers_by_task_keywords.py` | simple | Retag entire corpus for task coverage. |
 | `backend/database/methods_setup/link_papers_by_keywords.py` | longest | Retag corpus for methods while honoring hierarchical names. |
 

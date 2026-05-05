@@ -6,13 +6,19 @@ This module provides API endpoints for monitoring and managing CRON jobs.
 
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from cron.utils.cron_helpers import get_cron_job_status
-from backend.utils.auth import require_admin_token
+WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
+if str(WORKFLOWS_DIR) not in sys.path:
+    sys.path.insert(0, str(WORKFLOWS_DIR))
+
+from scripts.utils.cron_helpers import get_cron_job_status  # noqa: E402
+from backend.utils.auth import require_admin_token  # noqa: E402
 
 
 router = APIRouter()
@@ -44,12 +50,11 @@ class CronJobsResponse(BaseModel):
 
 def get_available_jobs() -> Dict[str, List[str]]:
     """Get all available cron jobs organized by category."""
-    cron_dir = Path(__file__).parent.parent.parent / "cron"
     jobs = {}
 
     categories = ["hourly", "daily", "weekly", "monthly"]
     for category in categories:
-        category_dir = cron_dir / category
+        category_dir = SCRIPTS_DIR / category
         if category_dir.exists():
             jobs[category] = []
             for script in category_dir.glob("*.py"):
@@ -62,8 +67,7 @@ def get_available_jobs() -> Dict[str, List[str]]:
 def get_job_description(job_name: str, category: str) -> Optional[str]:
     """Get job description from docstring."""
     try:
-        cron_dir = Path(__file__).parent.parent.parent / "cron"
-        script_path = cron_dir / category / f"{job_name}.py"
+        script_path = SCRIPTS_DIR / category / f"{job_name}.py"
 
         if not script_path.exists():
             return None

@@ -27,4 +27,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-              'cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env cron/daily/import_hf_daily_papers.py'
+              'cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.import_hf_daily_papers'

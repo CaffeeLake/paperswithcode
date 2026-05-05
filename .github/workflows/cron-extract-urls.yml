@@ -26,4 +26,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-              '/root/python_projects/paperswithcode/cron/run_extract_urls_hourly.sh'
+              '/root/python_projects/paperswithcode/.github/workflows/scripts/run_extract_urls_hourly.sh'

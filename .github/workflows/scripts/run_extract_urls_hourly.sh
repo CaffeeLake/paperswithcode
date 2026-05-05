@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+# Wrapper script for URL Extraction Hourly CRON Job
+# This ensures proper environment loading and error handling for CRON execution
+#
+
+# Set PATH for cron environment
+export PATH="/root/.local/bin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+export PYTHONPATH="$PROJECT_DIR/.github/workflows:${PYTHONPATH:-}"
+
+# Set working directory
+cd "$PROJECT_DIR" || exit 1
+
+# Create log file for wrapper script errors
+WRAPPER_LOG="$SCRIPT_DIR/logs/extract_urls_wrapper_$(date +%Y%m%d).log"
+mkdir -p "$SCRIPT_DIR/logs"
+
+# Function to log messages
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$WRAPPER_LOG"
+}
+
+log_message "Starting URL Extraction Hourly CRON job wrapper"
+
+# Check if environment file exists
+if [ ! -f "backend/keys.env" ]; then
+    log_message "ERROR: Environment file backend/keys.env not found"
+    exit 1
+fi
+
+log_message "Environment file found, starting job"
+
+# Run the job with proper error handling
+# Job writes to its own log via DatabaseCronJob class, we just capture stderr to wrapper log
+if uv run --env-file backend/keys.env python -m scripts.hourly.extract_urls 2>> "$WRAPPER_LOG"; then
+    log_message "URL extraction job completed successfully"
+    exit 0
+else
+    EXIT_CODE=$?
+    log_message "URL extraction job failed with exit code: $EXIT_CODE"
+    exit $EXIT_CODE
+fi

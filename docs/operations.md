@@ -2,23 +2,23 @@
 
 ## Cron Job Overview
 
-All jobs live in `cron/` and are executed with `uv run --env-file backend/keys.env …`.
+All jobs live in `.github/workflows/scripts/` and are executed with `uv run --env-file backend/keys.env …`.
 
 | Schedule | Script | Purpose |
 | --- | --- | --- |
-| `0 * * * *` | `cron/hourly/update_github_stars.py` | Refresh star counts for official repositories (batch size tuned for rate limits). |
-| `15 * * * *` | `cron/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
-| `30 * * * *` | `cron/hourly/update_citations.py` | Pull citation counts from Semantic Scholar for ArXiv papers. |
-| `45 * * * *` | `cron/hourly/extract_urls.py` | AI-assisted GitHub/project URL extraction for papers lacking resources. |
-| `0 3 * * 2-6` | `cron/daily/import_hf_daily_papers.py` | Import curated Hugging Face submissions (Tue–Sat). |
+| `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh star counts for official repositories (batch size tuned for rate limits). |
+| `15 * * * *` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
+| `30 * * * *` | `.github/workflows/scripts/hourly/update_citations.py` | Pull citation counts from Semantic Scholar for ArXiv papers. |
+| `45 * * * *` | `.github/workflows/scripts/hourly/extract_urls.py` | AI-assisted GitHub/project URL extraction for papers lacking resources. |
+| `0 3 * * 2-6` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` | Import curated Hugging Face submissions (Tue–Sat). |
 
 Useful commands:
 
 ```bash
-uv run --env-file backend/keys.env cron/manage_cron.py summary
-uv run --env-file backend/keys.env cron/manage_cron.py status update_github_stars
-uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
-uv run --env-file backend/keys.env cron/manage_cron.py cleanup
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py status update_github_stars
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test update_citations
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup
 ```
 
 ## Cron Dashboard
@@ -26,9 +26,9 @@ uv run --env-file backend/keys.env cron/manage_cron.py cleanup
 - Route: `/cron-dashboard` on the frontend (linked from the site header).
 - Backend endpoints: `/api/v1/cron/status`, `/api/v1/cron/job/{name}`, `/api/v1/cron/health`.
 - Auto-refresh every 30 seconds (toggleable), color-coded job states, next-run predictions, duration parsing for both “Runtime: … minutes” and “Duration: … seconds” logs.
-- Pulls data from log files in `cron/logs/` and merges with crontab discovery.
+- Pulls data from log files in `.github/workflows/scripts/logs/` and merges with crontab discovery.
 
-Use the dashboard to ensure health score stays ≥80%.  For command-line visibility, rely on `cron/manage_cron.py`.
+Use the dashboard to ensure health score stays ≥80%.  For command-line visibility, rely on `.github/workflows/scripts/manage_cron.py`.
 
 ## Trending Pipeline
 
@@ -72,13 +72,37 @@ Frontend integration (`frontend/src/pages/Papers.tsx`) uses the dedicated endpoi
 - Critical errors (rate limiting, CAPTCHA) are surfaced so papers are retried later instead of being marked as processed.
 - Unit tests: `tests/test_pdf_validation.py`, integration tests: `tests/test_pdf_download_integration.py`.
 
+## Thumbnail Storage
+
+The browser always loads paper previews through `/api/thumbnails/{filename}`.
+Production can store generated JPEGs in a private Hugging Face Storage Bucket by
+setting:
+
+```bash
+PWC_THUMBNAIL_STORAGE_BACKEND=hf_bucket
+PWC_THUMBNAIL_HF_BUCKET_ID=<owner>/<bucket>
+PWC_THUMBNAIL_HF_BUCKET_PREFIX=thumbnails
+PWC_HF_TOKEN=<token with bucket access>
+```
+
+Use a dry run before uploading the current VPS cache:
+
+```bash
+uv run --env-file backend/keys.env scripts/sync_thumbnails_to_hf_bucket.py --create-bucket
+uv run --env-file backend/keys.env scripts/sync_thumbnails_to_hf_bucket.py --create-bucket --apply
+```
+
+After spot-checking `/api/thumbnails/...`, the old `thumbnails/` directory can be
+removed from the VPS because the bucket is the durable copy. The backend keeps a
+small `PWC_THUMBNAIL_TEMP_CACHE_DIR` for recently served bucket objects.
+
 ## Troubleshooting Checklist
 
 | Issue | Resolution |
 | --- | --- |
 | Trending endpoint empty | Verify GitHub stars job is running and trending scores have at least two snapshots; check `repositories.trending_score_updated_at`. |
-| Cron dashboard shows “Unknown” | Ensure log file exists (`cron/logs/<job>_YYYYMMDD.log`) and job is scheduled in crontab. |
-| AI URL extraction stalls | Inspect `cron/logs/extract_urls_*.log` for CAPTCHA hits; consider slowing batch size or updating API key in `backend/keys.env`. |
-| Cron logs filling disk | Run `uv run --env-file backend/keys.env cron/manage_cron.py cleanup`; default policy keeps 30 days. |
+| Cron dashboard shows “Unknown” | Ensure log file exists (`.github/workflows/scripts/logs/<job>_YYYYMMDD.log`) and job is scheduled in crontab. |
+| AI URL extraction stalls | Inspect `.github/workflows/scripts/logs/extract_urls_*.log` for CAPTCHA hits; consider slowing batch size or updating API key in `backend/keys.env`. |
+| Cron logs filling disk | Run `uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup`; default policy keeps 30 days. |
 
 _Last updated: 7 November 2025_

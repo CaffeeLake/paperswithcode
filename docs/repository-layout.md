@@ -89,7 +89,7 @@ paperswithcode/
 │   │   └── utils/            # Additional utilities
 │   ├── package.json
 │   └── vite.config.ts
-├── cron/                      # Automated CRON job scripts
+├── .github/workflows/scripts/ # Automated CRON job scripts
 │   ├── README.md             # Comprehensive CRON documentation
 │   ├── hourly/               # High-performance hourly jobs (RECOMMENDED)
 │   │   ├── update_github_stars.py      # 4,500 repos/hour

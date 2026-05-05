@@ -135,8 +135,13 @@ curl -X POST "http://localhost:8000/api/v1/evaluations/" \
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/thumbnails/{filename}` | GET | Serve paper thumbnail images |
+| `/thumbnails/status/{paper_id}` | GET | Check whether a generated thumbnail exists |
+| `/thumbnails/generate/{paper_id}` | POST | Queue thumbnail generation for a paper |
 
-Note: thumbnails are mounted without the `/api/v1` prefix in the main app.
+Note: thumbnails are mounted without the `/api/v1` prefix in the main app. In
+production, `/api/thumbnails/` remains the browser-facing endpoint while the
+canonical JPEGs can be stored in a private Hugging Face Storage Bucket and
+proxied server-side with `PWC_HF_TOKEN`.
 
 ## Cron (`/api/v1/cron/`)
 
@@ -146,7 +151,7 @@ Note: thumbnails are mounted without the `/api/v1` prefix in the main app.
 | `/cron/job/{job_name}` | GET | Get specific job status |
 | `/cron/health` | GET | Health endpoint for monitoring |
 
-For day-to-day automation, see `docs/operations.md` and `cron/README.md`.
+For day-to-day automation, see `docs/operations.md` and `.github/workflows/scripts/README.md`.
 
 ## Working with data (API-first)
 

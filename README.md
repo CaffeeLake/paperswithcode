@@ -91,7 +91,7 @@ uv run
 - **[docs/DATABASE_SCHEMA_UML.md](docs/DATABASE_SCHEMA_UML.md)** – Schema reference
 - **[AGENTS.md](AGENTS.md)** – Concise agent quickstart and links to `docs/`
 - **[backend/README.md](backend/README.md)** – Backend setup
-- **[cron/README.md](cron/README.md)** – Cron job guide
+- **[.github/workflows/scripts/README.md](.github/workflows/scripts/README.md)** – Cron job guide
 
 ### Key Scripts
 - **[setup_ssl.sh](setup_ssl.sh)** - Automated SSL certificate setup

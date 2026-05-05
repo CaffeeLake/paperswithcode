@@ -7,8 +7,6 @@ Provides endpoints for:
 - Managing thumbnail cache
 """
 
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -17,7 +15,6 @@ from backend.database.connection import get_database_session
 from backend.services.thumbnail_service import ThumbnailService
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import PaperNotFoundError
-from backend.config import get_settings
 
 router = APIRouter(prefix="/thumbnails", tags=["thumbnails"])
 
@@ -48,52 +45,15 @@ async def serve_thumbnail(
     Raises:
         HTTPException: If generation fails or invalid filename
     """
-    settings = get_settings()
-    cache_dir = Path(settings.thumbnail_cache_dir)
-    file_path = cache_dir / filename
-
-    # Security check: ensure file is within cache directory
     try:
-        file_path.resolve().relative_to(cache_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # If thumbnail exists, serve it immediately
-    if file_path.exists() and file_path.is_file():
+        thumbnail_path = await thumbnail_service.get_or_generate_thumbnail(filename)
         return FileResponse(
-            path=file_path,
+            path=thumbnail_path,
             media_type="image/jpeg",
             headers={
                 "Cache-Control": "public, s-maxage=604800, max-age=604800"
             },  # 7 days cache like HF
         )
-
-    # On-demand generation: extract ArXiv ID and version from filename
-    try:
-        # Parse filename: "1234_56789_v1.jpg" -> arxiv_id="1234.56789", version="v1"
-        name_without_ext = filename.rsplit(".", 1)[0]  # Remove .jpg
-        parts = name_without_ext.split("_")
-
-        if len(parts) < 3:
-            raise ValueError("Invalid filename format")
-
-        # Reconstruct ArXiv ID: "1234_56789_v1" -> "1234.56789"
-        arxiv_parts = parts[:-1]  # All parts except version
-        version = parts[-1]  # Last part is version
-        arxiv_id = ".".join(arxiv_parts)
-
-        # Generate thumbnail on-demand using ArXiv service
-        generated_path = await thumbnail_service.generate_thumbnail(arxiv_id, version)
-
-        # Serve the newly generated thumbnail
-        return FileResponse(
-            path=generated_path,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "public, s-maxage=604800, max-age=604800"
-            },  # 7 days cache
-        )
-
     except Exception:
         # If generation fails, return a 404 with cache headers to avoid repeated attempts
         raise HTTPException(

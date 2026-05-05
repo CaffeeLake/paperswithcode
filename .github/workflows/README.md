@@ -58,7 +58,7 @@ For production deployment, you'll need to:
 
 ## Monitoring
 
-- **Logs**: Cron job logs are written on the VPS under `cron/logs/`
+- **Logs**: Cron job logs are written on the VPS under `.github/workflows/scripts/logs/`
 - **Reports**: GitHub Actions shows cron trigger status and SSH wrapper failures
 - **Notifications**: Configure GitHub notifications for workflow failures
 

@@ -6,21 +6,25 @@ This service handles:
 - Downloading PDFs from ArXiv
 - Converting first page to image
 - Cropping to show upper half
-- Caching thumbnails
+- Reading/writing thumbnails from local or Hugging Face bucket storage
 - Serving cached thumbnails
 """
 
+import logging
+import re
+import time
 from pathlib import Path
 from typing import Optional
-from io import BytesIO
 
-import requests
+from huggingface_hub import HfFileSystem, batch_bucket_files, download_bucket_files
 from PIL import Image
 from pdf2image import convert_from_bytes
 
 from backend.config import get_settings
 from backend.utils.exceptions import ThumbnailGenerationError
 from backend.services.arxiv_service import ArxivService
+
+logger = logging.getLogger(__name__)
 
 
 class ThumbnailService:
@@ -30,8 +34,26 @@ class ThumbnailService:
 
     def __init__(self):
         self.settings = get_settings()
-        self.cache_dir = Path(self.settings.thumbnail_cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.storage_backend = self.settings.thumbnail_storage_backend.lower()
+        self.legacy_cache_dir = Path(self.settings.thumbnail_cache_dir)
+        self.temp_cache_dir = Path(self.settings.thumbnail_temp_cache_dir)
+        self.bucket_id = self.settings.thumbnail_hf_bucket_id.strip()
+        self.bucket_prefix = self.settings.thumbnail_hf_bucket_prefix.strip("/")
+        self.hf_token = self.settings.hf_token or None
+        self.hf_fs = (
+            HfFileSystem(token=self.hf_token)
+            if self.storage_backend == "hf_bucket"
+            else None
+        )
+
+        if self.storage_backend == "hf_bucket":
+            if not self.bucket_id:
+                raise ThumbnailGenerationError(
+                    "PWC_THUMBNAIL_HF_BUCKET_ID is required for hf_bucket storage"
+                )
+            self.temp_cache_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.legacy_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Thumbnail settings
         self.thumbnail_width = 400  # Target width in pixels
@@ -42,71 +64,94 @@ class ThumbnailService:
         # ArXiv service for API interactions
         self.arxiv_service = ArxivService()
 
+    def parse_filename(self, filename: str) -> tuple[str, str]:
+        """
+        Parse a thumbnail filename into ArXiv ID and version.
+        """
+        if "/" in filename or "\\" in filename:
+            raise ThumbnailGenerationError("Invalid thumbnail filename")
+
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+_v\d+\.jpg", filename):
+            raise ThumbnailGenerationError("Invalid thumbnail filename")
+
+        name_without_ext = filename.rsplit(".", 1)[0]
+        parts = name_without_ext.split("_")
+        if len(parts) < 3:
+            raise ThumbnailGenerationError("Invalid thumbnail filename")
+
+        arxiv_id = ".".join(parts[:-1])
+        version = parts[-1]
+        return arxiv_id, version
+
+    def get_filename(self, arxiv_id: str, version: str = "v1") -> str:
+        """
+        Get the stable thumbnail filename for a given ArXiv paper.
+        """
+        safe_id = arxiv_id.replace("/", "_").replace(".", "_")
+        return f"{safe_id}_{version}.jpg"
+
     def _get_cache_path(self, arxiv_id: str, version: str = "v1") -> Path:
         """
-        Get the cache file path for a given ArXiv paper.
-
-        Args:
-            arxiv_id: ArXiv ID (e.g., "1805.10616")
-            version: Paper version (e.g., "v1", "v2")
-
-        Returns:
-            Path to cached thumbnail file
+        Get the active local cache file path for a given ArXiv paper.
         """
-        # Create a safe filename from arxiv_id and version
-        safe_id = arxiv_id.replace("/", "_").replace(".", "_")
-        filename = f"{safe_id}_{version}.jpg"
-        return self.cache_dir / filename
+        return self._get_active_cache_path(self.get_filename(arxiv_id, version))
 
-    def _download_pdf(self, pdf_url: str) -> bytes:
-        """
-        Download PDF from URL with proper error handling.
+    def _get_active_cache_path(self, filename: str) -> Path:
+        cache_dir = (
+            self.temp_cache_dir
+            if self.storage_backend == "hf_bucket"
+            else self.legacy_cache_dir
+        )
+        return cache_dir / filename
 
-        Args:
-            pdf_url: URL to the PDF file
+    def _get_legacy_cache_path(self, filename: str) -> Path:
+        return self.legacy_cache_dir / filename
 
-        Returns:
-            PDF content as bytes
+    def _get_bucket_key(self, filename: str) -> str:
+        return f"{self.bucket_prefix}/{filename}" if self.bucket_prefix else filename
 
-        Raises:
-            ThumbnailGenerationError: If download fails
-        """
+    def _get_bucket_uri(self, filename: str) -> str:
+        return f"hf://buckets/{self.bucket_id}/{self._get_bucket_key(filename)}"
+
+    def _download_from_bucket(self, filename: str) -> Optional[Path]:
+        if self.storage_backend != "hf_bucket":
+            return None
+
+        cache_path = self._get_active_cache_path(filename)
+        if cache_path.exists():
+            return cache_path
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        download_bucket_files(
+            self.bucket_id,
+            [(self._get_bucket_key(filename), cache_path)],
+            raise_on_missing_files=False,
+            token=self.hf_token,
+        )
+
+        return cache_path if cache_path.exists() else None
+
+    def _upload_to_bucket(self, thumbnail_path: Path, filename: str) -> None:
+        if self.storage_backend != "hf_bucket":
+            return
+
+        batch_bucket_files(
+            self.bucket_id,
+            add=[(thumbnail_path, self._get_bucket_key(filename))],
+            token=self.hf_token,
+        )
+
+    def _bucket_thumbnail_exists(self, filename: str) -> bool:
+        if self.storage_backend != "hf_bucket" or self.hf_fs is None:
+            return False
+
         try:
-            headers = {
-                "User-Agent": "PapersWithCode-Bot/1.0 (https://paperswithcode.ai)"
-            }
-
-            response = requests.get(
-                pdf_url, headers=headers, timeout=self.pdf_timeout, stream=True
+            return bool(self.hf_fs.exists(self._get_bucket_uri(filename)))
+        except Exception as exc:
+            logger.warning(
+                "Failed to check thumbnail bucket object %s: %s", filename, exc
             )
-            response.raise_for_status()
-
-            # Check content length
-            content_length = response.headers.get("content-length")
-            if content_length and int(content_length) > self.max_pdf_size:
-                raise ThumbnailGenerationError(f"PDF too large: {content_length} bytes")
-
-            # Download with size limit
-            content = BytesIO()
-            downloaded = 0
-
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    downloaded += len(chunk)
-                    if downloaded > self.max_pdf_size:
-                        raise ThumbnailGenerationError(
-                            f"PDF too large: {downloaded} bytes"
-                        )
-                    content.write(chunk)
-
-            return content.getvalue()
-
-        except requests.RequestException as e:
-            raise ThumbnailGenerationError(f"Failed to download PDF: {str(e)}")
-        except Exception as e:
-            raise ThumbnailGenerationError(
-                f"Unexpected error downloading PDF: {str(e)}"
-            )
+            return False
 
     def _convert_pdf_to_thumbnail(self, pdf_content: bytes) -> Image.Image:
         """
@@ -172,6 +217,44 @@ class ThumbnailService:
         except Exception as e:
             raise ThumbnailGenerationError(f"Failed to save thumbnail: {str(e)}")
 
+    def get_existing_thumbnail_path(self, filename: str) -> Optional[Path]:
+        """
+        Return an existing thumbnail path from active cache, bucket, or legacy cache.
+        """
+        self.parse_filename(filename)
+        active_cache_path = self._get_active_cache_path(filename)
+        if active_cache_path.exists():
+            return active_cache_path
+
+        bucket_path = self._download_from_bucket(filename)
+        if bucket_path:
+            return bucket_path
+
+        legacy_cache_path = self._get_legacy_cache_path(filename)
+        if legacy_cache_path.exists():
+            try:
+                self._upload_to_bucket(legacy_cache_path, filename)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to upload legacy thumbnail %s to bucket: %s",
+                    filename,
+                    exc,
+                )
+            return legacy_cache_path
+
+        return None
+
+    async def get_or_generate_thumbnail(self, filename: str) -> Path:
+        """
+        Return an existing thumbnail or generate it from the filename's ArXiv ID.
+        """
+        arxiv_id, version = self.parse_filename(filename)
+        existing_path = self.get_existing_thumbnail_path(filename)
+        if existing_path:
+            return existing_path
+
+        return await self.generate_thumbnail(arxiv_id, version)
+
     async def generate_thumbnail(self, arxiv_id: str, version: str = "v1") -> Path:
         """
         Generate thumbnail for a paper using ArXiv service.
@@ -186,11 +269,13 @@ class ThumbnailService:
         Raises:
             ThumbnailGenerationError: If generation fails
         """
-        cache_path = self._get_cache_path(arxiv_id, version)
+        filename = self.get_filename(arxiv_id, version)
+        existing_path = self.get_existing_thumbnail_path(filename)
+        if existing_path:
+            return existing_path
 
-        # Return cached version if it exists
-        if cache_path.exists():
-            return cache_path
+        cache_path = self._get_cache_path(arxiv_id, version)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             # Download PDF using ArXiv service (handles rate limiting)
@@ -206,6 +291,7 @@ class ThumbnailService:
 
             # Save to cache
             self._save_thumbnail(thumbnail, cache_path)
+            self._upload_to_bucket(cache_path, filename)
 
             return cache_path
 
@@ -227,11 +313,15 @@ class ThumbnailService:
         Returns:
             URL to the thumbnail or None if not cached
         """
-        cache_path = self._get_cache_path(arxiv_id, version)
+        filename = self.get_filename(arxiv_id, version)
 
-        if cache_path.exists():
-            # Return relative URL that will be served by the API
-            filename = cache_path.name
+        active_cache_path = self._get_active_cache_path(filename)
+        legacy_cache_path = self._get_legacy_cache_path(filename)
+        if (
+            active_cache_path.exists()
+            or legacy_cache_path.exists()
+            or self._bucket_thumbnail_exists(filename)
+        ):
             return f"/api/thumbnails/{filename}"
 
         return None
@@ -246,13 +336,17 @@ class ThumbnailService:
         Returns:
             Number of files deleted
         """
-        import time
-
         deleted_count = 0
         max_age_seconds = max_age_days * 24 * 60 * 60
         current_time = time.time()
 
-        for thumbnail_file in self.cache_dir.glob("*.jpg"):
+        cache_dir = (
+            self.temp_cache_dir
+            if self.storage_backend == "hf_bucket"
+            else self.legacy_cache_dir
+        )
+
+        for thumbnail_file in cache_dir.glob("*.jpg"):
             try:
                 file_age = current_time - thumbnail_file.stat().st_mtime
                 if file_age > max_age_seconds:
@@ -272,20 +366,40 @@ class ThumbnailService:
             Dictionary with cache statistics
         """
         try:
-            thumbnail_files = list(self.cache_dir.glob("*.jpg"))
+            cache_dir = (
+                self.temp_cache_dir
+                if self.storage_backend == "hf_bucket"
+                else self.legacy_cache_dir
+            )
+            thumbnail_files = list(cache_dir.glob("*.jpg"))
             total_files = len(thumbnail_files)
 
             total_size = sum(f.stat().st_size for f in thumbnail_files)
             total_size_mb = total_size / (1024 * 1024)
 
-            return {
+            stats = {
                 "total_files": total_files,
                 "total_size_mb": round(total_size_mb, 2),
-                "cache_dir": str(self.cache_dir),
+                "cache_dir": str(cache_dir),
+                "storage_backend": self.storage_backend,
             }
+            if self.storage_backend == "hf_bucket":
+                stats.update(
+                    {
+                        "bucket_id": self.bucket_id,
+                        "bucket_prefix": self.bucket_prefix,
+                        "legacy_cache_dir": str(self.legacy_cache_dir),
+                    }
+                )
+            return stats
         except Exception:
             return {
                 "total_files": 0,
                 "total_size_mb": 0,
-                "cache_dir": str(self.cache_dir),
+                "cache_dir": str(
+                    self.temp_cache_dir
+                    if self.storage_backend == "hf_bucket"
+                    else self.legacy_cache_dir
+                ),
+                "storage_backend": self.storage_backend,
             }

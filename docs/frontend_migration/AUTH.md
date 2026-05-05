@@ -18,7 +18,7 @@ Add real auth on the backend and an admin-gate UI on the frontend.
 
 - **Identity model**: GitHub OAuth + username allowlist (single operator).
 - **Token mechanism**: signed JWT (HS256) in an `httpOnly` + `Secure` + `SameSite=Lax` cookie.
-- **CRON jobs unaffected** — they bypass HTTP entirely (verified by grep over `cron/`).
+- **CRON jobs unaffected** — they bypass HTTP entirely (verified by grep over `.github/workflows/scripts/`).
 
 ## Identity model: GitHub OAuth with a username allowlist
 
@@ -79,7 +79,7 @@ This route does not exist yet; until this workstream lands, admin UI on PaperDet
 
 ## CRON jobs are unaffected by auth
 
-All current CRON jobs (`cron/hourly/*.py`, `cron/daily/import_hf_daily_papers.py`) call only external APIs (HuggingFace, GitHub, Semantic Scholar) and write to PostgreSQL **directly via SQLAlchemy** — they do not call our own `/api/v1/*` endpoints. Verified by `grep` over `cron/`. So no admin bypass key, no service token, no `Authorization` header is required for CRON. The only HTTP write paths that will be gated by `require_admin` are UI-driven (edit dialogs + `indexPaperFromArxiv` from `PaperDetailView`).
+All current CRON jobs (`.github/workflows/scripts/hourly/*.py`, `.github/workflows/scripts/daily/import_hf_daily_papers.py`) call only external APIs (HuggingFace, GitHub, Semantic Scholar) and write to PostgreSQL **directly via SQLAlchemy** — they do not call our own `/api/v1/*` endpoints. Verified by `grep` over `.github/workflows/scripts/`. So no admin bypass key, no service token, no `Authorization` header is required for CRON. The only HTTP write paths that will be gated by `require_admin` are UI-driven (edit dialogs + `indexPaperFromArxiv` from `PaperDetailView`).
 
 ## Deferred follow-up: multi-admin support / users table
 

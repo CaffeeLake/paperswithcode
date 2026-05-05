@@ -16,7 +16,7 @@ Guidance for AI agents working in this repository.
 
 ## Project overview
 
-Paperswithcode.ai: **React** frontend + **FastAPI** backend + **PostgreSQL**. Data from [Hugging Face papers](https://huggingface.co/papers) plus the legacy PapersWithCode dumps under `data/legacy_pwc_data/`. **CRON** jobs (`cron/`) import HF papers, refresh stars and citations, compute trending, and extract URLs with GenAI.
+Paperswithcode.ai: **React** frontend + **FastAPI** backend + **PostgreSQL**. Data from [Hugging Face papers](https://huggingface.co/papers) plus the legacy PapersWithCode dumps under `data/legacy_pwc_data/`. **CRON** jobs (`.github/workflows/scripts/`) import HF papers, refresh stars and citations, compute trending, and extract URLs with GenAI.
 
 **Stack**: React 18, TS, Vite, shadcn/ui, Tailwind, TanStack Query, React Router v6 • FastAPI, SQLAlchemy • PostgreSQL + full-text search • Nginx + Let’s Encrypt in production • `uv` (Python), `npm` (frontend).
 
@@ -55,8 +55,8 @@ uv run --env-file backend/keys.env python backend/tests/test_authors_api.py
 ### CRON
 
 ```bash
-uv run --env-file backend/keys.env cron/manage_cron.py summary
-uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test update_citations
 ```
 
 ## Where to read more
@@ -76,7 +76,7 @@ uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
 | UI features | `docs/frontend.md` |
 | Keyword APIs | `docs/keyword-matching.md` |
 | Schema diagram | `docs/DATABASE_SCHEMA_UML.md` |
-| Cron implementation notes | `cron/README.md`, `backend/database/README.md` |
+| Cron implementation notes | `.github/workflows/scripts/README.md`, `backend/database/README.md` |
 
 ## Quick reference
 
@@ -89,9 +89,9 @@ uv run --env-file backend/keys.env cron/manage_cron.py test update_citations
 uv run --env-file backend/keys.env backend/run_server.py
 cd frontend && npm run dev
 
-uv run --env-file backend/keys.env cron/manage_cron.py summary
+uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
 ```
 
 **`backend/keys.env` (names only)** — `PWC_DB_*`, `PWC_GITHUB_TOKEN`, `PWC_SEMANTIC_SCHOLAR_API_KEY`, `PWC_HF_TOKEN`, `PWC_OPENROUTER_API_KEY`
 
-**Key paths**: `backend/services/` • `backend/routers/` • `backend/database/` • `cron/` • `docs/`
+**Key paths**: `backend/services/` • `backend/routers/` • `backend/database/` • `.github/workflows/scripts/` • `docs/`

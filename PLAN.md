@@ -38,7 +38,7 @@ An error occurred with model gemini-2.5-pro: 400 INVALID_ARGUMENT. ... API_KEY_I
 ##[error]Process completed with exit code 1.
 ```
 
-**Root cause**: The workflow `ssh`es into the VPS and runs `cron/run_extract_urls_hourly.sh`, which calls `cron/hourly/extract_urls.py`. That script reads `PWC_GEMINI_API_KEY` via `backend.config.get_settings()` (see [`cron/hourly/extract_urls.py:76`](cron/hourly/extract_urls.py)). It validates the key on startup with `_validate_api_keys()` and, when validation fails, exits with `RuntimeError`. The local `backend/keys.env` in this repo has `PWC_GEMINI_API_KEY=AIzaSyDs4YMaEFtkAcMD8tzIfL6w8SO5QZtprtQ`, but the VPS's own `backend/keys.env` is what's actually consumed when the SSH command runs. That key is rejected by the Google Generative AI API.
+**Root cause**: The workflow `ssh`es into the VPS and runs `.github/workflows/scripts/run_extract_urls_hourly.sh`, which calls `.github/workflows/scripts/hourly/extract_urls.py`. That script reads `PWC_GEMINI_API_KEY` via `backend.config.get_settings()` (see [`.github/workflows/scripts/hourly/extract_urls.py:76`](.github/workflows/scripts/hourly/extract_urls.py)). It validates the key on startup with `_validate_api_keys()` and, when validation fails, exits with `RuntimeError`. The local `backend/keys.env` in this repo has `PWC_GEMINI_API_KEY=AIzaSyDs4YMaEFtkAcMD8tzIfL6w8SO5QZtprtQ`, but the VPS's own `backend/keys.env` is what's actually consumed when the SSH command runs. That key is rejected by the Google Generative AI API.
 
 **Fix**:
 1. SSH into the VPS and inspect `~/python_projects/paperswithcode/backend/keys.env`.
@@ -52,11 +52,11 @@ An error occurred with model gemini-2.5-pro: 400 INVALID_ARGUMENT. ... API_KEY_I
 
 **Symptom**: The 12:44 run is still going at 13:54 (≈70 min). Workflow timeout is `90` min; the next scheduled tick at 13:30 was already skipped because of `concurrency: cancel-in-progress: false`.
 
-**Evidence**: VPS log `cron/logs/update_citations_hourly_20260505.log` shows the script actively updating papers and being throttled by Semantic Scholar at 13:54. So the job is healthy, just slow due to real API rate limits.
+**Evidence**: VPS log `.github/workflows/scripts/logs/update_citations_hourly_20260505.log` shows the script actively updating papers and being throttled by Semantic Scholar at 13:54. So the job is healthy, just slow due to real API rate limits.
 
 **Fix**:
 1. Raise `timeout-minutes` in [`.github/workflows/cron-update-citations.yml`](.github/workflows/cron-update-citations.yml) from `90` → `180` (or `300`) so a single hourly run can finish even when Semantic Scholar throttles harder than usual.
-2. Optionally cap papers per run inside `cron/hourly/update_citations.py` so the job is bounded to ≤ ~40 min of wall clock — this avoids GitHub Actions hours bloat and lets the next scheduled tick actually run instead of being skipped.
+2. Optionally cap papers per run inside `.github/workflows/scripts/hourly/update_citations.py` so the job is bounded to ≤ ~40 min of wall clock — this avoids GitHub Actions hours bloat and lets the next scheduled tick actually run instead of being skipped.
 3. Consider moving the schedule off `:30` since `cron-calculate-trending-scores.yml` is also `:30`. Suggested: citations `:30`, trending `:15` — keeps both hourly without contending for the same VPS minute. (Both jobs SSH into the same box; not strictly a conflict, but operationally cleaner.)
 
 ### 3. Decide fate of legacy workflows: `arxiv-sync.yml`, `test-database.yml`, `import-papers.yml`

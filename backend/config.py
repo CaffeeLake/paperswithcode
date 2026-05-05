@@ -89,6 +89,22 @@ class Settings(BaseSettings):
     thumbnail_cache_dir: str = Field(
         default="./thumbnails", description="Directory to cache PDF thumbnails"
     )
+    thumbnail_storage_backend: str = Field(
+        default="local",
+        description="Thumbnail storage backend: local or hf_bucket",
+    )
+    thumbnail_hf_bucket_id: str = Field(
+        default="",
+        description="Private Hugging Face bucket ID for paper thumbnails",
+    )
+    thumbnail_hf_bucket_prefix: str = Field(
+        default="thumbnails",
+        description="Path prefix inside the thumbnail Hugging Face bucket",
+    )
+    thumbnail_temp_cache_dir: str = Field(
+        default="./thumbnail_cache",
+        description="Small local cache for bucket-backed thumbnail responses",
+    )
 
     class Config:
         env_file = ["keys.env"]
