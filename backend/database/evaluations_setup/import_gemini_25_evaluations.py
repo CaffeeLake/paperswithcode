@@ -41,7 +41,7 @@ EVALUATIONS = [
     (17, 5, "AIME 2025", 72.0, 88.0, ""),
     # General
     (82, 256, "Humanity's Last Exam", 11.0, 21.6, ""),
-    # Vision-language models
+    # Image understanding
     (31, 8, "MMMU", 79.7, 82.0, ""),
     (64, 8, "ZeroBench", 2.0, 4.5, ""),
 ]

@@ -1,8 +1,102 @@
 import re
 import aiohttp
 import asyncio
+from typing import Literal, Optional
+from urllib.parse import urlparse, urlunparse
 
 from huggingface_hub.utils import build_hf_headers
+
+
+HfArtifactKind = Literal["model", "dataset", "space"]
+
+
+_HF_NON_ARTIFACT_PATHS = {
+    "",
+    "api",
+    "blog",
+    "chat",
+    "collections",
+    "community",
+    "docs",
+    "enterprise",
+    "join",
+    "learn",
+    "login",
+    "models",
+    "new",
+    "papers",
+    "posts",
+    "pricing",
+    "settings",
+    "signup",
+    "spaces",
+    "tasks",
+    "tos",
+    "trending",
+}
+
+
+def normalize_hf_artifact_url(url: str) -> Optional[str]:
+    """
+    Normalize a Hugging Face artifact URL into a canonical, render-ready form.
+
+    Returns the URL with scheme forced to https, host forced to
+    `huggingface.co`, no query string, no fragment, and any trailing slash
+    stripped. Returns None if the URL does not look like an HF artifact URL.
+    """
+    if not url:
+        return None
+    candidate = url.strip()
+    if not candidate:
+        return None
+
+    if "://" not in candidate:
+        candidate = "https://" + candidate
+
+    parsed = urlparse(candidate)
+    host = (parsed.netloc or "").lower()
+    if host in {"www.huggingface.co", "hf.co", "www.hf.co"}:
+        host = "huggingface.co"
+    if host != "huggingface.co":
+        return None
+
+    path = parsed.path or ""
+    if path.endswith("/") and len(path) > 1:
+        path = path.rstrip("/")
+    if not path or path == "/":
+        return None
+
+    return urlunparse(("https", host, path, "", "", ""))
+
+
+def classify_hf_artifact_url(url: str) -> Optional[HfArtifactKind]:
+    """
+    Determine whether a Hugging Face URL points to a model, dataset, or space.
+
+    Returns None for URLs that do not look like HF artifact URLs (e.g.
+    profile, papers, blog, or arxiv filter URLs).
+    """
+    normalized = normalize_hf_artifact_url(url)
+    if normalized is None:
+        return None
+
+    path = urlparse(normalized).path.lstrip("/")
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        return None
+
+    head = segments[0].lower()
+    if head == "datasets" and len(segments) >= 2:
+        return "dataset"
+    if head == "spaces" and len(segments) >= 2:
+        return "space"
+    if head in _HF_NON_ARTIFACT_PATHS:
+        return None
+    # `huggingface.co/<namespace>/<name>` is a model; bare `huggingface.co/<name>`
+    # is a user/org profile and is not considered an artifact link.
+    if len(segments) >= 2:
+        return "model"
+    return None
 
 
 async def get_user_organizations(username: str) -> list[str]:

@@ -60,8 +60,8 @@ def populate_tasks(db: Session):
         },
         # General tasks (no specific area)
         {
-            "name": "Vision Language Models",
-            "description": "Vision Language Models are multimodal AI systems that can understand and process both visual and textual information. These models can perform tasks such as image captioning, visual question answering, and image-text matching by learning joint representations of vision and language.",
+            "name": "Image Understanding",
+            "description": "Image Understanding refers to understanding the contents of an image, including image captioning, classification, visual question answering, and more. Vision-language models (VLMs) are one way to solve image understanding, but the task is not limited to VLMs.",
             "area": "General",
             "parent": None,
             "level": 0,
@@ -77,7 +77,7 @@ def populate_tasks(db: Session):
         {
             "name": "Language Modeling",
             "description": "Language Modeling is the task of predicting the next word or character in a sequence given the previous context. Language models learn the probability distribution of word sequences and are foundational for many NLP applications including text generation, machine translation, and speech recognition.",
-            "area": "Natural Language Processing",
+            "area": "General",
             "parent": None,
             "level": 0,
         },

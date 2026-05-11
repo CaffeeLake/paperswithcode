@@ -32,7 +32,7 @@ async def list_tasks(
     level: Optional[int] = Query(None, ge=0, description="Filter by hierarchy level"),
     ordering: Optional[str] = Query(
         "name",
-        description="Order by field: name, created_at, level (prefix with '-' for descending)",
+        description="Order by field: name, created_at, level, paper_count (prefix with '-' for descending)",
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -58,7 +58,7 @@ async def list_tasks(
             order_by = ordering[1:]
 
         # Validate order_by field
-        valid_fields = ["name", "created_at", "level"]
+        valid_fields = ["name", "created_at", "level", "paper_count"]
         if order_by not in valid_fields:
             order_by = "name"
 
@@ -174,7 +174,7 @@ async def get_task_papers(
     ),
     order_by: str = Query(
         "date_published",
-        description="Field to order by: date_published, title, citation_count",
+        description="Field to order by: date_published, title, citation_count, trending",
     ),
     order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
     include_resources: bool = Query(
@@ -186,11 +186,12 @@ async def get_task_papers(
     Get papers associated with a specific task.
 
     Returns paginated papers that are tagged with the specified task.
-    Supports sorting by publication date, title, or citation count.
+    Supports sorting by publication date, title, citation count, or trending score.
 
     **Examples:**
     - `/api/v1/tasks/2/papers` - Get recent papers for task 2
     - `/api/v1/tasks/object-detection/papers?order_by=citation_count` - Most cited papers
+    - `/api/v1/tasks/object-detection/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/tasks/object-detection/papers?order_by=title&order_dir=asc` - Papers A-Z
     """
     try:

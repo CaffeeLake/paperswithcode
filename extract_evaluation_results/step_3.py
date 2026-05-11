@@ -101,9 +101,9 @@ Strategy: Start with 2-3 focused searches to gather core information, then refin
 - For vision-only datasets (e.g., Oxford-IIIT Pets) → use "Image Classification" or other Computer Vision tasks
 - For video classification/action recognition datasets (e.g., Kinetics-400, Something-Something V2, UCF101, HMDB-51) → use "Image Classification" (video classification is similar to image classification but for video frames)
 - For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
-- For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video-Language Models"
-- For vision-language datasets (e.g., MMMU, AI2D) → use "Vision-Language Models"
-- **For text-to-image (T2I) generation datasets** (e.g., TIIF-Bench, OneIG-Bench, COCO, ImageNet-1k when used for generation, GenEval, LongText-Bench, CVTG-2K, OmniContext) → use "Image Generation" (NOT "Vision-Language Models")
+- For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video Understanding"
+- For vision-language datasets (e.g., MMMU, AI2D) → use "Image Understanding"
+- **For text-to-image (T2I) generation datasets** (e.g., TIIF-Bench, OneIG-Bench, COCO, ImageNet-1k when used for generation, GenEval, LongText-Bench, CVTG-2K, OmniContext) → use "Image Generation" (NOT "Image Understanding")
 - For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
 - For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
 - For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"
@@ -111,14 +111,14 @@ Strategy: Start with 2-3 focused searches to gather core information, then refin
 - **If no specific task fits**: Use the "other" task (find it by calling get_tasks_by_area("Other") and look for the task named "other"). This is a valid fallback option for datasets that don't clearly fit into any of the standard categories.
 
 **Examples of correct single-task linking**:
-- LVBench → task_id=[Video-Language Models task ID]
+- LVBench → task_id=[Video Understanding task ID]
 - MMLU → task_id=[Language Modeling task ID]
 - Oxford-IIIT Pets → task_id=[Image Classification task ID]
 - Kinetics-400 → task_id=[Image Classification task ID] (video classification)
 - UCF101 → task_id=[Image Classification task ID] (video classification)
 - Something-Something V2 → task_id=[Image Classification task ID] (video classification)
 - OmniBench → task_id=[Omni models task ID]
-- MMMU → task_id=[Vision-Language Models task ID]
+- MMMU → task_id=[Image Understanding task ID]
 - GenEval → task_id=[Image Generation task ID] (text-to-image generation benchmark)
 - CALVIN → task_id=[Robotics task ID]
 

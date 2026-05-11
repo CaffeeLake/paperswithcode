@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getTasks, updatePaperTasks, type Task as APITask } from "@/lib/api";
+import { refreshPaperQueries } from "@/lib/queryInvalidation";
 
 interface EditTasksDialogProps {
   open: boolean;
@@ -48,8 +49,8 @@ export function EditTasksDialog({
   const updateTasksMutation = useMutation({
     mutationFn: ({ paperId, taskIds }: { paperId: string; taskIds: number[] }) =>
       updatePaperTasks(paperId, taskIds),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+    onSuccess: (updatedPaper) => {
+      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
       onSuccess?.();
       onOpenChange(false);
     },

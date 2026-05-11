@@ -22,12 +22,12 @@ def test_validation():
     with db_manager.session_local() as db:
         service = EvaluationService(db)
 
-        # Test case 1: Try to create evaluation with LVBench (ID: 58) and Vision-Language Models (ID: 8)
-        # This should FAIL because LVBench is linked to Video-Language Models (ID: 9)
+        # Test case 1: Try to create evaluation with LVBench (ID: 58) and Image Understanding (ID: 8)
+        # This should FAIL because LVBench is linked to Video Understanding (ID: 9)
         print("Test 1: Attempting to create evaluation with incorrect task")
         print("  Dataset: LVBench (ID: 58)")
-        print("  Task: Vision-Language Models (ID: 8) [INCORRECT]")
-        print("  Expected official task: Video-Language Models (ID: 9)")
+        print("  Task: Image Understanding (ID: 8) [INCORRECT]")
+        print("  Expected official task: Video Understanding (ID: 9)")
         print()
 
         try:
@@ -51,7 +51,7 @@ def test_validation():
         # Test case 2: Try with correct task
         print("Test 2: Creating evaluation with CORRECT task")
         print("  Dataset: LVBench (ID: 58)")
-        print("  Task: Video-Language Models (ID: 9) [CORRECT]")
+        print("  Task: Video Understanding (ID: 9) [CORRECT]")
         print()
 
         try:
@@ -78,7 +78,7 @@ def test_validation():
             "Test 3: Attempting to create evaluation with incorrect task for OCRBench"
         )
         print("  Dataset: OCRBench (ID: 155)")
-        print("  Task: Vision-Language Models (ID: 8) [INCORRECT]")
+        print("  Task: Image Understanding (ID: 8) [INCORRECT]")
         print("  Expected official task: OCR (ID: 4)")
         print()
 

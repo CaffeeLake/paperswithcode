@@ -53,14 +53,14 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m script
 # Calculate raw velocity
 rawStarsPerHour = (currentStars - previousStars) / hoursSinceLastSync
 
-# Apply EMA (α = 0.15)
-trendingScore = 0.15 × rawStarsPerHour + 0.85 × previousTrendingScore
+# Apply EMA (α = 0.75)
+trendingScore = 0.75 × rawStarsPerHour + 0.25 × previousTrendingScore
 ```
 
 **Configuration**:
 - Batch size: 500 repositories per batch
 - Update threshold: 1 hour (only update if score is > 1 hour old)
-- Alpha (smoothing factor): 0.15
+- Alpha (smoothing factor): 0.75
 - Minimum snapshot interval: 0.5 hours
 
 **Run manually**:
@@ -246,7 +246,7 @@ echo "PWC_GITHUB_TOKEN=ghp_your_token_here" >> backend/keys.env
 │  │  ↓                                                  │    │
 │  │  1. Read snapshots from repository_star_history    │    │
 │  │  2. Calculate star velocity (stars/hour)           │    │
-│  │  3. Apply EMA smoothing (α=0.15)                   │    │
+│  │  3. Apply EMA smoothing (α=0.75)                   │    │
 │  │  4. Update repositories.trending_score             │    │
 │  └────────────────────────────────────────────────────┘    │
 │                           ↓                                  │

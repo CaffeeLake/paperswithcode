@@ -5,7 +5,7 @@ This module provides all paper-related API endpoints that match the
 original PapersWithCode API specification.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -49,8 +49,13 @@ async def get_papers(
     latest_only: bool = Query(
         True, description="Whether to only include latest versions of papers"
     ),
-    order_by: str = Query("date_published", description="Field to order by"),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_by: Literal["trending", "date_published", "citation_count"] = Query(
+        "trending", description="Field to order by"
+    ),
+    order_dir: Literal["asc", "desc"] = Query("desc", description="Order direction"),
+    time: Literal["today", "week", "month", "all_time"] = Query(
+        "all_time", description="Time window for paper publication dates"
+    ),
     include_resources: bool = Query(
         False, description="Include repositories and project pages"
     ),
@@ -79,6 +84,7 @@ async def get_papers(
             latest_only=latest_only,
             order_by=order_by,
             order_dir=order_dir,
+            time_window=time,
             include_resources=include_resources,
         )
     except DatabaseError as e:
@@ -170,18 +176,20 @@ async def get_trending_papers(
     db: Session = Depends(get_database_session),
 ):
     """
-    Get trending papers ranked by GitHub repository star velocity (EMA-based).
+    Get trending papers ranked by EMA-based GitHub repository trending score.
 
-    This endpoint uses the trending_papers_24h view which ranks papers based on
-    their repository trending scores calculated using Exponential Moving Average (EMA).
+    This endpoint uses the trending_papers_24h view. It returns both:
+    - velocity_24h: the current 24-hour star velocity shown in the UI as "stars / hr"
+    - trending_score: an EMA-smoothed velocity used for ranking, so short bursts
+      retain some influence while newer activity still matters most
 
     The trending score is calculated hourly by a cron job that:
     - Tracks star count changes over time
     - Calculates velocity (stars gained per hour)
-    - Applies EMA smoothing (α=0.15) to reduce noise and weight recent trends
+    - Applies EMA smoothing (α=0.75) to weight recent velocity heavily while retaining some smoothing
 
     Returns papers with:
-    - High trending scores (recent star growth)
+    - High EMA trending scores
     - Official repository links only
     - Latest versions only
     - Published within the specified age limit (default: 6 months)
@@ -190,26 +198,34 @@ async def get_trending_papers(
     at least 1-2 hours to collect sufficient data for velocity calculations.
     """
     try:
+        # Source/source_url come from `papers` directly because the
+        # `trending_papers_24h` view does not yet expose them. Including them
+        # lets the frontend render external rows with their canonical URLs
+        # alongside ArXiv rows.
         query = text("""
             SELECT
-                paper_id,
-                arxiv_id,
-                title,
-                date_published,
-                repository_id,
-                repository_url,
-                owner,
-                repo_name,
-                current_stars,
-                COALESCE(velocity_24h, 0) as velocity_24h,
-                COALESCE(trending_score, 0) as trending_score,
-                COALESCE(stars_gained_24h, 0) as stars_gained_24h,
-                paper_age_days,
-                abstract
-            FROM trending_papers_24h
-            WHERE paper_age_days <= :max_age_days
-            AND (:min_velocity IS NULL OR COALESCE(velocity_24h, 0) >= :min_velocity)
-            ORDER BY trending_score DESC NULLS LAST, current_stars DESC
+                tp.paper_id,
+                tp.arxiv_id,
+                tp.title,
+                tp.date_published,
+                tp.repository_id,
+                tp.repository_url,
+                tp.owner,
+                tp.repo_name,
+                tp.current_stars,
+                COALESCE(tp.velocity_24h, 0) as velocity_24h,
+                COALESCE(tp.trending_score, 0) as trending_score,
+                COALESCE(tp.stars_gained_24h, 0) as stars_gained_24h,
+                tp.paper_age_days,
+                tp.abstract,
+                p.source,
+                p.source_url,
+                p.thumbnail_url
+            FROM trending_papers_24h tp
+            JOIN papers p ON p.id = tp.paper_id
+            WHERE tp.paper_age_days <= :max_age_days
+            AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
+            ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
             LIMIT :limit
         """)
 
@@ -265,11 +281,11 @@ async def get_trending_papers(
         for row in results:
             paper_id = row[0]
             arxiv_id = row[1]
-            # Generate thumbnail URL for all ArXiv papers (on-demand generation)
-            thumbnail_url = None
-            if arxiv_id:
-                # Generate thumbnail URL that will trigger on-demand generation
-                # Format: {arxiv_id_with_underscores}_v1.jpg (trending papers are always latest version)
+            source = row[14]
+            source_url = row[15]
+            explicit_thumbnail_url = row[16]
+            thumbnail_url = explicit_thumbnail_url
+            if thumbnail_url is None and source == "arxiv" and arxiv_id:
                 safe_arxiv_id = arxiv_id.replace(".", "_")
                 filename = f"{safe_arxiv_id}_v1.jpg"
                 thumbnail_url = f"/api/thumbnails/{filename}"
@@ -281,6 +297,8 @@ async def get_trending_papers(
                 {
                     "paper_id": str(paper_id),
                     "arxiv_id": arxiv_id,
+                    "source": source,
+                    "source_url": source_url,
                     "title": row[2],
                     "abstract": row[13],
                     "authors": authors_dict.get(paper_id, []),
@@ -312,28 +330,38 @@ async def get_trending_papers(
 
 
 @router.get(
-    "/papers/{paper_id}", response_model=Paper, summary="Get paper by database ID"
+    "/papers/{paper_id}",
+    response_model=Paper,
+    summary="Get paper by ArXiv ID or database ID",
 )
 async def get_paper_by_id(
-    paper_id: int = Path(..., description="Database paper ID"),
+    paper_id: str = Path(
+        ...,
+        description=(
+            "Identifier: ArXiv ID (e.g. '2504.12516') for ArXiv rows, or "
+            "internal database ID (e.g. '12345') for external rows."
+        ),
+    ),
     include_resources: bool = Query(
         False, description="Include repositories and project pages"
     ),
     db: Session = Depends(get_database_session),
 ):
     """
-    Get a specific paper by its database ID.
+    Get a specific paper by ArXiv ID or internal database ID.
 
-    Returns complete paper information including:
-    - Full metadata
-    - Author list
-    - ArXiv URLs (abstract and PDF)
-    - Conference information
-    - Version information
+    Resolution rules (per the external-resources design):
+    - If the identifier looks like an ArXiv ID, return the latest version of
+      that ArXiv paper.
+    - Otherwise, treat the identifier as an internal database ID. This is the
+      canonical addressing scheme for `source='external'` rows that do not
+      have an ArXiv identifier.
     """
     try:
         service = PaperService(db)
-        return service.get_paper_by_id(paper_id, include_resources=include_resources)
+        return service.get_paper_by_id_or_arxiv(
+            paper_id, include_resources=include_resources
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

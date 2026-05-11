@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Integer,
     BigInteger,
     String,
@@ -24,7 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 Base = declarative_base()
 
@@ -45,8 +46,19 @@ class Paper(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     abstract: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # ArXiv information with versioning support
-    arxiv_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Source split: `arxiv` for ArXiv papers, `external` for blog posts,
+    # technical reports, model release pages, etc. Existing rows default to
+    # `arxiv`. External rows must populate `source_url`; ArXiv rows leave it
+    # NULL and continue to derive their URLs from `arxiv_id` + `version`.
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="arxiv", server_default="arxiv"
+    )
+    source_url: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+
+    # ArXiv information with versioning support. `arxiv_id` is NULL for
+    # `source='external'` rows and required for `source='arxiv'` rows
+    # (enforced by `papers_source_identifier_check`).
+    arxiv_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     version: Mapped[str] = mapped_column(String(10), default="v1")
     is_latest_version: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -79,11 +91,24 @@ class Paper(Base):
     # URL extraction tracking
     urls_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Optional explicit thumbnail URL. ArXiv rows usually leave this NULL and
+    # derive thumbnails from arxiv_id/version; external rows can point at a
+    # captured source-page thumbnail.
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+
     # Frontend v2 schema additions (PLAN.md §11). Schema-only; no data ingestion in this migration.
     # tldr      -> AI-generated summary surfaced in PaperDetailView "TL;DR" panel.
     # num_pages -> source PDF page count; not surfaced in UI yet.
     tldr: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     num_pages: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Hugging Face artifact URLs explicitly linked to this paper. Used for
+    # `source='external'` rows because external rows have no reliable arxiv_id
+    # to query the Hugging Face arxiv filter URL with. ArXiv rows leave these
+    # NULL and derive artifacts from `arxiv_id` at request/render time.
+    hf_models: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
+    hf_datasets: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
+    hf_spaces: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -118,8 +143,32 @@ class Paper(Base):
 
     # Constraints
     __table_args__ = (
-        UniqueConstraint("arxiv_id", "version", name="uq_paper_arxiv_version"),
+        # Partial unique indexes replace the prior `(arxiv_id, version)` UNIQUE
+        # constraint so external rows can omit ArXiv identifiers.
+        Index(
+            "uq_papers_arxiv_id_version_when_present",
+            "arxiv_id",
+            "version",
+            unique=True,
+            postgresql_where=text("arxiv_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_papers_source_url_external",
+            "source_url",
+            unique=True,
+            postgresql_where=text("source = 'external' AND source_url IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "source IN ('arxiv', 'external')",
+            name="papers_source_check",
+        ),
+        CheckConstraint(
+            "(source = 'arxiv' AND arxiv_id IS NOT NULL) "
+            "OR (source = 'external' AND source_url IS NOT NULL)",
+            name="papers_source_identifier_check",
+        ),
         Index("idx_papers_arxiv_id", "arxiv_id"),
+        Index("idx_papers_source", "source"),
         Index("idx_papers_date_published", "date_published"),
         Index("idx_papers_conference", "conference"),
         Index("idx_papers_title_search", "title"),  # For text search
@@ -249,7 +298,9 @@ class Task(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_tasks", back_populates="tasks"
     )
-    # Note: Task-dataset relationships are inferred from task_dataset_metrics, not a direct relationship
+    datasets: Mapped[List["Dataset"]] = relationship(
+        "Dataset", secondary="task_datasets", back_populates="tasks"
+    )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="task"
     )
@@ -287,6 +338,9 @@ class Method(Base):
     )
 
     introduced_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source_paper_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="SET NULL"), nullable=True
+    )
     source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     source_title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     code_snippet_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -306,9 +360,12 @@ class Method(Base):
 
     # Relationships
     area: Mapped[Optional[Area]] = relationship("Area")
+    source_paper: Mapped[Optional[Paper]] = relationship("Paper")
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_methods", back_populates="methods"
     )
+
+    __table_args__ = (Index("idx_methods_source_paper_id", "source_paper_id"),)
 
     def __repr__(self) -> str:
         return f"<Method(id={self.id}, name='{self.name}')>"
@@ -400,7 +457,9 @@ class Dataset(Base):
     papers: Mapped[List[Paper]] = relationship(
         "Paper", secondary="paper_datasets", back_populates="datasets"
     )
-    # Note: Dataset-task relationships are inferred from task_dataset_metrics, not a direct relationship
+    tasks: Mapped[List[Task]] = relationship(
+        "Task", secondary="task_datasets", back_populates="datasets"
+    )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="dataset"
     )
@@ -784,6 +843,37 @@ class PaperRepository(Base):
     __table_args__ = (
         Index("idx_paper_repositories_paper_id", "paper_id"),
         Index("idx_paper_repositories_repository_id", "repository_id"),
+    )
+
+
+class TaskDataset(Base):
+    """
+    Task-specific dataset membership and display metadata.
+
+    Leaderboard metric definitions remain in TaskDatasetMetric; this table stores
+    one row per task-benchmark pair so display metadata cannot conflict across
+    multiple metrics.
+    """
+
+    __tablename__ = "task_datasets"
+
+    task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    dataset_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
+    )
+    featured_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_task_datasets_task_id", "task_id"),
+        Index("idx_task_datasets_dataset_id", "dataset_id"),
     )
 
 

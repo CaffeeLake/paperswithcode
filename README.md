@@ -47,7 +47,7 @@ pip install uv
 Next, clone the repo and install the package:
 
 ```bash
-git clone https://github.com/NielsRogge/paperswithcode.git
+git clone https://github.com/huggingface/paperswithcode.git
 cd paperswithcode
 uv add paperswithcode
 ```

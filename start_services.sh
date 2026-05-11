@@ -144,7 +144,8 @@ cleanup() {
     kill_port_processes $BACKEND_PORT "Backend"
     kill_port_processes $FRONTEND_PORT "Frontend"
     kill_processes_by_pattern "uvicorn.*backend.main:app" "Backend"
-    kill_processes_by_pattern "vite" "Frontend"
+    kill_processes_by_pattern "vite( |$)" "Frontend (vite)"
+    kill_processes_by_pattern "vite preview" "Frontend (preview)"
     echo -e "${GREEN}✅ Cleanup completed${NC}"
 }
 
@@ -159,7 +160,8 @@ echo -e "${PURPLE}🧹 Cleaning up existing processes...${NC}"
 kill_port_processes $BACKEND_PORT "Backend"
 kill_port_processes $FRONTEND_PORT "Frontend"
 kill_processes_by_pattern "uvicorn.*backend.main:app" "Backend"
-kill_processes_by_pattern "vite" "Frontend"
+kill_processes_by_pattern "vite( |$)" "Frontend (vite)"
+kill_processes_by_pattern "vite preview" "Frontend (preview)"
 
 echo -e "${GREEN}✅ Cleanup completed${NC}"
 echo ""
@@ -200,15 +202,25 @@ fi
 echo ""
 
 # Start Frontend
-echo -e "${PURPLE}🎨 Starting Frontend (Vite)...${NC}"
+echo -e "${PURPLE}🎨 Starting Frontend (Vite preview)...${NC}"
 echo -e "   Port: ${CYAN}$FRONTEND_PORT${NC}"
 echo -e "   Log: ${CYAN}$FRONTEND_LOG${NC}"
 
 # Change to frontend directory and start
 cd "$PROJECT_ROOT/frontend"
 
-# Start frontend in background with logging
-nohup npm run dev > "$FRONTEND_LOG" 2>&1 &
+# Build a fresh production bundle so we serve static assets instead of dev mode
+echo -e "${YELLOW}🏗️  Building frontend bundle (npm run build)...${NC}"
+if ! npm run build > "$FRONTEND_LOG" 2>&1; then
+    echo -e "${RED}❌ Frontend build failed${NC}"
+    echo -e "${YELLOW}📋 Build logs:${NC}"
+    tail -40 "$FRONTEND_LOG" || echo "No build logs available"
+    exit 1
+fi
+echo -e "${GREEN}✅ Frontend build completed${NC}"
+
+# Start the static preview server (serves frontend/dist; /api is proxied per vite.config.ts)
+nohup npm run preview -- --host :: --port "$FRONTEND_PORT" --strictPort >> "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 
 echo -e "${YELLOW}   Frontend PID: $FRONTEND_PID${NC}"

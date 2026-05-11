@@ -175,9 +175,9 @@ def fix_evaluations(
 
 if __name__ == "__main__":
     # Problematic datasets found:
-    # 1. OCRBench (ID: 155) - Move 3 evals from Vision-Language Models (8) to OCR (4)
-    # 2. LVBench (ID: 58) - Move 1 eval from Vision-Language Models (8) to Video-Language Models (9)
-    # 3. LIBERO (ID: 108) - Move 1 eval from Vision-Language Models (8) to Robotics (11)
+    # 1. OCRBench (ID: 155) - Move 3 evals from Image Understanding (8) to OCR (4)
+    # 2. LVBench (ID: 58) - Move 1 eval from Image Understanding (8) to Video Understanding (9)
+    # 3. LIBERO (ID: 108) - Move 1 eval from Image Understanding (8) to Robotics (11)
 
     with db_manager.session_local() as db:
         print("=" * 80)

@@ -1,0 +1,57 @@
+name: Cron - Preload Thumbnails
+
+on:
+  schedule:
+    # Daily at 04:30 UTC, after HF daily papers import (03:00 UTC).
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Maximum candidate papers to process"
+        required: false
+        default: ""
+      recent_days:
+        description: "Only consider papers published within the last N days"
+        required: false
+        default: ""
+      dry_run:
+        description: "Set to 'true' to skip uploads"
+        required: false
+        default: "false"
+
+concurrency:
+  group: cron-preload-thumbnails
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Load SSH key into agent
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run preload_thumbnails on VPS
+        env:
+          INPUT_LIMIT: ${{ github.event.inputs.limit }}
+          INPUT_RECENT_DAYS: ${{ github.event.inputs.recent_days }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ -n "${INPUT_LIMIT}" ]; then
+            ARGS="${ARGS} --limit ${INPUT_LIMIT}"
+          fi
+          if [ -n "${INPUT_RECENT_DAYS}" ]; then
+            ARGS="${ARGS} --recent-days ${INPUT_RECENT_DAYS}"
+          fi
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            ARGS="${ARGS} --dry-run"
+          fi
+          ssh -o StrictHostKeyChecking=yes \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.preload_thumbnails${ARGS}"

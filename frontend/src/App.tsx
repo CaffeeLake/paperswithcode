@@ -1,58 +1,96 @@
-import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
+/**
+ * Root app for the v2 frontend.
+ *
+ * Replaces the prototype's manual `setView(...)` state machine (App.jsx) with
+ * react-router-dom routes (PLAN.md §3). Every page is bookmarkable and the
+ * browser back button works as expected.
+ */
+
+import React from "react";
+import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
-import Index from "./pages/Index";
-import Papers from "./pages/Papers";
-import PaperDetail from "./pages/PaperDetail";
-import Tasks from "./pages/Tasks";
-import TaskDetail from "./pages/TaskDetail";
-import Methods from "./pages/Methods";
-import MethodDetail from "./pages/MethodDetail";
-import Benchmark from "./pages/Benchmark";
-import CronDashboard from "./pages/CronDashboard";
-import NotFound from "./pages/NotFound";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+
+import { Header } from "@/components";
+import SearchOverlay from "@/components/SearchOverlay";
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as SonnerToaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { useScrollToTop } from "@/hooks/useScrollToTop";
+
+import FeedView from "@/views/FeedView";
+import PapersListView from "@/views/PapersListView";
+import PaperDetailView from "@/views/PaperDetailView";
+import TagsIndexView from "@/views/TagsIndexView";
+import TagBrowseView from "@/views/TagBrowseView";
+import MethodsIndexView from "@/views/MethodsIndexView";
+import MethodDetailView from "@/views/MethodDetailView";
+import BenchmarkDetailView from "@/views/BenchmarkDetailView";
+import CronDashboard from "@/pages/CronDashboard";
+import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 3,
-      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
-      staleTime: 5 * 60 * 1000, // 5 minutes
       refetchOnWindowFocus: false,
-      refetchOnMount: true,
+      retry: 1,
     },
   },
 });
 
-// Redirect component for /papers/:arxivId to /paper/:arxivId
-const PapersRedirect = () => {
-  const { arxivId } = useParams<{ arxivId: string }>();
-  return <Navigate to={`/paper/${arxivId}`} replace />;
+const LegacyPaperRedirect: React.FC = () => {
+  const { arxivId } = useParams();
+  return <Navigate to={arxivId ? `/paper/${arxivId}` : "/papers"} replace />;
 };
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
+const Shell: React.FC = () => {
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
+  useScrollToTop();
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  return (
+    <>
+      <Header onOpenSearch={() => setSearchOpen(true)} />
+      <main>
         <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/papers" element={<Papers />} />
-          <Route path="/papers/:arxivId" element={<PapersRedirect />} />
-          <Route path="/paper/:arxivId" element={<PaperDetail />} />
-          <Route path="/tasks" element={<Tasks />} />
-          <Route path="/tasks/:taskId" element={<TaskDetail />} />
-          <Route path="/methods" element={<Methods />} />
-          <Route path="/methods/:methodId" element={<MethodDetail />} />
-          <Route path="/benchmark/:datasetSlug" element={<Benchmark />} />
+          <Route path="/" element={<FeedView />} />
+          <Route path="/papers" element={<PapersListView />} />
+          <Route path="/papers/:arxivId" element={<LegacyPaperRedirect />} />
+          <Route path="/paper/:arxivId" element={<PaperDetailView />} />
+          <Route path="/tasks" element={<TagsIndexView />} />
+          <Route path="/tasks/:taskSlug" element={<TagBrowseView />} />
+          <Route path="/methods" element={<MethodsIndexView />} />
+          <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
+          <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
           <Route path="/cron-dashboard" element={<CronDashboard />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
+      </main>
+      <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+    </>
+  );
+};
+
+const App: React.FC = () => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>
+      <BrowserRouter>
+        <Shell />
       </BrowserRouter>
+      <Toaster />
+      <SonnerToaster />
+      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
     </TooltipProvider>
   </QueryClientProvider>
 );

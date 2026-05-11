@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Link papers to the "Vision-Language Models" task based on keyword matching.
+Link papers to the "Image Understanding" task based on keyword matching.
 
 Keywords (case-sensitive):
 - VLM, MLLM, LVLM
@@ -135,7 +135,7 @@ def link_papers_to_task(conn, task_id: int, paper_ids: Set[int]) -> int:
 
     Args:
         conn: Database connection
-        task_id: ID of the Vision-Language Models task
+        task_id: ID of the Image Understanding task
         paper_ids: Set of paper IDs to link
 
     Returns:
@@ -184,14 +184,14 @@ def link_papers_to_task(conn, task_id: int, paper_ids: Set[int]) -> int:
 
 def link_vlm_papers() -> int:
     """
-    Main function to link papers to Vision-Language Models task.
+    Main function to link papers to Image Understanding task.
 
     Returns:
         Exit code (0 for success, 1 for error)
     """
     try:
         print("=" * 80)
-        print("Linking Papers to Vision-Language Models Task")
+        print("Linking Papers to Image Understanding Task")
         print("=" * 80)
 
         # Connect to database
@@ -200,19 +200,19 @@ def link_vlm_papers() -> int:
         print("   ✓ Connected successfully")
 
         # Get task ID
-        print("\n2. Finding Vision-Language Models task...")
+        print("\n2. Finding Image Understanding task...")
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT id, name, keywords
             FROM tasks
-            WHERE name = 'Vision-Language Models' AND keywords IS NOT NULL
+            WHERE name = 'Image Understanding' AND keywords IS NOT NULL
             LIMIT 1
         """)
         task = cur.fetchone()
         cur.close()
 
         if not task:
-            print("   ❌ Vision-Language Models task not found or has no keywords")
+            print("   ❌ Image Understanding task not found or has no keywords")
             conn.close()
             return 1
 
@@ -242,7 +242,7 @@ def link_vlm_papers() -> int:
         print("\n" + "=" * 80)
         print("Summary")
         print("=" * 80)
-        print(f"Task: Vision-Language Models (ID: {task_id})")
+        print(f"Task: Image Understanding (ID: {task_id})")
         print(f"Papers matching keywords: {len(matching_paper_ids):,}")
         print(f"New links created: {new_links:,}")
         print("=" * 80)

@@ -28,16 +28,40 @@ class Paper(BaseModel):
     id: str = Field(..., description="Paper ID")
     arxiv_id: Optional[str] = Field(None, description="ArXiv ID")
 
-    # URLs - computed from arxiv_id and version
-    url_abs: str = Field(..., description="URL to the paper abstract")
-    url_pdf: str = Field(..., description="URL to the paper PDF")
+    # Source split: 'arxiv' for ArXiv papers, 'external' for blog posts,
+    # technical reports, model release pages, etc.
+    source: str = Field(
+        default="arxiv",
+        description="Origin of this paper row: 'arxiv' or 'external'",
+    )
+    source_url: Optional[str] = Field(
+        None,
+        description=(
+            "Canonical URL for external rows. NULL for ArXiv rows; ArXiv URLs "
+            "continue to be derived from arxiv_id."
+        ),
+    )
+
+    # URLs - source-aware. ArXiv rows have generated abs/pdf URLs from
+    # `arxiv_id`/`version`. External rows return `source_url` as `url_abs`
+    # and leave `url_pdf` NULL unless an explicit PDF is known.
+    url_abs: Optional[str] = Field(
+        None, description="URL to the paper abstract or external source page"
+    )
+    url_pdf: Optional[str] = Field(
+        None,
+        description="URL to the paper PDF (NULL when no PDF is known, e.g. external blog posts)",
+    )
     thumbnail_url: Optional[str] = Field(
         None, description="URL to the paper thumbnail image"
     )
 
     # Paper content
     title: str = Field(..., description="Paper title")
-    abstract: str = Field(..., description="Paper abstract")
+    abstract: Optional[str] = Field(
+        default="",
+        description="Paper abstract or summary (may be empty for external rows)",
+    )
     authors: List[str] = Field(..., description="List of paper authors")
 
     # Publication information
@@ -94,6 +118,32 @@ class Paper(BaseModel):
         None, description="Page count of the source PDF (frontend v2)"
     )
 
+    # Hugging Face artifact URLs explicitly linked to this paper. Populated
+    # for `source='external'` rows because external rows have no reliable
+    # `arxiv_id` to query the Hugging Face arxiv filter URL with. ArXiv rows
+    # leave these empty and derive artifacts from `arxiv_id` at render time.
+    hf_models: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Full Hugging Face model URLs explicitly linked to this paper "
+            "(populated for external rows only)"
+        ),
+    )
+    hf_datasets: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Full Hugging Face dataset URLs explicitly linked to this paper "
+            "(populated for external rows only)"
+        ),
+    )
+    hf_spaces: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Full Hugging Face Space URLs explicitly linked to this paper "
+            "(populated for external rows only)"
+        ),
+    )
+
     # Associated resources (optional, populated when requested)
     repositories: Optional[List["Repository"]] = Field(
         None, description="GitHub repositories associated with this paper"
@@ -106,6 +156,10 @@ class Paper(BaseModel):
     )
     methods: Optional[List["MethodSummary"]] = Field(
         None, description="Methods and techniques used in this paper"
+    )
+    introduced_benchmarks: Optional[List["BenchmarkSummary"]] = Field(
+        None,
+        description="Benchmarks/datasets introduced by this paper (datasets where introducing_paper_id matches)",
     )
 
     @field_validator("authors", mode="before")
@@ -157,9 +211,19 @@ class PaperSummary(BaseModel):
     id: str = Field(..., description="Paper ID")
     title: str = Field(..., description="Paper title")
     arxiv_id: Optional[str] = Field(None, description="ArXiv ID")
+    source: str = Field(
+        default="arxiv",
+        description="Origin of this paper row: 'arxiv' or 'external'",
+    )
+    source_url: Optional[str] = Field(
+        None, description="Canonical URL for external rows; NULL for ArXiv rows"
+    )
     authors: List[str] = Field(..., description="List of paper authors")
     published: Optional[date] = Field(None, description="Paper publication date")
-    url_abs: str = Field(..., description="URL to the paper abstract")
+    url_abs: Optional[str] = Field(
+        None,
+        description="URL to the paper abstract or external source page",
+    )
     citation_count: int = Field(
         default=0, description="Number of citations from Semantic Scholar"
     )
@@ -653,6 +717,15 @@ class MethodSummary(BaseModel):
 
     id: str = Field(..., description="Method ID")
     name: str = Field(..., description="Method name")
+    slug: Optional[str] = Field(
+        None, description="URL-friendly slug (lowercase, hyphenated)"
+    )
+    introduced_year: Optional[int] = Field(
+        None, description="Year the method was introduced"
+    )
+    source_paper_id: Optional[str] = Field(
+        None, description="ID of the canonical paper that introduced this method"
+    )
     source_url: Optional[str] = Field(
         None, description="URL to the source paper/article"
     )
@@ -661,6 +734,30 @@ class MethodSummary(BaseModel):
     )
     code_snippet_url: Optional[str] = Field(
         None, description="URL to code implementation"
+    )
+
+    @field_validator("id", "source_paper_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is a string."""
+        if v is None:
+            return v
+        return str(v)
+
+
+class BenchmarkSummary(BaseModel):
+    """
+    Lightweight benchmark/dataset summary for embedding in paper objects.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Dataset (benchmark) ID")
+    name: str = Field(..., description="Dataset name")
+    slug: Optional[str] = Field(None, description="URL-friendly dataset slug")
+    full_name: Optional[str] = Field(None, description="Dataset full name")
+    introduced_year: Optional[int] = Field(
+        None, description="Year the dataset was introduced"
     )
 
     @field_validator("id", mode="before")
@@ -701,6 +798,9 @@ class Method(BaseModel):
     introduced_year: Optional[int] = Field(
         None, description="Year the method was introduced"
     )
+    source_paper_id: Optional[str] = Field(
+        None, description="ID of the canonical paper that introduced this method"
+    )
     source_url: Optional[str] = Field(
         None, description="URL to the source that introduced the method"
     )
@@ -739,7 +839,7 @@ class Method(BaseModel):
     )
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
 
-    @field_validator("id", "area_id", mode="before")
+    @field_validator("id", "area_id", "source_paper_id", mode="before")
     @classmethod
     def ensure_string_id(cls, v):
         """Ensure IDs are strings."""
@@ -824,6 +924,41 @@ class Tasks(BaseModel):
         None, description="Number of the previous page"
     )
     results: List[Task] = Field(..., description="List of tasks on this page")
+
+
+class AreaWithTasks(BaseModel):
+    """
+    Research area together with its tasks and aggregated paper counts.
+
+    Used by the taxonomy index endpoint to return the entire areas-and-tasks
+    tree in a single response, avoiding a fan-out of one HTTP request per area
+    from the frontend.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Area ID")
+    name: str = Field(..., description="Area name (e.g., 'Computer Vision')")
+    description: Optional[str] = Field(None, description="Area description")
+    tasks: List[Task] = Field(
+        default_factory=list,
+        description="Tasks belonging to this area (with paper counts)",
+    )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v)
+
+
+class AreasWithTasks(BaseModel):
+    """Container for the full areas-with-tasks taxonomy."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    results: List[AreaWithTasks] = Field(
+        ..., description="All research areas, each populated with its tasks"
+    )
 
 
 class TaskCreateRequest(BaseModel):
@@ -942,6 +1077,10 @@ class Dataset(BaseModel):
     )
     task_count: Optional[int] = Field(
         None, description="Number of tasks associated with this dataset"
+    )
+    featured_rank: Optional[int] = Field(
+        None,
+        description="Task-specific featured ordering rank when returned for a task",
     )
 
     # Allowed metrics for this dataset

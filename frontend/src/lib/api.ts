@@ -27,11 +27,21 @@ export interface ProjectPage {
   updated_at?: string;
 }
 
+export interface BenchmarkSummary {
+  id: string;
+  name: string;
+  slug?: string;
+  full_name?: string;
+  introduced_year?: number;
+}
+
 export interface Paper {
   id: string;
-  arxiv_id: string;
-  url_abs: string;
-  url_pdf: string;
+  arxiv_id: string | null;
+  source?: 'arxiv' | 'external';
+  source_url?: string | null;
+  url_abs: string | null;
+  url_pdf: string | null;
   thumbnail_url?: string;
   title: string;
   abstract: string;
@@ -47,8 +57,16 @@ export interface Paper {
   semantic_scholar_id?: string;
   repositories?: Repository[];
   project_pages?: ProjectPage[];
+  /** Hugging Face model URLs explicitly linked to this paper. Populated for
+   *  external rows only; arXiv rows derive HF artifacts from `arxiv_id`. */
+  hf_models?: string[];
+  /** Hugging Face dataset URLs explicitly linked to this paper. External rows only. */
+  hf_datasets?: string[];
+  /** Hugging Face Space URLs explicitly linked to this paper. External rows only. */
+  hf_spaces?: string[];
   tasks?: Task[];
   methods?: Method[];
+  introduced_benchmarks?: BenchmarkSummary[];
 }
 
 export interface Author {
@@ -66,6 +84,17 @@ export interface Area {
   description?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface AreaWithTasks {
+  id: string;
+  name: string;
+  description?: string;
+  tasks: Task[];
+}
+
+export interface AreasWithTasks {
+  results: AreaWithTasks[];
 }
 
 export interface Task {
@@ -91,6 +120,7 @@ export interface Method {
   description?: string;
   area_id?: string;
   introduced_year?: number;
+  source_paper_id?: string;
   source_url?: string;
   source_title?: string;
   code_snippet_url?: string;
@@ -113,6 +143,12 @@ export interface Dataset {
   hf_url?: string;
   slug?: string;
   paper_count?: number;
+  featured_rank?: number | null;
+  introducing_paper_id?: string;
+  introducing_paper_title?: string;
+  paper_url?: string;
+  introduced_year?: number;
+  introduced_date?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -163,6 +199,9 @@ export interface PaginatedResponse<T> {
   results: T[];
 }
 
+export type PaperOrderBy = 'trending' | 'date_published' | 'citation_count';
+export type PaperTimeWindow = 'today' | 'week' | 'month' | 'all_time';
+
 export interface TrendingMetrics {
   velocity_24h: number;
   trending_score: number;
@@ -171,8 +210,10 @@ export interface TrendingMetrics {
 
 export interface TrendingPaper {
   paper_id: string;
-  arxiv_id: string;
+  arxiv_id: string | null;
   title: string;
+  abstract: string | null;
+  authors: string[];
   date_published: string | null;
   thumbnail_url?: string;
   tasks?: Array<{ name: string; slug: string }>;
@@ -234,8 +275,9 @@ class ApiClient {
     page?: number;
     page_size?: number;
     search?: string;
-    order_by?: 'date_published' | 'citation_count' | 'title' | 'trending';
+    order_by?: PaperOrderBy;
     order_dir?: 'asc' | 'desc';
+    time?: PaperTimeWindow;
     published_after?: string;
     published_before?: string;
     conference?: string;
@@ -249,6 +291,7 @@ class ApiClient {
     if (params?.search) searchParams.append('search', params.search);
     if (params?.order_by) searchParams.append('order_by', params.order_by);
     if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+    if (params?.time) searchParams.append('time', params.time);
     if (params?.published_after) searchParams.append('published_after', params.published_after);
     if (params?.published_before) searchParams.append('published_before', params.published_before);
     if (params?.conference) searchParams.append('conference', params.conference);
@@ -415,6 +458,10 @@ class ApiClient {
     return this.request<Area>(`/areas/${id}`);
   }
 
+  async getAreasWithTasks(): Promise<AreasWithTasks> {
+    return this.request<AreasWithTasks>(`/areas/with-tasks/`);
+  }
+
   async getAreaTasks(areaId: string, params?: {
     page?: number;
     page_size?: number;
@@ -478,7 +525,7 @@ class ApiClient {
   async getTaskPapers(taskId: string, params?: {
     page?: number;
     page_size?: number;
-    order_by?: 'date_published' | 'citation_count' | 'title';
+    order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
     order_dir?: 'asc' | 'desc';
     latest_only?: boolean;
     include_resources?: boolean;
@@ -758,6 +805,7 @@ export const getAuthors = apiClient.getAuthors.bind(apiClient);
 export const getAuthor = apiClient.getAuthor.bind(apiClient);
 export const getAreas = apiClient.getAreas.bind(apiClient);
 export const getArea = apiClient.getArea.bind(apiClient);
+export const getAreasWithTasks = apiClient.getAreasWithTasks.bind(apiClient);
 export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);
 export const getTasks = apiClient.getTasks.bind(apiClient);
 export const getTask = apiClient.getTask.bind(apiClient);

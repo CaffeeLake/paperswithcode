@@ -9,7 +9,13 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
-from backend.models.database import Task as DBTask, Area as DBArea, PaperTask
+from backend.models.database import (
+    Task as DBTask,
+    Area as DBArea,
+    PaperTask,
+    Repository as DBRepository,
+    PaperRepository as DBPaperRepository,
+)
 from backend.models.api import Task, Tasks, TaskCreateRequest
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
@@ -54,8 +60,14 @@ class TaskService:
             DatabaseError: If database query fails
         """
         try:
-            # Base query
-            query = self.db.query(DBTask)
+            # Base query: aggregate paper count per task via outer join so tasks
+            # with zero papers are still represented.
+            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            query = (
+                self.db.query(DBTask, paper_count_col)
+                .outerjoin(PaperTask, DBTask.id == PaperTask.task_id)
+                .group_by(DBTask.id)
+            )
 
             # Apply filters
             if search:
@@ -88,6 +100,8 @@ class TaskService:
                 order_field = DBTask.created_at
             elif order_by == "level":
                 order_field = DBTask.level
+            elif order_by == "paper_count":
+                order_field = paper_count_col
             else:
                 order_field = DBTask.name  # Default to name
 
@@ -96,7 +110,8 @@ class TaskService:
             else:
                 query = query.order_by(asc(order_field))
 
-            # Get total count
+            # Total count of distinct tasks matching filters (works with GROUP BY
+            # because SQLAlchemy wraps it in a subquery).
             total_count = query.count()
 
             # Apply pagination
@@ -105,15 +120,7 @@ class TaskService:
 
             # Convert to API models
             tasks = []
-            for db_task in results:
-                # Get paper count for this task
-                paper_count = (
-                    self.db.query(func.count(PaperTask.paper_id))
-                    .filter(PaperTask.task_id == db_task.id)
-                    .scalar()
-                    or 0
-                )
-
+            for db_task, paper_count in results:
                 task_dict = {
                     "id": str(db_task.id),
                     "name": db_task.name,
@@ -123,7 +130,7 @@ class TaskService:
                     "parent_id": str(db_task.parent_id) if db_task.parent_id else None,
                     "area_id": str(db_task.area_id) if db_task.area_id else None,
                     "level": db_task.level,
-                    "paper_count": paper_count,
+                    "paper_count": paper_count or 0,
                     "image_url": db_task.image_url,
                     "image_credit": db_task.image_credit,
                     "created_at": db_task.created_at,
@@ -436,8 +443,8 @@ class TaskService:
             page: Page number (1-based)
             page_size: Number of papers per page
             latest_only: Whether to only include latest versions
-            order_by: Field to order by (date_published, title, citation_count)
-            order_dir: Order direction (asc, desc)
+            order_by: Field to order by (date_published, title, citation_count, trending)
+            order_dir: Order direction (asc, desc); ignored for trending which is always desc
             include_resources: Whether to include repositories and tasks
 
         Returns:
@@ -473,19 +480,47 @@ class TaskService:
                 query = query.filter(DBPaper.is_latest_version)
 
             # Apply ordering
-            if order_by == "date_published":
-                order_field = DBPaper.date_published
-            elif order_by == "title":
-                order_field = DBPaper.title
-            elif order_by == "citation_count":
-                order_field = DBPaper.citation_count
-            else:
-                order_field = DBPaper.date_published
+            if order_by == "trending":
+                # Rank papers by their best official repository's EMA trending
+                # score. Papers without an official repo / score remain in the
+                # list but sort after scored papers via the coalesce fallbacks.
+                trending_subq = (
+                    self.db.query(
+                        DBPaperRepository.paper_id.label("paper_id"),
+                        func.max(DBRepository.trending_score).label("trending_score"),
+                        func.max(DBRepository.num_stars).label("max_stars"),
+                    )
+                    .join(
+                        DBRepository,
+                        DBPaperRepository.repository_id == DBRepository.id,
+                    )
+                    .filter(DBPaperRepository.is_official.is_(True))
+                    .filter(DBRepository.trending_score.isnot(None))
+                    .group_by(DBPaperRepository.paper_id)
+                    .subquery()
+                )
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
+                query = query.outerjoin(
+                    trending_subq, trending_subq.c.paper_id == DBPaper.id
+                ).order_by(
+                    desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
+                    desc(func.coalesce(trending_subq.c.max_stars, -1)),
+                    desc(DBPaper.date_published),
+                )
             else:
-                query = query.order_by(asc(order_field))
+                if order_by == "date_published":
+                    order_field = DBPaper.date_published
+                elif order_by == "title":
+                    order_field = DBPaper.title
+                elif order_by == "citation_count":
+                    order_field = DBPaper.citation_count
+                else:
+                    order_field = DBPaper.date_published
+
+                if order_dir == "desc":
+                    query = query.order_by(desc(order_field))
+                else:
+                    query = query.order_by(asc(order_field))
 
             # Get total count
             total_count = query.count()
@@ -498,11 +533,16 @@ class TaskService:
             from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
+            relation_data = paper_service._get_paper_relation_data(
+                [paper.id for paper in db_papers], include_resources=include_resources
+            )
 
             papers = []
             for db_paper in db_papers:
                 paper = paper_service._convert_db_paper_to_api(
-                    db_paper, include_resources=include_resources
+                    db_paper,
+                    include_resources=include_resources,
+                    relation_data=relation_data,
                 )
                 papers.append(paper)
 

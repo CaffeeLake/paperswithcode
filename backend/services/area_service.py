@@ -9,8 +9,14 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
-from backend.models.database import Area as DBArea, Task as DBTask
-from backend.models.api import Area, Areas
+from backend.models.database import Area as DBArea, Task as DBTask, PaperTask
+from backend.models.api import (
+    Area,
+    Areas,
+    AreaWithTasks,
+    AreasWithTasks,
+    Task,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 
@@ -205,6 +211,66 @@ class AreaService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to search areas: {str(e)}")
+
+    def get_areas_with_tasks(self) -> AreasWithTasks:
+        """
+        Return every area together with its tasks (and per-task paper counts)
+        in a single response.
+
+        Uses two queries:
+          1. All areas, ordered by name.
+          2. All tasks LEFT JOIN paper_tasks GROUP BY task.id, fetching
+             paper_count in one aggregate pass instead of one count per task.
+
+        This collapses what used to be `1 + N_areas` HTTP requests from the
+        frontend (one for `/areas/`, then one `/areas/{id}/tasks` per area) into
+        a single backend round-trip.
+        """
+        try:
+            area_rows = self.db.query(DBArea).order_by(DBArea.name).all()
+
+            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            task_rows = (
+                self.db.query(DBTask, paper_count_col)
+                .outerjoin(PaperTask, DBTask.id == PaperTask.task_id)
+                .group_by(DBTask.id)
+                .order_by(DBTask.name)
+                .all()
+            )
+
+            tasks_by_area: dict[Optional[int], list[Task]] = {}
+            for db_task, paper_count in task_rows:
+                api_task = Task(
+                    id=str(db_task.id),
+                    name=db_task.name,
+                    description=db_task.description,
+                    slug=db_task.slug,
+                    keywords=db_task.keywords,
+                    parent_id=str(db_task.parent_id) if db_task.parent_id else None,
+                    area_id=str(db_task.area_id) if db_task.area_id else None,
+                    level=db_task.level,
+                    paper_count=paper_count or 0,
+                    image_url=db_task.image_url,
+                    image_credit=db_task.image_credit,
+                    created_at=db_task.created_at,
+                    updated_at=db_task.updated_at,
+                )
+                tasks_by_area.setdefault(db_task.area_id, []).append(api_task)
+
+            results = [
+                AreaWithTasks(
+                    id=str(area.id),
+                    name=area.name,
+                    description=area.description,
+                    tasks=tasks_by_area.get(area.id, []),
+                )
+                for area in area_rows
+            ]
+
+            return AreasWithTasks(results=results)
+
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve areas with tasks: {str(e)}")
 
     def get_area_task_count(self, area_id: int) -> int:
         """

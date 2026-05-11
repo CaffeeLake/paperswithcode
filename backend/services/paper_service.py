@@ -8,22 +8,43 @@ This service handles all paper-related operations, including:
 - Managing paper versions
 """
 
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, or_, func, text
 
-from backend.models.database import Paper as DBPaper, Author as DBAuthor, PaperAuthor
+from backend.models.database import (
+    Paper as DBPaper,
+    Author as DBAuthor,
+    PaperAuthor,
+    Task as DBTask,
+    Method as DBMethod,
+    PaperTask,
+    PaperMethod,
+    Repository as DBRepository,
+    PaperRepository as DBPaperRepository,
+    ProjectPage as DBProjectPage,
+    PaperProjectPage as DBPaperProjectPage,
+    Dataset as DBDataset,
+)
 from backend.models.api import (
     Paper,
     Papers,
     PaperSummary,
     PaperVersion,
     PaperVersions,
+    Repository,
+    ProjectPage,
+    TaskSummary,
+    MethodSummary,
+    BenchmarkSummary,
     VersionComparison,
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
-    get_arxiv_pdf_url,
+    get_paper_abs_url,
+    get_paper_pdf_url,
     get_paper_url,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -40,11 +61,188 @@ class PaperService:
         self.db = db
         self.settings = get_settings()
 
+    @staticmethod
+    def _convert_db_method_to_summary(method: DBMethod) -> MethodSummary:
+        return MethodSummary(
+            id=str(method.id),
+            name=method.name,
+            slug=method.slug,
+            introduced_year=method.introduced_year,
+            source_paper_id=str(method.source_paper_id)
+            if method.source_paper_id is not None
+            else None,
+            source_url=method.source_url,
+            source_title=method.source_title,
+            code_snippet_url=method.code_snippet_url,
+        )
+
+    def _get_paper_relation_data(
+        self, paper_ids: List[int], include_resources: bool = False
+    ) -> Dict[str, Dict[int, list]]:
+        """
+        Load paper relationships in batches for API serialization.
+        """
+        unique_ids = list(dict.fromkeys(int(paper_id) for paper_id in paper_ids))
+        relation_data = {
+            "authors": defaultdict(list),
+            "tasks": defaultdict(list),
+            "methods": defaultdict(list),
+            "repositories": defaultdict(list),
+            "project_pages": defaultdict(list),
+            "introduced_benchmarks": defaultdict(list),
+        }
+
+        if not unique_ids:
+            return relation_data
+
+        author_rows = (
+            self.db.query(PaperAuthor.paper_id, DBAuthor.name)
+            .join(DBAuthor, PaperAuthor.author_id == DBAuthor.id)
+            .filter(PaperAuthor.paper_id.in_(unique_ids))
+            .order_by(PaperAuthor.paper_id, PaperAuthor.author_order)
+            .all()
+        )
+        for paper_id, author_name in author_rows:
+            relation_data["authors"][paper_id].append(author_name)
+
+        task_rows = (
+            self.db.query(PaperTask.paper_id, DBTask)
+            .join(DBTask, PaperTask.task_id == DBTask.id)
+            .filter(PaperTask.paper_id.in_(unique_ids))
+            .order_by(PaperTask.paper_id, DBTask.name)
+            .all()
+        )
+        for paper_id, task in task_rows:
+            relation_data["tasks"][paper_id].append(
+                TaskSummary(id=str(task.id), name=task.name, slug=task.slug)
+            )
+
+        method_rows = (
+            self.db.query(PaperMethod.paper_id, DBMethod)
+            .join(DBMethod, PaperMethod.method_id == DBMethod.id)
+            .filter(PaperMethod.paper_id.in_(unique_ids))
+            .order_by(PaperMethod.paper_id, DBMethod.name)
+            .all()
+        )
+        for paper_id, method in method_rows:
+            relation_data["methods"][paper_id].append(
+                self._convert_db_method_to_summary(method)
+            )
+
+        introduced_dataset_rows = (
+            self.db.query(DBDataset)
+            .filter(DBDataset.introducing_paper_id.in_(unique_ids))
+            .order_by(DBDataset.introducing_paper_id, DBDataset.name)
+            .all()
+        )
+        for dataset in introduced_dataset_rows:
+            relation_data["introduced_benchmarks"][dataset.introducing_paper_id].append(
+                BenchmarkSummary(
+                    id=str(dataset.id),
+                    name=dataset.name,
+                    slug=dataset.slug,
+                    full_name=dataset.full_name,
+                    introduced_year=dataset.introduced_year,
+                )
+            )
+
+        if include_resources:
+            repository_rows = (
+                self.db.query(
+                    DBPaperRepository.paper_id,
+                    DBPaperRepository.is_official,
+                    DBRepository,
+                )
+                .join(
+                    DBRepository,
+                    DBPaperRepository.repository_id == DBRepository.id,
+                )
+                .filter(DBPaperRepository.paper_id.in_(unique_ids))
+                .order_by(
+                    DBPaperRepository.paper_id,
+                    desc(DBPaperRepository.is_official),
+                    desc(DBRepository.num_stars),
+                )
+                .all()
+            )
+            for paper_id, is_official, repository in repository_rows:
+                relation_data["repositories"][paper_id].append(
+                    Repository(
+                        id=str(repository.id),
+                        url=repository.url,
+                        owner=repository.owner,
+                        name=repository.name,
+                        num_stars=repository.num_stars,
+                        is_official=is_official,
+                        source=repository.source,
+                        trending_score=float(repository.trending_score)
+                        if repository.trending_score is not None
+                        else None,
+                        trending_score_updated_at=repository.trending_score_updated_at,
+                        created_at=repository.created_at.date()
+                        if repository.created_at
+                        else None,
+                        updated_at=repository.updated_at.date()
+                        if repository.updated_at
+                        else None,
+                    )
+                )
+
+            project_page_rows = (
+                self.db.query(DBPaperProjectPage.paper_id, DBProjectPage)
+                .join(
+                    DBProjectPage,
+                    DBPaperProjectPage.project_page_id == DBProjectPage.id,
+                )
+                .filter(DBPaperProjectPage.paper_id.in_(unique_ids))
+                .order_by(DBPaperProjectPage.paper_id, desc(DBProjectPage.created_at))
+                .all()
+            )
+            for paper_id, project_page in project_page_rows:
+                relation_data["project_pages"][paper_id].append(
+                    ProjectPage(
+                        id=str(project_page.id),
+                        url=project_page.url,
+                        is_official=project_page.is_official,
+                        source=project_page.source,
+                        created_at=project_page.created_at.date()
+                        if project_page.created_at
+                        else None,
+                        updated_at=project_page.updated_at.date()
+                        if project_page.updated_at
+                        else None,
+                    )
+                )
+
+        return relation_data
+
+    @staticmethod
+    def _get_published_after_for_time_window(
+        time_window: str,
+        today: Optional[date] = None,
+    ) -> Optional[date]:
+        """
+        Convert public feed time presets into UTC date boundaries.
+        """
+        current_date = today or datetime.now(timezone.utc).date()
+
+        if time_window == "today":
+            return current_date
+        if time_window == "week":
+            return current_date - timedelta(days=current_date.weekday())
+        if time_window == "month":
+            return current_date.replace(day=1)
+        if time_window == "all_time":
+            return None
+
+        raise ValueError(f"Unsupported time window: {time_window}")
+
     def _convert_db_paper_to_api(
         self,
         db_paper: DBPaper,
         include_full_data: bool = True,
         include_resources: bool = False,
+        relation_data: Optional[Dict[str, Dict[int, list]]] = None,
     ) -> Paper:
         """
         Convert database paper model to API paper model.
@@ -57,112 +255,56 @@ class PaperService:
         Returns:
             API Paper model
         """
-        # Get authors for this paper - handle case where authors table doesn't exist yet
-        authors = []
-        try:
-            authors_query = (
-                self.db.query(DBAuthor)
-                .join(PaperAuthor)
-                .filter(PaperAuthor.paper_id == db_paper.id)
-                .order_by(PaperAuthor.author_order)
+        if relation_data is None:
+            relation_data = self._get_paper_relation_data(
+                [db_paper.id], include_resources=include_resources
             )
-            authors = [author.name for author in authors_query.all()]
-        except Exception:
-            # Authors table doesn't exist yet, use empty list
-            authors = []
 
-        # Construct URLs
-        url_abs = get_arxiv_abs_url(db_paper.arxiv_id, db_paper.version)
-        url_pdf = get_arxiv_pdf_url(db_paper.arxiv_id, db_paper.version)
+        authors = relation_data["authors"].get(db_paper.id, [])
 
-        # Always provide thumbnail URL for ArXiv papers (on-demand generation)
-        thumbnail_url = None
-        if db_paper.arxiv_id:
-            # Generate thumbnail URL that will trigger on-demand generation
-            # Format: {arxiv_id_with_underscores}_{version}.jpg
+        # Source-aware URL construction. ArXiv rows derive abs/pdf URLs from
+        # `arxiv_id` + `version`. External rows use `source_url` for the
+        # primary link and have no derived PDF.
+        url_abs = get_paper_abs_url(
+            db_paper.source,
+            db_paper.arxiv_id,
+            db_paper.version,
+            db_paper.source_url,
+        )
+        url_pdf = get_paper_pdf_url(
+            db_paper.source, db_paper.arxiv_id, db_paper.version
+        )
+
+        # External rows may store an explicit captured thumbnail. ArXiv rows
+        # continue to derive their stable thumbnail URL from arxiv_id/version.
+        thumbnail_url = db_paper.thumbnail_url
+        if thumbnail_url is None and db_paper.source == "arxiv" and db_paper.arxiv_id:
             safe_arxiv_id = db_paper.arxiv_id.replace(".", "_")
             filename = f"{safe_arxiv_id}_{db_paper.version}.jpg"
             thumbnail_url = f"/api/thumbnails/{filename}"
 
-        # Get tasks and methods for this paper (always included)
-        tasks = None
-        methods = None
-        try:
-            from backend.models.database import Task as DBTask, Method as DBMethod
-            from backend.models.api import TaskSummary, MethodSummary
-
-            # Get tasks for this paper
-            db_tasks = (
-                self.db.query(DBTask)
-                .join(DBTask.papers)
-                .filter(DBPaper.id == db_paper.id)
-                .all()
-            )
-            if db_tasks:
-                tasks = [
-                    TaskSummary(id=str(task.id), name=task.name, slug=task.slug)
-                    for task in db_tasks
-                ]
-
-            # Get methods for this paper
-            db_methods = (
-                self.db.query(DBMethod)
-                .join(DBMethod.papers)
-                .filter(DBPaper.id == db_paper.id)
-                .all()
-            )
-            if db_methods:
-                methods = [
-                    MethodSummary(
-                        id=str(method.id),
-                        name=method.name,
-                        source_url=method.source_url,
-                        source_title=method.source_title,
-                        code_snippet_url=method.code_snippet_url,
-                    )
-                    for method in db_methods
-                ]
-
-        except Exception:
-            # If there's an error fetching tasks/methods, just leave them as None
-            tasks = None
-            methods = None
-
-        # Get repositories and project pages if requested
-        repositories = None
-        project_pages = None
-
-        if include_resources:
-            try:
-                from .repository_service import RepositoryService
-                from .project_page_service import ProjectPageService
-
-                repo_service = RepositoryService(self.db)
-                project_page_service = ProjectPageService(self.db)
-
-                # Get repositories for this paper
-                paper_repositories = repo_service.get_repositories_for_paper(
-                    str(db_paper.id)
-                )
-                # Extract just the Repository objects from the PaperRepository relationships
-                repositories = [
-                    pr.repository for pr in paper_repositories if pr.repository
-                ]
-
-                # Get project pages for this paper using the new normalized service
-                project_pages = project_page_service.get_project_pages_for_paper(
-                    str(db_paper.id)
-                )
-
-            except Exception:
-                # If there's an error fetching resources, just leave them as None
-                repositories = None
-                project_pages = None
+        tasks = relation_data["tasks"].get(db_paper.id) or None
+        methods = relation_data["methods"].get(db_paper.id) or None
+        introduced_benchmarks = (
+            relation_data["introduced_benchmarks"].get(db_paper.id) or None
+        )
+        repositories = (
+            relation_data["repositories"].get(db_paper.id) or None
+            if include_resources
+            else None
+        )
+        project_pages = (
+            relation_data["project_pages"].get(db_paper.id) or None
+            if include_resources
+            else None
+        )
 
         # Create the API model
         paper_data = {
             "id": str(db_paper.id),
             "arxiv_id": db_paper.arxiv_id,
+            "source": db_paper.source,
+            "source_url": db_paper.source_url,
             "url_abs": url_abs,
             "url_pdf": url_pdf,
             "thumbnail_url": thumbnail_url,
@@ -182,10 +324,14 @@ class PaperService:
             "primary_category": db_paper.primary_category,
             "all_categories": db_paper.all_categories or [],
             "urls_extracted": db_paper.urls_extracted,
+            "hf_models": db_paper.hf_models or [],
+            "hf_datasets": db_paper.hf_datasets or [],
+            "hf_spaces": db_paper.hf_spaces or [],
             "repositories": repositories,
             "project_pages": project_pages,
             "tasks": tasks,
             "methods": methods,
+            "introduced_benchmarks": introduced_benchmarks,
         }
 
         return Paper(**paper_data)
@@ -214,13 +360,20 @@ class PaperService:
             # Authors table doesn't exist yet, use empty list
             authors = []
 
-        # Construct URLs
-        url_abs = get_arxiv_abs_url(db_paper.arxiv_id, db_paper.version)
+        # Source-aware URL: ArXiv abs URL for ArXiv rows, source_url for external.
+        url_abs = get_paper_abs_url(
+            db_paper.source,
+            db_paper.arxiv_id,
+            db_paper.version,
+            db_paper.source_url,
+        )
 
         return PaperSummary(
             id=str(db_paper.id),
             title=db_paper.title,
             arxiv_id=db_paper.arxiv_id,
+            source=db_paper.source,
+            source_url=db_paper.source_url,
             authors=authors,
             published=db_paper.date_published,
             url_abs=url_abs,
@@ -247,14 +400,51 @@ class PaperService:
             if not db_paper:
                 raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
 
+            relation_data = self._get_paper_relation_data(
+                [db_paper.id], include_resources=include_resources
+            )
             return self._convert_db_paper_to_api(
-                db_paper, include_resources=include_resources
+                db_paper,
+                include_resources=include_resources,
+                relation_data=relation_data,
             )
 
         except Exception as e:
             if isinstance(e, PaperNotFoundError):
                 raise
             raise DatabaseError(f"Error fetching paper {paper_id}: {str(e)}")
+
+    def get_paper_by_id_or_arxiv(
+        self, identifier: str, include_resources: bool = False
+    ) -> Paper:
+        """
+        Resolve a paper by either an ArXiv ID or an internal database ID.
+
+        This is used by the public `/papers/{paper_id}` route so that:
+          - `source='arxiv'` rows keep ArXiv-style URLs like `/papers/2504.12516`.
+          - `source='external'` rows are addressed by their internal `papers.id`.
+
+        ArXiv lookups are attempted first when the identifier matches the
+        ArXiv format. Otherwise the identifier is parsed as an integer ID.
+        """
+        from backend.utils.urls import validate_arxiv_id
+
+        if validate_arxiv_id(identifier):
+            try:
+                return self.get_paper_by_arxiv_id(
+                    identifier, version=None, include_resources=include_resources
+                )
+            except PaperNotFoundError:
+                # Fall through to internal-ID lookup; external rows or
+                # unindexed ArXiv IDs are still addressable that way.
+                pass
+
+        try:
+            paper_id = int(identifier)
+        except (TypeError, ValueError):
+            raise PaperNotFoundError(f"No paper found for identifier '{identifier}'")
+
+        return self.get_paper_by_id(paper_id, include_resources=include_resources)
 
     def get_paper_by_arxiv_id(
         self,
@@ -293,8 +483,13 @@ class PaperService:
                     f"Paper with ArXiv ID {arxiv_id}{version_text} not found"
                 )
 
+            relation_data = self._get_paper_relation_data(
+                [db_paper.id], include_resources=include_resources
+            )
             return self._convert_db_paper_to_api(
-                db_paper, include_resources=include_resources
+                db_paper,
+                include_resources=include_resources,
+                relation_data=relation_data,
             )
 
         except Exception as e:
@@ -311,8 +506,9 @@ class PaperService:
         published_before: Optional[str] = None,
         conference: Optional[str] = None,
         latest_only: bool = True,
-        order_by: str = "date_published",
+        order_by: str = "trending",
         order_dir: str = "desc",
+        time_window: str = "all_time",
         include_resources: bool = False,
     ) -> Papers:
         """
@@ -326,8 +522,9 @@ class PaperService:
             published_before: Filter papers published before this date (YYYY-MM-DD)
             conference: Filter by conference
             latest_only: Whether to only include latest versions of papers
-            order_by: Field to order by (date_published, title, citation_count, trending)
+            order_by: Field to order by (date_published, citation_count, trending)
             order_dir: Order direction (asc, desc)
+            time_window: Feed time window (today, week, month, all_time)
 
         Returns:
             Paginated Papers response
@@ -339,6 +536,16 @@ class PaperService:
 
             # Limit page size
             page_size = min(page_size, self.settings.max_page_size)
+
+            allowed_order_columns = {
+                "date_published": DBPaper.date_published,
+                "citation_count": DBPaper.citation_count,
+            }
+            if order_by not in {*allowed_order_columns.keys(), "trending"}:
+                raise ValueError(f"Unsupported order_by: {order_by}")
+
+            if time_window != "all_time":
+                published_after = self._get_published_after_for_time_window(time_window)
 
             # Special handling for trending sort
             if order_by == "trending":
@@ -382,7 +589,7 @@ class PaperService:
                 query = query.filter(DBPaper.conference.ilike(f"%{conference}%"))
 
             # Apply ordering
-            order_column = getattr(DBPaper, order_by, DBPaper.date_published)
+            order_column = allowed_order_columns[order_by]
             if order_dir.lower() == "desc":
                 query = query.order_by(desc(order_column))
             else:
@@ -395,10 +602,16 @@ class PaperService:
             offset = (page - 1) * page_size
             db_papers = query.offset(offset).limit(page_size).all()
 
+            relation_data = self._get_paper_relation_data(
+                [paper.id for paper in db_papers], include_resources=include_resources
+            )
+
             # Convert to API models
             api_papers = [
                 self._convert_db_paper_to_api(
-                    db_paper, include_resources=include_resources
+                    db_paper,
+                    include_resources=include_resources,
+                    relation_data=relation_data,
                 )
                 for db_paper in db_papers
             ]
@@ -430,75 +643,43 @@ class PaperService:
         include_resources: bool = False,
     ) -> Papers:
         """
-        Get papers sorted by trending (star velocity over last 24-48 hours).
+        Get papers sorted by official repository trending score.
 
-        This uses repository_star_history to calculate the rate of star growth
-        and ranks papers by velocity. Requires at least 2 snapshots per repository.
+        This uses the EMA-based trending scores calculated by the hourly CRON job.
+        Only repositories marked official for a paper contribute to that paper's
+        ranking.
 
         Args:
             Same as get_papers()
 
         Returns:
-            Paginated Papers response sorted by star velocity
+            Paginated Papers response sorted by official repository trending score
         """
-        from datetime import datetime, timedelta
-
         try:
-            # Calculate velocity over last 48 hours (wider window = more data)
-            velocity_window_hours = 48
-            threshold_time = datetime.now() - timedelta(hours=velocity_window_hours)
-
-            # Build a raw SQL query for trending papers with velocity calculation
-            # This is complex because we need to:
-            # 1. Join papers -> paper_repositories -> repositories -> repository_star_history
-            # 2. Calculate velocity as (max_stars - min_stars) / hours_elapsed
-            # 3. Filter for papers with meaningful star changes
-            # 4. Apply all the same filters as regular get_papers
-
             sql_query = text("""
-                WITH paper_velocities AS (
+                WITH paper_trending AS (
                     SELECT DISTINCT ON (p.id)
                         p.id as paper_id,
-                        p.title,
-                        p.abstract,
-                        p.arxiv_id,
-                        p.version,
-                        p.is_latest_version,
-                        p.date_published,
-                        p.proceeding,
-                        p.conference,
-                        p.citation_count,
-                        MAX(rsh.num_stars) - MIN(rsh.num_stars) as star_gain,
-                        EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) / 3600.0 as hours_span,
-                        CASE
-                            WHEN EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) > 0
-                            THEN (MAX(rsh.num_stars) - MIN(rsh.num_stars))::float /
-                                 (EXTRACT(EPOCH FROM (MAX(rsh.snapshot_at) - MIN(rsh.snapshot_at))) / 3600.0)
-                            ELSE 0
-                        END as stars_per_hour,
-                        COUNT(DISTINCT rsh.snapshot_at) as snapshot_count
+                        r.trending_score,
+                        r.num_stars
                     FROM papers p
                     JOIN paper_repositories pr ON p.id = pr.paper_id
                     JOIN repositories r ON pr.repository_id = r.id
-                    JOIN repository_star_history rsh ON r.id = rsh.repository_id
-                    WHERE rsh.snapshot_at >= :threshold_time
+                    WHERE pr.is_official = TRUE
+                        AND r.trending_score IS NOT NULL
+                        AND r.trending_score_updated_at >= (NOW() - INTERVAL '24 hours')
                         AND (:search_term IS NULL OR p.title ILIKE :search_term OR p.abstract ILIKE :search_term)
                         AND (:published_after IS NULL OR p.date_published >= :published_after)
                         AND (:published_before IS NULL OR p.date_published <= :published_before)
                         AND (:conference IS NULL OR p.conference ILIKE :conference)
                         AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
-                    GROUP BY p.id, p.title, p.abstract, p.arxiv_id, p.version,
-                             p.is_latest_version, p.date_published, p.proceeding,
-                             p.conference, p.citation_count
-                    HAVING COUNT(DISTINCT rsh.snapshot_at) >= 2
-                        AND MAX(rsh.num_stars) > MIN(rsh.num_stars)
-                    ORDER BY p.id, stars_per_hour DESC
+                    ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC
                 )
                 SELECT
                     paper_id,
                     COUNT(*) OVER() as total_count
-                FROM paper_velocities
-                ORDER BY stars_per_hour DESC
+                FROM paper_trending
+                ORDER BY trending_score DESC NULLS LAST, num_stars DESC
                 LIMIT :limit OFFSET :offset
             """)
 
@@ -510,7 +691,6 @@ class PaperService:
             result = self.db.execute(
                 sql_query,
                 {
-                    "threshold_time": threshold_time,
                     "search_term": search_param,
                     "published_after": published_after,
                     "published_before": published_before,
@@ -534,17 +714,28 @@ class PaperService:
             paper_ids = [row[0] for row in result]
             total_count = result[0][1] if result else 0
 
-            # Fetch full paper objects maintaining the order
-            db_papers = []
-            for paper_id in paper_ids:
-                paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-                if paper:
-                    db_papers.append(paper)
+            papers_by_id = {
+                paper.id: paper
+                for paper in self.db.query(DBPaper)
+                .filter(DBPaper.id.in_(paper_ids))
+                .all()
+            }
+            db_papers = [
+                papers_by_id[paper_id]
+                for paper_id in paper_ids
+                if paper_id in papers_by_id
+            ]
+
+            relation_data = self._get_paper_relation_data(
+                [paper.id for paper in db_papers], include_resources=include_resources
+            )
 
             # Convert to API models
             api_papers = [
                 self._convert_db_paper_to_api(
-                    db_paper, include_resources=include_resources
+                    db_paper,
+                    include_resources=include_resources,
+                    relation_data=relation_data,
                 )
                 for db_paper in db_papers
             ]

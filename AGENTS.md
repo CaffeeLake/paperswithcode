@@ -4,8 +4,9 @@ Guidance for AI agents working in this repository.
 
 ## Essentials
 
-- Do not add `SUMMARY.md` files; implement changes directly.
-- Avoid heavy `try`/`except`; keep logic readable.
+- Do NOT care about backwards compatibility.
+- Avoid heavy `try`/`except`; keep logic simple and readable.
+- Whenever you make a change that requires a restart of the backend/frontend, do so without asking confirmation.
 - Use background tasks in Cursor for long-running work unless you are actively debugging.
 - **Run Python with** `uv run --env-file backend/keys.env …` (venv + env vars).
 - Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False`.
@@ -16,7 +17,11 @@ Guidance for AI agents working in this repository.
 
 ## Project overview
 
-Paperswithcode.ai: **React** frontend + **FastAPI** backend + **PostgreSQL**. Data from [Hugging Face papers](https://huggingface.co/papers) plus the legacy PapersWithCode dumps under `data/legacy_pwc_data/`. **CRON** jobs (`.github/workflows/scripts/`) import HF papers, refresh stars and citations, compute trending, and extract URLs with GenAI.
+This project implements paperswithcode.co, an AI-native revival of paperswithcode.com (which used to exist and was acquired by Meta). It showcases the top trending research papers in AI alongside their code (Github repositories), and tags papers by domain.
+
+The architecture consists of a ***React** frontend and a **FastAPI** backend + **PostgreSQL**.
+
+Data from [Hugging Face papers](https://huggingface.co/papers) plus the legacy PapersWithCode dumps under `data/legacy_pwc_data/`. **CRON** jobs (`.github/workflows/scripts/`) import HF papers, refresh stars and citations, compute trending, and extract URLs with GenAI.
 
 **Stack**: React 18, TS, Vite, shadcn/ui, Tailwind, TanStack Query, React Router v6 • FastAPI, SQLAlchemy • PostgreSQL + full-text search • Nginx + Let’s Encrypt in production • `uv` (Python), `npm` (frontend).
 
@@ -53,6 +58,8 @@ uv run --env-file backend/keys.env python backend/tests/test_authors_api.py
 ```
 
 ### CRON
+
+Various CRON jobs are deployed on Github Actions at https://github.com/huggingface/paperswithcode/actions. This includes updating citation counts of papers, updating Github stars of repositories linked to papers, importing papers from Hugging Face's daily papers and more.
 
 ```bash
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary

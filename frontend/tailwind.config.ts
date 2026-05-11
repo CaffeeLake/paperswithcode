@@ -2,6 +2,10 @@ import type { Config } from "tailwindcss";
 import tailwindcssAnimate from "tailwindcss-animate";
 import tailwindcssTypography from "@tailwindcss/typography";
 
+// Tailwind is layered for the *new* surfaces only (admin dialogs, toasts, mobile
+// hamburger sheet, loading/error/empty states). The v2 visual system is owned by
+// the hand-rolled `src/styles.css` (~1700 lines, with --ink/--bg/--accent CSS
+// variables). PLAN.md §10.
 export default {
   darkMode: ["class"],
   content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
@@ -38,7 +42,7 @@ export default {
           foreground: "hsl(var(--muted-foreground))",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
+          DEFAULT: "hsl(var(--accent-tw))",
           foreground: "hsl(var(--accent-foreground))",
         },
         popover: {
@@ -49,33 +53,6 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        paper: {
-          blue: "hsl(var(--paper-blue))",
-          teal: "hsl(var(--paper-teal))",
-          purple: "hsl(var(--paper-purple))",
-          pink: "hsl(var(--paper-pink))",
-          orange: "hsl(var(--paper-orange))",
-          green: "hsl(var(--paper-green))",
-        },
-        sidebar: {
-          DEFAULT: "hsl(var(--sidebar-background))",
-          foreground: "hsl(var(--sidebar-foreground))",
-          primary: "hsl(var(--sidebar-primary))",
-          "primary-foreground": "hsl(var(--sidebar-primary-foreground))",
-          accent: "hsl(var(--sidebar-accent))",
-          "accent-foreground": "hsl(var(--sidebar-accent-foreground))",
-          border: "hsl(var(--sidebar-border))",
-          ring: "hsl(var(--sidebar-ring))",
-        },
-      },
-      backgroundImage: {
-        'gradient-primary': 'var(--gradient-primary)',
-        'gradient-card': 'var(--gradient-card)',
-      },
-      boxShadow: {
-        'paper': 'var(--shadow-paper)',
-        'paper-hover': 'var(--shadow-paper-hover)',
-        'header': 'var(--shadow-header)',
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -84,20 +61,12 @@ export default {
       },
       keyframes: {
         "accordion-down": {
-          from: {
-            height: "0",
-          },
-          to: {
-            height: "var(--radix-accordion-content-height)",
-          },
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
         },
         "accordion-up": {
-          from: {
-            height: "var(--radix-accordion-content-height)",
-          },
-          to: {
-            height: "0",
-          },
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
         },
       },
       animation: {

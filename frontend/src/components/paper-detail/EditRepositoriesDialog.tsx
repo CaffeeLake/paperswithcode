@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updatePaperRepositories } from "@/lib/api";
+import { refreshPaperQueries } from "@/lib/queryInvalidation";
 
 interface Repository {
   url: string;
@@ -46,8 +47,8 @@ export function EditRepositoriesDialog({
   const updateRepositoriesMutation = useMutation({
     mutationFn: ({ paperId, repositories }: { paperId: string; repositories: Repository[] }) =>
       updatePaperRepositories(paperId, repositories),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+    onSuccess: (updatedPaper) => {
+      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
       onSuccess?.();
       onOpenChange(false);
       setNewRepositoryUrl("");

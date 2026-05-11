@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
-from backend.models.api import Area, Areas, Tasks
+from backend.models.api import Area, Areas, AreasWithTasks, Tasks
 from backend.services.area_service import AreaService
 from backend.services.task_service import TaskService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -101,6 +101,29 @@ async def get_areas(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get(
+    "/areas/with-tasks/",
+    response_model=AreasWithTasks,
+    summary="Get all research areas with their tasks (taxonomy index)",
+)
+async def get_areas_with_tasks(
+    db: Session = Depends(get_database_session),
+):
+    """
+    Return every research area together with its tasks and per-task paper
+    counts in a single response.
+
+    Powers the `/tasks` taxonomy index in the frontend without the previous
+    fan-out (`/areas/` plus one `/areas/{id}/tasks` per area). All paper counts
+    are aggregated in a single GROUP BY query rather than one count per task.
+    """
+    try:
+        area_service = AreaService(db)
+        return area_service.get_areas_with_tasks()
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get(

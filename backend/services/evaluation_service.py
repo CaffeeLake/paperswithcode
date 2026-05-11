@@ -32,23 +32,35 @@ class EvaluationService:
 
     def _get_paper_info(
         self, paper_id: int
-    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    ) -> tuple[
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        Optional[str],
+    ]:
         """
-        Get paper title, ArXiv ID, code URL, and publication date for a given paper ID.
+        Get paper metadata used by evaluation responses.
 
         Returns:
-            Tuple of (paper_title, paper_arxiv_id, code_url, paper_published_date)
+            Tuple of (paper_title, paper_arxiv_id, code_url,
+            paper_published_date, paper_source, paper_source_url).
+
+            `paper_source` is 'arxiv' or 'external'. For external rows the
+            `paper_source_url` provides the canonical link used as a fallback
+            for `result_url` when no ArXiv ID exists.
         """
         try:
-            # Get paper title, ArXiv ID, and publication date
             paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
             paper_title = paper.title if paper else None
             paper_arxiv_id = paper.arxiv_id if paper else None
             paper_published_date = (
                 str(paper.date_published) if paper and paper.date_published else None
             )
+            paper_source = paper.source if paper else None
+            paper_source_url = paper.source_url if paper else None
 
-            # Get code URL (first repository for the paper)
             code_url = None
             repo_link = (
                 self.db.query(DBRepository)
@@ -63,9 +75,16 @@ class EvaluationService:
             if repo_link:
                 code_url = repo_link.url
 
-            return paper_title, paper_arxiv_id, code_url, paper_published_date
+            return (
+                paper_title,
+                paper_arxiv_id,
+                code_url,
+                paper_published_date,
+                paper_source,
+                paper_source_url,
+            )
         except Exception:
-            return None, None, None, None
+            return None, None, None, None, None, None
 
     def _get_task_name(self, task_id: int) -> Optional[str]:
         """
@@ -251,19 +270,28 @@ class EvaluationService:
             evaluation_list = []
             for db_evaluation in results:
                 # Get paper info (title, ArXiv ID, code URL, and publication date)
-                paper_title, paper_arxiv_id, code_url, paper_published_date = (
-                    self._get_paper_info(db_evaluation.paper_id)
-                )
+                (
+                    paper_title,
+                    paper_arxiv_id,
+                    code_url,
+                    paper_published_date,
+                    paper_source,
+                    paper_source_url,
+                ) = self._get_paper_info(db_evaluation.paper_id)
 
                 # Get task and dataset names
                 task_name = self._get_task_name(db_evaluation.task_id)
                 dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
                 dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
 
-                # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
+                # Result URL precedence: explicit `external_source_url` on the
+                # evaluation, then the paper's ArXiv abstract URL, then the
+                # paper's `source_url` for external rows that have no ArXiv.
                 result_url = db_evaluation.external_source_url
                 if not result_url and paper_arxiv_id:
                     result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
+                if not result_url and paper_source_url:
+                    result_url = paper_source_url
 
                 evaluation_dict = {
                     "id": str(db_evaluation.id),
@@ -329,20 +357,29 @@ class EvaluationService:
             if not db_evaluation:
                 return None
 
-            # Get paper info (title, ArXiv ID, code URL, and publication date)
-            paper_title, paper_arxiv_id, code_url, paper_published_date = (
-                self._get_paper_info(db_evaluation.paper_id)
-            )
+            # Get paper info (title, ArXiv ID, code URL, publication date,
+            # and source metadata for external rows).
+            (
+                paper_title,
+                paper_arxiv_id,
+                code_url,
+                paper_published_date,
+                paper_source,
+                paper_source_url,
+            ) = self._get_paper_info(db_evaluation.paper_id)
 
             # Get task and dataset names
             task_name = self._get_task_name(db_evaluation.task_id)
             dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
             dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
 
-            # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
+            # Result URL precedence: explicit `external_source_url`, then ArXiv
+            # URL, then the paper's `source_url` for external rows.
             result_url = db_evaluation.external_source_url
             if not result_url and paper_arxiv_id:
                 result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
+            if not result_url and paper_source_url:
+                result_url = paper_source_url
 
             evaluation_dict = {
                 "id": str(db_evaluation.id),
@@ -483,15 +520,24 @@ class EvaluationService:
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
 
-            # Get paper info (title, ArXiv ID, and code URL)
-            paper_title, paper_arxiv_id, code_url, paper_published_date = (
-                self._get_paper_info(db_evaluation.paper_id)
-            )
+            # Get paper info (title, ArXiv ID, code URL, publication date,
+            # and source metadata for external rows).
+            (
+                paper_title,
+                paper_arxiv_id,
+                code_url,
+                paper_published_date,
+                paper_source,
+                paper_source_url,
+            ) = self._get_paper_info(db_evaluation.paper_id)
 
-            # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
+            # Result URL precedence: explicit `external_source_url`, then ArXiv
+            # URL, then the paper's `source_url` for external rows.
             result_url = db_evaluation.external_source_url
             if not result_url and paper_arxiv_id:
                 result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
+            if not result_url and paper_source_url:
+                result_url = paper_source_url
 
             evaluation_dict = {
                 "id": str(db_evaluation.id),
@@ -677,15 +723,24 @@ class EvaluationService:
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
 
-            # Get paper info (title, ArXiv ID, and code URL)
-            paper_title, paper_arxiv_id, code_url, paper_published_date = (
-                self._get_paper_info(db_evaluation.paper_id)
-            )
+            # Get paper info (title, ArXiv ID, code URL, publication date,
+            # and source metadata for external rows).
+            (
+                paper_title,
+                paper_arxiv_id,
+                code_url,
+                paper_published_date,
+                paper_source,
+                paper_source_url,
+            ) = self._get_paper_info(db_evaluation.paper_id)
 
-            # Use external_source_url if available, otherwise use paper ArXiv URL as fallback
+            # Result URL precedence: explicit `external_source_url`, then ArXiv
+            # URL, then the paper's `source_url` for external rows.
             result_url = db_evaluation.external_source_url
             if not result_url and paper_arxiv_id:
                 result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
+            if not result_url and paper_source_url:
+                result_url = paper_source_url
 
             evaluation_dict = {
                 "id": str(db_evaluation.id),

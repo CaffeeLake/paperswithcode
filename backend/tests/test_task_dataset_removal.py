@@ -1,267 +1,190 @@
 """
-Test script to verify task-dataset relationship changes.
-
-This script verifies that:
-1. Datasets can be queried by task_id
-2. Tasks can be queried by dataset_id
-3. Evaluation creation still validates correctly
-4. Dataset creation works
-5. Count queries return correct numbers
+Regression tests for task-dataset membership and featured benchmark ordering.
 """
 
-import sys
-from sqlalchemy import text
-from backend.database.connection import db_manager
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend.models.database import (
+    Base,
+    Dataset as DBDataset,
+    Metric as DBMetric,
+    Paper as DBPaper,
+    PaperDataset,
+    Task as DBTask,
+    TaskDataset,
+    TaskDatasetMetric,
+)
 from backend.services.dataset_service import DatasetService
-from backend.services.evaluation_service import EvaluationService
 
 
-def test_task_datasets_table_removed():
-    """Verify that task_datasets table no longer exists."""
-    print("\n=== Test 1: Verify TASK_DATASETS table removed ===")
-    with db_manager.session_local() as db:
-        try:
-            db.execute(text("SELECT 1 FROM task_datasets LIMIT 1"))
-            print("❌ FAILED: task_datasets table still exists!")
-            return False
-        except Exception as e:
-            if "does not exist" in str(e) or "no such table" in str(e):
-                print("✓ PASSED: task_datasets table successfully removed")
-                return True
-            else:
-                print(f"❌ FAILED: Unexpected error: {e}")
-                return False
+@compiles(ARRAY, "sqlite")
+def _compile_array_sqlite(_element, _compiler, **_kw):
+    return "TEXT"
 
 
-def test_dataset_filtering_by_task():
-    """Test that datasets can be filtered by task_id via task_dataset_metrics."""
-    print("\n=== Test 2: Filter datasets by task_id ===")
-    with db_manager.session_local() as db:
-        service = DatasetService(db)
-
-        # Get datasets for task 1 (Image Classification)
-        result = service.get_datasets(task_id=1, page_size=5)
-
-        if result.count > 0:
-            print(f"✓ PASSED: Found {result.count} datasets for task 1")
-            print(f"  Sample: {result.results[0].name if result.results else 'N/A'}")
-            return True
-        else:
-            print(
-                "⚠ WARNING: No datasets found for task 1 (this may be expected if no metrics are defined)"
-            )
-            return True
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_element, _compiler, **_kw):
+    return "TEXT"
 
 
-def test_get_dataset_tasks():
-    """Test that tasks can be retrieved for a dataset."""
-    print("\n=== Test 3: Get tasks for dataset ===")
-    with db_manager.session_local() as db:
-        # Find a dataset with tasks
-        result = db.execute(
-            text("""
-            SELECT DISTINCT dataset_id, COUNT(DISTINCT task_id) as task_count
-            FROM task_dataset_metrics
-            GROUP BY dataset_id
-            HAVING COUNT(DISTINCT task_id) > 0
-            ORDER BY task_count DESC
-            LIMIT 1
-        """)
-        ).fetchone()
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
-        if not result:
-            print("⚠ WARNING: No datasets with tasks found")
-            return True
-
-        dataset_id, expected_count = result
-
-        service = DatasetService(db)
-        task_ids = service.get_dataset_tasks(dataset_id)
-
-        if len(task_ids) == expected_count:
-            print(
-                f"✓ PASSED: Dataset {dataset_id} has {len(task_ids)} tasks (expected {expected_count})"
-            )
-            return True
-        else:
-            print(
-                f"❌ FAILED: Dataset {dataset_id} returned {len(task_ids)} tasks, expected {expected_count}"
-            )
-            return False
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def test_evaluation_validation():
-    """Test that evaluation creation validates against task_dataset_metrics."""
-    print("\n=== Test 4: Evaluation validation ===")
-    with db_manager.session_local() as db:
-        # Find a valid task-dataset pair with metrics
-        valid_pair = db.execute(
-            text("""
-            SELECT DISTINCT task_id, dataset_id
-            FROM task_dataset_metrics
-            LIMIT 1
-        """)
-        ).fetchone()
-
-        if not valid_pair:
-            print("⚠ WARNING: No valid task-dataset pairs found")
-            return True
-
-        task_id, dataset_id = valid_pair
-
-        service = EvaluationService(db)
-
-        # Test validation with valid pair
-        is_valid, error_msg = service._validate_dataset_task_consistency(
-            task_id, dataset_id
-        )
-
-        if is_valid:
-            print(
-                f"✓ PASSED: Validation succeeded for valid pair (task={task_id}, dataset={dataset_id})"
-            )
-        else:
-            print(f"❌ FAILED: Validation failed for valid pair: {error_msg}")
-            return False
-
-        # Test validation with invalid pair (task 999999, dataset 999999)
-        is_valid, error_msg = service._validate_dataset_task_consistency(999999, 999999)
-
-        if not is_valid:
-            print("✓ PASSED: Validation correctly rejected invalid pair")
-            return True
-        else:
-            print("❌ FAILED: Validation should have rejected invalid pair")
-            return False
+@pytest.fixture
+def db_session():
+    Base.metadata.create_all(bind=engine)
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine)
 
 
-def test_task_count_in_datasets():
-    """Test that task counts are correctly calculated for datasets."""
-    print("\n=== Test 5: Task counts for datasets ===")
-    with db_manager.session_local() as db:
-        # Get expected counts from task_dataset_metrics
-        expected_counts = db.execute(
-            text("""
-            SELECT dataset_id, COUNT(DISTINCT task_id) as task_count
-            FROM task_dataset_metrics
-            GROUP BY dataset_id
-            ORDER BY task_count DESC
-            LIMIT 1
-        """)
-        ).fetchone()
+@pytest.fixture
+def task_dataset_fixture(db_session):
+    task = DBTask(id=1, name="Coding Agents", slug="coding-agents", level=0)
+    db_session.add(task)
 
-        if not expected_counts:
-            print("⚠ WARNING: No task-dataset metrics found")
-            return True
-
-        dataset_id, expected_count = expected_counts
-
-        service = DatasetService(db)
-        dataset = service.get_dataset(dataset_id)
-
-        if dataset and dataset.task_count == expected_count:
-            print(
-                f"✓ PASSED: Dataset {dataset_id} has task_count={dataset.task_count} (expected {expected_count})"
-            )
-            return True
-        elif dataset:
-            print(
-                f"❌ FAILED: Dataset {dataset_id} has task_count={dataset.task_count}, expected {expected_count}"
-            )
-            return False
-        else:
-            print(f"❌ FAILED: Could not retrieve dataset {dataset_id}")
-            return False
-
-
-def test_dataset_tasks_endpoint():
-    """Test the /datasets/{id}/tasks/ endpoint behavior."""
-    print("\n=== Test 6: Datasets tasks endpoint ===")
-    with db_manager.session_local() as db:
-        # Find a dataset with tasks
-        result = db.execute(
-            text("""
-            SELECT dataset_id, COUNT(DISTINCT task_id) as task_count
-            FROM task_dataset_metrics
-            GROUP BY dataset_id
-            HAVING COUNT(DISTINCT task_id) > 0
-            ORDER BY task_count DESC
-            LIMIT 1
-        """)
-        ).fetchone()
-
-        if not result:
-            print("⚠ WARNING: No datasets with tasks found")
-            return True
-
-        dataset_id, expected_count = result
-
-        # Simulate what the endpoint does
-        from backend.models.database import Task as DBTask, TaskDatasetMetric
-
-        tasks_query = (
-            db.query(DBTask)
-            .join(TaskDatasetMetric, DBTask.id == TaskDatasetMetric.task_id)
-            .filter(TaskDatasetMetric.dataset_id == dataset_id)
-            .distinct()
-            .order_by(DBTask.name)
-            .all()
-        )
-
-        if len(tasks_query) == expected_count:
-            print(
-                f"✓ PASSED: Dataset {dataset_id} endpoint would return {len(tasks_query)} tasks (expected {expected_count})"
-            )
-            return True
-        else:
-            print(
-                f"❌ FAILED: Dataset {dataset_id} endpoint returned {len(tasks_query)} tasks, expected {expected_count}"
-            )
-            return False
-
-
-def main():
-    """Run all tests."""
-    print("\n" + "=" * 80)
-    print("  TASK-DATASET RELATIONSHIP MIGRATION TESTS")
-    print("=" * 80)
-
-    tests = [
-        test_task_datasets_table_removed,
-        test_dataset_filtering_by_task,
-        test_get_dataset_tasks,
-        test_evaluation_validation,
-        test_task_count_in_datasets,
-        test_dataset_tasks_endpoint,
+    datasets = [
+        DBDataset(id=1, name="Alpha", slug="alpha"),
+        DBDataset(id=2, name="SWE-Bench Verified", slug="swe-bench-verified"),
+        DBDataset(id=3, name="LiveCodeBench", slug="livecodebench"),
+        DBDataset(id=4, name="Beta", slug="beta"),
     ]
+    db_session.add_all(datasets)
 
-    results = []
-    for test in tests:
-        try:
-            result = test()
-            results.append(result)
-        except Exception as e:
-            print(f"\n❌ TEST EXCEPTION: {e}")
-            import traceback
+    papers = [
+        DBPaper(
+            id=i,
+            title=f"Paper {i}",
+            abstract=f"Abstract {i}",
+            arxiv_id=f"2026.0{i:04d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for i in range(1, 8)
+    ]
+    db_session.add_all(papers)
 
-            traceback.print_exc()
-            results.append(False)
+    db_session.add_all(
+        [
+            TaskDataset(task_id=1, dataset_id=1),
+            TaskDataset(task_id=1, dataset_id=2, featured_rank=1),
+            TaskDataset(task_id=1, dataset_id=3, featured_rank=2),
+            TaskDataset(task_id=1, dataset_id=4),
+        ]
+    )
 
-    # Summary
-    print("\n" + "=" * 80)
-    print("  TEST SUMMARY")
-    print("=" * 80)
-    passed = sum(results)
-    total = len(results)
-    print(f"\nPassed: {passed}/{total}")
+    db_session.add_all(
+        [
+            PaperDataset(paper_id=1, dataset_id=1),
+            PaperDataset(paper_id=2, dataset_id=1),
+            PaperDataset(paper_id=3, dataset_id=1),
+            PaperDataset(paper_id=4, dataset_id=2),
+            PaperDataset(paper_id=5, dataset_id=3),
+            PaperDataset(paper_id=6, dataset_id=3),
+            PaperDataset(paper_id=7, dataset_id=4),
+        ]
+    )
 
-    if passed == total:
-        print("\n✓✓✓ ALL TESTS PASSED ✓✓✓\n")
-        return 0
-    else:
-        print(f"\n❌ {total - passed} TEST(S) FAILED ❌\n")
-        return 1
+    metrics = [
+        DBMetric(id=1, name="Accuracy", direction="higher_is_better"),
+        DBMetric(id=2, name="Pass@1", direction="higher_is_better"),
+    ]
+    db_session.add_all(metrics)
+
+    # Dataset 3 has two metrics for the same task-dataset pair. The task-filtered
+    # dataset query should still return it once.
+    db_session.add_all(
+        [
+            TaskDatasetMetric(task_id=1, dataset_id=2, metric_id=1),
+            TaskDatasetMetric(task_id=1, dataset_id=3, metric_id=1),
+            TaskDatasetMetric(task_id=1, dataset_id=3, metric_id=2),
+            TaskDatasetMetric(task_id=1, dataset_id=1, metric_id=1),
+            TaskDatasetMetric(task_id=1, dataset_id=4, metric_id=1),
+        ]
+    )
+
+    db_session.commit()
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_task_datasets_without_featured_ranks_use_requested_fallback(db_session):
+    task = DBTask(id=1, name="Image Classification", slug="image-classification")
+    db_session.add(task)
+    db_session.add_all(
+        [
+            DBDataset(id=1, name="Small", slug="small"),
+            DBDataset(id=2, name="Large", slug="large"),
+        ]
+    )
+    db_session.add_all(
+        [
+            TaskDataset(task_id=1, dataset_id=1),
+            TaskDataset(task_id=1, dataset_id=2),
+            PaperDataset(paper_id=1, dataset_id=2),
+            PaperDataset(paper_id=2, dataset_id=2),
+            PaperDataset(paper_id=3, dataset_id=1),
+        ]
+    )
+    db_session.add_all(
+        [
+            DBPaper(id=1, title="One", abstract="A", arxiv_id="2026.00001"),
+            DBPaper(id=2, title="Two", abstract="B", arxiv_id="2026.00002"),
+            DBPaper(id=3, title="Three", abstract="C", arxiv_id="2026.00003"),
+        ]
+    )
+    db_session.commit()
+
+    result = DatasetService(db_session).get_datasets(
+        task_id=1, order_by="paper_count", order_dir="desc"
+    )
+
+    assert [dataset.slug for dataset in result.results] == ["large", "small"]
+    assert [dataset.featured_rank for dataset in result.results] == [None, None]
+
+
+def test_featured_ranks_order_before_fallback_and_return_once(
+    db_session, task_dataset_fixture
+):
+    result = DatasetService(db_session).get_datasets(
+        task_id=1, order_by="paper_count", order_dir="desc"
+    )
+
+    assert [dataset.slug for dataset in result.results] == [
+        "swe-bench-verified",
+        "livecodebench",
+        "alpha",
+        "beta",
+    ]
+    assert [dataset.featured_rank for dataset in result.results] == [1, 2, None, None]
+    assert (
+        len([dataset for dataset in result.results if dataset.slug == "livecodebench"])
+        == 1
+    )
+
+
+def test_unfiltered_dataset_queries_do_not_populate_featured_rank(
+    db_session, task_dataset_fixture
+):
+    result = DatasetService(db_session).get_datasets(order_by="name", order_dir="asc")
+
+    assert [dataset.name for dataset in result.results] == [
+        "Alpha",
+        "Beta",
+        "LiveCodeBench",
+        "SWE-Bench Verified",
+    ]
+    assert all(dataset.featured_rank is None for dataset in result.results)

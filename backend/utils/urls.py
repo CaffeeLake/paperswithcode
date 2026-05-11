@@ -85,6 +85,57 @@ def get_paper_url(
         return f"https://{domain}/papers/{paper_id}"
 
 
+def get_paper_abs_url(
+    source: str,
+    arxiv_id: Optional[str],
+    version: Optional[str],
+    source_url: Optional[str],
+) -> Optional[str]:
+    """
+    Source-aware "abstract URL" for a paper row.
+
+    For ArXiv rows this returns the generated `arxiv.org/abs/...` URL.
+    For external rows this returns the canonical `source_url`.
+    Returns ``None`` when neither identifier is available.
+    """
+    if source == "external":
+        return source_url
+    if arxiv_id:
+        return get_arxiv_abs_url(arxiv_id, version)
+    return source_url
+
+
+def get_paper_pdf_url(
+    source: str, arxiv_id: Optional[str], version: Optional[str]
+) -> Optional[str]:
+    """
+    Source-aware "PDF URL" for a paper row.
+
+    Only ArXiv rows have a derivable PDF URL; external rows return ``None``
+    unless a future column tracks an explicit PDF link separately.
+    """
+    if source == "external":
+        return None
+    if arxiv_id:
+        return get_arxiv_pdf_url(arxiv_id, version)
+    return None
+
+
+def get_paper_route_identifier(
+    source: str, arxiv_id: Optional[str], paper_id: int
+) -> str:
+    """
+    Public route identifier for a paper.
+
+    ArXiv rows continue to use the ArXiv ID in URLs (e.g. `/paper/2504.12516`).
+    External rows use the internal database ID (e.g. `/paper/12345`) because
+    they have no ArXiv identifier.
+    """
+    if source == "arxiv" and arxiv_id:
+        return arxiv_id
+    return str(paper_id)
+
+
 def get_paper_version_url(
     arxiv_id: str, version: str, domain: Optional[str] = None
 ) -> str:

@@ -6,9 +6,9 @@ Prior to this fix, evaluations (leaderboard results) could be created with incon
 
 ### Example Issues Found
 
-1. **LVBench** - Used with both "Vision-Language Models" and "Video-Language Models" tasks
-2. **OCRBench** - Used with both "Vision-Language Models" and "OCR" tasks
-3. **LIBERO** - Used with both "Vision-Language Models" and "Robotics" tasks
+1. **LVBench** - Used with both "Image Understanding" and "Video Understanding" tasks
+2. **OCRBench** - Used with both "Image Understanding" and "OCR" tasks
+3. **LIBERO** - Used with both "Image Understanding" and "Robotics" tasks
 
 ## Solution
 
@@ -16,9 +16,9 @@ Prior to this fix, evaluations (leaderboard results) could be created with incon
 
 Fixed all existing inconsistencies in the database:
 
-- **OCRBench** (ID: 155): Moved 3 evaluations from "Vision-Language Models" → "OCR"
-- **LVBench** (ID: 58): Moved 1 evaluation from "Vision-Language Models" → "Video-Language Models"
-- **LIBERO** (ID: 108): Moved 1 evaluation from "Vision-Language Models" → "Robotics"
+- **OCRBench** (ID: 155): Moved 3 evaluations from "Image Understanding" → "OCR"
+- **LVBench** (ID: 58): Moved 1 evaluation from "Image Understanding" → "Video Understanding"
+- **LIBERO** (ID: 108): Moved 1 evaluation from "Image Understanding" → "Robotics"
 
 ### 2. Validation Implementation
 
@@ -30,7 +30,7 @@ This method enforces consistency rules:
 
 **For single-task datasets (most common):**
 - Evaluations MUST use the officially linked task
-- Example: LVBench evaluations must use "Video-Language Models"
+- Example: LVBench evaluations must use "Video Understanding"
 
 **For multi-task datasets (exceptions):**
 - Evaluations can use ANY of the officially linked tasks
@@ -49,7 +49,7 @@ Validation is called in:
 If validation fails, a clear error message is returned:
 ```
 Task mismatch for dataset 'LVBench'. This dataset is officially linked to
-task 'Video-Language Models' but you're trying to use task 'Vision-Language Models'.
+task 'Video Understanding' but you're trying to use task 'Image Understanding'.
 Please use the correct task to maintain consistent leaderboards.
 ```
 
@@ -134,7 +134,7 @@ curl -X POST "http://localhost:8000/api/v1/evaluations/" \
   -H "Content-Type: application/json" \
   -d '{
     "paper_id": 123,
-    "task_id": 9,        # Video-Language Models
+    "task_id": 9,        # Video Understanding
     "dataset_id": 58,    # LVBench
     "metrics": {"Accuracy": "51.07"}
   }'
@@ -144,7 +144,7 @@ curl -X POST "http://localhost:8000/api/v1/evaluations/" \
   -H "Content-Type: application/json" \
   -d '{
     "paper_id": 123,
-    "task_id": 8,        # Vision-Language Models (WRONG!)
+    "task_id": 8,        # Image Understanding (WRONG!)
     "dataset_id": 58,    # LVBench
     "metrics": {"Accuracy": "51.07"}
   }'
@@ -156,7 +156,7 @@ When validation fails, the API returns a 400 Bad Request with a clear error mess
 
 ```json
 {
-  "detail": "Task mismatch for dataset 'LVBench'. This dataset is officially linked to task 'Video-Language Models' but you're trying to use task 'Vision-Language Models'. Please use the correct task to maintain consistent leaderboards."
+  "detail": "Task mismatch for dataset 'LVBench'. This dataset is officially linked to task 'Video Understanding' but you're trying to use task 'Image Understanding'. Please use the correct task to maintain consistent leaderboards."
 }
 ```
 

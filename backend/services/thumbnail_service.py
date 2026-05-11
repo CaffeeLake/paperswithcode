@@ -83,6 +83,15 @@ class ThumbnailService:
         version = parts[-1]
         return arxiv_id, version
 
+    def validate_custom_filename(self, filename: str) -> None:
+        """
+        Validate a manually captured thumbnail filename.
+        """
+        if "/" in filename or "\\" in filename:
+            raise ThumbnailGenerationError("Invalid custom thumbnail filename")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.jpg", filename):
+            raise ThumbnailGenerationError("Invalid custom thumbnail filename")
+
     def get_filename(self, arxiv_id: str, version: str = "v1") -> str:
         """
         Get the stable thumbnail filename for a given ArXiv paper.
@@ -222,6 +231,16 @@ class ThumbnailService:
         Return an existing thumbnail path from active cache, bucket, or legacy cache.
         """
         self.parse_filename(filename)
+        return self._get_existing_thumbnail_path_unchecked(filename)
+
+    def get_existing_custom_thumbnail_path(self, filename: str) -> Optional[Path]:
+        """
+        Return an existing manually captured thumbnail path.
+        """
+        self.validate_custom_filename(filename)
+        return self._get_existing_thumbnail_path_unchecked(filename)
+
+    def _get_existing_thumbnail_path_unchecked(self, filename: str) -> Optional[Path]:
         active_cache_path = self._get_active_cache_path(filename)
         if active_cache_path.exists():
             return active_cache_path

@@ -53,9 +53,24 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def add_public_cache_headers(request, call_next):
+        response = await call_next(request)
+        if (
+            request.method == "GET"
+            and request.url.path.startswith("/api/v1/papers")
+            and response.status_code == 200
+            and "cache-control" not in response.headers
+        ):
+            response.headers["Cache-Control"] = (
+                "public, max-age=60, stale-while-revalidate=300"
+            )
+        return response
+
     # Include routers
     from backend.routers import (
         papers,
+        external_resources,
         authors,
         thumbnails,
         repositories,
@@ -69,6 +84,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
+    # External-resource ingestion endpoints share the `/papers` prefix because
+    # the resulting rows live in the same `papers` table.
+    app.include_router(
+        external_resources.router, prefix="/api/v1", tags=["external_resources"]
+    )
     app.include_router(authors.router, prefix="/api/v1", tags=["authors"])
     app.include_router(repositories.router, prefix="/api/v1", tags=["repositories"])
     app.include_router(areas.router, prefix="/api/v1", tags=["areas"])

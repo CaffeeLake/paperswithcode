@@ -21,7 +21,7 @@ router = APIRouter(prefix="/methods", tags=["methods"])
 async def list_methods(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
-        50, ge=1, le=100, description="Number of methods per page (max 100)"
+        50, ge=1, le=500, description="Number of methods per page (max 500)"
     ),
     q: Optional[str] = Query(
         None, description="Search query for method name, full name, and description"
@@ -37,7 +37,10 @@ async def list_methods(
     ),
     ordering: Optional[str] = Query(
         "name",
-        description="Order by field: name, full_name, introduced_year, created_at (prefix with '-' for descending)",
+        description=(
+            "Order by field: name, full_name, introduced_year, created_at, "
+            "paper_count (prefix with '-' for descending)"
+        ),
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -62,8 +65,13 @@ async def list_methods(
             order_dir = "desc"
             order_by = ordering[1:]
 
-        # Validate order_by field
-        valid_fields = ["name", "full_name", "introduced_year", "created_at"]
+        valid_fields = [
+            "name",
+            "full_name",
+            "introduced_year",
+            "created_at",
+            "paper_count",
+        ]
         if order_by not in valid_fields:
             order_by = "name"
 

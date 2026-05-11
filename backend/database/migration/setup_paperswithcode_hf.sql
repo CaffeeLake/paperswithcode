@@ -102,6 +102,7 @@ CREATE TABLE methods (
     full_name VARCHAR(500),
     description TEXT,
     introduced_year INTEGER,
+    source_paper_id BIGINT REFERENCES papers(id) ON DELETE SET NULL,
     source_url VARCHAR(500),
     source_title VARCHAR(500),
     code_snippet_url VARCHAR(500),
@@ -266,6 +267,7 @@ CREATE INDEX idx_paper_tasks_paper_id ON paper_tasks(paper_id);
 CREATE INDEX idx_paper_tasks_task_id ON paper_tasks(task_id);
 CREATE INDEX idx_paper_methods_paper_id ON paper_methods(paper_id);
 CREATE INDEX idx_paper_methods_method_id ON paper_methods(method_id);
+CREATE INDEX idx_methods_source_paper_id ON methods(source_paper_id);
 CREATE INDEX idx_paper_datasets_paper_id ON paper_datasets(paper_id);
 CREATE INDEX idx_paper_datasets_dataset_id ON paper_datasets(dataset_id);
 

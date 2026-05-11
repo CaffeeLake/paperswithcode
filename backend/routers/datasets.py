@@ -48,7 +48,7 @@ async def list_datasets(
     task: Optional[str] = Query(None, description="Filter by task ID or task slug"),
     ordering: Optional[str] = Query(
         "name",
-        description="Order by field: name, full_name, created_at (prefix with '-' for descending)",
+        description="Order by field: name, full_name, created_at, paper_count (prefix with '-' for descending)",
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -74,7 +74,7 @@ async def list_datasets(
             order_by = ordering[1:]
 
         # Validate order_by field
-        valid_fields = ["name", "full_name", "created_at"]
+        valid_fields = ["name", "full_name", "created_at", "paper_count"]
         if order_by not in valid_fields:
             order_by = "name"
 
@@ -183,14 +183,14 @@ async def get_dataset_tasks(
                 )
             dataset_id_int = int(dataset.id)
 
-        # Get tasks for this dataset via task_dataset_metrics
-        from backend.models.database import Task as DBTask, TaskDatasetMetric
+        # Get tasks for this dataset via task_datasets display membership.
+        from backend.models.database import Task as DBTask, TaskDataset
         from backend.models.api import Task
 
         tasks_query = (
             db.query(DBTask)
-            .join(TaskDatasetMetric, DBTask.id == TaskDatasetMetric.task_id)
-            .filter(TaskDatasetMetric.dataset_id == dataset_id_int)
+            .join(TaskDataset, DBTask.id == TaskDataset.task_id)
+            .filter(TaskDataset.dataset_id == dataset_id_int)
             .distinct()
             .order_by(DBTask.name)
             .all()

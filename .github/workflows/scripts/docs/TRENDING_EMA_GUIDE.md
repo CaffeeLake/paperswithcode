@@ -76,18 +76,18 @@ trendingScore = α × rawStarsPerHour + (1 - α) × previousTrendingScore
 ```
 
 Where:
-- **α = 0.15** (smoothing factor)
+- **α = 0.75** (smoothing factor)
 - **hoursSinceLastSync** = time between snapshots (in hours)
 - **previousTrendingScore** = the trending score from last calculation (or `rawStarsPerHour` if first time)
 
-### Why α = 0.15?
+### Why α = 0.75?
 
-- **Low alpha (0.15)** means 85% weight on historical average, 15% on new data
+- **High alpha (0.75)** means 25% weight on historical average, 75% on new data
 - **Benefits**:
-  - Smooth, stable scores that change gradually
-  - Resistant to short-term spikes or anomalies
-  - Still responsive to sustained growth trends
-  - Matches the behavior of successful platforms like HuggingFace Papers
+  - Rankings respond quickly to recent star velocity changes
+  - Newly trending repositories surface fast
+  - Some smoothing is retained to avoid wild single-hour swings
+  - Trade-off: more sensitive to short-term spikes than a low-alpha EMA
 
 ### Example Calculation
 
@@ -104,9 +104,9 @@ hours_elapsed = 24
 raw_stars_per_hour = (1120 - 1000) / 24 = 5.0 stars/hour
 
 # Apply EMA
-trending_score = 0.15 × 5.0 + 0.85 × 4.5
-                = 0.75 + 3.825
-                = 4.575 stars/hour
+trending_score = 0.75 × 5.0 + 0.25 × 4.5
+                = 3.75 + 1.125
+                = 4.875 stars/hour
 ```
 
 ---
@@ -148,7 +148,7 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m script
 ```python
 batch_size = 500  # Process 500 repos per batch
 update_threshold_hours = 1  # Update if score > 1 hour old
-ALPHA = 0.15  # EMA smoothing factor
+ALPHA = 0.75  # EMA smoothing factor
 MIN_HOURS_BETWEEN_SNAPSHOTS = 0.5  # Minimum time between snapshots
 ```
 
@@ -395,7 +395,7 @@ if len(snapshots) >= 2:
 
     # Calculate what it should be
     # For first calculation: trending_score = raw_velocity
-    # For subsequent: trending_score = 0.15 * raw_velocity + 0.85 * previous_score
+    # For subsequent: trending_score = 0.75 * raw_velocity + 0.25 * previous_score
 
     print(f"Raw velocity: {raw_velocity:.4f} stars/hour")
     print(f"Current trending score: {current_score:.4f}")

@@ -110,8 +110,10 @@ echo ""
 # Stop Frontend
 echo -e "${YELLOW}🎨 Stopping Frontend (Vite)...${NC}"
 kill_port_processes $FRONTEND_PORT "Frontend"
-kill_processes_by_pattern "vite" "Frontend (vite)"
-kill_processes_by_pattern "npm run dev" "Frontend (npm)"
+kill_processes_by_pattern "vite preview" "Frontend (preview)"
+kill_processes_by_pattern "vite( |$)" "Frontend (vite)"
+kill_processes_by_pattern "npm run dev" "Frontend (npm dev)"
+kill_processes_by_pattern "npm run preview" "Frontend (npm preview)"
 
 echo ""
 

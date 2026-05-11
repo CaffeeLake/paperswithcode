@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getMethods, updatePaperMethods, type Method as APIMethod } from "@/lib/api";
+import { refreshPaperQueries } from "@/lib/queryInvalidation";
 
 interface EditMethodsDialogProps {
   open: boolean;
@@ -48,8 +49,8 @@ export function EditMethodsDialog({
   const updateMethodsMutation = useMutation({
     mutationFn: ({ paperId, methodIds }: { paperId: string; methodIds: number[] }) =>
       updatePaperMethods(paperId, methodIds),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
+    onSuccess: (updatedPaper) => {
+      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
       onSuccess?.();
       onOpenChange(false);
     },

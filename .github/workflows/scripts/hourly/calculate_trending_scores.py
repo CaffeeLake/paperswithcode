@@ -15,10 +15,11 @@ Algorithm:
 EMA Formula:
 - rawStarsPerHour = (currentStars - previousStars) / hoursSinceLastSync
 - trendingScore = α × rawStarsPerHour + (1 - α) × previousTrendingScore
-- Where α = 0.15 (smoothing factor)
+- Where α = 0.75 (smoothing factor)
 
-The low alpha (0.15) means the score changes gradually, preventing sudden spikes
-from dominating the ranking while still being responsive to recent changes.
+A high alpha (0.75) weights the latest observed velocity heavily (75%) versus
+the previous trending score (25%), making rankings respond quickly to recent
+changes while still retaining some smoothing.
 
 Schedule: Hourly (every hour)
 Dependencies: PostgreSQL, repository_star_history table with snapshots
@@ -35,8 +36,8 @@ from backend.database.connection import db_manager
 from scripts.utils.cron_helpers import DatabaseCronJob
 
 
-# EMA smoothing factor (0.15 means 85% weight on previous score, 15% on new data)
-ALPHA = 0.15
+# EMA smoothing factor (0.75 means 75% weight on new data, 25% on previous score)
+ALPHA = 0.75
 
 # Minimum hours between snapshots to calculate velocity (avoid division by very small numbers)
 MIN_HOURS_BETWEEN_SNAPSHOTS = 0.5
@@ -222,7 +223,7 @@ def calculate_ema_trending_score(
     Args:
         raw_stars_per_hour: Current velocity (stars/hour)
         previous_trending_score: Previous EMA trending score (None if first calculation)
-        alpha: Smoothing factor (0.15 by default)
+        alpha: Smoothing factor (0.75 by default)
 
     Returns:
         New trending score

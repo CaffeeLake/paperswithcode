@@ -33,7 +33,7 @@ Use the dashboard to ensure health score stays ≥80%.  For command-line visibil
 ## Trending Pipeline
 
 1. `update_github_stars.py` snapshots star counts into `repository_star_history`.
-2. `calculate_trending_scores.py` computes a trending score per repository using an exponential moving average (α = 0.15) of hourly velocity.
+2. `calculate_trending_scores.py` computes a trending score per repository using an exponential moving average (α = 0.75) of hourly velocity.
 3. Database views (`trending_repositories_24h`, `trending_papers_24h`) join the latest official repositories to papers.
 4. API endpoint `/api/v1/papers/trending` reads from the view and supports filters:
 

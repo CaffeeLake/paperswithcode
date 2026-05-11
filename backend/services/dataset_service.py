@@ -6,13 +6,13 @@ including pagination, filtering, paper associations, and evaluation data.
 """
 
 from typing import Optional, List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, desc, asc, or_
 
 from backend.models.database import (
     Dataset as DBDataset,
     PaperDataset,
-    TaskDatasetMetric,
+    TaskDataset,
     Task as DBTask,
     Evaluation as DBEvaluation,
 )
@@ -64,19 +64,18 @@ class DatasetService:
         """
         try:
             # Base query with paper count and task count
-            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
+            # Counts use distinct because joins can fan out across task and paper links.
+            task_dataset_filter = aliased(TaskDataset)
             query = (
                 self.db.query(
                     DBDataset,
-                    func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
-                        "task_count"
+                    func.count(func.distinct(PaperDataset.paper_id)).label(
+                        "paper_count"
                     ),
+                    func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(
-                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
-                )
+                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .group_by(DBDataset.id)
             )
 
@@ -102,13 +101,18 @@ class DatasetService:
                 query = query.filter(DBDataset.full_name.ilike(f"%{full_name}%"))
 
             if task_id is not None:
-                # Filter datasets by task association via task_dataset_metrics
-                query = query.filter(
-                    DBDataset.id.in_(
-                        self.db.query(TaskDatasetMetric.dataset_id)
-                        .filter(TaskDatasetMetric.task_id == task_id)
-                        .distinct()
+                # Filter datasets by task association via task_datasets so display
+                # metadata stays independent from per-metric leaderboard triples.
+                query = (
+                    query.add_columns(
+                        task_dataset_filter.featured_rank.label("featured_rank")
                     )
+                    .join(
+                        task_dataset_filter,
+                        DBDataset.id == task_dataset_filter.dataset_id,
+                    )
+                    .filter(task_dataset_filter.task_id == task_id)
+                    .group_by(task_dataset_filter.featured_rank)
                 )
 
             # Get total count before pagination
@@ -121,13 +125,23 @@ class DatasetService:
                 order_field = DBDataset.full_name
             elif order_by == "created_at":
                 order_field = DBDataset.created_at
+            elif order_by == "paper_count":
+                # Order by the aggregated count of associated papers.
+                order_field = func.count(PaperDataset.paper_id)
             else:
                 order_field = DBDataset.name
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
+            order_clause = (
+                desc(order_field) if order_dir == "desc" else asc(order_field)
+            )
+            if task_id is not None:
+                query = query.order_by(
+                    asc(task_dataset_filter.featured_rank).nulls_last(),
+                    order_clause,
+                    asc(DBDataset.name),
+                )
             else:
-                query = query.order_by(asc(order_field))
+                query = query.order_by(order_clause)
 
             # Apply pagination
             offset = (page - 1) * page_size
@@ -135,7 +149,9 @@ class DatasetService:
 
             # Convert to API models
             dataset_list = []
-            for db_dataset, paper_count, task_count in results:
+            for row in results:
+                db_dataset, paper_count, task_count = row[:3]
+                featured_rank = row[3] if task_id is not None else None
                 dataset_dict = {
                     "id": str(db_dataset.id),
                     "name": db_dataset.name,
@@ -179,6 +195,7 @@ class DatasetService:
                     # Legacy counts
                     "paper_count": paper_count,
                     "task_count": task_count,
+                    "featured_rank": featured_rank,
                 }
                 dataset_list.append(Dataset(**dataset_dict))
 
@@ -212,19 +229,16 @@ class DatasetService:
         """
         try:
             # Query dataset with counts
-            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
-                        "task_count"
+                    func.count(func.distinct(PaperDataset.paper_id)).label(
+                        "paper_count"
                     ),
+                    func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(
-                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
-                )
+                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .filter(DBDataset.id == dataset_id)
                 .group_by(DBDataset.id)
                 .first()
@@ -278,6 +292,7 @@ class DatasetService:
                 # Legacy counts
                 "paper_count": paper_count,
                 "task_count": task_count,
+                "featured_rank": None,
             }
 
             return Dataset(**dataset_dict)
@@ -300,19 +315,16 @@ class DatasetService:
         """
         try:
             # Query dataset with counts
-            # Task count uses distinct because TaskDatasetMetric can have multiple metrics per task-dataset pair
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(PaperDataset.paper_id).label("paper_count"),
-                    func.count(func.distinct(TaskDatasetMetric.task_id)).label(
-                        "task_count"
+                    func.count(func.distinct(PaperDataset.paper_id)).label(
+                        "paper_count"
                     ),
+                    func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
-                .outerjoin(
-                    TaskDatasetMetric, DBDataset.id == TaskDatasetMetric.dataset_id
-                )
+                .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .filter(DBDataset.slug == slug)
                 .group_by(DBDataset.id)
                 .first()
@@ -366,6 +378,7 @@ class DatasetService:
                 # Legacy counts
                 "paper_count": paper_count,
                 "task_count": task_count,
+                "featured_rank": None,
             }
 
             return Dataset(**dataset_dict)
@@ -420,10 +433,10 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Get distinct task IDs from task_dataset_metrics
+            # Get distinct task IDs from task_datasets
             task_ids = (
-                self.db.query(TaskDatasetMetric.task_id)
-                .filter(TaskDatasetMetric.dataset_id == dataset_id)
+                self.db.query(TaskDataset.task_id)
+                .filter(TaskDataset.dataset_id == dataset_id)
                 .distinct()
                 .all()
             )

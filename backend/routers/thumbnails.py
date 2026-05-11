@@ -63,6 +63,36 @@ async def serve_thumbnail(
         )
 
 
+@router.get("/custom/{filename}")
+async def serve_custom_thumbnail(
+    filename: str, thumbnail_service: ThumbnailService = Depends(get_thumbnail_service)
+):
+    """
+    Serve a manually captured thumbnail for non-ArXiv external resources.
+    """
+    try:
+        thumbnail_path = thumbnail_service.get_existing_custom_thumbnail_path(filename)
+        if thumbnail_path is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Thumbnail not available",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+        return FileResponse(
+            path=thumbnail_path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, s-maxage=604800, max-age=604800"},
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail="Thumbnail not available",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+
 @router.post("/generate/{paper_id}")
 async def generate_thumbnail(
     paper_id: str,

@@ -1,12 +1,13 @@
-import { useQuery, useInfiniteQuery } from '@tanstack/react-query';
-import { apiClient, Paper, PaginatedResponse, TrendingPaper } from '@/lib/api';
+import { keepPreviousData, useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { apiClient, Paper, PaginatedResponse, PaperOrderBy, PaperTimeWindow, TrendingPaper } from '@/lib/api';
 
 interface UsePapersParams {
   page?: number;
   page_size?: number;
   search?: string;
-  order_by?: 'date_published' | 'citation_count' | 'title' | 'trending';
+  order_by?: PaperOrderBy;
   order_dir?: 'asc' | 'desc';
+  time?: PaperTimeWindow;
   published_after?: string;
   published_before?: string;
   conference?: string;
@@ -22,6 +23,7 @@ export function usePapers(params: UsePapersParams = {}) {
     search,
     order_by = 'date_published',
     order_dir = 'desc',
+    time,
     published_after,
     published_before,
     conference,
@@ -31,10 +33,11 @@ export function usePapers(params: UsePapersParams = {}) {
   } = params;
 
   return useQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers', { page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }],
-    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }),
+    queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources }],
+    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources }),
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
   });
 }
@@ -50,11 +53,17 @@ export function usePaper(id: string, enabled: boolean = true) {
 }
 
 export function usePaperByArxivId(arxivId: string, enabled: boolean = true) {
+  const queryClient = useQueryClient();
+
   return useQuery<Paper, Error>({
     queryKey: ['paper-arxiv', arxivId],
     queryFn: () => apiClient.getPaperByArxivId(arxivId, true), // Explicitly include resources
     enabled: enabled && !!arxivId,
     staleTime: 10 * 60 * 1000, // 10 minutes
+    placeholderData: () => {
+      const cachedPaper = findPaperInCachedQueries(queryClient, arxivId);
+      return cachedPaper;
+    },
     refetchOnWindowFocus: false,
   });
 }
@@ -62,8 +71,9 @@ export function usePaperByArxivId(arxivId: string, enabled: boolean = true) {
 interface UseInfinitePapersParams {
   page_size?: number;
   search?: string;
-  order_by?: 'date_published' | 'citation_count' | 'title' | 'trending';
+  order_by?: PaperOrderBy;
   order_dir?: 'asc' | 'desc';
+  time?: PaperTimeWindow;
   published_after?: string;
   published_before?: string;
   conference?: string;
@@ -78,6 +88,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     search,
     order_by = 'date_published',
     order_dir = 'desc',
+    time,
     published_after,
     published_before,
     conference,
@@ -87,7 +98,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, published_after, published_before, conference, latest_only, include_resources }],
+    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getPapers({
         page: pageParam as number,
@@ -95,6 +106,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
         search,
         order_by,
         order_dir,
+        time,
         published_after,
         published_before,
         conference,
@@ -105,6 +117,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     initialPageParam: 1,
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
   });
 }
@@ -112,7 +125,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
 interface UseInfiniteTaskPapersParams {
   taskId: string;
   page_size?: number;
-  order_by?: 'date_published' | 'citation_count' | 'title';
+  order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
   order_dir?: 'asc' | 'desc';
   latest_only?: boolean;
   include_resources?: boolean;
@@ -145,6 +158,7 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
     initialPageParam: 1,
     enabled: enabled && !!taskId,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
   });
 }
@@ -154,6 +168,40 @@ interface UseTrendingPapersParams {
   max_age_days?: number;
   min_velocity?: number;
   enabled?: boolean;
+}
+
+function findPaperInCachedQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  arxivId: string,
+): Paper | undefined {
+  const queryPrefixes = [
+    ['papers'],
+    ['papers-infinite'],
+    ['task-papers-infinite'],
+    ['method-papers-infinite'],
+  ];
+
+  for (const queryKey of queryPrefixes) {
+    for (const [, data] of queryClient.getQueriesData({ queryKey })) {
+      const paper = findPaperInQueryData(data, arxivId);
+      if (paper) return paper;
+    }
+  }
+
+  return undefined;
+}
+
+function findPaperInQueryData(data: unknown, arxivId: string): Paper | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+
+  const paginated = data as Partial<PaginatedResponse<Paper>>;
+  const match = paginated.results?.find((paper) => paper.arxiv_id === arxivId);
+  if (match) return match;
+
+  const infinite = data as { pages?: Array<Partial<PaginatedResponse<Paper>>> };
+  return infinite.pages
+    ?.flatMap((page) => page?.results ?? [])
+    .find((paper) => paper.arxiv_id === arxivId);
 }
 
 export function useTrendingPapers(params: UseTrendingPapersParams = {}) {

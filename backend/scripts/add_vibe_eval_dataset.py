@@ -3,9 +3,9 @@
 Add Vibe-Eval dataset to the database via the FastAPI backend.
 
 This script:
-1. Finds the Vision Language Models task ID
+1. Finds the Image Understanding task ID
 2. Creates the Vibe-Eval dataset
-3. Links it to the Vision Language Models task
+3. Links it to the Image Understanding task
 """
 
 import requests
@@ -19,19 +19,19 @@ API_BASE_URL = os.getenv("PWC_API_URL", "http://localhost:8000/api/v1")
 
 def find_vision_language_models_task() -> Optional[int]:
     """
-    Find the Vision-Language Models task ID.
+    Find the Image Understanding task ID.
 
     Returns:
         Task ID if found, None otherwise
     """
     print("=" * 80)
-    print("Step 1: Finding Vision-Language Models task...")
+    print("Step 1: Finding Image Understanding task...")
     print("=" * 80)
 
     try:
         # Try to get the task directly by slug first
-        print("  Trying to get task by slug: vision-language-models")
-        response = requests.get(f"{API_BASE_URL}/tasks/vision-language-models")
+        print("  Trying to get task by slug: image-understanding")
+        response = requests.get(f"{API_BASE_URL}/tasks/image-understanding")
 
         if response.status_code == 200:
             task = response.json()
@@ -48,9 +48,13 @@ def find_vision_language_models_task() -> Optional[int]:
         response.raise_for_status()
         data = response.json()
 
-        # Look for exact match (try both variations)
+        # Look for exact match (try old and new task names)
         for task in data.get("results", []):
-            if task["name"] in ["Vision-Language Models", "Vision Language Models"]:
+            if task["name"] in [
+                "Image Understanding",
+                "Vision-Language Models",
+                "Vision Language Models",
+            ]:
                 task_id = int(task["id"])
                 print(f"✓ Found task: {task['name']}")
                 print(f"  ID: {task_id}")
@@ -58,7 +62,7 @@ def find_vision_language_models_task() -> Optional[int]:
                 print(f"  Description: {task.get('description', 'N/A')[:100]}...")
                 return task_id
 
-        print("✗ Vision-Language Models task not found")
+        print("✗ Image Understanding task not found")
         print(f"  Tasks checked: {len(data.get('results', []))}")
         return None
 
@@ -72,7 +76,7 @@ def create_vibe_eval_dataset(task_id: int) -> Optional[dict]:
     Create the Vibe-Eval dataset via API.
 
     Args:
-        task_id: The Vision Language Models task ID
+        task_id: The Image Understanding task ID
 
     Returns:
         Created dataset object if successful, None otherwise
@@ -177,13 +181,13 @@ def main():
     print(f"API URL: {API_BASE_URL}")
     print("=" * 80)
 
-    # Step 1: Find the Vision-Language Models task
+    # Step 1: Find the Image Understanding task
     task_id = find_vision_language_models_task()
     if not task_id:
-        print("\n❌ Failed to find Vision-Language Models task")
+        print("\n❌ Failed to find Image Understanding task")
         print("   Please ensure:")
         print("   1. The API server is running")
-        print("   2. The Vision-Language Models task exists in the database")
+        print("   2. The Image Understanding task exists in the database")
         sys.exit(1)
 
     # Step 2: Create the Vibe-Eval dataset
@@ -208,7 +212,7 @@ def main():
     print("Vibe-Eval dataset has been successfully added to the database!")
     print(f"  Dataset ID: {dataset_id}")
     print(f"  Dataset Slug: {dataset.get('slug')}")
-    print(f"  Linked to task: Vision-Language Models (ID: {task_id})")
+    print(f"  Linked to task: Image Understanding (ID: {task_id})")
     print("\nYou can view the dataset at:")
     print(f"  API: {API_BASE_URL}/datasets/{dataset_id}")
     print(f"  Or: {API_BASE_URL}/datasets/{dataset.get('slug')}")

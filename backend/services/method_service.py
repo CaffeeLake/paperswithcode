@@ -41,7 +41,8 @@ class MethodService:
             name: Filter by partial method name match
             full_name: Filter by partial full name match
             introduced_year: Filter by year introduced
-            order_by: Field to order by (name, full_name, introduced_year, paper_count)
+            order_by: Field to order by
+                (name, full_name, introduced_year, created_at, paper_count)
             order_dir: Order direction (asc, desc)
 
         Returns:
@@ -51,12 +52,16 @@ class MethodService:
             DatabaseError: If database query fails
         """
         try:
-            # Base query
-            query = self.db.query(DBMethod)
+            # Aggregate paper_count via a single LEFT JOIN/GROUP BY so we don't
+            # fire one count() query per row (was O(page_size) extra queries).
+            paper_count_col = func.count(PaperMethod.paper_id).label("paper_count")
+            query = (
+                self.db.query(DBMethod, paper_count_col)
+                .outerjoin(PaperMethod, DBMethod.id == PaperMethod.method_id)
+                .group_by(DBMethod.id)
+            )
 
-            # Apply filters
             if search:
-                # Use ilike for case-insensitive search in name, full_name, and description
                 query = query.filter(
                     or_(
                         DBMethod.name.ilike(f"%{search}%"),
@@ -78,7 +83,6 @@ class MethodService:
             if introduced_year is not None:
                 query = query.filter(DBMethod.introduced_year == introduced_year)
 
-            # Apply ordering
             if order_by == "name":
                 order_field = DBMethod.name
             elif order_by == "full_name":
@@ -87,56 +91,49 @@ class MethodService:
                 order_field = DBMethod.introduced_year
             elif order_by == "created_at":
                 order_field = DBMethod.created_at
+            elif order_by == "paper_count":
+                order_field = paper_count_col
             else:
-                order_field = DBMethod.name  # Default to name
+                order_field = DBMethod.name
 
             if order_dir == "desc":
                 query = query.order_by(desc(order_field))
             else:
                 query = query.order_by(asc(order_field))
 
-            # Get total count
             total_count = query.count()
 
-            # Apply pagination
             offset = (page - 1) * page_size
-            results = query.offset(offset).limit(page_size).all()
+            rows = query.offset(offset).limit(page_size).all()
 
-            # Convert to API models
-            methods = []
-            for db_method in results:
-                # Get paper count for this method
-                paper_count = (
-                    self.db.query(func.count(PaperMethod.paper_id))
-                    .filter(PaperMethod.method_id == db_method.id)
-                    .scalar()
-                    or 0
+            methods = [
+                Method(
+                    id=str(db_method.id),
+                    name=db_method.name,
+                    slug=db_method.slug,
+                    full_name=db_method.full_name,
+                    description=db_method.description,
+                    keywords=db_method.keywords,
+                    area_id=str(db_method.area_id) if db_method.area_id else None,
+                    introduced_year=db_method.introduced_year,
+                    source_paper_id=str(db_method.source_paper_id)
+                    if db_method.source_paper_id is not None
+                    else None,
+                    source_url=db_method.source_url,
+                    source_title=db_method.source_title,
+                    code_snippet_url=db_method.code_snippet_url,
+                    image_url=db_method.image_url,
+                    image_credit=db_method.image_credit,
+                    collection_name=db_method.collection_name,
+                    collection_description=db_method.collection_description,
+                    collection_parent=db_method.collection_parent,
+                    paper_count=paper_count or 0,
+                    created_at=db_method.created_at,
+                    updated_at=db_method.updated_at,
                 )
+                for db_method, paper_count in rows
+            ]
 
-                method_dict = {
-                    "id": str(db_method.id),
-                    "name": db_method.name,
-                    "slug": db_method.slug,
-                    "full_name": db_method.full_name,
-                    "description": db_method.description,
-                    "keywords": db_method.keywords,
-                    "area_id": str(db_method.area_id) if db_method.area_id else None,
-                    "introduced_year": db_method.introduced_year,
-                    "source_url": db_method.source_url,
-                    "source_title": db_method.source_title,
-                    "code_snippet_url": db_method.code_snippet_url,
-                    "image_url": db_method.image_url,
-                    "image_credit": db_method.image_credit,
-                    "collection_name": db_method.collection_name,
-                    "collection_description": db_method.collection_description,
-                    "collection_parent": db_method.collection_parent,
-                    "paper_count": paper_count,
-                    "created_at": db_method.created_at,
-                    "updated_at": db_method.updated_at,
-                }
-                methods.append(Method(**method_dict))
-
-            # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None
             previous_page = page - 1 if page > 1 else None
 
@@ -194,6 +191,9 @@ class MethodService:
                 "keywords": db_method.keywords,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
                 "introduced_year": db_method.introduced_year,
+                "source_paper_id": str(db_method.source_paper_id)
+                if db_method.source_paper_id is not None
+                else None,
                 "source_url": db_method.source_url,
                 "source_title": db_method.source_title,
                 "code_snippet_url": db_method.code_snippet_url,
@@ -264,6 +264,9 @@ class MethodService:
                 "keywords": db_method.keywords,
                 "area_id": str(db_method.area_id) if db_method.area_id else None,
                 "introduced_year": db_method.introduced_year,
+                "source_paper_id": str(db_method.source_paper_id)
+                if db_method.source_paper_id is not None
+                else None,
                 "source_url": db_method.source_url,
                 "source_title": db_method.source_title,
                 "code_snippet_url": db_method.code_snippet_url,
@@ -340,6 +343,9 @@ class MethodService:
                     "keywords": db_method.keywords,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
                     "introduced_year": db_method.introduced_year,
+                    "source_paper_id": str(db_method.source_paper_id)
+                    if db_method.source_paper_id is not None
+                    else None,
                     "source_url": db_method.source_url,
                     "source_title": db_method.source_title,
                     "code_snippet_url": db_method.code_snippet_url,
@@ -509,6 +515,9 @@ class MethodService:
                     "keywords": db_method.keywords,
                     "area_id": str(db_method.area_id) if db_method.area_id else None,
                     "introduced_year": db_method.introduced_year,
+                    "source_paper_id": str(db_method.source_paper_id)
+                    if db_method.source_paper_id is not None
+                    else None,
                     "source_url": db_method.source_url,
                     "source_title": db_method.source_title,
                     "code_snippet_url": db_method.code_snippet_url,
@@ -660,11 +669,16 @@ class MethodService:
             from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
+            relation_data = paper_service._get_paper_relation_data(
+                [paper.id for paper in db_papers], include_resources=include_resources
+            )
 
             papers = []
             for db_paper in db_papers:
                 paper = paper_service._convert_db_paper_to_api(
-                    db_paper, include_resources=include_resources
+                    db_paper,
+                    include_resources=include_resources,
+                    relation_data=relation_data,
                 )
                 papers.append(paper)
 
