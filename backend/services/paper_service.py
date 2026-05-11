@@ -28,6 +28,7 @@ from backend.models.database import (
     PaperProjectPage as DBPaperProjectPage,
     Dataset as DBDataset,
 )
+from backend.services.thumbnail_service import build_thumbnail_filename
 from backend.models.api import (
     Paper,
     Papers,
@@ -43,6 +44,7 @@ from backend.models.api import (
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
+    get_method_source_url,
     get_paper_abs_url,
     get_paper_pdf_url,
     get_paper_url,
@@ -62,7 +64,9 @@ class PaperService:
         self.settings = get_settings()
 
     @staticmethod
-    def _convert_db_method_to_summary(method: DBMethod) -> MethodSummary:
+    def _convert_db_method_to_summary(
+        method: DBMethod, source_paper: Optional[DBPaper] = None
+    ) -> MethodSummary:
         return MethodSummary(
             id=str(method.id),
             name=method.name,
@@ -71,7 +75,7 @@ class PaperService:
             source_paper_id=str(method.source_paper_id)
             if method.source_paper_id is not None
             else None,
-            source_url=method.source_url,
+            source_url=get_method_source_url(method.source_url, source_paper),
             source_title=method.source_title,
             code_snippet_url=method.code_snippet_url,
         )
@@ -124,9 +128,25 @@ class PaperService:
             .order_by(PaperMethod.paper_id, DBMethod.name)
             .all()
         )
+        source_paper_ids = [
+            method.source_paper_id
+            for _, method in method_rows
+            if method.source_paper_id is not None
+        ]
+        source_papers_by_id = {}
+        if source_paper_ids:
+            source_papers_by_id = {
+                paper.id: paper
+                for paper in self.db.query(DBPaper)
+                .filter(DBPaper.id.in_(set(source_paper_ids)))
+                .all()
+            }
         for paper_id, method in method_rows:
             relation_data["methods"][paper_id].append(
-                self._convert_db_method_to_summary(method)
+                self._convert_db_method_to_summary(
+                    method,
+                    source_papers_by_id.get(method.source_paper_id),
+                )
             )
 
         introduced_dataset_rows = (
@@ -240,7 +260,6 @@ class PaperService:
     def _convert_db_paper_to_api(
         self,
         db_paper: DBPaper,
-        include_full_data: bool = True,
         include_resources: bool = False,
         relation_data: Optional[Dict[str, Dict[int, list]]] = None,
     ) -> Paper:
@@ -249,7 +268,6 @@ class PaperService:
 
         Args:
             db_paper: Database paper instance
-            include_full_data: Whether to include full paper data or just summary
             include_resources: Whether to include repositories and project pages
 
         Returns:
@@ -279,8 +297,9 @@ class PaperService:
         # continue to derive their stable thumbnail URL from arxiv_id/version.
         thumbnail_url = db_paper.thumbnail_url
         if thumbnail_url is None and db_paper.source == "arxiv" and db_paper.arxiv_id:
-            safe_arxiv_id = db_paper.arxiv_id.replace(".", "_")
-            filename = f"{safe_arxiv_id}_{db_paper.version}.jpg"
+            filename = build_thumbnail_filename(
+                db_paper.arxiv_id, db_paper.version or "v1"
+            )
             thumbnail_url = f"/api/thumbnails/{filename}"
 
         tasks = relation_data["tasks"].get(db_paper.id) or None
@@ -1599,12 +1618,15 @@ class PaperService:
             if invalid_task_ids:
                 raise DatabaseError(f"Invalid task IDs: {invalid_task_ids}")
 
-            # Delete existing paper_tasks associations
+            # Replace all existing paper_tasks associations with the new set.
+            # An admin override always wins: every row inserted here is marked
+            # source='manual' so the keyword-matcher rebuild pass won't touch it.
             self.db.query(PaperTask).filter(PaperTask.paper_id == paper_id).delete()
 
-            # Add new associations
             for task_id in task_ids:
-                paper_task = PaperTask(paper_id=paper_id, task_id=task_id)
+                paper_task = PaperTask(
+                    paper_id=paper_id, task_id=task_id, source="manual"
+                )
                 self.db.add(paper_task)
 
             self.db.commit()

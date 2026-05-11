@@ -29,38 +29,30 @@ async def serve_thumbnail(
     filename: str, thumbnail_service: ThumbnailService = Depends(get_thumbnail_service)
 ):
     """
-    Serve a thumbnail file with on-demand generation.
+    Serve a pre-loaded thumbnail file from the local cache.
 
-    This endpoint follows Hugging Face's approach:
-    1. Check if thumbnail exists in cache
-    2. If not, generate it on-demand from the ArXiv ID in filename
-    3. Serve with heavy caching headers (7 days)
-
-    Args:
-        filename: Name of the thumbnail file (format: {arxiv_id}_{version}.jpg)
-
-    Returns:
-        FileResponse with the thumbnail image
-
-    Raises:
-        HTTPException: If generation fails or invalid filename
+    The request path is strictly on-disk: the local cache is kept in sync
+    with the HF bucket by `mirror_thumbnails_to_disk`, and brand-new
+    thumbnails are generated exclusively by the `preload_thumbnails` cron.
+    User-facing requests never trigger PDF rasterisation or HF round-trips.
     """
     try:
-        thumbnail_path = await thumbnail_service.get_or_generate_thumbnail(filename)
-        return FileResponse(
-            path=thumbnail_path,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "public, s-maxage=604800, max-age=604800"
-            },  # 7 days cache like HF
-        )
+        thumbnail_path = thumbnail_service.get_local_thumbnail_path(filename)
     except Exception:
-        # If generation fails, return a 404 with cache headers to avoid repeated attempts
+        thumbnail_path = None
+
+    if thumbnail_path is None:
         raise HTTPException(
             status_code=404,
             detail="Thumbnail not available",
-            headers={"Cache-Control": "public, max-age=3600"},  # Cache 404 for 1 hour
+            headers={"Cache-Control": "public, max-age=3600"},
         )
+
+    return FileResponse(
+        path=thumbnail_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, s-maxage=604800, max-age=604800"},
+    )
 
 
 @router.get("/custom/{filename}")

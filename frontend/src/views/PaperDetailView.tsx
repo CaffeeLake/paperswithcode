@@ -676,6 +676,7 @@ const PaperDetailView: React.FC = () => {
         paperId={paper.id}
         arxivId={arxivId}
         initialTaskIds={paper.tasks?.map((t) => parseInt(t.id)) || []}
+        initialTasks={paper.tasks || []}
       />
       <EditMethodsDialog
         open={isEditingMethods}
@@ -683,6 +684,7 @@ const PaperDetailView: React.FC = () => {
         paperId={paper.id}
         arxivId={arxivId}
         initialMethodIds={paper.methods?.map((m) => parseInt(m.id)) || []}
+        initialMethods={paper.methods || []}
       />
       <EditRepositoriesDialog
         open={isEditingRepositories}

@@ -1088,6 +1088,14 @@ class Dataset(BaseModel):
         None, description="List of metric names allowed for evaluations on this dataset"
     )
 
+    # Optionally embedded introducing paper. Populated only when the request
+    # passes `?include_paper=true`. Lets the benchmark page collapse the
+    # previous dataset → paper waterfall into a single round trip (PLAN.md §5).
+    introducing_paper: Optional["IntroducingPaper"] = Field(
+        None,
+        description="Lightweight introducing-paper embed. Present only when the request asked for it.",
+    )
+
     @field_validator("id", "parent_dataset_id", "introducing_paper_id", mode="before")
     @classmethod
     def ensure_string_id(cls, v):
@@ -1095,6 +1103,33 @@ class Dataset(BaseModel):
         if v is None:
             return v
         return str(v)
+
+
+class IntroducingPaper(BaseModel):
+    """
+    Minimal projection of a paper used as an embed inside `Dataset` when callers
+    request `?include_paper=true`.  Only carries the fields the benchmark page
+    needs (link by arxiv_id, headline, year), so we don't pay the full Paper
+    serialization cost (authors, repositories, methods, …) on every benchmark
+    page load.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Paper ID")
+    arxiv_id: Optional[str] = Field(None, description="ArXiv ID, if any")
+    title: str = Field(..., description="Paper title")
+    published: Optional[date] = Field(None, description="Publication date")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        if v is None:
+            return v
+        return str(v)
+
+
+Dataset.model_rebuild()
 
 
 class Datasets(BaseModel):

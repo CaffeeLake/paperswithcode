@@ -18,16 +18,26 @@ import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
 
-import FeedView from "@/views/FeedView";
-import PapersListView from "@/views/PapersListView";
-import PaperDetailView from "@/views/PaperDetailView";
-import TagsIndexView from "@/views/TagsIndexView";
-import TagBrowseView from "@/views/TagBrowseView";
-import MethodsIndexView from "@/views/MethodsIndexView";
-import MethodDetailView from "@/views/MethodDetailView";
-import BenchmarkDetailView from "@/views/BenchmarkDetailView";
-import CronDashboard from "@/pages/CronDashboard";
-import NotFound from "@/pages/NotFound";
+// Lazy-load route components so visitors only download the chunks for the
+// pages they actually navigate to. Saves ~150-200 KB gzipped on first paint
+// for visitors landing on a single route. See PLAN.md §4.
+const FeedView = React.lazy(() => import("@/views/FeedView"));
+const PapersListView = React.lazy(() => import("@/views/PapersListView"));
+const PaperDetailView = React.lazy(() => import("@/views/PaperDetailView"));
+const TagsIndexView = React.lazy(() => import("@/views/TagsIndexView"));
+const TagBrowseView = React.lazy(() => import("@/views/TagBrowseView"));
+const MethodsIndexView = React.lazy(() => import("@/views/MethodsIndexView"));
+const MethodDetailView = React.lazy(() => import("@/views/MethodDetailView"));
+const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView"));
+const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
+const NotFound = React.lazy(() => import("@/pages/NotFound"));
+
+// Minimal placeholder shown while a route chunk is downloading. Each view also
+// renders its own skeletons once mounted, so this fallback only flashes briefly
+// (≤200 ms on a warm cache).
+const RouteFallback: React.FC = () => (
+  <div className="page" aria-busy="true" />
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,19 +73,21 @@ const Shell: React.FC = () => {
     <>
       <Header onOpenSearch={() => setSearchOpen(true)} />
       <main>
-        <Routes>
-          <Route path="/" element={<FeedView />} />
-          <Route path="/papers" element={<PapersListView />} />
-          <Route path="/papers/:arxivId" element={<LegacyPaperRedirect />} />
-          <Route path="/paper/:arxivId" element={<PaperDetailView />} />
-          <Route path="/tasks" element={<TagsIndexView />} />
-          <Route path="/tasks/:taskSlug" element={<TagBrowseView />} />
-          <Route path="/methods" element={<MethodsIndexView />} />
-          <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
-          <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
-          <Route path="/cron-dashboard" element={<CronDashboard />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <React.Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/" element={<FeedView />} />
+            <Route path="/papers" element={<PapersListView />} />
+            <Route path="/papers/:arxivId" element={<LegacyPaperRedirect />} />
+            <Route path="/paper/:arxivId" element={<PaperDetailView />} />
+            <Route path="/tasks" element={<TagsIndexView />} />
+            <Route path="/tasks/:taskSlug" element={<TagBrowseView />} />
+            <Route path="/methods" element={<MethodsIndexView />} />
+            <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
+            <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
+            <Route path="/cron-dashboard" element={<CronDashboard />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </React.Suspense>
       </main>
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
     </>

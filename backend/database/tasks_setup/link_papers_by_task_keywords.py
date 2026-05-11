@@ -14,8 +14,16 @@ Case-Sensitivity Rules:
 - All-lowercase keywords: case-insensitive matching
   * Examples: "transformer", "attention", "object detection"
   * Uses word boundary matching to prevent false matches (e.g., "transformed" when looking for "transformer")
+
+Modes:
+- Default (add-only): inserts any new paper<->task links the matcher produces,
+  never removes anything. Safe to run repeatedly. (`ON CONFLICT DO NOTHING`)
+- `--rebuild`: deletes every `source = 'auto'` row first, then re-inserts what
+  the matcher currently produces. `source = 'manual'` rows (set via the admin
+  API or one-off scripts) are never touched.
 """
 
+import argparse
 import os
 from typing import Dict, List
 
@@ -55,18 +63,20 @@ def load_tasks_with_keywords(conn) -> List[Dict]:
     return tasks
 
 
-def link_papers_by_task_keywords():
+def link_papers_by_task_keywords(rebuild: bool = False):
     """Main function to link papers to tasks based on keyword matching."""
 
     try:
         print("=" * 80)
         print("Linking Papers to Tasks Based on Keywords")
+        if rebuild:
+            print("Mode: REBUILD (delete-then-insert for source='auto' rows)")
+        else:
+            print("Mode: add-only (default)")
         print("=" * 80)
 
-        # Connect to database
         conn = get_db_connection()
 
-        # Load tasks and create keyword patterns
         print("\n1. Loading tasks with keywords...")
         tasks = load_tasks_with_keywords(conn)
         print(f"   ✓ Loaded {len(tasks)} tasks with keywords")
@@ -82,13 +92,24 @@ def link_papers_by_task_keywords():
         print(f"   - {len(case_sensitive_patterns)} unique case-sensitive keywords")
         print(f"   - {len(case_insensitive_patterns)} unique case-insensitive keywords")
 
-        # Check current state of paper_tasks
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT COUNT(*) as count FROM paper_tasks")
         initial_count = cur.fetchone()["count"]
+        cur.execute("SELECT source, COUNT(*) as count FROM paper_tasks GROUP BY source")
+        by_source_initial = {row["source"]: row["count"] for row in cur.fetchall()}
         print(f"\n3. Current paper_tasks relationships: {initial_count:,}")
+        print(f"   - auto:   {by_source_initial.get('auto', 0):>10,}")
+        print(f"   - manual: {by_source_initial.get('manual', 0):>10,}")
 
-        # Process papers in batches
+        if rebuild:
+            print("\n3b. REBUILD: deleting all source='auto' rows ...")
+            cur2 = conn.cursor()
+            cur2.execute("DELETE FROM paper_tasks WHERE source = 'auto'")
+            deleted_count = cur2.rowcount
+            conn.commit()
+            cur2.close()
+            print(f"   ✓ Deleted {deleted_count:,} auto rows")
+
         print("\n4. Processing papers...")
         print("   (Streaming through papers and matching keywords...)")
 
@@ -105,8 +126,13 @@ def link_papers_by_task_keywords():
         batch = []
         batch_size = 1000
 
-        # Track statistics
         task_match_counts = defaultdict(int)
+
+        insert_sql = """
+            INSERT INTO paper_tasks (paper_id, task_id, source)
+            VALUES (%(paper_id)s, %(task_id)s, 'auto')
+            ON CONFLICT (paper_id, task_id) DO NOTHING
+        """
 
         for paper in cur:
             papers_processed += 1
@@ -118,7 +144,6 @@ def link_papers_by_task_keywords():
                     f"found {new_relationships:,} new relationships..."
                 )
 
-            # Combine title and abstract for matching
             text = ""
             if paper["title"]:
                 text = paper["title"]
@@ -128,7 +153,6 @@ def link_papers_by_task_keywords():
             if not text.strip():
                 continue
 
-            # Find matching tasks (simple matching - all matching tasks are tagged)
             matching_task_ids = find_matching_items_simple(
                 text, case_sensitive_patterns, case_insensitive_patterns
             )
@@ -141,43 +165,26 @@ def link_papers_by_task_keywords():
                     new_relationships += 1
                     task_match_counts[task_id] += 1
 
-            # Insert batch
             if len(batch) >= batch_size:
                 cur2 = conn.cursor()
-                execute_batch(
-                    cur2,
-                    """
-                    INSERT INTO paper_tasks (paper_id, task_id)
-                    VALUES (%(paper_id)s, %(task_id)s)
-                    ON CONFLICT (paper_id, task_id) DO NOTHING
-                """,
-                    batch,
-                )
+                execute_batch(cur2, insert_sql, batch)
                 conn.commit()
                 cur2.close()
                 batch = []
 
-        # Insert remaining batch
         if batch:
             cur2 = conn.cursor()
-            execute_batch(
-                cur2,
-                """
-                INSERT INTO paper_tasks (paper_id, task_id)
-                VALUES (%(paper_id)s, %(task_id)s)
-                ON CONFLICT (paper_id, task_id) DO NOTHING
-            """,
-                batch,
-            )
+            execute_batch(cur2, insert_sql, batch)
             conn.commit()
             cur2.close()
 
         cur.close()
 
-        # Final statistics
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT COUNT(*) as count FROM paper_tasks")
         final_count = cur.fetchone()["count"]
+        cur.execute("SELECT source, COUNT(*) as count FROM paper_tasks GROUP BY source")
+        by_source_final = {row["source"]: row["count"] for row in cur.fetchall()}
 
         print(f"\n   ✓ Finished processing {papers_processed:,} papers")
 
@@ -186,22 +193,19 @@ def link_papers_by_task_keywords():
         print("=" * 80)
         print(f"Papers processed:              {papers_processed:>10,}")
         print(f"Papers with keyword matches:   {papers_matched:>10,}")
-        print(f"New relationships found:       {new_relationships:>10,}")
+        print(f"Relationships matcher emitted: {new_relationships:>10,}")
         print(f"Initial paper_tasks count:     {initial_count:>10,}")
         print(f"Final paper_tasks count:       {final_count:>10,}")
-        print(f"Relationships actually added:  {final_count - initial_count:>10,}")
+        print(f"Net delta:                     {final_count - initial_count:>+10,}")
+        print(f"Auto rows now:                 {by_source_final.get('auto', 0):>10,}")
+        print(f"Manual rows now:               {by_source_final.get('manual', 0):>10,}")
 
-        # Show top tasks by new matches
         print("\n" + "=" * 80)
         print("Top 20 Tasks by New Keyword Matches")
         print("=" * 80)
 
-        # Get task names for the matched IDs
-        task_id_to_name = {}
-        for task in tasks:
-            task_id_to_name[task["id"]] = task["name"]
+        task_id_to_name = {task["id"]: task["name"] for task in tasks}
 
-        # Sort by match count
         sorted_tasks = sorted(
             task_match_counts.items(), key=lambda x: x[1], reverse=True
         )[:20]
@@ -210,7 +214,6 @@ def link_papers_by_task_keywords():
             task_name = task_id_to_name.get(task_id, f"Unknown (ID {task_id})")
             print(f"{task_name:40} {count:>8,} matches")
 
-        # Show overall top tasks in database
         print("\n" + "=" * 80)
         print("Top 20 Tasks by Total Paper Count (after keyword linking)")
         print("=" * 80)
@@ -242,5 +245,20 @@ def link_papers_by_task_keywords():
     return 0
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "Delete all source='auto' paper_tasks rows before re-inserting. "
+            "Manual rows are preserved. Use this to drop stale tags created by "
+            "old/broader keyword sets."
+        ),
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    exit(link_papers_by_task_keywords())
+    args = parse_args()
+    exit(link_papers_by_task_keywords(rebuild=args.rebuild))

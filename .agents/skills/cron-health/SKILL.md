@@ -1,6 +1,6 @@
 ---
 name: cron-health
-description: Investigate and report the health of the paperswithcode GitHub Actions CRON jobs (update_github_stars, update_citations, extract_urls, calculate_trending_scores, import_hf_daily_papers, preload_thumbnails). Use this skill whenever the user mentions cron health, cron status, scheduled jobs, broken cron, GitHub Actions runs, stale stars/citations/papers, missing recent papers, or asks variations like "are the cron jobs working?" / "did the github stars cron run today?" / "why are stars not updating?" — even when not phrased as a health check. Also use immediately whenever the user mentions updating any secret consumed by a cron (e.g. `PWC_GITHUB_TOKEN`, `PWC_OPENROUTER_API_KEY`, `PWC_GEMINI_API_KEY`, `PWC_HF_TOKEN`, `PWC_SEMANTIC_SCHOLAR_API_KEY`), because that is the single most common moment for these jobs to silently break.
+description: Investigate and report the health of the paperswithcode GitHub Actions CRON jobs (update_github_stars, update_citations, extract_urls, calculate_trending_scores, import_hf_daily_papers, preload_thumbnails, mirror_thumbnails_to_disk). Use this skill whenever the user mentions cron health, cron status, scheduled jobs, broken cron, GitHub Actions runs, stale stars/citations/papers, missing recent papers, or asks variations like "are the cron jobs working?" / "did the github stars cron run today?" / "why are stars not updating?" — even when not phrased as a health check. Also use immediately whenever the user mentions updating any secret consumed by a cron (e.g. `PWC_GITHUB_TOKEN`, `PWC_OPENROUTER_API_KEY`, `PWC_GEMINI_API_KEY`, `PWC_HF_TOKEN`, `PWC_SEMANTIC_SCHOLAR_API_KEY`), because that is the single most common moment for these jobs to silently break.
 ---
 
 # CRON job health check
@@ -28,6 +28,7 @@ The current set of CRONs (read these files directly to confirm schedule and targ
 | `cron-calculate-trending-scores.yml` | `15 * * * *` (hourly) | Recomputes trending scores from star history | local log `calculate_trending_scores_*.log`; `repositories.trending_score_updated_at` |
 | `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` (Tue–Sat 03:00) | Imports the previous day's HF daily papers | local log `import_hf_daily_papers_*.log`; new rows in `papers` |
 | `cron-preload-thumbnails.yml` | `30 4 * * *` (daily 04:30) | Preloads paper thumbnails into the HF bucket | local log `preload_thumbnails_*.log` |
+| `cron-mirror-thumbnails-to-disk.yml` | `0 5 * * *` (daily 05:00) | Mirrors the HF thumbnail bucket prefix to the VPS local cache served by `/api/thumbnails/{filename}` | local log `mirror_thumbnails_to_disk_*.log`; file count under `PWC_THUMBNAIL_TEMP_CACHE_DIR` should approach bucket file count |
 
 If a workflow file appears that you don't recognize, treat it as in-scope and figure out what it does — don't silently skip it.
 
@@ -53,7 +54,7 @@ If `gh` is unavailable, say so once and move on to the VPS-side evidence below. 
 For every cron, gather three things in one batch of tool calls:
 
 1. **Recent local logs**: `ls -la .github/workflows/scripts/logs/ | grep <prefix>` and `tail -40` on the most recent file (also peek at yesterday's if today's is short or missing).
-2. **Currently-running processes**: `ps -ef | grep -E "(update_github_stars|update_citations|extract_urls|calculate_trending|import_hf|preload_thumbnails)" | grep -v grep`. A long-running process here is normal during its window; a process that has been running for hours past its expected runtime is a stuck job.
+2. **Currently-running processes**: `ps -ef | grep -E "(update_github_stars|update_citations|extract_urls|calculate_trending|import_hf|preload_thumbnails|mirror_thumbnails)" | grep -v grep`. A long-running process here is normal during its window; a process that has been running for hours past its expected runtime is a stuck job.
 3. **Lock files**: `ls /tmp/*.lock 2>/dev/null` — `github_stars.lock`, `trending_scores.lock`, etc. A stale lock from a killed run will block all subsequent invocations.
 
 ### 4. Verify the actual work landed in the database
@@ -111,7 +112,7 @@ Detect this trap with:
 
 ```bash
 stat -c '%y' backend/keys.env
-ps -eo pid,lstart,cmd | grep -E "(update_github_stars|update_citations|extract_urls|calculate_trending|import_hf|preload_thumbnails)" | grep -v grep
+ps -eo pid,lstart,cmd | grep -E "(update_github_stars|update_citations|extract_urls|calculate_trending|import_hf|preload_thumbnails|mirror_thumbnails)" | grep -v grep
 ```
 
 If any process's `lstart` is **older** than `keys.env`'s mtime, it's running with stale credentials. Confirm with strace + a brief packet capture if needed:

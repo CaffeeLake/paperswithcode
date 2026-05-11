@@ -13,6 +13,10 @@ Case-Sensitivity Rules:
 - If a keyword is all lowercase: case-insensitive matching
   * Examples: "transformer", "attention", "object detection"
   * Uses word boundary matching to prevent false matches (e.g., "transformed" when looking for "transformer")
+  * Allows an optional trailing 's' so the keyword "large language model" also
+    catches the very common plural form "large language models". The optional
+    's' sits inside the trailing `\b`, so partial-word false positives like
+    "transformed" (when searching "transformer") are still rejected.
 """
 
 import re
@@ -138,12 +142,14 @@ def find_matching_items_simple(
         if keyword in text:
             matched_items.update(item_ids)
 
-    # Find case-insensitive matches
-    # For case-insensitive keywords (phrases), use word boundary
-    # This prevents matching "transformed" when looking for "transformer"
+    # Find case-insensitive matches.
+    # Word-boundary matching prevents substring false positives like matching
+    # "transformed" when looking for "transformer". The trailing `s?` allows
+    # the common English plural so e.g. keyword "large language model" still
+    # tags a paper that writes "Large Language Models" in its abstract.
     text_lower = text.lower()
     for keyword_lower, item_ids in case_insensitive_patterns.items():
-        pattern = r"\b" + re.escape(keyword_lower) + r"\b"
+        pattern = r"\b" + re.escape(keyword_lower) + r"s?\b"
         if re.search(pattern, text_lower):
             matched_items.update(item_ids)
 
@@ -199,10 +205,15 @@ def find_matching_items_longest_match(
                     }
                 )
 
-    # Find case-insensitive matches
+    # Find case-insensitive matches.
+    # Allow an optional trailing 's' (plural) inside the closing word boundary,
+    # mirroring the `find_matching_items_simple` rule so plural forms like
+    # "transformers" / "language models" still tag the underlying method/task.
     text_lower = text.lower()
     for keyword_lower, item_list in case_insensitive_patterns.items():
-        for match in re.finditer(r"\b" + re.escape(keyword_lower) + r"\b", text_lower):
+        for match in re.finditer(
+            r"\b" + re.escape(keyword_lower) + r"s?\b", text_lower
+        ):
             start, end = match.span()
             for item_info in item_list:
                 all_matches.append(

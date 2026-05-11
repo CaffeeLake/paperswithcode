@@ -22,12 +22,14 @@ from backend.models.api import (
 from backend.models.database import Paper as DBPaper, Author, PaperAuthor
 from backend.services.paper_service import PaperService
 from backend.services.arxiv_service import ArxivService
+from backend.services.thumbnail_service import build_thumbnail_filename
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import validate_arxiv_id, validate_version
 
 router = APIRouter()
 
 
+@router.get("/papers", response_model=Papers, include_in_schema=False)
 @router.get(
     "/papers/",
     response_model=Papers,
@@ -286,8 +288,7 @@ async def get_trending_papers(
             explicit_thumbnail_url = row[16]
             thumbnail_url = explicit_thumbnail_url
             if thumbnail_url is None and source == "arxiv" and arxiv_id:
-                safe_arxiv_id = arxiv_id.replace(".", "_")
-                filename = f"{safe_arxiv_id}_v1.jpg"
+                filename = build_thumbnail_filename(arxiv_id, "v1")
                 thumbnail_url = f"/api/thumbnails/{filename}"
 
             # Get tasks for this paper
@@ -663,30 +664,6 @@ async def update_citation_counts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Legacy compatibility endpoints (matching original PapersWithCode API)
-
-
-@router.get(
-    "/papers",
-    response_model=Papers,
-    summary="Legacy: Get papers (compatibility endpoint)",
-)
-async def get_papers_legacy(
-    page: int = Query(1, ge=1), db: Session = Depends(get_database_session)
-):
-    """
-    Legacy compatibility endpoint matching the original PapersWithCode API.
-
-    This endpoint provides basic pagination without advanced filtering options
-    to maintain compatibility with existing clients.
-    """
-    try:
-        service = PaperService(db)
-        return service.get_papers(page=page, latest_only=True)
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get(
     "/papers/{paper_id}/methods/",
     summary="Get methods used in a paper",
@@ -739,7 +716,9 @@ async def get_paper_methods(
 async def update_paper_tasks(
     paper_id: int = Path(..., description="Database paper ID"),
     task_ids: List[int] = Query(
-        ..., description="List of task IDs to associate with the paper"
+        default=[],
+        description="List of task IDs to associate with the paper. "
+        "An empty list clears all task associations.",
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -778,7 +757,9 @@ async def update_paper_tasks(
 async def update_paper_methods(
     paper_id: int = Path(..., description="Database paper ID"),
     method_ids: List[int] = Query(
-        ..., description="List of method IDs to associate with the paper"
+        default=[],
+        description="List of method IDs to associate with the paper. "
+        "An empty list clears all method associations.",
     ),
     db: Session = Depends(get_database_session),
 ):

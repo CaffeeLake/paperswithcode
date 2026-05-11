@@ -780,11 +780,14 @@ class PaperTask(Base):
     task_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
     )
+    # 'auto' = inserted by keyword matcher (rebuild may delete/re-insert).
+    # 'manual' = set via admin API / one-off script (rebuild leaves alone).
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="auto")
 
-    # Indexes
     __table_args__ = (
         Index("idx_paper_tasks_paper_id", "paper_id"),
         Index("idx_paper_tasks_task_id", "task_id"),
+        Index("idx_paper_tasks_source", "source"),
     )
 
 

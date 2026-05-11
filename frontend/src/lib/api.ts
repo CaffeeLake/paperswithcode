@@ -134,6 +134,14 @@ export interface Method {
   updated_at?: string;
 }
 
+export interface IntroducingPaper {
+  id: string;
+  arxiv_id?: string | null;
+  title: string;
+  /** ISO date string (YYYY-MM-DD) of the introducing paper's publication date. */
+  published?: string | null;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -151,6 +159,9 @@ export interface Dataset {
   introduced_date?: string;
   created_at?: string;
   updated_at?: string;
+  /** Optional embedded paper. Populated when the request asked for
+   * `?include_paper=true`; saves a follow-up GET /papers/{id} round trip. */
+  introducing_paper?: IntroducingPaper | null;
 }
 
 export interface Evaluation {
@@ -626,9 +637,15 @@ class ApiClient {
     return this.request<Dataset>(`/datasets/${id}`);
   }
 
-  async getDatasetBySlug(slug: string): Promise<Dataset> {
-    // Use the datasets/{slug} endpoint which supports both ID and slug lookups
-    return this.request<Dataset>(`/datasets/${slug}`);
+  async getDatasetBySlug(
+    slug: string,
+    options?: { include_paper?: boolean },
+  ): Promise<Dataset> {
+    // Pass `include_paper=true` from BenchmarkDetailView so the response
+    // already embeds the introducing paper (arxiv_id, title, published) and
+    // the page doesn't have to issue a second GET /papers/{id}.
+    const qs = options?.include_paper ? "?include_paper=true" : "";
+    return this.request<Dataset>(`/datasets/${slug}${qs}`);
   }
 
   async getDatasetTasks(datasetId: string): Promise<Task[]> {

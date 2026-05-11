@@ -116,6 +116,14 @@ async def list_datasets(
 @router.get("/{dataset_id}", response_model=Dataset)
 async def get_dataset(
     dataset_id: str,
+    include_paper: bool = Query(
+        False,
+        description=(
+            "Embed a lightweight introducing-paper projection (arxiv_id, title, "
+            "published) so callers don't need a follow-up request to GET "
+            "/papers/{id}.  Used by the benchmark detail page."
+        ),
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -127,6 +135,7 @@ async def get_dataset(
     **Example:**
     - `/api/v1/datasets/123` - Get dataset with ID 123
     - `/api/v1/datasets/coco` - Get dataset with slug "coco"
+    - `/api/v1/datasets/coco?include_paper=true` - Also embed the introducing paper
     """
     try:
         service = DatasetService(db)
@@ -134,10 +143,12 @@ async def get_dataset(
         # Try to parse as integer ID first
         try:
             dataset_id_int = int(dataset_id)
-            dataset = service.get_dataset(dataset_id_int)
+            dataset = service.get_dataset(dataset_id_int, include_paper=include_paper)
         except ValueError:
             # Not an integer, treat as slug
-            dataset = service.get_dataset_by_slug(dataset_id)
+            dataset = service.get_dataset_by_slug(
+                dataset_id, include_paper=include_paper
+            )
 
         if not dataset:
             raise HTTPException(

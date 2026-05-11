@@ -4,8 +4,7 @@ Each thumbnail is generated from the first page of the paper's PDF.
 
 This service handles:
 - Downloading PDFs from ArXiv
-- Converting first page to image
-- Cropping to show upper half
+- Converting the full first page to an image
 - Reading/writing thumbnails from local or Hugging Face bucket storage
 - Serving cached thumbnails
 """
@@ -25,6 +24,14 @@ from backend.utils.exceptions import ThumbnailGenerationError
 from backend.services.arxiv_service import ArxivService
 
 logger = logging.getLogger(__name__)
+
+
+def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
+    """
+    Build the canonical thumbnail filename for an ArXiv paper.
+    """
+    safe_id = arxiv_id.replace("/", "_").replace(".", "_")
+    return f"{safe_id}_{version}.jpg"
 
 
 class ThumbnailService:
@@ -71,17 +78,19 @@ class ThumbnailService:
         if "/" in filename or "\\" in filename:
             raise ThumbnailGenerationError("Invalid thumbnail filename")
 
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+_v\d+\.jpg", filename):
+        match = re.fullmatch(
+            r"(?P<base>[A-Za-z0-9_.-]+?)_(?P<version>v\d+)\.jpg",
+            filename,
+        )
+        if not match:
             raise ThumbnailGenerationError("Invalid thumbnail filename")
 
-        name_without_ext = filename.rsplit(".", 1)[0]
-        parts = name_without_ext.split("_")
-        if len(parts) < 3:
+        safe_id = match.group("base")
+        if "_" not in safe_id:
             raise ThumbnailGenerationError("Invalid thumbnail filename")
 
-        arxiv_id = ".".join(parts[:-1])
-        version = parts[-1]
-        return arxiv_id, version
+        arxiv_id = safe_id.replace("_", ".")
+        return arxiv_id, match.group("version")
 
     def validate_custom_filename(self, filename: str) -> None:
         """
@@ -96,8 +105,7 @@ class ThumbnailService:
         """
         Get the stable thumbnail filename for a given ArXiv paper.
         """
-        safe_id = arxiv_id.replace("/", "_").replace(".", "_")
-        return f"{safe_id}_{version}.jpg"
+        return build_thumbnail_filename(arxiv_id, version)
 
     def _get_cache_path(self, arxiv_id: str, version: str = "v1") -> Path:
         """
@@ -190,15 +198,11 @@ class ThumbnailService:
 
             image = images[0]
 
-            # Crop to upper half
-            width, height = image.size
-            upper_half = image.crop((0, 0, width, height // 2))
-
-            # Resize to target width while maintaining aspect ratio
-            aspect_ratio = upper_half.height / upper_half.width
+            # Resize the full first page to target width while maintaining aspect ratio
+            aspect_ratio = image.height / image.width
             target_height = int(self.thumbnail_width * aspect_ratio)
 
-            thumbnail = upper_half.resize(
+            thumbnail = image.resize(
                 (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
             )
 
@@ -232,6 +236,25 @@ class ThumbnailService:
         """
         self.parse_filename(filename)
         return self._get_existing_thumbnail_path_unchecked(filename)
+
+    def get_local_thumbnail_path(self, filename: str) -> Optional[Path]:
+        """
+        Return an existing thumbnail path from on-disk caches only.
+
+        Used by the request-serving path to guarantee that no per-request HF
+        bucket round-trip happens; the bucket is kept in sync with the active
+        local cache by the `mirror_thumbnails_to_disk` cron.
+        """
+        self.parse_filename(filename)
+        active_cache_path = self._get_active_cache_path(filename)
+        if active_cache_path.exists():
+            return active_cache_path
+
+        legacy_cache_path = self._get_legacy_cache_path(filename)
+        if legacy_cache_path.exists():
+            return legacy_cache_path
+
+        return None
 
     def get_existing_custom_thumbnail_path(self, filename: str) -> Optional[Path]:
         """

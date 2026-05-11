@@ -6,12 +6,13 @@ including pagination, filtering, and paper associations.
 """
 
 from typing import Optional, List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, asc, or_
 
 from backend.models.database import Method as DBMethod, PaperMethod
 from backend.models.api import Method, Methods
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.urls import get_method_source_url
 
 
 class MethodService:
@@ -19,6 +20,37 @@ class MethodService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    @staticmethod
+    def _convert_db_method_to_api(
+        db_method: DBMethod, paper_count: Optional[int] = None
+    ) -> Method:
+        return Method(
+            id=str(db_method.id),
+            name=db_method.name,
+            slug=db_method.slug,
+            full_name=db_method.full_name,
+            description=db_method.description,
+            keywords=db_method.keywords,
+            area_id=str(db_method.area_id) if db_method.area_id else None,
+            introduced_year=db_method.introduced_year,
+            source_paper_id=str(db_method.source_paper_id)
+            if db_method.source_paper_id is not None
+            else None,
+            source_url=get_method_source_url(
+                db_method.source_url, db_method.source_paper
+            ),
+            source_title=db_method.source_title,
+            code_snippet_url=db_method.code_snippet_url,
+            image_url=db_method.image_url,
+            image_credit=db_method.image_credit,
+            collection_name=db_method.collection_name,
+            collection_description=db_method.collection_description,
+            collection_parent=db_method.collection_parent,
+            paper_count=paper_count,
+            created_at=db_method.created_at,
+            updated_at=db_method.updated_at,
+        )
 
     def get_methods(
         self,
@@ -52,13 +84,23 @@ class MethodService:
             DatabaseError: If database query fails
         """
         try:
-            # Aggregate paper_count via a single LEFT JOIN/GROUP BY so we don't
-            # fire one count() query per row (was O(page_size) extra queries).
-            paper_count_col = func.count(PaperMethod.paper_id).label("paper_count")
+            paper_count_subq = (
+                self.db.query(
+                    PaperMethod.method_id.label("method_id"),
+                    func.count(PaperMethod.paper_id).label("paper_count"),
+                )
+                .group_by(PaperMethod.method_id)
+                .subquery()
+            )
+            paper_count_col = func.coalesce(paper_count_subq.c.paper_count, 0).label(
+                "paper_count"
+            )
             query = (
                 self.db.query(DBMethod, paper_count_col)
-                .outerjoin(PaperMethod, DBMethod.id == PaperMethod.method_id)
-                .group_by(DBMethod.id)
+                .options(joinedload(DBMethod.source_paper))
+                .outerjoin(
+                    paper_count_subq, DBMethod.id == paper_count_subq.c.method_id
+                )
             )
 
             if search:
@@ -107,30 +149,7 @@ class MethodService:
             rows = query.offset(offset).limit(page_size).all()
 
             methods = [
-                Method(
-                    id=str(db_method.id),
-                    name=db_method.name,
-                    slug=db_method.slug,
-                    full_name=db_method.full_name,
-                    description=db_method.description,
-                    keywords=db_method.keywords,
-                    area_id=str(db_method.area_id) if db_method.area_id else None,
-                    introduced_year=db_method.introduced_year,
-                    source_paper_id=str(db_method.source_paper_id)
-                    if db_method.source_paper_id is not None
-                    else None,
-                    source_url=db_method.source_url,
-                    source_title=db_method.source_title,
-                    code_snippet_url=db_method.code_snippet_url,
-                    image_url=db_method.image_url,
-                    image_credit=db_method.image_credit,
-                    collection_name=db_method.collection_name,
-                    collection_description=db_method.collection_description,
-                    collection_parent=db_method.collection_parent,
-                    paper_count=paper_count or 0,
-                    created_at=db_method.created_at,
-                    updated_at=db_method.updated_at,
-                )
+                self._convert_db_method_to_api(db_method, paper_count or 0)
                 for db_method, paper_count in rows
             ]
 
@@ -167,7 +186,10 @@ class MethodService:
 
             # Query the database
             db_method = (
-                self.db.query(DBMethod).filter(DBMethod.id == method_id_int).first()
+                self.db.query(DBMethod)
+                .options(joinedload(DBMethod.source_paper))
+                .filter(DBMethod.id == method_id_int)
+                .first()
             )
 
             if not db_method:
@@ -181,33 +203,7 @@ class MethodService:
                 or 0
             )
 
-            # Convert to API model
-            method_dict = {
-                "id": str(db_method.id),
-                "name": db_method.name,
-                "slug": db_method.slug,
-                "full_name": db_method.full_name,
-                "description": db_method.description,
-                "keywords": db_method.keywords,
-                "area_id": str(db_method.area_id) if db_method.area_id else None,
-                "introduced_year": db_method.introduced_year,
-                "source_paper_id": str(db_method.source_paper_id)
-                if db_method.source_paper_id is not None
-                else None,
-                "source_url": db_method.source_url,
-                "source_title": db_method.source_title,
-                "code_snippet_url": db_method.code_snippet_url,
-                "image_url": db_method.image_url,
-                "image_credit": db_method.image_credit,
-                "collection_name": db_method.collection_name,
-                "collection_description": db_method.collection_description,
-                "collection_parent": db_method.collection_parent,
-                "paper_count": paper_count,
-                "created_at": db_method.created_at,
-                "updated_at": db_method.updated_at,
-            }
-
-            return Method(**method_dict)
+            return self._convert_db_method_to_api(db_method, paper_count)
 
         except ValueError:
             raise PaperNotFoundError(f"Invalid method ID: {method_id}")
@@ -234,6 +230,7 @@ class MethodService:
             # Try to find by slug first (preferred), then fall back to name
             db_method = (
                 self.db.query(DBMethod)
+                .options(joinedload(DBMethod.source_paper))
                 .filter(
                     or_(
                         DBMethod.slug == method_name.lower(),
@@ -254,33 +251,7 @@ class MethodService:
                 or 0
             )
 
-            # Convert to API model
-            method_dict = {
-                "id": str(db_method.id),
-                "name": db_method.name,
-                "slug": db_method.slug,
-                "full_name": db_method.full_name,
-                "description": db_method.description,
-                "keywords": db_method.keywords,
-                "area_id": str(db_method.area_id) if db_method.area_id else None,
-                "introduced_year": db_method.introduced_year,
-                "source_paper_id": str(db_method.source_paper_id)
-                if db_method.source_paper_id is not None
-                else None,
-                "source_url": db_method.source_url,
-                "source_title": db_method.source_title,
-                "code_snippet_url": db_method.code_snippet_url,
-                "image_url": db_method.image_url,
-                "image_credit": db_method.image_credit,
-                "collection_name": db_method.collection_name,
-                "collection_description": db_method.collection_description,
-                "collection_parent": db_method.collection_parent,
-                "paper_count": paper_count,
-                "created_at": db_method.created_at,
-                "updated_at": db_method.updated_at,
-            }
-
-            return Method(**method_dict)
+            return self._convert_db_method_to_api(db_method, paper_count)
 
         except PaperNotFoundError:
             raise
@@ -311,6 +282,7 @@ class MethodService:
             # Base query with join to paper_methods
             query = (
                 self.db.query(DBMethod)
+                .options(joinedload(DBMethod.source_paper))
                 .join(PaperMethod, PaperMethod.method_id == DBMethod.id)
                 .filter(PaperMethod.paper_id == paper_id)
                 .order_by(DBMethod.name)
@@ -334,31 +306,7 @@ class MethodService:
                     or 0
                 )
 
-                method_dict = {
-                    "id": str(db_method.id),
-                    "name": db_method.name,
-                    "slug": db_method.slug,
-                    "full_name": db_method.full_name,
-                    "description": db_method.description,
-                    "keywords": db_method.keywords,
-                    "area_id": str(db_method.area_id) if db_method.area_id else None,
-                    "introduced_year": db_method.introduced_year,
-                    "source_paper_id": str(db_method.source_paper_id)
-                    if db_method.source_paper_id is not None
-                    else None,
-                    "source_url": db_method.source_url,
-                    "source_title": db_method.source_title,
-                    "code_snippet_url": db_method.code_snippet_url,
-                    "image_url": db_method.image_url,
-                    "image_credit": db_method.image_credit,
-                    "collection_name": db_method.collection_name,
-                    "collection_description": db_method.collection_description,
-                    "collection_parent": db_method.collection_parent,
-                    "paper_count": paper_count,
-                    "created_at": db_method.created_at,
-                    "updated_at": db_method.updated_at,
-                }
-                methods.append(Method(**method_dict))
+                methods.append(self._convert_db_method_to_api(db_method, paper_count))
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None
@@ -484,6 +432,7 @@ class MethodService:
             query = self.db.query(DBMethod).filter(
                 DBMethod.collection_name == collection_name
             )
+            query = query.options(joinedload(DBMethod.source_paper))
 
             # Order by name
             query = query.order_by(DBMethod.name)
@@ -506,31 +455,7 @@ class MethodService:
                     or 0
                 )
 
-                method_dict = {
-                    "id": str(db_method.id),
-                    "name": db_method.name,
-                    "slug": db_method.slug,
-                    "full_name": db_method.full_name,
-                    "description": db_method.description,
-                    "keywords": db_method.keywords,
-                    "area_id": str(db_method.area_id) if db_method.area_id else None,
-                    "introduced_year": db_method.introduced_year,
-                    "source_paper_id": str(db_method.source_paper_id)
-                    if db_method.source_paper_id is not None
-                    else None,
-                    "source_url": db_method.source_url,
-                    "source_title": db_method.source_title,
-                    "code_snippet_url": db_method.code_snippet_url,
-                    "image_url": db_method.image_url,
-                    "image_credit": db_method.image_credit,
-                    "collection_name": db_method.collection_name,
-                    "collection_description": db_method.collection_description,
-                    "collection_parent": db_method.collection_parent,
-                    "paper_count": paper_count,
-                    "created_at": db_method.created_at,
-                    "updated_at": db_method.updated_at,
-                }
-                methods.append(Method(**method_dict))
+                methods.append(self._convert_db_method_to_api(db_method, paper_count))
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None

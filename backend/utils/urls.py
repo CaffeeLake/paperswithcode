@@ -6,9 +6,20 @@ PDFs, and our own platform URLs, following the patterns described
 in the DATABASE_SCHEMA_UML.md documentation.
 """
 
-from typing import Optional
+from typing import Any, Optional
+from urllib.parse import urlparse
 
 from backend.config import get_settings
+
+
+LOCAL_PAPER_SOURCE_HOSTS = {
+    "",
+    "localhost",
+    "127.0.0.1",
+    "167.235.148.241",
+    "paperswithcode.co",
+    "www.paperswithcode.co",
+}
 
 
 def get_arxiv_abs_url(arxiv_id: str, version: Optional[str] = None) -> Optional[str]:
@@ -134,6 +145,54 @@ def get_paper_route_identifier(
     if source == "arxiv" and arxiv_id:
         return arxiv_id
     return str(paper_id)
+
+
+def normalize_local_paper_source_url(source_url: Optional[str]) -> Optional[str]:
+    """
+    Convert stored links to our own paper pages into canonical app-relative URLs.
+
+    Some method source links were created while the app was reached via an IP
+    preview host. Returning a relative route keeps those links on the current
+    production/staging origin while preserving truly external source URLs.
+    """
+    if not source_url:
+        return source_url
+
+    parsed = urlparse(source_url)
+    if parsed.scheme and (parsed.hostname or "") not in LOCAL_PAPER_SOURCE_HOSTS:
+        return source_url
+
+    path = parsed.path if parsed.scheme or parsed.netloc else source_url
+    path = path.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    for prefix in ("/paper/", "/abs/", "/pdf/"):
+        if path.startswith(prefix):
+            source_ref = path.removeprefix(prefix).removesuffix(".pdf")
+            if source_ref:
+                return f"/paper/{source_ref}"
+
+    return source_url
+
+
+def get_method_source_url(
+    source_url: Optional[str],
+    source_paper: Optional[Any] = None,
+) -> Optional[str]:
+    """
+    Public source URL for a method.
+
+    When a method points at a paper row, that relationship is the canonical
+    internal route. The stored source_url is only used for external metadata or
+    old rows that have not been backfilled yet.
+    """
+    if source_paper is not None:
+        route_identifier = get_paper_route_identifier(
+            source_paper.source,
+            source_paper.arxiv_id,
+            source_paper.id,
+        )
+        return f"/paper/{route_identifier}"
+
+    return normalize_local_paper_source_url(source_url)
 
 
 def get_paper_version_url(

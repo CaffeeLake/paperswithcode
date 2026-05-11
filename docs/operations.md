@@ -11,6 +11,8 @@ All jobs live in `.github/workflows/scripts/` and are executed with `uv run --en
 | `30 * * * *` | `.github/workflows/scripts/hourly/update_citations.py` | Pull citation counts from Semantic Scholar for ArXiv papers. |
 | `45 * * * *` | `.github/workflows/scripts/hourly/extract_urls.py` | AI-assisted GitHub/project URL extraction for papers lacking resources. |
 | `0 3 * * 2-6` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` | Import curated Hugging Face submissions (Tue–Sat). |
+| `30 4 * * *` | `.github/workflows/scripts/daily/preload_thumbnails.py` | Generate and upload missing paper thumbnails to the HF bucket. |
+| `0 5 * * *` | `.github/workflows/scripts/daily/mirror_thumbnails_to_disk.py` | Mirror the entire thumbnail bucket prefix down to the VPS local cache so `/api/thumbnails/{filename}` always serves from local disk. |
 
 Useful commands:
 
@@ -95,6 +97,22 @@ uv run --env-file backend/keys.env scripts/sync_thumbnails_to_hf_bucket.py --cre
 After spot-checking `/api/thumbnails/...`, the old `thumbnails/` directory can be
 removed from the VPS because the bucket is the durable copy. The backend keeps a
 small `PWC_THUMBNAIL_TEMP_CACHE_DIR` for recently served bucket objects.
+
+### Local disk mirror
+
+The thumbnail bucket is **private**, so the browser cannot fetch images directly
+from `huggingface.co/buckets/...`; every `<img src="/api/thumbnails/...">`
+request has to go through FastAPI. To keep that fast, the daily
+`mirror_thumbnails_to_disk` cron runs `huggingface_hub.sync_bucket` to
+incrementally pull the entire bucket prefix into `PWC_THUMBNAIL_TEMP_CACHE_DIR`
+on the VPS. Once the mirror finishes, `ThumbnailService` finds every requested
+file on local disk and never has to do a per-request HF download. To run it
+manually (e.g. for first-time bootstrap):
+
+```bash
+PYTHONPATH=.github/workflows uv run --env-file backend/keys.env \
+    python -m scripts.daily.mirror_thumbnails_to_disk
+```
 
 ## Troubleshooting Checklist
 

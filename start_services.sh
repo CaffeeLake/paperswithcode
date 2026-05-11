@@ -201,15 +201,18 @@ fi
 
 echo ""
 
-# Start Frontend
-echo -e "${PURPLE}🎨 Starting Frontend (Vite preview)...${NC}"
-echo -e "   Port: ${CYAN}$FRONTEND_PORT${NC}"
+# Build the frontend statically and let nginx serve frontend/dist directly.
+# We used to run `npm run preview` here as a long-lived Node process on :8080,
+# but `vite preview` is a single-threaded smoke-test server that re-validates
+# every hashed asset.  Nginx serving the dist/ folder is faster, parallel, and
+# leverages the immutable Cache-Control headers from the production site config.
+# See PLAN.md (root) §1.
+echo -e "${PURPLE}🎨 Building Frontend (static, served by nginx)...${NC}"
+echo -e "   Output: ${CYAN}$PROJECT_ROOT/frontend/dist${NC}"
 echo -e "   Log: ${CYAN}$FRONTEND_LOG${NC}"
 
-# Change to frontend directory and start
 cd "$PROJECT_ROOT/frontend"
 
-# Build a fresh production bundle so we serve static assets instead of dev mode
 echo -e "${YELLOW}🏗️  Building frontend bundle (npm run build)...${NC}"
 if ! npm run build > "$FRONTEND_LOG" 2>&1; then
     echo -e "${RED}❌ Frontend build failed${NC}"
@@ -218,28 +221,24 @@ if ! npm run build > "$FRONTEND_LOG" 2>&1; then
     exit 1
 fi
 echo -e "${GREEN}✅ Frontend build completed${NC}"
+FRONTEND_PID="(static, nginx-served)"
 
-# Start the static preview server (serves frontend/dist; /api is proxied per vite.config.ts)
-nohup npm run preview -- --host :: --port "$FRONTEND_PORT" --strictPort >> "$FRONTEND_LOG" 2>&1 &
-FRONTEND_PID=$!
-
-echo -e "${YELLOW}   Frontend PID: $FRONTEND_PID${NC}"
-
-# Wait for frontend to start
-if wait_for_service $FRONTEND_PORT "Frontend"; then
-    echo -e "${GREEN}🎉 Frontend started successfully!${NC}"
-    echo -e "   🌐 App: ${CYAN}http://localhost:$FRONTEND_PORT${NC}"
-else
-    echo -e "${RED}❌ Frontend failed to start${NC}"
-    echo -e "${YELLOW}📋 Frontend logs:${NC}"
-    tail -20 "$FRONTEND_LOG" || echo "No frontend logs available"
-    exit 1
+# Reload nginx so a fresh dist/ is picked up immediately (it's normally
+# transparent because Vite emits content-hashed filenames, but reloading
+# also flushes any open keepalive connections to the old origin).
+if command -v nginx >/dev/null 2>&1; then
+    if nginx -t >/dev/null 2>&1; then
+        nginx -s reload >/dev/null 2>&1 || true
+        echo -e "${GREEN}🔁 nginx reloaded${NC}"
+    else
+        echo -e "${YELLOW}⚠️  nginx -t failed; skipping reload${NC}"
+    fi
 fi
 
 echo ""
 echo -e "${GREEN}🎉 All services started successfully!${NC}"
 echo -e "${BLUE}========================================${NC}"
-echo -e "${GREEN}📱 Frontend:${NC} http://localhost:$FRONTEND_PORT"
+echo -e "${GREEN}📱 Frontend:${NC} https://paperswithcode.co (static, served by nginx from frontend/dist)"
 echo -e "${GREEN}🔧 Backend API:${NC} http://localhost:$BACKEND_PORT"
 echo -e "${GREEN}📚 API Docs:${NC} http://localhost:$BACKEND_PORT/docs"
 echo -e "${GREEN}🔍 Health Check:${NC} http://localhost:$BACKEND_PORT/health"
@@ -266,18 +265,12 @@ if [ "$MONITOR_MODE" = true ]; then
 
     # Keep script running to maintain processes
     while true; do
-        # Check if processes are still running
+        # Backend is the only managed long-running process now; nginx serves
+        # the frontend directly from frontend/dist.
         if ! kill -0 $BACKEND_PID 2>/dev/null; then
             echo -e "${RED}❌ Backend process died (PID: $BACKEND_PID)${NC}"
             echo -e "${YELLOW}📋 Recent backend logs:${NC}"
             tail -10 "$BACKEND_LOG" || echo "No backend logs available"
-            break
-        fi
-
-        if ! kill -0 $FRONTEND_PID 2>/dev/null; then
-            echo -e "${RED}❌ Frontend process died (PID: $FRONTEND_PID)${NC}"
-            echo -e "${YELLOW}📋 Recent frontend logs:${NC}"
-            tail -10 "$FRONTEND_LOG" || echo "No frontend logs available"
             break
         fi
 

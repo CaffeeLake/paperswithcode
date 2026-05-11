@@ -1,0 +1,50 @@
+name: Cron - Mirror Thumbnails To VPS Disk
+
+on:
+  schedule:
+    # Daily at 05:00 UTC, after preload_thumbnails (04:30 UTC) so any
+    # newly-uploaded bucket objects from that run land on the VPS disk too.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Set to 'true' to compute the plan without downloading"
+        required: false
+        default: "false"
+      delete:
+        description: "Set to 'true' to delete local files not present in the bucket"
+        required: false
+        default: "false"
+
+concurrency:
+  group: cron-mirror-thumbnails-to-disk
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Load SSH key into agent
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run mirror_thumbnails_to_disk on VPS
+        env:
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INPUT_DELETE: ${{ github.event.inputs.delete }}
+        run: |
+          ARGS=""
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            ARGS="${ARGS} --dry-run"
+          fi
+          if [ "${INPUT_DELETE}" = "true" ]; then
+            ARGS="${ARGS} --delete"
+          fi
+          ssh -o StrictHostKeyChecking=yes \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.mirror_thumbnails_to_disk${ARGS} >/dev/null"

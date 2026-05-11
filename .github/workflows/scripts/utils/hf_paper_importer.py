@@ -531,8 +531,8 @@ class HuggingFacePaperImporterMixin:
             return
 
         query = """
-            INSERT INTO paper_tasks (paper_id, task_id)
-            VALUES (%s, %s)
+            INSERT INTO paper_tasks (paper_id, task_id, source)
+            VALUES (%s, %s, 'auto')
             ON CONFLICT (paper_id, task_id) DO NOTHING
         """
         for task_id in matching_task_ids:

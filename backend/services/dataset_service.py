@@ -15,12 +15,14 @@ from backend.models.database import (
     TaskDataset,
     Task as DBTask,
     Evaluation as DBEvaluation,
+    Paper as DBPaper,
 )
 from backend.models.api import (
     Dataset,
     Datasets,
     DatasetCreateRequest,
     DatasetUpdateRequest,
+    IntroducingPaper,
 )
 from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
@@ -214,12 +216,45 @@ class DatasetService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve datasets: {str(e)}")
 
-    def get_dataset(self, dataset_id: int) -> Optional[Dataset]:
+    def _fetch_introducing_paper(
+        self, paper_id: Optional[int]
+    ) -> Optional[IntroducingPaper]:
+        """Fetch the minimal introducing-paper projection in one tiny query.
+
+        Returns None when `paper_id` is missing or the row no longer exists.
+        Used by `get_dataset` / `get_dataset_by_slug` when callers pass
+        `include_paper=True` so the benchmark page can avoid a follow-up
+        request for the introducing paper.
+        """
+        if paper_id is None:
+            return None
+        row = (
+            self.db.query(
+                DBPaper.id, DBPaper.arxiv_id, DBPaper.title, DBPaper.date_published
+            )
+            .filter(DBPaper.id == paper_id)
+            .first()
+        )
+        if not row:
+            return None
+        pid, arxiv_id, title, published = row
+        return IntroducingPaper(
+            id=str(pid),
+            arxiv_id=arxiv_id,
+            title=title,
+            published=published,
+        )
+
+    def get_dataset(
+        self, dataset_id: int, include_paper: bool = False
+    ) -> Optional[Dataset]:
         """
         Get a specific dataset by ID.
 
         Args:
             dataset_id: Dataset ID
+            include_paper: When True, embed a lightweight `introducing_paper`
+                projection (arxiv_id, title, published) in the response.
 
         Returns:
             Dataset object or None if not found
@@ -295,17 +330,26 @@ class DatasetService:
                 "featured_rank": None,
             }
 
+            if include_paper:
+                dataset_dict["introducing_paper"] = self._fetch_introducing_paper(
+                    db_dataset.introducing_paper_id
+                )
+
             return Dataset(**dataset_dict)
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve dataset: {str(e)}")
 
-    def get_dataset_by_slug(self, slug: str) -> Optional[Dataset]:
+    def get_dataset_by_slug(
+        self, slug: str, include_paper: bool = False
+    ) -> Optional[Dataset]:
         """
         Get a specific dataset by slug.
 
         Args:
             slug: Dataset slug
+            include_paper: When True, embed a lightweight `introducing_paper`
+                projection (arxiv_id, title, published) in the response.
 
         Returns:
             Dataset object or None if not found
@@ -380,6 +424,11 @@ class DatasetService:
                 "task_count": task_count,
                 "featured_rank": None,
             }
+
+            if include_paper:
+                dataset_dict["introducing_paper"] = self._fetch_introducing_paper(
+                    db_dataset.introducing_paper_id
+                )
 
             return Dataset(**dataset_dict)
 

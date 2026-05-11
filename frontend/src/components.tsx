@@ -458,7 +458,7 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
         <img
           src={thumbnailUrl}
           alt={`Thumbnail for ${title}`}
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
           onError={() => setErrored(true)}
         />
       </div>

@@ -136,18 +136,12 @@ const BenchmarkDetailView: React.FC = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
 
+  // Fetching the dataset with `include_paper=true` collapses the previous
+  // dataset → paper waterfall into a single round trip.  See PLAN.md §5.
   const datasetQ = useQuery({
-    queryKey: ["dataset", datasetSlug],
-    queryFn: () => apiClient.getDatasetBySlug(datasetSlug!),
+    queryKey: ["dataset", datasetSlug, "with-paper"],
+    queryFn: () => apiClient.getDatasetBySlug(datasetSlug!, { include_paper: true }),
     enabled: !!datasetSlug,
-    staleTime: 10 * 60 * 1000,
-  });
-
-  const introducingPaperId = datasetQ.data?.introducing_paper_id;
-  const introducingPaperQ = useQuery({
-    queryKey: ["introducing-paper", introducingPaperId],
-    queryFn: () => apiClient.getPaper(introducingPaperId!, false),
-    enabled: !!introducingPaperId,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -204,7 +198,7 @@ const BenchmarkDetailView: React.FC = () => {
   const dataset = datasetQ.data;
   const sortedRows = (evalsQ.data || []).slice().sort((a, b) => (a.best_rank ?? 9999) - (b.best_rank ?? 9999));
 
-  const introducingPaper = introducingPaperQ.data;
+  const introducingPaper = dataset.introducing_paper ?? undefined;
   const fallbackArxivIdFromUrl = (() => {
     if (!dataset.paper_url) return null;
     const match = dataset.paper_url.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+)/i);
