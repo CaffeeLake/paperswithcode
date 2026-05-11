@@ -18,6 +18,10 @@ on:
         description: "Set to 'true' to skip uploads"
         required: false
         default: "false"
+      refresh_existing:
+        description: "Set to 'true' to regenerate and overwrite existing thumbnails"
+        required: false
+        default: "false"
 
 concurrency:
   group: cron-preload-thumbnails
@@ -41,6 +45,7 @@ jobs:
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
           INPUT_RECENT_DAYS: ${{ github.event.inputs.recent_days }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INPUT_REFRESH_EXISTING: ${{ github.event.inputs.refresh_existing }}
         run: |
           ARGS=""
           if [ -n "${INPUT_LIMIT}" ]; then
@@ -51,6 +56,9 @@ jobs:
           fi
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
             ARGS="${ARGS} --dry-run"
+          fi
+          if [ "${INPUT_REFRESH_EXISTING}" = "true" ]; then
+            ARGS="${ARGS} --refresh-existing"
           fi
           ssh -o StrictHostKeyChecking=yes \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \

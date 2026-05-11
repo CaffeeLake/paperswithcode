@@ -420,19 +420,3 @@ class ArxivService:
         except Exception as e:
             logger.error(f"Error downloading PDF for {arxiv_id}: {e}")
             return None
-
-    async def check_paper_exists(self, arxiv_id: str) -> bool:
-        """
-        Check if a paper exists on ArXiv.
-
-        Args:
-            arxiv_id: ArXiv ID to check
-
-        Returns:
-            True if paper exists, False otherwise
-        """
-        try:
-            metadata = await self.get_paper_metadata(arxiv_id)
-            return metadata.success
-        except Exception:
-            return False

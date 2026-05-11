@@ -1,0 +1,20 @@
+{
+  "skill_name": "lean-code-cleanup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Can you do a cleanup pass over backend/services? Look for unused helpers, duplicate wrappers, stale compatibility code, or obvious bloat. Make safe edits, but don't touch database migrations or unrelated dirty files.",
+      "expected_output": "Identifies cleanup candidates with reference-search evidence, applies only low-risk edits, avoids risky operational/database code, and reports verification."
+    },
+    {
+      "id": 2,
+      "prompt": "This React feature got messy. Please make frontend/src/components leaner and remove stuff that is no longer used. I want this to be a regular maintenance-style cleanup, not a rewrite.",
+      "expected_output": "Runs a scoped component cleanup, distinguishes unused source from generated/local noise, avoids broad refactors, and verifies with lint or relevant checks."
+    },
+    {
+      "id": 3,
+      "prompt": "Look at the scripts folder and prune old one-off scripts if they are obsolete. Be careful because some scripts may be called from CI or docs.",
+      "expected_output": "Checks CI/docs/references before deletion, removes only unreferenced obsolete scripts, and lists risky candidates left untouched."
+    }
+  ]
+}

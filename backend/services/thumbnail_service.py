@@ -25,6 +25,34 @@ from backend.services.arxiv_service import ArxivService
 
 logger = logging.getLogger(__name__)
 
+THUMBNAIL_RENDERER_CACHE_BUST = "fit1"
+
+
+def _trim_blank_page_margins(image: Image.Image) -> Image.Image:
+    """
+    Remove blank PDF page margins while keeping all visible first-page content.
+    """
+    rgb_image = image.convert("RGB")
+    mask = rgb_image.point(lambda value: 255 if value < 245 else 0).convert("L")
+    bbox = mask.getbbox()
+    if bbox is None:
+        return image
+
+    width, height = image.size
+    left, top, right, bottom = bbox
+    padding = max(4, int(max(width, height) * 0.025))
+    crop_box = (
+        max(0, left - padding),
+        max(0, top - padding),
+        min(width, right + padding),
+        min(height, bottom + padding),
+    )
+
+    if crop_box == (0, 0, width, height):
+        return image
+
+    return image.crop(crop_box)
+
 
 def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
     """
@@ -32,6 +60,13 @@ def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
     """
     safe_id = arxiv_id.replace("/", "_").replace(".", "_")
     return f"{safe_id}_{version}.jpg"
+
+
+def build_thumbnail_url(filename: str) -> str:
+    """
+    Build the public thumbnail URL with a renderer cache-bust marker.
+    """
+    return f"/api/thumbnails/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
 
 
 class ThumbnailService:
@@ -197,6 +232,7 @@ class ThumbnailService:
                 raise ThumbnailGenerationError("No pages found in PDF")
 
             image = images[0]
+            image = _trim_blank_page_margins(image)
 
             # Resize the full first page to target width while maintaining aspect ratio
             aspect_ratio = image.height / image.width
@@ -297,13 +333,16 @@ class ThumbnailService:
 
         return await self.generate_thumbnail(arxiv_id, version)
 
-    async def generate_thumbnail(self, arxiv_id: str, version: str = "v1") -> Path:
+    async def generate_thumbnail(
+        self, arxiv_id: str, version: str = "v1", force: bool = False
+    ) -> Path:
         """
         Generate thumbnail for a paper using ArXiv service.
 
         Args:
             arxiv_id: ArXiv ID of the paper
             version: Paper version
+            force: Regenerate and overwrite the cached thumbnail if it exists
 
         Returns:
             Path to the generated thumbnail file
@@ -312,9 +351,10 @@ class ThumbnailService:
             ThumbnailGenerationError: If generation fails
         """
         filename = self.get_filename(arxiv_id, version)
-        existing_path = self.get_existing_thumbnail_path(filename)
-        if existing_path:
-            return existing_path
+        if not force:
+            existing_path = self.get_existing_thumbnail_path(filename)
+            if existing_path:
+                return existing_path
 
         cache_path = self._get_cache_path(arxiv_id, version)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -364,7 +404,7 @@ class ThumbnailService:
             or legacy_cache_path.exists()
             or self._bucket_thumbnail_exists(filename)
         ):
-            return f"/api/thumbnails/{filename}"
+            return build_thumbnail_url(filename)
 
         return None
 

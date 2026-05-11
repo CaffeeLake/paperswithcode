@@ -10,11 +10,11 @@ Behavior:
   layout identical to the on-demand serving path.
 - Skips any paper whose thumbnail already exists in the bucket (cheap exists()
   check via HfFileSystem) or in the active local cache.
-- Generates and uploads only the missing ones.
+- Generates and uploads only the missing ones by default, or regenerates existing
+  thumbnails when --refresh-existing is passed.
 
-The script does not change the API serving contract: the backend keeps returning
-/api/thumbnails/{filename} URLs and falls back to on-demand generation if a
-file is somehow missed by this job (e.g. for very newly imported papers).
+The backend falls back to on-demand generation if a file is somehow missed by
+this job (e.g. for very newly imported papers).
 
 Schedule: Daily.
 Dependencies: PostgreSQL, ArXiv access, Hugging Face bucket configured via
@@ -54,6 +54,7 @@ class ThumbnailPreloadJob(CronJobBase):
         recent_days: Optional[int],
         max_failures: Optional[int],
         dry_run: bool,
+        refresh_existing: bool,
     ):
         super().__init__(job_name="preload_thumbnails", log_level="INFO")
         self.settings = get_settings()
@@ -62,6 +63,7 @@ class ThumbnailPreloadJob(CronJobBase):
         self.recent_days = recent_days
         self.max_failures = max_failures
         self.dry_run = dry_run
+        self.refresh_existing = refresh_existing
 
         self.candidates_seen = 0
         self.already_cached = 0
@@ -124,17 +126,20 @@ class ThumbnailPreloadJob(CronJobBase):
         """Process one paper, returning a status: cached | generated | dry_run | failed."""
         filename = thumbnail_service.get_filename(arxiv_id, version)
 
-        active_cache_path = thumbnail_service._get_active_cache_path(filename)
-        if active_cache_path.exists():
-            return "cached"
+        if not self.refresh_existing:
+            active_cache_path = thumbnail_service._get_active_cache_path(filename)
+            if active_cache_path.exists():
+                return "cached"
 
-        if thumbnail_service._bucket_thumbnail_exists(filename):
-            return "cached"
+            if thumbnail_service._bucket_thumbnail_exists(filename):
+                return "cached"
 
         if self.dry_run:
             return "dry_run"
 
-        await thumbnail_service.generate_thumbnail(arxiv_id, version)
+        await thumbnail_service.generate_thumbnail(
+            arxiv_id, version, force=self.refresh_existing
+        )
         return "generated"
 
     async def _run_async(self) -> None:
@@ -150,11 +155,13 @@ class ThumbnailPreloadJob(CronJobBase):
 
         total = len(candidates)
         self.logger.info(
-            "Found %d candidate papers (limit=%s, recent_days=%s, dry_run=%s)",
+            "Found %d candidate papers "
+            "(limit=%s, recent_days=%s, dry_run=%s, refresh_existing=%s)",
             total,
             self.limit,
             self.recent_days,
             self.dry_run,
+            self.refresh_existing,
         )
         if total == 0:
             return
@@ -227,10 +234,12 @@ class ThumbnailPreloadJob(CronJobBase):
     def run(self) -> None:
         self._validate_settings()
         self.logger.info(
-            "Starting thumbnail preload job (bucket=%s, prefix=%s, dry_run=%s)",
+            "Starting thumbnail preload job "
+            "(bucket=%s, prefix=%s, dry_run=%s, refresh_existing=%s)",
             self.settings.thumbnail_hf_bucket_id,
             self.settings.thumbnail_hf_bucket_prefix,
             self.dry_run,
+            self.refresh_existing,
         )
 
         asyncio.run(self._run_async())
@@ -285,6 +294,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="List what would be generated without downloading or uploading.",
     )
+    parser.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help=(
+            "Regenerate and overwrite thumbnails even when a local or bucket "
+            "object already exists."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -296,6 +313,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         recent_days=args.recent_days,
         max_failures=args.max_failures,
         dry_run=args.dry_run,
+        refresh_existing=args.refresh_existing,
     )
     success = job.execute()
     return 0 if success else 1

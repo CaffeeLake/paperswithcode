@@ -22,7 +22,10 @@ from backend.models.api import (
 from backend.models.database import Paper as DBPaper, Author, PaperAuthor
 from backend.services.paper_service import PaperService
 from backend.services.arxiv_service import ArxivService
-from backend.services.thumbnail_service import build_thumbnail_filename
+from backend.services.thumbnail_service import (
+    build_thumbnail_filename,
+    build_thumbnail_url,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import validate_arxiv_id, validate_version
 
@@ -289,7 +292,7 @@ async def get_trending_papers(
             thumbnail_url = explicit_thumbnail_url
             if thumbnail_url is None and source == "arxiv" and arxiv_id:
                 filename = build_thumbnail_filename(arxiv_id, "v1")
-                thumbnail_url = f"/api/thumbnails/{filename}"
+                thumbnail_url = build_thumbnail_url(filename)
 
             # Get tasks for this paper
             paper_tasks = tasks_dict.get(paper_id, [])

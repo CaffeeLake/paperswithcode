@@ -28,7 +28,10 @@ from backend.models.database import (
     PaperProjectPage as DBPaperProjectPage,
     Dataset as DBDataset,
 )
-from backend.services.thumbnail_service import build_thumbnail_filename
+from backend.services.thumbnail_service import (
+    build_thumbnail_filename,
+    build_thumbnail_url,
+)
 from backend.models.api import (
     Paper,
     Papers,
@@ -300,7 +303,7 @@ class PaperService:
             filename = build_thumbnail_filename(
                 db_paper.arxiv_id, db_paper.version or "v1"
             )
-            thumbnail_url = f"/api/thumbnails/{filename}"
+            thumbnail_url = build_thumbnail_url(filename)
 
         tasks = relation_data["tasks"].get(db_paper.id) or None
         methods = relation_data["methods"].get(db_paper.id) or None

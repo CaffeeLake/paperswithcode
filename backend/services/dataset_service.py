@@ -14,7 +14,6 @@ from backend.models.database import (
     PaperDataset,
     TaskDataset,
     Task as DBTask,
-    Evaluation as DBEvaluation,
     Paper as DBPaper,
 )
 from backend.models.api import (
@@ -494,33 +493,6 @@ class DatasetService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks for dataset: {str(e)}")
-
-    def get_dataset_evaluations_count(self, dataset_id: int) -> int:
-        """
-        Get count of evaluations for a specific dataset.
-
-        Args:
-            dataset_id: Dataset ID
-
-        Returns:
-            Number of evaluations
-
-        Raises:
-            DatabaseError: If database query fails
-        """
-        try:
-            count = (
-                self.db.query(func.count(DBEvaluation.id))
-                .filter(DBEvaluation.dataset_id == dataset_id)
-                .scalar()
-            )
-
-            return count or 0
-
-        except Exception as e:
-            raise DatabaseError(
-                f"Failed to retrieve evaluation count for dataset: {str(e)}"
-            )
 
     def search_datasets(
         self, query: str, page: int = 1, page_size: int = 50

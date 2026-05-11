@@ -402,29 +402,6 @@ class TaskService:
             order_dir="asc",
         )
 
-    def get_task_paper_count(self, task_id: int) -> int:
-        """
-        Get the number of papers associated with a task.
-
-        Args:
-            task_id: The task ID
-
-        Returns:
-            Paper count
-
-        Raises:
-            DatabaseError: If database query fails
-        """
-        try:
-            return (
-                self.db.query(func.count(PaperTask.paper_id))
-                .filter(PaperTask.task_id == task_id)
-                .scalar()
-                or 0
-            )
-        except Exception as e:
-            raise DatabaseError(f"Failed to get paper count for task: {str(e)}")
-
     def get_task_papers(
         self,
         task_id: str,
