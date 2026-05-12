@@ -344,6 +344,26 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   border-left: 1px solid var(--hairline);
   padding-left: 20px;
 }
+a.paper-github-stats.is-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+a.paper-github-stats.is-link:hover {
+  border-left-color: var(--ink);
+  transform: translateY(-1px);
+}
+a.paper-github-stats.is-link:hover .gh-stars,
+a.paper-github-stats.is-link:hover .gh-rate {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+a.paper-github-stats.is-link:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
 .paper-github-stats .gh-stat-block {
   display: flex;
   flex-direction: column;

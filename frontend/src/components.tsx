@@ -538,26 +538,43 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
             </div>
           )}
         </div>
-        {paper.github != null && (
-          <aside className="paper-github-stats">
-            <div className="gh-stat-block">
-              <div className="gh-value-row">
-                <Icon name="github" size={12} />
-                <span className="gh-stars">{formatStars(paper.github)}</span>
-              </div>
-              <div className="gh-stars-label">stars</div>
-            </div>
-            {paper.velocity24h != null && paper.velocity24h > 0 && (
+        {paper.github != null && (() => {
+          const statsContent = (
+            <>
               <div className="gh-stat-block">
                 <div className="gh-value-row">
-                  <span className="gh-rate-arrow">↑</span>
-                  <span className="gh-rate">{Math.round(paper.velocity24h)}</span>
+                  <Icon name="github" size={12} />
+                  <span className="gh-stars">{formatStars(paper.github)}</span>
                 </div>
-                <div className="gh-stars-label">stars / hr</div>
+                <div className="gh-stars-label">stars</div>
               </div>
-            )}
-          </aside>
-        )}
+              {paper.velocity24h != null && paper.velocity24h > 0 && (
+                <div className="gh-stat-block">
+                  <div className="gh-value-row">
+                    <span className="gh-rate-arrow">↑</span>
+                    <span className="gh-rate">{formatStarsPerHour(paper.velocity24h)}</span>
+                  </div>
+                  <div className="gh-stars-label">stars / hr</div>
+                </div>
+              )}
+            </>
+          );
+          if (paper.githubUrl) {
+            return (
+              <a
+                className="paper-github-stats is-link"
+                href={paper.githubUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open GitHub repository (${formatStars(paper.github)} stars)`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {statsContent}
+              </a>
+            );
+          }
+          return <aside className="paper-github-stats">{statsContent}</aside>;
+        })()}
       </div>
     </article>
   );
@@ -566,4 +583,8 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
 function formatStars(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+function formatStarsPerHour(n: number): string {
+  return n.toFixed(1);
 }
