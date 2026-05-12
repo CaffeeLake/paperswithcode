@@ -27,7 +27,7 @@ const PaperThumbnail = ({
         <img
           src={thumbnailUrl}
           alt={`Thumbnail for ${title}`}
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
           onLoad={() => setIsLoading(false)}
           onLoadStart={() => setIsLoading(true)}
           onError={() => {

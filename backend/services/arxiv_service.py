@@ -9,10 +9,12 @@ This service handles interactions with the ArXiv API to:
 """
 
 import asyncio
+from email.utils import parsedate_to_datetime
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import httpx
@@ -24,9 +26,11 @@ logger = logging.getLogger(__name__)
 
 # ArXiv API configuration
 ARXIV_API_BASE_URL = "https://export.arxiv.org/api/query"
+ARXIV_PDF_BASE_URL = "https://arxiv.org/pdf"
 REQUEST_TIMEOUT = 30.0
 RATE_LIMIT_DELAY = 3.0  # ArXiv requires 3 seconds between requests
 MAX_RETRIES = 3
+PDF_429_FALLBACK_DELAY = 60.0
 
 
 @dataclass
@@ -78,6 +82,32 @@ class ArxivService:
             await asyncio.sleep(sleep_time)
 
         self.last_request_time = time.time()
+
+    def _build_direct_pdf_url(self, arxiv_id: str, version: str) -> str:
+        clean_arxiv_id = arxiv_id.replace("arXiv:", "").strip()
+        clean_arxiv_id = clean_arxiv_id.removesuffix(".pdf")
+        clean_arxiv_id = re.sub(r"v\d+$", "", clean_arxiv_id)
+        clean_version = version.strip()
+        return f"{ARXIV_PDF_BASE_URL}/{clean_arxiv_id}{clean_version}"
+
+    def _get_429_retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("retry-after")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max(
+                        0.0,
+                        (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        return PDF_429_FALLBACK_DELAY * (2**attempt)
 
     async def _make_request(
         self, url: str, params: Optional[Dict[str, Any]] = None
@@ -195,8 +225,6 @@ class ArxivService:
             )
 
             # Parse ArXiv ID and version (e.g., "1810.04805v2" -> "1810.04805", "v2")
-            import re
-
             arxiv_match = re.match(r"(\d+\.\d+)(v\d+)?", full_id)
             if arxiv_match:
                 arxiv_id = arxiv_match.group(1)
@@ -378,7 +406,11 @@ class ArxivService:
             PDF content as bytes or None if download fails
         """
         try:
-            pdf_url = await self.get_pdf_url(arxiv_id, version)
+            pdf_url = (
+                self._build_direct_pdf_url(arxiv_id, version)
+                if version
+                else await self.get_pdf_url(arxiv_id, version)
+            )
 
             if not pdf_url:
                 logger.warning(f"No PDF URL found for ArXiv ID: {arxiv_id}")
@@ -386,36 +418,57 @@ class ArxivService:
 
             logger.debug(f"Downloading PDF from: {pdf_url}")
 
-            # Rate limit before PDF download
-            await self._rate_limit()
-
             async with httpx.AsyncClient(
                 timeout=REQUEST_TIMEOUT, follow_redirects=True
             ) as client:
-                response = await client.get(pdf_url, headers=self.headers)
+                for attempt in range(MAX_RETRIES):
+                    # Rate limit before each PDF download attempt.
+                    await self._rate_limit()
 
-                # Check if we got HTML (reCAPTCHA) instead of PDF
-                content_type = response.headers.get("content-type", "")
-                if "text/html" in content_type:
-                    logger.warning(
-                        f"Got HTML response (likely reCAPTCHA) for PDF download: {arxiv_id}"
+                    response = await client.get(pdf_url, headers=self.headers)
+
+                    if response.status_code == 429:
+                        if attempt == MAX_RETRIES - 1:
+                            logger.error(
+                                "ArXiv PDF download got 429 after %d attempts for %s",
+                                MAX_RETRIES,
+                                arxiv_id,
+                            )
+                            return None
+
+                        retry_delay = self._get_429_retry_delay(response, attempt)
+                        logger.warning(
+                            "ArXiv PDF download got 429 for %s; sleeping %.1fs before retry %d/%d",
+                            arxiv_id,
+                            retry_delay,
+                            attempt + 2,
+                            MAX_RETRIES,
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                    # Check if we got HTML (reCAPTCHA) instead of PDF
+                    content_type = response.headers.get("content-type", "")
+                    if "text/html" in content_type:
+                        logger.warning(
+                            f"Got HTML response (likely reCAPTCHA) for PDF download: {arxiv_id}"
+                        )
+                        return None
+
+                    response.raise_for_status()
+
+                    # Verify we got PDF content
+                    content = response.content
+                    if not content.startswith(b"%PDF"):
+                        logger.warning(
+                            f"Downloaded content is not a valid PDF for ArXiv ID: {arxiv_id}"
+                        )
+                        return None
+
+                    logger.info(
+                        f"Successfully downloaded PDF for ArXiv ID: {arxiv_id} ({len(content)} bytes)"
                     )
-                    return None
-
-                response.raise_for_status()
-
-                # Verify we got PDF content
-                content = response.content
-                if not content.startswith(b"%PDF"):
-                    logger.warning(
-                        f"Downloaded content is not a valid PDF for ArXiv ID: {arxiv_id}"
-                    )
-                    return None
-
-                logger.info(
-                    f"Successfully downloaded PDF for ArXiv ID: {arxiv_id} ({len(content)} bytes)"
-                )
-                return content
+                    return content
 
         except Exception as e:
             logger.error(f"Error downloading PDF for {arxiv_id}: {e}")

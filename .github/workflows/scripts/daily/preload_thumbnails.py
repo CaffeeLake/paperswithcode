@@ -42,6 +42,7 @@ from scripts.utils.cron_helpers import CronJobBase
 
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_MAX_FAILURES = 50
+DEFAULT_REFRESH_REQUEST_DELAY_SECONDS = 6.0
 
 
 class ThumbnailPreloadJob(CronJobBase):
@@ -55,6 +56,7 @@ class ThumbnailPreloadJob(CronJobBase):
         max_failures: Optional[int],
         dry_run: bool,
         refresh_existing: bool,
+        request_delay_seconds: Optional[float],
     ):
         super().__init__(job_name="preload_thumbnails", log_level="INFO")
         self.settings = get_settings()
@@ -64,6 +66,12 @@ class ThumbnailPreloadJob(CronJobBase):
         self.max_failures = max_failures
         self.dry_run = dry_run
         self.refresh_existing = refresh_existing
+        if request_delay_seconds is not None:
+            self.request_delay_seconds = max(0.0, request_delay_seconds)
+        elif refresh_existing and not dry_run:
+            self.request_delay_seconds = DEFAULT_REFRESH_REQUEST_DELAY_SECONDS
+        else:
+            self.request_delay_seconds = 0.0
 
         self.candidates_seen = 0
         self.already_cached = 0
@@ -156,12 +164,14 @@ class ThumbnailPreloadJob(CronJobBase):
         total = len(candidates)
         self.logger.info(
             "Found %d candidate papers "
-            "(limit=%s, recent_days=%s, dry_run=%s, refresh_existing=%s)",
+            "(limit=%s, recent_days=%s, dry_run=%s, refresh_existing=%s, "
+            "request_delay_seconds=%.1f)",
             total,
             self.limit,
             self.recent_days,
             self.dry_run,
             self.refresh_existing,
+            self.request_delay_seconds,
         )
         if total == 0:
             return
@@ -231,15 +241,24 @@ class ThumbnailPreloadJob(CronJobBase):
                 )
                 break
 
+            if (
+                self.request_delay_seconds > 0
+                and not self.dry_run
+                and self.candidates_seen < total
+            ):
+                await asyncio.sleep(self.request_delay_seconds)
+
     def run(self) -> None:
         self._validate_settings()
         self.logger.info(
             "Starting thumbnail preload job "
-            "(bucket=%s, prefix=%s, dry_run=%s, refresh_existing=%s)",
+            "(bucket=%s, prefix=%s, dry_run=%s, refresh_existing=%s, "
+            "request_delay_seconds=%.1f)",
             self.settings.thumbnail_hf_bucket_id,
             self.settings.thumbnail_hf_bucket_prefix,
             self.dry_run,
             self.refresh_existing,
+            self.request_delay_seconds,
         )
 
         asyncio.run(self._run_async())
@@ -302,6 +321,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "object already exists."
         ),
     )
+    parser.add_argument(
+        "--request-delay-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Minimum delay between paper downloads. Defaults to "
+            f"{DEFAULT_REFRESH_REQUEST_DELAY_SECONDS:g}s for --refresh-existing "
+            "and 0 otherwise."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -314,6 +343,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_failures=args.max_failures,
         dry_run=args.dry_run,
         refresh_existing=args.refresh_existing,
+        request_delay_seconds=args.request_delay_seconds,
     )
     success = job.execute()
     return 0 if success else 1

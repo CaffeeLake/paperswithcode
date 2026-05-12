@@ -1,3 +1,119 @@
+# Plan — Shared ArXiv PDF Bucket
+
+## Goal
+
+Download each arXiv PDF once, store it in a private Hugging Face bucket, and reuse that stored PDF across workflows that need the same source artifact:
+
+- thumbnail preloading and regeneration
+- evaluation extraction from `extract_evaluation_results/`
+- a future native PDF viewer with paper chat, similar in spirit to alphaXiv pages such as https://www.alphaxiv.org/abs/2605.06548
+- future PDF-derived jobs, if any
+
+`preload_thumbnails.py` should stay an orchestration script. The shared PDF caching logic should live in backend service code so both thumbnail generation and evaluation extraction can use it.
+
+## Current State
+
+Thumbnail preloading currently flows through `ThumbnailService.generate_thumbnail()`, which calls `ArxivService.download_pdf(arxiv_id, version)`, renders the first page, uploads the JPEG thumbnail to the thumbnail HF bucket, and discards the PDF bytes.
+
+Evaluation extraction currently downloads the PDF separately in `extract_evaluation_results/step_1.py` through `temp_pdf_download(arxiv_id=...)`, converts it to Markdown with Datalab, and caches only the Markdown in `backend/outputs/evaluation_results/{arxiv_id}/markdown.md`.
+
+This means the same paper can be downloaded from arXiv multiple times, which increases latency, creates avoidable 429/reCAPTCHA risk, and makes long backfills less reliable.
+
+A later product direction is to host a native PDF reading experience on paperswithcode.co, where users can view a paper and chat with it on the same page. That makes the PDF bucket more than a pipeline cache: it becomes shared paper infrastructure that may need fast server-side streaming, range requests, access controls, and stable identifiers.
+
+## Design
+
+Add a separate private HF bucket for PDFs, distinct from the thumbnail bucket:
+
+```text
+PWC_ARXIV_PDF_HF_BUCKET_ID=nielsr/pwc-arxiv-pdfs
+PWC_ARXIV_PDF_HF_BUCKET_PREFIX=pdfs
+PWC_ARXIV_PDF_CACHE_DIR=./arxiv_pdf_cache
+```
+
+Use canonical object keys that include the arXiv ID and version:
+
+```text
+pdfs/2501.12345/v1.pdf
+pdfs/cs/9901001/v1.pdf
+```
+
+If path handling for old-style arXiv IDs becomes awkward, use a sanitized flat key instead:
+
+```text
+pdfs/2501_12345_v1.pdf
+pdfs/cs_9901001_v1.pdf
+```
+
+Prefer a helper with a small API:
+
+```python
+class ArxivPdfStore:
+    async def get_pdf_bytes(arxiv_id: str, version: str | None = None) -> bytes | None:
+        ...
+
+    async def get_pdf_path(arxiv_id: str, version: str | None = None) -> Path | None:
+        ...
+```
+
+The helper should check sources in this order:
+
+1. local disk cache
+2. HF PDF bucket
+3. arXiv download through the existing `ArxivService`
+
+When a PDF is downloaded from arXiv successfully, write it to local disk and upload it to the HF PDF bucket. When it is downloaded from the bucket, write it to local disk before returning it. Keep validation simple: require `%PDF` magic bytes and non-empty content; rely on the existing arXiv download path for HTTP retry/rate-limit behavior.
+
+## Implementation Steps
+
+1. Add config fields to `backend/config.py`:
+
+   - `arxiv_pdf_hf_bucket_id`
+   - `arxiv_pdf_hf_bucket_prefix`
+   - `arxiv_pdf_cache_dir`
+   - optionally `arxiv_pdf_storage_backend`, but only add this if we truly need to disable bucket usage in some environments
+
+2. Create `backend/services/arxiv_pdf_store.py`.
+
+   Use `huggingface_hub.HfFileSystem`, `download_bucket_files`, and `batch_bucket_files`, matching the thumbnail bucket pattern already used in `ThumbnailService`.
+
+3. Update `ThumbnailService.generate_thumbnail()`.
+
+   Replace the direct `self.arxiv_service.download_pdf(arxiv_id, version)` call with the shared store. Keep `preload_thumbnails.py` unchanged unless it needs logging/config validation for the new bucket.
+
+4. Update evaluation extraction after thumbnail flow is stable.
+
+   Replace `temp_pdf_download(arxiv_id=...)` in `extract_evaluation_results/step_1.py` with the shared store's `get_pdf_path(...)`, then pass that path to Datalab. Keep the existing Markdown cache because it avoids repeated PDF-to-Markdown conversion.
+
+5. Add operational validation.
+
+   - Run a small thumbnail preload dry run and verify PDFs appear in the new bucket.
+   - Generate one missing thumbnail from a cold local PDF cache and confirm the second run hits local/bucket cache.
+   - Run `extract_evaluation_results/step_1.py --arxiv_id <known paper>` and verify it can reuse the same PDF.
+
+6. Keep room for a future PDF viewer API.
+
+   Do not expose the HF bucket directly to browsers at first. Serve PDFs through a backend route later, for example `GET /api/v1/papers/{paper_id}/pdf`, so we can add range request support, caching headers, logging, abuse limits, and any future auth/product controls without changing stored object keys.
+
+## Notes And Tradeoffs
+
+Do not store PDFs in the thumbnail bucket. PDFs have different size, lifecycle, and access patterns from thumbnails, and they could grow to hundreds of GB for the full corpus.
+
+Do not mirror the entire PDF bucket to the VPS by default. The VPS has limited disk, so local caching should be lazy and bounded later if it grows too large. The durable copy should be the HF bucket.
+
+Do not make `preload_thumbnails.py` own this behavior. It should benefit indirectly through `ThumbnailService`, while the evaluation extraction pipeline reuses the same backend service.
+
+For the future PDF viewer, object keys should remain stable and version-aware. The viewer can choose which version to show, but storage should not collapse all versions into one mutable "latest" file.
+
+## Open Questions
+
+- Should the first backfill populate PDFs for every arXiv paper, or only lazily as thumbnails/eval extraction request them?
+- Should PDF objects use latest-version-only keys or exact version keys? Exact version keys are safer because thumbnails already carry a version.
+- Should we add a cleanup policy for `PWC_ARXIV_PDF_CACHE_DIR` once the bucket is warm?
+- For the PDF viewer, should we stream from the VPS local cache, proxy from HF bucket on demand, or keep a separate hot cache for popular papers?
+
+---
+
 # Performance Plan — paperswithcode.co
 
 Why the site (and pages like `/benchmark/mcpatlas`) feels slow, and what to do about it.

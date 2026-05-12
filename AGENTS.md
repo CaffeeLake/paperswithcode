@@ -4,12 +4,12 @@ Guidance for AI agents working in this repository.
 
 ## Essentials
 
-- Do NOT care about backwards compatibility.
+- Do NOT care about backwards compatibility since we have 0 users for now.
 - Avoid heavy `try`/`except`; keep logic simple and readable.
 - Whenever you make a change that requires a restart of the backend/frontend, do so without asking confirmation.
 - Use background tasks in Cursor for long-running work unless you are actively debugging.
 - **Run Python with** `uv run --env-file backend/keys.env …` (venv + env vars).
-- Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False`.
+- Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False` as Ruff penalizes this.
 - Database access: **`docs/database.md`**.
 - **Hardware**: Hetzner VPS, ~4GB RAM / 80GB disk — many scripts assume low RAM.
 - Start/stop app stack: `./start_services.sh` / `./stop_services.sh`.
@@ -17,7 +17,7 @@ Guidance for AI agents working in this repository.
 
 ## Project overview
 
-This project implements paperswithcode.co, an AI-native revival of paperswithcode.com (which used to exist and was acquired by Meta). It showcases the top trending research papers in AI alongside their code (Github repositories), and tags papers by domain.
+This project implements paperswithcode.co, an AI-native revival of paperswithcode.com (which used to exist and was acquired by Meta). It showcases the top trending research papers in AI alongside their code (Github repositories), tags papers by domain and extracts evaluation results from them.
 
 The architecture consists of a ***React** frontend and a **FastAPI** backend + **PostgreSQL**.
 

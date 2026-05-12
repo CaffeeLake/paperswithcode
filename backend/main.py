@@ -16,6 +16,20 @@ from backend.config import get_settings
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 
+def _is_mutable_paper_detail_path(path: str) -> bool:
+    if path.startswith("/api/v1/papers/arxiv/"):
+        return True
+
+    if not path.startswith("/api/v1/papers/"):
+        return False
+
+    suffix = path.removeprefix("/api/v1/papers/")
+    if suffix in {"search", "recent", "stats", "trending"}:
+        return False
+
+    return bool(suffix) and "/" not in suffix
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management."""
@@ -56,6 +70,10 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def add_public_cache_headers(request, call_next):
         response = await call_next(request)
+        if request.method == "GET" and _is_mutable_paper_detail_path(request.url.path):
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         if (
             request.method == "GET"
             and request.url.path.startswith("/api/v1/papers")

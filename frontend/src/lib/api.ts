@@ -252,12 +252,14 @@ class ApiClient {
     console.log(`[API] Requesting: ${url}`);
 
     try {
+      const { headers, ...requestOptions } = options ?? {};
       const response = await fetch(url, {
+        ...requestOptions,
+        cache: requestOptions.cache ?? 'no-store',
         headers: {
           'Content-Type': 'application/json',
-          ...options?.headers,
+          ...headers,
         },
-        ...options,
       });
 
       console.log(`[API] Response from ${url}:`, response.status, response.statusText);
