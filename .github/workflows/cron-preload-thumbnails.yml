@@ -2,18 +2,63 @@ name: Cron - Preload Thumbnails
 
 on:
   schedule:
-    # Daily at 04:30 UTC, after HF daily papers import (03:00 UTC).
+    # Hourly-ish: warm thumbnails for the top trending feed (homepage).
+    # Cheap, missing-only, trusts the local mirror.
+    - cron: "0 */3 * * *"
+    # Daily 04:00 UTC: warm thumbnails for the top --per-task papers on every
+    # task page so task detail views render cleanly.
+    - cron: "0 4 * * *"
+    # Daily 04:30 UTC: broad newest-first preload covering the last 30 days,
+    # after the HF daily import (03:00 UTC).
     - cron: "30 4 * * *"
   workflow_dispatch:
     inputs:
+      priority:
+        description: "Priority mode: trending, task-top, recent, or missing-all"
+        required: false
+        default: "recent"
+        type: choice
+        options:
+          - trending
+          - task-top
+          - recent
+          - missing-all
       limit:
         description: "Maximum candidate papers to process"
         required: false
         default: ""
       recent_days:
-        description: "Only consider papers published within the last N days"
+        description: "Only consider papers published within the last N days (priority=recent)"
         required: false
         default: ""
+      per_task:
+        description: "Top N papers per task (priority=task-top)"
+        required: false
+        default: ""
+      trending_max_age_days:
+        description: "Max paper age in days for priority=trending"
+        required: false
+        default: ""
+      after_id:
+        description: "Only papers with id > AFTER_ID (priority=missing-all)"
+        required: false
+        default: ""
+      before_id:
+        description: "Only papers with id < BEFORE_ID (priority=missing-all)"
+        required: false
+        default: ""
+      shard:
+        description: "Process papers with id %% N == I, formatted I/N (priority=missing-all)"
+        required: false
+        default: ""
+      missing_only:
+        description: "Skip candidates already on local disk before processing"
+        required: false
+        default: "false"
+      trust_local_cache:
+        description: "Skip per-paper HF bucket exists() probes (safe if mirror is healthy)"
+        required: false
+        default: "false"
       dry_run:
         description: "Set to 'true' to skip uploads"
         required: false
@@ -46,30 +91,77 @@ jobs:
 
       - name: Run preload_thumbnails on VPS
         env:
+          INPUT_PRIORITY: ${{ github.event.inputs.priority }}
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
           INPUT_RECENT_DAYS: ${{ github.event.inputs.recent_days }}
+          INPUT_PER_TASK: ${{ github.event.inputs.per_task }}
+          INPUT_TRENDING_MAX_AGE_DAYS: ${{ github.event.inputs.trending_max_age_days }}
+          INPUT_AFTER_ID: ${{ github.event.inputs.after_id }}
+          INPUT_BEFORE_ID: ${{ github.event.inputs.before_id }}
+          INPUT_SHARD: ${{ github.event.inputs.shard }}
+          INPUT_MISSING_ONLY: ${{ github.event.inputs.missing_only }}
+          INPUT_TRUST_LOCAL_CACHE: ${{ github.event.inputs.trust_local_cache }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
           INPUT_REFRESH_EXISTING: ${{ github.event.inputs.refresh_existing }}
           INPUT_REQUEST_DELAY_SECONDS: ${{ github.event.inputs.request_delay_seconds }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
           ARGS=""
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
-            ARGS="${ARGS} --recent-days 30 --limit 500"
-          fi
-          if [ -n "${INPUT_LIMIT}" ]; then
-            ARGS="${ARGS} --limit ${INPUT_LIMIT}"
-          fi
-          if [ -n "${INPUT_RECENT_DAYS}" ]; then
-            ARGS="${ARGS} --recent-days ${INPUT_RECENT_DAYS}"
-          fi
-          if [ "${INPUT_DRY_RUN}" = "true" ]; then
-            ARGS="${ARGS} --dry-run"
-          fi
-          if [ "${INPUT_REFRESH_EXISTING}" = "true" ]; then
-            ARGS="${ARGS} --refresh-existing"
-          fi
-          if [ -n "${INPUT_REQUEST_DELAY_SECONDS}" ]; then
-            ARGS="${ARGS} --request-delay-seconds ${INPUT_REQUEST_DELAY_SECONDS}"
+            case "${GITHUB_EVENT_SCHEDULE}" in
+              "0 */3 * * *")
+                ARGS=" --priority trending --limit 500 --missing-only --trust-local-cache"
+                ;;
+              "0 4 * * *")
+                ARGS=" --priority task-top --per-task 50 --missing-only --trust-local-cache"
+                ;;
+              "30 4 * * *")
+                ARGS=" --priority recent --recent-days 30 --limit 500"
+                ;;
+              *)
+                ARGS=" --priority recent --recent-days 30 --limit 500"
+                ;;
+            esac
+          else
+            if [ -n "${INPUT_PRIORITY}" ]; then
+              ARGS="${ARGS} --priority ${INPUT_PRIORITY}"
+            fi
+            if [ -n "${INPUT_LIMIT}" ]; then
+              ARGS="${ARGS} --limit ${INPUT_LIMIT}"
+            fi
+            if [ -n "${INPUT_RECENT_DAYS}" ]; then
+              ARGS="${ARGS} --recent-days ${INPUT_RECENT_DAYS}"
+            fi
+            if [ -n "${INPUT_PER_TASK}" ]; then
+              ARGS="${ARGS} --per-task ${INPUT_PER_TASK}"
+            fi
+            if [ -n "${INPUT_TRENDING_MAX_AGE_DAYS}" ]; then
+              ARGS="${ARGS} --trending-max-age-days ${INPUT_TRENDING_MAX_AGE_DAYS}"
+            fi
+            if [ -n "${INPUT_AFTER_ID}" ]; then
+              ARGS="${ARGS} --after-id ${INPUT_AFTER_ID}"
+            fi
+            if [ -n "${INPUT_BEFORE_ID}" ]; then
+              ARGS="${ARGS} --before-id ${INPUT_BEFORE_ID}"
+            fi
+            if [ -n "${INPUT_SHARD}" ]; then
+              ARGS="${ARGS} --shard ${INPUT_SHARD}"
+            fi
+            if [ "${INPUT_MISSING_ONLY}" = "true" ]; then
+              ARGS="${ARGS} --missing-only"
+            fi
+            if [ "${INPUT_TRUST_LOCAL_CACHE}" = "true" ]; then
+              ARGS="${ARGS} --trust-local-cache"
+            fi
+            if [ "${INPUT_DRY_RUN}" = "true" ]; then
+              ARGS="${ARGS} --dry-run"
+            fi
+            if [ "${INPUT_REFRESH_EXISTING}" = "true" ]; then
+              ARGS="${ARGS} --refresh-existing"
+            fi
+            if [ -n "${INPUT_REQUEST_DELAY_SECONDS}" ]; then
+              ARGS="${ARGS} --request-delay-seconds ${INPUT_REQUEST_DELAY_SECONDS}"
+            fi
           fi
           ssh -o StrictHostKeyChecking=yes \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
