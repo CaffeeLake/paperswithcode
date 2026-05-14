@@ -11,11 +11,13 @@ from sqlalchemy import func, desc, asc, or_
 
 from backend.models.database import (
     Dataset as DBDataset,
+    Evaluation as DBEvaluation,
     PaperDataset,
     TaskDataset,
     Task as DBTask,
     Paper as DBPaper,
 )
+from backend.utils.task_hierarchy import collect_descendant_task_ids
 from backend.models.api import (
     Dataset,
     Datasets,
@@ -33,6 +35,14 @@ class DatasetService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _supports_harness(self, dataset_id: int, task_id: Optional[int] = None) -> bool:
+        query = self.db.query(TaskDataset.supports_harness).filter(
+            TaskDataset.dataset_id == dataset_id
+        )
+        if task_id is not None:
+            query = query.filter(TaskDataset.task_id == task_id)
+        return any(supports for (supports,) in query.all())
+
     def get_datasets(
         self,
         page: int = 1,
@@ -41,6 +51,7 @@ class DatasetService:
         name: Optional[str] = None,
         full_name: Optional[str] = None,
         task_id: Optional[int] = None,
+        include_descendants: bool = False,
         order_by: str = "name",
         order_dir: str = "asc",
     ) -> Datasets:
@@ -64,18 +75,20 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Base query with paper count and task count
-            # Counts use distinct because joins can fan out across task and paper links.
+            # Base query with paper count and task count.
+            # `paper_count` here means leaderboard entry count: number of
+            # evaluation rows on this dataset. This matches what the task page
+            # labels as "ENTRIES" and the benchmark page renders in its
+            # leaderboard table. Counting `paper_datasets` instead drifts to 0
+            # for benchmarks that only exist as evaluation rows.
             task_dataset_filter = aliased(TaskDataset)
             query = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(PaperDataset.paper_id)).label(
-                        "paper_count"
-                    ),
+                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
-                .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
+                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
                 .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .group_by(DBDataset.id)
             )
@@ -104,6 +117,14 @@ class DatasetService:
             if task_id is not None:
                 # Filter datasets by task association via task_datasets so display
                 # metadata stays independent from per-metric leaderboard triples.
+                # When `include_descendants` is true, expand the filter to all
+                # subtasks under `task_id` so a parent task page can roll up
+                # benchmarks from its child tasks (subtasks).
+                if include_descendants:
+                    task_ids = collect_descendant_task_ids(self.db, task_id)
+                else:
+                    task_ids = [task_id]
+
                 query = (
                     query.add_columns(
                         task_dataset_filter.featured_rank.label("featured_rank")
@@ -112,7 +133,7 @@ class DatasetService:
                         task_dataset_filter,
                         DBDataset.id == task_dataset_filter.dataset_id,
                     )
-                    .filter(task_dataset_filter.task_id == task_id)
+                    .filter(task_dataset_filter.task_id.in_(task_ids))
                     .group_by(task_dataset_filter.featured_rank)
                 )
 
@@ -127,8 +148,8 @@ class DatasetService:
             elif order_by == "created_at":
                 order_field = DBDataset.created_at
             elif order_by == "paper_count":
-                # Order by the aggregated count of associated papers.
-                order_field = func.count(PaperDataset.paper_id)
+                # Order by the aggregated leaderboard entry count.
+                order_field = func.count(func.distinct(DBEvaluation.id))
             else:
                 order_field = DBDataset.name
 
@@ -153,6 +174,14 @@ class DatasetService:
             for row in results:
                 db_dataset, paper_count, task_count = row[:3]
                 featured_rank = row[3] if task_id is not None else None
+                # When rolling up descendants, harness support belongs to the
+                # owning child task, not the requested parent. Drop the task
+                # scoping so the dataset reflects whether *any* of its
+                # leaderboards allow harness values.
+                harness_task_id = None if include_descendants else task_id
+                supports_harness = self._supports_harness(
+                    db_dataset.id, harness_task_id
+                )
                 dataset_dict = {
                     "id": str(db_dataset.id),
                     "name": db_dataset.name,
@@ -197,6 +226,7 @@ class DatasetService:
                     "paper_count": paper_count,
                     "task_count": task_count,
                     "featured_rank": featured_rank,
+                    "supports_harness": supports_harness,
                 }
                 dataset_list.append(Dataset(**dataset_dict))
 
@@ -262,16 +292,16 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Query dataset with counts
+            # Query dataset with counts. `paper_count` is the number of
+            # evaluation rows on the dataset (leaderboard entries) so it stays
+            # in sync with the benchmark page leaderboard table.
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(PaperDataset.paper_id)).label(
-                        "paper_count"
-                    ),
+                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
-                .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
+                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
                 .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .filter(DBDataset.id == dataset_id)
                 .group_by(DBDataset.id)
@@ -282,6 +312,7 @@ class DatasetService:
                 return None
 
             db_dataset, paper_count, task_count = result
+            supports_harness = self._supports_harness(db_dataset.id)
 
             dataset_dict = {
                 "id": str(db_dataset.id),
@@ -327,6 +358,7 @@ class DatasetService:
                 "paper_count": paper_count,
                 "task_count": task_count,
                 "featured_rank": None,
+                "supports_harness": supports_harness,
             }
 
             if include_paper:
@@ -357,16 +389,15 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Query dataset with counts
+            # Query dataset with counts. `paper_count` mirrors the benchmark
+            # leaderboard size (evaluation rows) instead of `paper_datasets`.
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(PaperDataset.paper_id)).label(
-                        "paper_count"
-                    ),
+                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
-                .outerjoin(PaperDataset, DBDataset.id == PaperDataset.dataset_id)
+                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
                 .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .filter(DBDataset.slug == slug)
                 .group_by(DBDataset.id)
@@ -377,6 +408,7 @@ class DatasetService:
                 return None
 
             db_dataset, paper_count, task_count = result
+            supports_harness = self._supports_harness(db_dataset.id)
 
             dataset_dict = {
                 "id": str(db_dataset.id),
@@ -422,6 +454,7 @@ class DatasetService:
                 "paper_count": paper_count,
                 "task_count": task_count,
                 "featured_rank": None,
+                "supports_harness": supports_harness,
             }
 
             if include_paper:

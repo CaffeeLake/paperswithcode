@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS task_datasets (
     task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
     featured_rank INTEGER NULL,
+    supports_harness BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (task_id, dataset_id),
@@ -21,6 +22,9 @@ ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIM
 
 ALTER TABLE task_datasets
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE task_datasets
+ADD COLUMN IF NOT EXISTS supports_harness BOOLEAN NOT NULL DEFAULT FALSE;
 
 DO $$
 BEGIN
@@ -67,7 +71,16 @@ WHERE td.task_id = t.id
   AND ranked.slug = d.slug
   AND t.slug = 'coding-agents';
 
+UPDATE task_datasets td
+SET supports_harness = TRUE,
+    updated_at = CURRENT_TIMESTAMP
+FROM datasets d
+WHERE td.dataset_id = d.id
+  AND d.name IN ('Terminal Bench 2.0', 'SWE-Bench Verified');
+
 COMMENT ON TABLE task_datasets IS
 'Task-specific dataset membership and display metadata; metric definitions remain in task_dataset_metrics.';
 COMMENT ON COLUMN task_datasets.featured_rank IS
 'Optional task-specific featured ordering rank for benchmark display.';
+COMMENT ON COLUMN task_datasets.supports_harness IS
+'Whether this task-dataset leaderboard allows values in evaluations.harness.';

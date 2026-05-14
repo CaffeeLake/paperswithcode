@@ -1,321 +1,848 @@
 """
-Import Open ASR Leaderboard evaluation results from CSV file.
+Import the Open ASR Leaderboard into the paperswithcode database.
 
-This script imports evaluation results for models with known papers:
-- ibm-granite/granite-speech-3.3-2b (ArXiv: 2505.08699)
-- microsoft/Phi-4-multimodal-instruct (ArXiv: 2503.01743)
-- openai/whisper variants (ArXiv: 2212.04356)
-- distil-whisper variants (ArXiv: 2311.00430)
+The Hugging Face `hf-audio/open-asr-leaderboard` dataset is the official
+leaderboard for English ASR. This importer is the only authority for
+Automatic Speech Recognition evaluations: it deletes every existing ASR
+evaluation row and rebuilds them from the leaderboard.
+
+Pipeline:
+1. Pull the official ranking from `hf datasets leaderboard hf-audio/open-asr-leaderboard`.
+2. For each model, fetch `.eval_results/open_asr_leaderboard.yaml` from the
+   model repo (either `main` or the leaderboard's submission PR ref) plus
+   the model's HF `tags` (used for arxiv resolution) and `createdAt`.
+3. Resolve a `papers` row per model. We first try to reuse an existing
+   arxiv-backed paper using `MODEL_PAPER_HINTS` (verified by the model's
+   own arxiv tags AND a paper row already in the DB). Models without a
+   confident match fall back to a `source='external'` row keyed by the
+   HF model URL.
+4. Delete all existing evaluations on the ASR task and reinsert the
+   parent (Open ASR Leaderboard) row plus one row per matched
+   sub-benchmark (WER only). RTFx is consolidated into the parent row.
+5. Recalculate ranks for every affected (task, dataset) leaderboard.
+6. Set `featured_rank` on `task_datasets` so the ASR task page shows the
+   parent leaderboard first followed by the canonical sub-benchmarks.
+7. Garbage-collect orphan `source='external'` HF-model papers that are no
+   longer referenced anywhere.
+
+Run with:
+
+    uv run --env-file backend/keys.env \
+        python backend/database/evaluations_setup/import_open_asr_evaluations.py
 """
 
-import csv
-import logging
-import sys
-from pathlib import Path
-from typing import Optional, Dict, List
-from collections import defaultdict
+from __future__ import annotations
 
+import json
+import logging
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Optional
+
+import yaml
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.database.connection import db_manager
 from backend.models.database import (
+    Evaluation as DBEvaluation,
     Paper as DBPaper,
+    PaperTask as DBPaperTask,
     Task as DBTask,
-    Dataset as DBDataset,
-    Metric as DBMetric,
 )
+from backend.services.evaluation_service import EvaluationService
 
-# Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Model mappings: HF name -> (ArXiv ID, Simplified Name)
-MODEL_MAPPINGS = {
-    "ibm-granite/granite-speech-3.3-2b": ("2505.08699", "Granite Speech 3.3 2B"),
-    "ibm-granite/granite-speech-3.3-8b": ("2505.08699", "Granite Speech 3.3 8B"),
-    "microsoft/Phi-4-multimodal-instruct": ("2503.01743", "Phi-4 Multimodal Instruct"),
-    # Whisper variants
-    "openai/whisper-large-v3": ("2212.04356", "Whisper Large v3"),
-    "openai/whisper-large-v2": ("2212.04356", "Whisper Large v2"),
-    "openai/whisper-large-v3-turbo": ("2212.04356", "Whisper Large v3 Turbo"),
-    "openai/whisper-large": ("2212.04356", "Whisper Large"),
-    "openai/whisper-medium.en": ("2212.04356", "Whisper Medium (English)"),
-    "openai/whisper-small.en": ("2212.04356", "Whisper Small (English)"),
-    "openai/whisper-base.en": ("2212.04356", "Whisper Base (English)"),
-    "openai/whisper-tiny.en": ("2212.04356", "Whisper Tiny (English)"),
-    # Distil-Whisper variants
-    "distil-whisper/distil-large-v3.5": ("2311.00430", "Distil-Whisper Large v3.5"),
-    "distil-whisper/distil-large-v3": ("2311.00430", "Distil-Whisper Large v3"),
-    "distil-whisper/distil-large-v2": ("2311.00430", "Distil-Whisper Large v2"),
-    "distil-whisper/distil-small.en": ("2311.00430", "Distil-Whisper Small (English)"),
-    "distil-whisper/distil-medium.en": (
-        "2311.00430",
-        "Distil-Whisper Medium (English)",
+ASR_TASK_SLUG = "automatic-speech-recognition"
+LEADERBOARD_DATASET_SLUG = "open-asr-leaderboard"
+LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard"
+
+# Map YAML `task_id` values from the Open ASR Leaderboard schema to the
+# corresponding existing dataset slugs in our database. Only entries listed
+# here are imported; unknown sub-benchmarks (e.g. `voxpopuli_cleaned_aa_wer`)
+# are skipped and reported.
+SUB_BENCHMARK_SLUG_BY_YAML_TASK = {
+    "ami_wer": "ami-ihm",
+    "common_voice_wer": "common-voice",
+    "earnings22_wer": "earnings-22",
+    "gigaspeech_wer": "gigaspeech",
+    "librispeech_clean_wer": "librispeech-clean",
+    "librispeech_other_wer": "librispeech-other",
+    "spgispeech_wer": "spgispeech",
+    "tedlium_wer": "tedlium",
+    "voxpopuli_wer": "voxpopuli",
+}
+
+# Featured-rank order on the ASR task page. The parent leaderboard always
+# comes first, then the HF leaderboard's canonical English subsets in
+# alphabetical order. Common Voice is intentionally omitted because no
+# model on the current leaderboard reports `common_voice_wer`, so featuring
+# it would surface an empty benchmark on the task page.
+FEATURED_RANK_ORDER = [
+    "open-asr-leaderboard",
+    "ami-ihm",
+    "earnings-22",
+    "gigaspeech",
+    "librispeech-clean",
+    "librispeech-other",
+    "spgispeech",
+    "tedlium",
+    "voxpopuli",
+]
+
+# Curated mapping from a HF model_id prefix to the canonical paper's arxiv id.
+# For each entry, we only reuse the arxiv-backed paper if BOTH:
+#   1. the arxiv id is present in the model's HF `tags` list (defense against
+#      mistaken curation), AND
+#   2. that arxiv id resolves to an `is_latest_version` papers row in our DB.
+# Anything not matched here falls back to a `source='external'` paper keyed by
+# the HF model URL (for genuinely paperless models like CohereLabs/Symphony).
+# Order matters: longer/more specific prefixes are listed first so they win.
+MODEL_PAPER_HINTS: list[tuple[str, str]] = [
+    ("ibm-granite/granite-4.0-1b-speech", "2505.08699"),
+    ("ibm-granite/granite-speech", "2505.08699"),
+    ("microsoft/Phi-4-multimodal", "2503.01743"),
+    ("openai/whisper", "2212.04356"),
+    ("distil-whisper/", "2311.00430"),
+    ("facebook/wav2vec2-conformer", "2010.05171"),
+    ("facebook/wav2vec2", "2006.11477"),
+    ("facebook/hubert", "2106.07447"),
+    ("facebook/data2vec-audio", "2202.03555"),
+    ("facebook/mms", "2305.13516"),
+    ("mistralai/Voxtral", "2507.13264"),
+    ("UsefulSensors/moonshine", "2410.15608"),
+    ("nyrahealth/CrisperWhisper", "2408.16589"),
+    ("nvidia/canary-qwen", "2503.05931"),
+    ("nvidia/canary-1b", "2503.05931"),
+    ("nvidia/canary-180m", "2503.05931"),
+    ("nvidia/parakeet-tdt", "2304.06795"),
+    ("nvidia/parakeet-rnnt", "2305.05084"),
+    ("nvidia/parakeet-ctc", "2305.05084"),
+    ("nvidia/stt_en_fastconformer", "2305.05084"),
+    ("nvidia/stt_en_conformer", "2005.08100"),
+]
+
+# Explicit per-model overrides where the canonical arXiv paper is not declared
+# as an `arxiv:` tag on the HF model card, or the model tags multiple arXiv
+# ids and `resolve_canonical_paper` would otherwise leave it ambiguous. Unlike
+# MODEL_PAPER_HINTS these win unconditionally as long as the arXiv paper is
+# present in our DB. Key is the exact HF model_id (case-sensitive).
+MODEL_PAPER_OVERRIDES: dict[str, str] = {
+    "espnet/owsm_ctc_v3.1_1B": "2401.16658",
+    "espnet/owsm_ctc_v4_1B": "2506.00338",
+}
+
+# External-family canonicalization. When a HF model_id matches one of these
+# entries, the importer reuses the canonical model's `source='external'`
+# paper row instead of creating a per-variant one. Each evaluation still
+# carries the variant-specific `external_source_url`, so leaderboard rows
+# keep linking to the right HF model. Key is the variant model_id, value is
+# the canonical model_id that owns the consolidated paper row.
+MODEL_FAMILY_CANONICAL: dict[str, str] = {
+    "UsefulSensors/moonshine-streaming-tiny": (
+        "UsefulSensors/moonshine-streaming-medium"
     ),
+    "UsefulSensors/moonshine-streaming-small": (
+        "UsefulSensors/moonshine-streaming-medium"
+    ),
+    "abr-ai/niagara-19m-batch.en": "abr-ai/niagara-38m-batch.en",
 }
 
 
-def ensure_metric_exists(db: Session, metric_name: str, direction: str) -> None:
-    """Ensure a metric exists in the database with correct direction."""
-    metric = db.query(DBMetric).filter(DBMetric.name == metric_name).first()
+def derive_model_name(model_id: str) -> str:
+    """Convert a HF repo id to the human-readable name used on the model card.
 
-    if not metric:
-        logger.info(f"Creating metric: {metric_name} ({direction})")
-        metric = DBMetric(
-            name=metric_name,
-            full_name=metric_name,
-            direction=direction,
-            description=f"Metric: {metric_name}",
+    The convention is the last path segment with the first letter
+    capitalized so that lowercase repo names look presentable while
+    mixed-case repos are left untouched.
+
+    Examples:
+      openai/whisper-large-v3            -> Whisper-large-v3
+      ibm-granite/granite-4.0-1b-speech  -> Granite-4.0-1b-speech
+      mistralai/Voxtral-Mini-3B-2507     -> Voxtral-Mini-3B-2507
+      Qwen/Qwen3-ASR-1.7B                -> Qwen3-ASR-1.7B
+    """
+    last = model_id.rsplit("/", 1)[-1]
+    if not last:
+        return model_id
+    return last[0].upper() + last[1:]
+
+
+@dataclass
+class ModelEntry:
+    model_id: str
+    rank: int
+    mean_wer: float
+    pull_request: Optional[int]
+    yaml_url: str
+    raw_yaml: Optional[str] = None
+    yaml_records: list[dict] = field(default_factory=list)
+    eval_date: Optional[date] = None
+    created_at: Optional[date] = None
+    arxiv_tags: list[str] = field(default_factory=list)
+    fetch_error: Optional[str] = None
+
+
+def fetch_leaderboard() -> list[ModelEntry]:
+    """Fetch the official leaderboard via the `hf` CLI."""
+    cmd = [
+        "hf",
+        "datasets",
+        "leaderboard",
+        LEADERBOARD_REPO,
+        "--limit",
+        "200",
+        "--format",
+        "json",
+    ]
+    logger.info("Fetching leaderboard via: %s", " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    rows = json.loads(proc.stdout)
+    entries: list[ModelEntry] = []
+    for row in rows:
+        pr = row.get("pull_request")
+        if pr:
+            yurl = (
+                f"https://huggingface.co/{row['model_id']}"
+                f"/resolve/refs%2Fpr%2F{pr}/.eval_results/open_asr_leaderboard.yaml"
+            )
+        else:
+            yurl = (
+                f"https://huggingface.co/{row['model_id']}"
+                "/resolve/main/.eval_results/open_asr_leaderboard.yaml"
+            )
+        entries.append(
+            ModelEntry(
+                model_id=row["model_id"],
+                rank=row["rank"],
+                mean_wer=float(row["value"]),
+                pull_request=pr,
+                yaml_url=yurl,
+            )
         )
-        db.add(metric)
-        db.commit()
-    elif metric.direction != direction:
-        logger.warning(
-            f"Metric {metric_name} has direction {metric.direction}, expected {direction}"
-        )
+    logger.info("Leaderboard returned %d models", len(entries))
+    return entries
 
 
-def load_csv_results(csv_path: Path) -> Dict[str, List[Dict]]:
-    """Load CSV results and group by model name."""
-    results_by_model = defaultdict(list)
+def http_get(url: str, *, timeout: int = 20) -> Optional[str]:
+    token = os.environ.get("PWC_HF_TOKEN") or os.environ.get("HF_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
 
-    with open(csv_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            model_name = row["model_name"]
-            if model_name in MODEL_MAPPINGS:
-                # Normalize metric name: "Average WER" -> "WER"
-                metric_name = row["metric"]
-                if metric_name == "Average WER":
-                    metric_name = "WER"
 
-                results_by_model[model_name].append(
-                    {
-                        "dataset": row["dataset"],
-                        "metric": metric_name,
-                        "value": float(row["value"]),
-                    }
+def _record_dates(records: list[dict]) -> Optional[date]:
+    """Return the most recent `date` value across YAML/eval-results records."""
+    dates: list[date] = []
+    for rec in records:
+        d = rec.get("date")
+        if isinstance(d, date):
+            dates.append(d)
+        elif isinstance(d, str):
+            try:
+                dates.append(datetime.fromisoformat(d).date())
+            except ValueError:
+                continue
+    return max(dates) if dates else None
+
+
+def load_yaml_for_entry(entry: ModelEntry) -> None:
+    try:
+        text_yaml = http_get(entry.yaml_url, timeout=30)
+    except urllib.error.HTTPError as exc:
+        entry.fetch_error = f"HTTP {exc.code}"
+        return
+    except Exception as exc:
+        entry.fetch_error = f"{type(exc).__name__}: {exc}"
+        return
+
+    entry.raw_yaml = text_yaml
+    try:
+        records = list(yaml.safe_load(text_yaml) or [])
+    except yaml.YAMLError as exc:
+        entry.fetch_error = f"YAML parse error: {exc}"
+        return
+
+    entry.yaml_records = records
+    most_recent = _record_dates(records)
+    if most_recent is not None:
+        entry.eval_date = most_recent
+
+
+def load_model_metadata(entry: ModelEntry) -> None:
+    """Populate `entry.created_at`, `entry.arxiv_tags` and (optionally)
+    `entry.yaml_records` from HF model_info.
+
+    The `?expand=evalResults` payload mirrors the same eval entries that live
+    in `.eval_results/open_asr_leaderboard.yaml` (one record per
+    `(dataset, task_id)` pair). When the YAML fetch failed - e.g. the model
+    repo is gated and the local token has not been granted access yet, or the
+    file is temporarily unavailable - we fall back to those records so the
+    importer still produces sub-benchmark rows instead of only the aggregate
+    Mean WER from the leaderboard JSON.
+    """
+    # `expand` filters the response down to a fixed set of keys, so we have to
+    # request every field we read below (tags, createdAt) in addition to
+    # `evalResults`. Otherwise the recovered records arrive at the cost of
+    # losing the model's HF tags and creation date.
+    url = (
+        f"https://huggingface.co/api/models/{entry.model_id}"
+        "?expand=evalResults&expand=tags&expand=createdAt"
+    )
+    try:
+        body = http_get(url, timeout=15)
+    except Exception as exc:  # gated/private models can 401, etc.
+        logger.warning("HF model_info fetch failed for %s: %s", entry.model_id, exc)
+        return
+    info = json.loads(body)
+    entry.arxiv_tags = [
+        t.split(":", 1)[1]
+        for t in (info.get("tags") or [])
+        if isinstance(t, str) and t.startswith("arxiv:")
+    ]
+    if not entry.yaml_records:
+        eval_results = info.get("evalResults") or []
+        records = [
+            er["data"] for er in eval_results if isinstance(er.get("data"), dict)
+        ]
+        if records:
+            entry.yaml_records = records
+            most_recent = _record_dates(records)
+            if most_recent is not None and entry.eval_date is None:
+                entry.eval_date = most_recent
+            if entry.fetch_error:
+                entry.fetch_error = (
+                    f"{entry.fetch_error} (recovered via HF evalResults)"
                 )
-
-    return dict(results_by_model)
-
-
-def find_dataset(db: Session, dataset_name: str) -> Optional[DBDataset]:
-    """Find a dataset by name with fuzzy matching."""
-    # Special case: "overall" refers to the Open ASR Leaderboard parent dataset
-    if dataset_name.lower() == "overall":
-        dataset = (
-            db.query(DBDataset).filter(DBDataset.name == "Open ASR Leaderboard").first()
-        )
-        if dataset:
-            return dataset
-
-    # Try exact match first
-    dataset = db.query(DBDataset).filter(DBDataset.name.ilike(dataset_name)).first()
-    if dataset:
-        return dataset
-
-    # Try fuzzy match
-    dataset = (
-        db.query(DBDataset).filter(DBDataset.name.ilike(f"%{dataset_name}%")).first()
-    )
-    if dataset:
-        return dataset
-
-    # Try normalized match (remove hyphens, underscores, spaces for comparison)
-    # This handles cases like "Earnings22" vs "Earnings-22" or "LibriSpeech-Clean" vs "LibriSpeech Clean"
-    normalized_search = (
-        dataset_name.replace("-", "").replace("_", "").replace(" ", "").lower()
-    )
-
-    all_datasets = db.query(DBDataset).all()
-    for ds in all_datasets:
-        normalized_db = (
-            ds.name.replace("-", "").replace("_", "").replace(" ", "").lower()
-        )
-        if normalized_search in normalized_db or normalized_db in normalized_search:
-            return ds
-
-    return None
+    created = info.get("createdAt")
+    if not created:
+        return
+    try:
+        entry.created_at = datetime.strptime(created, "%Y-%m-%dT%H:%M:%S.%fZ").date()
+    except ValueError:
+        try:
+            entry.created_at = datetime.fromisoformat(
+                created.replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            return
 
 
-def import_evaluations(
-    db: Session,
-    model_name: str,
-    arxiv_id: str,
-    simplified_name: str,
-    results: List[Dict],
-) -> tuple[int, int, List[str]]:
+def resolve_canonical_paper(db: Session, entry: ModelEntry) -> Optional[DBPaper]:
+    """Try to reuse an existing arxiv-backed paper for this HF model.
+
+    Resolution order:
+
+    1. `MODEL_PAPER_OVERRIDES` wins outright. This is the explicit per-model
+       curation path for models whose arXiv id is missing from (or
+       ambiguous in) their HF tags.
+    2. Look up every `arxiv:` tag from the model's HF metadata in our local
+       `papers` table. If exactly one tag resolves to a latest paper, reuse
+       it. This covers the common case where the HF model card already
+       declares its canonical paper and we just need to honor that link
+       instead of fabricating an `source='external'` row.
+    3. When the HF tags are ambiguous (multiple resolve) or the single
+       resolved match disagrees with curation, fall back to the curated
+       `MODEL_PAPER_HINTS` mapping as a tie-breaker so well-known model
+       families keep pointing at the intended paper.
+    4. Otherwise return None and the caller creates an external paper row.
+
+    In all success paths the HF model URL is appended to the resolved
+    paper's `hf_models` for traceability.
     """
-    Import evaluations for a specific model with metric consolidation.
+    arxiv_set = set(entry.arxiv_tags)
 
-    This function groups metrics by dataset and creates a single evaluation row
-    per dataset with all metrics consolidated.
+    chosen: Optional[DBPaper] = None
 
-    Returns:
-        Tuple of (successful_count, skipped_count, missing_datasets)
+    override_arxiv = MODEL_PAPER_OVERRIDES.get(entry.model_id)
+    if override_arxiv:
+        chosen = (
+            db.query(DBPaper)
+            .filter(
+                DBPaper.arxiv_id == override_arxiv,
+                DBPaper.is_latest_version,
+            )
+            .first()
+        )
+
+    candidates: list[DBPaper] = []
+    if chosen is None and arxiv_set:
+        candidates = (
+            db.query(DBPaper)
+            .filter(
+                DBPaper.arxiv_id.in_(arxiv_set),
+                DBPaper.is_latest_version,
+            )
+            .all()
+        )
+
+    if chosen is None and len(candidates) == 1:
+        chosen = candidates[0]
+
+    if chosen is None:
+        model_lower = entry.model_id.lower()
+        for prefix, arxiv_id in MODEL_PAPER_HINTS:
+            if not model_lower.startswith(prefix.lower()):
+                continue
+            if arxiv_id not in arxiv_set:
+                continue
+            hint_match = next((c for c in candidates if c.arxiv_id == arxiv_id), None)
+            if hint_match is None:
+                hint_match = (
+                    db.query(DBPaper)
+                    .filter(
+                        DBPaper.arxiv_id == arxiv_id,
+                        DBPaper.is_latest_version,
+                    )
+                    .first()
+                )
+            if hint_match is not None:
+                chosen = hint_match
+                break
+
+    if chosen is None:
+        return None
+
+    hf_url = f"https://huggingface.co/{entry.model_id}"
+    existing_hf = list(chosen.hf_models or [])
+    if hf_url not in existing_hf:
+        existing_hf.append(hf_url)
+        chosen.hf_models = existing_hf
+    return chosen
+
+
+def get_or_create_external_paper(
+    db: Session, model_id: str, *, date_published: date
+) -> DBPaper:
+    """Return the external `papers` row for a HF model, creating it if needed.
+
+    Uniqueness is enforced by the partial index on
+    `(source='external', source_url)`; we key on the canonical HF model URL,
+    falling back to a `MODEL_FAMILY_CANONICAL` override when this model_id
+    is a variant of a consolidated family row (e.g. moonshine-streaming
+    -tiny/-small both reuse the -medium row).
     """
-    # Look up paper
-    paper = (
+    canonical_model_id = MODEL_FAMILY_CANONICAL.get(model_id, model_id)
+    canonical_url = f"https://huggingface.co/{canonical_model_id}"
+    variant_url = f"https://huggingface.co/{model_id}"
+
+    existing = (
         db.query(DBPaper)
-        .filter(DBPaper.arxiv_id == arxiv_id, DBPaper.is_latest_version)
+        .filter(DBPaper.source == "external", DBPaper.source_url == canonical_url)
         .first()
     )
+    if existing is not None:
+        if existing.date_published is None:
+            existing.date_published = date_published
+        existing_hf = list(existing.hf_models or [])
+        for url in {canonical_url, variant_url}:
+            if url not in existing_hf:
+                existing_hf.append(url)
+        existing.hf_models = existing_hf
+        return existing
 
-    if not paper:
-        logger.error(f"Paper not found for ArXiv ID: {arxiv_id}")
-        return 0, 0, []
-
-    # Look up ASR task
-    task = (
-        db.query(DBTask).filter(DBTask.name == "Automatic Speech Recognition").first()
+    paper = DBPaper(
+        title=canonical_model_id,
+        abstract=None,
+        arxiv_id=None,
+        source="external",
+        source_url=canonical_url,
+        date_published=date_published,
+        is_latest_version=True,
+        version="v1",
+        urls_extracted=True,
+        hf_models=sorted({canonical_url, variant_url}),
     )
-    if not task:
-        logger.error("Automatic Speech Recognition task not found")
-        return 0, 0, []
-
-    # Ensure metrics exist
-    ensure_metric_exists(db, "WER", "lower_is_better")
-    ensure_metric_exists(db, "RTFx", "higher_is_better")
-
-    successful = 0
-    skipped = 0
-    missing_datasets = []
-
-    logger.info(f"\nProcessing {simplified_name}")
-    logger.info(f"  Paper: {paper.title[:60]}...")
-    logger.info(f"  Paper ID: {paper.id}")
-
-    # Group results by dataset to consolidate metrics
-    dataset_metrics = defaultdict(dict)
-    for result in results:
-        dataset_name = result["dataset"]
-        metric_name = result["metric"]
-        metric_value = result["value"]
-
-        # Find dataset
-        dataset = find_dataset(db, dataset_name)
-
-        if not dataset:
-            logger.warning(f"  ✗ Dataset not found: {dataset_name}")
-            if dataset_name not in missing_datasets:
-                missing_datasets.append(dataset_name)
-            skipped += 1
-            continue
-
-        # Accumulate metrics for this dataset
-        dataset_metrics[dataset.id][metric_name] = str(metric_value)
-
-    # Create one evaluation per dataset with all metrics consolidated
-    for dataset_id, metrics in dataset_metrics.items():
-        dataset = db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
-
-        metric_str = ", ".join([f"{k}={v}" for k, v in metrics.items()])
-        logger.info(f"  ✓ Created/Updated: {dataset.name} ({metric_str})")
-        successful += 1
-
-    return successful, skipped, missing_datasets
+    db.add(paper)
+    db.flush()
+    return paper
 
 
-def main():
-    """Main function to import Open ASR Leaderboard evaluations."""
-    csv_path = (
-        Path(__file__).parent.parent.parent.parent
-        / "data"
-        / "english_results_20251022_174743.csv"
+def cleanup_orphan_external_hf_papers(db: Session) -> int:
+    """Delete external `papers` rows that point at a HF model URL but have no
+    remaining references. Useful after re-running the importer with smarter
+    paper resolution: previously-created external rows for models that now
+    map to an arxiv paper are no longer referenced and should be cleaned up.
+
+    Returns the number of papers deleted.
+    """
+    result = db.execute(
+        text(
+            r"""
+            DELETE FROM papers p
+            WHERE p.source = 'external'
+              AND p.source_url ~ '^https://huggingface\.co/[^/]+/[^/]+$'
+              AND p.source_url NOT LIKE 'https://huggingface.co/papers/%'
+              AND p.source_url NOT LIKE 'https://huggingface.co/datasets/%'
+              AND p.source_url NOT LIKE 'https://huggingface.co/spaces/%'
+              AND NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_authors pa WHERE pa.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_tasks pt WHERE pt.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_methods pm WHERE pm.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_datasets pd WHERE pd.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_repositories pr WHERE pr.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM paper_project_pages pp WHERE pp.paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM methods m WHERE m.source_paper_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM datasets d WHERE d.introducing_paper_id = p.id)
+            """
+        )
     )
+    return result.rowcount or 0
 
-    if not csv_path.exists():
-        logger.error(f"CSV file not found: {csv_path}")
-        sys.exit(1)
 
-    logger.info("=" * 80)
-    logger.info("IMPORTING OPEN ASR LEADERBOARD EVALUATIONS")
-    logger.info("=" * 80)
-    logger.info(f"CSV file: {csv_path}")
-    logger.info(f"Target models: {len(MODEL_MAPPINGS)}")
-    logger.info("=" * 80)
+def lookup_dataset_ids(db: Session) -> dict[str, int]:
+    rows = db.execute(
+        text("SELECT slug, id FROM datasets WHERE slug = ANY(:slugs)"),
+        {"slugs": list(set(FEATURED_RANK_ORDER))},
+    ).fetchall()
+    return {slug: id_ for slug, id_ in rows}
 
-    # Load CSV results
-    logger.info("\nLoading CSV data...")
-    results_by_model = load_csv_results(csv_path)
-    logger.info(f"Found results for {len(results_by_model)} models")
 
-    # Import evaluations for each model
+@dataclass
+class ImportSummary:
+    total_models: int = 0
+    parent_rows_created: int = 0
+    sub_rows_created: int = 0
+    arxiv_papers_reused: int = 0
+    external_papers_created: int = 0
+    external_papers_reused: int = 0
+    orphan_external_papers_deleted: int = 0
+    arxiv_resolutions: list[tuple[str, str]] = field(default_factory=list)
+    external_fallbacks: list[str] = field(default_factory=list)
+    skipped_models: list[tuple[str, str]] = field(default_factory=list)
+    skipped_subs: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+def main() -> None:
+    summary = ImportSummary()
+    entries = fetch_leaderboard()
+    summary.total_models = len(entries)
+
+    logger.info("Fetching .eval_results YAML for each model...")
+    for entry in entries:
+        load_yaml_for_entry(entry)
+        if entry.fetch_error:
+            logger.warning(
+                "  %s (rank %s): YAML fetch failed (%s) - falling back to leaderboard mean WER only",
+                entry.model_id,
+                entry.rank,
+                entry.fetch_error,
+            )
+
+    logger.info("Fetching HF model metadata (createdAt + arxiv tags)...")
+    for entry in entries:
+        load_model_metadata(entry)
+
     session = db_manager.session_local()
-
-    total_successful = 0
-    total_skipped = 0
-    all_missing_datasets = set()
-    model_summaries = []
-
     try:
-        for model_name, results in results_by_model.items():
-            arxiv_id, simplified_name = MODEL_MAPPINGS[model_name]
+        asr_task = session.query(DBTask).filter(DBTask.slug == ASR_TASK_SLUG).first()
+        if asr_task is None:
+            raise RuntimeError(f"Task '{ASR_TASK_SLUG}' missing from database")
 
-            successful, skipped, missing_datasets = import_evaluations(
-                session, model_name, arxiv_id, simplified_name, results
+        dataset_ids = lookup_dataset_ids(session)
+        parent_dataset_id = dataset_ids.get(LEADERBOARD_DATASET_SLUG)
+        if parent_dataset_id is None:
+            raise RuntimeError(
+                f"Dataset '{LEADERBOARD_DATASET_SLUG}' missing from database"
             )
 
-            total_successful += successful
-            total_skipped += skipped
-            all_missing_datasets.update(missing_datasets)
+        # 1. Wipe existing ASR evaluations.
+        existing_count = (
+            session.query(DBEvaluation)
+            .filter(DBEvaluation.task_id == asr_task.id)
+            .count()
+        )
+        logger.info(
+            "Deleting %d existing evaluations on task '%s' (id=%s)...",
+            existing_count,
+            asr_task.name,
+            asr_task.id,
+        )
+        session.query(DBEvaluation).filter(DBEvaluation.task_id == asr_task.id).delete(
+            synchronize_session=False
+        )
+        session.flush()
 
-            model_summaries.append(
-                {
-                    "name": simplified_name,
-                    "arxiv": arxiv_id,
-                    "successful": successful,
-                    "skipped": skipped,
-                    "total": len(results),
-                }
+        # 2. Insert fresh evaluations.
+        affected_leaderboards: set[tuple[int, int]] = set()
+        tagged_paper_ids: set[int] = set()
+        for entry in entries:
+            # Pick a publication date for the source row, preferring the
+            # model's HF createdAt and falling back to the YAML eval date.
+            date_published = entry.created_at or entry.eval_date or date.today()
+
+            paper = resolve_canonical_paper(session, entry)
+            if paper is not None:
+                summary.arxiv_papers_reused += 1
+                summary.arxiv_resolutions.append(
+                    (entry.model_id, paper.arxiv_id or "?")
+                )
+            else:
+                canonical_model_id = MODEL_FAMILY_CANONICAL.get(
+                    entry.model_id, entry.model_id
+                )
+                existed_before = (
+                    session.query(DBPaper.id)
+                    .filter(
+                        DBPaper.source == "external",
+                        DBPaper.source_url
+                        == f"https://huggingface.co/{canonical_model_id}",
+                    )
+                    .first()
+                    is not None
+                )
+                paper = get_or_create_external_paper(
+                    session, entry.model_id, date_published=date_published
+                )
+                if existed_before:
+                    summary.external_papers_reused += 1
+                else:
+                    summary.external_papers_created += 1
+                summary.external_fallbacks.append(entry.model_id)
+
+            if paper.id not in tagged_paper_ids:
+                existing_tag = (
+                    session.query(DBPaperTask)
+                    .filter(
+                        DBPaperTask.paper_id == paper.id,
+                        DBPaperTask.task_id == asr_task.id,
+                    )
+                    .first()
+                )
+                if existing_tag is None:
+                    session.add(
+                        DBPaperTask(
+                            paper_id=paper.id,
+                            task_id=asr_task.id,
+                            source="manual",
+                        )
+                    )
+                tagged_paper_ids.add(paper.id)
+
+            model_name = derive_model_name(entry.model_id)
+
+            # Group YAML rows by task_id -> value.
+            yaml_values: dict[str, float] = {}
+            for rec in entry.yaml_records:
+                ds = rec.get("dataset") or {}
+                if ds.get("id") != LEADERBOARD_REPO:
+                    continue
+                tid = ds.get("task_id")
+                val = rec.get("value")
+                if tid and val is not None:
+                    try:
+                        yaml_values[tid] = float(val)
+                    except (TypeError, ValueError):
+                        continue
+
+            # Always trust the leaderboard JSON for mean_wer; the HF
+            # leaderboard authority overrides any drift in the YAML.
+            yaml_values["mean_wer"] = entry.mean_wer
+
+            # Methodology line traces back to the source.
+            if entry.pull_request:
+                ref_label = f"refs/pr/{entry.pull_request}"
+            else:
+                ref_label = "main"
+            methodology = (
+                f"Open ASR Leaderboard rank {entry.rank}; sourced from "
+                f"{entry.model_id}/.eval_results/open_asr_leaderboard.yaml "
+                f"({ref_label})"
             )
+            if entry.fetch_error and not entry.yaml_records:
+                methodology = (
+                    f"Open ASR Leaderboard rank {entry.rank}; mean WER from "
+                    f"hf-audio/open-asr-leaderboard JSON "
+                    f"(YAML unavailable: {entry.fetch_error})"
+                )
+            elif entry.fetch_error and entry.yaml_records:
+                methodology = (
+                    f"Open ASR Leaderboard rank {entry.rank}; sub-benchmark "
+                    f"scores recovered from huggingface.co/api/models/"
+                    f"{entry.model_id}?expand=evalResults "
+                    f"(YAML fetch: {entry.fetch_error})"
+                )
 
-        # Print summary
-        logger.info("\n" + "=" * 80)
-        logger.info("IMPORT SUMMARY")
-        logger.info("=" * 80)
+            # Parent row: always present, includes mean WER and (optionally)
+            # RTFx in the same metrics blob.
+            parent_metrics = {"WER": f"{yaml_values['mean_wer']}"}
+            if "rtfx" in yaml_values:
+                parent_metrics["RTFx"] = f"{yaml_values['rtfx']}"
+            session.add(
+                DBEvaluation(
+                    paper_id=paper.id,
+                    task_id=asr_task.id,
+                    dataset_id=parent_dataset_id,
+                    model_name=model_name,
+                    methodology=methodology,
+                    metrics=parent_metrics,
+                    best_metric="WER",
+                    evaluated_on=entry.eval_date,
+                    external_source_url=f"https://huggingface.co/{entry.model_id}",
+                )
+            )
+            summary.parent_rows_created += 1
+            affected_leaderboards.add((asr_task.id, parent_dataset_id))
 
-        logger.info(f"\nTotal evaluations created: {total_successful}")
-        logger.info(f"Total evaluations skipped: {total_skipped}")
+            # Sub-benchmark WER rows.
+            for yaml_task_id, slug in SUB_BENCHMARK_SLUG_BY_YAML_TASK.items():
+                if yaml_task_id not in yaml_values:
+                    continue
+                ds_id = dataset_ids.get(slug)
+                if ds_id is None:
+                    summary.skipped_subs.append(
+                        (entry.model_id, yaml_task_id, "dataset slug missing")
+                    )
+                    continue
+                session.add(
+                    DBEvaluation(
+                        paper_id=paper.id,
+                        task_id=asr_task.id,
+                        dataset_id=ds_id,
+                        model_name=model_name,
+                        methodology=methodology,
+                        metrics={"WER": f"{yaml_values[yaml_task_id]}"},
+                        best_metric="WER",
+                        evaluated_on=entry.eval_date,
+                        external_source_url=f"https://huggingface.co/{entry.model_id}",
+                    )
+                )
+                summary.sub_rows_created += 1
+                affected_leaderboards.add((asr_task.id, ds_id))
 
-        if all_missing_datasets:
-            logger.info(f"\n⚠️  MISSING DATASETS ({len(all_missing_datasets)}):")
-            for dataset in sorted(all_missing_datasets):
-                logger.info(f"  - {dataset}")
+            # Report any YAML sub-benchmarks that don't map to a known DB slug
+            # so we can curate them later if desired.
+            for yaml_task_id in yaml_values:
+                if yaml_task_id in {"mean_wer", "rtfx"}:
+                    continue
+                if yaml_task_id not in SUB_BENCHMARK_SLUG_BY_YAML_TASK:
+                    summary.skipped_subs.append(
+                        (entry.model_id, yaml_task_id, "no DB mapping")
+                    )
 
-        logger.info("\nMODEL BREAKDOWN:")
-        logger.info("-" * 80)
-        for summary in model_summaries:
-            logger.info(f"{summary['name']:<40} ArXiv:{summary['arxiv']}")
+            if entry.fetch_error:
+                summary.skipped_models.append((entry.model_id, entry.fetch_error))
+
+        session.commit()
+        logger.info(
+            "Inserted %d parent rows + %d sub-benchmark rows",
+            summary.parent_rows_created,
+            summary.sub_rows_created,
+        )
+
+        # 3. Set featured_rank on task_datasets.
+        # The partial unique index on (task_id, featured_rank) requires
+        # a clean-slate before reassigning, so we null all ASR ranks first.
+        logger.info("Resetting featured_rank for ASR task...")
+        session.execute(
+            text(
+                "UPDATE task_datasets SET featured_rank = NULL, "
+                "updated_at = CURRENT_TIMESTAMP WHERE task_id = :tid"
+            ),
+            {"tid": asr_task.id},
+        )
+        session.flush()
+        for rank, slug in enumerate(FEATURED_RANK_ORDER, start=1):
+            ds_id = dataset_ids.get(slug)
+            if ds_id is None:
+                logger.warning("Skipping featured_rank for missing slug %s", slug)
+                continue
+            session.execute(
+                text(
+                    "INSERT INTO task_datasets (task_id, dataset_id, featured_rank) "
+                    "VALUES (:tid, :did, :rank) "
+                    "ON CONFLICT (task_id, dataset_id) DO UPDATE SET "
+                    "featured_rank = EXCLUDED.featured_rank, "
+                    "updated_at = CURRENT_TIMESTAMP"
+                ),
+                {"tid": asr_task.id, "did": ds_id, "rank": rank},
+            )
+        session.commit()
+
+        # 4. Recalculate ranks for every affected leaderboard.
+        eval_service = EvaluationService(session)
+        for tid, did in sorted(affected_leaderboards):
+            updated = eval_service.recalculate_ranks(tid, did)
             logger.info(
-                f"  Created: {summary['successful']:<3} Skipped: {summary['skipped']:<3} Total: {summary['total']}"
+                "Recalculated %d ranks for task=%s, dataset=%s", updated, tid, did
             )
 
-        logger.info("\n" + "=" * 80)
-        logger.info("✅ IMPORT COMPLETE")
-        logger.info("=" * 80)
+        # 5. Garbage-collect any external HF-model paper rows that the new
+        #    arxiv-aware resolution made obsolete. Safe because the cleanup
+        #    only touches rows with no remaining references anywhere.
+        deleted = cleanup_orphan_external_hf_papers(session)
+        summary.orphan_external_papers_deleted = deleted
+        if deleted:
+            logger.info("Deleted %d orphan external HF-model paper rows", deleted)
+        session.commit()
 
-        if all_missing_datasets:
-            logger.info(
-                "\n⚠️  NOTE: Some evaluations were skipped due to missing datasets."
-            )
-            logger.info(
-                "You will need to create these datasets before importing their results."
-            )
-
-    except Exception as e:
-        logger.error(f"Error during import: {e}")
-        import traceback
-
-        traceback.print_exc()
+    except Exception:
         session.rollback()
-        sys.exit(1)
+        raise
     finally:
         session.close()
 
+    # Final report.
+    logger.info("=" * 70)
+    logger.info("IMPORT SUMMARY")
+    logger.info("=" * 70)
+    logger.info("Models on leaderboard          : %d", summary.total_models)
+    logger.info("Arxiv-backed papers reused     : %d", summary.arxiv_papers_reused)
+    logger.info(
+        "External papers (created/reused): %d / %d",
+        summary.external_papers_created,
+        summary.external_papers_reused,
+    )
+    logger.info(
+        "Orphan external papers deleted : %d", summary.orphan_external_papers_deleted
+    )
+    logger.info("Parent (Open ASR) rows         : %d", summary.parent_rows_created)
+    logger.info("Sub-benchmark rows             : %d", summary.sub_rows_created)
+
+    if summary.arxiv_resolutions:
+        logger.info("Arxiv paper attributions:")
+        for model, arxiv in sorted(summary.arxiv_resolutions):
+            logger.info("  %-60s -> arxiv:%s", model, arxiv)
+    if summary.external_fallbacks:
+        logger.info("External fallback (no canonical arxiv):")
+        for m in sorted(summary.external_fallbacks):
+            logger.info("  %s", m)
+
+    if summary.skipped_models:
+        logger.info("YAML-unavailable models (still got mean WER):")
+        for m, reason in summary.skipped_models:
+            logger.info("  - %s : %s", m, reason)
+
+    if summary.skipped_subs:
+        unmapped = sorted(
+            {k[1] for k in summary.skipped_subs if k[2] == "no DB mapping"}
+        )
+        if unmapped:
+            logger.info("YAML sub-benchmarks not mapped to DB datasets:")
+            for k in unmapped:
+                logger.info("  - %s", k)
+
+    logger.info("Local task page: https://paperswithcode.co/tasks/%s", ASR_TASK_SLUG)
+    logger.info(
+        "Local benchmark page: https://paperswithcode.co/datasets/%s",
+        LEADERBOARD_DATASET_SLUG,
+    )
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.exception("Importer failed: %s", exc)
+        sys.exit(1)

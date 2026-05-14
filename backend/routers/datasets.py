@@ -46,6 +46,14 @@ async def list_datasets(
         None, description="Filter by partial full name match"
     ),
     task: Optional[str] = Query(None, description="Filter by task ID or task slug"),
+    include_descendants: bool = Query(
+        False,
+        description=(
+            "When `task` is set, also include datasets linked to subtasks "
+            "(child tasks under the task hierarchy). Useful for parent task "
+            "pages that want to roll up benchmarks from their subtasks."
+        ),
+    ),
     ordering: Optional[str] = Query(
         "name",
         description="Order by field: name, full_name, created_at, paper_count (prefix with '-' for descending)",
@@ -103,6 +111,7 @@ async def list_datasets(
             name=name,
             full_name=full_name,
             task_id=task_id,
+            include_descendants=include_descendants,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -467,6 +476,7 @@ async def get_leaderboard_metrics(
         "dataset_id": "6",
         "task_name": "Object Detection",
         "dataset_name": "COCO",
+        "supports_harness": false,
         "metrics": [
             {
                 "metric_id": "1",

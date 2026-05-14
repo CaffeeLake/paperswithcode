@@ -129,6 +129,7 @@ def show_job_status(job_name: str = None, date: str = None):
                             "update_citations": "update_citations_hourly",
                             "extract_urls": "extract_urls_hourly",
                             "calculate_trending_scores": "calculate_trending_scores",
+                            "link_methods_by_references": "link_methods_by_references_weekly",
                         }
                         log_name = log_name_mapping.get(job_name, job_name)
 

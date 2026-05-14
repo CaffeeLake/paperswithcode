@@ -9,15 +9,17 @@ High-level picture of PostgreSQL contents and on-disk legacy dumps. For connecti
 - **`authors`**: authors with Hugging Face profile integration
 - **`repositories`**: GitHub repositories, stars, update timestamps
 - **`project_pages`**: project page URLs for papers
-- **`tasks`**: task hierarchy (e.g. Computer Vision → Object Detection)
+- **`tasks`**: task hierarchy via `parent_id` self-FK and `level`. Subtasks are first-class child rows (e.g. `language-modeling` → `world-knowledge`, `math`, …) with their own description, page, benchmarks, and evaluations
 - **`methods`**: techniques (ResNet, Transformer, Adam, …)
 - **`datasets`**: benchmark datasets (COCO, ImageNet, …)
-- **`evaluations`**: benchmark results with metrics and ranks
+- **`evaluations`**: benchmark results with metrics and ranks. `task_id` may reference any task in the hierarchy (top-level OR subtask) but each row belongs to exactly one `(task_id, dataset_id, best_metric)` leaderboard; pick the most-specific child task. Optional `harness` column for model+harness benchmarks (e.g. Terminal-Bench scores a model running inside an agentic harness like `Claude Code` or `Terminus`); leave NULL for plain model-only benchmarks
 - **`metrics`**: evaluation metrics (AP, WER, BLEU, …)
 - **`areas`**: research areas (Computer Vision, NLP, …)
 
 **Junction (many-to-many)**:
-- **`paper_authors`**, **`paper_tasks`**, **`paper_methods`**, **`paper_repositories`**, **`paper_project_pages`**, **`dataset_tasks`**
+- **`paper_authors`**, **`paper_tasks`**, **`paper_methods`**, **`paper_repositories`**, **`paper_project_pages`**
+- **`task_datasets`** (task ↔ dataset display metadata: `featured_rank`, `supports_harness`)
+- **`task_dataset_metrics`** (task ↔ dataset ↔ metric leaderboard definition)
 
 **Tracking**:
 - **`repository_star_history`**: star snapshots for trending

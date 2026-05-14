@@ -19,6 +19,8 @@ import {
   FileText,
   Database
 } from "lucide-react";
+import { getStoredAdminToken, setStoredAdminToken } from "@/lib/adminAuth";
+import { useAuth } from "@/lib/authContext";
 
 interface CronJobStatus {
   job_name: string;
@@ -101,15 +103,19 @@ const resolveApiBaseUrl = (): string => {
 
 const API_BASE_URL = resolveApiBaseUrl();
 
-// Fetch cron jobs status
+// Fetch cron jobs status. Sends `credentials: 'include'` so that the
+// `pwc_session` cookie set by the HF OAuth flow reaches the API; the
+// optional X-Admin-Token header remains as a fallback for shared boxes
+// where signing in via HF isn't practical.
 const fetchCronStatus = async (token?: string): Promise<CronJobsResponse> => {
   const headers: HeadersInit = token ? { "X-Admin-Token": token } : {};
   const response = await fetch(`${API_BASE_URL}/api/v1/cron/status`, {
     headers,
+    credentials: "include",
   });
 
   if (response.status === 401) {
-    throw new Error("Unauthorized. Please check your admin token.");
+    throw new Error("Unauthorized. Sign in with Hugging Face or paste a valid admin token.");
   }
 
   if (!response.ok) {
@@ -119,10 +125,7 @@ const fetchCronStatus = async (token?: string): Promise<CronJobsResponse> => {
 };
 
 const loadStoredToken = (): string => {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  return localStorage.getItem("cronAdminToken") ?? "";
+  return getStoredAdminToken();
 };
 
 // Status icon component
@@ -280,14 +283,11 @@ const CronDashboard = () => {
   const [adminToken, setAdminToken] = useState<string>(() => loadStoredToken());
   const [tokenInput, setTokenInput] = useState<string>(() => loadStoredToken());
   const [tokenSaved, setTokenSaved] = useState(false);
+  const { user } = useAuth();
+  const isHfAdmin = !!user?.is_admin;
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (adminToken) {
-      localStorage.setItem("cronAdminToken", adminToken);
-    } else {
-      localStorage.removeItem("cronAdminToken");
-    }
+    setStoredAdminToken(adminToken);
   }, [adminToken]);
 
   useEffect(() => {
@@ -306,10 +306,11 @@ const CronDashboard = () => {
     setAdminToken("");
   };
 
-  const canFetch = adminToken.trim().length > 0;
+  // Either the HF session cookie or the legacy X-Admin-Token unlocks fetching.
+  const canFetch = isHfAdmin || adminToken.trim().length > 0;
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ["cronStatus", adminToken],
+    queryKey: ["cronStatus", isHfAdmin ? `hf:${user?.username}` : adminToken],
     queryFn: () => fetchCronStatus(adminToken.trim()),
     enabled: canFetch,
     refetchInterval: canFetch && autoRefresh ? 30000 : false, // Auto-refresh every 30 seconds if enabled
@@ -392,46 +393,59 @@ const CronDashboard = () => {
           </div>
         </div>
 
-        <Card className="mb-6">
-          <CardContent className="pt-6 space-y-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="font-semibold text-gray-800">Admin token</p>
-                <p className="text-sm text-gray-600">
-                  Enter your admin token to view CRON job metrics. The token is stored locally in this browser
-                  and sent with requests as the <code className="font-mono">X-Admin-Token</code> header.
-                </p>
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full md:w-auto">
-                <Input
-                  type="password"
-                  placeholder="Enter admin token"
-                  value={tokenInput}
-                  onChange={(event) => setTokenInput(event.target.value)}
-                  className="sm:w-64"
-                />
-                <Button size="sm" onClick={handleApplyToken} disabled={!tokenInput.trim()}>
-                  Apply token
-                </Button>
-                {adminToken && (
-                  <Button variant="ghost" size="sm" onClick={handleClearToken}>
-                    Clear
-                  </Button>
-                )}
-              </div>
-            </div>
-            {tokenSaved && (
-              <p className="text-xs text-green-600">
-                Token saved. Future requests will automatically include it.
+        {isHfAdmin ? (
+          <Card className="mb-6">
+            <CardContent className="pt-6">
+              <p className="text-sm text-gray-700">
+                Signed in as <span className="font-semibold">@{user?.username}</span>. Your admin
+                permissions are derived from the <code className="font-mono">PWC_ADMIN_HF_USERNAMES</code>
+                {" "}allowlist; CRON metrics will refresh automatically.
               </p>
-            )}
-            <p className={`text-xs ${canFetch ? "text-gray-500" : "text-blue-700"}`}>
-              {canFetch
-                ? "Token stored locally in this browser. Clear it when you are finished on shared devices."
-                : "Enter your admin token above to enable CRON job monitoring."}
-            </p>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="mb-6">
+            <CardContent className="pt-6 space-y-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="font-semibold text-gray-800">Admin token</p>
+                  <p className="text-sm text-gray-600">
+                    Sign in with Hugging Face from the header for the easiest path. Otherwise, paste your
+                    admin token here. The token is stored locally in this browser and sent with requests
+                    as the <code className="font-mono">X-Admin-Token</code> header.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full md:w-auto">
+                  <Input
+                    type="password"
+                    placeholder="Enter admin token"
+                    value={tokenInput}
+                    onChange={(event) => setTokenInput(event.target.value)}
+                    className="sm:w-64"
+                  />
+                  <Button size="sm" onClick={handleApplyToken} disabled={!tokenInput.trim()}>
+                    Apply token
+                  </Button>
+                  {adminToken && (
+                    <Button variant="ghost" size="sm" onClick={handleClearToken}>
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {tokenSaved && (
+                <p className="text-xs text-green-600">
+                  Token saved. Future requests will automatically include it.
+                </p>
+              )}
+              <p className={`text-xs ${canFetch ? "text-gray-500" : "text-blue-700"}`}>
+                {canFetch
+                  ? "Token stored locally in this browser. Clear it when you are finished on shared devices."
+                  : "Enter your admin token above (or sign in with Hugging Face) to enable CRON job monitoring."}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Loading State */}
         {isLoading && canFetch && (

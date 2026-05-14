@@ -8,7 +8,7 @@ Guidance for AI agents working in this repository.
 - Avoid heavy `try`/`except`; keep logic simple and readable.
 - Whenever you make a change that requires a restart of the backend/frontend, do so without asking confirmation.
 - Use background tasks in Cursor for long-running work unless you are actively debugging.
-- **Run Python with** `uv run --env-file backend/keys.env …` (venv + env vars).
+- **Run Python and CLIs with** `uv run --env-file backend/keys.env …` (venv + env vars).
 - Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False` as Ruff penalizes this.
 - Database access: **`docs/database.md`**.
 - **Hardware**: Hetzner VPS, ~4GB RAM / 80GB disk — many scripts assume low RAM.

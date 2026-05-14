@@ -29,6 +29,11 @@ List endpoints generally support pagination, filtering, and search; see `docs/ba
 | `/datasets/{dataset_id}` | GET | Get specific dataset details |
 | `/datasets/{dataset_id}/evaluations` | GET | Get evaluations for dataset |
 
+**Subtask rollups**: pass `task=<slug-or-id>&include_descendants=true` to roll
+up datasets owned by every subtask under the given task. Useful for parent
+task pages such as `/tasks/language-modeling` whose benchmarks now live on
+its child subtasks (`world-knowledge`, `math`, ...).
+
 **Creating a dataset**:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/datasets/" \
@@ -55,6 +60,12 @@ curl -X POST "http://localhost:8000/api/v1/datasets/" \
 | `/evaluations/{evaluation_id}` | DELETE | Delete evaluation result |
 | `/evaluations/recalculate-ranks` | POST | Recalculate leaderboard ranks |
 
+**Task hierarchy**: leaderboards key off the most-specific task. When a task
+has subtasks, write evaluations against the child task and read them back
+either via the child `task_id` or, for parent rollups, via
+`?task_id=<parent>&include_descendants=true`. Rank recalculation always runs
+within a single `(task_id, dataset_id, best_metric)` triple.
+
 **Adding an evaluation**:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/evaluations/" \
@@ -79,9 +90,19 @@ curl -X POST "http://localhost:8000/api/v1/evaluations/" \
 | `/tasks/{task_id}/papers` | GET | Get papers for task |
 | `/tasks/{task_id}/datasets` | GET | Get datasets for task |
 | `/tasks/{task_id}/children` | GET | Get child tasks (subtasks) |
+| `/tasks/{task_id}/parents` | GET | Get parent task chain up to the root |
 | `/tasks/{task_id}/keywords` | PUT | Update task keywords |
 
 **Query parameters**: `q` (search), `area_id`, `parent_id`, `level`, `ordering`
+
+**Subtasks model**: subtasks are first-class child rows in the `tasks` table
+linked via `tasks.parent_id` (with `tasks.level = parent.level + 1`). Each
+subtask has its own description, page, benchmarks, and evaluations. Parent
+task pages render their subtasks via `/tasks/{task_id}/children`. Example:
+Language Modeling (`language-modeling`, level 0) is the parent of
+`world-knowledge`, `long-context`, `instruction-following`, `math`,
+`language-reasoning`, `coding`, `safety-and-grounding`, and
+`classic-language-modeling` (all level 1).
 
 ## Methods (`/api/v1/methods/`)
 

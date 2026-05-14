@@ -38,15 +38,29 @@ const TagsIndexView: React.FC = () => {
   const visibleAreas = useMemo(() => {
     if (!taxonomyQ.data) return [];
 
+    // General sits at the top as the broad catchall, then the modality areas
+    // follow in a curated order. Anything outside this map falls to the end
+    // (sorted alphabetically) so newly added areas show up without code edits.
+    const AREA_ORDER: Record<string, number> = {
+      general: 0,
+      vision: 1,
+      video: 2,
+      language: 3,
+      audio: 4,
+      "time-series": 5,
+    };
+    const rank = (name: string) => AREA_ORDER[taskKey(name)] ?? 999;
+
     return taxonomyQ.data.results
       .map((area) => ({
         ...area,
         tasks: area.tasks.filter((task) => !isHiddenTask(task)),
       }))
       .sort((a, b) => {
-        if (taskKey(a.name) === "general") return -1;
-        if (taskKey(b.name) === "general") return 1;
-        return 0;
+        const ra = rank(a.name);
+        const rb = rank(b.name);
+        if (ra !== rb) return ra - rb;
+        return a.name.localeCompare(b.name);
       });
   }, [taxonomyQ.data]);
 

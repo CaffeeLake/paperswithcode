@@ -261,6 +261,7 @@ export function EditTasksDialog({
                       id={`task-${task.id}`}
                       checked={isSelected}
                       onCheckedChange={(checked) => toggleTask(taskId, checked === true)}
+                      className="!border !border-black data-[state=checked]:!bg-black data-[state=checked]:!text-white"
                     />
                     <label
                       htmlFor={`task-${task.id}`}

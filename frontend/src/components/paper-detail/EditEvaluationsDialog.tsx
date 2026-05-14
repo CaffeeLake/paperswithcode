@@ -11,6 +11,7 @@ interface EditableEvaluation {
   task_id: string;
   dataset_id: string;
   model_name: string;
+  harness: string;
   metric_name: string;
   metric_value: string;
   best_rank?: string;
@@ -50,6 +51,7 @@ export function EditEvaluationsDialog({
             task_id: e.task_id,
             dataset_id: e.dataset_id,
             model_name: e.model_name || '',
+            harness: e.harness || '',
             metric_name: metricName || '',
             metric_value: String(metricValue || ''),
             best_rank: e.best_rank ? String(e.best_rank) : '',
@@ -126,6 +128,12 @@ export function EditEvaluationsDialog({
     return allDatasetsForEvals?.results || [];
   };
 
+  const selectedDatasetSupportsHarness = (taskId: string, datasetId: string): boolean => {
+    if (!taskId || !datasetId) return false;
+    const dataset = getFilteredDatasetsForTask(taskId).find((d) => d.id === datasetId);
+    return Boolean(dataset?.supports_harness);
+  };
+
   // Mutation for saving evaluations (handles create, update, delete)
   const saveEvaluationsMutation = useMutation({
     mutationFn: async ({ paperId, evaluations }: { paperId: string; evaluations: EditableEvaluation[] }) => {
@@ -145,20 +153,24 @@ export function EditEvaluationsDialog({
             console.log(`Evaluation ${evalItem.id} already deleted or not found`);
           }
         } else if (evalItem.operation === 'create') {
+          const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           await createEvaluation({
             paper_id: parseInt(paperId),
             task_id: parseInt(evalItem.task_id),
             dataset_id: parseInt(evalItem.dataset_id),
             model_name: evalItem.model_name || undefined,
+            harness: supportsHarness ? evalItem.harness || undefined : undefined,
             metrics: { [evalItem.metric_name]: evalItem.metric_value },
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
+          const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           await updateEvaluation(evalItem.id, {
             task_id: parseInt(evalItem.task_id),
             dataset_id: parseInt(evalItem.dataset_id),
             model_name: evalItem.model_name || undefined,
+            harness: supportsHarness ? evalItem.harness || null : null,
             metrics: { [evalItem.metric_name]: evalItem.metric_value },
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
@@ -181,6 +193,7 @@ export function EditEvaluationsDialog({
         task_id: '',
         dataset_id: '',
         model_name: '',
+        harness: '',
         metric_name: '',
         metric_value: '',
         best_rank: '',
@@ -217,6 +230,15 @@ export function EditEvaluationsDialog({
         // If task changes, reset the dataset selection
         if (field === 'task_id') {
           updated.dataset_id = '';
+          updated.harness = '';
+        }
+
+        if (
+          field === 'dataset_id' &&
+          value &&
+          !selectedDatasetSupportsHarness(updated.task_id, value)
+        ) {
+          updated.harness = '';
         }
 
         // Mark as updated if it was previously unchanged
@@ -258,6 +280,7 @@ export function EditEvaluationsDialog({
                     <th className="text-left py-2 px-2 font-medium text-sm">Task</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Dataset</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Model</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm">Harness</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
@@ -305,6 +328,21 @@ export function EditEvaluationsDialog({
                             value={evaluation.model_name}
                             onChange={(e) => handleUpdateEvaluationField(index, 'model_name', e.target.value)}
                           />
+                        </td>
+                        <td className="py-2 px-2">
+                          {selectedDatasetSupportsHarness(evaluation.task_id, evaluation.dataset_id) ? (
+                            <Input
+                              type="text"
+                              className="w-full text-sm"
+                              placeholder="Claude Code, Terminus, ..."
+                              value={evaluation.harness}
+                              onChange={(e) => handleUpdateEvaluationField(index, 'harness', e.target.value)}
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              Not supported
+                            </span>
+                          )}
                         </td>
                         <td className="py-2 px-2">
                           <Input

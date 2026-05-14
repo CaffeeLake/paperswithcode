@@ -159,7 +159,7 @@ async def get_area(
     GET /api/v1/areas/1
     ```
 
-    Returns information about the research area with ID 1 (e.g., "Computer Vision").
+    Returns information about the research area with ID 1 (e.g., "Vision").
     """
     try:
         area_service = AreaService(db)
@@ -213,7 +213,7 @@ async def get_area_tasks(
     GET /api/v1/areas/1/tasks?page=1&page_size=20
     ```
 
-    Returns all tasks in the area with ID 1 (e.g., Computer Vision tasks like
+    Returns all tasks in the area with ID 1 (e.g., Vision tasks like
     Image Classification, Object Detection, etc.)
 
     **Error Responses:**

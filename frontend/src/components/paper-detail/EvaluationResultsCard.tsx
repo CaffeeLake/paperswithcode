@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getTasks, getDatasets, type Task as APITask, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import { getDatasets, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import { formatMetricValue } from "@/lib/utils";
 
 interface TaskEvaluationsGroup {
   taskId: string;
   taskName: string;
+  taskSlug?: string;
   evaluations: APIEvaluation[];
   metrics: string[];
   totalMetricsCount: number;
@@ -55,13 +57,9 @@ const truncateText = (text: string | null | undefined, maxChars: number) => {
 };
 
 export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: EvaluationResultsCardProps) {
-  // Fetch tasks and datasets to display names instead of IDs
-  const { data: allTasksDataForEvals } = useQuery({
-    queryKey: ['tasks-for-evals'],
-    queryFn: () => getTasks({ page_size: 100 }),
-    enabled: !!evaluations && evaluations.length > 0,
-  });
-
+  // Dataset names/slugs are served on each evaluation when available, but we keep
+  // this lookup as a last-resort fallback for stale rows that pre-date the
+  // `dataset_name`/`dataset_slug` fields on the evaluation payload.
   const { data: allDatasetsData } = useQuery({
     queryKey: ['datasets-for-evals'],
     queryFn: () => getDatasets({ page_size: 100 }),
@@ -89,16 +87,16 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
     });
 
     return Array.from(grouped.entries()).map(([taskId, group]) => {
-      const taskName = group.evaluations[0]?.task_name ||
-        allTasksDataForEvals?.results?.find((t: APITask) => t.id === taskId)?.name ||
-        `Task ${taskId}`;
+      const taskName = group.evaluations[0]?.task_name || `Task ${taskId}`;
+      const taskSlug = group.evaluations[0]?.task_slug || undefined;
 
       const sortedMetrics = Array.from(group.metrics).sort();
       const visibleMetrics = sortedMetrics.slice(0, MAX_VISIBLE_METRICS);
 
-      const taskGroup = {
+      const taskGroup: TaskEvaluationsGroup = {
         taskId,
         taskName,
+        taskSlug,
         evaluations: group.evaluations,
         metrics: visibleMetrics,
         totalMetricsCount: sortedMetrics.length,
@@ -106,7 +104,7 @@ export function EvaluationResultsCard({ evaluations, isLoading, onEdit }: Evalua
 
       return taskGroup;
     }).sort((a, b) => a.taskName.localeCompare(b.taskName));
-  }, [evaluations, allTasksDataForEvals]);
+  }, [evaluations]);
 
   // Calculate column widths for a specific number of metrics
 const calculateColumnWidths = (metricCount: number) => {
@@ -197,8 +195,19 @@ const calculateColumnWidths = (metricCount: number) => {
 
                 return (
                   <div key={taskGroup.taskId} className={taskGroupIdx > 0 ? 'mt-8' : ''}>
-                    {/* Task Heading */}
-                    <h3 className="text-lg font-semibold mb-4 text-foreground">{taskGroup.taskName}</h3>
+                    {/* Task Heading — links to /tasks/{slug} when we know the canonical slug. */}
+                    <h3 className="text-lg font-semibold mb-4 text-foreground">
+                      {taskGroup.taskSlug ? (
+                        <Link
+                          to={`/tasks/${taskGroup.taskSlug}`}
+                          className="hover:text-primary hover:underline underline-offset-4"
+                        >
+                          {taskGroup.taskName}
+                        </Link>
+                      ) : (
+                        taskGroup.taskName
+                      )}
+                    </h3>
 
                     {/* Evaluation Table with fixed layout for column alignment */}
                     <div className="overflow-x-auto w-full">
@@ -263,21 +272,10 @@ const calculateColumnWidths = (metricCount: number) => {
                               return dataset?.slug || `dataset-${evaluation.dataset_id}`;
                             })();
 
-                            // Get task slug - prefer from task data, fallback to generating from name or using ID
-                            const taskSlug = (() => {
-                              const task = allTasksDataForEvals?.results?.find(
-                                (t: APITask) => t.id === evaluation.task_id
-                              );
-                              if (task?.slug) {
-                                return task.slug;
-                              }
-                              // Fallback: generate slug from task name or use task ID
-                              if (task?.name) {
-                                return task.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-                              }
-                              // Last resort: use task ID
-                              return evaluation.task_id;
-                            })();
+                            // Use the canonical task slug from the grouped header (sourced
+                            // from the evaluation payload itself); fall back to the task ID
+                            // only if no slug is available, which would also break the link.
+                            const taskSlug = taskGroup.taskSlug || evaluation.task_id;
 
                             return (
                               <tr key={evaluation.id} className={`${idx < taskGroup.evaluations.length - 1 ? 'border-b border-border' : ''} hover:bg-muted/20`}>
@@ -303,7 +301,7 @@ const calculateColumnWidths = (metricCount: number) => {
                                     >
                                       {metricName && hasValue ? (
                                         <span className={`font-semibold ${taskMetricCount <= 2 ? '' : 'text-sm'}`}>
-                                          {typeof value === 'number' ? value.toFixed(2) : value}
+                                          {formatMetricValue(value)}
                                         </span>
                                       ) : (
                                         <span className="text-muted-foreground">-</span>

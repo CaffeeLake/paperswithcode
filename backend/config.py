@@ -75,6 +75,24 @@ class Settings(BaseSettings):
         description="API token required for administrative endpoints",
     )
 
+    # Hugging Face OAuth configuration (for "Sign in with Hugging Face")
+    hf_oauth_client_id: str = Field(
+        default="",
+        description="Client ID of the Hugging Face OAuth application",
+    )
+    hf_oauth_client_secret: str = Field(
+        default="",
+        description="Client secret of the Hugging Face OAuth application",
+    )
+    jwt_secret: str = Field(
+        default="",
+        description="HS256 secret used to sign the session and OAuth state JWTs",
+    )
+    admin_hf_usernames: str = Field(
+        default="",
+        description="Comma-separated list of HF usernames allowed to perform admin actions",
+    )
+
     # Hugging Face API configuration
     hf_token: str = Field(
         default="", description="Hugging Face API token for higher rate limits"
@@ -131,6 +149,16 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.environment.lower() == "production"
+
+    @property
+    def admin_hf_username_set(self) -> set[str]:
+        """Return the set of allowlisted HF usernames, lowercased and trimmed."""
+
+        return {
+            name.strip().lower()
+            for name in self.admin_hf_usernames.split(",")
+            if name.strip()
+        }
 
     @property
     def cors_allowed_origins(self) -> List[str]:

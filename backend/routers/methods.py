@@ -12,6 +12,7 @@ from typing import Optional
 from backend.models.api import Method, Methods, Papers, KeywordUpdate
 from backend.services.method_service import MethodService
 from backend.database.connection import get_database_session
+from backend.utils.auth import require_admin
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter(prefix="/methods", tags=["methods"])
@@ -177,7 +178,11 @@ async def get_method_papers(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{method_id}/keywords", response_model=Method)
+@router.post(
+    "/{method_id}/keywords",
+    response_model=Method,
+    dependencies=[Depends(require_admin)],
+)
 async def add_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,
@@ -209,7 +214,11 @@ async def add_method_keywords(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{method_id}/keywords", response_model=Method)
+@router.delete(
+    "/{method_id}/keywords",
+    response_model=Method,
+    dependencies=[Depends(require_admin)],
+)
 async def remove_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,
@@ -241,7 +250,11 @@ async def remove_method_keywords(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{method_id}/keywords", response_model=Method)
+@router.put(
+    "/{method_id}/keywords",
+    response_model=Method,
+    dependencies=[Depends(require_admin)],
+)
 async def replace_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,

@@ -21,24 +21,24 @@ from backend.config import get_settings
 # These areas correspond to the main categorizations in papers-with-abstracts.json
 COMMON_AREAS = [
     {
-        "name": "Computer Vision",
-        "description": "Research focused on enabling computers to interpret and understand visual information from images and videos, including tasks such as image classification, object detection, segmentation, and visual recognition.",
+        "name": "Vision",
+        "description": "Research on enabling machines to interpret and understand still images, including image classification, generation, editing, segmentation, detection, depth, and 3D understanding.",
     },
     {
-        "name": "Natural Language Processing",
-        "description": "The field of AI concerned with the interaction between computers and human language, encompassing text understanding, generation, translation, sentiment analysis, and question answering.",
+        "name": "Video",
+        "description": "Research on understanding, classifying, segmenting, and generating video, including temporal modeling across frames.",
+    },
+    {
+        "name": "Language",
+        "description": "Research on understanding and generating human language, including machine translation, text classification, and other NLP tasks (note: language modeling lives under General).",
     },
     {
         "name": "General",
         "description": "A broad category encompassing machine learning research and tasks that don't fit specifically into vision or language domains, including general ML methods, optimization, and cross-domain approaches.",
     },
     {
-        "name": "Time Series Forecasting",
+        "name": "Time-series",
         "description": "Machine learning methods for analyzing, modeling, and predicting sequential temporal data, including financial forecasting, weather prediction, and temporal pattern recognition.",
-    },
-    {
-        "name": "Robotics",
-        "description": "Research at the intersection of AI and physical systems, focusing on autonomous robots, control systems, robot learning, manipulation, and navigation in real-world environments.",
     },
     {
         "name": "Audio",

@@ -652,14 +652,14 @@ class Area(BaseModel):
     """
     Research area object representing a broad field of AI/ML research.
 
-    Examples: Computer Vision, Natural Language Processing, Reinforcement Learning, etc.
+    Examples: Vision, Video, Language, Audio, General, Time-series.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     # Core area identification
     id: str = Field(..., description="Area ID")
-    name: str = Field(..., description="Area name (e.g., 'Computer Vision')")
+    name: str = Field(..., description="Area name (e.g., 'Vision')")
     description: Optional[str] = Field(None, description="Area description")
 
     # Timestamps
@@ -938,7 +938,7 @@ class AreaWithTasks(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str = Field(..., description="Area ID")
-    name: str = Field(..., description="Area name (e.g., 'Computer Vision')")
+    name: str = Field(..., description="Area name (e.g., 'Vision')")
     description: Optional[str] = Field(None, description="Area description")
     tasks: List[Task] = Field(
         default_factory=list,
@@ -1081,6 +1081,10 @@ class Dataset(BaseModel):
     featured_rank: Optional[int] = Field(
         None,
         description="Task-specific featured ordering rank when returned for a task",
+    )
+    supports_harness: bool = Field(
+        False,
+        description="Whether this task-dataset leaderboard allows evaluation harness values",
     )
 
     # Allowed metrics for this dataset
@@ -1237,6 +1241,14 @@ class Evaluation(BaseModel):
     task_id: str = Field(..., description="Task ID being evaluated")
     dataset_id: str = Field(..., description="Dataset ID used for evaluation")
     model_name: Optional[str] = Field(None, description="Name of the model/method used")
+    harness: Optional[str] = Field(
+        None,
+        description=(
+            "Optional harness/runtime used to evaluate the model "
+            "(e.g. 'Claude Code', 'Terminus'). Benchmarks like Terminal-Bench "
+            "are model+harness combinations and surface this alongside the model."
+        ),
+    )
     methodology: Optional[str] = Field(None, description="Methodology description")
     metrics: dict = Field(
         ...,
@@ -1273,6 +1285,7 @@ class Evaluation(BaseModel):
     )
     result_url: Optional[str] = Field(None, description="URL to the result/demo page")
     task_name: Optional[str] = Field(None, description="Name of the task")
+    task_slug: Optional[str] = Field(None, description="URL-friendly slug of the task")
     dataset_name: Optional[str] = Field(None, description="Name of the dataset")
     dataset_slug: Optional[str] = Field(
         None, description="URL-friendly slug of the dataset"
@@ -1315,6 +1328,10 @@ class EvaluationCreateRequest(BaseModel):
     task_id: int = Field(..., description="Task ID")
     dataset_id: int = Field(..., description="Dataset ID")
     model_name: Optional[str] = Field(None, description="Model name")
+    harness: Optional[str] = Field(
+        None,
+        description="Optional harness/runtime used to evaluate the model",
+    )
     methodology: Optional[str] = Field(None, description="Methodology description")
     metrics: dict = Field(..., description="Dictionary of metrics")
     uses_additional_data: bool = Field(
@@ -1336,6 +1353,10 @@ class EvaluationUpdateRequest(BaseModel):
     task_id: Optional[int] = Field(None, description="Task ID")
     dataset_id: Optional[int] = Field(None, description="Dataset ID")
     model_name: Optional[str] = Field(None, description="Model name")
+    harness: Optional[str] = Field(
+        None,
+        description="Optional harness/runtime used to evaluate the model",
+    )
     methodology: Optional[str] = Field(None, description="Methodology description")
     metrics: Optional[dict] = Field(None, description="Dictionary of metrics")
     uses_additional_data: Optional[bool] = Field(

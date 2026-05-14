@@ -17,6 +17,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
+import { AuthProvider } from "@/lib/authContext";
 
 // Lazy-load route components so visitors only download the chunks for the
 // pages they actually navigate to. Saves ~150-200 KB gzipped on first paint
@@ -96,14 +97,16 @@ const Shell: React.FC = () => {
 
 const App: React.FC = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <BrowserRouter>
-        <Shell />
-      </BrowserRouter>
-      <Toaster />
-      <SonnerToaster />
-      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
-    </TooltipProvider>
+    <AuthProvider>
+      <TooltipProvider>
+        <BrowserRouter>
+          <Shell />
+        </BrowserRouter>
+        <Toaster />
+        <SonnerToaster />
+        {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+      </TooltipProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 

@@ -1,120 +1,122 @@
 ---
 name: backend authentication
-overview: GitHub OAuth + admin gate for write endpoints. Carved out of the frontend v2 migration plan ([PLAN.md](PLAN.md)) — implemented as a follow-up workstream after cutover. Until this ships, write endpoints (`POST/PUT/DELETE` on papers/datasets/evaluations/etc.) remain unauthenticated, matching the current production state.
+overview: Hugging Face OAuth + admin allowlist gate for write endpoints. The frontend header shows a "Sign in with Hugging Face" button (or the user avatar dropdown when signed in); the backend issues an httpOnly session cookie and gates every write endpoint via `require_admin`.
 isProject: false
 ---
 
-# Backend Authentication (deferred — implement after frontend v2 cutover)
+# Sign in with Hugging Face (implemented)
 
 ## Status
 
-**Not yet implemented.** This was originally part of the v2 migration but was carved out so the frontend can ship sooner. Until this lands, the existing unauthenticated write endpoints stay unauthenticated; admin UI in v2 (edit dialogs, `indexPaperFromArxiv`) ships visible to everyone, matching v1.
-
-When picked up, this is a small self-contained workstream — one new router, one dependency injected onto write endpoints, env-var setup, and matching frontend auth context. No schema work.
+**Shipped.** The header-level "Sign in with Hugging Face" button and the
+admin-gated edit dialogs are live. The legacy `X-Admin-Token` header path is
+intentionally retained as a CLI/cron fallback.
 
 ## TL;DR
 
-Add real auth on the backend and an admin-gate UI on the frontend.
+- **Identity**: Hugging Face OAuth (Authorization Code, with the regular
+  client_secret flavour described at <https://huggingface.co/docs/hub/oauth>).
+- **Allowlist**: `PWC_ADMIN_HF_USERNAMES` (comma-separated HF usernames).
+- **Session**: signed JWT (HS256) in an `httpOnly` + `Secure` (when HTTPS) +
+  `SameSite=Lax` cookie named `pwc_session`.
+- **CRON**: unaffected — the workflow scripts hit PostgreSQL directly via
+  SQLAlchemy and never touch any HTTP endpoint that requires `require_admin`.
 
-- **Identity model**: GitHub OAuth + username allowlist (single operator).
-- **Token mechanism**: signed JWT (HS256) in an `httpOnly` + `Secure` + `SameSite=Lax` cookie.
-- **CRON jobs unaffected** — they bypass HTTP entirely (verified by grep over `.github/workflows/scripts/`).
+## Backend
 
-## Identity model: GitHub OAuth with a username allowlist
+Implemented in [backend/routers/auth.py](../../backend/routers/auth.py):
 
-- New env vars in `backend/keys.env`:
-  - `PWC_GITHUB_OAUTH_CLIENT_ID` — single OAuth App (see "GitHub OAuth App setup" below)
-  - `PWC_GITHUB_OAUTH_CLIENT_SECRET`
-  - `PWC_JWT_SECRET` — 32-byte random hex used to sign the session JWT and the OAuth `state` JWT
-  - `PWC_ADMIN_GITHUB_USERNAMES` — comma-separated allowlist (e.g., `nielsrogge`)
+| Method | Path                            | Purpose                                                |
+| ------ | ------------------------------- | ------------------------------------------------------ |
+| GET    | `/api/v1/auth/hf/login`         | 302 → HF authorize URL with a signed `state` JWT       |
+| GET    | `/api/v1/auth/hf/callback`      | Exchange code → set `pwc_session` cookie → 302 back    |
+| POST   | `/api/v1/auth/logout`           | Clears the cookie                                      |
+| GET    | `/api/v1/auth/me`               | `{username, name, avatar_url, is_admin}` or `401`      |
 
-## Backend changes (new `backend/routers/auth.py` and middleware)
+The session payload is `{sub, username, name, avatar_url, is_admin, exp}`
+signed with `PWC_JWT_SECRET`. `is_admin` is set iff `username.lower()` is in
+`PWC_ADMIN_HF_USERNAMES` (lowercased).
 
-- `GET /api/v1/auth/github/login` — generates a short-lived (5 min) `state` JWT containing `{nonce, host}` where `host` is the originating request host (`paperswithcode.co` or `staging.paperswithcode.co`); redirects to GitHub OAuth `authorize` URL with `client_id` + `redirect_uri` (computed from the originating host) + `state` + `scope=read:user`.
-- `GET /api/v1/auth/github/callback?code=...&state=...` — verifies the `state` JWT signature and confirms `state.host` matches the incoming request host (CSRF defense without a sessions table); exchanges code for GitHub access token; fetches `/user` to get the username; checks allowlist; issues a signed session JWT; sets it as an `httpOnly` + `Secure` + `SameSite=Lax` cookie named `pwc_admin_session` with `Domain` set to the **originating host** (i.e. `Domain=paperswithcode.co` for prod requests, `Domain=staging.paperswithcode.co` for staging requests — separate cookies per environment).
-- `POST /api/v1/auth/logout` — clears the cookie (with the matching `Domain`).
-- `GET /api/v1/auth/me` — returns `{username, is_admin: true}` if cookie valid; 401 otherwise.
-- New auth dependency `require_admin(request)` injected into every write endpoint (`POST/PUT/DELETE` on papers/datasets/evaluations/etc.).
+`require_admin` in [backend/utils/auth.py](../../backend/utils/auth.py)
+guards every write endpoint:
 
-## Token mechanism
+1. **Cookie path** — read `pwc_session`, decode the JWT, allow if `is_admin`.
+2. **Header fallback** — `X-Admin-Token` matches `PWC_ADMIN_API_TOKEN`.
+3. Otherwise → `401 Unauthorized`.
 
-Signed JWT (HS256, secret in `PWC_JWT_SECRET` env var; generate once with `openssl rand -hex 32`). Stateless — no sessions table needed. Expiry: 30 days. No refresh token; user re-logs after expiry (rare event for a single operator). No rotation policy initially; rotating the secret invalidates all existing sessions, which is acceptable.
+Routers gated: `evaluations`, `papers`, `methods`, `cron`. The legacy
+`require_admin_token` is kept in `backend/utils/auth.py` for backwards
+compatibility, but no router uses it directly anymore.
 
-## CSRF protection
+## Frontend
 
-Relies on `SameSite=Lax` cookie behavior + the `state` JWT host check on the OAuth callback — sufficient for our threat model (single operator, no cross-site embeds). No explicit CSRF token header on write endpoints. If the threat model changes, add a CSRF token via `Set-Cookie: csrf-token=...; SameSite=Strict; HttpOnly=false` issued at login + required `X-CSRF-Token` header on writes.
+- New auth context [frontend/src/lib/authContext.tsx](../../frontend/src/lib/authContext.tsx) — `useAuth()` returns `{user, isLoading, refresh, logout}`. Hits `/auth/me` on mount with `credentials: 'include'`.
+- API client [frontend/src/lib/api.ts](../../frontend/src/lib/api.ts) sends `credentials: 'include'` on every request and dispatches a `pwc:auth-stale` window event on `401` so the context can clear local state without a page reload.
+- Header components [HfSignInButton.tsx](../../frontend/src/components/HfSignInButton.tsx) and [UserMenu.tsx](../../frontend/src/components/UserMenu.tsx) replace the placeholder profile slot from the design prototype.
+- Edit dialogs in [PaperDetailView.tsx](../../frontend/src/views/PaperDetailView.tsx) reveal their trigger buttons via `canEditPaper = user?.is_admin || legacy X-Admin-Token in localStorage`.
+- [CronDashboard.tsx](../../frontend/src/pages/CronDashboard.tsx) hides the token-input card when signed in as an HF admin and falls back to the token form otherwise.
 
-## GitHub OAuth App setup (one-time, manual)
+## HF OAuth app setup (one-time)
 
-- Create a single OAuth App in GitHub Developer Settings named "PapersWithCode Admin".
-- Register **two callback URLs**: `https://paperswithcode.co/api/v1/auth/github/callback` and `https://staging.paperswithcode.co/api/v1/auth/github/callback`.
-- Single `client_id` / `client_secret` pair shared by both environments. The backend chooses the correct `redirect_uri` based on the originating request host.
+1. Register an OAuth app at <https://huggingface.co/settings/applications/new>
+   - **Name**: PapersWithCode
+   - **Scopes**: `openid`, `profile`
+   - **Redirect URIs** (register all that apply):
+     - `https://paperswithcode.co/api/v1/auth/hf/callback`
+     - `https://staging.paperswithcode.co/api/v1/auth/hf/callback` (if a staging host exists)
+     - `http://localhost:8000/api/v1/auth/hf/callback` (local dev with backend on `:8000`)
+     - `http://localhost:5173/api/v1/auth/hf/callback` (local dev when Vite proxies the API)
+2. Copy `client_id` and `client_secret` into `backend/keys.env`.
+3. Generate a JWT secret: `openssl rand -hex 32`.
 
-## Cookie scope rationale (separate per environment)
+## Required env vars (`backend/keys.env`)
 
-Prod auth is rare and stable; staging auth is frequently broken during dev. A shared `Domain=.paperswithcode.co` cookie would mean every broken staging deploy could invalidate the operator's prod session, and a stale staging JWT could persist into prod after secret rotation. Separate cookies cost nothing and isolate failure modes.
+```bash
+PWC_HF_OAUTH_CLIENT_ID=...
+PWC_HF_OAUTH_CLIENT_SECRET=...
+PWC_JWT_SECRET=...                         # 32-byte hex
+PWC_ADMIN_HF_USERNAMES=nielsrogge          # comma-separated
+# Optional, kept as CLI fallback:
+PWC_ADMIN_API_TOKEN=...
+```
 
-## CORS update (in `backend/config.py`)
-
-- `Settings.cors_allowed_origins` must include `https://staging.paperswithcode.co` regardless of `is_production`. Recommended: introduce a `PWC_ENVIRONMENT=staging` mode that returns `["https://paperswithcode.co", "https://www.paperswithcode.co", "https://staging.paperswithcode.co"]`, and have the staging deploy set that env var. Simpler alternative: unconditionally include staging in the prod list — the only cost is that a leaked staging cert would be acceptable as a CORS origin in prod, which is not a meaningful threat for our setup.
-- `allow_credentials=True` is already set in `backend/main.py` — no change needed.
-
-## Frontend changes
-
-- New auth context (React Context, not React Query — auth is global state) holding `{user: User | null, isLoading: boolean, logout: () => void}`. Initial state populated by calling `/api/v1/auth/me` on app mount.
-- "Log in with GitHub" button: **only on `/admin/login` route, not in the main header** — admin UI is invisible to non-admin users browsing the site.
-- 401 from any write request → clear auth context, redirect to `/admin/login`.
-- Edit dialogs and admin-only buttons are conditionally rendered based on `user?.is_admin`.
-- API client (`lib/api.ts`) sends `credentials: 'include'` on all fetches so the cookie travels.
-
-## `/admin/login` route
-
-A new route with the v2 header chrome, a centered "Log in with GitHub" button, and (after auth) an "Operator panel" listing the editing entry points. Admin tools elsewhere in the site (edit dialogs on PaperDetailView) are also unlocked by the same auth state.
-
-This route does not exist yet; until this workstream lands, admin UI on PaperDetailView is rendered for everyone (matching the current production state).
-
-## Single-operator allowlist (accepted risk)
-
-`PWC_ADMIN_GITHUB_USERNAMES` will hold a single GitHub username; no second admin, no CLI escape hatch (the operator's GitHub account stability is treated as the source of truth). If that account is ever lost or GitHub OAuth itself breaks, recovery requires SSH-into-VPS + temporarily disabling `require_admin` in code or directly editing the database. Acceptable trade-off given a single-operator project.
-
-## CRON jobs are unaffected by auth
-
-All current CRON jobs (`.github/workflows/scripts/hourly/*.py`, `.github/workflows/scripts/daily/import_hf_daily_papers.py`) call only external APIs (HuggingFace, GitHub, Semantic Scholar) and write to PostgreSQL **directly via SQLAlchemy** — they do not call our own `/api/v1/*` endpoints. Verified by `grep` over `.github/workflows/scripts/`. So no admin bypass key, no service token, no `Authorization` header is required for CRON. The only HTTP write paths that will be gated by `require_admin` are UI-driven (edit dialogs + `indexPaperFromArxiv` from `PaperDetailView`).
-
-## Deferred follow-up: multi-admin support / users table
-
-Current setup is single-operator via the `PWC_ADMIN_GITHUB_USERNAMES` env var. If admin count grows past ~5, or audit logging / role scopes / a UI to manage admins becomes desirable, migrate to a `users` DB table with `github_username`, `is_admin`, `created_at` columns. Out of scope for this auth workstream too; tracked here so it isn't lost.
-
-## Rollout commands (when this workstream is implemented)
+## Rollout commands
 
 Run on the VPS, in order:
 
 ```bash
 cd /root/python_projects/paperswithcode
 
-# (1) Pull latest code
 git pull origin main
-uv sync                                                              # install PyJWT, httpx if not already present
-
-# (2) Edit backend/keys.env — add the four new auth env vars:
-#       PWC_JWT_SECRET            (generate via: openssl rand -hex 32)
-#       PWC_GITHUB_OAUTH_CLIENT_ID
-#       PWC_GITHUB_OAUTH_CLIENT_SECRET
-#       PWC_ADMIN_GITHUB_USERNAMES
-
-# (3) Restart backend so the new auth router goes live
+uv sync                                                # installs PyJWT
+# Edit backend/keys.env to add the four PWC_HF_OAUTH_* / PWC_JWT_SECRET /
+# PWC_ADMIN_HF_USERNAMES entries.
 ./stop_services.sh && ./start_services.sh
 
-# (4) Smoke test the auth router
-curl https://paperswithcode.co/api/v1/auth/me                        # → 401 unauthenticated
-# Then complete the OAuth flow in a browser at https://paperswithcode.co/admin/login
+# Smoke tests
+curl https://paperswithcode.co/api/v1/auth/me            # → 401 unauthenticated
+# Then complete the OAuth round-trip in a browser.
 ```
 
-## Smoke-test checklist (when implemented)
+## Smoke-test checklist
 
-1. `/admin/login` renders "Log in with GitHub" button; OAuth round-trip succeeds; non-allowlisted users get rejected; allowlisted users land in operator panel.
-2. After login, edit dialogs visible on PaperDetailView; PUT/POST/DELETE writes succeed.
-3. `GET /api/v1/auth/me` returns `{username, is_admin: true}` with a valid cookie; 401 otherwise.
-4. `POST /api/v1/auth/logout` clears the cookie; subsequent writes 401.
-5. Cookie has `Domain=paperswithcode.co` on prod requests, `Domain=staging.paperswithcode.co` on staging requests; the two cookies are independent (logging out of staging doesn't log out of prod).
-6. State JWT host-check rejects callbacks where the `state.host` doesn't match the request host.
+1. `/api/v1/auth/me` returns `401` unauthenticated, `{username, ..., is_admin: true}` after a successful HF round-trip.
+2. The header swaps the "Sign in with Hugging Face" button for the avatar dropdown.
+3. Edit dialogs (`Tasks`, `Methods`, `Repositories`, `Evaluations`) appear on `/paper/:arxivId` only for allowlisted users.
+4. `POST/PUT/DELETE` requests succeed with the cookie and `401` without it.
+5. `POST /api/v1/auth/logout` clears the cookie; subsequent writes `401`.
+6. CronDashboard auto-fetches when the HF admin signs in (no token form shown); falls back to the token form when signed out.
+
+## CSRF notes
+
+Relies on `SameSite=Lax` cookies plus a short-lived host-bound `state` JWT on
+the OAuth callback. Sufficient for our threat model (single-operator project,
+no cross-site embeds). If the threat model changes, layer in a `CSRF-Token`
+header on writes.
+
+## Out of scope
+
+- Users DB table — the allowlist stays env-var driven.
+- Refresh tokens — 30-day session JWT, user re-logs after expiry.
+- Removing the `X-Admin-Token` header path — kept for CLI/cron tooling.
+- Org-level scopes (`read-billing`, `read-repos`, etc.).

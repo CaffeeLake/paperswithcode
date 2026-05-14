@@ -1,20 +1,25 @@
 import React, { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
-import type { Evaluation, MetricDirections } from "@/lib/api";
+import type { Evaluation, MetricDirections, Task } from "@/lib/api";
+import { formatMetricValue } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import LatexTitle from "@/components/LatexTitle";
 
 interface BenchmarkChartProps {
   series: number[];
   dates: string[];
   metric: string;
-  arrow: "↑" | "↓";
 }
 
-const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric, arrow }) => {
+// Always plots raw values: larger values appear higher on the Y-axis, smaller
+// values appear lower, regardless of whether the metric is higher- or
+// lower-is-better. Direction only affects which points `computeSeries` chooses
+// as the running best, not the visual orientation of the chart.
+const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric }) => {
   const W = 880;
   const H = 320;
   const padL = 60;
@@ -29,7 +34,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric, 
   const step = innerW / Math.max(1, series.length - 1);
   const points = series.map((v, i) => {
     const x = padL + i * step;
-    const norm = arrow === "↓" ? (max - v) / range : (v - min) / range;
+    const norm = (v - min) / range;
     const y = padT + innerH * (1 - norm);
     return [x, y, v] as [number, number, number];
   });
@@ -41,12 +46,6 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric, 
     path += ` C${cx},${y0} ${cx},${y1} ${x1},${y1}`;
   }
   const tickCount = 5;
-  const fmt = (v: number): string => {
-    if (Math.abs(v) >= 100) return v.toFixed(0);
-    if (Math.abs(v) >= 10) return v.toFixed(1);
-    if (Math.abs(v) >= 1) return v.toFixed(2);
-    return v.toFixed(3);
-  };
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
       <text
@@ -63,12 +62,12 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric, 
       {Array.from({ length: tickCount }).map((_, i) => {
         const norm = i / (tickCount - 1);
         const y = padT + innerH * (1 - norm);
-        const dataAtNorm = arrow === "↓" ? max - range * norm : min + range * norm;
+        const dataAtNorm = min + range * norm;
         return (
           <g key={i}>
             <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="var(--hairline)" strokeWidth="1" />
             <text x={padL - 10} y={y + 4} fontSize="11" fontFamily="var(--mono)" fill="var(--ink-faint)" textAnchor="end">
-              {fmt(dataAtNorm)}
+              {formatMetricValue(dataAtNorm)}
             </text>
           </g>
         );
@@ -134,6 +133,11 @@ function computeSeries(
 
 const BenchmarkDetailView: React.FC = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
+  const [searchParams] = useSearchParams();
+  // The "See all" button on PaperDetailView's evaluation card links here
+  // with `?task=<slug>` so we can keep that task as the breadcrumb context
+  // for benchmarks linked to multiple tasks (e.g. COCO val2017).
+  const taskSlugFromQuery = searchParams.get("task") || undefined;
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
 
   // Fetching the dataset with `include_paper=true` collapses the previous
@@ -150,6 +154,13 @@ const BenchmarkDetailView: React.FC = () => {
     queryFn: () => apiClient.getEvaluationsByDataset(datasetQ.data!.id, bestMetric),
     enabled: !!datasetQ.data?.id,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const datasetTasksQ = useQuery<Task[]>({
+    queryKey: ["dataset-tasks", datasetQ.data?.id],
+    queryFn: () => apiClient.getDatasetTasks(datasetQ.data!.id),
+    enabled: !!datasetQ.data?.id,
+    staleTime: 10 * 60 * 1000,
   });
 
   const directionsQ = useQuery<MetricDirections>({
@@ -176,6 +187,19 @@ const BenchmarkDetailView: React.FC = () => {
     [evalsQ.data, activeMetric, arrow],
   );
 
+  // For breadcrumb context: prefer the task carried in `?task=<slug>` (set
+  // by PaperDetailView's "See all" link). Fall back to the alphabetically
+  // first linked task — the API already orders by Task.name.
+  const primaryTask = useMemo(() => {
+    const tasks = datasetTasksQ.data || [];
+    if (tasks.length === 0) return null;
+    if (taskSlugFromQuery) {
+      const match = tasks.find((t) => t.slug === taskSlugFromQuery);
+      if (match) return match;
+    }
+    return tasks[0];
+  }, [datasetTasksQ.data, taskSlugFromQuery]);
+
   if (datasetQ.isLoading) {
     return (
       <div className="page">
@@ -197,6 +221,7 @@ const BenchmarkDetailView: React.FC = () => {
 
   const dataset = datasetQ.data;
   const sortedRows = (evalsQ.data || []).slice().sort((a, b) => (a.best_rank ?? 9999) - (b.best_rank ?? 9999));
+  const showHarness = Boolean(dataset.supports_harness);
 
   const introducingPaper = dataset.introducing_paper ?? undefined;
   const fallbackArxivIdFromUrl = (() => {
@@ -219,6 +244,14 @@ const BenchmarkDetailView: React.FC = () => {
       <div className="bm-page">
         <div className="breadcrumb">
           <Link to="/tasks">Tasks</Link>
+          {primaryTask && (
+            <>
+              <span className="sep">/</span>
+              <Link to={`/tasks/${primaryTask.slug || primaryTask.id}`}>
+                {primaryTask.name}
+              </Link>
+            </>
+          )}
           <span className="sep">/</span>
           <span style={{ color: "var(--accent-text)" }}>{dataset.name}</span>
         </div>
@@ -233,7 +266,7 @@ const BenchmarkDetailView: React.FC = () => {
           )}
           {sotaModel ? (
             <span>
-              Best: <span className="best-name">{sota}</span> by <span className="best-name" style={{ fontStyle: "normal" }}>{sotaModel}</span>
+              Best: <span className="best-name">{formatMetricValue(sota)}</span> by <span className="best-name" style={{ fontStyle: "normal" }}>{sotaModel}</span>
             </span>
           ) : (
             <span>{sortedRows.length} evaluations</span>
@@ -257,7 +290,11 @@ const BenchmarkDetailView: React.FC = () => {
                 className="method-source-link"
               >
                 <span className="method-source-title">
-                  {sourcePaperTitle || `arXiv:${localSourcePaperArxivId}`}
+                  {sourcePaperTitle ? (
+                    <LatexTitle title={sourcePaperTitle} />
+                  ) : (
+                    `arXiv:${localSourcePaperArxivId}`
+                  )}
                 </span>
                 {sourcePaperYear && (
                   <span className="method-source-meta">{sourcePaperYear}</span>
@@ -271,7 +308,13 @@ const BenchmarkDetailView: React.FC = () => {
                 className="method-source-link"
               >
                 <span className="method-source-title">
-                  {sourcePaperTitle || (sourcePaperArxivId ? `arXiv:${sourcePaperArxivId}` : dataset.paper_url)}
+                  {sourcePaperTitle ? (
+                    <LatexTitle title={sourcePaperTitle} />
+                  ) : sourcePaperArxivId ? (
+                    `arXiv:${sourcePaperArxivId}`
+                  ) : (
+                    dataset.paper_url
+                  )}
                 </span>
                 {sourcePaperYear && (
                   <span className="method-source-meta">{sourcePaperYear}</span>
@@ -279,7 +322,9 @@ const BenchmarkDetailView: React.FC = () => {
               </a>
             ) : (
               <div className="method-source-link is-static">
-                <span className="method-source-title">{sourcePaperTitle}</span>
+                <span className="method-source-title">
+                  {sourcePaperTitle ? <LatexTitle title={sourcePaperTitle} /> : null}
+                </span>
                 {sourcePaperYear && (
                   <span className="method-source-meta">{sourcePaperYear}</span>
                 )}
@@ -311,7 +356,7 @@ const BenchmarkDetailView: React.FC = () => {
               <div className="bm-card-title">SOTA progression</div>
             </div>
             <div className="bm-chart-wrap">
-              <BenchmarkChart series={series} dates={dates} metric={activeMetric} arrow={arrow} />
+              <BenchmarkChart series={series} dates={dates} metric={activeMetric} />
             </div>
             <div className="bm-chart-foot">
               <span className="legend-dot"></span>
@@ -338,29 +383,38 @@ const BenchmarkDetailView: React.FC = () => {
                 <tr>
                   <th className="col-rank">Rank</th>
                   <th className="col-model">Model</th>
+                  {showHarness && <th className="col-harness">Harness</th>}
                   <th className="col-value">{activeMetric} {arrow}</th>
                   <th className="col-paper">Paper</th>
                   <th className="col-year">Year</th>
                 </tr>
               </thead>
               <tbody>
-                {sortedRows.map((e, i) => (
-                  <tr key={e.id}>
-                    <td className="col-rank">{e.best_rank ?? i + 1}</td>
-                    <td className="col-model">{e.model_name || "—"}</td>
-                    <td className={`col-value ${i === 0 ? "is-best" : ""}`}>
-                      {e.metrics?.[activeMetric] ?? "—"}
-                    </td>
-                    <td className="col-paper">
-                      {e.paper_arxiv_id ? (
-                        <Link to={`/paper/${e.paper_arxiv_id}`}>{e.paper_title || `arXiv:${e.paper_arxiv_id}`}</Link>
-                      ) : (
-                        e.paper_title || "—"
+                {sortedRows.map((e, i) => {
+                  const paperRouteId = e.paper_arxiv_id || e.paper_id;
+                  const paperLabel =
+                    e.paper_title || (e.paper_arxiv_id ? `arXiv:${e.paper_arxiv_id}` : null);
+                  return (
+                    <tr key={e.id}>
+                      <td className="col-rank">{e.best_rank ?? i + 1}</td>
+                      <td className="col-model">{e.model_name || "—"}</td>
+                      {showHarness && (
+                        <td className="col-harness">{e.harness || "—"}</td>
                       )}
-                    </td>
-                    <td className="col-year">{e.paper_published_date?.slice(0, 4) || "—"}</td>
-                  </tr>
-                ))}
+                      <td className={`col-value ${i === 0 ? "is-best" : ""}`}>
+                        {formatMetricValue(e.metrics?.[activeMetric])}
+                      </td>
+                      <td className="col-paper">
+                        {paperRouteId ? (
+                          <Link to={`/paper/${paperRouteId}`}>{paperLabel || "—"}</Link>
+                        ) : (
+                          paperLabel || "—"
+                        )}
+                      </td>
+                      <td className="col-year">{e.paper_published_date?.slice(0, 4) || "—"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

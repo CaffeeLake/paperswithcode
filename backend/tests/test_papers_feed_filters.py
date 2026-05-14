@@ -85,6 +85,37 @@ def test_papers_endpoint_rejects_unknown_order_by(client, monkeypatch):
     assert response.status_code == 422
 
 
+def test_trending_endpoint_deduplicates_view_rows_by_paper():
+    app = create_app()
+    captured = {}
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeDatabase:
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return EmptyResult()
+
+    def override_get_database_session():
+        yield FakeDatabase()
+
+    app.dependency_overrides[get_database_session] = override_get_database_session
+
+    with TestClient(app) as test_client:
+        response = test_client.get("/api/v1/papers/trending?limit=30&max_age_days=365")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert "PARTITION BY tp.paper_id" in captured["sql"]
+    assert "paper_repo_rank = 1" in captured["sql"]
+    assert captured["params"]["limit"] == 30
+
+
 def test_trending_feed_uses_official_repository_ema_scores():
     captured = {}
 

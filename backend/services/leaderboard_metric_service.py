@@ -14,6 +14,7 @@ from backend.models.database import (
     Dataset as DBDataset,
     Task as DBTask,
     Metric as DBMetric,
+    TaskDataset,
     TaskDatasetMetric as DBTaskDatasetMetric,
 )
 from backend.utils.exceptions import DatabaseError
@@ -364,6 +365,15 @@ class LeaderboardMetricService:
             if not dataset:
                 raise ValueError(f"Dataset with ID {dataset_id} not found")
 
+            task_dataset = (
+                self.db.query(TaskDataset)
+                .filter(
+                    TaskDataset.task_id == task_id,
+                    TaskDataset.dataset_id == dataset_id,
+                )
+                .first()
+            )
+
             # Get all metrics linked to this leaderboard
             links = (
                 self.db.query(DBTaskDatasetMetric, DBMetric)
@@ -392,6 +402,9 @@ class LeaderboardMetricService:
                 "dataset_id": str(dataset_id),
                 "task_name": task.name,
                 "dataset_name": dataset.name,
+                "supports_harness": bool(
+                    task_dataset and task_dataset.supports_harness
+                ),
                 "metrics": metric_list,
             }
 

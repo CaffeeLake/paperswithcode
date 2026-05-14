@@ -44,7 +44,7 @@ async def list_tasks(
 
     **Example queries:**
     - `/api/v1/tasks/` - Get all tasks
-    - `/api/v1/tasks/?area_id=1` - Get tasks in Computer Vision area
+    - `/api/v1/tasks/?area_id=1` - Get tasks in Vision area
     - `/api/v1/tasks/?level=0` - Get only top-level tasks
     - `/api/v1/tasks/?parent_id=5` - Get subtasks of task 5
     - `/api/v1/tasks/?q=classification` - Search for tasks containing "classification"

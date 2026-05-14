@@ -63,8 +63,33 @@ The evaluation service:
 Leaderboards are keyed on `(task_id, dataset_id, metric_id)`.  Examples:
 - `(Object Detection, COCO, box AP)`
 - `(Image Classification, ImageNet-1k, Top-1 Accuracy)`
+- `(World Knowledge, MMLU, Accuracy)` — the `task_id` here is the
+  `world-knowledge` *subtask* (a child of `language-modeling`), not the
+  parent task. Always pick the most-specific task in the hierarchy.
 
 If you are unsure which metrics are allowed for a task/dataset pair, use the `LeaderboardMetricService.get_metrics_for_leaderboard` helper or query `task_dataset_metrics`.
+
+### Subtasks (Task Hierarchy)
+
+Tasks form a tree via `tasks.parent_id`. Subtasks are first-class child rows
+with their own slug, description, page, benchmarks, and evaluations.
+
+When writing benchmark/evaluation data:
+
+- Always pick the most-specific (deepest) task that fits the benchmark.
+- Move existing parent-task benchmarks to the right subtask via a SQL
+  migration similar to `backend/database/migrations/add_language_modeling_subtasks.sql`,
+  then run the matching Python wrapper to recalculate ranks.
+- Do not duplicate the same benchmark on both a parent task and one of its
+  subtasks; leaderboards then have ambiguous ownership.
+
+When reading data for a parent task page:
+
+- `/api/v1/datasets/?task=<parent>&include_descendants=true` returns
+  benchmarks owned by every descendant subtask.
+- `/api/v1/evaluations/?task_id=<parent>&include_descendants=true` returns
+  evaluations from every descendant subtask.
+- The parent task's children are listed via `/api/v1/tasks/{task_id}/children`.
 
 ### Bulk Imports
 
@@ -111,5 +136,8 @@ Checks performed:
 - Metric tooling: `backend/database/validate_evaluation_metrics.py`
 - Triple reference: `docs/DATABASE_SCHEMA_UML.md` (`task_dataset_metrics` section)
 - Evaluation ingestion pipeline: `extract_evaluation_results/`
+- Subtask seeding example: `backend/database/migrations/add_language_modeling_subtasks.sql`
+  with the rank-recalculation wrapper
+  `backend/database/migrations/run_add_language_modeling_subtasks.py`
 
 _Last updated: 7 November 2025_

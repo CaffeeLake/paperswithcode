@@ -166,6 +166,44 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .icon-btn:hover { border-color: var(--hairline-strong); }
 
+.hf-signin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+.hf-signin-btn:hover {
+  border-color: var(--hairline-strong);
+  background: var(--bg-subtle);
+}
+
+.user-avatar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  padding: 0;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.user-avatar-btn:hover { border-color: var(--hairline-strong); }
+.user-avatar-btn:focus-visible {
+  outline: 2px solid var(--hairline-strong);
+  outline-offset: 2px;
+}
+
 /* === LAYOUT === */
 .page {
   max-width: calc(50vw + 640px);
@@ -1106,6 +1144,7 @@ a.paper-github-stats.is-link:focus-visible {
   border-collapse: collapse;
   font-size: 13px;
   margin-bottom: 32px;
+  table-layout: fixed;
 }
 .results-table th {
   text-align: left;
@@ -1115,13 +1154,23 @@ a.paper-github-stats.is-link:focus-visible {
   text-transform: uppercase;
   color: var(--ink-faint);
   font-weight: 500;
-  padding: 10px 12px;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--hairline-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.results-table th:first-child,
+.results-table td:first-child { padding-left: 0; }
+.results-table th:last-child,
+.results-table td:last-child { padding-right: 0; }
 .results-table td {
-  padding: 14px 12px;
+  padding: 14px 6px;
   border-bottom: 1px solid var(--hairline);
   font-family: var(--serif);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .results-table tr:last-child td { border-bottom: none; }
 .results-table .task-link {
@@ -1131,7 +1180,14 @@ a.paper-github-stats.is-link:focus-visible {
   cursor: pointer;
 }
 .results-table .task-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.results-table .model { color: var(--ink); }
 .results-table .benchmark { color: var(--ink); }
+.results-table .benchmark a { color: inherit; text-decoration: none; }
+.results-table .benchmark a:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .results-table .metric {
   font-family: var(--mono);
   font-size: 11px;
@@ -1195,6 +1251,7 @@ a.paper-github-stats.is-link:focus-visible {
   justify-content: space-between;
 }
 .section-rule .accent { color: var(--ink-soft); font-family: var(--serif); font-style: italic; text-transform: none; letter-spacing: 0; font-size: 12px; }
+.section-rule a:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
 
 .read-full {
   font-family: var(--mono);
@@ -1330,6 +1387,36 @@ a.paper-github-stats.is-link:focus-visible {
   font-weight: 400;
   letter-spacing: 0.05em;
   text-transform: none;
+}
+
+/* Per-subtask group on task pages: each subtask gets a small header followed
+ * by its top benchmark rows (reusing .bench-row). */
+.subtask-section {
+  margin-bottom: 24px;
+}
+.subtask-section + .subtask-section { margin-top: 8px; }
+.subtask-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+.subtask-head-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.subtask-head-name:hover { color: var(--accent-text); }
+.subtask-head-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
 }
 
 /* Benchmark card with sparkline */
@@ -1610,6 +1697,13 @@ a.paper-github-stats.is-link:focus-visible {
 .bm-table tbody tr:last-child td { border-bottom: none; }
 .bm-table .col-rank { width: 64px; color: var(--ink-faint); font-family: var(--mono); font-feature-settings: "tnum"; }
 .bm-table .col-model { font-weight: 600; color: var(--ink); }
+.bm-table .col-harness {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+  width: 140px;
+  white-space: nowrap;
+}
 .bm-table .col-value {
   font-family: var(--mono);
   font-feature-settings: "tnum";
@@ -1835,7 +1929,8 @@ html { scroll-behavior: smooth; }
  *   - <select> for paper-version dropdown on the detail view
  * ============================================================================ */
 
-.mobile-menu-btn {
+.mobile-menu-btn,
+.mobile-search-btn {
   display: none;
   width: 36px;
   height: 36px;
@@ -1844,7 +1939,8 @@ html { scroll-behavior: smooth; }
   border-radius: 4px;
   flex-shrink: 0;
 }
-.mobile-menu-btn:hover {
+.mobile-menu-btn:hover,
+.mobile-search-btn:hover {
   background: var(--bg-subtle);
 }
 
@@ -1864,7 +1960,8 @@ html { scroll-behavior: smooth; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
   overflow-y: auto;
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.06);
 }
@@ -1879,10 +1976,30 @@ html { scroll-behavior: smooth; }
   color: var(--accent-text);
   font-style: italic;
 }
+.mobile-nav-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink-faint);
+  background: var(--bg-subtle);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  text-align: left;
+}
+.mobile-nav-search:hover {
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+}
 
 @media (max-width: 880px) {
   .nav, .search-trigger { display: none; }
-  .mobile-menu-btn { display: inline-flex; }
+  .mobile-menu-btn,
+  .mobile-search-btn { display: inline-flex; }
 }
 
 /* Papers list search input */
@@ -1933,4 +2050,130 @@ html { scroll-behavior: smooth; }
 }
 .version-select:hover {
   border-color: var(--accent);
+}
+
+/* ============================================================================
+ * RESPONSIVE / MOBILE
+ *
+ * Collapses desktop multi-column grids and tightens spacing for tablet
+ * (<=880px) and phone (<=640px) widths. The header/drawer rules above already
+ * handle nav/search; rules below handle content layout, paper cards, headings,
+ * and page padding.
+ * ============================================================================ */
+
+@media (max-width: 880px) {
+  .app-header-inner {
+    padding: 14px 16px;
+    gap: 12px;
+  }
+  .page { padding: 24px 16px; }
+
+  .layout-with-sidebar {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .layout-with-sidebar .sidebar {
+    position: static;
+    top: auto;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+  .detail-sidebar { font-size: 13px; }
+
+  .task-page-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+  .task-side {
+    position: static;
+    top: auto;
+  }
+
+  .tag-grid { grid-template-columns: repeat(2, 1fr); }
+  .tag-cell:nth-child(3n) { border-right: 1px solid var(--hairline); }
+  .tag-cell:nth-child(2n) { border-right: none; }
+
+  .feed-title { font-size: 32px; }
+  .tag-hero-title { font-size: 40px; }
+  .detail-title { font-size: 28px; }
+
+  .paper-card {
+    grid-template-columns: 120px 1fr;
+    gap: 16px;
+    padding: 20px 0;
+  }
+  .paper-body {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .paper-github-stats {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 18px;
+    text-align: left;
+    border-left: none;
+    border-top: 1px solid var(--hairline);
+    padding-left: 0;
+    padding-top: 12px;
+  }
+  .paper-github-stats .gh-stat-block {
+    align-items: flex-start;
+  }
+
+  .bench-row {
+    grid-template-columns: 28px 1fr auto;
+    gap: 12px;
+    padding: 14px;
+  }
+  .bench-row > .bench-row-arrow { display: none; }
+}
+
+@media (max-width: 640px) {
+  .app-header-inner {
+    padding: 12px 14px;
+    gap: 8px;
+  }
+  .page { padding: 20px 14px; }
+
+  .feed-header {
+    margin-bottom: 24px;
+    gap: 16px;
+  }
+  .feed-title { font-size: 26px; }
+  .tag-hero { padding: 32px 0 24px; margin-bottom: 24px; }
+  .tag-hero-title { font-size: 30px; }
+  .detail-title { font-size: 24px; }
+
+  .tag-grid { grid-template-columns: 1fr; }
+  .tag-cell {
+    padding: 16px;
+    border-right: none !important;
+  }
+
+  .paper-card {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .paper-thumb-wrap {
+    align-self: flex-start;
+  }
+  .paper-title { font-size: 19px; }
+  .paper-abstract { -webkit-line-clamp: 4; line-clamp: 4; }
+
+  .brand-name { font-size: 17px; }
+
+  .results-table { font-size: 12px; }
+  .results-table th,
+  .results-table td { padding: 10px 4px; }
+
+  .tag-hero-meta { gap: 20px; flex-wrap: wrap; }
+  .task-quickstats { flex-wrap: wrap; gap: 16px; }
+
+  .search-modal-input { font-size: 16px; padding: 14px 16px; }
 }

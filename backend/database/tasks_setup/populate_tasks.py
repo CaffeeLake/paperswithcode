@@ -35,18 +35,18 @@ def populate_tasks(db: Session):
 
     # Define tasks with their descriptions
     tasks_data = [
-        # Computer Vision tasks
+        # Vision tasks
         {
             "name": "Image Classification",
             "description": "Image Classification is a fundamental task in computer vision that aims to assign a label or class to an entire image. The goal is to train a model that can recognize and categorize images into predefined classes.",
-            "area": "Computer Vision",
+            "area": "Vision",
             "parent": None,
             "level": 0,
         },
         {
             "name": "Object Detection",
             "description": "Object Detection is a computer vision task that involves identifying and localizing objects within an image. The goal is to detect instances of semantic objects of a certain class (such as humans, buildings, or cars) in digital images and videos.",
-            "area": "Computer Vision",
+            "area": "Vision",
             "parent": None,
             "level": 0,
         },
@@ -73,7 +73,7 @@ def populate_tasks(db: Session):
             "parent": None,
             "level": 0,
         },
-        # Natural Language Processing tasks
+        # Language tasks
         {
             "name": "Language Modeling",
             "description": "Language Modeling is the task of predicting the next word or character in a sequence given the previous context. Language models learn the probability distribution of word sequences and are foundational for many NLP applications including text generation, machine translation, and speech recognition.",
@@ -84,7 +84,7 @@ def populate_tasks(db: Session):
         {
             "name": "Machine Translation",
             "description": "Machine Translation is the task of automatically translating text from one natural language to another. The goal is to produce translations that preserve the meaning, style, and grammatical correctness of the source text while being fluent in the target language.",
-            "area": "Natural Language Processing",
+            "area": "Language",
             "parent": None,
             "level": 0,
         },
@@ -137,10 +137,10 @@ def populate_tasks(db: Session):
     # Print summary
     print("\n=== Task Summary ===")
     for area_name in [
-        "Computer Vision",
+        "Vision",
         "Robotics",
         "General",
-        "Natural Language Processing",
+        "Language",
     ]:
         if area_name == "General":
             count = sum(1 for t in created_tasks if t.area_id is None)

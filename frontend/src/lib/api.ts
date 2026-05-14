@@ -2,6 +2,8 @@
  * API client for PapersWithCode backend
  */
 
+import { getStoredAdminToken } from "./adminAuth";
+
 const API_BASE_URL = '/api/v1';
 
 export interface Repository {
@@ -152,6 +154,7 @@ export interface Dataset {
   slug?: string;
   paper_count?: number;
   featured_rank?: number | null;
+  supports_harness?: boolean;
   introducing_paper_id?: string;
   introducing_paper_title?: string;
   paper_url?: string;
@@ -170,6 +173,10 @@ export interface Evaluation {
   task_id: string;
   dataset_id: string;
   model_name?: string;
+  /** Optional harness/runtime used to evaluate the model
+   *  (e.g. "Claude Code", "Terminus"). Surfaced alongside the model on
+   *  benchmark leaderboards for model+harness benchmarks like Terminal-Bench. */
+  harness?: string;
   methodology?: string;
   metrics: Record<string, string | number>;
   uses_additional_data: boolean;
@@ -185,6 +192,7 @@ export interface Evaluation {
   code_url?: string;
   result_url?: string;
   task_name?: string;
+  task_slug?: string;
   dataset_name?: string;
   dataset_slug?: string;
 }
@@ -253,11 +261,14 @@ class ApiClient {
 
     try {
       const { headers, ...requestOptions } = options ?? {};
+      const adminToken = getStoredAdminToken();
       const response = await fetch(url, {
         ...requestOptions,
         cache: requestOptions.cache ?? 'no-store',
+        credentials: requestOptions.credentials ?? 'include',
         headers: {
           'Content-Type': 'application/json',
+          ...(adminToken ? { 'X-Admin-Token': adminToken } : {}),
           ...headers,
         },
       });
@@ -267,11 +278,21 @@ class ApiClient {
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[API] Error response:`, errorText);
+        if (response.status === 401 && typeof window !== 'undefined') {
+          // The session cookie is missing or expired; let the auth context
+          // (lib/authContext.tsx) clear local state so the header swaps back
+          // to the "Sign in with Hugging Face" button without a reload.
+          window.dispatchEvent(new CustomEvent('pwc:auth-stale'));
+        }
         const error: any = new Error(`API request failed: ${response.status} ${response.statusText}`);
         error.status = response.status;
         error.statusText = response.statusText;
         error.response = errorText;
         throw error;
+      }
+
+      if (response.status === 204) {
+        return undefined as T;
       }
 
       const data = await response.json();
@@ -313,6 +334,13 @@ class ApiClient {
 
     const endpoint = `/papers/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     return this.request<PaginatedResponse<Paper>>(endpoint);
+  }
+
+  async searchPapers(query: string, limit: number = 10): Promise<Paper[]> {
+    const searchParams = new URLSearchParams();
+    searchParams.append('q', query);
+    searchParams.append('limit', limit.toString());
+    return this.request<Paper[]>(`/papers/search?${searchParams.toString()}`);
   }
 
   async getPaper(id: string, includeResources: boolean = true): Promise<Paper> {
@@ -618,6 +646,12 @@ class ApiClient {
     full_name?: string;
     task?: string;
     task_id?: number;
+    /**
+     * When `task` / `task_id` is set, also include datasets linked to
+     * subtasks (child tasks). Used by parent task pages that want to roll
+     * up benchmarks owned by their subtasks.
+     */
+    include_descendants?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Dataset>> {
     const searchParams = new URLSearchParams();
@@ -629,6 +663,7 @@ class ApiClient {
     if (params?.full_name) searchParams.append('full_name', params.full_name);
     if (params?.task) searchParams.append('task', params.task);
     if (params?.task_id) searchParams.append('task', params.task_id.toString());
+    if (params?.include_descendants) searchParams.append('include_descendants', 'true');
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/datasets/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -662,6 +697,11 @@ class ApiClient {
     q?: string;
     paper_id?: number;
     task_id?: number;
+    /**
+     * When `task_id` is set, also include evaluations whose task is a
+     * descendant. Used to roll up subtask evaluations under a parent task.
+     */
+    include_descendants?: boolean;
     dataset_id?: number;
     best_metric?: string;
     ordering?: string;
@@ -673,6 +713,7 @@ class ApiClient {
     if (params?.q) searchParams.append('q', params.q);
     if (params?.paper_id) searchParams.append('paper_id', params.paper_id.toString());
     if (params?.task_id) searchParams.append('task_id', params.task_id.toString());
+    if (params?.include_descendants) searchParams.append('include_descendants', 'true');
     if (params?.dataset_id) searchParams.append('dataset_id', params.dataset_id.toString());
     if (params?.best_metric) searchParams.append('best_metric', params.best_metric);
     if (params?.ordering) searchParams.append('ordering', params.ordering);
@@ -705,6 +746,7 @@ class ApiClient {
     task_id: number;
     dataset_id: number;
     model_name?: string;
+    harness?: string | null;
     methodology?: string;
     metrics: Record<string, string | number>;
     uses_additional_data?: boolean;
@@ -724,6 +766,7 @@ class ApiClient {
     task_id?: number;
     dataset_id?: number;
     model_name?: string;
+    harness?: string | null;
     methodology?: string;
     metrics?: Record<string, string | number>;
     uses_additional_data?: boolean;

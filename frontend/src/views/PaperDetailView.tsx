@@ -6,7 +6,9 @@ import { Icon, MethodChip, TagChip } from "@/components";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import { apiClient, indexPaperFromArxiv } from "@/lib/api";
 import type { Paper } from "@/lib/api";
+import { useAuth } from "@/lib/authContext";
 import { summarizeRepos } from "@/lib/transform";
+import { formatMetricValue } from "@/lib/utils";
 import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
@@ -42,6 +44,8 @@ const PaperDetailView: React.FC = () => {
   const { arxivId } = useParams<{ arxivId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canEditPaper = user?.is_admin ?? false;
 
   const { data: paper, isLoading, error, refetch } = usePaper(arxivId || "", !!arxivId);
   const [secondaryQueriesEnabled, setSecondaryQueriesEnabled] = useState(false);
@@ -69,6 +73,33 @@ const PaperDetailView: React.FC = () => {
     }),
     [paper?.hf_models, paper?.hf_datasets, paper?.hf_spaces],
   );
+
+  // Group evaluations by task so the results section can show one mini-table
+  // per task with a shared heading, instead of repeating the task on every row.
+  // Groups are ordered by size desc so the most prolific task surfaces first.
+  const evaluationsByTask = useMemo(() => {
+    if (!evaluations) return [];
+    type EvalRow = (typeof evaluations)[number];
+    const groups = new Map<
+      string,
+      { taskId: string; taskName: string; taskSlug?: string; rows: EvalRow[] }
+    >();
+    for (const e of evaluations) {
+      const key = e.task_id;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.rows.push(e);
+      } else {
+        groups.set(key, {
+          taskId: key,
+          taskName: e.task_name || "—",
+          taskSlug: e.task_slug,
+          rows: [e],
+        });
+      }
+    }
+    return Array.from(groups.values()).sort((a, b) => b.rows.length - a.rows.length);
+  }, [evaluations]);
 
   // Paper version dropdown (PLAN.md §7.5)
   const versionsQ = useQuery({
@@ -173,10 +204,12 @@ const PaperDetailView: React.FC = () => {
           </Alert>
         )}
         <div className="action-row">
-          <button className="action-btn" onClick={handleIndex} disabled={indexState === "indexing"}>
-            <Icon name="sparkle" size={12} />
-            {indexState === "indexing" ? "Indexing…" : "Index from arXiv"}
-          </button>
+          {canEditPaper && (
+            <button className="action-btn" onClick={handleIndex} disabled={indexState === "indexing"}>
+              <Icon name="sparkle" size={12} />
+              {indexState === "indexing" ? "Indexing…" : "Index from arXiv"}
+            </button>
+          )}
           <Button variant="outline" onClick={() => navigate("/papers")}>
             Browse Papers
           </Button>
@@ -441,22 +474,24 @@ const PaperDetailView: React.FC = () => {
             <span>Tasks</span>
             <span className="accent">
               {paper.tasks?.length || 0} tagged
-              <button
-                onClick={() => setIsEditingTasks(true)}
-                className="edit-link"
-                style={{
-                  marginLeft: 8,
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "var(--accent-text)",
-                  textDecoration: "underline",
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                }}
-              >
-                edit
-              </button>
+              {canEditPaper && (
+                <button
+                  onClick={() => setIsEditingTasks(true)}
+                  className="edit-link"
+                  style={{
+                    marginLeft: 8,
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--accent-text)",
+                    textDecoration: "underline",
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                  }}
+                >
+                  edit
+                </button>
+              )}
             </span>
           </div>
           <div className="paper-tags" style={{ marginBottom: 8 }}>
@@ -469,22 +504,24 @@ const PaperDetailView: React.FC = () => {
             <span>Methods</span>
             <span className="accent">
               {paper.methods?.length || 0} used
-              <button
-                onClick={() => setIsEditingMethods(true)}
-                className="edit-link"
-                style={{
-                  marginLeft: 8,
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "var(--accent-text)",
-                  textDecoration: "underline",
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                }}
-              >
-                edit
-              </button>
+              {canEditPaper && (
+                <button
+                  onClick={() => setIsEditingMethods(true)}
+                  className="edit-link"
+                  style={{
+                    marginLeft: 8,
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--accent-text)",
+                    textDecoration: "underline",
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                  }}
+                >
+                  edit
+                </button>
+              )}
             </span>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
@@ -497,55 +534,86 @@ const PaperDetailView: React.FC = () => {
             <span>Results</span>
             <span className="accent">
               {evaluations?.length || 0} benchmarks
-              <button
-                onClick={() => setIsEditingEvaluations(true)}
-                className="edit-link"
-                style={{
-                  marginLeft: 8,
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "var(--accent-text)",
-                  textDecoration: "underline",
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                }}
-              >
-                edit
-              </button>
+              {canEditPaper && (
+                <button
+                  onClick={() => setIsEditingEvaluations(true)}
+                  className="edit-link"
+                  style={{
+                    marginLeft: 8,
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--accent-text)",
+                    textDecoration: "underline",
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                  }}
+                >
+                  edit
+                </button>
+              )}
             </span>
           </div>
           {evaluationsLoading ? (
             <Skeleton className="h-32 w-full" />
-          ) : evaluations && evaluations.length > 0 ? (
-            <table className="results-table">
-              <thead>
-                <tr>
-                  <th>Task</th>
-                  <th>Benchmark</th>
-                  <th>Metric</th>
-                  <th>Value</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {evaluations.map((e) => (
-                  <tr key={e.id}>
-                    <td>
-                      <span className="task-link">{e.task_name || "—"}</span>
-                    </td>
-                    <td className="benchmark">{e.dataset_name || "—"}</td>
-                    <td className="metric">{e.best_metric}</td>
-                    <td className="value">{e.metrics?.[e.best_metric || ""] ?? "—"}</td>
-                    <td className="compare">
-                      {e.dataset_slug && (
-                        <Link to={`/benchmark/${e.dataset_slug}`}>Compare →</Link>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          ) : evaluationsByTask.length > 0 ? (
+            evaluationsByTask.map((group) => (
+              <div key={group.taskId}>
+                <div className="section-rule">
+                  <span>
+                    {group.taskSlug ? (
+                      <Link to={`/tasks/${group.taskSlug}`}>{group.taskName}</Link>
+                    ) : (
+                      group.taskName
+                    )}
+                  </span>
+                  <span className="accent">
+                    {group.rows.length} {group.rows.length === 1 ? "result" : "results"}
+                  </span>
+                </div>
+                <table className="results-table">
+                  <colgroup>
+                    <col style={{ width: "14%" }} />
+                    <col style={{ width: "18%" }} />
+                    <col style={{ width: "26%" }} />
+                    <col style={{ width: "18%" }} />
+                    <col style={{ width: "24%" }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Benchmark</th>
+                      <th>Metric</th>
+                      <th>Value</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((e) => (
+                      <tr key={e.id}>
+                        <td className="model" title={e.model_name || undefined}>
+                          {e.model_name || "—"}
+                        </td>
+                        <td className="benchmark">
+                          {e.dataset_slug ? (
+                            <Link to={`/benchmark/${e.dataset_slug}`}>{e.dataset_name || "—"}</Link>
+                          ) : (
+                            e.dataset_name || "—"
+                          )}
+                        </td>
+                        <td className="metric">{e.best_metric}</td>
+                        <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
+                        <td className="compare">
+                          {e.dataset_slug && (
+                            <Link to={`/benchmark/${e.dataset_slug}`}>Compare →</Link>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
           ) : (
             <p style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink-faint)" }}>No benchmark results recorded yet.</p>
           )}
@@ -559,22 +627,24 @@ const PaperDetailView: React.FC = () => {
                 <span>GitHub</span>
                 <span className="badge">
                   {sortedRepos.length} repo{sortedRepos.length === 1 ? "" : "s"}
-                  <button
-                    onClick={() => setIsEditingRepositories(true)}
-                    className="edit-link"
-                    style={{
-                      marginLeft: 8,
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "var(--accent-text)",
-                      textDecoration: "underline",
-                      fontFamily: "var(--mono)",
-                      fontSize: 11,
-                    }}
-                  >
-                    edit
-                  </button>
+                  {canEditPaper && (
+                    <button
+                      onClick={() => setIsEditingRepositories(true)}
+                      className="edit-link"
+                      style={{
+                        marginLeft: 8,
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "var(--accent-text)",
+                        textDecoration: "underline",
+                        fontFamily: "var(--mono)",
+                        fontSize: 11,
+                      }}
+                    >
+                      edit
+                    </button>
+                  )}
                 </span>
               </div>
               {visibleRepos.map((r) => (

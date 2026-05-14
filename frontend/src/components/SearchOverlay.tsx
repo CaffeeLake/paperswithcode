@@ -38,8 +38,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
 
   const papersQ = useQuery({
     queryKey: ["search-papers", debouncedQuery],
-    queryFn: () =>
-      apiClient.getPapers({ search: debouncedQuery, page_size: 6, latest_only: true }),
+    queryFn: () => apiClient.searchPapers(debouncedQuery, 6),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
@@ -62,7 +61,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
 
   const matchedTasks = tasksQ.data?.results || [];
   const matchedMethods = methodsQ.data?.results || [];
-  const matchedPapers = papersQ.data?.results || [];
+  const matchedPapers = papersQ.data || [];
   const isLoading = papersQ.isFetching || tasksQ.isFetching || methodsQ.isFetching;
   const hasResults = matchedTasks.length || matchedPapers.length || matchedMethods.length;
 
@@ -129,12 +128,12 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
             <>
               <div className="search-section-label">Papers · {matchedPapers.length}</div>
               {matchedPapers.map((p) => (
-                <div key={p.id} className="search-result" onClick={() => go(`/paper/${p.arxiv_id}`)}>
+                <div key={p.id} className="search-result" onClick={() => go(`/paper/${p.arxiv_id || p.id}`)}>
                   <div className="search-result-title">
                     <LatexTitle title={p.title} />
                   </div>
                   <div className="search-result-meta">
-                    <span>arXiv:{p.arxiv_id}</span>
+                    <span>{p.arxiv_id ? `arXiv:${p.arxiv_id}` : "External resource"}</span>
                     {p.authors?.[0] && (
                       <>
                         <span>·</span>

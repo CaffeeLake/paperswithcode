@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { MethodChip, PaperCard } from "@/components";
 import { apiClient } from "@/lib/api";
@@ -17,11 +17,20 @@ const SORT_OPTIONS: Array<[SortKey, string]> = [
   ["cited", "most cited"],
 ];
 
+const HIDDEN_SUBTASK_SLUGS = new Set([
+  "classic-language-modeling",
+  "coding",
+  "safety-and-grounding",
+]);
+
+const SUBTASK_BENCH_PREVIEW = 3;
+
 const TagBrowseView: React.FC = () => {
   const { taskSlug } = useParams<{ taskSlug: string }>();
   const navigate = useNavigate();
   const [sortBy, setSortBy] = useState<SortKey>("trending");
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
+  const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set());
 
   const taskQ = useQuery({
     queryKey: ["task", taskSlug],
@@ -39,12 +48,54 @@ const TagBrowseView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  // Datasets associated with this task — surfaced as benchmark links.
-  const datasetsQ = useQuery({
-    queryKey: ["task-datasets", taskQ.data?.id],
-    queryFn: () => apiClient.getDatasets({ task_id: Number(taskQ.data!.id), page_size: 100, ordering: "-paper_count" }),
+  // Subtasks (child tasks). Parent task pages render these as cards; benchmarks
+  // are owned by the most-specific child task in the hierarchy.
+  const subtasksQ = useQuery({
+    queryKey: ["task-children", taskQ.data?.id],
+    queryFn: () => apiClient.getTaskChildren(taskQ.data!.id, { page_size: 50 }),
     enabled: !!taskQ.data?.id,
     staleTime: 10 * 60 * 1000,
+  });
+
+  // Visible subtasks: those not on the temporary hide list. Per-subtask benchmark
+  // queries depend on this list, so derive it before the dataset useQueries call.
+  const visibleSubtasks = useMemo(
+    () => (subtasksQ.data?.results || []).filter((s) => !HIDDEN_SUBTASK_SLUGS.has(s.slug)),
+    [subtasksQ.data],
+  );
+
+  // Datasets associated with this task — surfaced as benchmark links. When the
+  // task has subtasks, roll them up via include_descendants so the parent task
+  // page can still report a meaningful "BENCHMARKS" count without duplicating
+  // ownership.
+  const hasSubtasks = (subtasksQ.data?.results?.length || 0) > 0;
+  const datasetsQ = useQuery({
+    queryKey: ["task-datasets", taskQ.data?.id, hasSubtasks],
+    queryFn: () =>
+      apiClient.getDatasets({
+        task_id: Number(taskQ.data!.id),
+        page_size: 100,
+        ordering: "-paper_count",
+        include_descendants: hasSubtasks,
+      }),
+    enabled: !!taskQ.data?.id && !subtasksQ.isLoading,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Per-subtask top benchmarks. Fetched in parallel so each subtask section can
+  // render its own preview list. page_size:20 gives the "show more" expand
+  // something to reveal without an extra round trip.
+  const subtaskDatasetQs = useQueries({
+    queries: visibleSubtasks.map((s) => ({
+      queryKey: ["task-datasets", s.id, false],
+      queryFn: () =>
+        apiClient.getDatasets({
+          task_id: Number(s.id),
+          page_size: 20,
+          ordering: "-paper_count",
+        }),
+      staleTime: 10 * 60 * 1000,
+    })),
   });
 
   const orderBy =
@@ -114,6 +165,15 @@ const TagBrowseView: React.FC = () => {
   const sisters = (sistersQ.data?.results || []).filter((s) => s.id !== task.id);
   const datasets = datasetsQ.data?.results || [];
 
+  const toggleSubtaskExpanded = (subtaskId: string) => {
+    setExpandedSubtasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(subtaskId)) next.delete(subtaskId);
+      else next.add(subtaskId);
+      return next;
+    });
+  };
+
   return (
     <div className="page">
       <div className="breadcrumb">
@@ -143,7 +203,71 @@ const TagBrowseView: React.FC = () => {
 
       <div className="task-page-grid" style={{ marginTop: 28 }}>
         <div>
-          {datasets.length > 0 && (
+          {visibleSubtasks.length > 0 && (
+            <>
+              <div className="task-section-head">
+                <div className="task-section-eyebrow">Benchmarks by capability</div>
+                <div className="task-section-title">
+                  Subtasks <span className="meta">[{visibleSubtasks.length}]</span>
+                </div>
+              </div>
+              {visibleSubtasks.map((s, idx) => {
+                const q = subtaskDatasetQs[idx];
+                const subDatasets = q?.data?.results || [];
+                if (subDatasets.length === 0) return null;
+                const isExpanded = expandedSubtasks.has(s.id);
+                const visibleDatasets = isExpanded
+                  ? subDatasets
+                  : subDatasets.slice(0, SUBTASK_BENCH_PREVIEW);
+                const remaining = subDatasets.length - SUBTASK_BENCH_PREVIEW;
+                return (
+                  <div key={s.id} className="subtask-section">
+                    <div className="subtask-head">
+                      <Link to={`/tasks/${s.slug || s.id}`} className="subtask-head-name">
+                        {displayTaskName(s.name, s.slug)}
+                      </Link>
+                      <span className="subtask-head-meta">
+                        [{subDatasets.length} benchmark{subDatasets.length === 1 ? "" : "s"}]
+                      </span>
+                    </div>
+                    {visibleDatasets.map((d, i) => (
+                      <div
+                        key={d.id}
+                        className="bench-row"
+                        onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}
+                      >
+                        <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
+                        <div className="bench-row-main">
+                          <div className="bench-row-name">{d.name}</div>
+                          <div className="bench-row-sub">
+                            {d.paper_count != null && (
+                              <span>
+                                <strong>{d.paper_count}</strong> ENTRIES
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="bench-row-arrow">→</div>
+                      </div>
+                    ))}
+                    {remaining > 0 && (
+                      <button
+                        type="button"
+                        className="bench-show-more"
+                        onClick={() => toggleSubtaskExpanded(s.id)}
+                      >
+                        {isExpanded
+                          ? `− show top ${SUBTASK_BENCH_PREVIEW}`
+                          : `+ show ${remaining} more benchmark${remaining === 1 ? "" : "s"}`}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+
+          {!hasSubtasks && datasets.length > 0 && (
             <>
               <div className="task-section-head">
                 <div className="task-section-eyebrow">Leaderboards · click any</div>

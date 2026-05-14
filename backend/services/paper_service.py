@@ -685,17 +685,20 @@ class PaperService:
                         r.trending_score,
                         r.num_stars
                     FROM papers p
-                    JOIN paper_repositories pr ON p.id = pr.paper_id
-                    JOIN repositories r ON pr.repository_id = r.id
-                    WHERE pr.is_official = TRUE
+                    LEFT JOIN paper_repositories pr
+                        ON p.id = pr.paper_id
+                        AND pr.is_official = TRUE
+                    LEFT JOIN repositories r
+                        ON pr.repository_id = r.id
                         AND r.trending_score IS NOT NULL
                         AND r.trending_score_updated_at >= (NOW() - INTERVAL '24 hours')
+                    WHERE (:search_term IS NOT NULL OR r.id IS NOT NULL)
                         AND (:search_term IS NULL OR p.title ILIKE :search_term OR p.abstract ILIKE :search_term)
                         AND (:published_after IS NULL OR p.date_published >= :published_after)
                         AND (:published_before IS NULL OR p.date_published <= :published_before)
                         AND (:conference IS NULL OR p.conference ILIKE :conference)
                         AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
-                    ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC
+                    ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC NULLS LAST
                 )
                 SELECT
                     paper_id,

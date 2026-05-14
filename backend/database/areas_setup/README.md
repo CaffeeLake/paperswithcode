@@ -4,7 +4,7 @@ This directory contains scripts and documentation for the Areas API implementati
 
 ## Overview
 
-The Areas API provides endpoints to list and retrieve research areas (e.g., Computer Vision, Natural Language Processing, Reinforcement Learning). This implementation follows the legacy PapersWithCode API specification.
+The Areas API provides endpoints to list and retrieve research areas (e.g., Vision, Video, Language, Audio, General, Time-series). This implementation follows the legacy PapersWithCode API specification.
 
 ## Database Schema
 
@@ -113,22 +113,14 @@ Run the populate script to add common research areas:
 uv run --env-file backend/keys.env python backend/database/areas_setup/populate_areas.py --populate
 ```
 
-This will add the following areas:
-- Computer Vision
-- Natural Language Processing
-- Reinforcement Learning
-- Machine Learning
-- Speech
-- Robotics
-- Computer Code
-- Graphs
-- Adversarial
-- Time Series
+This will add the following areas (canonical list, kept in sync with
+`populate_areas.py`):
+- Vision
+- Video
+- Language
+- General
+- Time-series
 - Audio
-- Multi-modal Learning
-- Medical
-- Methodology
-- Playing Games
 
 ### 2. List Current Areas
 
@@ -211,8 +203,8 @@ The response format matches the legacy API:
   "results": [
     {
       "id": "1",
-      "name": "Computer Vision",
-      "description": "Research focused on enabling computers to interpret...",
+      "name": "Vision",
+      "description": "Research on enabling machines to interpret and understand still images...",
       "created_at": "2025-10-04T10:39:45.702167Z",
       "updated_at": "2025-10-04T10:39:45.702167Z"
     }

@@ -210,6 +210,7 @@ export function EditMethodsDialog({
                       id={`method-${method.id}`}
                       checked={isSelected}
                       onCheckedChange={(checked) => toggleMethod(methodId, checked === true)}
+                      className="!border !border-black data-[state=checked]:!bg-black data-[state=checked]:!text-white"
                     />
                     <label
                       htmlFor={`method-${method.id}`}

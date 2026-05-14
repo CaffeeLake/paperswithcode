@@ -17,6 +17,7 @@ from backend.models.api import (
 )
 from backend.services.evaluation_service import EvaluationService
 from backend.database.connection import get_database_session
+from backend.utils.auth import require_admin, require_hf_admin
 from backend.utils.exceptions import DatabaseError
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
@@ -33,6 +34,14 @@ async def list_evaluations(
     ),
     paper_id: Optional[int] = Query(None, description="Filter by paper ID"),
     task_id: Optional[int] = Query(None, description="Filter by task ID"),
+    include_descendants: bool = Query(
+        False,
+        description=(
+            "When `task_id` is set, also include evaluations whose task is a "
+            "descendant of `task_id`. Useful for parent task pages that want "
+            "to roll up evaluations from their subtasks."
+        ),
+    ),
     dataset_id: Optional[int] = Query(None, description="Filter by dataset ID"),
     best_metric: Optional[str] = Query(
         None, description="Filter by best metric (e.g., 'AbsRel', 'delta1')"
@@ -80,6 +89,7 @@ async def list_evaluations(
             page_size=page_size,
             paper_id=paper_id,
             task_id=task_id,
+            include_descendants=include_descendants,
             dataset_id=dataset_id,
             best_metric=best_metric,
             order_by=order_by,
@@ -122,7 +132,12 @@ async def get_evaluation(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/", response_model=Evaluation, status_code=201)
+@router.post(
+    "/",
+    response_model=Evaluation,
+    status_code=201,
+    dependencies=[Depends(require_hf_admin)],
+)
 async def create_evaluation(
     request: EvaluationCreateRequest,
     db: Session = Depends(get_database_session),
@@ -163,6 +178,7 @@ async def create_evaluation(
             task_id=request.task_id,
             dataset_id=request.dataset_id,
             model_name=request.model_name,
+            harness=request.harness,
             methodology=request.methodology,
             metrics=request.metrics,
             uses_additional_data=request.uses_additional_data,
@@ -181,7 +197,11 @@ async def create_evaluation(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.put("/{evaluation_id}", response_model=Evaluation)
+@router.put(
+    "/{evaluation_id}",
+    response_model=Evaluation,
+    dependencies=[Depends(require_hf_admin)],
+)
 async def update_evaluation(
     evaluation_id: int,
     request: EvaluationUpdateRequest,
@@ -220,6 +240,7 @@ async def update_evaluation(
             task_id=request.task_id,
             dataset_id=request.dataset_id,
             model_name=request.model_name,
+            harness=request.harness,
             methodology=request.methodology,
             metrics=request.metrics,
             uses_additional_data=request.uses_additional_data,
@@ -227,6 +248,7 @@ async def update_evaluation(
             best_metric=request.best_metric,
             evaluated_on=request.evaluated_on,
             external_source_url=request.external_source_url,
+            harness_set="harness" in request.model_fields_set,
         )
 
     except ValueError as e:
@@ -240,7 +262,11 @@ async def update_evaluation(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.delete("/{evaluation_id}", status_code=204)
+@router.delete(
+    "/{evaluation_id}",
+    status_code=204,
+    dependencies=[Depends(require_hf_admin)],
+)
 async def delete_evaluation(
     evaluation_id: int,
     db: Session = Depends(get_database_session),
@@ -269,7 +295,11 @@ async def delete_evaluation(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/recalculate-ranks", status_code=200)
+@router.post(
+    "/recalculate-ranks",
+    status_code=200,
+    dependencies=[Depends(require_admin)],
+)
 async def recalculate_ranks(
     task_id: int = Query(..., description="Task ID for the leaderboard"),
     dataset_id: int = Query(..., description="Dataset ID for the leaderboard"),

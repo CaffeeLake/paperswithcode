@@ -26,6 +26,7 @@ from backend.services.thumbnail_service import (
     build_thumbnail_filename,
     build_thumbnail_url,
 )
+from backend.utils.auth import require_admin, require_hf_admin
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import validate_arxiv_id, validate_version
 
@@ -208,29 +209,55 @@ async def get_trending_papers(
         # lets the frontend render external rows with their canonical URLs
         # alongside ArXiv rows.
         query = text("""
+            WITH ranked_trending_papers AS (
+                SELECT
+                    tp.paper_id,
+                    tp.arxiv_id,
+                    tp.title,
+                    tp.date_published,
+                    tp.repository_id,
+                    tp.repository_url,
+                    tp.owner,
+                    tp.repo_name,
+                    tp.current_stars,
+                    COALESCE(tp.velocity_24h, 0) as velocity_24h,
+                    COALESCE(tp.trending_score, 0) as trending_score,
+                    COALESCE(tp.stars_gained_24h, 0) as stars_gained_24h,
+                    tp.paper_age_days,
+                    tp.abstract,
+                    p.source,
+                    p.source_url,
+                    p.thumbnail_url,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY tp.paper_id
+                        ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
+                    ) as paper_repo_rank
+                FROM trending_papers_24h tp
+                JOIN papers p ON p.id = tp.paper_id
+                WHERE tp.paper_age_days <= :max_age_days
+                AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
+            )
             SELECT
-                tp.paper_id,
-                tp.arxiv_id,
-                tp.title,
-                tp.date_published,
-                tp.repository_id,
-                tp.repository_url,
-                tp.owner,
-                tp.repo_name,
-                tp.current_stars,
-                COALESCE(tp.velocity_24h, 0) as velocity_24h,
-                COALESCE(tp.trending_score, 0) as trending_score,
-                COALESCE(tp.stars_gained_24h, 0) as stars_gained_24h,
-                tp.paper_age_days,
-                tp.abstract,
-                p.source,
-                p.source_url,
-                p.thumbnail_url
-            FROM trending_papers_24h tp
-            JOIN papers p ON p.id = tp.paper_id
-            WHERE tp.paper_age_days <= :max_age_days
-            AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
-            ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
+                paper_id,
+                arxiv_id,
+                title,
+                date_published,
+                repository_id,
+                repository_url,
+                owner,
+                repo_name,
+                current_stars,
+                velocity_24h,
+                trending_score,
+                stars_gained_24h,
+                paper_age_days,
+                abstract,
+                source,
+                source_url,
+                thumbnail_url
+            FROM ranked_trending_papers
+            WHERE paper_repo_rank = 1
+            ORDER BY trending_score DESC NULLS LAST, current_stars DESC
             LIMIT :limit
         """)
 
@@ -499,6 +526,7 @@ async def compare_paper_versions(
     "/papers/index/{arxiv_id}",
     response_model=Paper,
     summary="Index a paper from ArXiv by ID",
+    dependencies=[Depends(require_admin)],
 )
 async def index_paper_from_arxiv(
     arxiv_id: str = Path(..., description="ArXiv ID (e.g., '2511.08544')"),
@@ -715,6 +743,7 @@ async def get_paper_methods(
     "/papers/{paper_id}/tasks",
     response_model=Paper,
     summary="Update tasks for a paper",
+    dependencies=[Depends(require_hf_admin)],
 )
 async def update_paper_tasks(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -756,6 +785,7 @@ async def update_paper_tasks(
     "/papers/{paper_id}/methods",
     response_model=Paper,
     summary="Update methods for a paper",
+    dependencies=[Depends(require_hf_admin)],
 )
 async def update_paper_methods(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -831,6 +861,7 @@ class UpdateProjectPagesRequest(BaseModel):
     "/papers/{paper_id}/repositories",
     response_model=Paper,
     summary="Update repositories for a paper",
+    dependencies=[Depends(require_admin)],
 )
 async def update_paper_repositories(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -880,6 +911,7 @@ async def update_paper_repositories(
     "/papers/{paper_id}/project-pages",
     response_model=Paper,
     summary="Update project pages for a paper",
+    dependencies=[Depends(require_admin)],
 )
 async def update_paper_project_pages(
     paper_id: int = Path(..., description="Database paper ID"),

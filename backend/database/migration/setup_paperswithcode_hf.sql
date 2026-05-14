@@ -157,6 +157,7 @@ CREATE TABLE evaluations (
     task_id BIGINT REFERENCES tasks(id) ON DELETE CASCADE,
     dataset_id BIGINT REFERENCES datasets(id) ON DELETE CASCADE,
     model_name VARCHAR(255),
+    harness VARCHAR(255),
     methodology TEXT,
     metrics JSONB NOT NULL,
     uses_additional_data BOOLEAN DEFAULT FALSE,

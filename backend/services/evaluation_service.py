@@ -16,11 +16,13 @@ from backend.models.database import (
     Dataset as DBDataset,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
+    TaskDataset,
     TaskDatasetMetric,
     Metric as DBMetric,
 )
 from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
+from backend.utils.task_hierarchy import collect_descendant_task_ids
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
 
 
@@ -98,6 +100,23 @@ class EvaluationService:
             return task.name if task else None
         except Exception:
             return None
+
+    def _get_task_name_and_slug(
+        self, task_id: int
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Get task name and slug for a given task ID in a single query.
+
+        Returns:
+            Tuple of (task_name, task_slug); both None if not found.
+        """
+        try:
+            task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+            if not task:
+                return None, None
+            return task.name, task.slug
+        except Exception:
+            return None, None
 
     def _get_dataset_name(self, dataset_id: int) -> Optional[str]:
         """
@@ -182,6 +201,32 @@ class EvaluationService:
             # In case of error, allow the operation to proceed
             return True, None
 
+    def _validate_harness_support(
+        self, task_id: int, dataset_id: int, harness: Optional[str]
+    ) -> tuple[bool, Optional[str]]:
+        if not harness:
+            return True, None
+
+        task_dataset = (
+            self.db.query(TaskDataset)
+            .filter(
+                TaskDataset.task_id == task_id,
+                TaskDataset.dataset_id == dataset_id,
+            )
+            .first()
+        )
+        if task_dataset and task_dataset.supports_harness:
+            return True, None
+
+        task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
+        dataset = self.db.query(DBDataset).filter(DBDataset.id == dataset_id).first()
+        return False, (
+            f"Leaderboard for task '{task.name if task else task_id}' and dataset "
+            f"'{dataset.name if dataset else dataset_id}' does not support harness values. "
+            "Put runtime/framework details in methodology instead, or enable "
+            "supports_harness for this leaderboard."
+        )
+
     def get_evaluations(
         self,
         page: int = 1,
@@ -189,6 +234,7 @@ class EvaluationService:
         search: Optional[str] = None,
         paper_id: Optional[int] = None,
         task_id: Optional[int] = None,
+        include_descendants: bool = False,
         dataset_id: Optional[int] = None,
         best_metric: Optional[str] = None,
         order_by: str = "created_at",
@@ -220,11 +266,14 @@ class EvaluationService:
 
             # Apply filters
             if search:
-                # Use ilike for case-insensitive search in model name and methodology
+                # Use ilike for case-insensitive search in model name, harness and methodology
                 query = query.filter(
                     or_(
                         DBEvaluation.model_name.ilike(f"%{search}%")
                         if DBEvaluation.model_name
+                        else False,
+                        DBEvaluation.harness.ilike(f"%{search}%")
+                        if DBEvaluation.harness
                         else False,
                         DBEvaluation.methodology.ilike(f"%{search}%")
                         if DBEvaluation.methodology
@@ -236,7 +285,11 @@ class EvaluationService:
                 query = query.filter(DBEvaluation.paper_id == paper_id)
 
             if task_id is not None:
-                query = query.filter(DBEvaluation.task_id == task_id)
+                if include_descendants:
+                    descendant_ids = collect_descendant_task_ids(self.db, task_id)
+                    query = query.filter(DBEvaluation.task_id.in_(descendant_ids))
+                else:
+                    query = query.filter(DBEvaluation.task_id == task_id)
 
             if dataset_id is not None:
                 query = query.filter(DBEvaluation.dataset_id == dataset_id)
@@ -280,7 +333,9 @@ class EvaluationService:
                 ) = self._get_paper_info(db_evaluation.paper_id)
 
                 # Get task and dataset names
-                task_name = self._get_task_name(db_evaluation.task_id)
+                task_name, task_slug = self._get_task_name_and_slug(
+                    db_evaluation.task_id
+                )
                 dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
                 dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
 
@@ -299,6 +354,7 @@ class EvaluationService:
                     "task_id": str(db_evaluation.task_id),
                     "dataset_id": str(db_evaluation.dataset_id),
                     "model_name": db_evaluation.model_name,
+                    "harness": db_evaluation.harness,
                     "methodology": db_evaluation.methodology,
                     "metrics": db_evaluation.metrics,
                     "uses_additional_data": db_evaluation.uses_additional_data,
@@ -314,6 +370,7 @@ class EvaluationService:
                     "paper_published_date": paper_published_date,
                     "result_url": result_url,
                     "task_name": task_name,
+                    "task_slug": task_slug,
                     "dataset_name": dataset_name,
                     "dataset_slug": dataset_slug,
                 }
@@ -369,7 +426,7 @@ class EvaluationService:
             ) = self._get_paper_info(db_evaluation.paper_id)
 
             # Get task and dataset names
-            task_name = self._get_task_name(db_evaluation.task_id)
+            task_name, task_slug = self._get_task_name_and_slug(db_evaluation.task_id)
             dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
             dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
 
@@ -387,6 +444,7 @@ class EvaluationService:
                 "task_id": str(db_evaluation.task_id),
                 "dataset_id": str(db_evaluation.dataset_id),
                 "model_name": db_evaluation.model_name,
+                "harness": db_evaluation.harness,
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
@@ -402,6 +460,7 @@ class EvaluationService:
                 "paper_published_date": paper_published_date,
                 "result_url": result_url,
                 "task_name": task_name,
+                "task_slug": task_slug,
                 "dataset_name": dataset_name,
                 "dataset_slug": dataset_slug,
             }
@@ -443,6 +502,7 @@ class EvaluationService:
         dataset_id: int,
         metrics: dict,
         model_name: Optional[str] = None,
+        harness: Optional[str] = None,
         methodology: Optional[str] = None,
         uses_additional_data: bool = False,
         best_rank: Optional[int] = None,
@@ -491,11 +551,18 @@ class EvaluationService:
             if not is_valid:
                 raise ValueError(error_message)
 
+            is_valid, error_message = self._validate_harness_support(
+                task_id, dataset_id, harness
+            )
+            if not is_valid:
+                raise ValueError(error_message)
+
             db_evaluation = DBEvaluation(
                 paper_id=paper_id,
                 task_id=task_id,
                 dataset_id=dataset_id,
                 model_name=model_name,
+                harness=harness,
                 methodology=methodology,
                 metrics=metrics,
                 uses_additional_data=uses_additional_data,
@@ -545,6 +612,7 @@ class EvaluationService:
                 "task_id": str(db_evaluation.task_id),
                 "dataset_id": str(db_evaluation.dataset_id),
                 "model_name": db_evaluation.model_name,
+                "harness": db_evaluation.harness,
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
@@ -563,6 +631,12 @@ class EvaluationService:
 
             return Evaluation(**evaluation_dict)
 
+        except ValueError:
+            self.db.rollback()
+            raise
+        except DatabaseError:
+            self.db.rollback()
+            raise
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to create evaluation: {str(e)}")
@@ -573,6 +647,7 @@ class EvaluationService:
         task_id: Optional[int] = None,
         dataset_id: Optional[int] = None,
         model_name: Optional[str] = None,
+        harness: Optional[str] = None,
         methodology: Optional[str] = None,
         metrics: Optional[dict] = None,
         uses_additional_data: Optional[bool] = None,
@@ -580,6 +655,7 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
+        harness_set: bool = False,
     ) -> Evaluation:
         """
         Update an existing evaluation.
@@ -631,6 +707,8 @@ class EvaluationService:
             # Determine which task to validate against
             target_task_id = task_id if task_id is not None else old_task_id
 
+            target_harness = harness if harness_set else db_evaluation.harness
+
             # Validate dataset-task consistency if task or dataset is changing
             if task_id is not None or dataset_id is not None:
                 is_valid, error_message = self._validate_dataset_task_consistency(
@@ -638,6 +716,12 @@ class EvaluationService:
                 )
                 if not is_valid:
                     raise ValueError(error_message)
+
+            is_valid, error_message = self._validate_harness_support(
+                target_task_id, target_dataset_id, target_harness
+            )
+            if not is_valid:
+                raise ValueError(error_message)
 
             # Validate metrics if they are being changed or task/dataset is changing
             if (
@@ -667,6 +751,8 @@ class EvaluationService:
                 db_evaluation.dataset_id = dataset_id
             if model_name is not None:
                 db_evaluation.model_name = model_name
+            if harness_set:
+                db_evaluation.harness = harness
             if methodology is not None:
                 db_evaluation.methodology = methodology
             if metrics is not None:
@@ -748,6 +834,7 @@ class EvaluationService:
                 "task_id": str(db_evaluation.task_id),
                 "dataset_id": str(db_evaluation.dataset_id),
                 "model_name": db_evaluation.model_name,
+                "harness": db_evaluation.harness,
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
@@ -766,6 +853,12 @@ class EvaluationService:
 
             return Evaluation(**evaluation_dict)
 
+        except ValueError:
+            self.db.rollback()
+            raise
+        except DatabaseError:
+            self.db.rollback()
+            raise
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to update evaluation: {str(e)}")

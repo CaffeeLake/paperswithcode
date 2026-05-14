@@ -10,13 +10,16 @@
 
 import React from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import LatexTitle from "@/components/LatexTitle";
 import PaperThumbnail from "@/components/PaperThumbnail";
+import HfSignInButton from "@/components/HfSignInButton";
+import UserMenu from "@/components/UserMenu";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
+import { useAuth } from "@/lib/authContext";
 import type { PaperCardProps } from "@/lib/transform";
 import { displayTaskName, humanizeSlug } from "@/lib/transform";
 
@@ -143,6 +146,9 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const closeMobile = () => setMobileOpen(false);
+  const { user, logout } = useAuth();
+  const location = useLocation();
+  const returnTo = `${location.pathname}${location.search}` || "/";
   return (
     <>
       <header className="app-header">
@@ -171,6 +177,18 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <kbd>⌘K</kbd>
           </button>
           <button
+            className="icon-btn mobile-search-btn"
+            aria-label="Search"
+            onClick={onOpenSearch}
+          >
+            <Icon name="search" size={14} />
+          </button>
+          {user ? (
+            <UserMenu user={user} onLogout={logout} />
+          ) : (
+            <HfSignInButton returnTo={returnTo} />
+          )}
+          <button
             className="icon-btn mobile-menu-btn"
             aria-label="Open menu"
             onClick={() => setMobileOpen((v) => !v)}
@@ -182,6 +200,17 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
       {mobileOpen && (
         <div className="mobile-nav-drawer" onClick={closeMobile}>
           <div className="mobile-nav-panel" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="mobile-nav-link mobile-nav-search"
+              onClick={() => {
+                closeMobile();
+                onOpenSearch();
+              }}
+            >
+              <Icon name="search" size={14} />
+              <span>Search papers, authors, domains…</span>
+            </button>
             <NavLink to="/" end className="mobile-nav-link" onClick={closeMobile}>
               Trending
             </NavLink>

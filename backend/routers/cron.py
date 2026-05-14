@@ -18,7 +18,7 @@ if str(WORKFLOWS_DIR) not in sys.path:
     sys.path.insert(0, str(WORKFLOWS_DIR))
 
 from scripts.utils.cron_helpers import get_cron_job_status  # noqa: E402
-from backend.utils.auth import require_admin_token  # noqa: E402
+from backend.utils.auth import require_admin  # noqa: E402
 
 
 router = APIRouter()
@@ -101,7 +101,7 @@ def get_job_description(job_name: str, category: str) -> Optional[str]:
     "/cron/status",
     response_model=CronJobsResponse,
     summary="Get CRON jobs status",
-    dependencies=[Depends(require_admin_token)],
+    dependencies=[Depends(require_admin)],
 )
 async def get_cron_status(
     days: int = Query(
@@ -203,7 +203,7 @@ async def get_cron_status(
     "/cron/job/{job_name}",
     response_model=Dict[str, Any],
     summary="Get detailed status for a specific job",
-    dependencies=[Depends(require_admin_token)],
+    dependencies=[Depends(require_admin)],
 )
 async def get_job_detail(
     job_name: str,
@@ -276,7 +276,7 @@ async def get_job_detail(
 @router.get(
     "/cron/health",
     summary="Get CRON system health",
-    dependencies=[Depends(require_admin_token)],
+    dependencies=[Depends(require_admin)],
 )
 async def get_cron_health():
     """

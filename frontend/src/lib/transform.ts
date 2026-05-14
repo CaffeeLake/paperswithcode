@@ -30,9 +30,9 @@ export interface PaperCardProps {
   /** paper.tasks[*].slug, used by TagChip */
   tags: string[];
   citations: number;
-  /** sum of stars across official repos; null when no repo */
+  /** stars for the featured repo; null when no repo */
   github: number | null;
-  /** url of most-starred official repo; null when no repo */
+  /** url of the featured repo; null when no repo */
   githubUrl: string | null;
   /** project_pages[0]?.url; null when none */
   project: string | null;
@@ -53,9 +53,9 @@ export interface PaperCardProps {
 }
 
 /**
- * Roll up multiple `Repository` rows into the single (stars, url) tuple the
- * `PaperCard` aside renders. Mirrors the legacy `Papers.tsx` logic: official
- * repos take priority; if none, fall back to most-starred unofficial.
+ * Pick the single repository represented by the `Code` CTA and paper-card
+ * GitHub stats. Official repos take priority; if none exist, fall back to the
+ * most-starred linked repo.
  */
 export function summarizeRepos(repos: Repository[] | undefined): {
   github: number | null;
@@ -66,10 +66,9 @@ export function summarizeRepos(repos: Repository[] | undefined): {
   }
   const official = repos.filter((r) => r.is_official);
   const pool = official.length > 0 ? official : repos;
-  const totalStars = pool.reduce((s, r) => s + (r.num_stars || 0), 0);
   const top = [...pool].sort((a, b) => (b.num_stars || 0) - (a.num_stars || 0))[0];
   return {
-    github: totalStars > 0 ? totalStars : null,
+    github: top && top.num_stars > 0 ? top.num_stars : null,
     githubUrl: top?.url || null,
   };
 }
@@ -156,6 +155,9 @@ export interface TagInfo {
 }
 
 export function humanizeSlug(slug: string): string {
+  const displayOverride = TASK_DISPLAY_NAMES.get(slug.toLowerCase());
+  if (displayOverride) return displayOverride;
+
   const acronym = slug.toUpperCase();
   if (TASK_ACRONYMS.has(acronym)) return acronym;
 
@@ -163,9 +165,13 @@ export function humanizeSlug(slug: string): string {
 }
 
 const TASK_ACRONYMS = new Set(["OCR"]);
+const TASK_DISPLAY_NAMES = new Map([["3d-generation", "3D generation"]]);
 
 export function displayTaskName(name?: string, slug?: string): string {
   const label = name || humanizeSlug(slug || "");
+  const displayOverride = TASK_DISPLAY_NAMES.get(slug?.toLowerCase() || taskKey(label));
+  if (displayOverride) return displayOverride;
+
   const normalizedSlug = slug?.toUpperCase();
   const normalizedLabel = label.toUpperCase();
   const isAcronymLabel = /^[A-Z0-9][A-Z0-9-]{1,}$/.test(label);
@@ -181,6 +187,10 @@ export function displayTaskName(name?: string, slug?: string): string {
   return label
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function taskKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, "-");
 }
 
 export function tagInfoFromTask(task: Pick<Task, "name" | "slug">): TagInfo {

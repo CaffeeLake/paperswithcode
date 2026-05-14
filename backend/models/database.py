@@ -91,6 +91,12 @@ class Paper(Base):
     # URL extraction tracking
     urls_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # References-based method tagging tracking. NULL means the references-based
+    # cron has never processed this paper; populated rows are skipped.
+    methods_scanned_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Optional explicit thumbnail URL. ArXiv rows usually leave this NULL and
     # derive thumbnails from arxiv_id/version; external rows can point at a
     # captured source-page thumbnail.
@@ -177,6 +183,11 @@ class Paper(Base):
         Index("idx_papers_semantic_scholar_id", "semantic_scholar_id"),
         Index("idx_papers_primary_category", "primary_category"),
         Index("idx_papers_urls_extracted", "urls_extracted"),
+        Index(
+            "idx_papers_methods_scanned_at",
+            "methods_scanned_at",
+            postgresql_where=text("methods_scanned_at IS NULL"),
+        ),
     )
 
     def __repr__(self) -> str:
@@ -228,7 +239,7 @@ class Author(Base):
 
 class Area(Base):
     """
-    Research areas (Computer Vision, NLP, etc.).
+    Research areas (Vision, Video, Language, Audio, General, Time-series, etc.).
     """
 
     __tablename__ = "areas"
@@ -670,6 +681,11 @@ class Evaluation(Base):
     )
 
     model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Optional harness/runtime used to evaluate the model (e.g. "Claude Code",
+    # "Terminus"). Some benchmarks like Terminal-Bench are effectively
+    # model+harness combinations; this column lets us render them separately
+    # from `model_name` instead of cramming both into the model column.
+    harness: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     metrics: Mapped[dict] = mapped_column(JSONB, nullable=False)  # JSONB field
     uses_additional_data: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -867,6 +883,9 @@ class TaskDataset(Base):
         BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
     )
     featured_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    supports_harness: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

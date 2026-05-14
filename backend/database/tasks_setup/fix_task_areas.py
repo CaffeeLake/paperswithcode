@@ -122,11 +122,11 @@ def get_correct_area(task_name, description):
 
     # Check for NLP tasks
     if any(kw in task_lower for kw in nlp_tasks):
-        return "Natural Language Processing"
+        return "Language"
 
-    # Check for Computer Vision tasks
+    # Check for Vision tasks
     if any(kw in task_lower for kw in cv_tasks):
-        return "Computer Vision"
+        return "Vision"
 
     # Check for Time Series tasks
     if any(kw in task_lower for kw in time_series_tasks):
@@ -144,9 +144,9 @@ def get_correct_area(task_name, description):
     if "speech" in desc_lower or "audio" in desc_lower or "sound" in desc_lower:
         return "Audio"
     elif "language" in desc_lower or "text" in desc_lower or "nlp" in desc_lower:
-        return "Natural Language Processing"
+        return "Language"
     elif "image" in desc_lower or "visual" in desc_lower or "vision" in desc_lower:
-        return "Computer Vision"
+        return "Vision"
     elif "graph" in desc_lower or "network" in desc_lower:
         return "Graphs"
     elif "time" in desc_lower or "temporal" in desc_lower:

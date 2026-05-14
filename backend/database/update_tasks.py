@@ -120,16 +120,19 @@ def ensure_areas_exist(tasks):
             cur.execute("SELECT id, name FROM areas")
             existing_areas = {row["id"]: row["name"] for row in cur.fetchall()}
 
-            # Define area names for missing IDs
+            # Define area names for missing IDs (keep IDs aligned with the
+            # current DB; see `backend/database/areas_setup/populate_areas.py`
+            # for the canonical list).
             area_names = {
-                1: "Computer Vision",
-                2: "Natural Language Processing",
+                1: "Vision",
+                2: "Language",
                 3: "General",
                 4: "Time Series Forecasting",
                 5: "Robotics",
                 6: "Audio",
                 7: "Time-series",
                 8: "Other",
+                9: "Video",
             }
 
             # Create missing areas

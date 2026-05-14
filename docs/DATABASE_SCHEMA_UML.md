@@ -1,8 +1,8 @@
-# PapersWithCode - Database Schema & UML (Live, November 2025)
+# PapersWithCode - Database Schema & UML (Live, May 2026)
 
 ## Overview
 
-This document reflects the live PostgreSQL schema of the PapersWithCode backend as of November 2025. It is derived directly from the database (schema-only dump and table descriptions) and should be treated as the source of truth for development.
+This document reflects the live PostgreSQL schema of the PapersWithCode backend as of May 2026. It is derived directly from the database (schema-only dump and table descriptions) and should be treated as the source of truth for development.
 
 Key capabilities:
 - Leaderboards defined by triples: (task, dataset, metric)
@@ -15,32 +15,33 @@ Key capabilities:
 ## Entity Relationship Diagram (UML)
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│     AUTHORS     │    │      PAPERS      │    │      TASKS      │
-├─────────────────┤    ├──────────────────┤    ├─────────────────┤
-│ id (PK)         │    │ id (PK)          │    │ id (PK)         │
-│ name            │    │ title            │    │ name            │
-│ hf_username     │    │ abstract         │    │ description     │
-│ hf_id           │    │ arxiv_id         │    │ slug (UNIQUE)   │
-│ hf_avatar_url   │    │ version          │    │ parent_id (FK)  │
-│ hf_status       │    │ is_latest_version│    │ area_id (FK)    │
-│ hf_is_pro       │    │ date_published   │    │ level           │
-│ created_at      │    │ proceeding       │    │ created_at      │
-│ updated_at      │    │ conference       │    │ updated_at      │
-└─────────────────┘    │ citation_count   │    │ keywords, images│
-                       │ semantic_scholar │    └─────────────────┘
-                       │ categories, flags│             │
-                       │ created_at/updated│            │ (Self-referencing)
-                       └──────────────────┘             │ Parent-Child
-                                │                       ▼
-                                │             ┌─────────────────┐
-                                │             │      AREAS      │
-                                │             ├─────────────────┤
-                                │             │ id (PK)         │
-                                │             │ name            │
-                                │             │ description     │
-                                │             │ created/updated │
-                                │             └─────────────────┘
+┌─────────────────┐    ┌──────────────────┐    ┌──────────────────────────┐
+│     AUTHORS     │    │      PAPERS      │    │           TASKS          │
+├─────────────────┤    ├──────────────────┤    ├──────────────────────────┤
+│ id (PK)         │    │ id (PK)          │    │ id (PK)                  │
+│ name            │    │ title            │    │ name                     │
+│ hf_username     │    │ abstract         │    │ description              │
+│ hf_id           │    │ arxiv_id         │    │ slug (UNIQUE)            │
+│ hf_avatar_url   │    │ version          │    │ parent_id (FK self)      │
+│ hf_status       │    │ is_latest_version│    │ area_id (FK areas)       │
+│ hf_is_pro       │    │ date_published   │    │ level (0=top-level,      │
+│ created_at      │    │ proceeding       │    │   1=subtask,             │
+│ updated_at      │    │ conference       │    │   2=sub-subtask, ...)    │
+└─────────────────┘    │ citation_count   │    │ keywords, images         │
+                       │ semantic_scholar │    │ created/updated          │
+                       │ categories, flags│    └──────────────────────────┘
+                       │ created_at/updated│             │
+                       └──────────────────┘              │ (Self-referencing
+                                │                        │  parent_id ─► tasks.id)
+                                │                        ▼
+                                │              ┌─────────────────┐
+                                │              │      AREAS      │
+                                │              ├─────────────────┤
+                                │              │ id (PK)         │
+                                │              │ name            │
+                                │              │ description     │
+                                │              │ created/updated │
+                                │              └─────────────────┘
                                 │
        ┌────────────────────────┼────────────────────────┐
        │                        │                        │
@@ -80,15 +81,16 @@ Key capabilities:
                         └─────────────────┘
                                 │
                                 ▼
-                    ┌───────────────────────────────┐
-                    │     TASK_DATASET_METRICS      │
-                    ├───────────────────────────────┤
-                    │ task_id (FK)                  │
-                    │ dataset_id (FK)               │
-                    │ metric_id (FK)                │
-                    │ PK (task,dataset,metric)      │
-                    │ (Defines leaderboards)        │
-                    └───────────────────────────────┘
+       ┌──────────────────────────────┐    ┌───────────────────────────────┐
+       │       TASK_DATASETS          │    │     TASK_DATASET_METRICS      │
+       ├──────────────────────────────┤    ├───────────────────────────────┤
+       │ task_id (FK)                 │    │ task_id (FK)                  │
+       │ dataset_id (FK)              │    │ dataset_id (FK)               │
+       │ featured_rank (NULL or > 0)  │    │ metric_id (FK)                │
+       │ supports_harness (bool)      │    │ PK (task,dataset,metric)      │
+       │ PK (task, dataset)           │    │ (Defines leaderboards)        │
+       │ (Display + harness metadata) │    └───────────────────────────────┘
+       └──────────────────────────────┘
                                 │
                                 ▼
                         ┌──────────────────┐      ┌─────────────────┐
@@ -99,6 +101,9 @@ Key capabilities:
                         │ metrics JSONB    │      │ direction (CHECK)│
                         │ best_metric (str)│      │ created/updated │
                         └──────────────────┘      └─────────────────┘
+                        evaluations.task_id may reference any task in the
+                        hierarchy (top-level OR child subtask). Leaderboards
+                        are scoped to the most specific task.
 
 ┌─────────────────┐       ┌───────────────────────┐
 │  REPOSITORIES   │       │  REPOSITORY_STAR_... │
@@ -161,6 +166,13 @@ The following summarizes the live structure. See the database for full DDL.
 - keywords, image_url, image_credit, useful_leaderboards
 - created_at, updated_at
 - Indexes: parent_id, area_id, slug
+- **Hierarchy:** subtasks are child rows linked through `parent_id`. `level`
+  is `0` for top-level tasks, `1` for subtasks under a top-level task,
+  `2` for sub-subtasks, etc. Each subtask has its own page, description,
+  benchmarks, and evaluations. Example: `language-modeling` (level 0) has
+  child subtasks `world-knowledge`, `long-context`, `instruction-following`,
+  `math`, `language-reasoning`, `coding`, `safety-and-grounding`, and
+  `classic-language-modeling` (all level 1).
 
 ### METHODS
 - id (PK), name, full_name, description, introduced_year
@@ -187,10 +199,16 @@ The following summarizes the live structure. See the database for full DDL.
 ### EVALUATIONS
 - id (PK)
 - paper_id (FK), task_id (FK), dataset_id (FK)
-- model_name, methodology, metrics (JSONB)
+- model_name, harness (optional), methodology, metrics (JSONB)
 - uses_additional_data (bool), best_rank, best_metric (string), evaluated_on, external_source_url
 - created_at, updated_at
 - Indexes: GIN(metrics), (paper_id, task_id, dataset_id), (task_id, dataset_id, best_metric)
+- **Hierarchy semantics:** `task_id` may reference any task in the hierarchy
+  (top-level or any child subtask), but each evaluation belongs to exactly one
+  `(task_id, dataset_id, best_metric)` leaderboard. Use the most specific child
+  task. Parent rollups are read-only via API filters
+  (`?include_descendants=true`); rank recalculation always runs within a
+  single leaderboard triple.
 
 ### METRICS
 - id (PK), name (UNIQUE), full_name
@@ -224,9 +242,10 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_DATASETS(paper_id, dataset_id) PK(paper_id, dataset_id)
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
+- TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 
-**Note:** Task-dataset relationships are defined via TASK_DATASET_METRICS. A (task, dataset) pair is valid if it has at least one metric defined. This table serves as both the junction table and the leaderboard definition table.
+**Note:** TASK_DATASETS owns task-specific *display metadata* (featured ordering, harness support) for a (task, dataset) pair. TASK_DATASET_METRICS defines the actual leaderboards by adding the metric dimension. Together they replace the legacy single-table design: TASK_DATASETS is what task pages render benchmark cards from, and TASK_DATASET_METRICS is what evaluation create/update validates against. Both tables key on `task_id`, which means subtasks (child tasks under `tasks.parent_id`) own benchmarks and leaderboards independently from their parent.
 
 
 ## Views (current)
@@ -249,8 +268,9 @@ The following summarizes the live structure. See the database for full DDL.
 
 ## Notes & Guidance
 
-- **Leaderboards:** TASK_DATASET_METRICS defines all valid leaderboards. A (task, dataset) pair is valid if it has at least one metric defined. This aligns with the legacy PapersWithCode design where leaderboards are defined by (task, dataset, metrics) triples.
-- **Task-Dataset Relationships:** There is NO direct TASK_DATASETS junction table. Relationships are inferred from TASK_DATASET_METRICS. To get datasets for a task, query distinct dataset_ids from TASK_DATASET_METRICS where task_id matches.
+- **Leaderboards:** TASK_DATASET_METRICS defines all valid leaderboards. A (task, dataset, metric) triple must exist before evaluations can be added; `evaluation_service` enforces this. Rank recalculation always runs within a single `(task_id, dataset_id, best_metric)` triple.
+- **Task-Dataset Relationships:** TASK_DATASETS holds membership and display metadata (featured ordering, harness support) per (task, dataset) pair, while TASK_DATASET_METRICS holds the metric dimension. Both tables exist in production; do not fall back to the older "infer task-dataset from metrics" pattern.
+- **Subtasks (task hierarchy):** subtasks are first-class child rows in TASKS connected via `parent_id`. Each subtask owns its own task pages, benchmarks (TASK_DATASETS rows), leaderboards (TASK_DATASET_METRICS rows), and EVALUATIONS. To roll up subtasks for a parent task page, the API exposes `?include_descendants=true` on `/api/v1/datasets/?task=...` and `/api/v1/evaluations/?task_id=...`. Writes always target the most-specific child task so rank semantics stay clean.
 - **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
 
