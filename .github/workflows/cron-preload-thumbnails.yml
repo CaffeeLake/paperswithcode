@@ -92,6 +92,14 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
+          if [ -z "$VPS_HOST" ] || [[ "$VPS_HOST" == *"://"* || "$VPS_HOST" == *"@"* || "$VPS_HOST" == *"/"* || "$VPS_HOST" =~ [[:space:]] ]]; then
+            echo "VPS_HOST must be a bare hostname or IP address, without user, scheme, path, or whitespace."
+            exit 1
+          fi
+          if ! timeout 10 bash -c "cat < /dev/null > /dev/tcp/$VPS_HOST/22"; then
+            echo "Cannot reach VPS_HOST on TCP port 22 from the GitHub runner."
+            exit 1
+          fi
           if ! ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts; then
             echo "Failed to scan VPS host key. Check VPS_HOST is a hostname/IP only and port 22 is reachable."
             exit 1
