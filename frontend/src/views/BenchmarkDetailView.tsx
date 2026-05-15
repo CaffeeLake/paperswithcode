@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
@@ -9,9 +9,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
 
+interface SotaPoint {
+  value: number;
+  dateLabel: string;
+  modelName: string;
+  paperTitle: string;
+  paperRouteId: string | null;
+}
+
 interface BenchmarkChartProps {
-  series: number[];
-  dates: string[];
+  points: SotaPoint[];
   metric: string;
 }
 
@@ -19,33 +26,42 @@ interface BenchmarkChartProps {
 // values appear lower, regardless of whether the metric is higher- or
 // lower-is-better. Direction only affects which points `computeSeries` chooses
 // as the running best, not the visual orientation of the chart.
-const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric }) => {
+const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, metric }) => {
+  const navigate = useNavigate();
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const W = 880;
   const H = 320;
   const padL = 60;
   const padR = 30;
   const padT = 24;
   const padB = 50;
-  const min = Math.min(...series);
-  const max = Math.max(...series);
+  const values = dataPoints.map((d) => d.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const range = max - min || 1;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
-  const step = innerW / Math.max(1, series.length - 1);
-  const points = series.map((v, i) => {
+  const step = innerW / Math.max(1, dataPoints.length - 1);
+  const points = dataPoints.map((dp, i) => {
     const x = padL + i * step;
-    const norm = (v - min) / range;
+    const norm = (dp.value - min) / range;
     const y = padT + innerH * (1 - norm);
-    return [x, y, v] as [number, number, number];
+    return { x, y, data: dp };
   });
-  let path = `M${points[0][0]},${points[0][1]}`;
+  let path = `M${points[0].x},${points[0].y}`;
   for (let i = 1; i < points.length; i++) {
-    const [x0, y0] = points[i - 1];
-    const [x1, y1] = points[i];
-    const cx = (x0 + x1) / 2;
-    path += ` C${cx},${y0} ${cx},${y1} ${x1},${y1}`;
+    const p0 = points[i - 1];
+    const p1 = points[i];
+    const cx = (p0.x + p1.x) / 2;
+    path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
   }
   const tickCount = 5;
+
+  const clearHover = (i: number) => setHoverIdx((cur) => (cur === i ? null : cur));
+  const handleClick = (routeId: string | null) => {
+    if (routeId) navigate(`/paper/${routeId}`);
+  };
+
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
       <text
@@ -73,14 +89,102 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ series, dates, metric }
         );
       })}
       {points.map((p, i) => (
-        <text key={i} x={p[0]} y={H - padB + 18} fontSize="11" fontFamily="var(--mono)" fill="var(--ink-soft)" textAnchor="middle">
-          {dates[i] || ""}
+        <text key={i} x={p.x} y={H - padB + 18} fontSize="11" fontFamily="var(--mono)" fill="var(--ink-soft)" textAnchor="middle">
+          {p.data.dateLabel}
         </text>
       ))}
       <path d={path} stroke="var(--accent)" strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
-      {points.map((p, i) => (
-        <circle key={i} cx={p[0]} cy={p[1]} r="4.5" fill="var(--bg-elevated)" stroke="var(--accent)" strokeWidth="2" />
-      ))}
+      {points.map((p, i) => {
+        const isHover = hoverIdx === i;
+        const label = p.data.modelName || p.data.paperTitle || "Unknown model";
+        const ariaLabel = `${label}: ${formatMetricValue(p.data.value)} on ${p.data.dateLabel}`;
+        const clickable = !!p.data.paperRouteId;
+        return (
+          <g key={i}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={isHover ? 6 : 4.5}
+              fill={isHover ? "var(--accent)" : "var(--bg-elevated)"}
+              stroke="var(--accent)"
+              strokeWidth="2"
+              style={{ transition: "r 0.12s ease, fill 0.12s ease" }}
+            />
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r="14"
+              fill="transparent"
+              style={{ cursor: clickable ? "pointer" : "default", outline: "none" }}
+              tabIndex={0}
+              role={clickable ? "link" : "img"}
+              aria-label={ariaLabel}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => clearHover(i)}
+              onFocus={() => setHoverIdx(i)}
+              onBlur={() => clearHover(i)}
+              onClick={() => handleClick(p.data.paperRouteId)}
+              onKeyDown={(e) => {
+                if (clickable && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  handleClick(p.data.paperRouteId);
+                }
+              }}
+            >
+              <title>{ariaLabel}</title>
+            </circle>
+          </g>
+        );
+      })}
+      {hoverIdx !== null && (() => {
+        const p = points[hoverIdx];
+        const rawLabel = p.data.modelName || p.data.paperTitle || "Unknown model";
+        const label = rawLabel.length > 40 ? rawLabel.slice(0, 39) + "…" : rawLabel;
+        const meta = `${formatMetricValue(p.data.value)} · ${p.data.dateLabel}`;
+        const charW = 6.6;
+        const tooltipW = Math.max(140, Math.min(320, Math.max(label.length, meta.length) * charW + 24));
+        const tooltipH = 46;
+        let tx = p.x - tooltipW / 2;
+        if (tx < padL) tx = padL;
+        if (tx + tooltipW > W - padR) tx = W - padR - tooltipW;
+        const aboveDot = p.y - tooltipH - 14 >= padT;
+        const ty = aboveDot ? p.y - tooltipH - 12 : p.y + 12;
+        return (
+          <g pointerEvents="none">
+            <rect
+              x={tx}
+              y={ty}
+              width={tooltipW}
+              height={tooltipH}
+              rx="6"
+              ry="6"
+              fill="var(--bg-elevated)"
+              stroke="var(--hairline-strong)"
+              strokeWidth="1"
+              style={{ filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.08))" }}
+            />
+            <text
+              x={tx + 12}
+              y={ty + 19}
+              fontSize="12"
+              fontFamily="var(--sans)"
+              fill="var(--ink)"
+              fontWeight={500}
+            >
+              {label}
+            </text>
+            <text
+              x={tx + 12}
+              y={ty + 36}
+              fontSize="11"
+              fontFamily="var(--mono)"
+              fill="var(--ink-soft)"
+            >
+              {meta}
+            </text>
+          </g>
+        );
+      })()}
     </svg>
   );
 };
@@ -93,8 +197,8 @@ function computeSeries(
   evals: Evaluation[],
   bestMetric: string,
   arrow: "↑" | "↓",
-): { series: number[]; dates: string[]; sota: number; sotaModel: string } {
-  if (evals.length === 0) return { series: [], dates: [], sota: 0, sotaModel: "" };
+): { points: SotaPoint[]; sota: number; sotaModel: string } {
+  if (evals.length === 0) return { points: [], sota: 0, sotaModel: "" };
 
   // Sort by published date ascending; require numeric values for the metric.
   const items = evals
@@ -107,8 +211,7 @@ function computeSeries(
     .filter((x) => Number.isFinite(x.value) && x.date)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  const series: number[] = [];
-  const dates: string[] = [];
+  const points: SotaPoint[] = [];
   let runningBest: number | null = null;
   for (const it of items) {
     const better = runningBest == null
@@ -118,8 +221,13 @@ function computeSeries(
         : it.value > runningBest;
     if (better) {
       runningBest = it.value;
-      series.push(it.value);
-      dates.push(it.date.slice(0, 7));
+      points.push({
+        value: it.value,
+        dateLabel: it.date.slice(0, 7),
+        modelName: it.eval.model_name || "",
+        paperTitle: it.eval.paper_title || "",
+        paperRouteId: it.eval.paper_arxiv_id || it.eval.paper_id || null,
+      });
     }
   }
   // The leaderboard's top row drives the headline SOTA.
@@ -128,7 +236,7 @@ function computeSeries(
   const sota = typeof sotaRaw === "string" ? parseFloat(sotaRaw) : ((sotaRaw as number) ?? 0);
   const sotaModel = top?.model_name || top?.paper_title || "";
 
-  return { series, dates, sota, sotaModel };
+  return { points, sota, sotaModel };
 }
 
 const BenchmarkDetailView: React.FC = () => {
@@ -182,7 +290,7 @@ const BenchmarkDetailView: React.FC = () => {
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
   const arrow: "↑" | "↓" = direction === "lower_is_better" ? "↓" : "↑";
 
-  const { series, dates, sota, sotaModel } = useMemo(
+  const { points: chartPoints, sota, sotaModel } = useMemo(
     () => computeSeries(evalsQ.data || [], activeMetric, arrow),
     [evalsQ.data, activeMetric, arrow],
   );
@@ -350,17 +458,17 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
-        {series.length >= 2 && (
+        {chartPoints.length >= 2 && (
           <div className="bm-card">
             <div className="bm-card-head">
               <div className="bm-card-title">SOTA progression</div>
             </div>
             <div className="bm-chart-wrap">
-              <BenchmarkChart series={series} dates={dates} metric={activeMetric} />
+              <BenchmarkChart points={chartPoints} metric={activeMetric} />
             </div>
             <div className="bm-chart-foot">
               <span className="legend-dot"></span>
-              Best result over time · running best by paper publish date
+              Best result over time · hover a point to see the model · click to open the paper
             </div>
           </div>
         )}

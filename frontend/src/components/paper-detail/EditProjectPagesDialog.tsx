@@ -59,16 +59,26 @@ export function EditProjectPagesDialog({
     },
   });
 
-  const handleAddProjectPage = () => {
+  // Returns the project pages to commit, optionally folding in the typed-but-not-yet-added URL.
+  // Returns null when the typed URL is a duplicate so callers can abort.
+  const getProjectPagesForSubmission = (): ProjectPage[] | null => {
     const trimmedUrl = newProjectPageUrl.trim();
-    if (!trimmedUrl) return;
+    if (!trimmedUrl) return editedProjectPages;
 
     if (editedProjectPages.some(p => p.url === trimmedUrl)) {
       alert("This project page URL is already added");
-      return;
+      return null;
     }
 
-    setEditedProjectPages([...editedProjectPages, { url: trimmedUrl, is_official: false }]);
+    return [...editedProjectPages, { url: trimmedUrl, is_official: false }];
+  };
+
+  const handleAddProjectPage = () => {
+    const next = getProjectPagesForSubmission();
+    if (next === null) return;
+    if (next.length === editedProjectPages.length) return;
+
+    setEditedProjectPages(next);
     setNewProjectPageUrl("");
   };
 
@@ -85,7 +95,9 @@ export function EditProjectPagesDialog({
   };
 
   const handleSave = () => {
-    updateProjectPagesMutation.mutate({ paperId, projectPages: editedProjectPages });
+    const next = getProjectPagesForSubmission();
+    if (next === null) return;
+    updateProjectPagesMutation.mutate({ paperId, projectPages: next });
   };
 
   return (

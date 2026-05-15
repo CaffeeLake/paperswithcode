@@ -25,7 +25,7 @@ from backend.services.arxiv_service import ArxivService
 
 logger = logging.getLogger(__name__)
 
-THUMBNAIL_RENDERER_CACHE_BUST = "fit1"
+THUMBNAIL_RENDERER_CACHE_BUST = "fit2"
 EXPECTED_THUMBNAIL_WIDTH = 400
 EXPECTED_THUMBNAIL_FORMAT = "JPEG"
 # A correctly-rendered first-page thumbnail is portrait (PDF page is ~A4 /

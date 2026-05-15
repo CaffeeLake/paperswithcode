@@ -5,11 +5,11 @@ description: Add evaluation results to the paperswithcode database from any sour
 
 # Add Evaluations
 
-This skill imports evaluation results into the paperswithcode database from any of the common sources that ship benchmark tables: Hugging Face model cards, the paper a model is linked to (arXiv or HF), and the GitHub repository associated with the model or paper. It is intentionally conservative: it only writes evaluation rows for benchmarks that already exist in the database with a task association and a configured leaderboard metric. It never invents new datasets, tasks, or metrics during the import.
+This skill imports evaluation results into the paperswithcode database from any of the common sources that ship benchmark tables: Hugging Face model cards, a paper on Arxiv/Hugging Face/paperswithcode.co, or a Github or project page URL. It is intentionally conservative: it only writes evaluation rows for benchmarks that already exist in the database with a task association and a configured leaderboard metric. It never invents new datasets, tasks, or metrics during the import.
 
 ## Why this exists
 
-Model releases (especially flagship LLMs / VLMs / OCR models) advertise benchmark numbers across several surfaces — the HF model card, the technical report or arXiv paper, and the GitHub README. Any of them can be the only source where a particular table appears, so the import workflow has to be source-agnostic but consistent. The natural workflow is:
+Model releases (especially flagship LLMs / VLMs / OCR models) advertise benchmark numbers across several surfaces — the HF model card, the technical report or arXiv paper, the GitHub README and external blog posts/project pages. Any of them can be the only source where a particular table appears, so the import workflow has to be source-agnostic but consistent. The natural workflow is:
 
 - Reuse existing benchmark datasets in the DB by matching names from the source.
 - Skip source benchmarks that are not yet in the DB (curate those separately later, not as a side effect).

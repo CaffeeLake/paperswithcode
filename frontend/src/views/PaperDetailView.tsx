@@ -423,18 +423,36 @@ const PaperDetailView: React.FC = () => {
               </a>
             )}
             {projectPages.map((page, index) => (
-              <a key={page.url} className="action-btn" href={page.url} target="_blank" rel="noopener noreferrer">
-                <Icon name="globe" size={12} /> {formatProjectPageLabel(page.url, projectPages.length, index)}
-              </a>
+              <span key={page.url} className="project-page-action">
+                <a
+                  className="action-btn project-page-link"
+                  href={page.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="globe" size={12} /> {formatProjectPageLabel(page.url, projectPages.length, index)}
+                </a>
+                {canEditPaper && (
+                  <button
+                    type="button"
+                    className="action-btn project-page-edit"
+                    onClick={() => setIsEditingProjectPages(true)}
+                    title="Edit project pages"
+                    aria-label="Edit project pages"
+                  >
+                    edit
+                  </button>
+                )}
+              </span>
             ))}
-            {canEditPaper ? (
+            {canEditPaper && projectPages.length === 0 ? (
               <button
                 type="button"
                 className="action-btn"
                 onClick={() => setIsEditingProjectPages(true)}
-                title="Edit project pages"
+                title="Add project page"
               >
-                <Icon name="globe" size={12} /> {projectPages.length > 0 ? "Edit project pages" : "Add project page"}
+                <Icon name="globe" size={12} /> Add project page
               </button>
             ) : null}
             {paper.conference_url_abs && (

@@ -659,6 +659,32 @@ a.paper-github-stats.is-link:focus-visible {
 .action-btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .action-btn.primary:hover { background: #000; }
 
+.project-page-action {
+  display: inline-flex;
+  align-items: stretch;
+}
+.project-page-action .project-page-link {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-width: 0;
+}
+.project-page-action .project-page-edit {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 7px 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.project-page-action .project-page-edit:hover {
+  color: var(--ink);
+}
+.project-page-action:hover .project-page-link,
+.project-page-action:hover .project-page-edit {
+  border-color: var(--ink);
+}
+
 /* === DETAIL SIDEBAR === */
 .detail-sidebar { font-size: 13px; }
 .sidebar-card {

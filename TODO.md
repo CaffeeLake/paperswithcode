@@ -11,3 +11,4 @@
 - Update scatter plots for lower is better, like https://paperswithcode.co/benchmark/librispeech-clean
 - A backup!!!
 - Label all papers with tasks for which they have evals (CRON job)
+- Support multiple metrics per benchmark, e.g. https://paperswithcode.co/benchmark/open-asr-leaderboard
