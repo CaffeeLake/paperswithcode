@@ -164,6 +164,14 @@ const TagBrowseView: React.FC = () => {
   const taskName = displayTaskName(task.name, task.slug);
   const sisters = (sistersQ.data?.results || []).filter((s) => s.id !== task.id);
   const datasets = datasetsQ.data?.results || [];
+  const subtaskBenchmarkQueriesReady = subtaskDatasetQs.every((q) => !q.isLoading);
+  const hasVisibleSubtaskBenchmarks = visibleSubtasks.some((_, idx) => {
+    const subDatasets = subtaskDatasetQs[idx]?.data?.results || [];
+    return subDatasets.length > 0;
+  });
+  const shouldShowBenchmarkList =
+    datasets.length > 0 &&
+    (!hasSubtasks || (subtaskBenchmarkQueriesReady && !hasVisibleSubtaskBenchmarks));
 
   const toggleSubtaskExpanded = (subtaskId: string) => {
     setExpandedSubtasks((prev) => {
@@ -203,7 +211,7 @@ const TagBrowseView: React.FC = () => {
 
       <div className="task-page-grid" style={{ marginTop: 28 }}>
         <div>
-          {visibleSubtasks.length > 0 && (
+          {hasVisibleSubtaskBenchmarks && (
             <>
               <div className="task-section-head">
                 <div className="task-section-eyebrow">Benchmarks by capability</div>
@@ -211,63 +219,65 @@ const TagBrowseView: React.FC = () => {
                   Subtasks <span className="meta">[{visibleSubtasks.length}]</span>
                 </div>
               </div>
-              {visibleSubtasks.map((s, idx) => {
-                const q = subtaskDatasetQs[idx];
-                const subDatasets = q?.data?.results || [];
-                if (subDatasets.length === 0) return null;
-                const isExpanded = expandedSubtasks.has(s.id);
-                const visibleDatasets = isExpanded
-                  ? subDatasets
-                  : subDatasets.slice(0, SUBTASK_BENCH_PREVIEW);
-                const remaining = subDatasets.length - SUBTASK_BENCH_PREVIEW;
-                return (
-                  <div key={s.id} className="subtask-section">
-                    <div className="subtask-head">
-                      <Link to={`/tasks/${s.slug || s.id}`} className="subtask-head-name">
-                        {displayTaskName(s.name, s.slug)}
-                      </Link>
-                      <span className="subtask-head-meta">
-                        [{subDatasets.length} benchmark{subDatasets.length === 1 ? "" : "s"}]
-                      </span>
-                    </div>
-                    {visibleDatasets.map((d, i) => (
-                      <div
-                        key={d.id}
-                        className="bench-row"
-                        onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}
-                      >
-                        <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
-                        <div className="bench-row-main">
-                          <div className="bench-row-name">{d.name}</div>
-                          <div className="bench-row-sub">
-                            {d.paper_count != null && (
-                              <span>
-                                <strong>{d.paper_count}</strong> ENTRIES
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="bench-row-arrow">→</div>
+              <div className="subtask-grid">
+                {visibleSubtasks.map((s, idx) => {
+                  const q = subtaskDatasetQs[idx];
+                  const subDatasets = q?.data?.results || [];
+                  if (subDatasets.length === 0) return null;
+                  const isExpanded = expandedSubtasks.has(s.id);
+                  const visibleDatasets = isExpanded
+                    ? subDatasets
+                    : subDatasets.slice(0, SUBTASK_BENCH_PREVIEW);
+                  const remaining = subDatasets.length - SUBTASK_BENCH_PREVIEW;
+                  return (
+                    <div key={s.id} className="subtask-section">
+                      <div className="subtask-head">
+                        <Link to={`/tasks/${s.slug || s.id}`} className="subtask-head-name">
+                          {displayTaskName(s.name, s.slug)}
+                        </Link>
+                        <span className="subtask-head-meta">
+                          [{subDatasets.length} benchmark{subDatasets.length === 1 ? "" : "s"}]
+                        </span>
                       </div>
-                    ))}
-                    {remaining > 0 && (
-                      <button
-                        type="button"
-                        className="bench-show-more"
-                        onClick={() => toggleSubtaskExpanded(s.id)}
-                      >
-                        {isExpanded
-                          ? `− show top ${SUBTASK_BENCH_PREVIEW}`
-                          : `+ show ${remaining} more benchmark${remaining === 1 ? "" : "s"}`}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                      {visibleDatasets.map((d, i) => (
+                        <div
+                          key={d.id}
+                          className="bench-row"
+                          onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}
+                        >
+                          <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
+                          <div className="bench-row-main">
+                            <div className="bench-row-name">{d.name}</div>
+                            <div className="bench-row-sub">
+                              {d.paper_count != null && (
+                                <span>
+                                  <strong>{d.paper_count}</strong> ENTRIES
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="bench-row-arrow">→</div>
+                        </div>
+                      ))}
+                      {remaining > 0 && (
+                        <button
+                          type="button"
+                          className="bench-show-more"
+                          onClick={() => toggleSubtaskExpanded(s.id)}
+                        >
+                          {isExpanded
+                            ? `− show top ${SUBTASK_BENCH_PREVIEW}`
+                            : `+ show ${remaining} more benchmark${remaining === 1 ? "" : "s"}`}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </>
           )}
 
-          {!hasSubtasks && datasets.length > 0 && (
+          {shouldShowBenchmarkList && (
             <>
               <div className="task-section-head">
                 <div className="task-section-eyebrow">Leaderboards · click any</div>

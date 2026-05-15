@@ -1445,6 +1445,61 @@ a.paper-github-stats.is-link:focus-visible {
   letter-spacing: 0.05em;
 }
 
+/* Subtask grid: arrange subtask sections as compact tiles so more fit in
+ * the same vertical space. Scoped overrides shrink the per-subtask card and
+ * its inner benchmark rows without affecting the standalone .bench-row used
+ * elsewhere. */
+.subtask-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.subtask-grid .subtask-section {
+  margin-bottom: 0;
+  border: 1px solid var(--hairline);
+  background: var(--bg-elevated);
+  border-radius: 6px;
+  padding: 12px 14px 10px;
+}
+.subtask-grid .subtask-section + .subtask-section { margin-top: 0; }
+.subtask-grid .subtask-head {
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.subtask-grid .subtask-head-name { font-size: 12px; }
+.subtask-grid .subtask-head-meta { font-size: 10px; }
+.subtask-grid .bench-row {
+  display: grid;
+  grid-template-columns: 22px 1fr 16px;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 8px 0;
+  margin-bottom: 0;
+  border-bottom: 1px dashed var(--hairline);
+  transition: none;
+}
+.subtask-grid .bench-row:last-of-type { border-bottom: 0; }
+.subtask-grid .bench-row:hover { border-color: transparent; }
+.subtask-grid .bench-row:hover .bench-row-name { color: var(--accent-text); }
+.subtask-grid .bench-row-num { font-size: 10px; }
+.subtask-grid .bench-row-name {
+  font-size: 13.5px;
+  margin-bottom: 2px;
+  line-height: 1.2;
+}
+.subtask-grid .bench-row-sub { font-size: 9.5px; letter-spacing: 0.06em; }
+.subtask-grid .bench-row-arrow { font-size: 14px; }
+.subtask-grid .bench-show-more {
+  font-size: 10px;
+  padding: 6px 0 0;
+  margin-top: 2px;
+}
+
 /* Benchmark card with sparkline */
 .bench-card {
   border: 1px solid var(--hairline);
@@ -2117,6 +2172,7 @@ html { scroll-behavior: smooth; }
     position: static;
     top: auto;
   }
+  .subtask-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 
   .tag-grid { grid-template-columns: repeat(2, 1fr); }
   .tag-cell:nth-child(3n) { border-right: 1px solid var(--hairline); }
@@ -2181,6 +2237,8 @@ html { scroll-behavior: smooth; }
     padding: 16px;
     border-right: none !important;
   }
+
+  .subtask-grid { grid-template-columns: 1fr; }
 
   .paper-card {
     grid-template-columns: 1fr;

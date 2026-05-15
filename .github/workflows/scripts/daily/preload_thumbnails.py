@@ -17,9 +17,12 @@ Priority modes (selected via --priority):
   task-page preload cron.
 - `recent`: existing newest-first preload, optionally constrained to
   --recent-days. Used by the daily broad preload cron.
-- `missing-all`: oldest-first sweep over every latest-version arXiv paper
+- `missing-all`: oldest-first sweep over every latest-version ArXiv paper
   whose thumbnail is missing locally. Supports `--shard i/n` and `--after-id`
   / `--before-id` for chunked manual backfills.
+- `external-missing`: sweep over non-ArXiv external papers missing an explicit
+  captured thumbnail. Direct PDF source URLs are rendered from page one; other
+  source pages are captured with headless Chrome.
 
 The local cache is the source of truth for "do we have this thumbnail" during
 backfills: candidates whose .jpg already exists on disk are skipped without any
@@ -43,7 +46,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, NamedTuple, Optional, Tuple
 
 from sqlalchemy import and_, or_, text
 
@@ -53,6 +56,8 @@ from backend.models.database import Paper as DBPaper
 from backend.services.thumbnail_service import (
     EXPECTED_THUMBNAIL_WIDTH,
     ThumbnailService,
+    build_custom_thumbnail_url,
+    build_external_thumbnail_filename,
     build_thumbnail_filename,
     is_thumbnail_valid,
 )
@@ -69,10 +74,22 @@ DEFAULT_CITATION_TOP = 1000
 DEFAULT_TRENDING_TOP = 500
 DEFAULT_VISIBLE_PER_TASK = 20
 
-VALID_PRIORITIES = ("visible", "trending", "task-top", "recent", "missing-all")
+VALID_PRIORITIES = (
+    "visible",
+    "trending",
+    "task-top",
+    "recent",
+    "missing-all",
+    "external-missing",
+)
 
 
-Candidate = Tuple[int, str, str]
+class Candidate(NamedTuple):
+    paper_id: int
+    arxiv_id: Optional[str]
+    version: str
+    source_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
 
 
 class ThumbnailPreloadJob(CronJobBase):
@@ -203,7 +220,7 @@ class ThumbnailPreloadJob(CronJobBase):
             query = query.limit(self.limit)
 
         for row in query.yield_per(self.batch_size):
-            yield row.id, row.arxiv_id, row.version or "v1"
+            yield Candidate(row.id, row.arxiv_id, row.version or "v1")
 
     def _iter_trending(
         self, session, limit_override: Optional[int] = None
@@ -247,7 +264,7 @@ class ThumbnailPreloadJob(CronJobBase):
             },
         ).fetchall()
         for row in rows:
-            yield row[0], row[1], row[2] or "v1"
+            yield Candidate(row[0], row[1], row[2] or "v1")
 
     def _iter_citation_top(
         self, session, limit_override: Optional[int] = None
@@ -275,7 +292,7 @@ class ThumbnailPreloadJob(CronJobBase):
             .limit(effective_limit)
         )
         for row in query.yield_per(self.batch_size):
-            yield row.id, row.arxiv_id, row.version or "v1"
+            yield Candidate(row.id, row.arxiv_id, row.version or "v1")
 
     def _iter_visible(self, session) -> Iterable[Candidate]:
         """
@@ -295,11 +312,11 @@ class ThumbnailPreloadJob(CronJobBase):
             self._iter_task_top(session),
         ]
         for source in sources:
-            for paper_id, arxiv_id, version in source:
-                if paper_id in seen:
+            for candidate in source:
+                if candidate.paper_id in seen:
                     continue
-                seen.add(paper_id)
-                yield paper_id, arxiv_id, version
+                seen.add(candidate.paper_id)
+                yield candidate
 
     def _iter_task_top(self, session) -> Iterable[Candidate]:
         sql = text(
@@ -339,11 +356,11 @@ class ThumbnailPreloadJob(CronJobBase):
             """
         )
         rows = session.execute(sql, {"per_task": self.per_task}).fetchall()
-        candidates = [(row[0], row[1], row[2] or "v1") for row in rows]
+        candidates = [Candidate(row[0], row[1], row[2] or "v1") for row in rows]
         if self.limit is not None and self.limit > 0:
             candidates = candidates[: self.limit]
-        for cand in candidates:
-            yield cand
+        for candidate in candidates:
+            yield candidate
 
     def _iter_missing_all(self, session) -> Iterable[Candidate]:
         filters = [
@@ -368,7 +385,55 @@ class ThumbnailPreloadJob(CronJobBase):
             query = query.limit(self.limit)
 
         for row in query.yield_per(self.batch_size):
-            yield row.id, row.arxiv_id, row.version or "v1"
+            yield Candidate(row.id, row.arxiv_id, row.version or "v1")
+
+    def _iter_external_missing(self, session) -> Iterable[Candidate]:
+        filters = [
+            DBPaper.is_latest_version,
+            DBPaper.source == "external",
+            DBPaper.source_url.isnot(None),
+            DBPaper.source_url != "",
+            or_(DBPaper.thumbnail_url.is_(None), DBPaper.thumbnail_url == ""),
+        ]
+        if self.after_id is not None:
+            filters.append(DBPaper.id > self.after_id)
+        if self.before_id is not None:
+            filters.append(DBPaper.id < self.before_id)
+        if self.shard is not None:
+            shard_index, shard_total = self.shard
+            filters.append(DBPaper.id % shard_total == shard_index)
+
+        query = (
+            session.query(DBPaper.id, DBPaper.source_url, DBPaper.thumbnail_url)
+            .filter(and_(*filters))
+            .order_by(DBPaper.date_published.desc().nullslast(), DBPaper.id.desc())
+        )
+        if self.limit is not None and self.limit > 0:
+            query = query.limit(self.limit)
+
+        for row in query.yield_per(self.batch_size):
+            yield Candidate(
+                paper_id=row.id,
+                arxiv_id=None,
+                version="external",
+                source_url=row.source_url,
+                thumbnail_url=row.thumbnail_url,
+            )
+
+    def _candidate_thumbnail_filename(self, candidate: Candidate) -> str:
+        if candidate.arxiv_id:
+            return build_thumbnail_filename(candidate.arxiv_id, candidate.version)
+        return build_external_thumbnail_filename(candidate.paper_id)
+
+    def _persist_external_thumbnail_url(self, paper_id: int, filename: str) -> None:
+        session = db_manager.session_local()
+        try:
+            paper = session.get(DBPaper, paper_id)
+            if paper is not None:
+                paper.thumbnail_url = build_custom_thumbnail_url(filename)
+                session.commit()
+        finally:
+            session.close()
 
     def _collect_candidates(self, session) -> List[Candidate]:
         if self.priority == "visible":
@@ -379,6 +444,8 @@ class ThumbnailPreloadJob(CronJobBase):
             iterator = self._iter_task_top(session)
         elif self.priority == "missing-all":
             iterator = self._iter_missing_all(session)
+        elif self.priority == "external-missing":
+            iterator = self._iter_external_missing(session)
         else:
             iterator = self._iter_recent(session)
 
@@ -386,12 +453,14 @@ class ThumbnailPreloadJob(CronJobBase):
         if self.priority == "visible" and self.limit and self.limit > 0:
             raw = raw[: self.limit]
 
-        if self.missing_only or self.priority == "missing-all":
+        if (self.missing_only and self.priority != "external-missing") or (
+            self.priority == "missing-all"
+        ):
             filtered = [
-                (paper_id, arxiv_id, version)
-                for paper_id, arxiv_id, version in raw
+                candidate
+                for candidate in raw
                 if not self._local_thumbnail_is_valid(
-                    build_thumbnail_filename(arxiv_id, version)
+                    self._candidate_thumbnail_filename(candidate)
                 )
             ]
             self.logger.info(
@@ -409,30 +478,45 @@ class ThumbnailPreloadJob(CronJobBase):
     async def _process_paper(
         self,
         thumbnail_service: ThumbnailService,
-        arxiv_id: str,
-        version: str,
+        candidate: Candidate,
     ) -> str:
         """Process one paper, returning a status: cached | generated | dry_run | failed."""
-        filename = thumbnail_service.get_filename(arxiv_id, version)
+        filename = self._candidate_thumbnail_filename(candidate)
         active_cache_path = thumbnail_service._get_active_cache_path(filename)
         local_exists = active_cache_path.exists()
         local_invalid = local_exists and not is_thumbnail_valid(active_cache_path)
 
         if not self.refresh_existing and not local_invalid:
             if local_exists:
+                if not candidate.arxiv_id:
+                    self._persist_external_thumbnail_url(candidate.paper_id, filename)
                 return "cached"
 
             if (
                 not self.trust_local_cache
                 and thumbnail_service._bucket_thumbnail_exists(filename)
             ):
+                if not candidate.arxiv_id:
+                    self._persist_external_thumbnail_url(candidate.paper_id, filename)
                 return "cached"
 
         if self.dry_run:
             return "dry_run"
 
         force = self.refresh_existing or local_invalid
-        await thumbnail_service.generate_thumbnail(arxiv_id, version, force=force)
+        if candidate.arxiv_id:
+            await thumbnail_service.generate_thumbnail(
+                candidate.arxiv_id, candidate.version, force=force
+            )
+        else:
+            if not candidate.source_url:
+                raise ThumbnailGenerationError("External paper has no source URL")
+            await thumbnail_service.generate_external_thumbnail(
+                candidate.paper_id,
+                candidate.source_url,
+                force=force,
+            )
+            self._persist_external_thumbnail_url(candidate.paper_id, filename)
         return "generated"
 
     async def _run_async(self) -> None:
@@ -472,27 +556,27 @@ class ThumbnailPreloadJob(CronJobBase):
             return
 
         start = time.time()
-        for paper_id, arxiv_id, version in candidates:
+        for candidate in candidates:
             self.candidates_seen += 1
 
             try:
-                status = await self._process_paper(thumbnail_service, arxiv_id, version)
+                status = await self._process_paper(thumbnail_service, candidate)
             except ThumbnailGenerationError as exc:
                 self.failures += 1
                 self.logger.warning(
                     "Failed to generate thumbnail for paper %s (%s %s): %s",
-                    paper_id,
-                    arxiv_id,
-                    version,
+                    candidate.paper_id,
+                    candidate.arxiv_id or "external",
+                    candidate.version,
                     exc,
                 )
             except Exception as exc:
                 self.failures += 1
                 self.logger.warning(
                     "Unexpected error for paper %s (%s %s): %s",
-                    paper_id,
-                    arxiv_id,
-                    version,
+                    candidate.paper_id,
+                    candidate.arxiv_id or "external",
+                    candidate.version,
                     exc,
                 )
             else:
@@ -502,9 +586,9 @@ class ThumbnailPreloadJob(CronJobBase):
                     self.generated += 1
                     self.logger.info(
                         "Generated thumbnail for %s %s (paper_id=%s)",
-                        arxiv_id,
-                        version,
-                        paper_id,
+                        candidate.arxiv_id or "external",
+                        candidate.version,
+                        candidate.paper_id,
                     )
                 elif status == "dry_run":
                     self.would_generate += 1
@@ -606,7 +690,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "trending_papers_24h view, 'task-top' takes the top --per-task "
             "papers per task tag, 'recent' is newest-first (optionally "
             "constrained to --recent-days), and 'missing-all' sweeps every "
-            "latest-version arXiv paper without a local thumbnail."
+            "latest-version ArXiv paper without a local thumbnail. "
+            "'external-missing' captures missing non-ArXiv thumbnails."
         ),
     )
     parser.add_argument(

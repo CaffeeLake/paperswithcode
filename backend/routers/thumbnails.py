@@ -11,8 +11,12 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from backend.database.connection import get_database_session
-from backend.services.thumbnail_service import ThumbnailService
+from backend.database.connection import db_manager, get_database_session
+from backend.models.database import Paper as DBPaper
+from backend.services.thumbnail_service import (
+    ThumbnailService,
+    build_custom_thumbnail_url,
+)
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import PaperNotFoundError
 
@@ -112,6 +116,57 @@ async def generate_thumbnail(
         paper_service = PaperService(db)
         paper = paper_service.get_paper_by_id(paper_id)
 
+        if paper.source == "external":
+            if not paper.source_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="External paper does not have a source URL",
+                )
+
+            existing_url = (
+                paper.thumbnail_url
+                or thumbnail_service.get_external_thumbnail_url(paper.id)
+            )
+            if existing_url:
+                if not paper.thumbnail_url:
+                    paper.thumbnail_url = existing_url
+                    db.commit()
+                return {
+                    "thumbnail_url": existing_url,
+                    "status": "cached",
+                    "message": "Thumbnail already exists",
+                }
+
+            async def generate_external_in_background():
+                try:
+                    await thumbnail_service.generate_external_thumbnail(
+                        paper.id, paper.source_url
+                    )
+                    filename = thumbnail_service.get_external_filename(paper.id)
+                    thumbnail_url = build_custom_thumbnail_url(filename)
+
+                    session = db_manager.session_local()
+                    try:
+                        db_paper = session.get(DBPaper, paper.id)
+                        if db_paper is not None:
+                            db_paper.thumbnail_url = thumbnail_url
+                            session.commit()
+                    finally:
+                        session.close()
+                except Exception as e:
+                    print(
+                        f"Background external thumbnail generation failed for "
+                        f"paper {paper.id}: {e}"
+                    )
+
+            background_tasks.add_task(generate_external_in_background)
+
+            return {
+                "thumbnail_url": None,
+                "status": "generating",
+                "message": "External thumbnail generation started in background",
+            }
+
         if not paper.arxiv_id:
             raise HTTPException(
                 status_code=400,
@@ -151,6 +206,8 @@ async def generate_thumbnail(
 
     except PaperNotFoundError:
         raise HTTPException(status_code=404, detail="Paper not found")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to generate thumbnail: {str(e)}"
@@ -181,6 +238,18 @@ async def get_thumbnail_status(
         # Get paper details
         paper_service = PaperService(db)
         paper = paper_service.get_paper_by_id(paper_id)
+
+        if paper.source == "external":
+            thumbnail_url = (
+                paper.thumbnail_url
+                or thumbnail_service.get_external_thumbnail_url(paper.id)
+            )
+            return {
+                "has_thumbnail": thumbnail_url is not None,
+                "thumbnail_url": thumbnail_url,
+                "source": paper.source,
+                "source_url": paper.source_url,
+            }
 
         if not paper.arxiv_id:
             return {

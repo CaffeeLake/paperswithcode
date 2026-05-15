@@ -5,10 +5,10 @@
 - Download all Arxiv PDFs in a private HF bucket, so that they can easily be reused later for extracting evaluation results/thumbnail generation/chatting purposes.
 - Add a CRON job to check whose methods are cited by papers, so that these methods can serve as tags on those papers
 - Add the ability to copy paste/screenshot a leaderboard, similar to AA.
-- Add subtasks
 - Clean up evals of https://paperswithcode.co/paper/2509.17765
 - Reasoning: task or subtask of language modeling?
 - Update scatter plots for lower is better, like https://paperswithcode.co/benchmark/librispeech-clean
 - A backup!!!
 - Label all papers with tasks for which they have evals (CRON job)
 - Support multiple metrics per benchmark, e.g. https://paperswithcode.co/benchmark/open-asr-leaderboard
+- Add thumbnails for external papers, by taking a screenshot of the external blog, PDF, etc.

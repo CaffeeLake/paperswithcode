@@ -56,19 +56,24 @@ def _make_job(
 
 
 def test_iter_visible_dedups_paper_ids_citation_first():
+    from scripts.daily.preload_thumbnails import Candidate
+
     job = _make_job()
 
     job._iter_citation_top = lambda session: iter(
-        [(1, "1234.5678", "v1"), (2, "2345.6789", "v2")]
+        [Candidate(1, "1234.5678", "v1"), Candidate(2, "2345.6789", "v2")]
     )
     job._iter_trending = lambda session, limit_override=None: iter(
-        [(2, "2345.6789", "v2"), (3, "3456.7890", "v1")]
+        [Candidate(2, "2345.6789", "v2"), Candidate(3, "3456.7890", "v1")]
     )
     job._iter_task_top = lambda session: iter(
-        [(1, "1234.5678", "v1"), (4, "4567.8901", "v3")]
+        [Candidate(1, "1234.5678", "v1"), Candidate(4, "4567.8901", "v3")]
     )
 
-    result = list(job._iter_visible(session=None))
+    result = [
+        (candidate.paper_id, candidate.arxiv_id, candidate.version)
+        for candidate in job._iter_visible(session=None)
+    ]
 
     assert result == [
         (1, "1234.5678", "v1"),
@@ -97,19 +102,25 @@ def test_iter_visible_passes_trending_top_to_trending_iterator():
 
 
 def test_collect_candidates_visible_caps_to_limit_after_dedup():
+    from scripts.daily.preload_thumbnails import Candidate
+
     # missing_only=False so we don't go through the local-cache validity filter
     # for this test, which only checks the limit/dedup contract.
     job = _make_job(limit=2, missing_only=False)
 
     job._iter_citation_top = lambda session: iter(
-        [(1, "1.2", "v1"), (2, "2.3", "v1"), (3, "3.4", "v1")]
+        [
+            Candidate(1, "1.2", "v1"),
+            Candidate(2, "2.3", "v1"),
+            Candidate(3, "3.4", "v1"),
+        ]
     )
     job._iter_trending = lambda session, limit_override=None: iter([])
     job._iter_task_top = lambda session: iter([])
 
     result = job._collect_candidates(session=None)
     assert len(result) == 2
-    assert [paper_id for paper_id, _, _ in result] == [1, 2]
+    assert [candidate.paper_id for candidate in result] == [1, 2]
 
 
 def _save_jpeg(path: Path, width: int, height: int = 560) -> None:
@@ -119,7 +130,7 @@ def _save_jpeg(path: Path, width: int, height: int = 560) -> None:
 
 
 def test_missing_only_filter_keeps_invalid_local_thumbnails(tmp_path: Path):
-    from scripts.daily.preload_thumbnails import build_thumbnail_filename
+    from scripts.daily.preload_thumbnails import Candidate, build_thumbnail_filename
 
     job = _make_job(cache_dir=tmp_path)
 
@@ -130,22 +141,23 @@ def test_missing_only_filter_keeps_invalid_local_thumbnails(tmp_path: Path):
 
     job._iter_citation_top = lambda session: iter(
         [
-            (10, "9999.0001", "v1"),
-            (11, "9999.0002", "v1"),
-            (12, "9999.0003", "v1"),  # missing entirely
+            Candidate(10, "9999.0001", "v1"),
+            Candidate(11, "9999.0002", "v1"),
+            Candidate(12, "9999.0003", "v1"),  # missing entirely
         ]
     )
     job._iter_trending = lambda session, limit_override=None: iter([])
     job._iter_task_top = lambda session: iter([])
 
     result = job._collect_candidates(session=None)
-    paper_ids = sorted(paper_id for paper_id, _, _ in result)
+    paper_ids = sorted(candidate.paper_id for candidate in result)
 
     assert paper_ids == [11, 12]
 
 
 def test_process_paper_regenerates_when_local_thumbnail_invalid(tmp_path: Path):
     from scripts.daily.preload_thumbnails import (
+        Candidate,
         ThumbnailPreloadJob,
         build_thumbnail_filename,
     )
@@ -172,7 +184,9 @@ def test_process_paper_regenerates_when_local_thumbnail_invalid(tmp_path: Path):
     import asyncio
 
     status = asyncio.run(
-        ThumbnailPreloadJob._process_paper(job, thumbnail_service, "8888.0001", "v1")
+        ThumbnailPreloadJob._process_paper(
+            job, thumbnail_service, Candidate(1, "8888.0001", "v1")
+        )
     )
 
     assert status == "generated"
@@ -181,6 +195,7 @@ def test_process_paper_regenerates_when_local_thumbnail_invalid(tmp_path: Path):
 
 def test_process_paper_treats_valid_local_thumbnail_as_cached(tmp_path: Path):
     from scripts.daily.preload_thumbnails import (
+        Candidate,
         ThumbnailPreloadJob,
         build_thumbnail_filename,
     )
@@ -200,7 +215,9 @@ def test_process_paper_treats_valid_local_thumbnail_as_cached(tmp_path: Path):
     import asyncio
 
     status = asyncio.run(
-        ThumbnailPreloadJob._process_paper(job, thumbnail_service, "8888.0002", "v1")
+        ThumbnailPreloadJob._process_paper(
+            job, thumbnail_service, Candidate(1, "8888.0002", "v1")
+        )
     )
 
     assert status == "cached"

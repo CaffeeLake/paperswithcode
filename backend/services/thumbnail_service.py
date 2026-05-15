@@ -9,12 +9,17 @@ This service handles:
 - Serving cached thumbnails
 """
 
+import asyncio
 import logging
 import re
+import shutil
 import time
+import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import httpx
 from huggingface_hub import HfFileSystem, batch_bucket_files, download_bucket_files
 from PIL import Image
 from pdf2image import convert_from_bytes
@@ -94,11 +99,25 @@ def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
     return f"{safe_id}_{version}.jpg"
 
 
+def build_external_thumbnail_filename(paper_id: int | str) -> str:
+    """
+    Build the stable thumbnail filename for a non-ArXiv external paper.
+    """
+    return f"external_{paper_id}.jpg"
+
+
 def build_thumbnail_url(filename: str) -> str:
     """
     Build the public thumbnail URL with a renderer cache-bust marker.
     """
     return f"/api/thumbnails/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
+
+
+def build_custom_thumbnail_url(filename: str) -> str:
+    """
+    Build the public URL for an explicitly stored non-ArXiv thumbnail.
+    """
+    return f"/api/thumbnails/custom/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
 
 
 class ThumbnailService:
@@ -134,6 +153,8 @@ class ThumbnailService:
         self.thumbnail_quality = 85  # JPEG quality
         self.pdf_timeout = 30  # Timeout for PDF downloads in seconds
         self.max_pdf_size = 50 * 1024 * 1024  # 50MB max PDF size
+        self.external_page_screenshot_timeout = 45
+        self.external_page_viewport = (1200, 1680)
 
         # ArXiv service for API interactions
         self.arxiv_service = ArxivService()
@@ -173,6 +194,12 @@ class ThumbnailService:
         Get the stable thumbnail filename for a given ArXiv paper.
         """
         return build_thumbnail_filename(arxiv_id, version)
+
+    def get_external_filename(self, paper_id: int | str) -> str:
+        """
+        Get the stable thumbnail filename for a non-ArXiv paper.
+        """
+        return build_external_thumbnail_filename(paper_id)
 
     def _get_cache_path(self, arxiv_id: str, version: str = "v1") -> Path:
         """
@@ -278,6 +305,133 @@ class ThumbnailService:
 
         except Exception as e:
             raise ThumbnailGenerationError(f"Failed to convert PDF to image: {str(e)}")
+
+    def _convert_screenshot_to_thumbnail(self, image: Image.Image) -> Image.Image:
+        """
+        Resize a browser screenshot to the same card-friendly width as PDF thumbnails.
+        """
+        try:
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            aspect_ratio = image.height / image.width
+            target_height = int(self.thumbnail_width * aspect_ratio)
+            return image.resize(
+                (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
+            )
+        except Exception as e:
+            raise ThumbnailGenerationError(
+                f"Failed to convert screenshot to thumbnail: {str(e)}"
+            )
+
+    def _normalize_external_pdf_url(self, source_url: str) -> str:
+        """
+        Convert common browser-facing PDF URLs to direct downloadable URLs.
+        """
+        parsed = urlparse(source_url)
+        if parsed.netloc == "huggingface.co" and "/blob/" in parsed.path:
+            path = parsed.path.replace("/blob/", "/resolve/", 1)
+            return parsed._replace(path=path).geturl()
+        return source_url
+
+    def _looks_like_pdf_url(self, source_url: str) -> bool:
+        return urlparse(source_url).path.lower().endswith(".pdf")
+
+    async def _download_external_pdf(self, source_url: str) -> Optional[bytes]:
+        """
+        Download an external PDF when the source URL is directly PDF-like.
+        """
+        pdf_url = self._normalize_external_pdf_url(source_url)
+        headers = {
+            "Accept": "application/pdf,text/html;q=0.8,*/*;q=0.5",
+            "User-Agent": "paperswithcode-thumbnail-bot/1.0",
+        }
+        timeout = httpx.Timeout(self.pdf_timeout)
+
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=timeout, headers=headers
+        ) as client:
+            if not self._looks_like_pdf_url(pdf_url):
+                try:
+                    head = await client.head(pdf_url)
+                except httpx.HTTPError:
+                    return None
+                content_type = head.headers.get("content-type", "").lower()
+                if "application/pdf" not in content_type:
+                    return None
+
+            try:
+                response = await client.get(pdf_url)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ThumbnailGenerationError(
+                    f"Failed to download external PDF: {exc}"
+                )
+
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/pdf" not in content_type and not self._looks_like_pdf_url(
+            str(response.url)
+        ):
+            return None
+        if len(response.content) > self.max_pdf_size:
+            raise ThumbnailGenerationError("External PDF is too large")
+        if not response.content.startswith(b"%PDF"):
+            return None
+        return response.content
+
+    async def _capture_external_page_screenshot(self, source_url: str) -> Image.Image:
+        """
+        Capture the first viewport of an external project page with headless Chrome.
+        """
+        chrome_path = (
+            shutil.which("google-chrome")
+            or shutil.which("chromium")
+            or shutil.which("chromium-browser")
+        )
+        if chrome_path is None:
+            raise ThumbnailGenerationError("No headless Chrome executable found")
+
+        width, height = self.external_page_viewport
+        with tempfile.TemporaryDirectory(prefix="pwc_external_thumb_") as tmp_dir:
+            screenshot_path = Path(tmp_dir) / "page.jpg"
+            process = await asyncio.create_subprocess_exec(
+                chrome_path,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--hide-scrollbars",
+                f"--window-size={width},{height}",
+                "--force-device-scale-factor=1",
+                "--run-all-compositor-stages-before-draw",
+                "--virtual-time-budget=10000",
+                f"--screenshot={screenshot_path}",
+                source_url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=self.external_page_screenshot_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                process.kill()
+                try:
+                    await asyncio.wait_for(process.communicate(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+                raise ThumbnailGenerationError(
+                    "Timed out capturing external page screenshot"
+                ) from exc
+
+            if process.returncode != 0 or not screenshot_path.exists():
+                error = stderr.decode("utf-8", errors="ignore").strip()
+                raise ThumbnailGenerationError(
+                    f"Failed to capture external page screenshot: {error[-500:]}"
+                )
+
+            with Image.open(screenshot_path) as image:
+                return image.convert("RGB")
 
     def _save_thumbnail(self, image: Image.Image, cache_path: Path) -> None:
         """
@@ -416,6 +570,35 @@ class ThumbnailService:
                 f"Unexpected error generating thumbnail: {str(e)}"
             )
 
+    async def generate_external_thumbnail(
+        self, paper_id: int | str, source_url: str, force: bool = False
+    ) -> Path:
+        """
+        Generate a thumbnail for a non-ArXiv external paper.
+
+        Direct PDFs are rendered from their first page. Other source URLs fall
+        back to a first-viewport screenshot of the project page.
+        """
+        filename = self.get_external_filename(paper_id)
+        if not force:
+            existing_path = self.get_existing_custom_thumbnail_path(filename)
+            if existing_path:
+                return existing_path
+
+        cache_path = self._get_active_cache_path(filename)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        pdf_content = await self._download_external_pdf(source_url)
+        if pdf_content is not None:
+            thumbnail = self._convert_pdf_to_thumbnail(pdf_content)
+        else:
+            screenshot = await self._capture_external_page_screenshot(source_url)
+            thumbnail = self._convert_screenshot_to_thumbnail(screenshot)
+
+        self._save_thumbnail(thumbnail, cache_path)
+        self._upload_to_bucket(cache_path, filename)
+        return cache_path
+
     def get_thumbnail_url(self, arxiv_id: str, version: str = "v1") -> Optional[str]:
         """
         Get the URL for a cached thumbnail.
@@ -438,6 +621,15 @@ class ThumbnailService:
         ):
             return build_thumbnail_url(filename)
 
+        return None
+
+    def get_external_thumbnail_url(self, paper_id: int | str) -> Optional[str]:
+        """
+        Get the URL for a cached non-ArXiv paper thumbnail.
+        """
+        filename = self.get_external_filename(paper_id)
+        if self.get_existing_custom_thumbnail_path(filename):
+            return build_custom_thumbnail_url(filename)
         return None
 
     def cleanup_old_thumbnails(self, max_age_days: int = 30) -> int:

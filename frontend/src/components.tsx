@@ -558,13 +558,13 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
             )}
             {paper.date && (
               <>
-                {" · "}
+                {totalAuthors > 0 ? " · " : ""}
                 <span>{paper.date}</span>
               </>
             )}
             {paper.citations > 0 && (
               <>
-                {" · "}
+                {totalAuthors > 0 || paper.date ? " · " : ""}
                 <span>{paper.citations.toLocaleString()} citations</span>
               </>
             )}

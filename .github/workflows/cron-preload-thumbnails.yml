@@ -13,10 +13,13 @@ on:
     # Daily 04:30 UTC: broad newest-first preload covering the last 30 days,
     # after the HF daily import (03:00 UTC).
     - cron: "30 4 * * *"
+    # Daily 04:45 UTC: capture thumbnails for non-ArXiv external resource pages
+    # that do not have an explicit thumbnail_url yet.
+    - cron: "45 4 * * *"
   workflow_dispatch:
     inputs:
       priority:
-        description: "Priority mode: visible, trending, task-top, recent, or missing-all"
+        description: "Priority mode: visible, trending, task-top, recent, missing-all, or external-missing"
         required: false
         default: "recent"
         type: choice
@@ -26,6 +29,7 @@ on:
           - task-top
           - recent
           - missing-all
+          - external-missing
       limit:
         description: "Maximum candidate papers to process"
         required: false
@@ -147,6 +151,9 @@ jobs:
                 ;;
               "30 4 * * *")
                 ARGS=" --priority recent --recent-days 30 --limit 500"
+                ;;
+              "45 4 * * *")
+                ARGS=" --priority external-missing --request-delay-seconds 2 --max-failures -1"
                 ;;
               *)
                 ARGS=" --priority recent --recent-days 30 --limit 500"

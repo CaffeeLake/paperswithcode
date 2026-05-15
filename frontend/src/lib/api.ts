@@ -760,12 +760,29 @@ class ApiClient {
     // Sort by benchmark popularity so rows for the most-evaluated benchmark
     // (e.g. MCP-Atlas) surface together at the top, regardless of which
     // model variant (GLM-5, GLM-5.1, ...) produced each row.
-    const response = await this.getEvaluations({
-      paper_id: parseInt(paperId),
-      page_size: 100,
+    const pageSize = 100;
+    const paper_id = parseInt(paperId);
+    const firstPage = await this.getEvaluations({
+      paper_id,
+      page_size: pageSize,
       ordering: '-benchmark_popularity',
     });
-    return response.results;
+
+    const results = [...firstPage.results];
+    let nextPage = firstPage.next_page;
+
+    while (nextPage) {
+      const response = await this.getEvaluations({
+        paper_id,
+        page: nextPage,
+        page_size: pageSize,
+        ordering: '-benchmark_popularity',
+      });
+      results.push(...response.results);
+      nextPage = response.next_page;
+    }
+
+    return results;
   }
 
   async getEvaluationsByDataset(datasetId: string, bestMetric?: string): Promise<Evaluation[]> {
