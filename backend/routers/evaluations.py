@@ -48,7 +48,13 @@ async def list_evaluations(
     ),
     ordering: Optional[str] = Query(
         "-created_at",
-        description="Order by field: created_at, best_rank, evaluated_on (prefix with '-' for descending)",
+        description=(
+            "Order by field: created_at, best_rank, evaluated_on, "
+            "benchmark_popularity (prefix with '-' for descending). "
+            "benchmark_popularity sorts each row by the total number of "
+            "evaluations on its dataset across all papers, which keeps rows "
+            "for the most popular benchmarks together at the top."
+        ),
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -64,6 +70,8 @@ async def list_evaluations(
     - `/api/v1/evaluations/?task_id=2&dataset_id=1` - Get evaluations for task 2 on dataset 1
     - `/api/v1/evaluations/?q=DETR` - Search for evaluations containing "DETR"
     - `/api/v1/evaluations/?ordering=-best_rank` - Order by best rank descending
+    - `/api/v1/evaluations/?paper_id=123&ordering=-benchmark_popularity` -
+      Paper page rows grouped by most popular benchmark first
     """
     try:
         # Parse ordering
@@ -74,7 +82,12 @@ async def list_evaluations(
             order_by = ordering[1:]
 
         # Validate order_by field
-        valid_fields = ["created_at", "best_rank", "evaluated_on"]
+        valid_fields = [
+            "created_at",
+            "best_rank",
+            "evaluated_on",
+            "benchmark_popularity",
+        ]
         if order_by not in valid_fields:
             order_by = "created_at"
 

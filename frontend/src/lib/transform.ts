@@ -165,7 +165,10 @@ export function humanizeSlug(slug: string): string {
 }
 
 const TASK_ACRONYMS = new Set(["OCR"]);
-const TASK_DISPLAY_NAMES = new Map([["3d-generation", "3D generation"]]);
+const TASK_DISPLAY_NAMES = new Map([
+  ["3d-generation", "3D generation"],
+  ["3d-understanding", "3D understanding"],
+]);
 
 export function displayTaskName(name?: string, slug?: string): string {
   const label = name || humanizeSlug(slug || "");

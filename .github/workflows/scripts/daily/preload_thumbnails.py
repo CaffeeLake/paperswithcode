@@ -5,16 +5,21 @@ Generates and uploads paper thumbnails to a Hugging Face Storage Bucket so that
 they are warm before browsers request them via /api/thumbnails/{filename}.
 
 Priority modes (selected via --priority):
-- `trending`: candidates ranked by the EMA-smoothed `trending_papers_24h` view.
-  Used by the hourly homepage preload cron.
-- `task-top`: top --per-task papers per task tag (matches the default task page
-  ranking: trending score, then stars, then date). Used by the daily task-page
-  preload cron.
+- `visible`: union of the candidate sets actually visible to users — top
+  --citation-top by citation count (matches the homepage default and
+  ?order_by=citation_count), top --trending-top trending papers, and top
+  --per-task papers per task tag. Yielded citation-first and deduplicated by
+  paper id, then capped by --limit. Used by the hourly visible preload cron.
+- `trending`: candidates ranked by the EMA-smoothed `trending_papers_24h`
+  view alone.
+- `task-top`: top --per-task papers per task tag (matches the default task
+  page ranking: trending score, then stars, then date). Used by the daily
+  task-page preload cron.
 - `recent`: existing newest-first preload, optionally constrained to
   --recent-days. Used by the daily broad preload cron.
-- `missing-all`: oldest-first sweep over every latest-version arXiv paper whose
-  thumbnail is missing locally. Supports `--shard i/n` and `--after-id` /
-  `--before-id` for chunked manual backfills.
+- `missing-all`: oldest-first sweep over every latest-version arXiv paper
+  whose thumbnail is missing locally. Supports `--shard i/n` and `--after-id`
+  / `--before-id` for chunked manual backfills.
 
 The local cache is the source of truth for "do we have this thumbnail" during
 backfills: candidates whose .jpg already exists on disk are skipped without any
@@ -46,8 +51,10 @@ from backend.config import get_settings
 from backend.database.connection import db_manager
 from backend.models.database import Paper as DBPaper
 from backend.services.thumbnail_service import (
+    EXPECTED_THUMBNAIL_WIDTH,
     ThumbnailService,
     build_thumbnail_filename,
+    is_thumbnail_valid,
 )
 from backend.utils.exceptions import ThumbnailGenerationError
 from scripts.utils.cron_helpers import CronJobBase
@@ -58,8 +65,11 @@ DEFAULT_MAX_FAILURES = 50
 DEFAULT_REFRESH_REQUEST_DELAY_SECONDS = 6.0
 DEFAULT_TRENDING_MAX_AGE_DAYS = 180
 DEFAULT_PER_TASK = 50
+DEFAULT_CITATION_TOP = 1000
+DEFAULT_TRENDING_TOP = 500
+DEFAULT_VISIBLE_PER_TASK = 20
 
-VALID_PRIORITIES = ("trending", "task-top", "recent", "missing-all")
+VALID_PRIORITIES = ("visible", "trending", "task-top", "recent", "missing-all")
 
 
 Candidate = Tuple[int, str, str]
@@ -76,6 +86,8 @@ class ThumbnailPreloadJob(CronJobBase):
         recent_days: Optional[int],
         per_task: int,
         trending_max_age_days: int,
+        citation_top: int,
+        trending_top: int,
         after_id: Optional[int],
         before_id: Optional[int],
         shard: Optional[Tuple[int, int]],
@@ -99,6 +111,8 @@ class ThumbnailPreloadJob(CronJobBase):
         self.recent_days = recent_days
         self.per_task = max(1, per_task)
         self.trending_max_age_days = max(1, trending_max_age_days)
+        self.citation_top = max(0, citation_top)
+        self.trending_top = max(0, trending_top)
         self.after_id = after_id
         self.before_id = before_id
         self.shard = shard
@@ -154,6 +168,14 @@ class ThumbnailPreloadJob(CronJobBase):
             return set()
         return {p.name for p in cache_dir.glob("*.jpg")}
 
+    def _local_thumbnail_is_valid(self, filename: str) -> bool:
+        """
+        Treat a local cache hit as usable only when the file decodes as a JPEG
+        of the expected generated width. Stale / truncated / wrong-size files
+        must regenerate so visible papers don't keep a broken thumbnail.
+        """
+        return is_thumbnail_valid(self._local_cache_dir() / filename)
+
     def _iter_recent(self, session) -> Iterable[Candidate]:
         filters = [
             DBPaper.is_latest_version,
@@ -183,7 +205,16 @@ class ThumbnailPreloadJob(CronJobBase):
         for row in query.yield_per(self.batch_size):
             yield row.id, row.arxiv_id, row.version or "v1"
 
-    def _iter_trending(self, session) -> Iterable[Candidate]:
+    def _iter_trending(
+        self, session, limit_override: Optional[int] = None
+    ) -> Iterable[Candidate]:
+        if limit_override is not None and limit_override > 0:
+            effective_limit = limit_override
+        elif self.limit and self.limit > 0:
+            effective_limit = self.limit
+        else:
+            effective_limit = 1000
+
         sql = text(
             """
             WITH ranked AS (
@@ -212,11 +243,63 @@ class ThumbnailPreloadJob(CronJobBase):
             sql,
             {
                 "max_age_days": self.trending_max_age_days,
-                "limit": self.limit if self.limit and self.limit > 0 else 1000,
+                "limit": effective_limit,
             },
         ).fetchall()
         for row in rows:
             yield row[0], row[1], row[2] or "v1"
+
+    def _iter_citation_top(
+        self, session, limit_override: Optional[int] = None
+    ) -> Iterable[Candidate]:
+        """
+        Top latest-version arXiv papers ordered by Semantic Scholar citation
+        count, matching what /?order_by=citation_count exposes on the homepage.
+        """
+        effective_limit = (
+            limit_override if limit_override is not None else self.citation_top
+        )
+        if effective_limit <= 0:
+            return
+        query = (
+            session.query(DBPaper.id, DBPaper.arxiv_id, DBPaper.version)
+            .filter(
+                DBPaper.is_latest_version,
+                DBPaper.arxiv_id.isnot(None),
+                DBPaper.arxiv_id != "",
+            )
+            .order_by(
+                DBPaper.citation_count.desc().nullslast(),
+                DBPaper.id.desc(),
+            )
+            .limit(effective_limit)
+        )
+        for row in query.yield_per(self.batch_size):
+            yield row.id, row.arxiv_id, row.version or "v1"
+
+    def _iter_visible(self, session) -> Iterable[Candidate]:
+        """
+        Union of the candidate sets actually visible to users:
+        - top by citation count (homepage default + ?order_by=citation_count),
+        - top trending (homepage default + trending feeds),
+        - top per-task (each task page first screenfuls).
+
+        Yielded in citation-first order so the highest-visibility papers are
+        processed before any limit cap kicks in. Deduplicated by paper_id so
+        the same paper isn't generated twice within one run.
+        """
+        seen: set = set()
+        sources: List[Iterable[Candidate]] = [
+            self._iter_citation_top(session),
+            self._iter_trending(session, limit_override=self.trending_top),
+            self._iter_task_top(session),
+        ]
+        for source in sources:
+            for paper_id, arxiv_id, version in source:
+                if paper_id in seen:
+                    continue
+                seen.add(paper_id)
+                yield paper_id, arxiv_id, version
 
     def _iter_task_top(self, session) -> Iterable[Candidate]:
         sql = text(
@@ -288,7 +371,9 @@ class ThumbnailPreloadJob(CronJobBase):
             yield row.id, row.arxiv_id, row.version or "v1"
 
     def _collect_candidates(self, session) -> List[Candidate]:
-        if self.priority == "trending":
+        if self.priority == "visible":
+            iterator = self._iter_visible(session)
+        elif self.priority == "trending":
             iterator = self._iter_trending(session)
         elif self.priority == "task-top":
             iterator = self._iter_task_top(session)
@@ -298,19 +383,24 @@ class ThumbnailPreloadJob(CronJobBase):
             iterator = self._iter_recent(session)
 
         raw = list(iterator)
+        if self.priority == "visible" and self.limit and self.limit > 0:
+            raw = raw[: self.limit]
 
         if self.missing_only or self.priority == "missing-all":
-            existing = self._existing_local_filenames()
             filtered = [
                 (paper_id, arxiv_id, version)
                 for paper_id, arxiv_id, version in raw
-                if build_thumbnail_filename(arxiv_id, version) not in existing
+                if not self._local_thumbnail_is_valid(
+                    build_thumbnail_filename(arxiv_id, version)
+                )
             ]
             self.logger.info(
-                "Missing-only filter: %d -> %d candidates (skipped %d already on disk)",
+                "Missing-only filter: %d -> %d candidates "
+                "(skipped %d already on disk with valid %dpx JPEG)",
                 len(raw),
                 len(filtered),
                 len(raw) - len(filtered),
+                EXPECTED_THUMBNAIL_WIDTH,
             )
             return filtered
 
@@ -324,10 +414,12 @@ class ThumbnailPreloadJob(CronJobBase):
     ) -> str:
         """Process one paper, returning a status: cached | generated | dry_run | failed."""
         filename = thumbnail_service.get_filename(arxiv_id, version)
+        active_cache_path = thumbnail_service._get_active_cache_path(filename)
+        local_exists = active_cache_path.exists()
+        local_invalid = local_exists and not is_thumbnail_valid(active_cache_path)
 
-        if not self.refresh_existing:
-            active_cache_path = thumbnail_service._get_active_cache_path(filename)
-            if active_cache_path.exists():
+        if not self.refresh_existing and not local_invalid:
+            if local_exists:
                 return "cached"
 
             if (
@@ -339,9 +431,8 @@ class ThumbnailPreloadJob(CronJobBase):
         if self.dry_run:
             return "dry_run"
 
-        await thumbnail_service.generate_thumbnail(
-            arxiv_id, version, force=self.refresh_existing
-        )
+        force = self.refresh_existing or local_invalid
+        await thumbnail_service.generate_thumbnail(arxiv_id, version, force=force)
         return "generated"
 
     async def _run_async(self) -> None:
@@ -357,6 +448,7 @@ class ThumbnailPreloadJob(CronJobBase):
         self.logger.info(
             "Found %d candidate papers "
             "(priority=%s, limit=%s, recent_days=%s, per_task=%s, "
+            "citation_top=%s, trending_top=%s, "
             "after_id=%s, before_id=%s, shard=%s, missing_only=%s, "
             "trust_local_cache=%s, dry_run=%s, refresh_existing=%s, "
             "request_delay_seconds=%.1f)",
@@ -364,7 +456,9 @@ class ThumbnailPreloadJob(CronJobBase):
             self.priority,
             self.limit,
             self.recent_days,
-            self.per_task if self.priority == "task-top" else None,
+            self.per_task if self.priority in ("task-top", "visible") else None,
+            self.citation_top if self.priority == "visible" else None,
+            self.trending_top if self.priority == "visible" else None,
             self.after_id,
             self.before_id,
             f"{self.shard[0]}/{self.shard[1]}" if self.shard else None,
@@ -506,7 +600,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         choices=VALID_PRIORITIES,
         default="recent",
         help=(
-            "Which candidate set to process. 'trending' uses the EMA "
+            "Which candidate set to process. 'visible' unions citation-top, "
+            "trending, and per-task papers (the user-visible surfaces) and "
+            "deduplicates citation-first. 'trending' uses the EMA "
             "trending_papers_24h view, 'task-top' takes the top --per-task "
             "papers per task tag, 'recent' is newest-first (optionally "
             "constrained to --recent-days), and 'missing-all' sweeps every "
@@ -551,6 +647,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help=(
             "Maximum paper age (days) for --priority=trending candidates "
             "(default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--citation-top",
+        type=int,
+        default=DEFAULT_CITATION_TOP,
+        help=(
+            "Top N papers by citation_count to include in --priority=visible "
+            "(default: %(default)s). Pass 0 to skip the citation contribution."
+        ),
+    )
+    parser.add_argument(
+        "--trending-top",
+        type=int,
+        default=DEFAULT_TRENDING_TOP,
+        help=(
+            "Top N trending papers to include in --priority=visible "
+            "(default: %(default)s). Pass 0 to skip the trending contribution."
         ),
     )
     parser.add_argument(
@@ -635,6 +749,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         recent_days=args.recent_days,
         per_task=args.per_task,
         trending_max_age_days=args.trending_max_age_days,
+        citation_top=args.citation_top,
+        trending_top=args.trending_top,
         after_id=args.after_id,
         before_id=args.before_id,
         shard=args.shard,

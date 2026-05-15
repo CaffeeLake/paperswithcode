@@ -2177,3 +2177,38 @@ html { scroll-behavior: smooth; }
 
   .search-modal-input { font-size: 16px; padding: 14px 16px; }
 }
+
+/* === SAVED PAPERS VIEW === */
+.saved-area-section { margin-top: 28px; }
+.saved-area-section:first-of-type { margin-top: 4px; }
+.saved-area-heading {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0 0 6px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.saved-task-block { margin-top: 16px; }
+.saved-task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.saved-task-count {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.saved-signin-panel {
+  display: flex;
+  justify-content: center;
+  padding: 80px 0;
+}
+.action-btn.is-saved {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+.action-btn.is-saved:hover { background: #000; }

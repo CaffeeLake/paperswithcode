@@ -183,6 +183,14 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           >
             <Icon name="search" size={14} />
           </button>
+          <NavLink
+            to="/saved"
+            className="icon-btn header-bookmark-btn"
+            aria-label="Saved papers"
+            title="Saved papers"
+          >
+            <Icon name="bookmark" size={13} />
+          </NavLink>
           {user ? (
             <UserMenu user={user} onLogout={logout} />
           ) : (
@@ -219,6 +227,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             </NavLink>
             <NavLink to="/methods" className="mobile-nav-link" onClick={closeMobile}>
               Methods
+            </NavLink>
+            <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>
+              Saved papers
             </NavLink>
             <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
               CRON dashboard

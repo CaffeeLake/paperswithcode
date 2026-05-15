@@ -26,6 +26,38 @@ from backend.services.arxiv_service import ArxivService
 logger = logging.getLogger(__name__)
 
 THUMBNAIL_RENDERER_CACHE_BUST = "fit1"
+EXPECTED_THUMBNAIL_WIDTH = 400
+EXPECTED_THUMBNAIL_FORMAT = "JPEG"
+# A correctly-rendered first-page thumbnail is portrait (PDF page is ~A4 /
+# US Letter, H/W ~= 1.2-1.4 after trimming). Older renders produced squat
+# thumbnails around H/W = 0.65 because the height was clipped, so we treat
+# anything noticeably non-portrait as invalid and regenerate it.
+MIN_THUMBNAIL_HEIGHT_TO_WIDTH_RATIO = 1.0
+
+
+def is_thumbnail_valid(
+    path: Path,
+    expected_width: int = EXPECTED_THUMBNAIL_WIDTH,
+    min_height_to_width_ratio: float = MIN_THUMBNAIL_HEIGHT_TO_WIDTH_RATIO,
+) -> bool:
+    """
+    Check whether a cached thumbnail file is a readable JPEG with the expected
+    generated width and a portrait-ish aspect ratio. Used by the preload cron
+    to detect stale, truncated, or wrong-aspect thumbnails so they get
+    regenerated instead of being silently skipped just because the filename
+    happens to exist on disk.
+    """
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return False
+        with Image.open(path) as img:
+            if img.format != EXPECTED_THUMBNAIL_FORMAT:
+                return False
+            if img.width != expected_width:
+                return False
+            return img.height / img.width >= min_height_to_width_ratio
+    except Exception:
+        return False
 
 
 def _trim_blank_page_margins(image: Image.Image) -> Image.Image:
@@ -98,7 +130,7 @@ class ThumbnailService:
             self.legacy_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Thumbnail settings
-        self.thumbnail_width = 400  # Target width in pixels
+        self.thumbnail_width = EXPECTED_THUMBNAIL_WIDTH  # Target width in pixels
         self.thumbnail_quality = 85  # JPEG quality
         self.pdf_timeout = 30  # Timeout for PDF downloads in seconds
         self.max_pdf_size = 50 * 1024 * 1024  # 50MB max PDF size

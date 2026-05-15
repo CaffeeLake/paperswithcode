@@ -157,9 +157,14 @@ class DatasetService:
                 desc(order_field) if order_dir == "desc" else asc(order_field)
             )
             if task_id is not None:
+                # Task pages sort benchmarks by the requested ordering first
+                # (typically -paper_count, i.e. evaluation-count popularity).
+                # `featured_rank` is kept around as dormant curation metadata
+                # and only used as a final tie-breaker between equally
+                # popular benchmarks, so popularity drives the visible order.
                 query = query.order_by(
-                    asc(task_dataset_filter.featured_rank).nulls_last(),
                     order_clause,
+                    asc(task_dataset_filter.featured_rank).nulls_last(),
                     asc(DBDataset.name),
                 )
             else:

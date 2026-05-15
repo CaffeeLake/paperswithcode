@@ -100,9 +100,11 @@ def create_app() -> FastAPI:
         metrics,
         cron,
         auth,
+        bookmarks,
     )
 
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+    app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     # External-resource ingestion endpoints share the `/papers` prefix because
     # the resulting rows live in the same `papers` table.

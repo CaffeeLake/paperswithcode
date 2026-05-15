@@ -92,3 +92,27 @@ def require_hf_admin(request: Request) -> dict:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Sign in with an authorized Hugging Face account to edit this paper",
     )
+
+
+def require_user(request: Request) -> dict:
+    """Allow any signed-in HF user.
+
+    Mirrors :func:`require_hf_admin` without the admin-allowlist check; used by
+    user-scoped endpoints such as the bookmark API. Returns a small dict with
+    the canonical HF ``username`` (lowercased) pulled from the session JWT.
+    """
+
+    from backend.routers.auth import SESSION_COOKIE_NAME, decode_session_cookie
+
+    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    payload = decode_session_cookie(cookie or "")
+    username = (payload or {}).get("username")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in with Hugging Face to use this feature",
+        )
+    return {
+        "source": "cookie",
+        "username": username.lower(),
+    }

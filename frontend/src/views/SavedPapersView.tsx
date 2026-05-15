@@ -1,0 +1,151 @@
+/**
+ * Saved papers view (`/saved`).
+ *
+ * Lists the signed-in user's bookmarked papers grouped by Area (top-level
+ * research domain) and within each area sub-grouped by the paper's primary
+ * Task. The grouping is computed server-side in `GET /api/v1/me/bookmarks`.
+ *
+ * If the user is not signed in we render a small sign-in panel that round
+ * trips through the HF OAuth flow (same pattern as `HfSignInButton`).
+ */
+
+import React from "react";
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+
+import { PaperCard, TagChip } from "@/components";
+import HfSignInButton from "@/components/HfSignInButton";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { apiClient } from "@/lib/api";
+import type { SavedPapersResponse } from "@/lib/api";
+import { transformPaperForCard } from "@/lib/transform";
+import { useAuth } from "@/lib/authContext";
+
+const SavedPapersView: React.FC = () => {
+  const { user, isLoading: isAuthLoading } = useAuth();
+
+  const query = useQuery<SavedPapersResponse, Error>({
+    queryKey: ["my-bookmarks"],
+    queryFn: () => apiClient.getMyBookmarks(),
+    enabled: !!user,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  if (isAuthLoading) {
+    return (
+      <div className="page">
+        <Skeleton className="h-10 w-1/3 mb-4" />
+        <Skeleton className="h-6 w-1/2 mb-8" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="page">
+        <div className="feed-header">
+          <div>
+            <h1 className="feed-title">
+              Saved <em>Papers</em>
+            </h1>
+            <div className="feed-subtitle">
+              Sign in with Hugging Face to save papers and revisit them later.
+            </div>
+          </div>
+        </div>
+        <div className="saved-signin-panel">
+          <HfSignInButton returnTo="/saved" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <div className="feed-header">
+        <div>
+          <h1 className="feed-title">
+            Saved <em>Papers</em>
+          </h1>
+          <div className="feed-subtitle">
+            {query.data?.count
+              ? `${query.data.count.toLocaleString()} saved · grouped by domain`
+              : "Your bookmarked papers, grouped by domain."}
+          </div>
+        </div>
+      </div>
+
+      {query.error && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>Failed to load your saved papers. Please try again.</AlertDescription>
+        </Alert>
+      )}
+
+      {query.isLoading ? (
+        <div className="paper-list">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="paper-card">
+              <Skeleton className="h-[220px] w-[160px]" />
+              <div className="paper-body" style={{ flex: 1, gap: 12 }}>
+                <Skeleton className="h-6 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-12 w-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : !query.data || query.data.count === 0 ? (
+        <div className="no-results">
+          No saved papers yet.{" "}
+          <Link to="/papers" className="sidebar-link" style={{ display: "inline" }}>
+            Browse papers →
+          </Link>
+        </div>
+      ) : (
+        query.data.areas.map((area) => (
+          <section
+            key={`area-${area.id ?? "other"}`}
+            className="saved-area-section"
+          >
+            <h2 className="saved-area-heading">{area.name}</h2>
+            {area.tasks.map((task) => {
+              const paperCount = task.papers.length;
+              return (
+                <div
+                  key={`task-${area.id ?? "other"}-${task.id ?? "untagged"}`}
+                  className="saved-task-block"
+                >
+                  <div className="saved-task-row">
+                    {task.slug ? (
+                      <TagChip slug={task.slug} label={task.name} />
+                    ) : (
+                      <span className="tag-chip" style={{ background: "var(--surface)" }}>
+                        {task.name}
+                      </span>
+                    )}
+                    <span className="saved-task-count">
+                      {paperCount} {paperCount === 1 ? "paper" : "papers"}
+                    </span>
+                  </div>
+                  <div className="paper-list">
+                    {task.papers.map((paper) => (
+                      <PaperCard
+                        key={paper.id}
+                        paper={transformPaperForCard(paper)}
+                        rank={1}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        ))
+      )}
+    </div>
+  );
+};
+
+export default SavedPapersView;

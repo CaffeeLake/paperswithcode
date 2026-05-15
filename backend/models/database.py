@@ -929,3 +929,34 @@ class TaskDatasetMetric(Base):
         Index("idx_task_dataset_metrics_metric_id", "metric_id"),
         Index("idx_task_dataset_metrics_task_dataset", "task_id", "dataset_id"),
     )
+
+
+class UserBookmark(Base):
+    """Per-HF-user paper bookmarks.
+
+    Keyed on the HF username carried in the ``pwc_session`` JWT (see
+    ``backend.routers.auth``). Rows are removed via ``ON DELETE CASCADE`` when
+    the underlying paper is deleted.
+    """
+
+    __tablename__ = "user_bookmarks"
+
+    hf_username: Mapped[str] = mapped_column(
+        String(255), primary_key=True, nullable=False
+    )
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_user_bookmarks_user", "hf_username"),
+        Index("idx_user_bookmarks_paper", "paper_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserBookmark(hf_username='{self.hf_username}', paper_id={self.paper_id})>"

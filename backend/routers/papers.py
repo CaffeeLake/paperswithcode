@@ -205,9 +205,9 @@ async def get_trending_papers(
     """
     try:
         # Source/source_url come from `papers` directly because the
-        # `trending_papers_24h` view does not yet expose them. Including them
-        # lets the frontend render external rows with their canonical URLs
-        # alongside ArXiv rows.
+        # `trending_papers_24h` view does not yet expose them. `p.version` is
+        # also pulled in so the synthesised ArXiv thumbnail URL points at the
+        # exact filename the preload cron generated, not a hardcoded `_v1`.
         query = text("""
             WITH ranked_trending_papers AS (
                 SELECT
@@ -228,6 +228,7 @@ async def get_trending_papers(
                     p.source,
                     p.source_url,
                     p.thumbnail_url,
+                    p.version,
                     ROW_NUMBER() OVER (
                         PARTITION BY tp.paper_id
                         ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
@@ -254,7 +255,8 @@ async def get_trending_papers(
                 abstract,
                 source,
                 source_url,
-                thumbnail_url
+                thumbnail_url,
+                version
             FROM ranked_trending_papers
             WHERE paper_repo_rank = 1
             ORDER BY trending_score DESC NULLS LAST, current_stars DESC
@@ -316,9 +318,10 @@ async def get_trending_papers(
             source = row[14]
             source_url = row[15]
             explicit_thumbnail_url = row[16]
+            paper_version = row[17] or "v1"
             thumbnail_url = explicit_thumbnail_url
             if thumbnail_url is None and source == "arxiv" and arxiv_id:
-                filename = build_thumbnail_filename(arxiv_id, "v1")
+                filename = build_thumbnail_filename(arxiv_id, paper_version)
                 thumbnail_url = build_thumbnail_url(filename)
 
             # Get tasks for this paper
@@ -861,7 +864,7 @@ class UpdateProjectPagesRequest(BaseModel):
     "/papers/{paper_id}/repositories",
     response_model=Paper,
     summary="Update repositories for a paper",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_hf_admin)],
 )
 async def update_paper_repositories(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -911,7 +914,7 @@ async def update_paper_repositories(
     "/papers/{paper_id}/project-pages",
     response_model=Paper,
     summary="Update project pages for a paper",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_hf_admin)],
 )
 async def update_paper_project_pages(
     paper_id: int = Path(..., description="Database paper ID"),

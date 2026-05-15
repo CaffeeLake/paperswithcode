@@ -2,8 +2,10 @@ name: Cron - Preload Thumbnails
 
 on:
   schedule:
-    # Hourly-ish: warm thumbnails for the top trending feed (homepage).
-    # Cheap, missing-only, trusts the local mirror.
+    # Every 3h: warm thumbnails for the user-visible candidate sets (top by
+    # citation, top trending, top per task) so the homepage and task pages
+    # always have appropriate thumbnails. Missing-only with on-disk validity
+    # check so stale / wrong-size local files get regenerated.
     - cron: "0 */3 * * *"
     # Daily 04:00 UTC: warm thumbnails for the top --per-task papers on every
     # task page so task detail views render cleanly.
@@ -14,11 +16,12 @@ on:
   workflow_dispatch:
     inputs:
       priority:
-        description: "Priority mode: trending, task-top, recent, or missing-all"
+        description: "Priority mode: visible, trending, task-top, recent, or missing-all"
         required: false
         default: "recent"
         type: choice
         options:
+          - visible
           - trending
           - task-top
           - recent
@@ -37,6 +40,14 @@ on:
         default: ""
       trending_max_age_days:
         description: "Max paper age in days for priority=trending"
+        required: false
+        default: ""
+      citation_top:
+        description: "Top N papers by citation_count to include (priority=visible)"
+        required: false
+        default: ""
+      trending_top:
+        description: "Top N trending papers to include (priority=visible)"
         required: false
         default: ""
       after_id:
@@ -113,6 +124,8 @@ jobs:
           INPUT_RECENT_DAYS: ${{ github.event.inputs.recent_days }}
           INPUT_PER_TASK: ${{ github.event.inputs.per_task }}
           INPUT_TRENDING_MAX_AGE_DAYS: ${{ github.event.inputs.trending_max_age_days }}
+          INPUT_CITATION_TOP: ${{ github.event.inputs.citation_top }}
+          INPUT_TRENDING_TOP: ${{ github.event.inputs.trending_top }}
           INPUT_AFTER_ID: ${{ github.event.inputs.after_id }}
           INPUT_BEFORE_ID: ${{ github.event.inputs.before_id }}
           INPUT_SHARD: ${{ github.event.inputs.shard }}
@@ -127,7 +140,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${GITHUB_EVENT_SCHEDULE}" in
               "0 */3 * * *")
-                ARGS=" --priority trending --limit 500 --missing-only --trust-local-cache"
+                ARGS=" --priority visible --citation-top 1000 --trending-top 500 --per-task 20 --limit 2500 --missing-only --trust-local-cache"
                 ;;
               "0 4 * * *")
                 ARGS=" --priority task-top --per-task 50 --missing-only --trust-local-cache"
@@ -154,6 +167,12 @@ jobs:
             fi
             if [ -n "${INPUT_TRENDING_MAX_AGE_DAYS}" ]; then
               ARGS="${ARGS} --trending-max-age-days ${INPUT_TRENDING_MAX_AGE_DAYS}"
+            fi
+            if [ -n "${INPUT_CITATION_TOP}" ]; then
+              ARGS="${ARGS} --citation-top ${INPUT_CITATION_TOP}"
+            fi
+            if [ -n "${INPUT_TRENDING_TOP}" ]; then
+              ARGS="${ARGS} --trending-top ${INPUT_TRENDING_TOP}"
             fi
             if [ -n "${INPUT_AFTER_ID}" ]; then
               ARGS="${ARGS} --after-id ${INPUT_AFTER_ID}"

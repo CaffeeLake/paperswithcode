@@ -21,7 +21,9 @@ import { useToast } from "@/hooks/use-toast";
 import { EditTasksDialog } from "@/components/paper-detail/EditTasksDialog";
 import { EditMethodsDialog } from "@/components/paper-detail/EditMethodsDialog";
 import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositoriesDialog";
+import { EditProjectPagesDialog } from "@/components/paper-detail/EditProjectPagesDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
+import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 
 const ABSTRACT_PREVIEW_LEN = 360;
 const REPO_PREVIEW_LIMIT = 3;
@@ -38,6 +40,19 @@ function formatLongDate(iso: string | null | undefined): string {
 function formatStars(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+function formatProjectPageLabel(url: string, total: number, index: number): string {
+  if (total === 1) return "Project page";
+
+  try {
+    const parsed = new URL(url);
+    const slug = parsed.pathname.replace(/\/$/, "").split("/").filter(Boolean).pop();
+    if (slug) return `Project: ${slug.replace(/[-_]+/g, " ")}`;
+    return `Project: ${parsed.hostname.replace(/^www\./, "")}`;
+  } catch {
+    return `Project page ${index + 1}`;
+  }
 }
 
 const PaperDetailView: React.FC = () => {
@@ -76,7 +91,10 @@ const PaperDetailView: React.FC = () => {
 
   // Group evaluations by task so the results section can show one mini-table
   // per task with a shared heading, instead of repeating the task on every row.
-  // Groups are ordered by size desc so the most prolific task surfaces first.
+  // The backend returns rows sorted by benchmark popularity (most-evaluated
+  // benchmark first); we preserve that order both across groups (insertion
+  // order of the Map) and within each group's rows so model variants on the
+  // same benchmark stay together.
   const evaluationsByTask = useMemo(() => {
     if (!evaluations) return [];
     type EvalRow = (typeof evaluations)[number];
@@ -98,7 +116,7 @@ const PaperDetailView: React.FC = () => {
         });
       }
     }
-    return Array.from(groups.values()).sort((a, b) => b.rows.length - a.rows.length);
+    return Array.from(groups.values());
   }, [evaluations]);
 
   // Paper version dropdown (PLAN.md §7.5)
@@ -142,6 +160,8 @@ const PaperDetailView: React.FC = () => {
     setIsEditingMethods,
     isEditingRepositories,
     setIsEditingRepositories,
+    isEditingProjectPages,
+    setIsEditingProjectPages,
     isEditingEvaluations,
     setIsEditingEvaluations,
   } = usePaperEditState();
@@ -283,6 +303,7 @@ const PaperDetailView: React.FC = () => {
   const hasIntroducedItems = introducedMethods.length > 0 || introducedBenchmarks.length > 0;
   const paperSourceLabel = paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : "External resource";
   const sourceActionLabel = paper.source === "external" ? "Source page" : "arXiv page";
+  const projectPages = paper.project_pages?.filter((page) => page.url) ?? [];
   const introducedSummary = (() => {
     const parts: string[] = [];
     if (introducedMethods.length > 0) {
@@ -401,19 +422,27 @@ const PaperDetailView: React.FC = () => {
                 )}
               </a>
             )}
-            {paper.project_pages?.[0]?.url && (
-              <a className="action-btn" href={paper.project_pages[0].url} target="_blank" rel="noopener noreferrer">
-                <Icon name="globe" size={12} /> Project page
+            {projectPages.map((page, index) => (
+              <a key={page.url} className="action-btn" href={page.url} target="_blank" rel="noopener noreferrer">
+                <Icon name="globe" size={12} /> {formatProjectPageLabel(page.url, projectPages.length, index)}
               </a>
-            )}
+            ))}
+            {canEditPaper ? (
+              <button
+                type="button"
+                className="action-btn"
+                onClick={() => setIsEditingProjectPages(true)}
+                title="Edit project pages"
+              >
+                <Icon name="globe" size={12} /> {projectPages.length > 0 ? "Edit project pages" : "Add project page"}
+              </button>
+            ) : null}
             {paper.conference_url_abs && (
               <a className="action-btn" href={paper.conference_url_abs} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" size={12} /> Conference
               </a>
             )}
-            <button className="action-btn">
-              <Icon name="bookmark" size={12} /> Save
-            </button>
+            <SavePaperButton paperId={paper.id} />
           </div>
 
           {hasIntroducedItems && (
@@ -573,16 +602,16 @@ const PaperDetailView: React.FC = () => {
                 </div>
                 <table className="results-table">
                   <colgroup>
-                    <col style={{ width: "14%" }} />
-                    <col style={{ width: "18%" }} />
-                    <col style={{ width: "26%" }} />
-                    <col style={{ width: "18%" }} />
-                    <col style={{ width: "24%" }} />
+                    <col style={{ width: "30%" }} />
+                    <col style={{ width: "30%" }} />
+                    <col style={{ width: "15%" }} />
+                    <col style={{ width: "15%" }} />
+                    <col style={{ width: "10%" }} />
                   </colgroup>
                   <thead>
                     <tr>
-                      <th>Model</th>
                       <th>Benchmark</th>
+                      <th>Model</th>
                       <th>Metric</th>
                       <th>Value</th>
                       <th></th>
@@ -591,15 +620,15 @@ const PaperDetailView: React.FC = () => {
                   <tbody>
                     {group.rows.map((e) => (
                       <tr key={e.id}>
-                        <td className="model" title={e.model_name || undefined}>
-                          {e.model_name || "—"}
-                        </td>
                         <td className="benchmark">
                           {e.dataset_slug ? (
                             <Link to={`/benchmark/${e.dataset_slug}`}>{e.dataset_name || "—"}</Link>
                           ) : (
                             e.dataset_name || "—"
                           )}
+                        </td>
+                        <td className="model" title={e.model_name || undefined}>
+                          {e.model_name || "—"}
                         </td>
                         <td className="metric">{e.best_metric}</td>
                         <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
@@ -621,7 +650,7 @@ const PaperDetailView: React.FC = () => {
         </div>
 
         <aside className="detail-sidebar">
-          {sortedRepos.length > 0 && (
+          {(sortedRepos.length > 0 || canEditPaper) && (
             <div className="sidebar-card">
               <div className="sidebar-card-title">
                 <span>GitHub</span>
@@ -668,6 +697,18 @@ const PaperDetailView: React.FC = () => {
                   <span className="code-line-stars">★ {formatStars(r.num_stars)}</span>
                 </a>
               ))}
+              {sortedRepos.length === 0 && canEditPaper && (
+                <div
+                  style={{
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                    color: "var(--ink-faint)",
+                    padding: "6px 0",
+                  }}
+                >
+                  No GitHub repositories linked yet.
+                </div>
+              )}
               {sortedRepos.length > REPO_PREVIEW_LIMIT && (
                 <button
                   type="button"
@@ -763,6 +804,15 @@ const PaperDetailView: React.FC = () => {
         arxivId={arxivId}
         initialRepositories={
           paper.repositories?.map((r) => ({ url: r.url, is_official: r.is_official || false })) || []
+        }
+      />
+      <EditProjectPagesDialog
+        open={isEditingProjectPages}
+        onOpenChange={setIsEditingProjectPages}
+        paperId={paper.id}
+        arxivId={arxivId}
+        initialProjectPages={
+          paper.project_pages?.map((p) => ({ url: p.url, is_official: p.is_official || false })) || []
         }
       />
       <EditEvaluationsDialog

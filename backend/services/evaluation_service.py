@@ -7,7 +7,7 @@ including pagination, filtering by paper, task, and dataset.
 
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_
+from sqlalchemy import desc, asc, or_, func
 
 from backend.models.database import (
     Evaluation as DBEvaluation,
@@ -251,7 +251,10 @@ class EvaluationService:
             task_id: Filter by task ID
             dataset_id: Filter by dataset ID
             best_metric: Filter by best metric name (e.g., 'AbsRel', 'delta1')
-            order_by: Field to order by (created_at, best_rank, evaluated_on)
+            order_by: Field to order by (created_at, best_rank, evaluated_on,
+                benchmark_popularity). benchmark_popularity sorts rows by the
+                total number of evaluations on each row's dataset across the
+                whole database, so the most popular benchmarks surface first.
             order_dir: Order direction (asc, desc)
 
         Returns:
@@ -301,19 +304,55 @@ class EvaluationService:
             total_count = query.count()
 
             # Apply ordering
-            if order_by == "created_at":
-                order_field = DBEvaluation.created_at
-            elif order_by == "best_rank":
-                order_field = DBEvaluation.best_rank
-            elif order_by == "evaluated_on":
-                order_field = DBEvaluation.evaluated_on
+            if order_by == "benchmark_popularity":
+                # Popularity = total number of evaluation rows on each row's
+                # dataset across the whole table. We aggregate in a subquery
+                # so the per-evaluation result set is preserved (no GROUP BY
+                # on the outer query) and so the count reflects the full
+                # database, not just the filtered slice for this caller.
+                popularity_sq = (
+                    self.db.query(
+                        DBEvaluation.dataset_id.label("dataset_id"),
+                        func.count(DBEvaluation.id).label("popularity"),
+                    )
+                    .group_by(DBEvaluation.dataset_id)
+                    .subquery()
+                )
+                query = query.outerjoin(
+                    popularity_sq,
+                    DBEvaluation.dataset_id == popularity_sq.c.dataset_id,
+                )
+                popularity_field = func.coalesce(popularity_sq.c.popularity, 0)
+                primary = (
+                    desc(popularity_field)
+                    if order_dir == "desc"
+                    else asc(popularity_field)
+                )
+                # Tie-breakers: keep all rows for the same benchmark together,
+                # then sort by best_rank (ascending, nulls last) so the strongest
+                # entries on each benchmark surface first — mirroring the
+                # benchmark leaderboard view. Fall back to evaluation id for a
+                # fully stable order when ranks tie or are absent.
+                query = query.order_by(
+                    primary,
+                    asc(DBEvaluation.dataset_id),
+                    asc(DBEvaluation.best_rank).nulls_last(),
+                    asc(DBEvaluation.id),
+                )
             else:
-                order_field = DBEvaluation.created_at
+                if order_by == "created_at":
+                    order_field = DBEvaluation.created_at
+                elif order_by == "best_rank":
+                    order_field = DBEvaluation.best_rank
+                elif order_by == "evaluated_on":
+                    order_field = DBEvaluation.evaluated_on
+                else:
+                    order_field = DBEvaluation.created_at
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
-            else:
-                query = query.order_by(asc(order_field))
+                if order_dir == "desc":
+                    query = query.order_by(desc(order_field))
+                else:
+                    query = query.order_by(asc(order_field))
 
             # Apply pagination
             offset = (page - 1) * page_size

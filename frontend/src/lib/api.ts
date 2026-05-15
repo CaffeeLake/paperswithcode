@@ -247,6 +247,28 @@ export interface TrendingPaper {
   paper_age_days: number;
 }
 
+export interface BookmarkIdsResponse {
+  paper_ids: number[];
+}
+
+export interface SavedTaskGroup {
+  id: number | null;
+  slug: string | null;
+  name: string;
+  papers: Paper[];
+}
+
+export interface SavedAreaGroup {
+  id: number | null;
+  name: string;
+  tasks: SavedTaskGroup[];
+}
+
+export interface SavedPapersResponse {
+  count: number;
+  areas: SavedAreaGroup[];
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -377,6 +399,14 @@ class ApiClient {
     return this.request<Paper>(endpoint, {
       method: 'PUT',
       body: JSON.stringify({ repositories }),
+    });
+  }
+
+  async updatePaperProjectPages(paperId: string, projectPages: Array<{ url: string; is_official: boolean }>): Promise<Paper> {
+    const endpoint = `/papers/${paperId}/project-pages`;
+    return this.request<Paper>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify({ project_pages: projectPages }),
     });
   }
 
@@ -727,7 +757,14 @@ class ApiClient {
   }
 
   async getEvaluationsByPaper(paperId: string): Promise<Evaluation[]> {
-    const response = await this.getEvaluations({ paper_id: parseInt(paperId), page_size: 100 });
+    // Sort by benchmark popularity so rows for the most-evaluated benchmark
+    // (e.g. MCP-Atlas) surface together at the top, regardless of which
+    // model variant (GLM-5, GLM-5.1, ...) produced each row.
+    const response = await this.getEvaluations({
+      paper_id: parseInt(paperId),
+      page_size: 100,
+      ordering: '-benchmark_popularity',
+    });
     return response.results;
   }
 
@@ -845,6 +882,23 @@ class ApiClient {
   async getMetricDirections(): Promise<MetricDirections> {
     return this.request<MetricDirections>('/metrics/directions');
   }
+
+  // ── Bookmarks (signed-in HF user) ──
+  async getMyBookmarkIds(): Promise<BookmarkIdsResponse> {
+    return this.request<BookmarkIdsResponse>('/me/bookmarks/ids');
+  }
+
+  async getMyBookmarks(): Promise<SavedPapersResponse> {
+    return this.request<SavedPapersResponse>('/me/bookmarks');
+  }
+
+  async addBookmark(paperId: string | number): Promise<void> {
+    await this.request<void>(`/me/bookmarks/${paperId}`, { method: 'POST' });
+  }
+
+  async removeBookmark(paperId: string | number): Promise<void> {
+    await this.request<void>(`/me/bookmarks/${paperId}`, { method: 'DELETE' });
+  }
 }
 
 // Create and export a singleton instance
@@ -858,6 +912,7 @@ export const indexPaperFromArxiv = apiClient.indexPaperFromArxiv.bind(apiClient)
 export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
 export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);
+export const updatePaperProjectPages = apiClient.updatePaperProjectPages.bind(apiClient);
 export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);
@@ -894,3 +949,7 @@ export const getMetrics = apiClient.getMetrics.bind(apiClient);
 export const getMetric = apiClient.getMetric.bind(apiClient);
 export const getMetricDirections = apiClient.getMetricDirections.bind(apiClient);
 export const healthCheck = apiClient.healthCheck.bind(apiClient);
+export const getMyBookmarkIds = apiClient.getMyBookmarkIds.bind(apiClient);
+export const getMyBookmarks = apiClient.getMyBookmarks.bind(apiClient);
+export const addBookmark = apiClient.addBookmark.bind(apiClient);
+export const removeBookmark = apiClient.removeBookmark.bind(apiClient);

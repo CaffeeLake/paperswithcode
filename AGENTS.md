@@ -6,7 +6,7 @@ Guidance for AI agents working in this repository.
 
 - Do NOT care about backwards compatibility since we have 0 users for now.
 - Avoid heavy `try`/`except`; keep logic simple and readable.
-- Whenever you make a change that requires a restart of the backend/frontend, do so without asking confirmation.
+- Whenever you make a change that requires a restart/redeploy of the backend or frontend, do so without asking confirmation. See **Deploying changes** below for the exact commands.
 - Use background tasks in Cursor for long-running work unless you are actively debugging.
 - **Run Python and CLIs with** `uv run --env-file backend/keys.env …` (venv + env vars).
 - Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False` as Ruff penalizes this.
@@ -14,6 +14,23 @@ Guidance for AI agents working in this repository.
 - **Hardware**: Hetzner VPS, ~4GB RAM / 80GB disk — many scripts assume low RAM.
 - Start/stop app stack: `./start_services.sh` / `./stop_services.sh`.
 - API base path: **`http://localhost:8000/api/v1/`** (interactive docs: `/docs`).
+
+## Deploying changes (production: paperswithcode.co)
+
+Production runs from this very VPS, so any frontend/backend edit must be redeployed before the user sees it. Always do this yourself, without asking.
+
+- **Frontend changes** (anything under `frontend/`): the prod site is static, served by nginx from `frontend/dist`. The Vite dev server is NOT what users hit. After editing, run:
+  ```bash
+  cd frontend && npm run build && cd .. && nginx -t && nginx -s reload
+  ```
+- **Backend changes** (anything under `backend/`): restart the FastAPI process. Easiest is to re-run the full stack script (it also rebuilds the frontend, which is fine):
+  ```bash
+  ./start_services.sh
+  ```
+  Or kill+restart just the backend (`pkill -f 'uvicorn.*backend.main:app'` then re-launch `nohup uv run --env-file backend/keys.env backend/run_server.py > logs/backend.log 2>&1 &`).
+- **Both** changed: just run `./start_services.sh`.
+
+Skip redeploy only if the change is purely docs, tests, scripts, or `.github/workflows/`.
 
 ## Project overview
 

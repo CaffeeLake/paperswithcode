@@ -135,6 +135,15 @@ Key capabilities:
 │ project_page_id (FK)   │            │ project_pages (triggers│
 │ PK (paper,project)     │            │ for insert/update/delete)
 └────────────────────────┘            └────────────────────────┘
+
+┌──────────────────────────┐
+│      USER_BOOKMARKS      │
+├──────────────────────────┤
+│ hf_username (PK)         │
+│ paper_id (FK papers, PK) │◄──── PAPERS.id (ON DELETE CASCADE)
+│ created_at               │
+│ PK (hf_username, paper_id)│
+└──────────────────────────┘
 ```
 
 ## Core Tables (DDL highlights)
@@ -234,6 +243,11 @@ The following summarizes the live structure. See the database for full DDL.
 - id (PK), url, is_official, source, created_at, updated_at
 - Indexes: url, is_official, source
 
+### USER_BOOKMARKS
+- hf_username VARCHAR(255), paper_id BIGINT (FK papers, ON DELETE CASCADE), created_at TIMESTAMPTZ DEFAULT now()
+- Primary key: (hf_username, paper_id)
+- Indexes: idx_user_bookmarks_user (hf_username), idx_user_bookmarks_paper (paper_id)
+
 ## Junction Tables
 
 - PAPER_AUTHORS(paper_id, author_id, author_order > 0) PK(paper_id, author_id)
@@ -244,6 +258,7 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
+- USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
 
 **Note:** TASK_DATASETS owns task-specific *display metadata* (featured ordering, harness support) for a (task, dataset) pair. TASK_DATASET_METRICS defines the actual leaderboards by adding the metric dimension. Together they replace the legacy single-table design: TASK_DATASETS is what task pages render benchmark cards from, and TASK_DATASET_METRICS is what evaluation create/update validates against. Both tables key on `task_id`, which means subtasks (child tasks under `tasks.parent_id`) own benchmarks and leaderboards independently from their parent.
 
@@ -273,5 +288,6 @@ The following summarizes the live structure. See the database for full DDL.
 - **Subtasks (task hierarchy):** subtasks are first-class child rows in TASKS connected via `parent_id`. Each subtask owns its own task pages, benchmarks (TASK_DATASETS rows), leaderboards (TASK_DATASET_METRICS rows), and EVALUATIONS. To roll up subtasks for a parent task page, the API exposes `?include_descendants=true` on `/api/v1/datasets/?task=...` and `/api/v1/evaluations/?task_id=...`. Writes always target the most-specific child task so rank semantics stay clean.
 - **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
+- **User bookmarks:** persisted per HF account in USER_BOOKMARKS; written exclusively through `/api/v1/me/bookmarks` endpoints which require the `pwc_session` cookie.
 
 This document is synchronized with the live schema via schema dump and table descriptions.

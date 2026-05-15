@@ -30,6 +30,7 @@ const TagBrowseView = React.lazy(() => import("@/views/TagBrowseView"));
 const MethodsIndexView = React.lazy(() => import("@/views/MethodsIndexView"));
 const MethodDetailView = React.lazy(() => import("@/views/MethodDetailView"));
 const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView"));
+const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
 
@@ -85,6 +86,7 @@ const Shell: React.FC = () => {
             <Route path="/methods" element={<MethodsIndexView />} />
             <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
+            <Route path="/saved" element={<SavedPapersView />} />
             <Route path="/cron-dashboard" element={<CronDashboard />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

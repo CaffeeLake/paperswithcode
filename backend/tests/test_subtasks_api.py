@@ -316,5 +316,313 @@ def test_task_children_endpoint_lists_subtasks_for_parent(client):
     assert all(t["level"] == 1 for t in payload["results"])
 
 
+def _seed_paper_with_three_benchmarks(db):
+    """Seed one focal paper plus extra papers that pump benchmark popularity.
+
+    Layout:
+        Task 10 owns three benchmarks.
+        Dataset 100 (MCP-Atlas)  -> 1 eval from focal paper + 4 from others = 5
+        Dataset 200 (BrowseComp) -> 1 eval from focal paper + 1 from another = 2
+        Dataset 300 (Niche)      -> 1 eval from focal paper                   = 1
+
+    Focal paper (id=999) has exactly one row on each benchmark, and the rows
+    were inserted in the *opposite* of popularity order so a default
+    -created_at sort would return Niche, BrowseComp, MCP-Atlas. The
+    benchmark_popularity ordering must flip that to MCP-Atlas, BrowseComp,
+    Niche regardless of insertion / created_at order.
+    """
+    task = DBTask(id=10, name="Agents", slug="agents", level=0)
+    db.add(task)
+
+    db.add_all(
+        [
+            DBDataset(id=100, name="MCP-Atlas", slug="mcp-atlas"),
+            DBDataset(id=200, name="BrowseComp", slug="browsecomp"),
+            DBDataset(id=300, name="Niche", slug="niche"),
+        ]
+    )
+    db.add(DBMetric(id=10, name="Accuracy", direction="higher_is_better"))
+
+    # One TaskDataset entry per (task, dataset) so the dataset listing endpoint
+    # surfaces all three benchmarks under task 10. featured_rank is set
+    # adversarially: the *least* popular benchmark gets the smallest
+    # featured_rank, so popularity ordering must override featured_rank.
+    db.add_all(
+        [
+            TaskDataset(task_id=10, dataset_id=100, featured_rank=None),
+            TaskDataset(task_id=10, dataset_id=200, featured_rank=2),
+            TaskDataset(task_id=10, dataset_id=300, featured_rank=1),
+            TaskDatasetMetric(task_id=10, dataset_id=100, metric_id=10),
+            TaskDatasetMetric(task_id=10, dataset_id=200, metric_id=10),
+            TaskDatasetMetric(task_id=10, dataset_id=300, metric_id=10),
+        ]
+    )
+
+    papers = [
+        DBPaper(
+            id=pid,
+            title=f"Paper {pid}",
+            abstract=f"Abstract {pid}",
+            arxiv_id=f"2026.1{pid:04d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for pid in [999, 1001, 1002, 1003, 1004, 1005]
+    ]
+    db.add_all(papers)
+
+    # Focal paper rows in least-popular-first order so created_at sort
+    # would otherwise place Niche first.
+    db.add_all(
+        [
+            DBEvaluation(
+                id=500,
+                paper_id=999,
+                task_id=10,
+                dataset_id=300,
+                model_name="GLM-5",
+                metrics={"Accuracy": "70.0"},
+                best_metric="Accuracy",
+            ),
+            DBEvaluation(
+                id=501,
+                paper_id=999,
+                task_id=10,
+                dataset_id=200,
+                model_name="GLM-5",
+                metrics={"Accuracy": "60.0"},
+                best_metric="Accuracy",
+            ),
+            DBEvaluation(
+                id=502,
+                paper_id=999,
+                task_id=10,
+                dataset_id=100,
+                model_name="GLM-5",
+                metrics={"Accuracy": "80.0"},
+                best_metric="Accuracy",
+            ),
+        ]
+    )
+
+    # Extra rows from other papers so MCP-Atlas accumulates 5 evaluations
+    # and BrowseComp accumulates 2 evaluations.
+    db.add_all(
+        [
+            DBEvaluation(
+                id=600 + i,
+                paper_id=1001 + i,
+                task_id=10,
+                dataset_id=100,
+                model_name=f"OtherModel{i}",
+                metrics={"Accuracy": str(50 + i)},
+                best_metric="Accuracy",
+            )
+            for i in range(4)
+        ]
+    )
+    db.add(
+        DBEvaluation(
+            id=610,
+            paper_id=1005,
+            task_id=10,
+            dataset_id=200,
+            model_name="OtherBrowse",
+            metrics={"Accuracy": "55.0"},
+            best_metric="Accuracy",
+        )
+    )
+
+    db.commit()
+
+
+def test_paper_evaluations_sorted_by_benchmark_popularity(client):
+    """Paper page rows must surface the most-evaluated benchmark first
+    regardless of insertion order (which would otherwise dominate via the
+    default -created_at sort)."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.close()
+
+    response = client.get(
+        "/api/v1/evaluations/?paper_id=999&ordering=-benchmark_popularity&page_size=50"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    # Focal paper has exactly three evaluations.
+    assert payload["count"] == 3
+    dataset_slugs = [row["dataset_slug"] for row in payload["results"]]
+    assert dataset_slugs == ["mcp-atlas", "browsecomp", "niche"]
+
+
+def _seed_paper_with_multiple_rows_per_benchmark(db):
+    """Seed a focal paper that has *multiple* evaluations on the same benchmark.
+
+    Layout:
+        Task 20 owns two benchmarks.
+        Dataset 400 (BenchPop) -> 3 evals from focal paper + 4 from others = 7
+        Dataset 500 (BenchTail) -> 1 eval from focal paper                  = 1
+
+    The focal paper's three rows on BenchPop are inserted in *ascending id*
+    order with adversarial best_rank values so that an id-only tie-break
+    would yield [rank 3, rank 1, rank None] — the wrong order. The
+    benchmark_popularity ordering must instead surface the rank-1 row first,
+    then rank 3, then the unranked row (nulls last).
+    """
+    task = DBTask(id=20, name="Bench Tasks", slug="bench-tasks", level=0)
+    db.add(task)
+
+    db.add_all(
+        [
+            DBDataset(id=400, name="BenchPop", slug="benchpop"),
+            DBDataset(id=500, name="BenchTail", slug="benchtail"),
+        ]
+    )
+    db.add(DBMetric(id=20, name="Accuracy", direction="higher_is_better"))
+
+    db.add_all(
+        [
+            TaskDataset(task_id=20, dataset_id=400),
+            TaskDataset(task_id=20, dataset_id=500),
+            TaskDatasetMetric(task_id=20, dataset_id=400, metric_id=20),
+            TaskDatasetMetric(task_id=20, dataset_id=500, metric_id=20),
+        ]
+    )
+
+    papers = [
+        DBPaper(
+            id=pid,
+            title=f"Paper {pid}",
+            abstract=f"Abstract {pid}",
+            arxiv_id=f"2026.2{pid:04d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for pid in [2999, 3001, 3002, 3003, 3004]
+    ]
+    db.add_all(papers)
+
+    # Focal paper rows on BenchPop, inserted with ascending ids but adversarial
+    # ranks so id-only tie-breaking would mis-order them.
+    db.add_all(
+        [
+            DBEvaluation(
+                id=800,
+                paper_id=2999,
+                task_id=20,
+                dataset_id=400,
+                model_name="VariantA",
+                metrics={"Accuracy": "70.0"},
+                best_metric="Accuracy",
+                best_rank=3,
+            ),
+            DBEvaluation(
+                id=801,
+                paper_id=2999,
+                task_id=20,
+                dataset_id=400,
+                model_name="VariantB",
+                metrics={"Accuracy": "90.0"},
+                best_metric="Accuracy",
+                best_rank=1,
+            ),
+            DBEvaluation(
+                id=802,
+                paper_id=2999,
+                task_id=20,
+                dataset_id=400,
+                model_name="VariantC",
+                metrics={"Accuracy": "55.0"},
+                best_metric="Accuracy",
+                best_rank=None,
+            ),
+            DBEvaluation(
+                id=803,
+                paper_id=2999,
+                task_id=20,
+                dataset_id=500,
+                model_name="VariantA",
+                metrics={"Accuracy": "60.0"},
+                best_metric="Accuracy",
+                best_rank=1,
+            ),
+        ]
+    )
+
+    # Extra rows from other papers so BenchPop accumulates 7 total evaluations
+    # (the focal paper's 3 + these 4) and BenchTail stays at 1.
+    db.add_all(
+        [
+            DBEvaluation(
+                id=900 + i,
+                paper_id=3001 + i,
+                task_id=20,
+                dataset_id=400,
+                model_name=f"OtherModel{i}",
+                metrics={"Accuracy": str(40 + i)},
+                best_metric="Accuracy",
+                best_rank=4 + i,
+            )
+            for i in range(4)
+        ]
+    )
+
+    db.commit()
+
+
+def test_paper_evaluations_within_benchmark_sorted_by_best_rank(client):
+    """Within each benchmark group, paper page rows must be ordered by
+    `best_rank` ascending (with NULL ranks last) so the strongest entry on
+    each benchmark surfaces first — mirroring the benchmark leaderboard.
+
+    The popular benchmark must still come before the less popular one."""
+    db = TestingSessionLocal()
+    _seed_paper_with_multiple_rows_per_benchmark(db)
+    db.close()
+
+    response = client.get(
+        "/api/v1/evaluations/?paper_id=2999&ordering=-benchmark_popularity&page_size=50"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["count"] == 4
+    rows = payload["results"]
+
+    # Across benchmarks: BenchPop (popularity 7) before BenchTail (popularity 1).
+    dataset_slugs = [row["dataset_slug"] for row in rows]
+    assert dataset_slugs == ["benchpop", "benchpop", "benchpop", "benchtail"]
+
+    # Within BenchPop: rank 1, then rank 3, then unranked (nulls last).
+    benchpop_ranks = [
+        row["best_rank"] for row in rows if row["dataset_slug"] == "benchpop"
+    ]
+    assert benchpop_ranks == [1, 3, None]
+
+
+def test_task_benchmarks_sorted_by_paper_count_overrides_featured_rank(client):
+    """The task page benchmark list must sort benchmarks by evaluation-count
+    popularity, not by `featured_rank`. The seed sets featured_rank=1 on the
+    least popular benchmark, so the previous behavior would have surfaced it
+    at the top; the new behavior must surface MCP-Atlas first."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.close()
+
+    response = client.get(
+        "/api/v1/datasets/?task=10&ordering=-paper_count&page_size=50"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    slugs = [d["slug"] for d in payload["results"]]
+    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
+    # paper_count is the per-dataset evaluation row count; sanity check it
+    # matches the seeded counts so we know we're testing the intended sort key.
+    counts = {d["slug"]: d["paper_count"] for d in payload["results"]}
+    assert counts == {"mcp-atlas": 5, "browsecomp": 2, "niche": 1}
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
