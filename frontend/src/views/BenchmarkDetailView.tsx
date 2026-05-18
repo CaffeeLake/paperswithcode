@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
@@ -190,8 +190,26 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
 };
 
 /**
+ * Parse a stored metric value into a number. Handles "88.55 ± 0.04" style
+ * strings (we keep the central estimate and drop the uncertainty), plain
+ * numeric strings, and already-numeric values. Returns null when the value
+ * isn't usable for comparisons so callers can push those rows to the end.
+ */
+function parseMetricValue(raw: string | number | undefined | null): number | null {
+  if (raw == null) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  const s = raw.includes("±") ? raw.split("±")[0].trim() : raw.trim();
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Compute the SOTA progression (running best) from evaluations sorted by
- * paper.published. Mirrors the v1 Benchmark.tsx logic.
+ * paper.published. Mirrors the v1 Benchmark.tsx logic, but ranks SOTA by the
+ * currently selected metric's value + direction rather than by the row's
+ * stored `best_rank` (which only describes the row's own `best_metric`
+ * leaderboard, so it doesn't match alternate metric tabs like Recall on a
+ * benchmark whose primary metric is F1).
  */
 function computeSeries(
   evals: Evaluation[],
@@ -203,12 +221,13 @@ function computeSeries(
   // Sort by published date ascending; require numeric values for the metric.
   const items = evals
     .map((e) => {
-      const raw = e.metrics?.[bestMetric];
-      const n = typeof raw === "string" ? parseFloat(raw) : (raw as number);
+      const value = parseMetricValue(e.metrics?.[bestMetric]);
       const date = e.paper_published_date || "";
-      return { eval: e, value: n, date };
+      return { eval: e, value, date };
     })
-    .filter((x) => Number.isFinite(x.value) && x.date)
+    .filter((x): x is { eval: Evaluation; value: number; date: string } =>
+      x.value !== null && !!x.date,
+    )
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const points: SotaPoint[] = [];
@@ -230,11 +249,19 @@ function computeSeries(
       });
     }
   }
-  // The leaderboard's top row drives the headline SOTA.
-  const top = [...evals].sort((a, b) => (a.best_rank ?? 9999) - (b.best_rank ?? 9999))[0];
-  const sotaRaw = top?.metrics?.[bestMetric];
-  const sota = typeof sotaRaw === "string" ? parseFloat(sotaRaw) : ((sotaRaw as number) ?? 0);
-  const sotaModel = top?.model_name || top?.paper_title || "";
+
+  // Headline SOTA is the best value for the currently selected metric.
+  // We sort all evals that have a numeric value for `bestMetric` by the
+  // metric's direction, so secondary metrics like Recall/Precision get the
+  // right top row instead of always echoing the F1 leader.
+  const ranked = evals
+    .map((e) => ({ eval: e, value: parseMetricValue(e.metrics?.[bestMetric]) }))
+    .filter((x): x is { eval: Evaluation; value: number } => x.value !== null)
+    .sort((a, b) => (arrow === "↓" ? a.value - b.value : b.value - a.value));
+
+  const top = ranked[0];
+  const sota = top?.value ?? 0;
+  const sotaModel = top?.eval.model_name || top?.eval.paper_title || "";
 
   return { points, sota, sotaModel };
 }
@@ -246,7 +273,15 @@ const BenchmarkDetailView: React.FC = () => {
   // with `?task=<slug>` so we can keep that task as the breadcrumb context
   // for benchmarks linked to multiple tasks (e.g. COCO val2017).
   const taskSlugFromQuery = searchParams.get("task") || undefined;
+  // PaperDetailView's "Compare →" link in the per-paper results table appends
+  // `?eval=<evaluationId>` so the leaderboard can spotlight the originating
+  // row. The id is stable and unambiguous (model+harness display strings can
+  // collide), so we deep-link by it and silently fall back to the normal
+  // benchmark page when the id is missing or no longer present.
+  const highlightEvalId = searchParams.get("eval") || undefined;
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
+  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
+  const didScrollToHighlight = useRef(false);
 
   // Fetching the dataset with `include_paper=true` collapses the previous
   // dataset → paper waterfall into a single round trip.  See PLAN.md §5.
@@ -257,9 +292,15 @@ const BenchmarkDetailView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
+  // Fetch every evaluation on this dataset once. Metric switching is purely
+  // a UI concern (column choice, sort key, SOTA computation), so we must not
+  // pass `bestMetric` as an API filter — the backend filters on the row's
+  // `best_metric` column, which would drop rows whose primary metric is
+  // different from the tab the user clicked (e.g. an F1-primary row that
+  // also carries Recall/Precision values).
   const evalsQ = useQuery({
-    queryKey: ["dataset-evals", datasetQ.data?.id, bestMetric],
-    queryFn: () => apiClient.getEvaluationsByDataset(datasetQ.data!.id, bestMetric),
+    queryKey: ["dataset-evals", datasetQ.data?.id],
+    queryFn: () => apiClient.getEvaluationsByDataset(datasetQ.data!.id),
     enabled: !!datasetQ.data?.id,
     staleTime: 5 * 60 * 1000,
   });
@@ -295,6 +336,19 @@ const BenchmarkDetailView: React.FC = () => {
     [evalsQ.data, activeMetric, arrow],
   );
 
+  // Bring the highlighted leaderboard row into view once the evaluations
+  // query resolves. Guarded by a ref so subsequent metric switches don't
+  // hijack the user's scroll position.
+  useEffect(() => {
+    if (didScrollToHighlight.current) return;
+    if (!highlightEvalId) return;
+    if (!evalsQ.data || evalsQ.data.length === 0) return;
+    const node = highlightRowRef.current;
+    if (!node) return;
+    didScrollToHighlight.current = true;
+    node.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [highlightEvalId, evalsQ.data]);
+
   // For breadcrumb context: prefer the task carried in `?task=<slug>` (set
   // by PaperDetailView's "See all" link). Fall back to the alphabetically
   // first linked task — the API already orders by Task.name.
@@ -328,8 +382,27 @@ const BenchmarkDetailView: React.FC = () => {
   }
 
   const dataset = datasetQ.data;
-  const sortedRows = (evalsQ.data || []).slice().sort((a, b) => (a.best_rank ?? 9999) - (b.best_rank ?? 9999));
+  // Sort by the *active* metric, not the stored `best_rank`. `best_rank` is
+  // computed per (task, dataset, best_metric) on the backend, so it only
+  // matches the leaderboard when the row's primary metric == the displayed
+  // metric. When the user clicks an alternate metric tab (Recall on an
+  // F1-primary benchmark, for example), we re-rank in-client by the actual
+  // value. Rows that don't carry the active metric drop to the end, ordered
+  // by their stored rank as a deterministic tie-breaker.
+  const sortedRows = (evalsQ.data || []).slice().sort((a, b) => {
+    const va = parseMetricValue(a.metrics?.[activeMetric]);
+    const vb = parseMetricValue(b.metrics?.[activeMetric]);
+    if (va !== null && vb !== null) {
+      return arrow === "↓" ? va - vb : vb - va;
+    }
+    if (va !== null) return -1;
+    if (vb !== null) return 1;
+    return (a.best_rank ?? 9999) - (b.best_rank ?? 9999);
+  });
   const showHarness = Boolean(dataset.supports_harness);
+  const highlightedEval = highlightEvalId
+    ? sortedRows.find((e) => e.id === highlightEvalId) || null
+    : null;
 
   const introducingPaper = dataset.introducing_paper ?? undefined;
   const fallbackArxivIdFromUrl = (() => {
@@ -473,6 +546,45 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
+        {highlightedEval && (() => {
+          const paperRouteId = highlightedEval.paper_arxiv_id || highlightedEval.paper_id;
+          const paperLabel =
+            highlightedEval.paper_title ||
+            (highlightedEval.paper_arxiv_id
+              ? `arXiv:${highlightedEval.paper_arxiv_id}`
+              : null);
+          const metricForRow =
+            highlightedEval.best_metric && highlightedEval.metrics?.[highlightedEval.best_metric] !== undefined
+              ? highlightedEval.best_metric
+              : activeMetric;
+          const metricValue = highlightedEval.metrics?.[metricForRow];
+          return (
+            <div className="bm-highlight-banner" role="status">
+              <span className="bm-highlight-dot" aria-hidden="true" />
+              <div className="bm-highlight-text">
+                <span className="bm-highlight-label">Comparing result</span>
+                <span className="bm-highlight-paper">
+                  {highlightedEval.model_name || paperLabel || "—"}
+                  {highlightedEval.harness ? ` · ${highlightedEval.harness}` : ""}
+                </span>
+                <span className="bm-highlight-meta">
+                  {metricValue !== undefined && metricForRow ? (
+                    <>
+                      {metricForRow}: {formatMetricValue(metricValue)}
+                      {paperLabel ? " · " : ""}
+                    </>
+                  ) : null}
+                  {paperLabel && paperRouteId ? (
+                    <Link to={`/paper/${paperRouteId}`}>{paperLabel}</Link>
+                  ) : (
+                    paperLabel || null
+                  )}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="bm-card">
           <div className="bm-card-head">
             <div className="bm-card-title">Leaderboard</div>
@@ -498,31 +610,56 @@ const BenchmarkDetailView: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {sortedRows.map((e, i) => {
-                  const paperRouteId = e.paper_arxiv_id || e.paper_id;
-                  const paperLabel =
-                    e.paper_title || (e.paper_arxiv_id ? `arXiv:${e.paper_arxiv_id}` : null);
-                  return (
-                    <tr key={e.id}>
-                      <td className="col-rank">{e.best_rank ?? i + 1}</td>
-                      <td className="col-model">{e.model_name || "—"}</td>
-                      {showHarness && (
-                        <td className="col-harness">{e.harness || "—"}</td>
-                      )}
-                      <td className={`col-value ${i === 0 ? "is-best" : ""}`}>
-                        {formatMetricValue(e.metrics?.[activeMetric])}
-                      </td>
-                      <td className="col-paper">
-                        {paperRouteId ? (
-                          <Link to={`/paper/${paperRouteId}`}>{paperLabel || "—"}</Link>
-                        ) : (
-                          paperLabel || "—"
+                {(() => {
+                  // Re-derive ranks from the active-metric ordering with ties
+                  // getting equal ranks (so two models that share a Recall of
+                  // 0.98 both show as #1). Rows without a numeric value for
+                  // the active metric are unranked.
+                  let lastValue: number | null = null;
+                  let lastRank = 0;
+                  return sortedRows.map((e, i) => {
+                    const value = parseMetricValue(e.metrics?.[activeMetric]);
+                    let rank: number | null = null;
+                    if (value !== null) {
+                      if (lastValue === null || value !== lastValue) {
+                        lastRank = i + 1;
+                        lastValue = value;
+                      }
+                      rank = lastRank;
+                    }
+                    const paperRouteId = e.paper_arxiv_id || e.paper_id;
+                    const paperLabel =
+                      e.paper_title || (e.paper_arxiv_id ? `arXiv:${e.paper_arxiv_id}` : null);
+                    const isHighlighted = highlightEvalId === e.id;
+                    return (
+                      <tr
+                        key={e.id}
+                        ref={isHighlighted ? highlightRowRef : undefined}
+                        className={isHighlighted ? "is-highlighted" : undefined}
+                      >
+                        <td className="col-rank">{rank ?? "—"}</td>
+                        <td className="col-model">
+                          {isHighlighted && <span className="bm-row-marker" aria-hidden="true" />}
+                          {e.model_name || "—"}
+                        </td>
+                        {showHarness && (
+                          <td className="col-harness">{e.harness || "—"}</td>
                         )}
-                      </td>
-                      <td className="col-year">{e.paper_published_date?.slice(0, 4) || "—"}</td>
-                    </tr>
-                  );
-                })}
+                        <td className={`col-value ${rank === 1 ? "is-best" : ""}`}>
+                          {formatMetricValue(e.metrics?.[activeMetric])}
+                        </td>
+                        <td className="col-paper">
+                          {paperRouteId ? (
+                            <Link to={`/paper/${paperRouteId}`}>{paperLabel || "—"}</Link>
+                          ) : (
+                            paperLabel || "—"
+                          )}
+                        </td>
+                        <td className="col-year">{e.paper_published_date?.slice(0, 4) || "—"}</td>
+                      </tr>
+                    );
+                  });
+                })()}
               </tbody>
             </table>
           )}

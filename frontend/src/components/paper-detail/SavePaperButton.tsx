@@ -11,6 +11,7 @@
 import React from "react";
 
 import { Icon } from "@/components";
+import { isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { useBookmarkIds, useToggleBookmark } from "@/hooks/useBookmarks";
 
@@ -22,6 +23,8 @@ export const SavePaperButton: React.FC<SavePaperButtonProps> = ({ paperId }) => 
   const { user } = useAuth();
   const { idSet } = useBookmarkIds();
   const { toggle, isPending } = useToggleBookmark();
+
+  if (isAuthDisabled()) return null;
 
   const numericId = Number(paperId);
   const isBookmarked = !!user && idSet.has(numericId);

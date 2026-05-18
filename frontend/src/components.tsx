@@ -19,6 +19,7 @@ import UserMenu from "@/components/UserMenu";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
+import { isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import type { PaperCardProps } from "@/lib/transform";
 import { displayTaskName, humanizeSlug } from "@/lib/transform";
@@ -149,6 +150,11 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const returnTo = `${location.pathname}${location.search}` || "/";
+  // The Hugging Face Space mirror sets `VITE_DISABLE_AUTH=1` because the
+  // session cookie set by the HF OAuth callback on the API origin can't be
+  // shared cross-origin. Hide every auth-gated affordance there so visitors
+  // aren't presented with dead-ends.
+  const authDisabled = isAuthDisabled();
   return (
     <>
       <header className="app-header">
@@ -183,15 +189,17 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           >
             <Icon name="search" size={14} />
           </button>
-          <NavLink
-            to="/saved"
-            className="icon-btn header-bookmark-btn"
-            aria-label="Saved papers"
-            title="Saved papers"
-          >
-            <Icon name="bookmark" size={13} />
-          </NavLink>
-          {user ? (
+          {!authDisabled && (
+            <NavLink
+              to="/saved"
+              className="icon-btn header-bookmark-btn"
+              aria-label="Saved papers"
+              title="Saved papers"
+            >
+              <Icon name="bookmark" size={13} />
+            </NavLink>
+          )}
+          {authDisabled ? null : user ? (
             <UserMenu user={user} onLogout={logout} />
           ) : (
             <HfSignInButton returnTo={returnTo} />
@@ -228,12 +236,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <NavLink to="/methods" className="mobile-nav-link" onClick={closeMobile}>
               Methods
             </NavLink>
-            <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>
-              Saved papers
-            </NavLink>
-            <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
-              CRON dashboard
-            </NavLink>
+            {!authDisabled && (
+              <>
+                <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>
+                  Saved papers
+                </NavLink>
+                <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
+                  CRON dashboard
+                </NavLink>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -474,15 +486,38 @@ export const PdfThumbnail: React.FC<{ paperId: string }> = ({ paperId }) => {
  * PLAN.md §9 thumbnail bullet: keep PdfThumbnail as a *fallback*, prefer real
  * thumbnails first.
  */
-export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailUrl: string | null }> = ({
+export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailUrl: string | null; priority?: boolean }> = ({
   paperId,
   title,
   thumbnailUrl,
+  priority = false,
 }) => {
   const [errored, setErrored] = React.useState(false);
+  const [shouldLoad, setShouldLoad] = React.useState(priority);
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (priority || shouldLoad) return;
+    const node = containerRef.current;
+    if (!node) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "250px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [priority, shouldLoad]);
+
   if (thumbnailUrl && !errored) {
     return (
       <div
+        ref={containerRef}
         style={{
           width: 160,
           height: 220,
@@ -495,12 +530,17 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
           position: "relative",
         }}
       >
-        <img
-          src={thumbnailUrl}
-          alt={`Thumbnail for ${title}`}
-          style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-          onError={() => setErrored(true)}
-        />
+        {shouldLoad && (
+          <img
+            src={thumbnailUrl}
+            alt={`Thumbnail for ${title}`}
+            loading={priority ? "eager" : "lazy"}
+            decoding="async"
+            fetchPriority={priority ? "high" : "auto"}
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+            onError={() => setErrored(true)}
+          />
+        )}
       </div>
     );
   }
@@ -541,7 +581,7 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
           onMouseEnter={prefetchPaper}
           style={{ cursor: "pointer" }}
         >
-          <PaperPreview paperId={paper.id} title={paper.title} thumbnailUrl={paper.thumbnailUrl} />
+          <PaperPreview paperId={paper.id} title={paper.title} thumbnailUrl={paper.thumbnailUrl} priority={rank <= 3} />
         </div>
       )}
       <div className="paper-body">

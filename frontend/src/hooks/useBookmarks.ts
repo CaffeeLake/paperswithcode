@@ -15,6 +15,7 @@ import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient, type BookmarkIdsResponse } from "@/lib/api";
+import { apiUrl, isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 
 const BOOKMARK_IDS_KEY = ["my-bookmark-ids"] as const;
@@ -89,11 +90,14 @@ export function useToggleBookmark() {
   const toggle = React.useCallback(
     (paperId: string | number, isBookmarked: boolean) => {
       if (!user) {
+        if (isAuthDisabled()) return;
         const returnTo =
           typeof window !== "undefined"
             ? window.location.pathname + window.location.search
             : "/";
-        window.location.href = `/api/v1/auth/hf/login?return_to=${encodeURIComponent(returnTo)}`;
+        window.location.href = apiUrl(
+          `/api/v1/auth/hf/login?return_to=${encodeURIComponent(returnTo)}`,
+        );
         return;
       }
       mutation.mutate({ paperId, isBookmarked });

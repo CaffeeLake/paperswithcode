@@ -18,6 +18,7 @@
 import { format, parseISO } from "date-fns";
 
 import type { Paper, Repository, Task, TrendingPaper } from "./api";
+import { assetUrl } from "./apiUrl";
 
 export interface PaperCardProps {
   /** source-aware route id: arxiv_id for ArXiv rows, DB id for external rows */
@@ -112,7 +113,7 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     date: shortDate(paper.published),
     publishedIso: paper.published || null,
     year: isoYear(paper.published),
-    thumbnailUrl: paper.thumbnail_url || null,
+    thumbnailUrl: assetUrl(paper.thumbnail_url) || null,
     tldr: (paper as any).tldr || null,
     version: paper.version || "v1",
     velocity24h: null,
@@ -138,7 +139,7 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     date: shortDate(t.date_published),
     publishedIso: t.date_published,
     year: isoYear(t.date_published),
-    thumbnailUrl: t.thumbnail_url || null,
+    thumbnailUrl: assetUrl(t.thumbnail_url) || null,
     tldr: null,
     version: "v1",
     velocity24h: t.trending?.velocity_24h ?? null,

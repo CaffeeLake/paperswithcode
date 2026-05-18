@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { MethodChip, PaperCard } from "@/components";
@@ -10,12 +10,19 @@ import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-type SortKey = "trending" | "new" | "cited";
-const SORT_OPTIONS: Array<[SortKey, string]> = [
+type OrderBy = "trending" | "date_published" | "citation_count";
+const SORT_OPTIONS: Array<[OrderBy, string]> = [
   ["trending", "trending"],
-  ["new", "newest"],
-  ["cited", "most cited"],
+  ["date_published", "newest"],
+  ["citation_count", "most cited"],
 ];
+
+const parseOrderBy = (value: string | null): OrderBy => {
+  if (value === "trending" || value === "date_published" || value === "citation_count") {
+    return value;
+  }
+  return "trending";
+};
 
 const HIDDEN_SUBTASK_SLUGS = new Set([
   "classic-language-modeling",
@@ -25,10 +32,21 @@ const HIDDEN_SUBTASK_SLUGS = new Set([
 
 const SUBTASK_BENCH_PREVIEW = 3;
 
+// Hide single-evaluation benchmarks from default task-page lists. The
+// benchmark detail page still loads by slug and ignores this filter, so a
+// sparse benchmark linked directly from a paper remains reachable.
+const MIN_BENCH_EVAL_COUNT = 2;
+
 const TagBrowseView: React.FC = () => {
   const { taskSlug } = useParams<{ taskSlug: string }>();
   const navigate = useNavigate();
-  const [sortBy, setSortBy] = useState<SortKey>("trending");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const orderBy = parseOrderBy(searchParams.get("order_by"));
+  const setOrderBy = (next: OrderBy) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("order_by", next);
+    setSearchParams(params);
+  };
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set());
 
@@ -36,6 +54,15 @@ const TagBrowseView: React.FC = () => {
     queryKey: ["task", taskSlug],
     queryFn: () => apiClient.getTask(taskSlug!),
     enabled: !!taskSlug,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Parent task chain for the breadcrumb. The endpoint returns parents ordered
+  // immediate-parent first, so we reverse to render root -> leaf.
+  const parentsQ = useQuery({
+    queryKey: ["task-parents", taskQ.data?.id],
+    queryFn: () => apiClient.getTaskParents(taskQ.data!.id),
+    enabled: !!taskQ.data?.id,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -64,21 +91,21 @@ const TagBrowseView: React.FC = () => {
     [subtasksQ.data],
   );
 
-  // Datasets associated with this task — surfaced as benchmark links. When the
-  // task has subtasks, roll them up via include_descendants so the parent task
-  // page can still report a meaningful "BENCHMARKS" count without duplicating
-  // ownership.
-  const hasSubtasks = (subtasksQ.data?.results?.length || 0) > 0;
+  // Direct benchmarks for this task only. Subtask benchmarks render in their
+  // own per-subtask section below, so this list intentionally excludes
+  // descendants — otherwise parent tasks like `object-detection` would have
+  // their own benchmarks (e.g. `COCO val2017`, `Open Images V7`) hidden the
+  // moment any subtask happened to expose a benchmark too.
   const datasetsQ = useQuery({
-    queryKey: ["task-datasets", taskQ.data?.id, hasSubtasks],
+    queryKey: ["task-datasets", taskQ.data?.id, false, MIN_BENCH_EVAL_COUNT],
     queryFn: () =>
       apiClient.getDatasets({
         task_id: Number(taskQ.data!.id),
         page_size: 100,
         ordering: "-paper_count",
-        include_descendants: hasSubtasks,
+        min_eval_count: MIN_BENCH_EVAL_COUNT,
       }),
-    enabled: !!taskQ.data?.id && !subtasksQ.isLoading,
+    enabled: !!taskQ.data?.id,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -87,26 +114,21 @@ const TagBrowseView: React.FC = () => {
   // something to reveal without an extra round trip.
   const subtaskDatasetQs = useQueries({
     queries: visibleSubtasks.map((s) => ({
-      queryKey: ["task-datasets", s.id, false],
+      queryKey: ["task-datasets", s.id, false, MIN_BENCH_EVAL_COUNT],
       queryFn: () =>
         apiClient.getDatasets({
           task_id: Number(s.id),
           page_size: 20,
           ordering: "-paper_count",
+          min_eval_count: MIN_BENCH_EVAL_COUNT,
         }),
       staleTime: 10 * 60 * 1000,
     })),
   });
 
-  const orderBy =
-    sortBy === "trending"
-      ? "trending"
-      : sortBy === "cited"
-        ? "citation_count"
-        : "date_published";
   const papersQ = useInfiniteTaskPapers({
     taskId: taskQ.data?.id || "",
-    page_size: 20,
+    page_size: 12,
     order_by: orderBy,
     order_dir: "desc",
     include_resources: false,
@@ -164,14 +186,23 @@ const TagBrowseView: React.FC = () => {
   const taskName = displayTaskName(task.name, task.slug);
   const sisters = (sistersQ.data?.results || []).filter((s) => s.id !== task.id);
   const datasets = datasetsQ.data?.results || [];
-  const subtaskBenchmarkQueriesReady = subtaskDatasetQs.every((q) => !q.isLoading);
   const hasVisibleSubtaskBenchmarks = visibleSubtasks.some((_, idx) => {
     const subDatasets = subtaskDatasetQs[idx]?.data?.results || [];
     return subDatasets.length > 0;
   });
-  const shouldShowBenchmarkList =
-    datasets.length > 0 &&
-    (!hasSubtasks || (subtaskBenchmarkQueriesReady && !hasVisibleSubtaskBenchmarks));
+  const shouldShowBenchmarkList = datasets.length > 0;
+
+  // Total unique benchmarks for the BENCHMARKS quickstat: direct task
+  // benchmarks plus visible subtask benchmarks, deduped by dataset id so a
+  // benchmark linked to both the parent and a subtask only counts once.
+  const totalBenchmarkCount = (() => {
+    const ids = new Set<string>();
+    datasets.forEach((d) => ids.add(d.id));
+    subtaskDatasetQs.forEach((q) =>
+      (q.data?.results || []).forEach((d) => ids.add(d.id)),
+    );
+    return ids.size;
+  })();
 
   const toggleSubtaskExpanded = (subtaskId: string) => {
     setExpandedSubtasks((prev) => {
@@ -188,6 +219,14 @@ const TagBrowseView: React.FC = () => {
         <Link to="/">Papers</Link>
         <span className="sep">/</span>
         <Link to="/tasks">Tasks</Link>
+        {[...(parentsQ.data || [])].reverse().map((parent) => (
+          <React.Fragment key={parent.id}>
+            <span className="sep">/</span>
+            <Link to={`/tasks/${parent.slug || parent.id}`}>
+              {displayTaskName(parent.name, parent.slug)}
+            </Link>
+          </React.Fragment>
+        ))}
         <span className="sep">/</span>
         <span style={{ color: "var(--accent-text)" }}>{task.name.toUpperCase()}</span>
       </div>
@@ -202,7 +241,7 @@ const TagBrowseView: React.FC = () => {
           <span className="num">{(task.paper_count ?? 0).toLocaleString()}</span>PAPERS
         </span>
         <span>
-          <span className="num">{datasets.length}</span>BENCHMARKS
+          <span className="num">{totalBenchmarkCount}</span>BENCHMARKS
         </span>
         <span>
           <span className="num">{commonMethods.length}+</span>METHODS USED
@@ -211,9 +250,50 @@ const TagBrowseView: React.FC = () => {
 
       <div className="task-page-grid" style={{ marginTop: 28 }}>
         <div>
-          {hasVisibleSubtaskBenchmarks && (
+          {shouldShowBenchmarkList && (
             <>
               <div className="task-section-head">
+                <div className="task-section-eyebrow">Leaderboards · click any</div>
+                <div className="task-section-title">
+                  Benchmarks <span className="meta">[{datasets.length}]</span>
+                </div>
+              </div>
+              {(benchmarksExpanded ? datasets : datasets.slice(0, 5)).map((d, i) => (
+                <div key={d.id} className="bench-row" onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}>
+                  <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
+                  <div className="bench-row-main">
+                    <div className="bench-row-name">{d.name}</div>
+                    <div className="bench-row-sub">
+                      {d.paper_count != null && (
+                        <span>
+                          <strong>{d.paper_count}</strong> ENTRIES
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="bench-row-arrow">→</div>
+                </div>
+              ))}
+              {datasets.length > 5 && (
+                <button
+                  type="button"
+                  className="bench-show-more"
+                  onClick={() => setBenchmarksExpanded((v) => !v)}
+                >
+                  {benchmarksExpanded
+                    ? "− show top 5"
+                    : `+ show ${datasets.length - 5} more benchmarks`}
+                </button>
+              )}
+            </>
+          )}
+
+          {hasVisibleSubtaskBenchmarks && (
+            <>
+              <div
+                className="task-section-head"
+                style={shouldShowBenchmarkList ? { marginTop: 36 } : undefined}
+              >
                 <div className="task-section-eyebrow">Benchmarks by capability</div>
                 <div className="task-section-title">
                   Subtasks <span className="meta">[{visibleSubtasks.length}]</span>
@@ -277,44 +357,6 @@ const TagBrowseView: React.FC = () => {
             </>
           )}
 
-          {shouldShowBenchmarkList && (
-            <>
-              <div className="task-section-head">
-                <div className="task-section-eyebrow">Leaderboards · click any</div>
-                <div className="task-section-title">
-                  Benchmarks <span className="meta">[{datasets.length}]</span>
-                </div>
-              </div>
-              {(benchmarksExpanded ? datasets : datasets.slice(0, 5)).map((d, i) => (
-                <div key={d.id} className="bench-row" onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}>
-                  <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
-                  <div className="bench-row-main">
-                    <div className="bench-row-name">{d.name}</div>
-                    <div className="bench-row-sub">
-                      {d.paper_count != null && (
-                        <span>
-                          <strong>{d.paper_count}</strong> ENTRIES
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="bench-row-arrow">→</div>
-                </div>
-              ))}
-              {datasets.length > 5 && (
-                <button
-                  type="button"
-                  className="bench-show-more"
-                  onClick={() => setBenchmarksExpanded((v) => !v)}
-                >
-                  {benchmarksExpanded
-                    ? "− show top 5"
-                    : `+ show ${datasets.length - 5} more benchmarks`}
-                </button>
-              )}
-            </>
-          )}
-
           <div className="task-section-head" style={{ marginTop: 36 }}>
             <div className="task-section-eyebrow">Top trending · sort below</div>
             <div className="task-section-title">
@@ -327,8 +369,8 @@ const TagBrowseView: React.FC = () => {
               {SORT_OPTIONS.map(([k, l]) => (
                 <button
                   key={k}
-                  className={`sort-btn ${sortBy === k ? "active" : ""}`}
-                  onClick={() => setSortBy(k)}
+                  className={`sort-btn ${orderBy === k ? "active" : ""}`}
+                  onClick={() => setOrderBy(k)}
                 >
                   {l}
                 </button>

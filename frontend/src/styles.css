@@ -1982,6 +1982,10 @@ html { scroll-behavior: smooth; }
 .bm-table tbody tr.is-highlighted {
   background: oklch(0.97 0.035 60);
   position: relative;
+  /* Sticky `.app-header` (top: 0) is ~58px tall; reserve a bit more so the
+   * deep-link `scrollIntoView({ block: "start" })` lands the row just below
+   * the header instead of behind it. */
+  scroll-margin-top: 80px;
 }
 .bm-table tbody tr.is-highlighted td {
   background: oklch(0.97 0.035 60);

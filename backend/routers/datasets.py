@@ -54,6 +54,15 @@ async def list_datasets(
             "pages that want to roll up benchmarks from their subtasks."
         ),
     ),
+    min_eval_count: Optional[int] = Query(
+        None,
+        ge=1,
+        description=(
+            "Hide benchmarks whose evaluation row count (`paper_count`) is "
+            "below this threshold. Used by task pages to suppress sparse "
+            "benchmarks (e.g. < 2 evaluations) by default."
+        ),
+    ),
     ordering: Optional[str] = Query(
         "name",
         description="Order by field: name, full_name, created_at, paper_count (prefix with '-' for descending)",
@@ -114,6 +123,7 @@ async def list_datasets(
             include_descendants=include_descendants,
             order_by=order_by,
             order_dir=order_dir,
+            min_eval_count=min_eval_count,
         )
 
     except DatabaseError as e:

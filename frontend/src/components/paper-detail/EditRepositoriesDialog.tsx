@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Check, Plus, Trash2, Github } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,16 +34,20 @@ export function EditRepositoriesDialog({
   const [newRepositoryUrl, setNewRepositoryUrl] = useState("");
   const queryClient = useQueryClient();
 
-  // Reset state when dialog opens
-  const handleOpenChange = (newOpen: boolean) => {
-    if (newOpen) {
-      setEditedRepositories(initialRepositories);
-      setNewRepositoryUrl("");
+  // Only seed local state on the false→true transition of `open` so background
+  // refetches of the paper don't wipe pending edits while the dialog is open.
+  const hasSeededRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      hasSeededRef.current = false;
+      return;
     }
-    onOpenChange(newOpen);
-  };
+    if (hasSeededRef.current) return;
+    hasSeededRef.current = true;
+    setEditedRepositories(initialRepositories);
+    setNewRepositoryUrl("");
+  }, [open, initialRepositories]);
 
-  // Mutation for updating repositories
   const updateRepositoriesMutation = useMutation({
     mutationFn: ({ paperId, repositories }: { paperId: string; repositories: Repository[] }) =>
       updatePaperRepositories(paperId, repositories),
@@ -55,17 +59,26 @@ export function EditRepositoriesDialog({
     },
   });
 
-  const handleAddRepository = () => {
+  // Returns the repositories to commit, optionally folding in the typed-but-not-yet-added URL.
+  // Returns null when the typed URL is a duplicate so callers can abort.
+  const getRepositoriesForSubmission = (): Repository[] | null => {
     const trimmedUrl = newRepositoryUrl.trim();
-    if (!trimmedUrl) return;
+    if (!trimmedUrl) return editedRepositories;
 
-    // Check if URL already exists
     if (editedRepositories.some(r => r.url === trimmedUrl)) {
       alert("This repository URL is already added");
-      return;
+      return null;
     }
 
-    setEditedRepositories([...editedRepositories, { url: trimmedUrl, is_official: false }]);
+    return [...editedRepositories, { url: trimmedUrl, is_official: false }];
+  };
+
+  const handleAddRepository = () => {
+    const next = getRepositoriesForSubmission();
+    if (next === null) return;
+    if (next.length === editedRepositories.length) return;
+
+    setEditedRepositories(next);
     setNewRepositoryUrl("");
   };
 
@@ -82,11 +95,13 @@ export function EditRepositoriesDialog({
   };
 
   const handleSave = () => {
-    updateRepositoriesMutation.mutate({ paperId, repositories: editedRepositories });
+    const next = getRepositoriesForSubmission();
+    if (next === null) return;
+    updateRepositoriesMutation.mutate({ paperId, repositories: next });
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[600px]">
         <DialogHeader>
           <DialogTitle>Edit Paper Repositories</DialogTitle>

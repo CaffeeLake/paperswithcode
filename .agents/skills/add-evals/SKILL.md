@@ -1,11 +1,11 @@
 ---
 name: add-evals
-description: Add evaluation results to the paperswithcode database from any source — Hugging Face model cards, arXiv/HF/PapersWithCode paper text, or GitHub repository READMEs — restricted to benchmarks that already exist with a task association and leaderboard metric. Use this whenever the user shares a Hugging Face model URL or repo id, an arXiv id / HF paper / PapersWithCode paper, a GitHub repository URL, or a model release page and asks to add evaluation results, benchmark scores, or leaderboard entries — even when phrased casually like "add scores from this model", "import benchmarks from <hf url>", "ingest the eval table from this paper into the DB", "grab the benchmarks from this repo's README", or "add evaluations for this release". This is the repo-specific workflow that uses `uv run hf`, `curl` against Hugging Face model search, `gh`, and the local backend API; trigger it instead of generic ingestion guidance whenever the user is trying to populate evaluation results from a model, paper, or repository source.
+description: Add evaluation results to the paperswithcode database from any source — Hugging Face model cards, arXiv/HF/PapersWithCode paper text, or GitHub repository READMEs — restricted to benchmarks that already exist with a task association and the exact leaderboard metric already configured. Use this whenever the user shares a Hugging Face model URL or repo id, an arXiv id / HF paper / PapersWithCode paper, a GitHub repository URL, or a model release page and asks to add evaluation results, benchmark scores, or leaderboard entries — even when phrased casually like "add scores from this model", "import benchmarks from <hf url>", "ingest the eval table from this paper into the DB", "grab the benchmarks from this repo's README", or "add evaluations for this release". This skill must skip source-only metrics, component scores, subscores, and alternate metric labels unless that metric is already configured for the exact leaderboard; use it instead of generic ingestion guidance whenever the user is trying to populate evaluation results from a model, paper, or repository source.
 ---
 
 # Add Evaluations
 
-This skill imports evaluation results into the paperswithcode database from any of the common sources that ship benchmark tables: Hugging Face model cards, a paper on Arxiv/Hugging Face/paperswithcode.co, or a Github or project page URL. It is intentionally conservative: it only writes evaluation rows for benchmarks that already exist in the database with a task association and a configured leaderboard metric. It never invents new datasets, tasks, or metrics during the import.
+This skill imports evaluation results into the paperswithcode database from any of the common sources that ship benchmark tables: Hugging Face model cards, a paper on Arxiv/Hugging Face/paperswithcode.co, or a Github or project page URL. It is intentionally conservative: it only writes evaluation rows for benchmarks that already exist in the database with a task association and a configured leaderboard metric. It never invents new datasets, tasks, or metrics during the import, and it never imports rows for source-only metric labels that are not already configured on the exact leaderboard.
 
 ## Why this exists
 
@@ -13,10 +13,10 @@ Model releases (especially flagship LLMs / VLMs / OCR models) advertise benchmar
 
 - Reuse existing benchmark datasets in the DB by matching names from the source.
 - Skip source benchmarks that are not yet in the DB (curate those separately later, not as a side effect).
-- Add evaluation rows for the model only on benchmarks that are fully wired up (dataset linked to a task with at least one leaderboard metric).
+- Add evaluation rows for the model only on benchmarks that are fully wired up (dataset linked to a task with the specific leaderboard metric being imported).
 - Keep imports idempotent and easy to re-run.
 
-This avoids polluting the schema with half-configured benchmarks, false-positive name matches, or duplicate evaluation rows.
+This avoids polluting the schema with half-configured benchmarks, false-positive name matches, duplicate evaluation rows, or mixed-metric leaderboards where incomparable component scores are ranked together with canonical scores.
 
 ## Pre-flight
 
@@ -185,11 +185,13 @@ Apply the exclusion rules in this order:
 
 1. Drop any benchmark with no matching dataset row in the DB.
 2. Drop any matched benchmark with no task association.
-3. Drop any matched benchmark whose required metric is not already in `task_dataset_metrics`.
-4. For each remaining benchmark, pick a `best_metric` that is already linked to that leaderboard. Prefer the source's metric label (`Pass@1`, `Accuracy`, etc.) when it is already linked; otherwise fall back to the canonical metric the leaderboard uses (most often `Accuracy`).
-5. Record `supports_harness` for the exact selected `(task_id, dataset_id)` row. This flag decides whether the API payload may include `harness`. If it is true, inspect the source notes, footnotes, model card metadata, official blog/report text, and linked official evaluation PRs or result files for a named harness before posting the row.
+3. For each matched benchmark, list the metrics already linked in `task_dataset_metrics` for the exact `(task_id, dataset_id)` leaderboard before choosing any row to import.
+4. Drop any source row whose metric label is not already linked to that exact leaderboard, unless the row can be converted to an already-linked canonical metric by a source-supported rule. Do not add the source metric to `metrics`, do not create a new `metrics` row, and do not add a `task_dataset_metrics` link in this skill.
+5. Only use a canonical metric fallback when it preserves the same quantity, not merely the same benchmark name. For example, if a leaderboard only allows `Score`, an `MME Perception Score` or `MME Cognition Score` row must be skipped unless the source also reports enough official components to compute the overall `Score` and the source defines that sum as the leaderboard score. If a leaderboard only allows `Accuracy`, do not import `F1`, `Recall`, `Edit Distance`, or another table column as `Accuracy`.
+6. For each remaining benchmark, set `best_metric` to one of the already-linked metric names exactly as stored in `task_dataset_metrics`. The `metrics` JSON must contain only that selected metric key for the imported row unless every additional metric key is also linked to the same leaderboard and comparable on that page.
+7. Record `supports_harness` for the exact selected `(task_id, dataset_id)` row. This flag decides whether the API payload may include `harness`. If it is true, inspect the source notes, footnotes, model card metadata, official blog/report text, and linked official evaluation PRs or result files for a named harness before posting the row.
 
-Keep an explicit "skipped" list of names + reasons to report at the end. Do not change task associations or leaderboard metrics in this pass; if the user explicitly wants to add tasks or metrics, defer to the `add-benchmark` skill instead.
+Keep an explicit "skipped" list of names + reasons to report at the end. Use reasons like `metric not configured for leaderboard` or `component metric only; canonical total not reported` so future cleanup is easy. Do not change task associations or leaderboard metrics in this pass; if the user explicitly wants to add tasks or metrics, defer to the `add-benchmark` skill instead.
 
 ### 6. Optional: minimal benchmark metadata enrichment
 
@@ -218,8 +220,9 @@ If the source paper cannot be confidently identified, leave the dataset alone an
 
 ### 7. Post evaluations via the API
 
-Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per (selected best target model configuration × benchmark). Include `harness` only when the selected leaderboard's `supports_harness` flag is true. The unique key is `(paper_id, task_id, dataset_id, model_name, harness, best_metric)`, so:
+Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per (selected best target model configuration × benchmark). Before posting each row, assert that `best_metric` is in the allowed metric list fetched for that exact `(task_id, dataset_id)` pair and that every key in the outgoing `metrics` object is allowed for that leaderboard. Include `harness` only when the selected leaderboard's `supports_harness` flag is true. The unique key is `(paper_id, task_id, dataset_id, model_name, harness, best_metric)`, so:
 
+- Use the model name as written in the paper/source, keeping it short and to the point. Put setup details such as "fine-tuned", parameter count, harness, mode, precision, or training recipe in `methodology` unless they are part of the source's actual model name.
 - Distinguish variants from the same release with `model_name`, e.g. `DeepSeek-V4-Pro Max` vs `DeepSeek-V4-Flash Max`. Do NOT bake harness names, parameter counts, or modes into `model_name` — keep `model_name` clean (e.g. `GLM-5.1`, not `GLM-5.1 (Terminus-2)` or `GLM-4.5 (355B)`).
 - Since the default import scope is the best target model only, model-name suffixes for ablations like `(4x)`, `(16x)`, `(Non-Think)`, or `(w/ tools)` should appear only when the user explicitly requested those variants or when they are needed to identify the single selected best setup.
 - Preserve benchmark shot-count comparability in `model_name`. If the source reports a multi-shot result for a benchmark whose leaderboard commonly compares 1-shot results, append the shot count to the model name, e.g. `Llama 2 70B (8-shot)`, `Llama 2 70B (5-shot)`, or `Llama 2 70B (3-shot)`. Keep plain `Model Name` for 1-shot rows. Mention the exact shot count in `methodology` either way.
@@ -227,6 +230,7 @@ Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per (selecte
 - Leave `harness` unset (null) on every leaderboard where `supports_harness = FALSE`, even when the setup is agentic or tool-augmented. Capture those details in `methodology`, or in a concise `model_name` suffix only when the setup represents a distinct non-harness condition.
 - Two harness variants of the same model on a harness-supporting leaderboard (e.g. `GLM-5.1` with `Claude Code` and `GLM-5.1` with `Terminus-2`) become two separate rows that differ only in `harness`. They are not duplicates.
 - Distinguish setups on the same benchmark that are NOT about harness (e.g. `HLE` vs `HLE w/ tools`) via a `model_name` suffix like `(w/ tools)` plus a clear `methodology` description, since the metric is shared. Only do this if the metric/methodology can clearly distinguish the rows — otherwise skip and report.
+- Skip component, subscore, split, or alternate-metric rows when their metric is not configured on the selected leaderboard. Examples: skip `MME Perception Score` and `MME Cognition Score` on an `MME` leaderboard that only allows `Score`; skip `MME-P` unless a separate MME-P dataset/leaderboard exists with that metric configured.
 - Always include `methodology` summarizing the source's note for that row (shot count, metric label, mode, harness version, source surface — card/paper/README — etc.) so the row is traceable back to where the number came from.
 
 Skeleton:
@@ -240,6 +244,13 @@ def post_eval(
     paper_id, task_id, dataset_id, model_name, metric, score, methodology,
     harness=None,
 ):
+    allowed_metrics = allowed_metrics_by_leaderboard[(task_id, dataset_id)]
+    outgoing_metric_keys = {metric}
+    if metric not in allowed_metrics or not outgoing_metric_keys <= allowed_metrics:
+        raise ValueError(
+            f"Metric {metric!r} is not configured for task={task_id}, dataset={dataset_id}"
+        )
+
     body = {
         "paper_id": paper_id,
         "task_id": task_id,
@@ -267,7 +278,7 @@ def post_eval(
 Common error responses:
 
 - `400 Failed to create evaluation: No leaderboard defined ...` — the dataset has no metric linked for that task. The benchmark should have been filtered out in step 5; recheck the inventory.
-- `400 Metric '<X>' is not allowed ...` — pick a `best_metric` already in the leaderboard's allowed list, often `Accuracy`.
+- `400 Metric '<X>' is not allowed ...` — the row escaped the filter. Do not retry with a newly invented metric or a loose fallback; recheck the allowed metrics for that leaderboard and skip the source row if its metric is not configured.
 - `401 Unauthorized` — `X-Admin-Token` is missing or wrong; reload `backend/keys.env`.
 
 ### 8. Validate and verify
@@ -295,7 +306,7 @@ End by giving the user a concise report:
 - Which source(s) the evaluation table actually came from — model card, paper body, GitHub README, or a combination — so the user can audit the provenance quickly.
 - Which model variants were imported and how many rows were posted per variant. For harness-supporting leaderboards, list each `(model, harness)` combination explicitly.
 - The list of in-scope benchmarks, with `dataset_id`, `task`, `best_metric`, and `supports_harness`.
-- The list of skipped benchmarks with the reason for each (no DB match / no task / no metric / missing source paper / could not distinguish setup).
+- The list of skipped benchmarks or rows with the reason for each (no DB match / no task / metric not configured for leaderboard / component metric only / missing source paper / could not distinguish setup).
 - Any benchmark metadata gaps left for follow-up (e.g. missing `introducing_paper_id`, no arXiv source paper, missing source publication date, missing harness attribution for a harness-supporting leaderboard).
 - Any harness details from the source that were downgraded into `methodology` or `model_name` because `supports_harness = FALSE`.
 

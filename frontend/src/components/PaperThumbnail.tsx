@@ -27,6 +27,8 @@ const PaperThumbnail = ({
         <img
           src={thumbnailUrl}
           alt={`Thumbnail for ${title}`}
+          loading="lazy"
+          decoding="async"
           className="w-full h-full object-contain"
           onLoad={() => setIsLoading(false)}
           onLoadStart={() => setIsLoading(true)}

@@ -58,14 +58,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
+    # Add CORS middleware. `allow_origin_regex` is used to permit the Hugging
+    # Face Space mirror (e.g. `https://<owner>-<name>.hf.space`) when the
+    # `PWC_EXTRA_ALLOWED_ORIGIN_REGEX` setting is configured, without having
+    # to hardcode every Space subdomain.
+    cors_kwargs = dict(
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
+    if settings.extra_allowed_origin_regex:
+        cors_kwargs["allow_origin_regex"] = settings.extra_allowed_origin_regex
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     @app.middleware("http")
     async def add_public_cache_headers(request, call_next):

@@ -54,6 +54,7 @@ class DatasetService:
         include_descendants: bool = False,
         order_by: str = "name",
         order_dir: str = "asc",
+        min_eval_count: Optional[int] = None,
     ) -> Datasets:
         """
         Get a paginated list of benchmark datasets with optional filtering.
@@ -67,6 +68,9 @@ class DatasetService:
             task_id: Filter by associated task ID (e.g., datasets for "Image Classification")
             order_by: Field to order by (name, full_name, created_at)
             order_dir: Order direction (asc, desc)
+            min_eval_count: When set, hide benchmarks whose evaluation row
+                count (i.e. `paper_count`) is below this threshold. Used by
+                the task page to suppress low-signal benchmarks by default.
 
         Returns:
             Datasets object with pagination info and results
@@ -135,6 +139,17 @@ class DatasetService:
                     )
                     .filter(task_dataset_filter.task_id.in_(task_ids))
                     .group_by(task_dataset_filter.featured_rank)
+                )
+
+            if min_eval_count is not None and min_eval_count > 0:
+                # Hide sparse benchmarks. `paper_count` is the count of
+                # distinct evaluation rows on a dataset, so a HAVING on the
+                # same aggregate suppresses low-signal benchmarks from
+                # default task-page lists without touching the underlying
+                # data or the dataset detail page (which loads benchmarks
+                # by slug directly, bypassing this filter).
+                query = query.having(
+                    func.count(func.distinct(DBEvaluation.id)) >= min_eval_count
                 )
 
             # Get total count before pagination
@@ -404,7 +419,7 @@ class DatasetService:
                 )
                 .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
                 .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
-                .filter(DBDataset.slug == slug)
+                .filter(func.lower(DBDataset.slug) == slug.lower())
                 .group_by(DBDataset.id)
                 .first()
             )

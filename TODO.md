@@ -12,3 +12,7 @@
 - Label all papers with tasks for which they have evals (CRON job)
 - Support multiple metrics per benchmark, e.g. https://paperswithcode.co/benchmark/open-asr-leaderboard
 - Add thumbnails for external papers, by taking a screenshot of the external blog, PDF, etc.
+- Add support for external evals (i.e. evals on models not introduced by the paper)
+- Remove false positives of image generation papers being tagged with image classification due to the imagenet keyword
+- Add support for closed-source models, e.g. Claude Sonnet 3.5 (and mark them as "closed-source" with a toggle to enable/disable)
+- Add scientific benchmarks of https://huggingface.co/internlm/Intern-S1-Pro

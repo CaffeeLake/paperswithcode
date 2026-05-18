@@ -79,6 +79,15 @@ const FeedView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
+  // Sidebar: tasks whose share of recent papers is rising vs their baseline.
+  // Independent of Top Domains; overlapping entries appear in both sections
+  // so neither list misrepresents its own signal.
+  const trendingTasks = useQuery({
+    queryKey: ["trending-tasks-sidebar"],
+    queryFn: () => apiClient.getTrendingTasks({ limit: 8 }),
+    staleTime: 10 * 60 * 1000,
+  });
+
   const papers = usePapers({
     page_size: 30,
     order_by: orderBy,
@@ -147,6 +156,28 @@ const FeedView: React.FC = () => {
             <Link to="/tasks" className="sidebar-link" style={{ marginTop: 8, fontStyle: "italic" }}>
               all domains →
             </Link>
+          </div>
+
+          <div className="sidebar-section">
+            <div className="sidebar-label">Trending Domains</div>
+            {trendingTasks.isLoading && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-5 w-full" />
+                ))}
+              </div>
+            )}
+            {trendingTasks.data?.results?.length === 0 && !trendingTasks.isLoading && (
+              <div style={{ fontSize: 12, color: "var(--ink-faint)" }}>
+                No domains gaining momentum right now.
+              </div>
+            )}
+            {trendingTasks.data?.results?.map((task) => (
+              <Link key={task.id} to={`/tasks/${task.slug}`} className="sidebar-link">
+                {displayTaskName(task.name, task.slug)}
+                <span className="count">{task.share_lift.toFixed(1)}x</span>
+              </Link>
+            ))}
           </div>
         </aside>
 

@@ -5,18 +5,27 @@ This service provides methods for retrieving and managing AI/ML task data,
 including pagination, filtering, hierarchical relationships, and paper associations.
 """
 
+import math
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, or_
+from sqlalchemy import func, desc, asc, or_, case, and_
 
 from backend.models.database import (
     Task as DBTask,
     Area as DBArea,
+    Paper as DBPaper,
     PaperTask,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
 )
-from backend.models.api import Task, Tasks, TaskCreateRequest
+from backend.models.api import (
+    Task,
+    Tasks,
+    TaskCreateRequest,
+    TrendingTask,
+    TrendingTasks,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
 
@@ -151,6 +160,142 @@ class TaskService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve tasks: {str(e)}")
+
+    def get_trending_tasks(
+        self,
+        limit: int = 8,
+        recent_days: int = 30,
+        baseline_days: int = 180,
+        level: Optional[int] = None,
+        min_recent_papers: int = 5,
+        min_baseline_papers: int = 10,
+        min_share_lift: float = 1.0,
+        today: Optional[date] = None,
+    ) -> TrendingTasks:
+        """
+        Rank tasks by how over-indexed they are in recent papers vs baseline.
+
+        For each task with enough support, computes::
+
+            recent_share   = task_recent_papers   / all_recent_papers
+            baseline_share = task_baseline_papers / all_baseline_papers
+            share_lift     = recent_share / baseline_share
+            trend_score    = share_lift * ln(1 + task_recent_papers)
+
+        The recent window is the last ``recent_days``, the baseline window is
+        the ``baseline_days`` immediately preceding it. Tasks below the
+        ``min_recent_papers`` / ``min_baseline_papers`` / ``min_share_lift``
+        gates are dropped so noisy or shrinking domains never surface.
+        """
+        try:
+            today = today or datetime.now(timezone.utc).date()
+            recent_start = today - timedelta(days=recent_days)
+            baseline_start = recent_start - timedelta(days=baseline_days)
+
+            in_recent = and_(
+                DBPaper.is_latest_version,
+                DBPaper.date_published > recent_start,
+                DBPaper.date_published <= today,
+            )
+            in_baseline = and_(
+                DBPaper.is_latest_version,
+                DBPaper.date_published > baseline_start,
+                DBPaper.date_published <= recent_start,
+            )
+
+            totals_row = (
+                self.db.query(
+                    func.count(case((in_recent, DBPaper.id))).label("all_recent"),
+                    func.count(case((in_baseline, DBPaper.id))).label("all_baseline"),
+                )
+                .filter(DBPaper.date_published.isnot(None))
+                .one()
+            )
+            all_recent = int(totals_row.all_recent or 0)
+            all_baseline = int(totals_row.all_baseline or 0)
+
+            if all_recent == 0 or all_baseline == 0:
+                return TrendingTasks(
+                    results=[],
+                    recent_days=recent_days,
+                    baseline_days=baseline_days,
+                )
+
+            recent_count_col = func.count(case((in_recent, DBPaper.id))).label(
+                "recent_count"
+            )
+            baseline_count_col = func.count(case((in_baseline, DBPaper.id))).label(
+                "baseline_count"
+            )
+
+            per_task_query = (
+                self.db.query(
+                    DBTask,
+                    recent_count_col,
+                    baseline_count_col,
+                )
+                .join(PaperTask, PaperTask.task_id == DBTask.id)
+                .join(DBPaper, DBPaper.id == PaperTask.paper_id)
+                .filter(DBPaper.date_published.isnot(None))
+                .group_by(DBTask.id)
+                .having(recent_count_col >= min_recent_papers)
+                .having(baseline_count_col >= min_baseline_papers)
+            )
+
+            if level is not None:
+                per_task_query = per_task_query.filter(DBTask.level == level)
+
+            scored: List[tuple] = []
+            for db_task, recent_count, baseline_count in per_task_query.all():
+                recent_count = int(recent_count or 0)
+                baseline_count = int(baseline_count or 0)
+                recent_share = recent_count / all_recent
+                baseline_share = baseline_count / all_baseline
+                if baseline_share <= 0:
+                    continue
+                share_lift = recent_share / baseline_share
+                if share_lift <= min_share_lift:
+                    continue
+                trend_score = share_lift * math.log(1 + recent_count)
+                scored.append(
+                    (trend_score, share_lift, recent_count, baseline_count, db_task)
+                )
+
+            scored.sort(key=lambda item: item[0], reverse=True)
+
+            results = [
+                TrendingTask(
+                    id=str(db_task.id),
+                    name=db_task.name,
+                    description=db_task.description,
+                    slug=db_task.slug,
+                    keywords=db_task.keywords,
+                    parent_id=str(db_task.parent_id) if db_task.parent_id else None,
+                    area_id=str(db_task.area_id) if db_task.area_id else None,
+                    level=db_task.level,
+                    paper_count=recent_count + baseline_count,
+                    image_url=db_task.image_url,
+                    image_credit=db_task.image_credit,
+                    created_at=db_task.created_at,
+                    updated_at=db_task.updated_at,
+                    recent_paper_count=recent_count,
+                    baseline_paper_count=baseline_count,
+                    share_lift=share_lift,
+                    trend_score=trend_score,
+                )
+                for trend_score, share_lift, recent_count, baseline_count, db_task in scored[
+                    :limit
+                ]
+            ]
+
+            return TrendingTasks(
+                results=results,
+                recent_days=recent_days,
+                baseline_days=baseline_days,
+            )
+
+        except Exception as e:
+            raise DatabaseError(f"Failed to compute trending tasks: {str(e)}")
 
     def get_task_by_id(self, task_id: str) -> Task:
         """

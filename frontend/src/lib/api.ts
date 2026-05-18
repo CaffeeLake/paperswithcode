@@ -3,8 +3,10 @@
  */
 
 import { getStoredAdminToken } from "./adminAuth";
+import { apiUrl, getApiOrigin } from "./apiUrl";
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = `${getApiOrigin()}/api/v1`;
+const LOG_API_REQUESTS = import.meta.env.DEV;
 
 export interface Repository {
   id: string;
@@ -112,6 +114,19 @@ export interface Task {
   image_credit?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface TrendingTask extends Task {
+  recent_paper_count: number;
+  baseline_paper_count: number;
+  share_lift: number;
+  trend_score: number;
+}
+
+export interface TrendingTasksResponse {
+  results: TrendingTask[];
+  recent_days: number;
+  baseline_days: number;
 }
 
 export interface Method {
@@ -279,7 +294,9 @@ class ApiClient {
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
-    console.log(`[API] Requesting: ${url}`);
+    if (LOG_API_REQUESTS) {
+      console.log(`[API] Requesting: ${url}`);
+    }
 
     try {
       const { headers, ...requestOptions } = options ?? {};
@@ -295,7 +312,9 @@ class ApiClient {
         },
       });
 
-      console.log(`[API] Response from ${url}:`, response.status, response.statusText);
+      if (LOG_API_REQUESTS) {
+        console.log(`[API] Response from ${url}:`, response.status, response.statusText);
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -318,7 +337,9 @@ class ApiClient {
       }
 
       const data = await response.json();
-      console.log(`[API] Success:`, data);
+      if (LOG_API_REQUESTS) {
+        console.log(`[API] Success:`, data);
+      }
       return data;
     } catch (error) {
       console.error(`[API] Request to ${url} failed:`, error);
@@ -576,6 +597,30 @@ class ApiClient {
     return this.request<Task>(`/tasks/${id}`);
   }
 
+  async getTrendingTasks(params?: {
+    limit?: number;
+    recent_days?: number;
+    baseline_days?: number;
+    level?: number;
+    min_recent_papers?: number;
+    min_baseline_papers?: number;
+    min_share_lift?: number;
+  }): Promise<TrendingTasksResponse> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    if (params?.recent_days) searchParams.append('recent_days', params.recent_days.toString());
+    if (params?.baseline_days) searchParams.append('baseline_days', params.baseline_days.toString());
+    if (params?.level !== undefined) searchParams.append('level', params.level.toString());
+    if (params?.min_recent_papers !== undefined) searchParams.append('min_recent_papers', params.min_recent_papers.toString());
+    if (params?.min_baseline_papers !== undefined) searchParams.append('min_baseline_papers', params.min_baseline_papers.toString());
+    if (params?.min_share_lift !== undefined) searchParams.append('min_share_lift', params.min_share_lift.toString());
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString ? `/tasks/trending?${queryString}` : '/tasks/trending';
+    return this.request<TrendingTasksResponse>(endpoint);
+  }
+
   async getTaskChildren(taskId: string, params?: {
     page?: number;
     page_size?: number;
@@ -682,6 +727,13 @@ class ApiClient {
      * up benchmarks owned by their subtasks.
      */
     include_descendants?: boolean;
+    /**
+     * Hide benchmarks whose evaluation row count (`paper_count`) is below
+     * this threshold. Task pages pass `2` to suppress sparse benchmarks
+     * (single-evaluation leaderboards) from default listings while leaving
+     * the benchmark detail page reachable via direct URL.
+     */
+    min_eval_count?: number;
     ordering?: string;
   }): Promise<PaginatedResponse<Dataset>> {
     const searchParams = new URLSearchParams();
@@ -694,6 +746,7 @@ class ApiClient {
     if (params?.task) searchParams.append('task', params.task);
     if (params?.task_id) searchParams.append('task', params.task_id.toString());
     if (params?.include_descendants) searchParams.append('include_descendants', 'true');
+    if (params?.min_eval_count !== undefined) searchParams.append('min_eval_count', params.min_eval_count.toString());
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/datasets/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -845,7 +898,7 @@ class ApiClient {
 
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
-    const url = `/api/thumbnails/generate/${paperId}`;
+    const url = apiUrl(`/api/thumbnails/generate/${paperId}`);
     const response = await fetch(url, { method: 'POST' });
     if (!response.ok) {
       throw new Error(`Thumbnail generation failed: ${response.status}`);
@@ -854,7 +907,7 @@ class ApiClient {
   }
 
   async getThumbnailStatus(paperId: string): Promise<{ has_thumbnail: boolean; thumbnail_url?: string; arxiv_id?: string; version?: string }> {
-    const url = `/api/thumbnails/status/${paperId}`;
+    const url = apiUrl(`/api/thumbnails/status/${paperId}`);
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Thumbnail status check failed: ${response.status}`);
@@ -864,7 +917,7 @@ class ApiClient {
 
   // Health check
   async healthCheck(): Promise<{ status: string; service: string }> {
-    const url = `/health`;
+    const url = apiUrl(`/health`);
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Health check failed: ${response.status}`);
@@ -943,6 +996,7 @@ export const getAreasWithTasks = apiClient.getAreasWithTasks.bind(apiClient);
 export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);
 export const getTasks = apiClient.getTasks.bind(apiClient);
 export const getTask = apiClient.getTask.bind(apiClient);
+export const getTrendingTasks = apiClient.getTrendingTasks.bind(apiClient);
 export const getTaskChildren = apiClient.getTaskChildren.bind(apiClient);
 export const getTaskParents = apiClient.getTaskParents.bind(apiClient);
 export const getTaskPapers = apiClient.getTaskPapers.bind(apiClient);

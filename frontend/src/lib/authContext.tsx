@@ -12,6 +12,8 @@
 
 import React from "react";
 
+import { apiUrl, isAuthDisabled } from "./apiUrl";
+
 export interface AuthUser {
   username: string;
   name: string | null;
@@ -31,7 +33,8 @@ const AuthContext = React.createContext<AuthContextValue | null>(null);
 export const AUTH_STALE_EVENT = "pwc:auth-stale";
 
 async function fetchMe(): Promise<AuthUser | null> {
-  const res = await fetch("/api/v1/auth/me", {
+  if (isAuthDisabled()) return null;
+  const res = await fetch(apiUrl("/api/v1/auth/me"), {
     credentials: "include",
     cache: "no-store",
   });
@@ -52,7 +55,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = React.useCallback(async () => {
-    await fetch("/api/v1/auth/logout", {
+    await fetch(apiUrl("/api/v1/auth/logout"), {
       method: "POST",
       credentials: "include",
     });

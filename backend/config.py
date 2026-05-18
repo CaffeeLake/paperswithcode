@@ -39,6 +39,23 @@ class Settings(BaseSettings):
         ],
         description="Allowed CORS origins for non-production environments",
     )
+    extra_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of additional CORS origins. "
+            "Used to allow the Hugging Face Space mirror (e.g. "
+            "https://nielsr-paperswithcode.hf.space) to call the production "
+            "API."
+        ),
+    )
+    extra_allowed_origin_regex: str = Field(
+        default="",
+        description=(
+            "Optional regex of additional CORS origins. Useful to allow "
+            "any Hugging Face Space subdomain via something like "
+            r"'^https://[a-z0-9-]+\\.hf\\.space$'."
+        ),
+    )
 
     # API configuration
     default_page_size: int = Field(
@@ -165,9 +182,17 @@ class Settings(BaseSettings):
         """Return the appropriate CORS origins for the current environment."""
 
         if self.is_production:
-            return ["https://paperswithcode.co", "https://www.paperswithcode.co"]
+            base = ["https://paperswithcode.co", "https://www.paperswithcode.co"]
+        else:
+            base = list(self.allowed_origins)
 
-        return self.allowed_origins
+        # Always merge any extra origins (e.g. the HF Space mirror) so the
+        # same setting works in staging/dev while testing the Space.
+        for origin in self.extra_allowed_origins.split(","):
+            origin = origin.strip()
+            if origin and origin not in base:
+                base.append(origin)
+        return base
 
 
 @lru_cache()

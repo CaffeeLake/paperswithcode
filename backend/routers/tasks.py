@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Task, Tasks, Papers, KeywordUpdate, TaskCreateRequest
+from backend.models.api import (
+    Task,
+    Tasks,
+    Papers,
+    KeywordUpdate,
+    TaskCreateRequest,
+    TrendingTasks,
+)
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -77,6 +84,72 @@ async def list_tasks(
             level=level,
             order_by=order_by,
             order_dir=order_dir,
+        )
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/trending", response_model=TrendingTasks)
+async def get_trending_tasks(
+    limit: int = Query(
+        8, ge=1, le=50, description="Maximum number of trending tasks to return"
+    ),
+    recent_days: int = Query(
+        30, ge=1, le=365, description="Length of the recent window in days"
+    ),
+    baseline_days: int = Query(
+        180,
+        ge=1,
+        le=730,
+        description="Length of the baseline window immediately preceding the recent window",
+    ),
+    level: Optional[int] = Query(
+        None,
+        ge=0,
+        description="Optional hierarchy level filter (0 = top-level domains only)",
+    ),
+    min_recent_papers: int = Query(
+        5,
+        ge=1,
+        description="Minimum recent-window paper count required for a task to qualify",
+    ),
+    min_baseline_papers: int = Query(
+        10,
+        ge=1,
+        description="Minimum baseline-window paper count required for a task to qualify",
+    ),
+    min_share_lift: float = Query(
+        1.0,
+        ge=0.0,
+        description=(
+            "Minimum share lift (recent share divided by baseline share). Default 1.0 "
+            "restricts results to domains that are actively growing."
+        ),
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Trending domains for the homepage sidebar.
+
+    Ranks tasks by `share_lift * ln(1 + recent_paper_count)`, where
+    `share_lift` compares each task's share of recent papers against its
+    share in the preceding baseline window. Lift > 1.0 means the task is
+    over-indexed in recent publications relative to its history.
+
+    **Example queries:**
+    - `/api/v1/tasks/trending` - default 30d vs preceding 180d, top 8
+    - `/api/v1/tasks/trending?limit=12&level=0` - top-level domains only
+    """
+    try:
+        service = TaskService(db)
+        return service.get_trending_tasks(
+            limit=limit,
+            recent_days=recent_days,
+            baseline_days=baseline_days,
+            level=level,
+            min_recent_papers=min_recent_papers,
+            min_baseline_papers=min_baseline_papers,
+            min_share_lift=min_share_lift,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))

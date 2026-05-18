@@ -20,6 +20,7 @@ import {
   Database
 } from "lucide-react";
 import { getStoredAdminToken, setStoredAdminToken } from "@/lib/adminAuth";
+import { apiUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 
 interface CronJobStatus {
@@ -50,66 +51,13 @@ interface CronJobsResponse {
   };
 }
 
-const resolveApiBaseUrl = (): string => {
-  const envApiBaseUrl = import.meta.env.VITE_API_URL?.trim();
-
-  const ensureNoTrailingSlash = (value: string) =>
-    value.endsWith("/") ? value.slice(0, -1) : value;
-
-  const coerceHttps = (url: URL) => {
-    if (typeof window !== "undefined" && window.location.protocol === "https:" && url.protocol === "http:") {
-      return null;
-    }
-    return url;
-  };
-
-  if (envApiBaseUrl) {
-    try {
-      const baseUrl = envApiBaseUrl.startsWith("http")
-        ? new URL(envApiBaseUrl)
-        : new URL(envApiBaseUrl, typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
-
-      const sanitized = coerceHttps(baseUrl);
-
-      if (sanitized === null) {
-        if (typeof window !== "undefined") {
-          return ensureNoTrailingSlash(window.location.origin);
-        }
-        return "http://localhost:8000";
-      }
-
-      if (
-        typeof window !== "undefined" &&
-        window.location.protocol === "https:" &&
-        sanitized.hostname === window.location.hostname &&
-        sanitized.port &&
-        sanitized.port !== window.location.port
-      ) {
-        return ensureNoTrailingSlash(window.location.origin);
-      }
-
-      return ensureNoTrailingSlash(sanitized.origin);
-    } catch (error) {
-      console.warn("[CronDashboard] Failed to parse VITE_API_URL, falling back to window origin", error);
-    }
-  }
-
-  if (typeof window !== "undefined") {
-    return ensureNoTrailingSlash(window.location.origin);
-  }
-
-  return "http://localhost:8000";
-};
-
-const API_BASE_URL = resolveApiBaseUrl();
-
 // Fetch cron jobs status. Sends `credentials: 'include'` so that the
 // `pwc_session` cookie set by the HF OAuth flow reaches the API; the
 // optional X-Admin-Token header remains as a fallback for shared boxes
 // where signing in via HF isn't practical.
 const fetchCronStatus = async (token?: string): Promise<CronJobsResponse> => {
   const headers: HeadersInit = token ? { "X-Admin-Token": token } : {};
-  const response = await fetch(`${API_BASE_URL}/api/v1/cron/status`, {
+  const response = await fetch(apiUrl("/api/v1/cron/status"), {
     headers,
     credentials: "include",
   });

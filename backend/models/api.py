@@ -926,6 +926,49 @@ class Tasks(BaseModel):
     results: List[Task] = Field(..., description="List of tasks on this page")
 
 
+class TrendingTask(Task):
+    """
+    Task augmented with publication-rate trending metadata.
+
+    Surfaces domains whose share of recent papers is higher than their
+    historical share, i.e. domains gaining momentum rather than just
+    domains with large all-time paper counts.
+    """
+
+    recent_paper_count: int = Field(
+        ..., description="Distinct papers in this task within the recent window"
+    )
+    baseline_paper_count: int = Field(
+        ..., description="Distinct papers in this task within the baseline window"
+    )
+    share_lift: float = Field(
+        ...,
+        description=(
+            "Ratio of recent share to baseline share. Values > 1.0 mean the "
+            "task is over-indexed in recent papers compared with its history."
+        ),
+    )
+    trend_score: float = Field(
+        ...,
+        description="Composite score = share_lift * ln(1 + recent_paper_count)",
+    )
+
+
+class TrendingTasks(BaseModel):
+    """Container for the homepage Trending Domains sidebar."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    results: List[TrendingTask] = Field(
+        ..., description="Tasks sorted by descending trend score"
+    )
+    recent_days: int = Field(..., description="Length of the recent window (days)")
+    baseline_days: int = Field(
+        ...,
+        description="Length of the baseline window preceding the recent window (days)",
+    )
+
+
 class AreaWithTasks(BaseModel):
     """
     Research area together with its tasks and aggregated paper counts.

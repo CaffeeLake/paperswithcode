@@ -6,6 +6,7 @@ import { Icon, MethodChip, TagChip } from "@/components";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import { apiClient, indexPaperFromArxiv } from "@/lib/api";
 import type { Paper } from "@/lib/api";
+import { apiUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { summarizeRepos } from "@/lib/transform";
 import { formatMetricValue } from "@/lib/utils";
@@ -125,7 +126,7 @@ const PaperDetailView: React.FC = () => {
     queryFn: async () => {
       // Strip any vN suffix to get the canonical id.
       const raw = paper!.arxiv_id!.replace(/v\d+$/, "");
-      const resp = await fetch(`/api/v1/papers/arxiv/${raw}/versions`);
+      const resp = await fetch(apiUrl(`/api/v1/papers/arxiv/${raw}/versions`));
       if (!resp.ok) return [] as Paper[];
       return (await resp.json()) as Paper[];
     },
@@ -652,7 +653,7 @@ const PaperDetailView: React.FC = () => {
                         <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
                         <td className="compare">
                           {e.dataset_slug && (
-                            <Link to={`/benchmark/${e.dataset_slug}`}>Compare →</Link>
+                            <Link to={`/benchmark/${e.dataset_slug}?eval=${encodeURIComponent(e.id)}`}>Compare →</Link>
                           )}
                         </td>
                       </tr>

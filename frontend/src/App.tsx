@@ -7,17 +7,37 @@
  */
 
 import React from "react";
-import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
+import {
+  BrowserRouter,
+  HashRouter,
+  Navigate,
+  Route,
+  Routes,
+  useParams,
+} from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 
-import { Header } from "@/components";
-import SearchOverlay from "@/components/SearchOverlay";
+import Header from "@/components/Header";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
+import { isAuthDisabled, shouldUseHashRouter } from "@/lib/apiUrl";
 import { AuthProvider } from "@/lib/authContext";
+
+// HF Static Spaces (a) boot the iframe at `/index.html` and (b) return a
+// hard 404 for any deep link, so on those builds we switch to `HashRouter`.
+// See `shouldUseHashRouter` in `lib/apiUrl.ts`.
+const useHashRouter = shouldUseHashRouter();
+const Router = useHashRouter ? HashRouter : BrowserRouter;
+
+if (!useHashRouter && typeof window !== "undefined") {
+  const hashRoute = window.location.hash;
+  if (hashRoute.startsWith("#/") && !hashRoute.startsWith("#//")) {
+    window.history.replaceState(null, "", hashRoute.slice(1));
+  }
+}
 
 // Lazy-load route components so visitors only download the chunks for the
 // pages they actually navigate to. Saves ~150-200 KB gzipped on first paint
@@ -33,6 +53,7 @@ const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
+const SearchOverlay = React.lazy(() => import("@/components/SearchOverlay"));
 
 // Minimal placeholder shown while a route chunk is downloading. Each view also
 // renders its own skeletons once mounted, so this fallback only flashes briefly
@@ -53,6 +74,17 @@ const queryClient = new QueryClient({
 const LegacyPaperRedirect: React.FC = () => {
   const { arxivId } = useParams();
   return <Navigate to={arxivId ? `/paper/${arxivId}` : "/papers"} replace />;
+};
+
+// On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
+// cookie can't follow visitors across origins, so any view that requires
+// sign-in (bookmarks, CRON dashboard) is a dead-end. Redirect those routes
+// home so visitors don't land on empty pages.
+const AuthGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) => {
+  if (isAuthDisabled()) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{element}</>;
 };
 
 const Shell: React.FC = () => {
@@ -86,13 +118,17 @@ const Shell: React.FC = () => {
             <Route path="/methods" element={<MethodsIndexView />} />
             <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
-            <Route path="/saved" element={<SavedPapersView />} />
-            <Route path="/cron-dashboard" element={<CronDashboard />} />
+            <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
+            <Route path="/cron-dashboard" element={<AuthGatedRoute element={<CronDashboard />} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </React.Suspense>
       </main>
-      <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+      {searchOpen && (
+        <React.Suspense fallback={null}>
+          <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+        </React.Suspense>
+      )}
     </>
   );
 };
@@ -101,9 +137,9 @@ const App: React.FC = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
       <TooltipProvider>
-        <BrowserRouter>
+        <Router>
           <Shell />
-        </BrowserRouter>
+        </Router>
         <Toaster />
         <SonnerToaster />
         {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}

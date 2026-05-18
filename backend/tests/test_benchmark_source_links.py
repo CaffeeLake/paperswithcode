@@ -11,6 +11,7 @@ from backend.models.database import (
     Dataset as DBDataset,
     Paper as DBPaper,
 )
+from backend.services.dataset_service import DatasetService
 from backend.services.paper_service import PaperService
 
 
@@ -94,3 +95,30 @@ def test_paper_without_introduced_benchmarks_returns_none():
         response = PaperService(db).get_paper_by_arxiv_id("1234.5678")
 
     assert response.introduced_benchmarks is None
+
+
+def test_dataset_lookup_by_slug_is_case_insensitive():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with SessionLocal() as db:
+        db.add(
+            DBDataset(
+                id=105,
+                name="MTEB",
+                slug="mteb",
+                description="Massive Text Embedding Benchmark",
+            )
+        )
+        db.commit()
+
+        response = DatasetService(db).get_dataset_by_slug("MTEB")
+
+    assert response is not None
+    assert response.id == "105"
+    assert response.slug == "mteb"

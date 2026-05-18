@@ -1,0 +1,13 @@
+rank,model_name,model_url,reason
+7,Octen-Embedding-8B,https://huggingface.co/Octen/Octen-Embedding-8B,No arxiv: tags on HF model card
+11,Seed1.6-embedding-1215,https://console.volcengine.com/ark/region:ark+cn-beijing/model/detail?Id=doubao-embedding-vision,Non-HF or proprietary model URL
+31,text-multilingual-embedding-002,https://cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-text-embeddings,Non-HF or proprietary model URL
+35,Cohere-embed-multilingual-v3.0,https://cohere.com/blog/introducing-embed-v3,Non-HF or proprietary model URL
+37,bilingual-embedding-large,https://huggingface.co/Lajavaness/bilingual-embedding-large,"Ambiguous: multiple local papers match arxiv tags (2010.08240,1911.02116,1908.10084)"
+38,SFR-Embedding-2_R,https://huggingface.co/Salesforce/SFR-Embedding-2_R,No arxiv: tags on HF model card
+41,gte-Qwen1.5-7B-instruct,https://huggingface.co/Alibaba-NLP/gte-Qwen1.5-7B-instruct,No numeric overall score (value=None)
+42,text-embedding-3-large,https://openai.com/index/new-embedding-models-and-api-updates/,No numeric overall score (value=None)
+44,jasper_en_vision_language_v1,https://huggingface.co/infgrad/jasper_en_vision_language_v1,No numeric overall score (value=None)
+46,Solon-embeddings-large-0.1,https://huggingface.co/OrdalieTech/Solon-embeddings-large-0.1,No arxiv: tags on HF model card
+47,voyage-3.5,https://blog.voyageai.com/2025/05/20/voyage-3-5/,Non-HF or proprietary model URL
+48,bge-m3,https://huggingface.co/BAAI/bge-m3,"Ambiguous: multiple local papers match arxiv tags (2402.03216,2004.04906,2106.14807,2107.05720,2004.12832)"

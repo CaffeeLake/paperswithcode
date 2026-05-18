@@ -624,5 +624,44 @@ def test_task_benchmarks_sorted_by_paper_count_overrides_featured_rank(client):
     assert counts == {"mcp-atlas": 5, "browsecomp": 2, "niche": 1}
 
 
+def test_task_benchmarks_filtered_by_min_eval_count(client):
+    """`min_eval_count=2` hides single-evaluation benchmarks from the default
+    task-page listing so sparse leaderboards don't clutter the UI. The
+    benchmark fixture seeds MCP-Atlas (5 evals), BrowseComp (2), Niche (1);
+    only Niche should be filtered out and the reported count must match."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.close()
+
+    response = client.get(
+        "/api/v1/datasets/?task=10&ordering=-paper_count&page_size=50&min_eval_count=2"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    slugs = [d["slug"] for d in payload["results"]]
+    assert slugs == ["mcp-atlas", "browsecomp"]
+    assert payload["count"] == 2
+
+
+def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):
+    """The filter must be opt-in: omitting `min_eval_count` keeps every
+    benchmark (including sparse ones) visible so existing callers and the
+    benchmark detail page see the full set."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.close()
+
+    response = client.get(
+        "/api/v1/datasets/?task=10&ordering=-paper_count&page_size=50"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    slugs = [d["slug"] for d in payload["results"]]
+    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
+    assert payload["count"] == 3
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

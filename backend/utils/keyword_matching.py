@@ -8,8 +8,12 @@ This module provides two matching strategies:
 Case-Sensitivity Rules:
 - If a keyword contains at least 1 capital letter: case-sensitive matching
   * Examples: "BERT", "GPT-4", "ResNet", "VLM"
-  * Uses substring matching to catch plurals (VLMs, GANs) and compounds (LVLMs, OpenCLIP)
-  * Case sensitivity prevents false positives (CLIP vs clip)
+  * `find_matching_items_simple` (tasks) uses word-boundary matching with an
+    optional trailing 's', so "NER" matches "NER" / "NERs" but NOT "FINER".
+  * `find_matching_items_longest_match` (methods) uses substring matching to
+    catch plurals (VLMs, GANs) and hierarchical compounds (LVLMs, OpenCLIP);
+    the longest-match disambiguation handles overlaps.
+  * Case sensitivity itself prevents false positives like CLIP vs clip.
 - If a keyword is all lowercase: case-insensitive matching
   * Examples: "transformer", "attention", "object detection"
   * Uses word boundary matching to prevent false matches (e.g., "transformed" when looking for "transformer")
@@ -134,12 +138,15 @@ def find_matching_items_simple(
 
     matched_items = set()
 
-    # Find case-sensitive matches
-    # For case-sensitive keywords (usually acronyms), use substring matching
-    # This catches plurals (VLMs, GANs) and compounds (LVLMs, OpenCLIP)
-    # Case sensitivity prevents false positives (CLIP vs clip)
+    # Find case-sensitive matches.
+    # Word-boundary matching (with optional trailing 's' for plurals) keeps
+    # acronyms like "NER" or "VLM" from substring-matching inside unrelated
+    # words such as "FINER" or "OpenCLIP". Compound acronyms that should
+    # still be tagged (LVLMs, MLLMs, ...) are expected to be added as their
+    # own keywords on the task.
     for keyword, item_ids in case_sensitive_patterns.items():
-        if keyword in text:
+        pattern = r"\b" + re.escape(keyword) + r"s?\b"
+        if re.search(pattern, text):
             matched_items.update(item_ids)
 
     # Find case-insensitive matches.

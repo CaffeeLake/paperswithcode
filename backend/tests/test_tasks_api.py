@@ -6,6 +6,8 @@ relies on `/api/v1/tasks/?ordering=-paper_count` returning the tasks with
 the most associated papers first.
 """
 
+from datetime import date, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -24,6 +26,7 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
 )
 from backend.database.connection import get_database_session
+from backend.services.task_service import TaskService
 
 
 # The ORM uses Postgres-only types for unrelated columns; teach SQLite to
@@ -300,6 +303,165 @@ def test_task_papers_default_ordering_unchanged(client, task_with_trending_paper
     assert {paper["title"] for paper in data["results"]} == {
         f"Paper {i}" for i in range(1, 6)
     }
+
+
+@pytest.fixture
+def trending_dataset():
+    """Build papers that exercise the trending-domains scoring.
+
+    The recent window is the last 30 days; the baseline window is the 180
+    days immediately preceding it. Layout:
+
+      - rising_domain: 10 recent papers, 10 baseline papers. Big share lift
+        because its share of recent papers far exceeds its baseline share.
+      - flat_domain: 5 recent papers, 100 baseline papers. Historically
+        dominant but no recent over-representation, so it must be filtered
+        out by `share_lift > 1.0`.
+      - small_domain: 3 recent papers, 4 baseline papers. Below the recent
+        and baseline support gates and must be filtered out.
+      - filler_domain_*: 1 recent each, 50 baseline each. Used to pad the
+        baseline window so flat_domain's baseline share stays large.
+    """
+    db = TestingSessionLocal()
+
+    today = date(2026, 5, 16)
+    recent_start = today - timedelta(days=30)
+    recent_day = today - timedelta(days=5)
+    baseline_day = today - timedelta(days=120)
+
+    tasks = [
+        DBTask(id=1, name="Rising Domain", slug="rising-domain", level=0),
+        DBTask(id=2, name="Flat Domain", slug="flat-domain", level=0),
+        DBTask(id=3, name="Small Domain", slug="small-domain", level=0),
+        DBTask(id=4, name="Filler A", slug="filler-a", level=0),
+        DBTask(id=5, name="Filler B", slug="filler-b", level=0),
+    ]
+    db.add_all(tasks)
+
+    papers = []
+    associations = []
+    next_paper_id = 1
+
+    def add_papers(count: int, published: date, task_id: int) -> None:
+        nonlocal next_paper_id
+        for _ in range(count):
+            papers.append(
+                DBPaper(
+                    id=next_paper_id,
+                    title=f"Paper {next_paper_id}",
+                    abstract=f"Abstract {next_paper_id}",
+                    arxiv_id=f"2025.{next_paper_id:05d}",
+                    version="v1",
+                    is_latest_version=True,
+                    date_published=published,
+                )
+            )
+            associations.append((next_paper_id, task_id))
+            next_paper_id += 1
+
+    add_papers(10, recent_day, 1)
+    add_papers(10, baseline_day, 1)
+
+    add_papers(5, recent_day, 2)
+    add_papers(100, baseline_day, 2)
+
+    add_papers(3, recent_day, 3)
+    add_papers(4, baseline_day, 3)
+
+    add_papers(1, recent_day, 4)
+    add_papers(50, baseline_day, 4)
+    add_papers(1, recent_day, 5)
+    add_papers(50, baseline_day, 5)
+
+    db.add_all(papers)
+    db.commit()
+    db.add_all(
+        PaperTask(paper_id=paper_id, task_id=task_id)
+        for paper_id, task_id in associations
+    )
+    db.commit()
+    db.close()
+
+    assert recent_start < recent_day <= today
+    assert baseline_day <= recent_start
+
+    return today
+
+
+def test_trending_tasks_rank_by_share_lift(client, trending_dataset):
+    """A small, rapidly growing domain outranks a large, flat one."""
+    today = trending_dataset
+
+    db = TestingSessionLocal()
+    try:
+        service = TaskService(db)
+        response = service.get_trending_tasks(today=today)
+    finally:
+        db.close()
+
+    names = [t.name for t in response.results]
+    assert "Rising Domain" in names
+    assert "Flat Domain" not in names
+    assert names[0] == "Rising Domain"
+
+    rising = next(t for t in response.results if t.name == "Rising Domain")
+    assert rising.recent_paper_count == 10
+    assert rising.baseline_paper_count == 10
+    assert rising.share_lift > 1.0
+    assert rising.trend_score > 0
+
+
+def test_trending_tasks_apply_support_gates(client, trending_dataset):
+    """Domains below the support thresholds are dropped."""
+    today = trending_dataset
+
+    db = TestingSessionLocal()
+    try:
+        service = TaskService(db)
+        response = service.get_trending_tasks(today=today)
+    finally:
+        db.close()
+
+    names = [t.name for t in response.results]
+
+    assert "Small Domain" not in names
+    assert "Filler A" not in names
+    assert "Filler B" not in names
+
+
+def test_trending_tasks_endpoint_returns_metadata(client, trending_dataset):
+    """The HTTP endpoint exposes window metadata and trend fields."""
+    response = client.get("/api/v1/tasks/trending?limit=8")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["recent_days"] == 30
+    assert data["baseline_days"] == 180
+    assert isinstance(data["results"], list)
+
+    if data["results"]:
+        first = data["results"][0]
+        for key in (
+            "recent_paper_count",
+            "baseline_paper_count",
+            "share_lift",
+            "trend_score",
+            "slug",
+            "name",
+        ):
+            assert key in first
+        assert first["share_lift"] > 1.0
+
+
+def test_trending_tasks_path_not_treated_as_slug(client, trending_dataset):
+    """`/tasks/trending` must hit the trending route, not the slug route."""
+    response = client.get("/api/v1/tasks/trending")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "results" in body
+    assert "recent_days" in body
 
 
 if __name__ == "__main__":
