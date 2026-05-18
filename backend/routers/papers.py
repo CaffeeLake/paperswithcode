@@ -208,6 +208,13 @@ async def get_trending_papers(
         # `trending_papers_24h` view does not yet expose them. `p.version` is
         # also pulled in so the synthesised ArXiv thumbnail URL points at the
         # exact filename the preload cron generated, not a hardcoded `_v1`.
+        # Two-step dedup:
+        # 1. `paper_repo_rank` keeps the best repository per paper (handles
+        #    papers with multiple official repos in `trending_papers_24h`).
+        # 2. `repo_paper_rank` keeps the most recently published paper per
+        #    repository so a single GitHub URL never produces two trending
+        #    cards (e.g. v1/v2 papers both flagged `is_latest_version=TRUE`,
+        #    or unrelated papers linked to the same code release).
         query = text("""
             WITH ranked_trending_papers AS (
                 SELECT
@@ -237,6 +244,20 @@ async def get_trending_papers(
                 JOIN papers p ON p.id = tp.paper_id
                 WHERE tp.paper_age_days <= :max_age_days
                 AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
+            ),
+            unique_repo_per_paper AS (
+                SELECT *
+                FROM ranked_trending_papers
+                WHERE paper_repo_rank = 1
+            ),
+            ranked_by_repo AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY repository_id
+                        ORDER BY date_published DESC NULLS LAST, paper_id DESC
+                    ) as repo_paper_rank
+                FROM unique_repo_per_paper
             )
             SELECT
                 paper_id,
@@ -257,8 +278,8 @@ async def get_trending_papers(
                 source_url,
                 thumbnail_url,
                 version
-            FROM ranked_trending_papers
-            WHERE paper_repo_rank = 1
+            FROM ranked_by_repo
+            WHERE repo_paper_rank = 1
             ORDER BY trending_score DESC NULLS LAST, current_stars DESC
             LIMIT :limit
         """)

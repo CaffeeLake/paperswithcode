@@ -37,7 +37,7 @@ const MethodDetailView: React.FC = () => {
         page_size: 20,
         order_by: orderBy,
         order_dir: "desc",
-        include_resources: false,
+        include_resources: true,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,

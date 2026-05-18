@@ -678,10 +678,18 @@ class PaperService:
             Paginated Papers response sorted by official repository trending score
         """
         try:
+            # Two-step dedup: first pick the best official repo per paper,
+            # then ensure each repository contributes at most one paper. When
+            # multiple latest papers share the same GitHub repo (e.g. v1/v2
+            # papers both flagged latest, or unrelated papers wired to the
+            # same code release), we keep only the most recently published
+            # paper so the trending feed never shows duplicate repo cards.
             sql_query = text("""
                 WITH paper_trending AS (
                     SELECT DISTINCT ON (p.id)
                         p.id as paper_id,
+                        p.date_published,
+                        r.id as repository_id,
                         r.trending_score,
                         r.num_stars
                     FROM papers p
@@ -699,11 +707,23 @@ class PaperService:
                         AND (:conference IS NULL OR p.conference ILIKE :conference)
                         AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
                     ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC NULLS LAST
+                ),
+                ranked_by_repo AS (
+                    SELECT
+                        paper_id,
+                        trending_score,
+                        num_stars,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY repository_id
+                            ORDER BY date_published DESC NULLS LAST, paper_id DESC
+                        ) as repo_paper_rank
+                    FROM paper_trending
                 )
                 SELECT
                     paper_id,
                     COUNT(*) OVER() as total_count
-                FROM paper_trending
+                FROM ranked_by_repo
+                WHERE repo_paper_rank = 1
                 ORDER BY trending_score DESC NULLS LAST, num_stars DESC
                 LIMIT :limit OFFSET :offset
             """)

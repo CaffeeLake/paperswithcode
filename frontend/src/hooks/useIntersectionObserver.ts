@@ -1,49 +1,53 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface UseIntersectionObserverOptions {
   threshold?: number;
   rootMargin?: string;
 }
 
+/**
+ * Observe a single sentinel element and report whether it is currently
+ * intersecting the viewport. Uses a callback ref so the observer attaches the
+ * moment the sentinel mounts — even if it appears later than the hook itself
+ * (e.g. after a paginated query finishes loading and replaces the skeleton
+ * placeholder with the real list + sentinel).
+ */
 export function useIntersectionObserver(
-  options: UseIntersectionObserverOptions = {}
+  options: UseIntersectionObserverOptions = {},
 ) {
   const { threshold = 0, rootMargin = '0px' } = options;
   const [isIntersecting, setIsIntersecting] = useState(false);
-  const targetRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
-  useEffect(() => {
-    const target = targetRef.current;
-    if (!target) {
-      console.log('👁️ Intersection Observer: No target element found');
-      return;
-    }
+  const targetRef = useCallback(
+    (node: Element | null) => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (!node) {
+        setIsIntersecting(false);
+        return;
+      }
+      const observer = new IntersectionObserver(
+        ([entry]) => setIsIntersecting(entry.isIntersecting),
+        { threshold, rootMargin },
+      );
+      observer.observe(node);
+      observerRef.current = observer;
+    },
+    [threshold, rootMargin],
+  );
 
-    console.log('👁️ Intersection Observer: Setting up observer', { threshold, rootMargin });
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        console.log('👁️ Intersection Observer:', {
-          isIntersecting: entry.isIntersecting,
-          intersectionRatio: entry.intersectionRatio,
-          boundingClientRect: entry.boundingClientRect,
-          rootBounds: entry.rootBounds,
-          threshold,
-          rootMargin
-        });
-        setIsIntersecting(entry.isIntersecting);
-      },
-      { threshold, rootMargin }
-    );
-
-    observer.observe(target);
-    console.log('👁️ Intersection Observer: Started observing target');
-
-    return () => {
-      console.log('👁️ Intersection Observer: Cleaning up observer');
-      observer.unobserve(target);
-    };
-  }, [threshold, rootMargin]);
+  useEffect(
+    () => () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+    },
+    [],
+  );
 
   return { targetRef, isIntersecting };
 }

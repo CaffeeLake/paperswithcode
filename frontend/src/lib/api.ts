@@ -15,6 +15,8 @@ export interface Repository {
   owner?: string;
   name?: string;
   num_stars: number;
+  trending_score?: number | null;
+  trending_score_updated_at?: string | null;
   is_official: boolean;
   source: string;
   created_at?: string;

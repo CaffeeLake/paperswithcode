@@ -1,10 +1,11 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
 import { apiClient } from "@/lib/api";
 import { displayTaskName, transformPaperForCard, transformTrendingForCard } from "@/lib/transform";
-import { usePapers, useTrendingPapers } from "@/hooks/usePapers";
+import { useInfinitePapers, useTrendingPapers } from "@/hooks/usePapers";
+import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { PERIODS, type Period } from "@/hooks/usePeriodFilter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -88,11 +89,12 @@ const FeedView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  const papers = usePapers({
+  const infinite = useInfinitePapers({
     page_size: 30,
     order_by: orderBy,
+    order_dir: "desc",
     time: timeWindow,
-    include_resources: false,
+    include_resources: true,
     enabled: orderBy !== "trending",
   });
 
@@ -106,11 +108,19 @@ const FeedView: React.FC = () => {
     if (orderBy === "trending") {
       return (trendingPapers.data || []).map(transformTrendingForCard);
     }
-    return (papers.data?.results || []).map(transformPaperForCard);
-  }, [orderBy, papers.data, trendingPapers.data]);
+    const all = infinite.data?.pages.flatMap((p) => p.results) || [];
+    return all.map(transformPaperForCard);
+  }, [orderBy, infinite.data, trendingPapers.data]);
 
-  const isLoading = orderBy === "trending" ? trendingPapers.isLoading : papers.isLoading;
-  const error = orderBy === "trending" ? trendingPapers.error : papers.error;
+  const { targetRef: sentinelRef, isIntersecting } = useIntersectionObserver({ rootMargin: "400px" });
+  useEffect(() => {
+    if (orderBy !== "trending" && isIntersecting && infinite.hasNextPage && !infinite.isFetchingNextPage) {
+      infinite.fetchNextPage();
+    }
+  }, [orderBy, isIntersecting, infinite.hasNextPage, infinite.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isLoading = orderBy === "trending" ? trendingPapers.isLoading : infinite.isLoading;
+  const error = orderBy === "trending" ? trendingPapers.error : infinite.error;
 
   return (
     <div className="page">
@@ -219,11 +229,23 @@ const FeedView: React.FC = () => {
           ) : cards.length === 0 ? (
             <div className="no-results">No papers in this window.</div>
           ) : (
-            <div className="paper-list">
-              {cards.map((p, i) => (
-                <PaperCard key={p.id} paper={p} rank={i + 1} />
-              ))}
-            </div>
+            <>
+              <div className="paper-list">
+                {cards.map((p, i) => (
+                  <PaperCard key={p.id} paper={p} rank={i + 1} />
+                ))}
+              </div>
+              {orderBy !== "trending" && (
+                <>
+                  <div ref={sentinelRef} style={{ height: 1 }} />
+                  {infinite.isFetchingNextPage && (
+                    <div style={{ padding: "20px 0", textAlign: "center", color: "var(--ink-faint)" }}>
+                      Loading more…
+                    </div>
+                  )}
+                </>
+              )}
+            </>
           )}
         </div>
       </div>

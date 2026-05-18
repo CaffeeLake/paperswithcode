@@ -131,7 +131,7 @@ const TagBrowseView: React.FC = () => {
     page_size: 12,
     order_by: orderBy,
     order_dir: "desc",
-    include_resources: false,
+    include_resources: true,
     enabled: !!taskQ.data?.id,
   });
 

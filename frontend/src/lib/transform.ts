@@ -61,9 +61,10 @@ export interface PaperCardProps {
 export function summarizeRepos(repos: Repository[] | undefined): {
   github: number | null;
   githubUrl: string | null;
+  velocity24h: number | null;
 } {
   if (!repos || repos.length === 0) {
-    return { github: null, githubUrl: null };
+    return { github: null, githubUrl: null, velocity24h: null };
   }
   const official = repos.filter((r) => r.is_official);
   const pool = official.length > 0 ? official : repos;
@@ -71,6 +72,7 @@ export function summarizeRepos(repos: Repository[] | undefined): {
   return {
     github: top && top.num_stars > 0 ? top.num_stars : null,
     githubUrl: top?.url || null,
+    velocity24h: top?.trending_score ?? null,
   };
 }
 
@@ -97,7 +99,7 @@ function isoYear(iso: string | null | undefined): number | null {
  * Turn a backend `Paper` into the props the `PaperCard` component needs.
  */
 export function transformPaperForCard(paper: Paper): PaperCardProps {
-  const { github, githubUrl } = summarizeRepos(paper.repositories);
+  const { github, githubUrl, velocity24h } = summarizeRepos(paper.repositories);
   const tags = (paper.tasks || []).map((t) => t.slug || "").filter(Boolean);
   return {
     id: paper.arxiv_id || paper.id,
@@ -116,7 +118,7 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     thumbnailUrl: assetUrl(paper.thumbnail_url) || null,
     tldr: (paper as any).tldr || null,
     version: paper.version || "v1",
-    velocity24h: null,
+    velocity24h,
   };
 }
 

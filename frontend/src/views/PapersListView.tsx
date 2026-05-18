@@ -49,7 +49,7 @@ const PapersListView: React.FC = () => {
     order_dir: "desc",
     search: debouncedSearch || undefined,
     published_after: publishedAfter,
-    include_resources: false,
+    include_resources: true,
   });
 
   const topTasks = useQuery({
