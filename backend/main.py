@@ -30,6 +30,37 @@ def _is_mutable_paper_detail_path(path: str) -> bool:
     return bool(suffix) and "/" not in suffix
 
 
+# Read-only public API prefixes that are safe to cache briefly in the browser
+# and any shared CDN. These power list/detail pages on the marketing site
+# (methods, tasks, datasets, ...). Auth/session paths (`/me`, `/auth`,
+# `/cron`) are deliberately excluded so signed-in state stays fresh.
+# Trailing slash makes prefix matches accurate (e.g. `/api/v1/papers` would
+# otherwise also match `/api/v1/papers-archive/...` if that route ever
+# appeared).
+_PUBLIC_CACHEABLE_PREFIXES = (
+    "/api/v1/papers/",
+    "/api/v1/methods/",
+    "/api/v1/tasks/",
+    "/api/v1/datasets/",
+    "/api/v1/areas/",
+    "/api/v1/metrics/",
+    "/api/v1/evaluations/",
+    "/api/v1/repositories/",
+    "/api/v1/project-pages/",
+    "/api/v1/authors/",
+)
+
+# Endpoints that must never be cached even on GET because their response
+# depends on the signed-in user / session cookie. Trailing slash on each
+# prefix prevents false matches like `/api/v1/me` accidentally matching
+# `/api/v1/methods/...`.
+_PRIVATE_GET_PREFIXES = (
+    "/api/v1/auth/",
+    "/api/v1/me/",
+    "/api/v1/cron/",
+)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management."""
@@ -75,15 +106,29 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def add_public_cache_headers(request, call_next):
         response = await call_next(request)
-        if request.method == "GET" and _is_mutable_paper_detail_path(request.url.path):
+        if request.method != "GET":
+            return response
+
+        path = request.url.path
+
+        # Per-paper detail rows can change (admin edits, new repos linked)
+        # so keep these uncached.
+        if _is_mutable_paper_detail_path(path):
             response.headers["Cache-Control"] = "no-store"
             return response
 
+        # User-specific endpoints (bookmarks, session probes, cron dashboard)
+        # must always reflect the current session.
+        if any(path.startswith(prefix) for prefix in _PRIVATE_GET_PREFIXES):
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        # Public list/detail GETs benefit from a short freshness window plus
+        # a longer stale-while-revalidate so repeat navigation is instant.
         if (
-            request.method == "GET"
-            and request.url.path.startswith("/api/v1/papers")
-            and response.status_code == 200
+            response.status_code == 200
             and "cache-control" not in response.headers
+            and any(path.startswith(prefix) for prefix in _PUBLIC_CACHEABLE_PREFIXES)
         ):
             response.headers["Cache-Control"] = (
                 "public, max-age=60, stale-while-revalidate=300"

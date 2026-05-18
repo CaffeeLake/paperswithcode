@@ -55,11 +55,27 @@ const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
 const SearchOverlay = React.lazy(() => import("@/components/SearchOverlay"));
 
-// Minimal placeholder shown while a route chunk is downloading. Each view also
-// renders its own skeletons once mounted, so this fallback only flashes briefly
-// (≤200 ms on a warm cache).
+// Visible page-shape skeleton shown while the route's lazy chunk is
+// downloading. A blank `aria-busy` div was confusing visitors on slow
+// connections because the previous page's content stayed in their viewport
+// until the new chunk arrived. Rendering a structured skeleton makes the
+// transition feel intentional and immediate.
 const RouteFallback: React.FC = () => (
-  <div className="page" aria-busy="true" />
+  <div className="page" aria-busy="true" aria-live="polite">
+    <div
+      className="animate-pulse rounded-md bg-muted"
+      style={{ height: 24, width: "30%", marginBottom: 24 }}
+    />
+    <div
+      className="animate-pulse rounded-md bg-muted"
+      style={{ height: 64, width: "60%", marginBottom: 32 }}
+    />
+    <div className="paper-list" style={{ display: "grid", gap: 16 }}>
+      <div className="animate-pulse rounded-md bg-muted" style={{ height: 96 }} />
+      <div className="animate-pulse rounded-md bg-muted" style={{ height: 96 }} />
+      <div className="animate-pulse rounded-md bg-muted" style={{ height: 96 }} />
+    </div>
+  </div>
 );
 
 const queryClient = new QueryClient({

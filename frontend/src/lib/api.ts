@@ -303,9 +303,15 @@ class ApiClient {
     try {
       const { headers, ...requestOptions } = options ?? {};
       const adminToken = getStoredAdminToken();
+      const method = (requestOptions.method ?? 'GET').toUpperCase();
+      // Default GETs to browser caching (so server-sent `Cache-Control`
+      // headers can actually take effect). Non-GET requests stay
+      // `no-store` defensively so we never hand stale state to a mutation.
+      // Callers may still pass their own `cache` value to override either.
+      const defaultCache: RequestCache = method === 'GET' ? 'default' : 'no-store';
       const response = await fetch(url, {
         ...requestOptions,
-        cache: requestOptions.cache ?? 'no-store',
+        cache: requestOptions.cache ?? defaultCache,
         credentials: requestOptions.credentials ?? 'include',
         headers: {
           'Content-Type': 'application/json',
@@ -683,6 +689,10 @@ class ApiClient {
     name?: string;
     full_name?: string;
     introduced_year?: number;
+    /** Filter to methods belonging to a specific research area. */
+    area_id?: number | string;
+    /** Exclude a specific method ID (used for "related methods" lists). */
+    exclude_id?: number | string;
     ordering?: string;
   }): Promise<PaginatedResponse<Method>> {
     const searchParams = new URLSearchParams();
@@ -693,6 +703,8 @@ class ApiClient {
     if (params?.name) searchParams.append('name', params.name);
     if (params?.full_name) searchParams.append('full_name', params.full_name);
     if (params?.introduced_year) searchParams.append('introduced_year', params.introduced_year.toString());
+    if (params?.area_id !== undefined) searchParams.append('area_id', params.area_id.toString());
+    if (params?.exclude_id !== undefined) searchParams.append('exclude_id', params.exclude_id.toString());
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/methods/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;

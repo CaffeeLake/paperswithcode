@@ -46,21 +46,21 @@ const MethodDetailView: React.FC = () => {
     placeholderData: keepPreviousData,
   });
 
-  // Related methods: same area_id.
+  // Related methods: most-popular methods in the same area. Fetch only what
+  // we render (8 chips) so this small panel doesn't pull the entire methods
+  // catalog into the browser on every method page visit.
   const relatedQ = useQuery({
-    queryKey: ["methods-by-area", methodQ.data?.area_id],
+    queryKey: ["methods-by-area", methodQ.data?.area_id, methodQ.data?.id],
     queryFn: () =>
       apiClient.getMethods({
-        // Backend uses ordering on -paper_count to surface popular ones.
+        area_id: methodQ.data!.area_id!,
+        exclude_id: methodQ.data!.id,
         ordering: "-paper_count",
-        page_size: 100,
+        page_size: 8,
       }),
     enabled: !!methodQ.data?.area_id,
     staleTime: 10 * 60 * 1000,
-    select: (res) =>
-      res.results
-        .filter((m) => m.area_id === methodQ.data?.area_id && m.id !== methodQ.data?.id)
-        .slice(0, 8),
+    select: (res) => res.results,
   });
 
   const cards = useMemo(() => {

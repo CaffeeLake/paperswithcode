@@ -36,6 +36,12 @@ async def list_methods(
     introduced_year: Optional[int] = Query(
         None, description="Filter by year method was introduced"
     ),
+    area_id: Optional[int] = Query(
+        None, description="Filter methods belonging to this research area"
+    ),
+    exclude_id: Optional[int] = Query(
+        None, description="Exclude a specific method ID from results"
+    ),
     ordering: Optional[str] = Query(
         "name",
         description=(
@@ -88,6 +94,8 @@ async def list_methods(
             name=name,
             full_name=full_name,
             introduced_year=introduced_year,
+            area_id=area_id,
+            exclude_id=exclude_id,
             order_by=order_by,
             order_dir=order_dir,
         )

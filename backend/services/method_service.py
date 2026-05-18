@@ -60,6 +60,8 @@ class MethodService:
         name: Optional[str] = None,
         full_name: Optional[str] = None,
         introduced_year: Optional[int] = None,
+        area_id: Optional[int] = None,
+        exclude_id: Optional[int] = None,
         order_by: str = "name",
         order_dir: str = "asc",
     ) -> Methods:
@@ -124,6 +126,12 @@ class MethodService:
 
             if introduced_year is not None:
                 query = query.filter(DBMethod.introduced_year == introduced_year)
+
+            if area_id is not None:
+                query = query.filter(DBMethod.area_id == area_id)
+
+            if exclude_id is not None:
+                query = query.filter(DBMethod.id != exclude_id)
 
             if order_by == "name":
                 order_field = DBMethod.name
