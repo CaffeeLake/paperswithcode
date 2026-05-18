@@ -43,6 +43,11 @@ jobs:
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
               'set -euo pipefail
                systemctl start pwc-postgres-backup.service
-               systemctl status pwc-postgres-backup.service --no-pager
-               systemctl status pwc-postgres-backup.timer --no-pager
-               journalctl -u pwc-postgres-backup.service -n 120 --no-pager'
+               service_result="$(systemctl show pwc-postgres-backup.service --property=Result --value)"
+               systemctl status pwc-postgres-backup.service --no-pager || true
+               systemctl status pwc-postgres-backup.timer --no-pager || true
+               journalctl -u pwc-postgres-backup.service -n 120 --no-pager
+               if [ "$service_result" != "success" ]; then
+                 echo "Backup service result was: $service_result"
+                 exit 1
+               fi'
