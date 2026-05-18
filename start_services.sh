@@ -235,6 +235,25 @@ if command -v nginx >/dev/null 2>&1; then
     fi
 fi
 
+# Warm cache-friendly homepage sidebar endpoints so the first real visitor
+# does not pay the cold DB cost on /tasks/top and /tasks/trending. We hit
+# the backend directly to warm Postgres buffers, then the public URL so
+# Nginx's proxy_cache fills with the same key the frontend will request.
+echo -e "${PURPLE}🔥 Warming homepage sidebar endpoints...${NC}"
+WARM_URLS=(
+    "http://localhost:${BACKEND_PORT}/api/v1/tasks/top?limit=8"
+    "http://localhost:${BACKEND_PORT}/api/v1/tasks/trending?limit=8"
+    "https://paperswithcode.co/api/v1/tasks/top?limit=8"
+    "https://paperswithcode.co/api/v1/tasks/trending?limit=8"
+)
+for url in "${WARM_URLS[@]}"; do
+    if curl -sS -o /dev/null --max-time 15 "$url" >/dev/null 2>&1; then
+        echo -e "   ${GREEN}✓${NC} ${url}"
+    else
+        echo -e "   ${YELLOW}⚠${NC}  failed to warm ${url}"
+    fi
+done
+
 echo ""
 echo -e "${GREEN}🎉 All services started successfully!${NC}"
 echo -e "${BLUE}========================================${NC}"

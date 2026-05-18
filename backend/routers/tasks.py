@@ -7,7 +7,7 @@ filtering by area, and paper associations.
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from backend.models.api import (
     Task,
@@ -151,6 +151,26 @@ async def get_trending_tasks(
             min_baseline_papers=min_baseline_papers,
             min_share_lift=min_share_lift,
         )
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/top", response_model=List[Task])
+async def get_top_tasks(
+    limit: int = Query(
+        8, ge=1, le=50, description="Maximum number of top tasks to return"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Top tasks by paper count for the homepage sidebar.
+
+    This endpoint is intentionally small and cache-friendly. It avoids the
+    pagination count work done by the general `/tasks/` listing.
+    """
+    try:
+        service = TaskService(db)
+        return service.get_top_tasks(limit=limit)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 

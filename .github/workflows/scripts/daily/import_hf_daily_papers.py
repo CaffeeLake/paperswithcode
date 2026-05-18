@@ -17,10 +17,11 @@ Schedule: Daily at 3:00 AM UTC (after ArXiv update)
 Dependencies: PostgreSQL, Hugging Face API
 """
 
-import sys
+import argparse
 import asyncio
+import sys
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import aiohttp
 
@@ -32,9 +33,10 @@ from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
     """Daily job to import papers from Hugging Face daily papers API."""
 
-    def __init__(self):
+    def __init__(self, target_date: Optional[str] = None):
         super().__init__(job_name="import_hf_daily_papers", log_level="INFO")
         self.settings = get_settings()
+        self.target_date = target_date
         self.processed_count = 0
         self.error_count = 0
         self.new_papers_count = 0
@@ -54,23 +56,25 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         """Main execution logic for Hugging Face daily papers import."""
         self.logger.info("Starting Hugging Face daily papers import")
 
-        # Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
-        today = datetime.now()
-        weekday = today.weekday()
-        if weekday in [0, 6]:  # Monday or Sunday
-            day_name = today.strftime("%A")
-            self.logger.info(
-                f"Skipping import on {day_name} - papers are only submitted Mon-Fri on Hugging Face"
-            )
-            return
+        if self.target_date:
+            target_date = self.target_date
+        else:
+            # Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
+            today = datetime.now()
+            weekday = today.weekday()
+            if weekday in [0, 6]:  # Monday or Sunday
+                day_name = today.strftime("%A")
+                self.logger.info(
+                    f"Skipping import on {day_name} - papers are only submitted Mon-Fri on Hugging Face"
+                )
+                return
 
-        self.load_task_keywords()
-        self.load_method_keywords()
-
-        yesterday = datetime.now() - timedelta(days=1)
-        target_date = yesterday.strftime("%Y-%m-%d")
+            yesterday = datetime.now() - timedelta(days=1)
+            target_date = yesterday.strftime("%Y-%m-%d")
 
         self.logger.info(f"Fetching daily papers for date: {target_date}")
+        self.load_task_keywords()
+        self.load_method_keywords()
 
         daily_papers = asyncio.run(self.fetch_daily_papers(target_date))
 
@@ -164,6 +168,19 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
 
 
 if __name__ == "__main__":
-    job = HuggingFaceDailyPapersJob()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--date",
+        help=(
+            "Import a specific Hugging Face daily-papers date in YYYY-MM-DD "
+            "format. Defaults to yesterday."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.date:
+        datetime.strptime(args.date, "%Y-%m-%d")
+
+    job = HuggingFaceDailyPapersJob(target_date=args.date)
     success = job.execute()
     sys.exit(0 if success else 1)

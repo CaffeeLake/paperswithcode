@@ -599,6 +599,18 @@ class ApiClient {
     return this.request<Task>(`/tasks/${id}`);
   }
 
+  async getTopTasks(params?: {
+    limit?: number;
+  }): Promise<Task[]> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString ? `/tasks/top?${queryString}` : '/tasks/top';
+    return this.request<Task[]>(endpoint);
+  }
+
   async getTrendingTasks(params?: {
     limit?: number;
     recent_days?: number;
@@ -998,6 +1010,7 @@ export const getAreasWithTasks = apiClient.getAreasWithTasks.bind(apiClient);
 export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);
 export const getTasks = apiClient.getTasks.bind(apiClient);
 export const getTask = apiClient.getTask.bind(apiClient);
+export const getTopTasks = apiClient.getTopTasks.bind(apiClient);
 export const getTrendingTasks = apiClient.getTrendingTasks.bind(apiClient);
 export const getTaskChildren = apiClient.getTaskChildren.bind(apiClient);
 export const getTaskParents = apiClient.getTaskParents.bind(apiClient);

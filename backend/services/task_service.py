@@ -36,6 +36,50 @@ class TaskService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _build_task_model(
+        self, db_task: DBTask, paper_count: int | None = None
+    ) -> Task:
+        return Task(
+            id=str(db_task.id),
+            name=db_task.name,
+            description=db_task.description,
+            slug=db_task.slug,
+            keywords=db_task.keywords,
+            parent_id=str(db_task.parent_id) if db_task.parent_id else None,
+            area_id=str(db_task.area_id) if db_task.area_id else None,
+            level=db_task.level,
+            paper_count=paper_count or 0,
+            image_url=db_task.image_url,
+            image_credit=db_task.image_credit,
+            created_at=db_task.created_at,
+            updated_at=db_task.updated_at,
+        )
+
+    def get_top_tasks(self, limit: int = 8) -> List[Task]:
+        """
+        Return the most common tasks for the homepage sidebar.
+
+        Unlike the general paginated task listing, this deliberately skips the
+        total-count query because the homepage only needs a small top-N list.
+        """
+        try:
+            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            results = (
+                self.db.query(DBTask, paper_count_col)
+                .join(PaperTask, DBTask.id == PaperTask.task_id)
+                .group_by(DBTask.id)
+                .order_by(desc(paper_count_col), asc(DBTask.name))
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                self._build_task_model(db_task, int(paper_count or 0))
+                for db_task, paper_count in results
+            ]
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve top tasks: {str(e)}")
+
     def get_tasks(
         self,
         page: int = 1,
@@ -130,22 +174,7 @@ class TaskService:
             # Convert to API models
             tasks = []
             for db_task, paper_count in results:
-                task_dict = {
-                    "id": str(db_task.id),
-                    "name": db_task.name,
-                    "description": db_task.description,
-                    "slug": db_task.slug,
-                    "keywords": db_task.keywords,
-                    "parent_id": str(db_task.parent_id) if db_task.parent_id else None,
-                    "area_id": str(db_task.area_id) if db_task.area_id else None,
-                    "level": db_task.level,
-                    "paper_count": paper_count or 0,
-                    "image_url": db_task.image_url,
-                    "image_credit": db_task.image_credit,
-                    "created_at": db_task.created_at,
-                    "updated_at": db_task.updated_at,
-                }
-                tasks.append(Task(**task_dict))
+                tasks.append(self._build_task_model(db_task, int(paper_count or 0)))
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None
@@ -192,13 +221,22 @@ class TaskService:
             recent_start = today - timedelta(days=recent_days)
             baseline_start = recent_start - timedelta(days=baseline_days)
 
-            in_recent = and_(
+            # Combined window predicate: only consider latest-version papers
+            # published anywhere between baseline_start and today. Pushing this
+            # into the WHERE clause lets Postgres skip the bulk of `papers` and
+            # the matching `paper_tasks` rows entirely before aggregation,
+            # instead of scanning all dated papers and discarding most of them
+            # inside a CASE.
+            in_window = and_(
                 DBPaper.is_latest_version,
+                DBPaper.date_published > baseline_start,
+                DBPaper.date_published <= today,
+            )
+            in_recent = and_(
                 DBPaper.date_published > recent_start,
                 DBPaper.date_published <= today,
             )
             in_baseline = and_(
-                DBPaper.is_latest_version,
                 DBPaper.date_published > baseline_start,
                 DBPaper.date_published <= recent_start,
             )
@@ -208,7 +246,7 @@ class TaskService:
                     func.count(case((in_recent, DBPaper.id))).label("all_recent"),
                     func.count(case((in_baseline, DBPaper.id))).label("all_baseline"),
                 )
-                .filter(DBPaper.date_published.isnot(None))
+                .filter(in_window)
                 .one()
             )
             all_recent = int(totals_row.all_recent or 0)
@@ -236,7 +274,7 @@ class TaskService:
                 )
                 .join(PaperTask, PaperTask.task_id == DBTask.id)
                 .join(DBPaper, DBPaper.id == PaperTask.paper_id)
-                .filter(DBPaper.date_published.isnot(None))
+                .filter(in_window)
                 .group_by(DBTask.id)
                 .having(recent_count_col >= min_recent_papers)
                 .having(baseline_count_col >= min_baseline_papers)

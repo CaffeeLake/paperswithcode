@@ -4,7 +4,12 @@ on:
   schedule:
     # Tue-Sat 03:00 UTC (papers are submitted Mon-Fri on HF; we import the previous day)
     - cron: "0 3 * * 2-6"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Optional HF daily-papers date to import, in YYYY-MM-DD format"
+        required: false
+        type: string
 
 concurrency:
   group: cron-import-hf-daily-papers
@@ -42,6 +47,15 @@ jobs:
 
       - name: Run import_hf_daily_papers on VPS
         run: |
+          TARGET_DATE="${{ github.event.inputs.date }}"
+          if [ -n "$TARGET_DATE" ] && [[ ! "$TARGET_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "date must be in YYYY-MM-DD format"
+            exit 1
+          fi
+          REMOTE_COMMAND='cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.import_hf_daily_papers'
+          if [ -n "$TARGET_DATE" ]; then
+            REMOTE_COMMAND="$REMOTE_COMMAND --date $TARGET_DATE"
+          fi
           ssh -o StrictHostKeyChecking=yes \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-              'cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.import_hf_daily_papers'
+              "$REMOTE_COMMAND"

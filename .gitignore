@@ -26,6 +26,7 @@ dist-ssr
 
 # Data
 data/
+backups/
 
 # Extracted data
 extracted_data/
