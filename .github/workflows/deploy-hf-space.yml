@@ -15,7 +15,7 @@ on:
       space:
         description: "Target Hugging Face Space repo id"
         required: true
-        default: "nielsr/paperswithcode-mirror"
+        default: "huggingface/paperswithcode"
       api_url:
         description: "Backend API origin baked into the Space build"
         required: true
@@ -34,7 +34,7 @@ jobs:
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      SPACE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.space || 'nielsr/paperswithcode-mirror' }}
+      SPACE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.space || 'huggingface/paperswithcode' }}
       API_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.api_url || 'https://paperswithcode.co' }}
 
     steps:
