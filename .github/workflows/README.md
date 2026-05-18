@@ -1,6 +1,6 @@
 # GitHub Actions Workflows
 
-This directory contains GitHub Actions workflows for running production cron jobs on the VPS and smoke-testing the current database layer.
+This directory contains GitHub Actions workflows for running production cron jobs on the VPS, smoke-testing the current database layer, and deploying the Hugging Face Space mirror.
 
 ## Workflows
 
@@ -34,6 +34,19 @@ This directory contains GitHub Actions workflows for running production cron job
 - Uses `backend.database.connection` and SQLAlchemy models to create/drop tables.
 - Inserts and queries a sample `Paper` row.
 
+### Deploy Hugging Face Space (`deploy-hf-space.yml`)
+
+**Purpose**: Build the static frontend mirror and upload it to the Hugging Face Space.
+
+**Triggers**:
+- Push to `main` when frontend, deploy script, or dependency lock files change
+- Manual trigger with optional Space id and API URL inputs
+
+**What it does**:
+- Installs Python and frontend dependencies.
+- Runs `scripts/deploy_hf_space.py` with `--skip-restore` because CI is not serving `frontend/dist` through nginx.
+- Uploads the generated static bundle to the Space using the `HF_TOKEN` repository secret.
+
 ## Database Configuration
 
 Database code reads `PWC_`-prefixed environment variables:
@@ -51,6 +64,7 @@ For production deployment, you'll need to:
    - `VPS_SSH_PRIVATE_KEY`
    - `VPS_HOST`
    - `VPS_USER`
+   - `HF_TOKEN` (write token for deploying `nielsr/paperswithcode-mirror`)
 
 2. **Modify workflows** to use production database instead of test PostgreSQL service
 
