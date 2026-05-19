@@ -354,6 +354,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   justify-content: flex-start;
 }
 .paper-thumb-wrap:hover { transform: translateY(-2px); }
+.paper-thumb-skeleton {
+  width: 160px;
+  height: 220px;
+}
 .paper-card:first-child { padding-top: 0; }
 .paper-rank {
   font-family: var(--serif);
@@ -2218,6 +2222,37 @@ html { scroll-behavior: smooth; }
     padding: 14px;
   }
   .bench-row > .bench-row-arrow { display: none; }
+}
+
+/* Tablet-only thumbnail sizing.
+ *
+ * PaperPreview / PdfThumbnail render with hard-coded inline width/height
+ * (160x220), but at this breakpoint the .paper-card grid track shrinks to
+ * 120px, which would otherwise let the preview overflow into the title
+ * column. Phone widths (<=640px) re-stack the card to a single column and
+ * keep the original 160x220 thumbnail, so this override is bracketed to
+ * tablet only. */
+@media (min-width: 641px) and (max-width: 880px) {
+  .paper-thumb-wrap {
+    min-width: 0;
+  }
+  .paper-thumb-wrap > div {
+    width: 100% !important;
+    max-width: 120px;
+    height: auto !important;
+    aspect-ratio: 160 / 220;
+  }
+  .paper-thumb-wrap > div > img,
+  .paper-thumb-wrap > div > svg {
+    width: 100% !important;
+    height: 100% !important;
+  }
+  .paper-thumb-skeleton {
+    width: 100%;
+    max-width: 120px;
+    height: auto;
+    aspect-ratio: 160 / 220;
+  }
 }
 
 @media (max-width: 640px) {

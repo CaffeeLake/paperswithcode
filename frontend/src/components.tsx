@@ -10,7 +10,7 @@
 
 import React from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import LatexTitle from "@/components/LatexTitle";
 import PaperThumbnail from "@/components/PaperThumbnail";
@@ -559,9 +559,8 @@ interface PaperCardComponentProps {
 }
 
 export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onClickTag }) => {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const handleOpen = () => navigate(`/paper/${paper.id}`);
+  const paperHref = `/paper/${paper.id}`;
   const prefetchPaper = React.useCallback(() => {
     queryClient.prefetchQuery({
       queryKey: ["paper-arxiv", paper.id],
@@ -574,20 +573,21 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
   return (
     <article className="paper-card">
       {rank != null && (
-        <div
+        <Link
+          to={paperHref}
           className="paper-thumb-wrap"
-          onClick={handleOpen}
           onFocus={prefetchPaper}
           onMouseEnter={prefetchPaper}
-          style={{ cursor: "pointer" }}
         >
           <PaperPreview paperId={paper.id} title={paper.title} thumbnailUrl={paper.thumbnailUrl} priority={rank <= 3} />
-        </div>
+        </Link>
       )}
       <div className="paper-body">
         <div className="paper-body-main">
-          <h3 className="paper-title" onClick={handleOpen} onFocus={prefetchPaper} onMouseEnter={prefetchPaper}>
-            <LatexTitle title={paper.title} />
+          <h3 className="paper-title">
+            <Link to={paperHref} onFocus={prefetchPaper} onMouseEnter={prefetchPaper}>
+              <LatexTitle title={paper.title} />
+            </Link>
           </h3>
           <div className="paper-authors">
             {visibleAuthors}

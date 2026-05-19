@@ -17,15 +17,27 @@ SELECT
     r.owner,
     r.name,
     r.num_stars as current_stars,
-    -- Still calculate 24h velocity for display purposes (if we have history)
-    (
-        SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
-               GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
-        FROM repository_star_history rsh
-        WHERE rsh.repository_id = r.id
-        AND rsh.snapshot_at <= (NOW() - INTERVAL '24 hours')
-        ORDER BY rsh.snapshot_at DESC
-        LIMIT 1
+    -- Prefer a true 24h velocity, but fall back to the oldest available
+    -- recent snapshot so newly tracked trending repos can still display a rate.
+    COALESCE(
+        (
+            SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
+                   GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
+            FROM repository_star_history rsh
+            WHERE rsh.repository_id = r.id
+            AND rsh.snapshot_at <= (NOW() - INTERVAL '24 hours')
+            ORDER BY rsh.snapshot_at DESC
+            LIMIT 1
+        ),
+        (
+            SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
+                   GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
+            FROM repository_star_history rsh
+            WHERE rsh.repository_id = r.id
+            AND rsh.snapshot_at < (NOW() - INTERVAL '30 minutes')
+            ORDER BY rsh.snapshot_at ASC
+            LIMIT 1
+        )
     ) as velocity_24h,
     -- Use the EMA-based trending score from the repositories table
     r.trending_score,
@@ -77,15 +89,27 @@ SELECT
     r.owner,
     r.name as repo_name,
     r.num_stars as current_stars,
-    -- Calculate 24h velocity for display
-    (
-        SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
-               GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
-        FROM repository_star_history rsh
-        WHERE rsh.repository_id = r.id
-        AND rsh.snapshot_at <= (NOW() - INTERVAL '24 hours')
-        ORDER BY rsh.snapshot_at DESC
-        LIMIT 1
+    -- Prefer a true 24h velocity, but fall back to the oldest available
+    -- recent snapshot so newly tracked trending repos can still display a rate.
+    COALESCE(
+        (
+            SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
+                   GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
+            FROM repository_star_history rsh
+            WHERE rsh.repository_id = r.id
+            AND rsh.snapshot_at <= (NOW() - INTERVAL '24 hours')
+            ORDER BY rsh.snapshot_at DESC
+            LIMIT 1
+        ),
+        (
+            SELECT (r.num_stars - rsh.num_stars)::NUMERIC /
+                   GREATEST(EXTRACT(EPOCH FROM (NOW() - rsh.snapshot_at)) / 3600, 0.5)
+            FROM repository_star_history rsh
+            WHERE rsh.repository_id = r.id
+            AND rsh.snapshot_at < (NOW() - INTERVAL '30 minutes')
+            ORDER BY rsh.snapshot_at ASC
+            LIMIT 1
+        )
     ) as velocity_24h,
     -- Use the EMA-based trending score
     r.trending_score,

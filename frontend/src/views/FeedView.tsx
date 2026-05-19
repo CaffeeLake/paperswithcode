@@ -217,7 +217,9 @@ const FeedView: React.FC = () => {
             <div className="paper-list">
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="paper-card">
-                  <Skeleton className="h-[220px] w-[160px]" />
+                  <div className="paper-thumb-wrap">
+                    <Skeleton className="paper-thumb-skeleton" />
+                  </div>
                   <div className="paper-body" style={{ flex: 1, gap: 12 }}>
                     <Skeleton className="h-6 w-3/4" />
                     <Skeleton className="h-4 w-1/2" />

@@ -777,11 +777,13 @@ const PaperDetailView: React.FC = () => {
             <div className="sidebar-card">
               <div className="sidebar-card-title">Related papers</div>
               {relatedQ.data!.map((p) => (
-                <div
+                <Link
                   key={p.id}
+                  to={`/paper/${p.arxiv_id || p.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="related-paper"
-                  onClick={() => navigate(`/paper/${p.arxiv_id || p.id}`)}
-                  style={{ cursor: "pointer" }}
+                  style={{ textDecoration: "none", color: "inherit" }}
                 >
                   <div className="related-title">
                     <LatexTitle title={p.title} />
@@ -792,7 +794,7 @@ const PaperDetailView: React.FC = () => {
                       <span>{p.citation_count.toLocaleString()} cites</span>
                     )}
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
