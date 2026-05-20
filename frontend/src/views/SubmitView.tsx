@@ -1,0 +1,299 @@
+/**
+ * Public paper submission page (`/submit`).
+ *
+ * Inspired by huggingface.co/papers/submit. Accepts either an ArXiv ID/URL
+ * (routed through the existing ArXiv indexing flow) or an external paper
+ * URL (delegated to `ExternalResourceService.add_from_url` on the backend,
+ * which performs AI-assisted metadata extraction with optional overrides).
+ * No `comment` field, per the product spec.
+ */
+
+import React from "react";
+import { useNavigate } from "react-router-dom";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import { submitPaper } from "@/lib/api";
+import type { PaperSubmitPayload, PaperSubmitResponse } from "@/lib/api";
+
+const ARXIV_BARE_ID = /^\d{4}\.\d{4,5}(v\d+)?$/i;
+const ARXIV_LEGACY_ID = /^[a-z-]+(\.[A-Z]{2})?\/\d{7}$/;
+const ARXIV_URL_HOST = /^https?:\/\/(?:www\.)?arxiv\.org\//i;
+
+type SubmissionKind = "arxiv" | "external" | "empty";
+
+function classifyInput(raw: string): SubmissionKind {
+  const value = raw.trim();
+  if (!value) return "empty";
+  if (ARXIV_BARE_ID.test(value) || ARXIV_LEGACY_ID.test(value)) return "arxiv";
+  if (ARXIV_URL_HOST.test(value)) return "arxiv";
+  if (/^https?:\/\//i.test(value)) return "external";
+  // Anything else (e.g. partial input) is treated as an in-progress ArXiv ID
+  return "arxiv";
+}
+
+function buildPayload(
+  primary: string,
+  overrides: {
+    title: string;
+    abstract: string;
+    authors: string;
+    datePublished: string;
+  },
+): PaperSubmitPayload {
+  const value = primary.trim();
+  const kind = classifyInput(value);
+
+  if (kind === "arxiv") {
+    if (/^https?:\/\//i.test(value)) {
+      return { source_url: value };
+    }
+    return { arxiv_id: value };
+  }
+
+  const payload: PaperSubmitPayload = { source_url: value };
+  const trimmedTitle = overrides.title.trim();
+  if (trimmedTitle) payload.title = trimmedTitle;
+  const trimmedAbstract = overrides.abstract.trim();
+  if (trimmedAbstract) payload.abstract = trimmedAbstract;
+  const authors = overrides.authors
+    .split(/[,\n]/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (authors.length > 0) payload.authors = authors;
+  if (overrides.datePublished) payload.date_published = overrides.datePublished;
+  return payload;
+}
+
+function extractErrorDetail(err: unknown): string {
+  const e = err as { response?: string; message?: string } | undefined;
+  if (!e) return "Submission failed";
+  if (e.response) {
+    try {
+      const parsed = JSON.parse(e.response);
+      if (typeof parsed.detail === "string") return parsed.detail;
+    } catch {
+      return e.response;
+    }
+  }
+  return e.message || "Submission failed";
+}
+
+const SubmitView: React.FC = () => {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const [input, setInput] = React.useState("");
+  const [title, setTitle] = React.useState("");
+  const [abstract, setAbstract] = React.useState("");
+  const [authors, setAuthors] = React.useState("");
+  const [datePublished, setDatePublished] = React.useState("");
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+
+  const kind = classifyInput(input);
+  const isExternal = kind === "external";
+
+  const mutation = useMutation<PaperSubmitResponse, Error, PaperSubmitPayload>({
+    mutationFn: (payload) => submitPaper(payload),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["papers"], refetchType: "none" });
+      queryClient.invalidateQueries({
+        queryKey: ["papers-infinite"],
+        refetchType: "none",
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["trending-papers"],
+        refetchType: "none",
+      });
+      toast({
+        title: data.created ? "Paper submitted" : "Paper already indexed",
+        description: data.created
+          ? "Opening the paper page…"
+          : "Opening the existing paper page…",
+      });
+      navigate(`/paper/${data.route_identifier}`);
+    },
+    onError: (err) => {
+      setErrorMsg(extractErrorDetail(err));
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+
+    if (kind === "empty") {
+      setErrorMsg("Enter an arXiv ID or a paper URL to submit.");
+      return;
+    }
+
+    const payload = buildPayload(input, {
+      title,
+      abstract,
+      authors,
+      datePublished,
+    });
+    mutation.mutate(payload);
+  };
+
+  return (
+    <div className="page" style={{ maxWidth: 720 }}>
+      <h1 className="detail-title">Submit a paper</h1>
+      <p
+        style={{
+          fontFamily: "var(--serif)",
+          color: "var(--ink-soft)",
+          marginTop: 12,
+          lineHeight: 1.55,
+        }}
+      >
+        Index an arXiv paper or add a non-arXiv paper (blog post, technical
+        report, model release page). Submissions are public and appear in the
+        feed immediately.
+      </p>
+
+      <form
+        onSubmit={handleSubmit}
+        style={{ marginTop: 28, display: "grid", gap: 20 }}
+      >
+        <div style={{ display: "grid", gap: 8 }}>
+          <label
+            htmlFor="submit-input"
+            style={{ fontWeight: 600, fontSize: 14 }}
+          >
+            arXiv ID or paper URL
+          </label>
+          <Input
+            id="submit-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="2501.12345  ·  https://arxiv.org/abs/2501.12345  ·  https://blog.example.com/release"
+            autoFocus
+            required
+          />
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-soft)",
+              minHeight: 18,
+            }}
+          >
+            {kind === "arxiv"
+              ? "Detected: arXiv paper — metadata will be fetched automatically."
+              : kind === "external"
+                ? "Detected: external URL — we'll extract metadata and you can override below."
+                : "Paste an arXiv ID like 2501.12345 or any paper/blog URL."}
+          </div>
+        </div>
+
+        {isExternal && (
+          <fieldset
+            style={{
+              border: "1px solid var(--rule)",
+              borderRadius: 8,
+              padding: "16px 20px 20px",
+              display: "grid",
+              gap: 16,
+            }}
+          >
+            <legend
+              style={{
+                padding: "0 8px",
+                fontSize: 12,
+                color: "var(--ink-soft)",
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              External paper details (optional)
+            </legend>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <label htmlFor="submit-title" style={{ fontSize: 13 }}>
+                Title
+              </label>
+              <Input
+                id="submit-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Leave blank to extract automatically"
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <label htmlFor="submit-abstract" style={{ fontSize: 13 }}>
+                Abstract or summary
+              </label>
+              <Textarea
+                id="submit-abstract"
+                value={abstract}
+                onChange={(e) => setAbstract(e.target.value)}
+                rows={4}
+                placeholder="Leave blank to extract automatically"
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <label htmlFor="submit-authors" style={{ fontSize: 13 }}>
+                Authors (comma-separated)
+              </label>
+              <Input
+                id="submit-authors"
+                value={authors}
+                onChange={(e) => setAuthors(e.target.value)}
+                placeholder="Jane Smith, John Doe"
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <label htmlFor="submit-date" style={{ fontSize: 13 }}>
+                Publication date
+              </label>
+              <Input
+                id="submit-date"
+                type="date"
+                value={datePublished}
+                onChange={(e) => setDatePublished(e.target.value)}
+                style={{ maxWidth: 220 }}
+              />
+              <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                Required only if we cannot infer a date from the page.
+              </div>
+            </div>
+          </fieldset>
+        )}
+
+        {errorMsg && (
+          <Alert variant="destructive">
+            <AlertDescription>{errorMsg}</AlertDescription>
+          </Alert>
+        )}
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <Button type="submit" disabled={mutation.isPending}>
+            {mutation.isPending
+              ? isExternal
+                ? "Fetching & indexing…"
+                : "Indexing…"
+              : "Submit paper"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => navigate(-1)}
+            disabled={mutation.isPending}
+          >
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export default SubmitView;

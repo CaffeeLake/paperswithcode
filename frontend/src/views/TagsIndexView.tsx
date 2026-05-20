@@ -8,25 +8,17 @@ import { displayTaskName } from "@/lib/transform";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-const HIDDEN_TASK_KEYS = new Set([
-  "few-shot-image-classification",
-  "object-counting",
-  "open-vocabulary-object-detection",
-  "other",
-]);
-
 const taskKey = (value?: string) => value?.trim().toLowerCase().replace(/[\s_]+/g, "-") ?? "";
-const isHiddenTask = (task: { name: string; slug?: string }) =>
-  HIDDEN_TASK_KEYS.has(taskKey(task.name)) || HIDDEN_TASK_KEYS.has(taskKey(task.slug));
 
 /**
- * Browse page: render the 6 backend areas verbatim, each with their tasks
+ * Browse page: render the backend areas verbatim, each with their tasks
  * (PLAN.md §4.2). v2's curated MODALITY_GROUPS is dropped — we use the
  * `Area` rows from the backend directly.
  *
  * Uses the consolidated `/api/v1/areas/with-tasks/` endpoint, which returns
  * every area populated with its tasks (and aggregated paper counts) in one
- * round-trip.
+ * round-trip. The backend already filters out tasks with `is_visible = false`,
+ * so this view does not duplicate the hide list.
  */
 const TagsIndexView: React.FC = () => {
   const taxonomyQ = useQuery({
@@ -39,29 +31,25 @@ const TagsIndexView: React.FC = () => {
     if (!taxonomyQ.data) return [];
 
     // General sits at the top as the broad catchall, then the modality areas
-    // follow in a curated order. Anything outside this map falls to the end
-    // (sorted alphabetically) so newly added areas show up without code edits.
+    // follow in a curated order, with "Other" at the end. Anything outside
+    // this map falls after that (sorted alphabetically) so newly added areas
+    // show up without code edits.
     const AREA_ORDER: Record<string, number> = {
       general: 0,
       vision: 1,
       video: 2,
       language: 3,
       audio: 4,
-      "time-series": 5,
+      other: 5,
     };
     const rank = (name: string) => AREA_ORDER[taskKey(name)] ?? 999;
 
-    return taxonomyQ.data.results
-      .map((area) => ({
-        ...area,
-        tasks: area.tasks.filter((task) => !isHiddenTask(task)),
-      }))
-      .sort((a, b) => {
-        const ra = rank(a.name);
-        const rb = rank(b.name);
-        if (ra !== rb) return ra - rb;
-        return a.name.localeCompare(b.name);
-      });
+    return [...taxonomyQ.data.results].sort((a, b) => {
+      const ra = rank(a.name);
+      const rb = rank(b.name);
+      if (ra !== rb) return ra - rb;
+      return a.name.localeCompare(b.name);
+    });
   }, [taxonomyQ.data]);
 
   const totalTasks = useMemo(() => {

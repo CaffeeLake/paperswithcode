@@ -5,6 +5,10 @@ This module provides all paper-related API endpoints that match the
 original PapersWithCode API specification.
 """
 
+import logging
+import re
+import time
+from datetime import date
 from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from pydantic import BaseModel, Field
@@ -20,6 +24,12 @@ from backend.models.api import (
     VersionComparison,
 )
 from backend.models.database import Paper as DBPaper, Author, PaperAuthor
+from backend.services.external_resource_service import (
+    ExternalResourceError,
+    ExternalResourceInput,
+    ExternalResourceService,
+)
+from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
 from backend.services.arxiv_service import ArxivService
 from backend.services.thumbnail_service import (
@@ -28,8 +38,15 @@ from backend.services.thumbnail_service import (
 )
 from backend.utils.auth import require_admin, require_hf_admin
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.utils.urls import validate_arxiv_id, validate_version
+from backend.utils.urls import (
+    get_paper_route_identifier,
+    parse_arxiv_url,
+    validate_arxiv_id,
+    validate_version,
+)
 
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -546,6 +563,112 @@ async def compare_paper_versions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _arxiv_metadata_error(arxiv_id: str, error_type: Optional[str]) -> HTTPException:
+    if error_type == "rate_limited":
+        return HTTPException(
+            status_code=429,
+            detail="arXiv is rate-limiting indexing right now. Try again in a few minutes.",
+        )
+    if error_type == "not_found":
+        return HTTPException(
+            status_code=404,
+            detail=f"Paper with ArXiv ID {arxiv_id} was not found on arXiv.",
+        )
+    if error_type == "temporary_failure":
+        return HTTPException(
+            status_code=502,
+            detail="Could not fetch metadata from arXiv right now. Try again in a few minutes.",
+        )
+    if error_type == "response_error":
+        return HTTPException(
+            status_code=502,
+            detail="arXiv returned an invalid metadata response. Try again in a few minutes.",
+        )
+
+    return HTTPException(
+        status_code=502,
+        detail="Could not fetch metadata from arXiv right now. Try again in a few minutes.",
+    )
+
+
+async def _fetch_and_persist_arxiv_paper(
+    arxiv_id: str, db: Session, source_endpoint: str
+) -> Paper:
+    """Pull metadata from ArXiv and persist a new paper row with authors.
+
+    Caller is responsible for checking that ``arxiv_id`` is valid and that no
+    row with that ArXiv ID already exists. Returns the API ``Paper`` model.
+    """
+    started_at = time.monotonic()
+    paper_service = PaperService(db)
+
+    arxiv_service = ArxivService()
+    metadata = await arxiv_service.get_paper_metadata(arxiv_id)
+    if not metadata.success:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=%s elapsed_ms=%d fallback_used=%s",
+            arxiv_id,
+            source_endpoint,
+            metadata.error_type or "upstream_error",
+            elapsed_ms,
+            metadata.fallback_used,
+        )
+        raise _arxiv_metadata_error(arxiv_id, metadata.error_type)
+
+    paper_data = {
+        "arxiv_id": metadata.arxiv_id,
+        "title": metadata.title,
+        "abstract": metadata.abstract,
+        "version": metadata.version,
+        "date_published": metadata.published.date() if metadata.published else None,
+        "primary_category": metadata.primary_category,
+        "all_categories": metadata.categories,
+        "is_latest_version": True,
+    }
+
+    paper_id = paper_service.add_paper(paper_data)
+    if not paper_id:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=db_error elapsed_ms=%d fallback_used=false",
+            arxiv_id,
+            source_endpoint,
+            elapsed_ms,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to add paper to database (may already exist)",
+        )
+
+    db_paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+    if not db_paper:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=db_error elapsed_ms=%d fallback_used=false",
+            arxiv_id,
+            source_endpoint,
+            elapsed_ms,
+        )
+        raise HTTPException(
+            status_code=500, detail="Paper was added but could not be retrieved"
+        )
+
+    if metadata.authors:
+        await add_authors_to_paper(db, db_paper, metadata.authors)
+
+    paper = paper_service.get_paper_by_id(paper_id, include_resources=True)
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    logger.info(
+        "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=success elapsed_ms=%d fallback_used=%s",
+        arxiv_id,
+        source_endpoint,
+        elapsed_ms,
+        metadata.fallback_used,
+    )
+    return paper
+
+
 @router.post(
     "/papers/index/{arxiv_id}",
     response_model=Paper,
@@ -572,78 +695,264 @@ async def index_paper_from_arxiv(
     - 409: Paper already exists in database
     - 500: Server error (ArXiv API unavailable, database error, etc.)
     """
-    # Validate ArXiv ID format
     if not validate_arxiv_id(arxiv_id):
         raise HTTPException(
             status_code=400, detail=f"Invalid ArXiv ID format: {arxiv_id}"
         )
 
+    paper_service = PaperService(db)
+
     try:
-        paper_service = PaperService(db)
-
-        # Check if paper already exists
-        try:
-            existing_paper = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
-            if existing_paper:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Paper with ArXiv ID {arxiv_id} already exists in database",
-                )
-        except PaperNotFoundError:
-            # Good, paper doesn't exist yet
-            pass
-
-        # Fetch metadata from ArXiv
-        arxiv_service = ArxivService()
-        metadata = await arxiv_service.get_paper_metadata(arxiv_id)
-
-        if not metadata.success:
+        existing_paper = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
+        if existing_paper:
             raise HTTPException(
-                status_code=404,
-                detail=f"Paper not found on ArXiv or ArXiv API error: {metadata.error_message}",
+                status_code=409,
+                detail=(f"Paper with ArXiv ID {arxiv_id} already exists in database"),
             )
+    except PaperNotFoundError:
+        pass
 
-        # Prepare paper data
-        paper_data = {
-            "arxiv_id": metadata.arxiv_id,
-            "title": metadata.title,
-            "abstract": metadata.abstract,
-            "version": metadata.version,
-            "date_published": metadata.published.date() if metadata.published else None,
-            "primary_category": metadata.primary_category,
-            "all_categories": metadata.categories,
-            "is_latest_version": True,
-        }
-
-        # Add paper to database
-        paper_id = paper_service.add_paper(paper_data)
-
-        if not paper_id:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to add paper to database (may already exist)",
-            )
-
-        # Get the paper object
-        db_paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-
-        if not db_paper:
-            raise HTTPException(
-                status_code=500, detail="Paper was added but could not be retrieved"
-            )
-
-        # Add authors if available
-        if metadata.authors:
-            await add_authors_to_paper(db, db_paper, metadata.authors)
-
-        # Return the complete paper object
-        return paper_service.get_paper_by_id(paper_id, include_resources=True)
-
+    try:
+        return await _fetch_and_persist_arxiv_paper(arxiv_id, db, "paper_detail")
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error indexing paper: {str(e)}")
+
+
+class PaperSubmitRequest(BaseModel):
+    """Public paper submission payload.
+
+    Either ``arxiv_id`` or ``source_url`` must be provided. The other fields
+    are optional overrides for external (non-ArXiv) submissions; they are
+    ignored when the submission resolves to an ArXiv ID.
+    """
+
+    arxiv_id: Optional[str] = Field(
+        None,
+        description=(
+            "ArXiv identifier (e.g. '2501.12345' or '2501.12345v2'). May also "
+            "be the full ArXiv abs/pdf URL; the server will normalize it."
+        ),
+    )
+    source_url: Optional[str] = Field(
+        None,
+        description=(
+            "Canonical URL for an external paper (blog post, technical "
+            "report, model release page). ArXiv URLs are auto-detected and "
+            "routed to the ArXiv flow even when supplied here."
+        ),
+    )
+    title: Optional[str] = Field(None, description="Title override for external papers")
+    abstract: Optional[str] = Field(
+        None, description="Abstract override for external papers"
+    )
+    authors: Optional[List[str]] = Field(
+        None, description="Author list override for external papers"
+    )
+    date_published: Optional[date] = Field(
+        None,
+        description=(
+            "Publication date override for external papers. Required when "
+            "automatic extraction cannot infer one."
+        ),
+    )
+
+
+class PaperSubmitResponse(BaseModel):
+    """Response for a public paper submission."""
+
+    paper: Paper
+    route_identifier: str = Field(
+        ...,
+        description=(
+            "Identifier the frontend should use to navigate to the new paper "
+            "page: ArXiv ID for ArXiv rows, internal numeric ID otherwise."
+        ),
+    )
+    created: bool = Field(
+        ...,
+        description=(
+            "True when the submission resulted in a new paper row, False when "
+            "an existing row was returned (idempotent re-submission)."
+        ),
+    )
+
+
+_ARXIV_ID_WITH_VERSION_RE = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
+
+
+def _normalize_arxiv_id(raw: str) -> Optional[str]:
+    """Strip a trailing version suffix from a modern ArXiv ID and validate.
+
+    Returns ``None`` if the input does not look like a usable ArXiv ID.
+    """
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    match = _ARXIV_ID_WITH_VERSION_RE.match(candidate)
+    if match:
+        candidate = match.group(1)
+
+    return candidate if validate_arxiv_id(candidate) else None
+
+
+@router.post(
+    "/papers/submit",
+    response_model=PaperSubmitResponse,
+    summary="Submit a paper (ArXiv or external) from the public submit form",
+)
+async def submit_paper(
+    request: PaperSubmitRequest = Body(...),
+    db: Session = Depends(get_database_session),
+):
+    """Unified entry point backing the ``/submit`` page.
+
+    Routing:
+      * If ``arxiv_id`` is provided (or ``source_url`` is an ArXiv URL), the
+        request is funneled into the existing ArXiv indexing flow. Already
+        indexed papers are returned with ``created=False`` instead of 409.
+      * Otherwise the request is delegated to
+        ``ExternalResourceService.add_from_url`` which performs AI-assisted
+        metadata extraction with the supplied overrides.
+    """
+    arxiv_id_input = (request.arxiv_id or "").strip()
+    source_url = (request.source_url or "").strip()
+
+    if not arxiv_id_input and not source_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide an ArXiv ID or a paper URL to submit.",
+        )
+
+    arxiv_id: Optional[str] = None
+    if arxiv_id_input:
+        arxiv_id = _normalize_arxiv_id(arxiv_id_input)
+        if not arxiv_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid ArXiv ID: {arxiv_id_input}",
+            )
+    elif source_url:
+        parsed = parse_arxiv_url(source_url)
+        if parsed is not None:
+            arxiv_id = parsed[0]
+            source_url = ""
+
+    if arxiv_id:
+        paper_service = PaperService(db)
+        try:
+            existing = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
+        except PaperNotFoundError:
+            existing = None
+
+        if existing is not None:
+            return PaperSubmitResponse(
+                paper=existing,
+                route_identifier=existing.arxiv_id or str(existing.id),
+                created=False,
+            )
+
+        try:
+            paper = await _fetch_and_persist_arxiv_paper(arxiv_id, db, "submit")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Error indexing paper: {str(e)}"
+            )
+
+        return PaperSubmitResponse(
+            paper=paper,
+            route_identifier=paper.arxiv_id or str(paper.id),
+            created=True,
+        )
+
+    existing_external = (
+        db.query(DBPaper)
+        .filter(DBPaper.source == "external", DBPaper.source_url == source_url)
+        .first()
+    )
+
+    service = ExternalResourceService(db)
+
+    # bio/medRxiv pages sit behind a Cloudflare bot challenge so raw HTML
+    # fetches return 403 regardless of user agent. Use the public bioRxiv
+    # JSON API instead when the URL points at one of those preprint servers.
+    biorxiv_metadata = None
+    if parse_biorxiv_doi(source_url) is not None:
+        try:
+            biorxiv_metadata = await fetch_biorxiv_metadata(source_url)
+        except Exception as exc:
+            logger.warning("biorxiv metadata lookup failed for %s: %s", source_url, exc)
+            biorxiv_metadata = None
+
+    # Decide which ingestion path to take:
+    #   1. bio/medRxiv URL → use API metadata (LLM extraction skipped).
+    #   2. Caller already supplied title + date_published → trust their
+    #      overrides and skip extraction (lets users index Cloudflare-blocked
+    #      pages by pasting metadata manually).
+    #   3. Otherwise fall back to the generic fetch + LLM extraction path.
+    try:
+        if biorxiv_metadata is not None:
+            payload = ExternalResourceInput(
+                source_url=source_url,
+                title=(request.title or biorxiv_metadata.title),
+                abstract=(request.abstract or biorxiv_metadata.abstract),
+                authors=(
+                    request.authors
+                    if request.authors is not None
+                    else biorxiv_metadata.authors
+                ),
+                date_published=(
+                    request.date_published or biorxiv_metadata.date_published
+                ),
+            )
+            result = service.add_external_resource(payload)
+        elif request.title and request.date_published:
+            payload = ExternalResourceInput(
+                source_url=source_url,
+                title=request.title,
+                abstract=request.abstract,
+                authors=list(request.authors or []),
+                date_published=request.date_published,
+            )
+            result = service.add_external_resource(payload)
+        else:
+            result = await service.add_from_url(
+                source_url=source_url,
+                date_published=request.date_published,
+                title_override=request.title,
+                abstract_override=request.abstract,
+                authors_override=request.authors,
+            )
+    except ExternalResourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except DatabaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        # Upstream extraction (page fetch or LLM metadata extraction) failed.
+        # Surface the underlying message instead of an opaque 500 so the user
+        # can paste overrides and retry without guessing what went wrong.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Could not fetch or extract metadata for the supplied URL: "
+                f"{exc}. Try again, or fill in the optional title and "
+                "publication date fields to skip automatic extraction."
+            ),
+        )
+
+    paper = result.paper
+    route_identifier = get_paper_route_identifier(
+        paper.source, paper.arxiv_id, int(paper.id)
+    )
+    return PaperSubmitResponse(
+        paper=paper,
+        route_identifier=route_identifier,
+        created=existing_external is None,
+    )
 
 
 async def add_authors_to_paper(

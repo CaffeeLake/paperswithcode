@@ -127,10 +127,8 @@ def ensure_areas_exist(tasks):
                 1: "Vision",
                 2: "Language",
                 3: "General",
-                4: "Time Series Forecasting",
                 5: "Robotics",
                 6: "Audio",
-                7: "Time-series",
                 8: "Other",
                 9: "Video",
             }

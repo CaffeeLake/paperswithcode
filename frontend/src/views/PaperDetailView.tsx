@@ -18,6 +18,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 import { EditTasksDialog } from "@/components/paper-detail/EditTasksDialog";
 import { EditMethodsDialog } from "@/components/paper-detail/EditMethodsDialog";
@@ -43,16 +50,15 @@ function formatStars(n: number): string {
   return String(n);
 }
 
-function formatProjectPageLabel(url: string, total: number, index: number): string {
-  if (total === 1) return "Project page";
-
+function formatResourceLinkLabel(url: string, fallback: string): string {
   try {
     const parsed = new URL(url);
-    const slug = parsed.pathname.replace(/\/$/, "").split("/").filter(Boolean).pop();
-    if (slug) return `Project: ${slug.replace(/[-_]+/g, " ")}`;
-    return `Project: ${parsed.hostname.replace(/^www\./, "")}`;
+    const parts = parsed.pathname.replace(/\/$/, "").split("/").filter(Boolean);
+    const slug = parts.at(-1);
+    if (slug) return slug.replace(/[-_]+/g, " ");
+    return parsed.hostname.replace(/^www\./, "");
   } catch {
-    return `Project page ${index + 1}`;
+    return fallback;
   }
 }
 
@@ -168,20 +174,22 @@ const PaperDetailView: React.FC = () => {
   } = usePaperEditState();
 
   // Auto-index if missing.
-  const [indexState, setIndexState] = useState<"idle" | "indexing" | "error">("idle");
+  const [indexState, setIndexState] = useState<"idle" | "indexing">("idle");
   const [indexError, setIndexError] = useState<string | null>(null);
+  const [indexErrorHint, setIndexErrorHint] = useState<string | null>(null);
 
   const handleIndex = async () => {
     if (!arxivId) return;
     setIndexState("indexing");
     setIndexError(null);
+    setIndexErrorHint(null);
     try {
       await indexPaperFromArxiv(arxivId);
       toast({ title: "Indexed", description: "Paper added to database." });
       setTimeout(() => refetch(), 1200);
       setIndexState("idle");
     } catch (e) {
-      const err = e as { response?: string; message?: string };
+      const err = e as { response?: string; message?: string; status?: number };
       let msg = err.message || "Failed to index paper";
       if (err.response) {
         try {
@@ -191,7 +199,10 @@ const PaperDetailView: React.FC = () => {
         }
       }
       setIndexError(msg);
-      setIndexState("error");
+      if (err.status === 429 || err.status === 503) {
+        setIndexErrorHint("Try again later after arXiv has lifted the temporary limit.");
+      }
+      setIndexState("idle");
     }
   };
 
@@ -221,7 +232,10 @@ const PaperDetailView: React.FC = () => {
         </p>
         {indexError && (
           <Alert variant="destructive" className="mt-4 max-w-xl">
-            <AlertDescription>{indexError}</AlertDescription>
+            <AlertDescription>
+              <div>{indexError}</div>
+              {indexErrorHint && <div className="mt-2">{indexErrorHint}</div>}
+            </AlertDescription>
           </Alert>
         )}
         <div className="action-row">
@@ -282,22 +296,34 @@ const PaperDetailView: React.FC = () => {
             label: "Models",
             href: hfArtifactGroupHref(explicitHfArtifacts.models),
             count: explicitHfArtifacts.models.length,
+            links: explicitHfArtifacts.models.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Model"),
+            })),
           },
           {
             label: "Datasets",
             href: hfArtifactGroupHref(explicitHfArtifacts.datasets),
             count: explicitHfArtifacts.datasets.length,
+            links: explicitHfArtifacts.datasets.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Dataset"),
+            })),
           },
           {
             label: "Spaces",
             href: hfArtifactGroupHref(explicitHfArtifacts.spaces),
             count: explicitHfArtifacts.spaces.length,
+            links: explicitHfArtifacts.spaces.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Space"),
+            })),
           },
         ],
         footer: null,
       };
-  const tldr = (paper as Paper & { tldr?: string }).tldr || null;
-  const numPages = (paper as Paper & { num_pages?: number }).num_pages || null;
+  const tldr = paper.tldr || null;
+  const numPages = paper.num_pages || null;
   const abstract = paper.abstract || "";
   const abstractShort = abstract.length > ABSTRACT_PREVIEW_LEN ? abstract.slice(0, ABSTRACT_PREVIEW_LEN) + "…" : abstract;
   const abstractView = abstractExpanded || abstract.length <= ABSTRACT_PREVIEW_LEN ? abstract : abstractShort;
@@ -425,29 +451,37 @@ const PaperDetailView: React.FC = () => {
                 )}
               </a>
             )}
-            {projectPages.map((page, index) => (
-              <span key={page.url} className="project-page-action">
-                <a
-                  className="action-btn project-page-link"
-                  href={page.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Icon name="globe" size={12} /> {formatProjectPageLabel(page.url, projectPages.length, index)}
-                </a>
-                {canEditPaper && (
-                  <button
-                    type="button"
-                    className="action-btn project-page-edit"
-                    onClick={() => setIsEditingProjectPages(true)}
-                    title="Edit project pages"
-                    aria-label="Edit project pages"
-                  >
-                    edit
+            {projectPages.length === 1 && !canEditPaper ? (
+              <a className="action-btn" href={projectPages[0].url} target="_blank" rel="noopener noreferrer">
+                <Icon name="globe" size={12} /> Project page
+              </a>
+            ) : null}
+            {projectPages.length > 0 && (projectPages.length > 1 || canEditPaper) ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className="action-btn">
+                    <Icon name="globe" size={12} /> Project page
                   </button>
-                )}
-              </span>
-            ))}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="project-page-menu">
+                  {projectPages.map((page, index) => (
+                    <DropdownMenuItem key={page.url} asChild>
+                      <a href={page.url} target="_blank" rel="noopener noreferrer">
+                        {formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}
+                      </a>
+                    </DropdownMenuItem>
+                  ))}
+                  {canEditPaper && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => setIsEditingProjectPages(true)}>
+                        Add or edit project pages
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
             {canEditPaper && projectPages.length === 0 ? (
               <button
                 type="button"
@@ -854,6 +888,7 @@ interface HfRowProps {
   href: string;
   count: number | undefined;
   isLimited?: boolean;
+  links?: Array<{ label: string; href: string }>;
 }
 
 interface HuggingFaceArtifactsViewer {
@@ -896,29 +931,38 @@ const HuggingFaceArtifactsCard: React.FC<{ viewer: HuggingFaceArtifactsViewer }>
   </div>
 );
 
-const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited }) => (
-  <a
-    href={href}
-    target="_blank"
-    rel="noopener noreferrer"
-    style={{
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      padding: "6px 0",
-      borderBottom: "1px dashed var(--hairline)",
-      fontFamily: "var(--mono)",
-      fontSize: 11,
-      color: "var(--ink-soft)",
-      textDecoration: "none",
-    }}
-  >
-    <span>{label}</span>
-    <span style={{ fontWeight: 600, color: count ? "var(--ink)" : "var(--ink-faint)" }}>
-      {count != null ? `${count}${isLimited ? "+" : ""}` : "—"}
-    </span>
-  </a>
-);
+const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) => {
+  const hasLinks = (links?.length ?? 0) > 0;
+  const header = (
+    <div className="hf-artifact-row-header">
+      <span>{label}</span>
+      <span style={{ fontWeight: 600, color: count ? "var(--ink)" : "var(--ink-faint)" }}>
+        {count != null ? `${count}${isLimited ? "+" : ""}` : "—"}
+      </span>
+    </div>
+  );
+
+  if (!hasLinks) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="hf-artifact-row">
+        {header}
+      </a>
+    );
+  }
+
+  return (
+    <div className="hf-artifact-row">
+      {header}
+      <div className="hf-artifact-links">
+        {links!.map((link) => (
+          <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer">
+            {link.label}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 function hfArtifactGroupHref(urls: string[]): string {
   return urls[0] ?? "https://huggingface.co";

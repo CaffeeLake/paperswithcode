@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Check, Plus, Trash2, Globe } from "lucide-react";
+import { Loader2, Check, Plus, Trash2, Globe, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -151,13 +151,20 @@ export function EditProjectPagesDialog({
                   </div>
                   <div className="flex items-center space-x-1">
                     <Button
-                      variant="ghost"
+                      variant={page.is_official ? "default" : "outline"}
                       size="sm"
                       onClick={() => handleToggleOfficial(page.url)}
-                      className="h-8 px-2"
-                      title={page.is_official ? "Mark as unofficial" : "Mark as official"}
+                      className="h-8 px-2 text-xs"
+                      title={
+                        page.is_official
+                          ? "Click to unmark as official (created by paper authors)"
+                          : "Click to mark as official (created by paper authors)"
+                      }
                     >
-                      <Check className={`w-4 h-4 ${page.is_official ? 'text-green-600' : 'text-muted-foreground'}`} />
+                      <Star
+                        className={`w-3.5 h-3.5 mr-1 ${page.is_official ? "fill-current" : ""}`}
+                      />
+                      {page.is_official ? "Official" : "Mark official"}
                     </Button>
                     <Button
                       variant="ghost"

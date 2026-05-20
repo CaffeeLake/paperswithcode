@@ -37,12 +37,12 @@ COMMON_AREAS = [
         "description": "A broad category encompassing machine learning research and tasks that don't fit specifically into vision or language domains, including general ML methods, optimization, and cross-domain approaches.",
     },
     {
-        "name": "Time-series",
-        "description": "Machine learning methods for analyzing, modeling, and predicting sequential temporal data, including financial forecasting, weather prediction, and temporal pattern recognition.",
-    },
-    {
         "name": "Audio",
         "description": "Research on processing, understanding, and generating audio signals, including speech recognition, music generation, sound classification, and audio synthesis.",
+    },
+    {
+        "name": "Other",
+        "description": "Research that does not fit into the main modality areas (Vision, Video, Language, Audio, General), including AI for biology, time-series modeling, and other cross-domain or niche tasks.",
     },
 ]
 

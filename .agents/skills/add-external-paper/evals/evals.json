@@ -1,0 +1,23 @@
+{
+  "skill_name": "add-external-paper",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add https://github.com/sapientinc/HRM-Text as an external paper on paperswithcode.co. It does not have an arXiv paper. Create a paper page with a short source-grounded summary, tag it with the appropriate existing tasks and methods, link the GitHub repo as official code, and include any Hugging Face artifacts linked from the README.",
+      "expected_output": "The agent should gather README/repo metadata, avoid creating an arXiv row, create or update a source='external' papers row with title, summary, date, repo, HF artifacts, and apply existing task/method tags. It should report the final paperswithcode.co paper URL and any unresolved metadata gaps.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Please add this HF model release as a paper: https://huggingface.co/Qwen/Qwen2.5-7B-Instruct. If it points at an arXiv paper, use the existing paper instead of creating an external duplicate; otherwise make an external paper row. Link the model card, official repo/project pages, and tag the paper.",
+      "expected_output": "The agent should inspect HF model metadata for arXiv tags first, choose the canonical paper row correctly, then attach HF artifacts and relevant official links/tags without duplicating a paper.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Index this company technical report as a paper page: https://www.zyphra.com/zaya1-vl-8b-technical-report. It should get a concise abstract/summary, publication date, source URL, linked GitHub/HF resources if present, and current taxonomy tags.",
+      "expected_output": "The agent should use the external metadata extractor or page text, require a credible publication date, create/update the external paper row, link resources and tags, and verify the local paper page/API response.",
+      "files": []
+    }
+  ]
+}

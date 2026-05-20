@@ -24,12 +24,6 @@ const parseOrderBy = (value: string | null): OrderBy => {
   return "trending";
 };
 
-const HIDDEN_SUBTASK_SLUGS = new Set([
-  "classic-language-modeling",
-  "coding",
-  "safety-and-grounding",
-]);
-
 const SUBTASK_BENCH_PREVIEW = 3;
 
 // Hide single-evaluation benchmarks from default task-page lists. The
@@ -66,28 +60,41 @@ const TagBrowseView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  // Sister tasks: tasks under the same area_id.
+  // Sister tasks: tasks under the same area_id. `visible_only=true` mirrors
+  // the public `/tasks` taxonomy so hidden tasks (`is_visible=false`) don't
+  // appear in the sidebar even when they share an area with the current task.
   const sistersQ = useQuery({
     queryKey: ["task-sisters", taskQ.data?.area_id, taskQ.data?.id],
     queryFn: () =>
-      apiClient.getTasks({ area_id: Number(taskQ.data!.area_id), page_size: 50 }),
+      apiClient.getTasks({
+        area_id: Number(taskQ.data!.area_id),
+        page_size: 50,
+        visible_only: true,
+      }),
     enabled: !!taskQ.data?.area_id,
     staleTime: 10 * 60 * 1000,
   });
 
   // Subtasks (child tasks). Parent task pages render these as cards; benchmarks
-  // are owned by the most-specific child task in the hierarchy.
+  // are owned by the most-specific child task in the hierarchy. `visible_only`
+  // hides children flagged `is_visible=false` (e.g. `classic-language-modeling`).
   const subtasksQ = useQuery({
     queryKey: ["task-children", taskQ.data?.id],
-    queryFn: () => apiClient.getTaskChildren(taskQ.data!.id, { page_size: 50 }),
+    queryFn: () =>
+      apiClient.getTaskChildren(taskQ.data!.id, {
+        page_size: 50,
+        visible_only: true,
+      }),
     enabled: !!taskQ.data?.id,
     staleTime: 10 * 60 * 1000,
   });
 
-  // Visible subtasks: those not on the temporary hide list. Per-subtask benchmark
-  // queries depend on this list, so derive it before the dataset useQueries call.
+  // Per-subtask benchmark queries depend on this list, so derive it before
+  // the dataset useQueries call. The backend already filters out hidden
+  // subtasks via `visible_only=true`, so this is a thin pass-through that
+  // keeps a stable identity for downstream memo deps.
   const visibleSubtasks = useMemo(
-    () => (subtasksQ.data?.results || []).filter((s) => !HIDDEN_SUBTASK_SLUGS.has(s.slug)),
+    () => subtasksQ.data?.results || [],
     [subtasksQ.data],
   );
 

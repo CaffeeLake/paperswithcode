@@ -117,7 +117,7 @@ def provide_recommendations(usage_data):
         else:
             print("   • You have 1000 free requests per day (purchased 10+ credits)")
 
-        print("   • Free models end with ':free' (e.g., 'x-ai/grok-4-fast:free')")
+        print("   • Free models end with ':free' (e.g., 'x-ai/grok-4.3:free')")
 
         if limit and (limit - usage) < 100:
             print("   • ⚠️  Low credits remaining - consider upgrading to paid tier")

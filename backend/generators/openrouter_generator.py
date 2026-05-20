@@ -28,7 +28,7 @@ class OpenRouterGenerator(RateLimitingMixin, Generator):
     def __init__(self, requests_per_minute=200, requests_per_day=10000, **kwargs):
         # Initialize rate limiting with OpenRouter's paid model limits
         # Note: 20 req/min and 1000 req/day limits only apply to :free models
-        # For paid models like grok-4-fast with a paid account, limits are much higher
+        # For paid models like grok-4.3 with a paid account, limits are much higher
         super().__init__(
             requests_per_minute=requests_per_minute,
             requests_per_day=requests_per_day,
@@ -37,7 +37,9 @@ class OpenRouterGenerator(RateLimitingMixin, Generator):
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY
         )
-        self.model_name = "x-ai/grok-4-fast"
+        # `x-ai/grok-4-fast` was deprecated by xAI in May 2026; xAI recommends
+        # switching to `grok-4.3`.
+        self.model_name = "x-ai/grok-4.3"
 
     def encode_image(self, image_path: str) -> str:
         """

@@ -37,6 +37,15 @@ async def list_tasks(
     area_id: Optional[int] = Query(None, description="Filter by research area ID"),
     parent_id: Optional[int] = Query(None, description="Filter by parent task ID"),
     level: Optional[int] = Query(None, ge=0, description="Filter by hierarchy level"),
+    visible_only: bool = Query(
+        False,
+        description=(
+            "If true, restrict results to tasks with `is_visible = true`. "
+            "Used by user-facing pickers (paper task-tagging dropdown, "
+            "taxonomy index) so hidden tasks like `object-counting` or "
+            "`classic-language-modeling` never appear as choices."
+        ),
+    ),
     ordering: Optional[str] = Query(
         "name",
         description="Order by field: name, created_at, level, paper_count (prefix with '-' for descending)",
@@ -55,6 +64,7 @@ async def list_tasks(
     - `/api/v1/tasks/?level=0` - Get only top-level tasks
     - `/api/v1/tasks/?parent_id=5` - Get subtasks of task 5
     - `/api/v1/tasks/?q=classification` - Search for tasks containing "classification"
+    - `/api/v1/tasks/?visible_only=true` - Hide tasks marked `is_visible = false`
     """
     try:
         # Parse ordering
@@ -73,7 +83,12 @@ async def list_tasks(
 
         # Use search if q parameter is provided
         if q:
-            return service.search_tasks(query=q, page=page, page_size=page_size)
+            return service.search_tasks(
+                query=q,
+                page=page,
+                page_size=page_size,
+                visible_only=visible_only,
+            )
 
         return service.get_tasks(
             page=page,
@@ -82,6 +97,7 @@ async def list_tasks(
             area_id=area_id,
             parent_id=parent_id,
             level=level,
+            visible_only=visible_only,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -212,6 +228,10 @@ async def get_task_children(
     page_size: int = Query(
         50, ge=1, le=100, description="Number of tasks per page (max 100)"
     ),
+    visible_only: bool = Query(
+        False,
+        description="If true, restrict results to subtasks with `is_visible = true`.",
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -225,7 +245,12 @@ async def get_task_children(
     """
     try:
         service = TaskService(db)
-        return service.get_task_children(task_id, page=page, page_size=page_size)
+        return service.get_task_children(
+            task_id,
+            page=page,
+            page_size=page_size,
+            visible_only=visible_only,
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

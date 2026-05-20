@@ -51,6 +51,7 @@ class TaskService:
             paper_count=paper_count or 0,
             image_url=db_task.image_url,
             image_credit=db_task.image_credit,
+            is_visible=db_task.is_visible,
             created_at=db_task.created_at,
             updated_at=db_task.updated_at,
         )
@@ -89,6 +90,7 @@ class TaskService:
         area_id: Optional[int] = None,
         parent_id: Optional[int] = None,
         level: Optional[int] = None,
+        visible_only: bool = False,
         order_by: str = "name",
         order_dir: str = "asc",
     ) -> Tasks:
@@ -103,6 +105,10 @@ class TaskService:
             area_id: Filter by research area ID
             parent_id: Filter by parent task ID
             level: Filter by hierarchy level (0=top-level, 1=subtask, etc.)
+            visible_only: If True, only return tasks with `is_visible = True`.
+                Used by user-facing pickers (paper task-tagging dropdown,
+                taxonomy index) so hidden tasks like `object-counting` or
+                `classic-language-modeling` never appear as choices.
             order_by: Field to order by (name, created_at, level, paper_count)
             order_dir: Order direction (asc, desc)
 
@@ -145,6 +151,9 @@ class TaskService:
 
             if level is not None:
                 query = query.filter(DBTask.level == level)
+
+            if visible_only:
+                query = query.filter(DBTask.is_visible)
 
             # Apply ordering
             if order_by == "name":
@@ -363,23 +372,7 @@ class TaskService:
                 or 0
             )
 
-            task_dict = {
-                "id": str(db_task.id),
-                "name": db_task.name,
-                "description": db_task.description,
-                "slug": db_task.slug,
-                "keywords": db_task.keywords,
-                "parent_id": str(db_task.parent_id) if db_task.parent_id else None,
-                "area_id": str(db_task.area_id) if db_task.area_id else None,
-                "level": db_task.level,
-                "paper_count": paper_count,
-                "image_url": db_task.image_url,
-                "image_credit": db_task.image_credit,
-                "created_at": db_task.created_at,
-                "updated_at": db_task.updated_at,
-            }
-
-            return Task(**task_dict)
+            return self._build_task_model(db_task, paper_count)
 
         except PaperNotFoundError:
             raise
@@ -418,6 +411,7 @@ class TaskService:
         task_id: str,
         page: int = 1,
         page_size: int = 50,
+        visible_only: bool = False,
     ) -> Tasks:
         """
         Get child tasks (subtasks) of a specific task.
@@ -426,6 +420,7 @@ class TaskService:
             task_id: The parent task ID
             page: Page number (1-based)
             page_size: Number of tasks per page
+            visible_only: If True, restrict to subtasks with `is_visible = True`.
 
         Returns:
             Tasks object with child tasks
@@ -447,6 +442,7 @@ class TaskService:
                 page=page,
                 page_size=page_size,
                 parent_id=int(task_id),
+                visible_only=visible_only,
                 order_by="name",
                 order_dir="asc",
             )
@@ -494,19 +490,7 @@ class TaskService:
                     or 0
                 )
 
-                parent_dict = {
-                    "id": str(parent.id),
-                    "name": parent.name,
-                    "description": parent.description,
-                    "slug": parent.slug,
-                    "parent_id": str(parent.parent_id) if parent.parent_id else None,
-                    "area_id": str(parent.area_id) if parent.area_id else None,
-                    "level": parent.level,
-                    "paper_count": paper_count,
-                    "created_at": parent.created_at,
-                    "updated_at": parent.updated_at,
-                }
-                parents.append(Task(**parent_dict))
+                parents.append(self._build_task_model(parent, paper_count))
                 current = parent
 
             return parents
@@ -521,6 +505,7 @@ class TaskService:
         area_id: str,
         page: int = 1,
         page_size: int = 50,
+        visible_only: bool = False,
     ) -> Tasks:
         """
         Get all tasks associated with a specific research area.
@@ -529,6 +514,7 @@ class TaskService:
             area_id: The research area ID
             page: Page number (1-based)
             page_size: Number of tasks per page
+            visible_only: If True, restrict to tasks with `is_visible = True`.
 
         Returns:
             Tasks object with tasks in the area
@@ -548,6 +534,7 @@ class TaskService:
                 page=page,
                 page_size=page_size,
                 area_id=int(area_id),
+                visible_only=visible_only,
                 order_by="name",
                 order_dir="asc",
             )
@@ -562,6 +549,7 @@ class TaskService:
         query: str,
         page: int = 1,
         page_size: int = 50,
+        visible_only: bool = False,
     ) -> Tasks:
         """
         Search tasks by name and description with full-text search.
@@ -570,6 +558,7 @@ class TaskService:
             query: Search query
             page: Page number (1-based)
             page_size: Number of tasks per page
+            visible_only: If True, restrict to tasks with `is_visible = True`.
 
         Returns:
             Tasks object with search results
@@ -581,6 +570,7 @@ class TaskService:
             page=page,
             page_size=page_size,
             search=query,
+            visible_only=visible_only,
             order_by="name",
             order_dir="asc",
         )

@@ -331,6 +331,12 @@ class ThumbnailService:
         if parsed.netloc == "huggingface.co" and "/blob/" in parsed.path:
             path = parsed.path.replace("/blob/", "/resolve/", 1)
             return parsed._replace(path=path).geturl()
+        if (
+            parsed.netloc in {"github.com", "www.github.com"}
+            and "/blob/" in parsed.path
+        ):
+            path = parsed.path.replace("/blob/", "/raw/", 1)
+            return parsed._replace(path=path).geturl()
         return source_url
 
     def _looks_like_pdf_url(self, source_url: str) -> bool:
@@ -484,6 +490,23 @@ class ThumbnailService:
         """
         self.validate_custom_filename(filename)
         return self._get_existing_thumbnail_path_unchecked(filename)
+
+    def get_local_custom_thumbnail_path(self, filename: str) -> Optional[Path]:
+        """
+        Disk-only variant of :meth:`get_existing_custom_thumbnail_path`.
+
+        Used by latency-sensitive paths (e.g. social-preview HTML rendering)
+        that must not trigger a per-request HF bucket round-trip just to
+        decide whether the thumbnail JPEG already exists on the VPS mirror.
+        """
+        self.validate_custom_filename(filename)
+        active_cache_path = self._get_active_cache_path(filename)
+        if active_cache_path.exists():
+            return active_cache_path
+        legacy_cache_path = self._get_legacy_cache_path(filename)
+        if legacy_cache_path.exists():
+            return legacy_cache_path
+        return None
 
     def _get_existing_thumbnail_path_unchecked(self, filename: str) -> Optional[Path]:
         active_cache_path = self._get_active_cache_path(filename)

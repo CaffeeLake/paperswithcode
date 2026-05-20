@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw
 
 from backend.services.thumbnail_service import (
     EXPECTED_THUMBNAIL_WIDTH,
+    ThumbnailService,
     _trim_blank_page_margins,
     is_thumbnail_valid,
 )
@@ -78,3 +79,14 @@ def test_is_thumbnail_valid_accepts_portrait_thumbnail(tmp_path: Path):
     path = tmp_path / "portrait.jpg"
     _save_jpeg(path, EXPECTED_THUMBNAIL_WIDTH, 480)
     assert is_thumbnail_valid(path) is True
+
+
+def test_normalize_external_pdf_url_converts_github_blob_to_raw():
+    service = ThumbnailService.__new__(ThumbnailService)
+
+    assert (
+        service._normalize_external_pdf_url(
+            "https://github.com/huggingface/carbon/blob/main/tech-report.pdf"
+        )
+        == "https://github.com/huggingface/carbon/raw/main/tech-report.pdf"
+    )

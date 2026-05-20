@@ -79,11 +79,17 @@ export function EditTasksDialog({
     return () => window.clearTimeout(handle);
   }, [searchQuery]);
 
+  // `visible_only: true` keeps the dropdown aligned with the public /tasks
+  // taxonomy. Hidden tasks (e.g. `object-counting`, `classic-language-modeling`)
+  // are filtered out server-side so they never appear as new selections.
+  // Already-selected hidden tasks remain pinned via `knownTasks` below so the
+  // user can still uncheck them.
   const { data: searchData, isFetching: searchLoading } = useQuery({
     queryKey: ["tasks-search", debouncedQuery],
     queryFn: () =>
       getTasks({
         page_size: SEARCH_PAGE_SIZE,
+        visible_only: true,
         ...(debouncedQuery ? { q: debouncedQuery } : {}),
       }),
     enabled: open,

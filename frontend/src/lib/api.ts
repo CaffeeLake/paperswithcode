@@ -51,6 +51,8 @@ export interface Paper {
   thumbnail_url?: string;
   title: string;
   abstract: string;
+  tldr?: string | null;
+  num_pages?: number | null;
   authors: string[];
   published: string;
   conference?: string;
@@ -114,6 +116,10 @@ export interface Task {
   paper_count?: number;
   image_url?: string;
   image_credit?: string;
+  /** Whether this task is surfaced in user-facing pickers (the /tasks
+   *  taxonomy and the paper task-tagging dropdown). Hidden tasks remain
+   *  reachable by direct slug/id. */
+  is_visible?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -286,6 +292,28 @@ export interface SavedPapersResponse {
   areas: SavedAreaGroup[];
 }
 
+/** Payload accepted by `POST /papers/submit`. Either `arxiv_id` or
+ *  `source_url` must be provided. The remaining fields are optional metadata
+ *  overrides used only for external (non-ArXiv) submissions. */
+export interface PaperSubmitPayload {
+  arxiv_id?: string;
+  source_url?: string;
+  title?: string;
+  abstract?: string;
+  authors?: string[];
+  /** Publication date as `YYYY-MM-DD`. */
+  date_published?: string;
+}
+
+export interface PaperSubmitResponse {
+  paper: Paper;
+  /** Identifier the frontend should use to build the paper detail URL:
+   *  ArXiv ID for ArXiv rows, internal numeric ID otherwise. */
+  route_identifier: string;
+  /** False when an existing paper was returned instead of creating a new row. */
+  created: boolean;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -407,6 +435,13 @@ class ApiClient {
   async indexPaperFromArxiv(arxivId: string): Promise<Paper> {
     const endpoint = `/papers/index/${arxivId}`;
     return this.request<Paper>(endpoint, { method: 'POST' });
+  }
+
+  async submitPaper(payload: PaperSubmitPayload): Promise<PaperSubmitResponse> {
+    return this.request<PaperSubmitResponse>('/papers/submit', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 
   async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
@@ -584,6 +619,10 @@ class ApiClient {
     area_id?: number;
     parent_id?: number;
     level?: number;
+    /** When true, the backend filters out tasks with `is_visible = false`.
+     *  Used by user-facing pickers (paper task-tagging dropdown, taxonomy)
+     *  so hidden tasks like `object-counting` never appear as choices. */
+    visible_only?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Task>> {
     const searchParams = new URLSearchParams();
@@ -595,6 +634,7 @@ class ApiClient {
     if (params?.area_id) searchParams.append('area_id', params.area_id.toString());
     if (params?.parent_id) searchParams.append('parent_id', params.parent_id.toString());
     if (params?.level !== undefined) searchParams.append('level', params.level.toString());
+    if (params?.visible_only) searchParams.append('visible_only', 'true');
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/tasks/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -644,11 +684,14 @@ class ApiClient {
   async getTaskChildren(taskId: string, params?: {
     page?: number;
     page_size?: number;
+    /** When true, the backend filters out subtasks with `is_visible = false`. */
+    visible_only?: boolean;
   }): Promise<PaginatedResponse<Task>> {
     const searchParams = new URLSearchParams();
 
     if (params?.page) searchParams.append('page', params.page.toString());
     if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.visible_only) searchParams.append('visible_only', 'true');
 
     const endpoint = `/tasks/${taskId}/children${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     return this.request<PaginatedResponse<Task>>(endpoint);
@@ -1005,6 +1048,7 @@ export const getPapers = apiClient.getPapers.bind(apiClient);
 export const getPaper = apiClient.getPaper.bind(apiClient);
 export const getPaperByArxivId = apiClient.getPaperByArxivId.bind(apiClient);
 export const indexPaperFromArxiv = apiClient.indexPaperFromArxiv.bind(apiClient);
+export const submitPaper = apiClient.submitPaper.bind(apiClient);
 export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
 export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);

@@ -239,7 +239,7 @@ class Author(Base):
 
 class Area(Base):
     """
-    Research areas (Vision, Video, Language, Audio, General, Time-series, etc.).
+    Research areas (Vision, Video, Language, Audio, General, Other, etc.).
     """
 
     __tablename__ = "areas"
@@ -289,6 +289,12 @@ class Task(Base):
     image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     image_credit: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     useful_leaderboards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Visibility in user-facing pickers (the /tasks taxonomy index and the
+    # paper-tagging dropdown). Hidden tasks remain reachable by direct slug.
+    is_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

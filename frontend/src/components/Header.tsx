@@ -27,6 +27,9 @@ interface HeaderProps {
   onOpenSearch: () => void;
 }
 
+const FEEDBACK_URL =
+  "https://github.com/huggingface/paperswithcode-feedback/issues";
+
 const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const closeMobile = () => setMobileOpen(false);
@@ -55,8 +58,19 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <NavLink to="/methods" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
               Methods
             </NavLink>
+            <NavLink to="/submit" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
+              Submit
+            </NavLink>
           </nav>
           <div className="header-spacer"></div>
+          <a
+            className="feedback-link header-feedback-link"
+            href={FEEDBACK_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Submit feedback
+          </a>
           <button className="search-trigger" onClick={onOpenSearch}>
             <HeaderIcon name="search" size={13} />
             <span>Search papers, authors, domains…</span>
@@ -116,6 +130,18 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <NavLink to="/methods" className="mobile-nav-link" onClick={closeMobile}>
               Methods
             </NavLink>
+            <NavLink to="/submit" className="mobile-nav-link" onClick={closeMobile}>
+              Submit
+            </NavLink>
+            <a
+              className="mobile-nav-link"
+              href={FEEDBACK_URL}
+              target="_blank"
+              rel="noreferrer"
+              onClick={closeMobile}
+            >
+              Submit feedback
+            </a>
             {!authDisabled && (
               <>
                 <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>

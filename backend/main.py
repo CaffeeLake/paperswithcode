@@ -141,6 +141,7 @@ def create_app() -> FastAPI:
         external_resources,
         authors,
         thumbnails,
+        paper_pages,
         repositories,
         areas,
         tasks,
@@ -170,6 +171,10 @@ def create_app() -> FastAPI:
     app.include_router(evaluations.router, prefix="/api/v1", tags=["evaluations"])
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
+    # Server-rendered paper-page HTML for social previews. Mounted at the
+    # app root because the public URL shape is `/paper/{id}` (not under
+    # `/api/v1/...`).
+    app.include_router(paper_pages.router, tags=["paper_pages"])
     app.include_router(cron.router, prefix="/api/v1", tags=["cron"])
 
     # Health check endpoint

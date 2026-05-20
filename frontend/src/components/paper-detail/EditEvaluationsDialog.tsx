@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Check, Plus, Trash2, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,24 @@ interface EditEvaluationsDialogProps {
   onSuccess?: () => void;
 }
 
+function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEvaluation[] {
+  return evaluations.map(e => {
+    const metricName = e.best_metric || Object.keys(e.metrics)[0];
+    const metricValue = e.metrics[metricName];
+    return {
+      id: e.id,
+      task_id: e.task_id,
+      dataset_id: e.dataset_id,
+      model_name: e.model_name || '',
+      harness: e.harness || '',
+      metric_name: metricName || '',
+      metric_value: String(metricValue || ''),
+      best_rank: e.best_rank ? String(e.best_rank) : '',
+      operation: 'unchanged' as const,
+    };
+  });
+}
+
 export function EditEvaluationsDialog({
   open,
   onOpenChange,
@@ -38,33 +56,29 @@ export function EditEvaluationsDialog({
   const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluation[]>([]);
   const queryClient = useQueryClient();
 
-  // Reset state when dialog opens
-  const handleOpenChange = (newOpen: boolean) => {
-    if (newOpen) {
-      // Convert existing evaluations to editable format
-      if (initialEvaluations && initialEvaluations.length > 0) {
-        const editable: EditableEvaluation[] = initialEvaluations.map(e => {
-          const metricName = e.best_metric || Object.keys(e.metrics)[0];
-          const metricValue = e.metrics[metricName];
-          return {
-            id: e.id,
-            task_id: e.task_id,
-            dataset_id: e.dataset_id,
-            model_name: e.model_name || '',
-            harness: e.harness || '',
-            metric_name: metricName || '',
-            metric_value: String(metricValue || ''),
-            best_rank: e.best_rank ? String(e.best_rank) : '',
-            operation: 'unchanged' as const,
-          };
-        });
-        setEditedEvaluations(editable);
-      } else {
-        setEditedEvaluations([]);
-      }
+  // Seed local state from props once per open session. The parent controls
+  // `open`, so initialization can't depend on Radix's `onOpenChange` callback
+  // firing (it doesn't when the parent flips `open` itself). `hasSeededRef`
+  // becomes true after a non-empty seed so background refetches of
+  // `initialEvaluations` don't clobber the form; `hasUserEditedRef` extends
+  // that protection to in-progress edits even if seeding hasn't run with
+  // non-empty data yet. The dialog still late-seeds once if it was opened
+  // before evaluations finished loading.
+  const hasSeededRef = useRef(false);
+  const hasUserEditedRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      hasSeededRef.current = false;
+      hasUserEditedRef.current = false;
+      return;
     }
-    onOpenChange(newOpen);
-  };
+    if (hasSeededRef.current) return;
+    if (hasUserEditedRef.current) return;
+    if (initialEvaluations.length === 0) return;
+    hasSeededRef.current = true;
+    setEditedEvaluations(mapApiEvaluationsToEditable(initialEvaluations));
+  }, [open, initialEvaluations]);
 
   // Fetch all tasks and datasets for evaluation editing
   const { data: allTasksForEvals } = useQuery({
@@ -187,6 +201,7 @@ export function EditEvaluationsDialog({
   });
 
   const handleAddEvaluation = () => {
+    hasUserEditedRef.current = true;
     setEditedEvaluations([
       ...editedEvaluations,
       {
@@ -203,6 +218,7 @@ export function EditEvaluationsDialog({
   };
 
   const handleDeleteEvaluation = (index: number) => {
+    hasUserEditedRef.current = true;
     const evaluation = editedEvaluations[index];
     if (evaluation.id) {
       // Mark existing evaluation for deletion
@@ -222,6 +238,7 @@ export function EditEvaluationsDialog({
     field: keyof EditableEvaluation,
     value: string
   ) => {
+    hasUserEditedRef.current = true;
     setEditedEvaluations(
       editedEvaluations.map((e, i) => {
         if (i !== index) return e;
@@ -262,7 +279,7 @@ export function EditEvaluationsDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-6xl max-h-[800px]">
         <DialogHeader>
           <DialogTitle>Edit Evaluation Results</DialogTitle>

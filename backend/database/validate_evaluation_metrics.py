@@ -5,16 +5,29 @@ This script checks for and fixes common data inconsistencies in the evaluations 
 particularly metric naming inconsistencies that can cause display issues.
 """
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from typing import Dict, List
 import sys
 import os
+from typing import Dict, List
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # Add backend to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from backend.config import get_settings
+
+
+STANDARDIZATION_ALIASES = {
+    "box AP": ["box mAP", "box_ap", "box_map", "bbox AP", "bbox mAP"],
+    "AP50": ["AP@50", "AP@0.5", "AP_50"],
+    "AP75": ["AP@75", "AP@0.75", "AP_75"],
+}
+
+REVIEW_ONLY_ALIASES = {
+    "AP": ["mAP", "mean AP"],
+    "mAP": ["mean AP"],
+}
 
 
 def get_database_connection():
@@ -53,21 +66,140 @@ def find_metric_inconsistencies(cursor) -> Dict[str, List[str]]:
 
     inconsistencies = {}
 
-    # Known inconsistencies to check for
-    # Format: {standard_name: [variations]}
-    known_variations = {
-        "box AP": ["box mAP", "box_ap", "box_map", "bbox AP", "bbox mAP"],
-        "AP": ["mAP", "mean AP"],
-        "AP50": ["AP@50", "AP@0.5", "AP_50"],
-        "AP75": ["AP@75", "AP@0.75", "AP_75"],
-    }
-
-    for standard_name, variations in known_variations.items():
+    for standard_name, variations in STANDARDIZATION_ALIASES.items():
         found_variations = [v for v in variations if v in metric_keys]
         if found_variations:
             inconsistencies[standard_name] = found_variations
 
     return inconsistencies
+
+
+def get_metric_label_audit_rows(cursor):
+    """Compare metric keys on evaluations with leaderboard metric definitions."""
+    cursor.execute("""
+        SELECT
+            e.id,
+            e.model_name,
+            e.task_id,
+            e.dataset_id,
+            t.name AS task_name,
+            d.name AS dataset_name,
+            metric_key.metric_name,
+            e.best_metric,
+            COALESCE(
+                (
+                    SELECT array_agg(DISTINCT m.name ORDER BY m.name)
+                    FROM task_dataset_metrics tdm
+                    JOIN metrics m ON m.id = tdm.metric_id
+                    WHERE tdm.task_id = e.task_id
+                      AND tdm.dataset_id = e.dataset_id
+                ),
+                ARRAY[]::text[]
+            ) AS allowed_metrics
+        FROM evaluations e
+        JOIN tasks t ON t.id = e.task_id
+        JOIN datasets d ON d.id = e.dataset_id
+        CROSS JOIN LATERAL jsonb_object_keys(e.metrics) AS metric_key(metric_name)
+        ORDER BY t.name, d.name, e.best_metric, metric_key.metric_name, e.id
+    """)
+    return cursor.fetchall()
+
+
+def classify_metric_label(metric_name: str, allowed_metrics: List[str]) -> str:
+    """Classify a metric label against its configured leaderboard metrics."""
+    if metric_name in allowed_metrics:
+        return "valid_source_label"
+
+    for standard_name, variations in STANDARDIZATION_ALIASES.items():
+        if metric_name in variations and standard_name in allowed_metrics:
+            return "possible_alias"
+
+    for standard_name, variations in REVIEW_ONLY_ALIASES.items():
+        if metric_name in variations and standard_name in allowed_metrics:
+            return "possible_alias"
+
+    return "leaderboard_mismatch"
+
+
+def audit_metric_labels(cursor) -> int:
+    """Report metric labels that do not match configured leaderboard metrics."""
+    rows = get_metric_label_audit_rows(cursor)
+
+    summary = {
+        "valid_source_label": 0,
+        "possible_alias": 0,
+        "leaderboard_mismatch": 0,
+    }
+    grouped_issues = {}
+
+    for row in rows:
+        allowed_metrics = list(row["allowed_metrics"] or [])
+        status = classify_metric_label(row["metric_name"], allowed_metrics)
+        summary[status] += 1
+
+        if status == "valid_source_label":
+            continue
+
+        key = (
+            status,
+            row["task_name"],
+            row["dataset_name"],
+            row["best_metric"],
+            row["metric_name"],
+            tuple(allowed_metrics),
+        )
+        grouped_issues[key] = grouped_issues.get(key, 0) + 1
+
+    print("\nMetric label audit:")
+    for status, count in summary.items():
+        print(f"  {status}: {count}")
+
+    if not grouped_issues:
+        print("  ✓ All metric keys match configured leaderboard metrics")
+        return 0
+
+    print("\nMetric labels needing review, grouped by leaderboard:")
+    for (
+        status,
+        task_name,
+        dataset_name,
+        best_metric,
+        metric_name,
+        allowed_metrics,
+    ), count in sorted(grouped_issues.items())[:25]:
+        allowed = ", ".join(allowed_metrics) if allowed_metrics else "none configured"
+        print(
+            f"  [{status}] {task_name} / {dataset_name} / best={best_metric}: "
+            f"{metric_name} ({count} evaluation(s); allowed: {allowed})"
+        )
+
+    if len(grouped_issues) > 25:
+        print(f"  ... {len(grouped_issues) - 25} more grouped issue(s)")
+
+    return summary["possible_alias"] + summary["leaderboard_mismatch"]
+
+
+def find_standardization_candidates(cursor):
+    """Find safe metric-name rewrites based on leaderboard definitions."""
+    rows = get_metric_label_audit_rows(cursor)
+    candidates = []
+
+    for row in rows:
+        allowed_metrics = list(row["allowed_metrics"] or [])
+        metric_name = row["metric_name"]
+
+        for standard_name, variations in STANDARDIZATION_ALIASES.items():
+            if (
+                metric_name in variations
+                and standard_name in allowed_metrics
+                and metric_name not in allowed_metrics
+            ):
+                candidate = dict(row)
+                candidate["standard_name"] = standard_name
+                candidates.append(candidate)
+                break
+
+    return candidates
 
 
 def standardize_metric_names(cursor, dry_run=True) -> int:
@@ -81,57 +213,55 @@ def standardize_metric_names(cursor, dry_run=True) -> int:
     Returns:
         Number of evaluations updated
     """
-    inconsistencies = find_metric_inconsistencies(cursor)
+    candidates = find_standardization_candidates(cursor)
 
-    if not inconsistencies:
-        print("✓ No metric naming inconsistencies found!")
+    if not candidates:
+        print("✓ No safe metric naming standardizations found!")
         return 0
 
-    print("\nFound metric naming inconsistencies:")
-    for standard_name, variations in inconsistencies.items():
-        print(f"  {standard_name}: {', '.join(variations)}")
+    print("\nFound safe metric naming standardizations:")
 
     total_updated = 0
 
-    for standard_name, variations in inconsistencies.items():
-        for variation in variations:
-            # Count how many would be affected
+    for candidate in candidates:
+        eval_id = candidate["id"]
+        variation = candidate["metric_name"]
+        standard_name = candidate["standard_name"]
+
+        print(
+            f"  Evaluation {eval_id}: {variation} → {standard_name} "
+            f"({candidate['task_name']} / {candidate['dataset_name']})"
+        )
+
+        if not dry_run:
             cursor.execute(
                 """
-                SELECT COUNT(*) as count
-                FROM evaluations
-                WHERE metrics ? %s
+                UPDATE evaluations
+                SET
+                    metrics = jsonb_set(metrics - %s, %s, metrics->%s),
+                    best_metric = CASE
+                        WHEN best_metric = %s THEN %s
+                        ELSE best_metric
+                    END
+                WHERE id = %s
+                  AND metrics ? %s
+                  AND NOT metrics ? %s
             """,
-                (variation,),
+                (
+                    variation,
+                    f"{{{standard_name}}}",
+                    variation,
+                    variation,
+                    standard_name,
+                    eval_id,
+                    variation,
+                    standard_name,
+                ),
             )
-            count = cursor.fetchone()["count"]
+            total_updated += cursor.rowcount
+            print(f"    ✓ Updated {cursor.rowcount} evaluation(s)")
 
-            if count > 0:
-                print(f"\n  {variation} → {standard_name}: {count} evaluation(s)")
-
-                if not dry_run:
-                    # Update the metric name
-                    cursor.execute(
-                        """
-                        UPDATE evaluations
-                        SET metrics = jsonb_set(
-                            jsonb_set(metrics, %s, metrics->%s),
-                            %s, 'null'::jsonb
-                        ) - %s
-                        WHERE metrics ? %s
-                    """,
-                        (
-                            f"{{{standard_name}}}",  # New key path
-                            variation,  # Old key to copy from
-                            f"{{{variation}}}",  # Path to remove
-                            variation,  # Key to remove
-                            variation,  # Filter condition
-                        ),
-                    )
-                    total_updated += count
-                    print(f"    ✓ Updated {count} evaluation(s)")
-
-    return total_updated
+    return len(candidates) if dry_run else total_updated
 
 
 def validate_best_metrics(cursor, dry_run=True) -> int:
@@ -224,10 +354,13 @@ def main():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Run validations
-        print("\n1. Checking for metric naming inconsistencies...")
+        print("\n1. Auditing metric labels against leaderboard definitions...")
+        metric_label_issues = audit_metric_labels(cursor)
+
+        print("\n2. Checking for safe metric naming standardizations...")
         updated_metrics = standardize_metric_names(cursor, dry_run=dry_run)
 
-        print("\n2. Checking for missing best_metric values...")
+        print("\n3. Checking for missing best_metric values...")
         updated_best_metrics = validate_best_metrics(cursor, dry_run=dry_run)
 
         # Commit changes if not dry run
@@ -238,6 +371,7 @@ def main():
         # Summary
         print("\n" + "=" * 60)
         print("Summary:")
+        print(f"  Metric labels needing review: {metric_label_issues}")
         print(f"  Metric names standardized: {updated_metrics}")
         print(f"  Best metrics set: {updated_best_metrics}")
         print("=" * 60)
@@ -245,9 +379,18 @@ def main():
         cursor.close()
         conn.close()
 
-        if dry_run and (updated_metrics > 0 or updated_best_metrics > 0):
-            print("\n💡 Run with --fix to apply these changes")
-            return 1
+        if dry_run:
+            has_findings = (
+                metric_label_issues > 0
+                or updated_metrics > 0
+                or updated_best_metrics > 0
+            )
+            if updated_metrics > 0 or updated_best_metrics > 0:
+                print("\n💡 Run with --fix to apply safe automated changes")
+            if metric_label_issues > 0:
+                print("\n💡 Review leaderboard mismatches before applying manual fixes")
+            if has_findings:
+                return 1
 
         return 0
 
