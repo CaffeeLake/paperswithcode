@@ -54,6 +54,9 @@ export interface Paper {
   tldr?: string | null;
   num_pages?: number | null;
   authors: string[];
+  /** Parallel to `authors`. When present, includes hf_username so the frontend
+   *  can link names to the matching huggingface.co profile. */
+  author_links?: AuthorLink[];
   published: string;
   conference?: string;
   conference_url_abs?: string;
@@ -84,6 +87,11 @@ export interface Author {
   citation_count: number;
   h_index: number;
   semantic_scholar_id?: string;
+}
+
+export interface AuthorLink {
+  name: string;
+  hf_username?: string | null;
 }
 
 export interface Area {
