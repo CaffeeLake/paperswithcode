@@ -18,6 +18,41 @@ psql -h localhost -U postgres -d paperswithcode_hf < backend/database/migrations
 
 ## Available Migrations
 
+### Add Paper Relations Table (2026-05-22)
+
+**Forward Migration:** `add_paper_relations.sql`
+- Creates the `paper_relations` junction table for directed predecessor/
+  successor edges between papers (e.g. DINOv2 -> DINOv3 follow-up).
+- Columns: `source_paper_id`, `target_paper_id` (both FK to `papers(id)`
+  with `ON DELETE CASCADE`), `created_at`. Primary key on the pair.
+- Adds a CHECK constraint preventing self-links and indexes on each FK.
+- Seeds the canonical DINOv2 -> DINOv3 edge when both arXiv rows
+  (`2304.07193` and `2508.10104`) already exist; uses `ON CONFLICT DO NOTHING`
+  so re-running is a no-op.
+
+**Wrapper:** `run_add_paper_relations.py`
+- Applies the SQL migration above and prints column metadata + row count.
+
+```bash
+uv run --env-file backend/keys.env python \
+    backend/database/migrations/run_add_paper_relations.py
+```
+
+### Add Evaluation Parameter Count Column (2026-05-21)
+
+**Forward Migration:** `add_evaluations_num_parameters.sql`
+- Adds nullable `evaluations.num_parameters` (`BIGINT`) for the raw model
+  parameter count of a given evaluation row (e.g. `7000000000` for a 7B
+  model). Existing rows stay `NULL` until backfilled.
+- Adds a CHECK constraint `num_parameters IS NULL OR num_parameters >= 0`
+- Idempotent: column add uses `IF NOT EXISTS` and the constraint is
+  dropped before being re-added so re-running is safe
+
+```bash
+psql -U postgres -d paperswithcode_hf \
+     -f backend/database/migrations/add_evaluations_num_parameters.sql
+```
+
 ### Make Retrieval a Subtask of Embedding Models (2026-05-14)
 
 **Forward Migration:** `make_retrieval_embedding_subtask.sql`

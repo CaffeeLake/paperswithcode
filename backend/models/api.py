@@ -169,6 +169,20 @@ class Paper(BaseModel):
         None,
         description="Benchmarks/datasets introduced by this paper (datasets where introducing_paper_id matches)",
     )
+    predecessor_papers: Optional[List["RelatedPaperSummary"]] = Field(
+        None,
+        description=(
+            "Earlier papers that this paper is a follow-up to "
+            "(e.g. DINOv2 for the DINOv3 paper)."
+        ),
+    )
+    successor_papers: Optional[List["RelatedPaperSummary"]] = Field(
+        None,
+        description=(
+            "Later papers that follow up on this paper "
+            "(e.g. DINOv3 for the DINOv2 paper)."
+        ),
+    )
 
     @field_validator("authors", mode="before")
     @classmethod
@@ -326,7 +340,8 @@ class AuthorLink(BaseModel):
 
     name: str = Field(..., description="Author display name")
     hf_username: Optional[str] = Field(
-        None, description="Hugging Face username, when the author is mapped to a HF profile"
+        None,
+        description="Hugging Face username, when the author is mapped to a HF profile",
     )
 
 
@@ -789,6 +804,40 @@ class BenchmarkSummary(BaseModel):
         """Ensure ID is a string."""
         if v is None:
             return v
+        return str(v)
+
+
+class RelatedPaperSummary(BaseModel):
+    """
+    Lightweight paper summary used to embed predecessor/successor papers
+    inside a paper detail response (lineage banner on the frontend).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Paper ID")
+    title: str = Field(..., description="Paper title")
+    arxiv_id: Optional[str] = Field(None, description="ArXiv ID, if any")
+    source: str = Field(
+        default="arxiv",
+        description="Origin of this paper row: 'arxiv' or 'external'",
+    )
+    source_url: Optional[str] = Field(
+        None, description="Canonical URL for external rows; NULL for ArXiv rows"
+    )
+    published: Optional[date] = Field(None, description="Paper publication date")
+    route_identifier: str = Field(
+        ...,
+        description=(
+            "Identifier the frontend should use when building the paper detail "
+            "URL: ArXiv ID for ArXiv rows, internal numeric ID otherwise."
+        ),
+    )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        """Ensure ID is always a string."""
         return str(v)
 
 
@@ -1347,6 +1396,15 @@ class Evaluation(BaseModel):
     external_source_url: Optional[str] = Field(
         None, description="URL to external source (e.g., competition)"
     )
+    num_parameters: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "Raw number of model parameters for this evaluation row "
+            "(e.g. 7000000000 for a 7B model). Optional metadata that lets "
+            "future leaderboards filter and visualize by model size."
+        ),
+    )
     created_at: datetime = Field(..., description="Timestamp when record was created")
     updated_at: datetime = Field(
         ..., description="Timestamp when record was last updated"
@@ -1419,6 +1477,11 @@ class EvaluationCreateRequest(BaseModel):
     best_metric: Optional[str] = Field(None, description="Best metric name")
     evaluated_on: Optional[date] = Field(None, description="Evaluation date")
     external_source_url: Optional[str] = Field(None, description="External source URL")
+    num_parameters: Optional[int] = Field(
+        None,
+        ge=0,
+        description=("Raw number of model parameters (e.g. 7000000000 for a 7B model)"),
+    )
 
 
 class EvaluationUpdateRequest(BaseModel):
@@ -1444,6 +1507,14 @@ class EvaluationUpdateRequest(BaseModel):
     best_metric: Optional[str] = Field(None, description="Best metric name")
     evaluated_on: Optional[date] = Field(None, description="Evaluation date")
     external_source_url: Optional[str] = Field(None, description="External source URL")
+    num_parameters: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "Raw number of model parameters (e.g. 7000000000 for a 7B model). "
+            "Pass `null` to clear an existing value."
+        ),
+    )
 
 
 # Metric models

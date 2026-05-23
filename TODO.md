@@ -16,3 +16,7 @@
 - Remove false positives of image generation papers being tagged with image classification due to the imagenet keyword
 - Add support for closed-source models, e.g. Claude Sonnet 3.5 (and mark them as "closed-source" with a toggle to enable/disable)
 - Add scientific benchmarks of https://huggingface.co/internlm/Intern-S1-Pro
+- Import all time-series benchmarks like GIFT-eval
+- Add all Artificial Analysis scores using their API
+- Auto-tag papers with orgs, e.g.
+- Add paperswithcode.co/paper-series, where the follow-up papers can be read

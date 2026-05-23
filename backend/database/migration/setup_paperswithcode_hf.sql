@@ -165,8 +165,11 @@ CREATE TABLE evaluations (
     best_metric VARCHAR(100),
     evaluated_on DATE,
     external_source_url VARCHAR(500),
+    num_parameters BIGINT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT evaluations_num_parameters_non_negative
+        CHECK (num_parameters IS NULL OR num_parameters >= 0)
 );
 
 -- Junction Tables (Many-to-Many Relationships)

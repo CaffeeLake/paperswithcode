@@ -22,6 +22,7 @@ from backend.models.database import (
     Method as DBMethod,
     PaperTask,
     PaperMethod,
+    PaperRelation as DBPaperRelation,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
     ProjectPage as DBProjectPage,
@@ -43,6 +44,7 @@ from backend.models.api import (
     TaskSummary,
     MethodSummary,
     BenchmarkSummary,
+    RelatedPaperSummary,
     VersionComparison,
     AuthorLink,
 )
@@ -51,6 +53,7 @@ from backend.utils.urls import (
     get_method_source_url,
     get_paper_abs_url,
     get_paper_pdf_url,
+    get_paper_route_identifier,
     get_paper_url,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -84,6 +87,26 @@ class PaperService:
             code_snippet_url=method.code_snippet_url,
         )
 
+    @staticmethod
+    def _convert_db_paper_to_related_summary(
+        related: DBPaper,
+    ) -> RelatedPaperSummary:
+        """
+        Convert a related (predecessor/successor) paper row into the lightweight
+        summary used inside the paper detail response lineage banner.
+        """
+        return RelatedPaperSummary(
+            id=str(related.id),
+            title=related.title,
+            arxiv_id=related.arxiv_id,
+            source=related.source,
+            source_url=related.source_url,
+            published=related.date_published,
+            route_identifier=get_paper_route_identifier(
+                related.source, related.arxiv_id, related.id
+            ),
+        )
+
     def _get_paper_relation_data(
         self, paper_ids: List[int], include_resources: bool = False
     ) -> Dict[str, Dict[int, list]]:
@@ -99,6 +122,8 @@ class PaperService:
             "repositories": defaultdict(list),
             "project_pages": defaultdict(list),
             "introduced_benchmarks": defaultdict(list),
+            "predecessor_papers": defaultdict(list),
+            "successor_papers": defaultdict(list),
         }
 
         if not unique_ids:
@@ -172,6 +197,43 @@ class PaperService:
                     full_name=dataset.full_name,
                     introduced_year=dataset.introduced_year,
                 )
+            )
+
+        # Directed paper lineage edges. For each requested paper, load
+        # successors (outgoing edges where the requested paper is the
+        # predecessor) and predecessors (incoming edges where the requested
+        # paper is the successor). Two batched queries with eager-loaded
+        # related Paper rows keep round-trips at O(1) per detail call.
+        successor_rows = (
+            self.db.query(DBPaperRelation.source_paper_id, DBPaper)
+            .join(DBPaper, DBPaperRelation.target_paper_id == DBPaper.id)
+            .filter(DBPaperRelation.source_paper_id.in_(unique_ids))
+            .order_by(
+                DBPaperRelation.source_paper_id,
+                DBPaper.date_published.asc().nullslast(),
+                DBPaper.id,
+            )
+            .all()
+        )
+        for paper_id, related in successor_rows:
+            relation_data["successor_papers"][paper_id].append(
+                self._convert_db_paper_to_related_summary(related)
+            )
+
+        predecessor_rows = (
+            self.db.query(DBPaperRelation.target_paper_id, DBPaper)
+            .join(DBPaper, DBPaperRelation.source_paper_id == DBPaper.id)
+            .filter(DBPaperRelation.target_paper_id.in_(unique_ids))
+            .order_by(
+                DBPaperRelation.target_paper_id,
+                DBPaper.date_published.asc().nullslast(),
+                DBPaper.id,
+            )
+            .all()
+        )
+        for paper_id, related in predecessor_rows:
+            relation_data["predecessor_papers"][paper_id].append(
+                self._convert_db_paper_to_related_summary(related)
             )
 
         if include_resources:
@@ -316,6 +378,10 @@ class PaperService:
         introduced_benchmarks = (
             relation_data["introduced_benchmarks"].get(db_paper.id) or None
         )
+        predecessor_papers = (
+            relation_data["predecessor_papers"].get(db_paper.id) or None
+        )
+        successor_papers = relation_data["successor_papers"].get(db_paper.id) or None
         repositories = (
             relation_data["repositories"].get(db_paper.id) or None
             if include_resources
@@ -363,6 +429,8 @@ class PaperService:
             "tasks": tasks,
             "methods": methods,
             "introduced_benchmarks": introduced_benchmarks,
+            "predecessor_papers": predecessor_papers,
+            "successor_papers": successor_papers,
         }
 
         return Paper(**paper_data)

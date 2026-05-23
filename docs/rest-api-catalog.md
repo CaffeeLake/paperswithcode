@@ -77,9 +77,13 @@ curl -X POST "http://localhost:8000/api/v1/evaluations/" \
     "model_name": "DETR-R50",
     "metrics": {"AP": "44.9", "AP50": "64.7"},
     "best_metric": "AP",
-    "methodology": "End-to-End Object Detection with Transformers"
+    "methodology": "End-to-End Object Detection with Transformers",
+    "num_parameters": 41000000
   }'
 ```
+
+`num_parameters` is optional and stores the raw model parameter count (e.g.
+`7000000000` for a 7B model). On PUT, send `null` to clear an existing value.
 
 ## Tasks (`/api/v1/tasks/`)
 

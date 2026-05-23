@@ -155,22 +155,33 @@ class TaskService:
             if visible_only:
                 query = query.filter(DBTask.is_visible)
 
-            # Apply ordering
-            if order_by == "name":
-                order_field = DBTask.name
-            elif order_by == "created_at":
-                order_field = DBTask.created_at
-            elif order_by == "level":
-                order_field = DBTask.level
-            elif order_by == "paper_count":
-                order_field = paper_count_col
+            # Apply ordering. When a search query is active we rank title
+            # matches above description-only matches so e.g. searching "image"
+            # surfaces "Image Classification" / "Image Matching" before tasks
+            # that only mention "image" in their description.
+            if search:
+                search_rank = case(
+                    (DBTask.name.ilike(f"{search}%"), 0),
+                    (DBTask.name.ilike(f"%{search}%"), 1),
+                    else_=2,
+                ).label("search_rank")
+                query = query.order_by(asc(search_rank), asc(DBTask.name))
             else:
-                order_field = DBTask.name  # Default to name
+                if order_by == "name":
+                    order_field = DBTask.name
+                elif order_by == "created_at":
+                    order_field = DBTask.created_at
+                elif order_by == "level":
+                    order_field = DBTask.level
+                elif order_by == "paper_count":
+                    order_field = paper_count_col
+                else:
+                    order_field = DBTask.name  # Default to name
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
-            else:
-                query = query.order_by(asc(order_field))
+                if order_dir == "desc":
+                    query = query.order_by(desc(order_field))
+                else:
+                    query = query.order_by(asc(order_field))
 
             # Total count of distinct tasks matching filters (works with GROUP BY
             # because SQLAlchemy wraps it in a subquery).

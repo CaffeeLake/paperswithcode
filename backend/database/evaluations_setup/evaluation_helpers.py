@@ -50,6 +50,7 @@ def get_or_create_evaluation(
     best_metric: Optional[str] = None,
     evaluated_on: Optional[Any] = None,
     external_source_url: Optional[str] = None,
+    num_parameters: Optional[int] = None,
     merge_metrics: bool = True,
 ) -> DBEvaluation:
     """
@@ -130,6 +131,8 @@ def get_or_create_evaluation(
             existing.evaluated_on = evaluated_on
         if external_source_url and not existing.external_source_url:
             existing.external_source_url = external_source_url
+        if num_parameters is not None and existing.num_parameters is None:
+            existing.num_parameters = num_parameters
 
         db.add(existing)
         db.commit()
@@ -168,6 +171,7 @@ def get_or_create_evaluation(
             best_metric=best_metric,
             evaluated_on=evaluated_on,
             external_source_url=external_source_url,
+            num_parameters=num_parameters,
         )
 
         db.add(evaluation)
@@ -239,6 +243,7 @@ def bulk_create_evaluations_with_consolidation(
                 "best_metric": eval_data.get("best_metric"),
                 "evaluated_on": eval_data.get("evaluated_on"),
                 "external_source_url": eval_data.get("external_source_url"),
+                "num_parameters": eval_data.get("num_parameters"),
             }
 
         # Merge metrics

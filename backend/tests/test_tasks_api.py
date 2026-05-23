@@ -464,5 +464,86 @@ def test_trending_tasks_path_not_treated_as_slug(client, trending_dataset):
     assert "recent_days" in body
 
 
+@pytest.fixture
+def tasks_with_image_keyword():
+    """Tasks where 'image' appears in different fields to test title-first rank.
+
+    Layout:
+      - Image Classification: name match (prefix)
+      - Image Matching: name match (prefix)
+      - Image Understanding: name match (prefix)
+      - Scene Understanding: description-only match ("uses image features")
+      - Robotics: no match at all
+    """
+    db = TestingSessionLocal()
+
+    tasks = [
+        DBTask(
+            id=1,
+            name="Image Classification",
+            slug="image-classification",
+            description="Categorize images into classes.",
+            level=0,
+            is_visible=True,
+        ),
+        DBTask(
+            id=2,
+            name="Image Matching",
+            slug="image-matching",
+            description="Match correspondences across views.",
+            level=0,
+            is_visible=True,
+        ),
+        DBTask(
+            id=3,
+            name="Image Understanding",
+            slug="image-understanding",
+            description="Understand visual scene content.",
+            level=0,
+            is_visible=True,
+        ),
+        DBTask(
+            id=4,
+            name="Scene Understanding",
+            slug="scene-understanding",
+            description="High-level reasoning that uses image features.",
+            level=0,
+            is_visible=True,
+        ),
+        DBTask(
+            id=5,
+            name="Robotics",
+            slug="robotics",
+            description="Embodied agents acting in the world.",
+            level=0,
+            is_visible=True,
+        ),
+    ]
+    db.add_all(tasks)
+    db.commit()
+    db.close()
+
+
+def test_tasks_search_ranks_title_matches_before_description(
+    client, tasks_with_image_keyword
+):
+    """`q=image` returns title matches before description-only matches."""
+    response = client.get("/api/v1/tasks/?q=image&page_size=20")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    names = [task["name"] for task in data["results"]]
+
+    assert names[:3] == [
+        "Image Classification",
+        "Image Matching",
+        "Image Understanding",
+    ]
+    assert "Scene Understanding" in names
+    assert names.index("Scene Understanding") > names.index("Image Understanding")
+    assert "Robotics" not in names
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

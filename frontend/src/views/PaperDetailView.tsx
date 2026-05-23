@@ -206,6 +206,51 @@ const PaperDetailView: React.FC = () => {
     }
   };
 
+  const { citationDisplay, citationCopy } = useMemo(() => {
+    if (!paper) return { citationDisplay: "", citationCopy: "" };
+    const truncatedTitle = `${paper.title.slice(0, 60)}${paper.title.length > 60 ? "…" : ""}`;
+    const displayAuthor = `${paper.authors[0] || ""}${paper.authors.length > 1 ? " et al." : ""}`;
+    const fullAuthors = paper.authors.join(" and ");
+    const year = (paper.published || "").slice(0, 4) || "—";
+    const build = (title: string, authorField: string) =>
+      paper.arxiv_id
+        ? `@article{${paper.arxiv_id.replace(".", "")},
+  title={{${title}}},
+  author=${authorField},
+  year={{${year}}},
+  eprint={{${paper.arxiv_id}}},
+  archivePrefix={{arXiv}}
+}`
+        : `@misc{paper${paper.id},
+  title={{${title}}},
+  author=${authorField},
+  year={{${year}}},
+  url={{${paper.source_url || paper.url_abs || ""}}}
+}`;
+    return {
+      citationDisplay: build(truncatedTitle, `{{${displayAuthor}}}`),
+      citationCopy: build(paper.title, `{${fullAuthors}}`),
+    };
+  }, [paper]);
+
+  const [citationCopied, setCitationCopied] = useState(false);
+
+  const handleCopyCitation = async () => {
+    if (!citationCopy) return;
+    try {
+      await navigator.clipboard.writeText(citationCopy);
+      setCitationCopied(true);
+      toast({ title: "Citation copied", description: "BibTeX entry copied to clipboard." });
+      window.setTimeout(() => setCitationCopied(false), 1500);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Could not access the clipboard. Please copy manually.",
+        variant: "destructive",
+      });
+    }
+  };
+
   // ── render ───────────────────────────────────────────────────────────────
   if (isLoading) {
     return (
@@ -345,6 +390,14 @@ const PaperDetailView: React.FC = () => {
     if (parts.length === 1) return parts[0];
     return parts.join(" and ");
   })();
+
+  // Lineage banner: directed predecessor/successor edges from
+  // `paper_relations`. A paper may have both at once (e.g. a middle entry
+  // in a series); we render both groups inside the same banner with
+  // separate eyebrow labels.
+  const predecessorPapers = paper.predecessor_papers || [];
+  const successorPapers = paper.successor_papers || [];
+  const hasLineageItems = predecessorPapers.length > 0 || successorPapers.length > 0;
 
   const AUTHOR_LIMIT = 12;
   const authorEntries = paper.authors.map((name, i) => ({
@@ -545,6 +598,51 @@ const PaperDetailView: React.FC = () => {
               <span className="introduced-note">
                 This paper is the canonical source for {introducedSummary}.
               </span>
+            </div>
+          )}
+
+          {hasLineageItems && (
+            <div className="introduced-banner lineage-banner">
+              {successorPapers.length > 0 && (
+                <div className="lineage-row">
+                  <span className="introduced-label lineage-label">
+                    {successorPapers.length === 1 ? "Follow-up paper" : "Follow-up papers"}
+                  </span>
+                  <div className="introduced-methods">
+                    {successorPapers.map((p) => (
+                      <button
+                        key={`successor-${p.id}`}
+                        type="button"
+                        className="introduced-pill lineage-pill"
+                        onClick={() => navigate(`/paper/${p.route_identifier}`)}
+                      >
+                        {p.title}
+                        <span className="introduced-arrow">→</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {predecessorPapers.length > 0 && (
+                <div className="lineage-row">
+                  <span className="introduced-label lineage-label">
+                    {predecessorPapers.length === 1 ? "Predecessor paper" : "Predecessor papers"}
+                  </span>
+                  <div className="introduced-methods">
+                    {predecessorPapers.map((p) => (
+                      <button
+                        key={`predecessor-${p.id}`}
+                        type="button"
+                        className="introduced-pill lineage-pill"
+                        onClick={() => navigate(`/paper/${p.route_identifier}`)}
+                      >
+                        <span className="introduced-arrow lineage-arrow-back">←</span>
+                        {p.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -797,7 +895,19 @@ const PaperDetailView: React.FC = () => {
           <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
 
           <div className="sidebar-card">
-            <div className="sidebar-card-title">Citation</div>
+            <div className="sidebar-card-title">
+              <span>Citation</span>
+              <button
+                type="button"
+                className="citation-copy-btn"
+                onClick={handleCopyCitation}
+                aria-label="Copy citation to clipboard"
+                title="Copy citation to clipboard"
+              >
+                <Icon name="copy" size={11} />
+                {citationCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
             <pre
               style={{
                 fontFamily: "var(--mono)",
@@ -809,18 +919,7 @@ const PaperDetailView: React.FC = () => {
                 margin: 0,
               }}
             >
-{paper.arxiv_id ? `@article{${paper.arxiv_id.replace(".", "")},
-  title={{${paper.title.slice(0, 60)}${paper.title.length > 60 ? "…" : ""}}},
-  author={{${paper.authors[0] || ""}${paper.authors.length > 1 ? " et al." : ""}}},
-  year={{${(paper.published || "").slice(0, 4) || "—"}}},
-  eprint={{${paper.arxiv_id}}},
-  archivePrefix={{arXiv}}
-}` : `@misc{paper${paper.id},
-  title={{${paper.title.slice(0, 60)}${paper.title.length > 60 ? "…" : ""}}},
-  author={{${paper.authors[0] || ""}${paper.authors.length > 1 ? " et al." : ""}}},
-  year={{${(paper.published || "").slice(0, 4) || "—"}}},
-  url={{${paper.source_url || paper.url_abs || ""}}}
-}`}
+              {citationDisplay}
             </pre>
           </div>
 

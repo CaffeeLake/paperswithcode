@@ -57,13 +57,34 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
     staleTime: 60_000,
   });
 
+  const benchmarksQ = useQuery({
+    queryKey: ["search-benchmarks", debouncedQuery],
+    queryFn: () =>
+      apiClient.getDatasets({
+        q: debouncedQuery,
+        page_size: 6,
+        ordering: "-paper_count",
+      }),
+    enabled: open && debouncedQuery.length >= 2,
+    staleTime: 60_000,
+  });
+
   if (!open) return null;
 
   const matchedTasks = tasksQ.data?.results || [];
   const matchedMethods = methodsQ.data?.results || [];
+  const matchedBenchmarks = benchmarksQ.data?.results || [];
   const matchedPapers = papersQ.data || [];
-  const isLoading = papersQ.isFetching || tasksQ.isFetching || methodsQ.isFetching;
-  const hasResults = matchedTasks.length || matchedPapers.length || matchedMethods.length;
+  const isLoading =
+    papersQ.isFetching ||
+    tasksQ.isFetching ||
+    methodsQ.isFetching ||
+    benchmarksQ.isFetching;
+  const hasResults =
+    matchedTasks.length ||
+    matchedPapers.length ||
+    matchedMethods.length ||
+    matchedBenchmarks.length;
 
   const go = (path: string) => {
     onClose();
@@ -76,7 +97,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
         <input
           ref={inputRef}
           className="search-modal-input"
-          placeholder="Search papers, tasks, or methods…"
+          placeholder="Search papers, tasks, methods, or benchmarks…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -120,6 +141,23 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
                 >
                   <span style={{ fontFamily: "var(--mono)", fontWeight: 600 }}>{m.name}</span>
                   {m.paper_count != null && <span className="count">{m.paper_count} papers</span>}
+                </div>
+              ))}
+            </>
+          )}
+          {matchedBenchmarks.length > 0 && (
+            <>
+              <div className="search-section-label">Benchmarks · {matchedBenchmarks.length}</div>
+              {matchedBenchmarks.map((d) => (
+                <div
+                  key={d.id}
+                  className="search-result-tag"
+                  onClick={() => go(`/benchmark/${d.slug || d.id}`)}
+                >
+                  <span className="name">{d.name}</span>
+                  {d.paper_count != null && d.paper_count > 0 && (
+                    <span className="count">{d.paper_count} entries</span>
+                  )}
                 </div>
               ))}
             </>

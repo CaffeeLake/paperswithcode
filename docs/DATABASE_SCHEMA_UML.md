@@ -144,6 +144,16 @@ Key capabilities:
 │ created_at               │
 │ PK (hf_username, paper_id)│
 └──────────────────────────┘
+
+┌──────────────────────────────┐
+│       PAPER_RELATIONS        │
+├──────────────────────────────┤
+│ source_paper_id (FK papers)  │◄──── PAPERS.id (predecessor, ON DELETE CASCADE)
+│ target_paper_id (FK papers)  │◄──── PAPERS.id (successor,   ON DELETE CASCADE)
+│ created_at                   │
+│ PK (source_paper_id, target_paper_id)
+│ CHECK source_paper_id <> target_paper_id
+└──────────────────────────────┘
 ```
 
 ## Core Tables (DDL highlights)
@@ -210,6 +220,7 @@ The following summarizes the live structure. See the database for full DDL.
 - paper_id (FK), task_id (FK), dataset_id (FK)
 - model_name, harness (optional), methodology, metrics (JSONB)
 - uses_additional_data (bool), best_rank, best_metric (string), evaluated_on, external_source_url
+- num_parameters (BIGINT, NULL — raw model parameter count, e.g. 7000000000 for a 7B model; non-negative CHECK)
 - created_at, updated_at
 - Indexes: GIN(metrics), (paper_id, task_id, dataset_id), (task_id, dataset_id, best_metric)
 - **Hierarchy semantics:** `task_id` may reference any task in the hierarchy
@@ -256,6 +267,7 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_DATASETS(paper_id, dataset_id) PK(paper_id, dataset_id)
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
+- PAPER_RELATIONS(source_paper_id, target_paper_id, created_at) PK(source_paper_id, target_paper_id) — directed lineage edges between papers. `source_paper_id` is the predecessor (earlier) paper and `target_paper_id` is the successor (follow-up) paper, e.g. DINOv2 -> DINOv3. CHECK constraint prevents self-edges; both FKs cascade on paper delete. Many-to-many in both directions: a paper can have multiple successors and multiple predecessors.
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 - USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
@@ -289,5 +301,6 @@ The following summarizes the live structure. See the database for full DDL.
 - **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
 - **User bookmarks:** persisted per HF account in USER_BOOKMARKS; written exclusively through `/api/v1/me/bookmarks` endpoints which require the `pwc_session` cookie.
+- **Paper lineage:** directed predecessor/successor edges between papers live in PAPER_RELATIONS (`source_paper_id` -> `target_paper_id`, predecessor -> successor). Surfaced on the paper detail API via `predecessor_papers` and `successor_papers`, and rendered as the lineage banner on the paper detail view (e.g. DINOv2 shows DINOv3 as the follow-up; DINOv3 shows DINOv2 as the predecessor).
 
 This document is synchronized with the live schema via schema dump and table descriptions.

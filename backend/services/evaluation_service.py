@@ -401,6 +401,7 @@ class EvaluationService:
                     "best_metric": db_evaluation.best_metric,
                     "evaluated_on": db_evaluation.evaluated_on,
                     "external_source_url": db_evaluation.external_source_url,
+                    "num_parameters": db_evaluation.num_parameters,
                     "created_at": db_evaluation.created_at,
                     "updated_at": db_evaluation.updated_at,
                     "paper_title": paper_title,
@@ -491,6 +492,7 @@ class EvaluationService:
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
+                "num_parameters": db_evaluation.num_parameters,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,
@@ -548,6 +550,7 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
+        num_parameters: Optional[int] = None,
     ) -> Evaluation:
         """
         Create a new evaluation.
@@ -609,6 +612,7 @@ class EvaluationService:
                 best_metric=best_metric,
                 evaluated_on=evaluated_on,
                 external_source_url=external_source_url,
+                num_parameters=num_parameters,
             )
 
             self.db.add(db_evaluation)
@@ -659,6 +663,7 @@ class EvaluationService:
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
+                "num_parameters": db_evaluation.num_parameters,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,
@@ -694,7 +699,9 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
+        num_parameters: Optional[int] = None,
         harness_set: bool = False,
+        num_parameters_set: bool = False,
     ) -> Evaluation:
         """
         Update an existing evaluation.
@@ -806,6 +813,8 @@ class EvaluationService:
                 db_evaluation.evaluated_on = evaluated_on
             if external_source_url is not None:
                 db_evaluation.external_source_url = external_source_url
+            if num_parameters_set:
+                db_evaluation.num_parameters = num_parameters
 
             self.db.commit()
             self.db.refresh(db_evaluation)
@@ -881,6 +890,7 @@ class EvaluationService:
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
+                "num_parameters": db_evaluation.num_parameters,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,

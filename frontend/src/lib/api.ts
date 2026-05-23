@@ -41,6 +41,21 @@ export interface BenchmarkSummary {
   introduced_year?: number;
 }
 
+/** Lightweight summary of a related paper (predecessor or successor)
+ *  embedded in the paper detail response. Used to power the lineage banner
+ *  on the paper page (e.g. DINOv2 -> DINOv3). */
+export interface RelatedPaperSummary {
+  id: string;
+  title: string;
+  arxiv_id: string | null;
+  source?: 'arxiv' | 'external';
+  source_url?: string | null;
+  published?: string | null;
+  /** Identifier the frontend should use when building the paper detail URL:
+   *  ArXiv ID for ArXiv rows, internal numeric ID otherwise. */
+  route_identifier: string;
+}
+
 export interface Paper {
   id: string;
   arxiv_id: string | null;
@@ -78,6 +93,14 @@ export interface Paper {
   tasks?: Task[];
   methods?: Method[];
   introduced_benchmarks?: BenchmarkSummary[];
+  /** Earlier papers that this paper is a follow-up to (e.g. DINOv2 for the
+   *  DINOv3 paper). Powers the "Predecessor paper" pill in the lineage
+   *  banner on the paper detail view. */
+  predecessor_papers?: RelatedPaperSummary[];
+  /** Later papers that follow up on this paper (e.g. DINOv3 for the DINOv2
+   *  paper). Powers the "Follow-up paper" pill in the lineage banner on the
+   *  paper detail view. */
+  successor_papers?: RelatedPaperSummary[];
 }
 
 export interface Author {
@@ -215,6 +238,10 @@ export interface Evaluation {
   best_metric?: string;
   evaluated_on?: string;
   external_source_url?: string;
+  /** Raw number of model parameters (e.g. 7000000000 for a 7B model).
+   *  Optional metadata used by future leaderboards to filter and visualize
+   *  results by model size. */
+  num_parameters?: number | null;
   created_at: string;
   updated_at: string;
   paper_title?: string;
@@ -240,6 +267,26 @@ export interface Metric {
 
 export interface MetricDirections {
   directions: Record<string, 'higher_is_better' | 'lower_is_better'>;
+}
+
+/** One entry in the `metrics` array returned by
+ *  `GET /api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics`. The backend
+ *  prefixes fields with `metric_` because the wrapper also has a `task_id` /
+ *  `dataset_id` for the leaderboard itself. */
+export interface LeaderboardMetric {
+  metric_id: string;
+  metric_name: string;
+  metric_direction: 'higher_is_better' | 'lower_is_better';
+  created_at?: string;
+}
+
+export interface LeaderboardMetricsResponse {
+  task_id: string;
+  dataset_id: string;
+  task_name: string;
+  dataset_name: string;
+  supports_harness: boolean;
+  metrics: LeaderboardMetric[];
 }
 
 export interface PaginatedResponse<T> {
@@ -850,6 +897,19 @@ class ApiClient {
     return response.results;
   }
 
+  /** Configured metrics for a single (task, dataset) leaderboard, sourced
+   *  from `task_dataset_metrics`. Drives the metric columns + View dropdown
+   *  on the benchmark page. */
+  async getLeaderboardMetrics(
+    datasetId: string,
+    taskId: string,
+  ): Promise<LeaderboardMetric[]> {
+    const res = await this.request<LeaderboardMetricsResponse>(
+      `/datasets/${datasetId}/tasks/${taskId}/metrics`,
+    );
+    return res.metrics;
+  }
+
   // Evaluations API
   async getEvaluations(params?: {
     page?: number;
@@ -938,6 +998,7 @@ class ApiClient {
     best_metric?: string;
     evaluated_on?: string;
     external_source_url?: string;
+    num_parameters?: number | null;
   }): Promise<Evaluation> {
     const endpoint = '/evaluations/';
     return this.request<Evaluation>(endpoint, {
@@ -958,6 +1019,7 @@ class ApiClient {
     best_metric?: string;
     evaluated_on?: string;
     external_source_url?: string;
+    num_parameters?: number | null;
   }): Promise<Evaluation> {
     const endpoint = `/evaluations/${evaluationId}`;
     return this.request<Evaluation>(endpoint, {
@@ -1086,6 +1148,7 @@ export const getDatasets = apiClient.getDatasets.bind(apiClient);
 export const getDataset = apiClient.getDataset.bind(apiClient);
 export const getDatasetBySlug = apiClient.getDatasetBySlug.bind(apiClient);
 export const getDatasetTasks = apiClient.getDatasetTasks.bind(apiClient);
+export const getLeaderboardMetrics = apiClient.getLeaderboardMetrics.bind(apiClient);
 export const getEvaluations = apiClient.getEvaluations.bind(apiClient);
 export const getEvaluation = apiClient.getEvaluation.bind(apiClient);
 export const getEvaluationsByPaper = apiClient.getEvaluationsByPaper.bind(apiClient);

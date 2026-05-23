@@ -15,6 +15,10 @@ interface EditableEvaluation {
   metric_name: string;
   metric_value: string;
   best_rank?: string;
+  /** Raw model parameter count as a string for input control compatibility.
+   *  Empty string means "no value" (sent as `null` on PUT to clear, or omitted
+   *  on POST). Stored as integers server-side. */
+  num_parameters: string;
   operation?: 'create' | 'update' | 'delete' | 'unchanged';
 }
 
@@ -40,9 +44,22 @@ function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEval
       metric_name: metricName || '',
       metric_value: String(metricValue || ''),
       best_rank: e.best_rank ? String(e.best_rank) : '',
+      num_parameters: e.num_parameters != null ? String(e.num_parameters) : '',
       operation: 'unchanged' as const,
     };
   });
+}
+
+/** Parse the user-entered parameter count. Empty/whitespace -> `null` so the
+ *  field can be explicitly cleared. Anything that doesn't parse as a
+ *  non-negative integer falls back to `null` rather than rejecting the save —
+ *  the backend has its own CHECK constraint as a final guard. */
+function parseNumParametersInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return Math.trunc(parsed);
 }
 
 export function EditEvaluationsDialog({
@@ -168,6 +185,7 @@ export function EditEvaluationsDialog({
           }
         } else if (evalItem.operation === 'create') {
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
+          const numParameters = parseNumParametersInput(evalItem.num_parameters);
           await createEvaluation({
             paper_id: parseInt(paperId),
             task_id: parseInt(evalItem.task_id),
@@ -177,6 +195,7 @@ export function EditEvaluationsDialog({
             metrics: { [evalItem.metric_name]: evalItem.metric_value },
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+            num_parameters: numParameters ?? undefined,
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
@@ -188,6 +207,7 @@ export function EditEvaluationsDialog({
             metrics: { [evalItem.metric_name]: evalItem.metric_value },
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+            num_parameters: parseNumParametersInput(evalItem.num_parameters),
           });
         }
       }
@@ -212,6 +232,7 @@ export function EditEvaluationsDialog({
         metric_name: '',
         metric_value: '',
         best_rank: '',
+        num_parameters: '',
         operation: 'create',
       },
     ]);
@@ -300,6 +321,7 @@ export function EditEvaluationsDialog({
                     <th className="text-left py-2 px-2 font-medium text-sm">Harness</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm">Parameters</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
                   </tr>
                 </thead>
@@ -377,6 +399,18 @@ export function EditEvaluationsDialog({
                             placeholder="44.9"
                             value={evaluation.metric_value}
                             onChange={(e) => handleUpdateEvaluationField(index, 'metric_value', e.target.value)}
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <Input
+                            type="number"
+                            min={0}
+                            step={1}
+                            className="w-full text-sm"
+                            placeholder="e.g. 7000000000"
+                            value={evaluation.num_parameters}
+                            onChange={(e) => handleUpdateEvaluationField(index, 'num_parameters', e.target.value)}
+                            title="Raw model parameter count (e.g. 7000000000 for a 7B model). Leave blank if unknown."
                           />
                         </td>
                         <td className="py-2 px-2">

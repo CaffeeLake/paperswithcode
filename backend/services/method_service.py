@@ -7,7 +7,7 @@ including pagination, filtering, and paper associations.
 
 from typing import Optional, List
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc, asc, or_
+from sqlalchemy import func, desc, asc, or_, case
 
 from backend.models.database import Method as DBMethod, PaperMethod
 from backend.models.api import Method, Methods
@@ -133,23 +133,37 @@ class MethodService:
             if exclude_id is not None:
                 query = query.filter(DBMethod.id != exclude_id)
 
-            if order_by == "name":
-                order_field = DBMethod.name
-            elif order_by == "full_name":
-                order_field = DBMethod.full_name
-            elif order_by == "introduced_year":
-                order_field = DBMethod.introduced_year
-            elif order_by == "created_at":
-                order_field = DBMethod.created_at
-            elif order_by == "paper_count":
-                order_field = paper_count_col
+            # When a search query is active, rank title matches above
+            # description-only matches so e.g. searching "image" surfaces
+            # methods named "Image ..." before ones that only mention the
+            # term in their description.
+            if search:
+                search_rank = case(
+                    (DBMethod.name.ilike(f"{search}%"), 0),
+                    (DBMethod.name.ilike(f"%{search}%"), 1),
+                    (DBMethod.full_name.ilike(f"{search}%"), 2),
+                    (DBMethod.full_name.ilike(f"%{search}%"), 3),
+                    else_=4,
+                ).label("search_rank")
+                query = query.order_by(asc(search_rank), asc(DBMethod.name))
             else:
-                order_field = DBMethod.name
+                if order_by == "name":
+                    order_field = DBMethod.name
+                elif order_by == "full_name":
+                    order_field = DBMethod.full_name
+                elif order_by == "introduced_year":
+                    order_field = DBMethod.introduced_year
+                elif order_by == "created_at":
+                    order_field = DBMethod.created_at
+                elif order_by == "paper_count":
+                    order_field = paper_count_col
+                else:
+                    order_field = DBMethod.name
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
-            else:
-                query = query.order_by(asc(order_field))
+                if order_dir == "desc":
+                    query = query.order_by(desc(order_field))
+                else:
+                    query = query.order_by(asc(order_field))
 
             total_count = query.count()
 

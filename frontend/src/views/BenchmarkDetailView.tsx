@@ -1,13 +1,35 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
-import type { Evaluation, MetricDirections, Task } from "@/lib/api";
+import type { Evaluation, LeaderboardMetric, MetricDirections, Task } from "@/lib/api";
 import { formatMetricValue } from "@/lib/utils";
+import { copyNodeAsPng } from "@/lib/copyScreenshot";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
+import { Icon } from "@/components";
+import { useToast } from "@/hooks/use-toast";
+
+/** Cap how many metric columns we render in the leaderboard at once. The
+ *  View dropdown still lists every configured metric — picking one outside
+ *  the visible set promotes it to `activeMetric`, which guarantees the sort
+ *  column is always shown (see `visibleMetrics` below). */
+const MAX_METRIC_COLUMNS = 5;
+
+function extractSourcePaperRouteId(paperUrl?: string | null): string | null {
+  if (!paperUrl) return null;
+
+  const url = paperUrl.trim();
+  const arxivMatch = url.match(/^https?:\/\/(?:www\.)?arxiv\.org\/(?:abs|pdf)\/([^/?#]+)/i);
+  if (arxivMatch?.[1]) {
+    return arxivMatch[1].replace(/\.pdf$/i, "");
+  }
+
+  const localMatch = url.match(/^(?:https?:\/\/(?:www\.)?paperswithcode\.co)?\/paper\/([^/?#]+)/i);
+  return localMatch?.[1] ?? null;
+}
 
 interface SotaPoint {
   value: number;
@@ -266,6 +288,81 @@ function computeSeries(
   return { points, sota, sotaModel };
 }
 
+interface CopyScreenshotButtonProps {
+  /** Node to capture. Lazily resolved on click so the button stays usable
+   *  even if the ref is attached after a render-skipping branch. */
+  targetRef: React.RefObject<HTMLElement>;
+  /** Surface name used in the failure toast (e.g. "leaderboard"). */
+  label: string;
+}
+
+const CopyScreenshotButton: React.FC<CopyScreenshotButtonProps> = ({ targetRef, label }) => {
+  const { toast } = useToast();
+  const [status, setStatus] = useState<"idle" | "copying" | "copied">("idle");
+  const resetTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimer.current !== null) {
+        window.clearTimeout(resetTimer.current);
+      }
+    };
+  }, []);
+
+  const handleClick = useCallback(async () => {
+    const node = targetRef.current;
+    if (!node) return;
+    setStatus("copying");
+    node.classList.add("is-capturing");
+    // Force the browser to flush the style/layout change that reveals the
+    // screenshot-only title, then wait one paint frame so html-to-image's
+    // clone walk sees the post-toggle dimensions. Without this, the title
+    // is missing on tall cards like the leaderboard table.
+    void node.offsetHeight;
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => resolve()),
+    );
+    try {
+      await copyNodeAsPng(node);
+      setStatus("copied");
+      toast({
+        title: "Screenshot copied",
+        description: `Image of the ${label} copied to your clipboard.`,
+      });
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+      resetTimer.current = window.setTimeout(() => setStatus("idle"), 1500);
+    } catch (err) {
+      setStatus("idle");
+      toast({
+        title: "Copy failed",
+        description:
+          err instanceof Error && err.message
+            ? err.message
+            : "Could not copy the screenshot to your clipboard.",
+        variant: "destructive",
+      });
+    } finally {
+      node.classList.remove("is-capturing");
+    }
+  }, [targetRef, label, toast]);
+
+  const text = status === "copied" ? "Copied" : status === "copying" ? "Copying…" : "Copy image";
+
+  return (
+    <button
+      type="button"
+      className="bm-copy-btn"
+      onClick={handleClick}
+      disabled={status === "copying"}
+      aria-label={`Copy ${label} screenshot to clipboard`}
+      title={`Copy ${label} screenshot to clipboard`}
+    >
+      <Icon name="copy" size={11} />
+      {text}
+    </button>
+  );
+};
+
 const BenchmarkDetailView: React.FC = () => {
   const { datasetSlug } = useParams<{ datasetSlug: string }>();
   const [searchParams] = useSearchParams();
@@ -282,6 +379,8 @@ const BenchmarkDetailView: React.FC = () => {
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
   const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const didScrollToHighlight = useRef(false);
+  const chartCardRef = useRef<HTMLDivElement | null>(null);
+  const leaderboardCardRef = useRef<HTMLDivElement | null>(null);
 
   // Fetching the dataset with `include_paper=true` collapses the previous
   // dataset → paper waterfall into a single round trip.  See PLAN.md §5.
@@ -318,22 +417,136 @@ const BenchmarkDetailView: React.FC = () => {
     staleTime: 60 * 60 * 1000,
   });
 
-  const allMetrics = useMemo(() => {
+  // Pick the (task, dataset) leaderboard whose configured metrics drive the
+  // table columns. Prefer `?task=<slug>` (set by PaperDetailView links); for
+  // benchmarks with multiple linked tasks but no URL hint, fall back to the
+  // task that the most evaluations belong to, so the column set matches the
+  // bulk of the data. With zero linked tasks (rare legacy rows) we leave it
+  // null and the page falls back to a data-union metric set.
+  const currentTaskId = useMemo<string | null>(() => {
+    const tasks = datasetTasksQ.data || [];
+    if (tasks.length === 0) return null;
+    if (taskSlugFromQuery) {
+      const match = tasks.find((t) => t.slug === taskSlugFromQuery);
+      if (match) return match.id;
+    }
+    if (tasks.length === 1) return tasks[0].id;
+    const evals = evalsQ.data || [];
+    if (evals.length > 0) {
+      const counts = new Map<string, number>();
+      for (const e of evals) {
+        counts.set(e.task_id, (counts.get(e.task_id) || 0) + 1);
+      }
+      let topId: string | null = null;
+      let topN = -1;
+      for (const t of tasks) {
+        const n = counts.get(t.id) || 0;
+        if (n > topN) {
+          topN = n;
+          topId = t.id;
+        }
+      }
+      if (topId) return topId;
+    }
+    return tasks[0].id;
+  }, [datasetTasksQ.data, evalsQ.data, taskSlugFromQuery]);
+
+  // Configured metrics for the current leaderboard — the canonical column
+  // set rendered in the table. Missing for legacy/unconfigured (task,
+  // dataset) pairs, in which case we fall back to a data-union below.
+  const leaderboardMetricsQ = useQuery<LeaderboardMetric[]>({
+    queryKey: ["leaderboard-metrics", datasetQ.data?.id, currentTaskId],
+    queryFn: () => apiClient.getLeaderboardMetrics(datasetQ.data!.id, currentTaskId!),
+    enabled: !!datasetQ.data?.id && !!currentTaskId,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Filter to evaluations on the current (task, dataset) leaderboard so
+  // unrelated rows from other tasks don't pollute ranking / chart / column
+  // population. Falls back to all evals when no task is resolved.
+  const taskEvals = useMemo(() => {
+    const evals = evalsQ.data || [];
+    if (!currentTaskId) return evals;
+    return evals.filter((e) => e.task_id === currentTaskId);
+  }, [evalsQ.data, currentTaskId]);
+
+  // Last-resort metric set when this leaderboard has no configured metrics
+  // in `task_dataset_metrics` (e.g. legacy imports). Picked over data union
+  // only when `configuredMetrics` is empty.
+  const dataMetrics = useMemo(() => {
     const set = new Set<string>();
-    (evalsQ.data || []).forEach((e) => {
+    taskEvals.forEach((e) => {
       if (e.best_metric) set.add(e.best_metric);
       Object.keys(e.metrics || {}).forEach((k) => set.add(k));
     });
     return Array.from(set);
-  }, [evalsQ.data]);
+  }, [taskEvals]);
 
-  const activeMetric = bestMetric || evalsQ.data?.[0]?.best_metric || allMetrics[0] || "";
+  const configuredMetrics = useMemo(
+    () => (leaderboardMetricsQ.data || []).map((m) => m.metric_name),
+    [leaderboardMetricsQ.data],
+  );
+
+  // Full metric set exposed in the View dropdown.
+  const allowedMetrics = configuredMetrics.length ? configuredMetrics : dataMetrics;
+
+  // Pick the most useful default metric: whichever metric is set as
+  // `best_metric` on the most evaluation rows (so multi-metric leaderboards
+  // default to the metric most papers actually rank on). Fall back to the
+  // first allowed metric when no eval data is available yet.
+  const defaultMetric = useMemo(() => {
+    if (taskEvals.length === 0) return allowedMetrics[0] || "";
+    const counts = new Map<string, number>();
+    for (const e of taskEvals) {
+      if (!e.best_metric) continue;
+      if (configuredMetrics.length && !allowedMetrics.includes(e.best_metric)) continue;
+      counts.set(e.best_metric, (counts.get(e.best_metric) || 0) + 1);
+    }
+    let top: string | null = null;
+    let topN = 0;
+    for (const [m, n] of counts) {
+      if (n > topN) {
+        topN = n;
+        top = m;
+      }
+    }
+    return top || allowedMetrics[0] || taskEvals[0]?.best_metric || "";
+  }, [taskEvals, allowedMetrics, configuredMetrics]);
+
+  const activeMetric = bestMetric || defaultMetric;
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
   const arrow: "↑" | "↓" = direction === "lower_is_better" ? "↓" : "↑";
 
+  // Subset of `allowedMetrics` actually rendered as table columns. Always
+  // includes `activeMetric` (so the sort column is never hidden); the rest
+  // fill in from `allowedMetrics` in their original configured order. The
+  // active metric is NOT bubbled to the front, matching the legacy PwC
+  // layout where columns kept their leaderboard ordering and the sort key
+  // was indicated by an arrow.
+  const visibleMetrics = useMemo(() => {
+    if (allowedMetrics.length === 0) return activeMetric ? [activeMetric] : [];
+    if (allowedMetrics.length <= MAX_METRIC_COLUMNS) return allowedMetrics;
+    const result: string[] = [];
+    const activeIncluded = activeMetric && allowedMetrics.includes(activeMetric);
+    const budget = activeIncluded ? MAX_METRIC_COLUMNS - 1 : MAX_METRIC_COLUMNS;
+    let taken = 0;
+    for (const m of allowedMetrics) {
+      if (m === activeMetric) continue;
+      if (taken >= budget) continue;
+      result.push(m);
+      taken++;
+    }
+    if (activeIncluded) {
+      const insertAt = allowedMetrics.findIndex((m) => m === activeMetric);
+      const before = allowedMetrics.slice(0, insertAt).filter((m) => result.includes(m)).length;
+      result.splice(before, 0, activeMetric);
+    }
+    return result;
+  }, [allowedMetrics, activeMetric]);
+
   const { points: chartPoints, sota, sotaModel } = useMemo(
-    () => computeSeries(evalsQ.data || [], activeMetric, arrow),
-    [evalsQ.data, activeMetric, arrow],
+    () => computeSeries(taskEvals, activeMetric, arrow),
+    [taskEvals, activeMetric, arrow],
   );
 
   // Bring the highlighted leaderboard row into view once the evaluations
@@ -349,18 +562,13 @@ const BenchmarkDetailView: React.FC = () => {
     node.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [highlightEvalId, evalsQ.data]);
 
-  // For breadcrumb context: prefer the task carried in `?task=<slug>` (set
-  // by PaperDetailView's "See all" link). Fall back to the alphabetically
-  // first linked task — the API already orders by Task.name.
+  // Breadcrumb task — the resolved `currentTaskId` lifted back to the full
+  // Task object so we can show its name/slug in the trail.
   const primaryTask = useMemo(() => {
     const tasks = datasetTasksQ.data || [];
-    if (tasks.length === 0) return null;
-    if (taskSlugFromQuery) {
-      const match = tasks.find((t) => t.slug === taskSlugFromQuery);
-      if (match) return match;
-    }
-    return tasks[0];
-  }, [datasetTasksQ.data, taskSlugFromQuery]);
+    if (!currentTaskId) return tasks[0] || null;
+    return tasks.find((t) => t.id === currentTaskId) || tasks[0] || null;
+  }, [datasetTasksQ.data, currentTaskId]);
 
   if (datasetQ.isLoading) {
     return (
@@ -389,7 +597,7 @@ const BenchmarkDetailView: React.FC = () => {
   // F1-primary benchmark, for example), we re-rank in-client by the actual
   // value. Rows that don't carry the active metric drop to the end, ordered
   // by their stored rank as a deterministic tie-breaker.
-  const sortedRows = (evalsQ.data || []).slice().sort((a, b) => {
+  const sortedRows = taskEvals.slice().sort((a, b) => {
     const va = parseMetricValue(a.metrics?.[activeMetric]);
     const vb = parseMetricValue(b.metrics?.[activeMetric]);
     if (va !== null && vb !== null) {
@@ -405,20 +613,18 @@ const BenchmarkDetailView: React.FC = () => {
     : null;
 
   const introducingPaper = dataset.introducing_paper ?? undefined;
-  const fallbackArxivIdFromUrl = (() => {
-    if (!dataset.paper_url) return null;
-    const match = dataset.paper_url.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+)/i);
-    if (match && match[1]) return match[1].replace(/\.pdf$/i, "");
-    const localMatch = dataset.paper_url.match(/\/(?:paper|abs|pdf)\/([\w.-]+)/i);
-    if (localMatch && localMatch[1]) return localMatch[1].replace(/\.pdf$/i, "");
-    return null;
-  })();
-  const sourcePaperArxivId = introducingPaper?.arxiv_id || fallbackArxivIdFromUrl;
-  const localSourcePaperArxivId = sourcePaperArxivId;
+  const sourcePaperRouteId =
+    introducingPaper?.arxiv_id ||
+    introducingPaper?.id ||
+    extractSourcePaperRouteId(dataset.paper_url);
   const sourcePaperTitle =
     introducingPaper?.title || dataset.introducing_paper_title || null;
   const sourcePaperYear = introducingPaper?.published?.slice(0, 4) || dataset.introduced_year || null;
-  const hasSource = !!sourcePaperArxivId || !!dataset.paper_url || !!sourcePaperTitle;
+  const hasSource = !!sourcePaperRouteId || !!dataset.paper_url || !!sourcePaperTitle;
+  const sourcePaperFallbackLabel =
+    introducingPaper?.arxiv_id || dataset.paper_url?.match(/^https?:\/\/(?:www\.)?arxiv\.org\//i)
+      ? `arXiv:${sourcePaperRouteId}`
+      : `Paper ${sourcePaperRouteId}`;
 
   return (
     <div className="page">
@@ -463,9 +669,9 @@ const BenchmarkDetailView: React.FC = () => {
         {hasSource && (
           <div className="method-source" style={{ marginTop: 0, marginBottom: 18 }}>
             <span className="method-source-label">Source</span>
-            {localSourcePaperArxivId ? (
+            {sourcePaperRouteId ? (
               <Link
-                to={`/paper/${localSourcePaperArxivId}`}
+                to={`/paper/${sourcePaperRouteId}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="method-source-link"
@@ -474,7 +680,7 @@ const BenchmarkDetailView: React.FC = () => {
                   {sourcePaperTitle ? (
                     <LatexTitle title={sourcePaperTitle} />
                   ) : (
-                    `arXiv:${localSourcePaperArxivId}`
+                    sourcePaperFallbackLabel
                   )}
                 </span>
                 {sourcePaperYear && (
@@ -491,8 +697,6 @@ const BenchmarkDetailView: React.FC = () => {
                 <span className="method-source-title">
                   {sourcePaperTitle ? (
                     <LatexTitle title={sourcePaperTitle} />
-                  ) : sourcePaperArxivId ? (
-                    `arXiv:${sourcePaperArxivId}`
                   ) : (
                     dataset.paper_url
                   )}
@@ -514,27 +718,30 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
-        {allMetrics.length > 1 && (
-          <div className="bm-actions">
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-faint)", marginRight: 8 }}>
-              METRIC
-            </span>
-            {allMetrics.map((m) => (
-              <button
-                key={m}
-                className={`bm-action-btn ${m === activeMetric ? "is-active" : ""}`}
-                onClick={() => setBestMetric(m)}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-        )}
-
         {chartPoints.length >= 2 && (
-          <div className="bm-card">
+          <div className="bm-card" ref={chartCardRef}>
+            <div className="bm-card-screenshot-title" aria-hidden="true">
+              <span className="bm-card-screenshot-eyebrow">Benchmark</span>
+              <span className="bm-card-screenshot-name">{dataset.name}</span>
+            </div>
             <div className="bm-card-head">
               <div className="bm-card-title">SOTA progression</div>
+              <div className="bm-card-actions">
+                {allowedMetrics.length > 1 && (
+                  <label className="bm-view-select">
+                    <span className="bm-view-select-label">View</span>
+                    <select
+                      value={activeMetric}
+                      onChange={(e) => setBestMetric(e.target.value)}
+                    >
+                      {allowedMetrics.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <CopyScreenshotButton targetRef={chartCardRef} label="SOTA chart" />
+              </div>
             </div>
             <div className="bm-chart-wrap">
               <BenchmarkChart points={chartPoints} metric={activeMetric} />
@@ -585,9 +792,29 @@ const BenchmarkDetailView: React.FC = () => {
           );
         })()}
 
-        <div className="bm-card">
+        <div className="bm-card" ref={leaderboardCardRef}>
+          <div className="bm-card-screenshot-title" aria-hidden="true">
+            <span className="bm-card-screenshot-eyebrow">Benchmark</span>
+            <span className="bm-card-screenshot-name">{dataset.name}</span>
+          </div>
           <div className="bm-card-head">
             <div className="bm-card-title">Leaderboard</div>
+            <div className="bm-card-actions">
+              {allowedMetrics.length > 1 && (
+                <label className="bm-view-select">
+                  <span className="bm-view-select-label">View</span>
+                  <select
+                    value={activeMetric}
+                    onChange={(e) => setBestMetric(e.target.value)}
+                  >
+                    {allowedMetrics.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <CopyScreenshotButton targetRef={leaderboardCardRef} label="leaderboard" />
+            </div>
           </div>
           {evalsQ.isLoading ? (
             <div style={{ padding: 16 }}>
@@ -604,7 +831,26 @@ const BenchmarkDetailView: React.FC = () => {
                   <th className="col-rank">Rank</th>
                   <th className="col-model">Model</th>
                   {showHarness && <th className="col-harness">Harness</th>}
-                  <th className="col-value">{activeMetric} {arrow}</th>
+                  {visibleMetrics.map((m) => {
+                    const isActive = m === activeMetric;
+                    return (
+                      <th
+                        key={m}
+                        className={`col-value ${isActive ? "is-active" : ""}`}
+                        aria-sort={isActive ? (arrow === "↓" ? "ascending" : "descending") : "none"}
+                      >
+                        <button
+                          type="button"
+                          className="bm-metric-header"
+                          onClick={() => setBestMetric(m)}
+                          aria-pressed={isActive}
+                          title={`Sort by ${m}`}
+                        >
+                          {m}{isActive ? ` ${arrow}` : ""}
+                        </button>
+                      </th>
+                    );
+                  })}
                   <th className="col-paper">Paper</th>
                   <th className="col-year">Year</th>
                 </tr>
@@ -645,9 +891,20 @@ const BenchmarkDetailView: React.FC = () => {
                         {showHarness && (
                           <td className="col-harness">{e.harness || "—"}</td>
                         )}
-                        <td className={`col-value ${rank === 1 ? "is-best" : ""}`}>
-                          {formatMetricValue(e.metrics?.[activeMetric])}
-                        </td>
+                        {visibleMetrics.map((m) => {
+                          const isActive = m === activeMetric;
+                          const raw = e.metrics?.[m];
+                          return (
+                            <td
+                              key={m}
+                              className={`col-value${isActive ? " is-active" : ""}${isActive && rank === 1 ? " is-best" : ""}`}
+                            >
+                              {raw !== undefined && raw !== null && raw !== ""
+                                ? formatMetricValue(raw)
+                                : "—"}
+                            </td>
+                          );
+                        })}
                         <td className="col-paper">
                           {paperRouteId ? (
                             <Link to={`/paper/${paperRouteId}`}>{paperLabel || "—"}</Link>

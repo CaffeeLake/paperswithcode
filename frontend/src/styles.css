@@ -756,6 +756,30 @@ a.paper-github-stats.is-link:focus-visible {
   padding: 2px 6px;
   border-radius: 3px;
 }
+.citation-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  background: var(--bg-subtle);
+  border: 1px solid var(--hairline);
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.citation-copy-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.citation-copy-btn:focus-visible {
+  outline: none;
+  border-color: var(--ink);
+  color: var(--ink);
+}
 .code-line {
   font-family: var(--mono);
   font-size: 11px;
@@ -1009,6 +1033,37 @@ a.paper-github-stats.is-link:focus-visible {
   font-style: italic;
   font-size: 13px;
   color: var(--ink-soft);
+}
+/* Lineage banner: same structure as `.introduced-banner` but a distinct
+ * cool color (vs the warm yellow used for canonical-source banners). Shown
+ * directly under the introduced banner when both apply. Stacks each
+ * relationship group (follow-up / predecessor) on its own row so the eyebrow
+ * labels never share a line when both are present. */
+.lineage-banner {
+  background: oklch(0.97 0.04 230);
+  border-color: oklch(0.86 0.07 230);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.lineage-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.lineage-label {
+  color: oklch(0.42 0.10 240);
+}
+.lineage-pill {
+  border-color: oklch(0.82 0.06 235);
+}
+.lineage-pill:hover {
+  background: oklch(0.99 0.01 230);
+  border-color: oklch(0.55 0.10 235);
+}
+.lineage-arrow-back {
+  margin-right: -2px;
 }
 @media (max-width: 900px) {
   .method-hero-grid { grid-template-columns: 1fr; gap: 24px; }
@@ -1760,6 +1815,7 @@ a.paper-github-stats.is-link:focus-visible {
   justify-content: space-between;
   align-items: baseline;
   margin-bottom: 18px;
+  gap: 12px;
 }
 .bm-card-title {
   font-family: var(--serif);
@@ -1767,6 +1823,104 @@ a.paper-github-stats.is-link:focus-visible {
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--ink);
+}
+.bm-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* Screenshot-only header: hidden in the live UI, revealed by the
+ * `is-capturing` class that `CopyScreenshotButton` toggles around the
+ * html-to-image render pass so the exported PNG includes the benchmark
+ * name. The same `is-capturing` toggle hides the copy button itself so it
+ * doesn't appear in the screenshot. */
+.bm-card-screenshot-title {
+  display: none;
+}
+.bm-card.is-capturing .bm-card-screenshot-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+.bm-card-screenshot-eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.bm-card-screenshot-name {
+  font-family: var(--serif);
+  font-size: 48px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.bm-card.is-capturing .bm-copy-btn {
+  display: none;
+}
+.bm-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  background: var(--bg-subtle);
+  border: 1px solid var(--hairline);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.bm-copy-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.bm-copy-btn:focus-visible {
+  outline: none;
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.bm-copy-btn:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.bm-view-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.bm-view-select-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.bm-view-select select {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.bm-view-select select:hover {
+  border-color: var(--hairline-strong);
 }
 .bm-controls {
   display: flex;
@@ -1834,8 +1988,47 @@ a.paper-github-stats.is-link:focus-visible {
   font-feature-settings: "tnum";
   font-size: 14px;
   color: var(--ink);
-  width: 100px;
+  width: 86px;
+  text-align: right;
+  white-space: nowrap;
 }
+.bm-table thead th.col-value {
+  text-align: right;
+}
+/* Metric column headers double as a sort/view toggle: clicking promotes that
+ * metric to `activeMetric`, which drives the leaderboard sort, SOTA banner,
+ * and chart. Styled as a bare button so it visually matches the surrounding
+ * uppercase mono header text. */
+.bm-table thead th.col-value .bm-metric-header {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: right;
+  cursor: pointer;
+  width: 100%;
+}
+.bm-table thead th.col-value .bm-metric-header:hover {
+  color: var(--ink);
+}
+.bm-table thead th.col-value .bm-metric-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.bm-table thead th.col-value.is-active .bm-metric-header {
+  color: var(--ink);
+}
+/* The active sort column gets a small visual lift (arrow already drawn in the
+ * header text). Non-active metric columns stay quiet so the chosen metric
+ * reads first. */
+.bm-table .col-value.is-active { color: var(--ink); font-weight: 600; }
+.bm-table tbody td.col-value:not(.is-active) { color: var(--ink-soft); }
 .bm-table .col-value.is-best { color: var(--accent-text); font-weight: 600; }
 .bm-table .col-paper a {
   color: var(--accent-text);
@@ -2129,6 +2322,18 @@ html { scroll-behavior: smooth; }
   .nav, .search-trigger, .header-feedback-link { display: none; }
   .mobile-menu-btn,
   .mobile-search-btn { display: inline-flex; }
+}
+
+@media (max-width: 640px) {
+  .hf-signin-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .hf-signin-btn > span { display: none; }
 }
 
 /* Papers list search input */

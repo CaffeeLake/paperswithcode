@@ -30,6 +30,28 @@ interface HeaderProps {
 const FEEDBACK_URL =
   "https://github.com/huggingface/paperswithcode-feedback/issues";
 
+// Apple devices use Cmd as the primary modifier; everyone else (Windows,
+// Linux, ChromeOS, …) uses Ctrl. `navigator.userAgentData` is the modern
+// signal but isn't available on Safari, so fall back to the legacy
+// `navigator.platform` / `userAgent` strings.
+const isApplePlatform = (): boolean => {
+  if (typeof navigator === "undefined") return false;
+  const uaData = (navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  }).userAgentData;
+  const platform =
+    uaData?.platform || navigator.platform || navigator.userAgent || "";
+  return /Mac|iPhone|iPad|iPod/i.test(platform);
+};
+
+const SearchShortcutHint: React.FC = () => {
+  const [isMac, setIsMac] = React.useState(false);
+  React.useEffect(() => {
+    setIsMac(isApplePlatform());
+  }, []);
+  return <kbd>{isMac ? "⌘K" : "Ctrl K"}</kbd>;
+};
+
 const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const closeMobile = () => setMobileOpen(false);
@@ -74,7 +96,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
           <button className="search-trigger" onClick={onOpenSearch}>
             <HeaderIcon name="search" size={13} />
             <span>Search papers, authors, domains…</span>
-            <kbd>⌘K</kbd>
+            <SearchShortcutHint />
           </button>
           <button
             className="icon-btn mobile-search-btn"

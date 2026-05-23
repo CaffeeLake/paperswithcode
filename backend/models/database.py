@@ -701,6 +701,10 @@ class Evaluation(Base):
     external_source_url: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True
     )
+    # Raw number of model parameters for this evaluation row (e.g. 7000000000
+    # for a 7B model). Kept on the evaluation rather than baked into
+    # `model_name` so future leaderboards can filter / sort by size.
+    num_parameters: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -869,6 +873,42 @@ class PaperRepository(Base):
         Index("idx_paper_repositories_paper_id", "paper_id"),
         Index("idx_paper_repositories_repository_id", "repository_id"),
     )
+
+
+class PaperRelation(Base):
+    """Directed lineage edges between papers.
+
+    ``source_paper_id`` is the predecessor (earlier) paper; ``target_paper_id``
+    is the successor (follow-up) paper. The relation is many-to-many in both
+    directions: a paper can have multiple successors and multiple predecessors.
+    """
+
+    __tablename__ = "paper_relations"
+
+    source_paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    target_paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source_paper_id <> target_paper_id",
+            name="paper_relations_no_self_link",
+        ),
+        Index("idx_paper_relations_source_paper_id", "source_paper_id"),
+        Index("idx_paper_relations_target_paper_id", "target_paper_id"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PaperRelation(source_paper_id={self.source_paper_id}, "
+            f"target_paper_id={self.target_paper_id})>"
+        )
 
 
 class TaskDataset(Base):

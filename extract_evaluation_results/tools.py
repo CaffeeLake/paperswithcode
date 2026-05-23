@@ -1078,6 +1078,7 @@ async def add_evaluation_result(
     uses_additional_data: bool = False,
     evaluated_on: Optional[str] = None,
     external_source_url: Optional[str] = None,
+    num_parameters: Optional[int] = None,
 ) -> str:
     """Add a new evaluation result to the database.
 
@@ -1095,6 +1096,9 @@ async def add_evaluation_result(
         uses_additional_data: Whether additional data was used beyond the dataset (default: False)
         evaluated_on: Date when evaluation was performed in YYYY-MM-DD format (optional)
         external_source_url: URL to external source like a competition (optional)
+        num_parameters: Raw number of model parameters for this evaluation row
+            (e.g. 7000000000 for a 7B model). Optional metadata that lets later
+            leaderboards filter and visualize by model size.
 
     Returns:
         A success message with evaluation details, or an error message if creation failed.
@@ -1213,6 +1217,7 @@ async def add_evaluation_result(
             best_metric=normalized_best_metric,
             evaluated_on=evaluated_on,
             external_source_url=external_source_url,
+            num_parameters=num_parameters,
         )
 
         # Format success response

@@ -1,6 +1,6 @@
 ---
 name: add-evals
-description: Add evaluation results to the paperswithcode database from any source — Hugging Face model cards, arXiv/HF/PapersWithCode paper text, or GitHub repository READMEs — restricted to benchmarks that already exist with a task association and the exact leaderboard metric already configured. Use this whenever the user shares a Hugging Face model URL or repo id, an arXiv id / HF paper / PapersWithCode paper, a GitHub repository URL, or a model release page and asks to add evaluation results, benchmark scores, or leaderboard entries — even when phrased casually like "add scores from this model", "import benchmarks from <hf url>", "ingest the eval table from this paper into the DB", "grab the benchmarks from this repo's README", or "add evaluations for this release". This skill must skip source-only metrics, component scores, subscores, and alternate metric labels unless that metric is already configured for the exact leaderboard; use it instead of generic ingestion guidance whenever the user is trying to populate evaluation results from a model, paper, or repository source.
+description: Add evaluation results to the paperswithcode database from any source — Hugging Face model cards, arXiv/HF/PapersWithCode paper text, or GitHub repository READMEs — restricted to benchmarks that already exist with a task association and the exact leaderboard metric already configured. Use this whenever the user shares a Hugging Face model URL or repo id, an arXiv id / HF paper / PapersWithCode paper, a GitHub repository URL, or a model release page and asks to add evaluation results, benchmark scores, or leaderboard entries — even when phrased casually like "add scores from this model", "import benchmarks from <hf url>", "ingest the eval table from this paper into the DB", "grab the benchmarks from this repo's README", or "add evaluations for this release". If the source is not backed by an arXiv paper, first use the add-external-paper skill to create or update the `source = 'external'` paper row, then attach evaluation rows to that paper. This skill must skip source-only metrics, component scores, subscores, and alternate metric labels unless that metric is already configured for the exact leaderboard; use it instead of generic ingestion guidance whenever the user is trying to populate evaluation results from a model, paper, or repository source.
 ---
 
 # Add Evaluations
@@ -79,7 +79,9 @@ Different starting points should converge on the same triple — a model identit
 
    Repo READMEs often contain the most complete benchmark tables for new releases (especially for OCR/VLM models). Treat README tables exactly like card tables for the rest of the workflow.
 
-You can combine sources when each one carries part of the picture (e.g. the card has the "main" table, the paper has an ablation, the README has the final leaderboard). Track per-row context — which source the score came from, model variant / mode / shot count / metric label / harness notes — so methodology lines you write later are accurate and traceable.
+You can combine sources when each one carries part of the picture (e.g. the card has the "main" table, the paper has an ablation, the README has the final leaderboard). Track per-row context — which source the score came from, model variant / mode / shot count / metric label / backbone head or task framework / harness notes — so model names and methodology lines you write later are accurate and traceable.
+
+While reading each source, also pin down the **raw model parameter count** for every model row you intend to import, since the database now stores it on each evaluation (`evaluations.num_parameters`, BIGINT). Check, in order: the HF model info JSON (`safetensors.total` or an explicit parameter field), the model card / paper / README headline that states the model size (e.g. "7B parameters", "355B-A22B", "1.5 billion parameters"), and any size column already in the source's own benchmark table. Convert size labels to the raw integer (`7B` -> `7_000_000_000`, `355B-A22B` -> `355_000_000_000` total parameters not active, `1.5B` -> `1_500_000_000`, `355M` -> `355_000_000`). Mixture-of-experts models should use **total** parameters by default; if you store the active count instead, mention it in `methodology` so the meaning of the stored value is unambiguous. If the source does not state the parameter count clearly for that specific variant, do not guess from sibling models, blog headlines, or organization conventions — leave the field unset for that row and report it as missing. Accuracy matters more than coverage here.
 
 Do not extract Elo scores. Cards, papers, and READMEs increasingly include LLM-judged Elo rankings (e.g. Gemini-judged Elo over olmOCR-Bench / OmniDocBench / XDocParse / OCRArena). These are pairwise-comparison rankings, not the benchmark's native metric, and they are tied to the specific judge model and pool of comparators used at the time of publication. They do not map to any leaderboard metric in this database and they are not comparable across sources, so skip every Elo table outright and only ingest the underlying native-metric tables (Accuracy, Edit Distance, ANLS, Pass@1, Score, etc.). Mention the skipped Elo table in the final report so the user knows it was intentional.
 
@@ -101,10 +103,10 @@ Ask the user once if anything is ambiguous; otherwise proceed with the defaults 
 
 ### 3. Resolve the source paper
 
-Every evaluation row attaches to a `papers` row, regardless of which surface the numbers came from. Find or import the right source row before posting evaluations. Two common cases:
+Every evaluation row attaches to a `papers` row, regardless of which surface the numbers came from. Resolve or create the right source row before posting evaluations. Two common cases:
 
 - ArXiv-backed: locate the paper row by `arxiv_id`. The release is usually already imported.
-- External tech report / model release (HF model card, HF PDF, blog, vendor page, GitHub release page): the row often already exists with `source = 'external'` and the report URL as `source_url`.
+- External tech report / model release (HF model card, HF PDF, blog, vendor page, GitHub release page): use the `add-external-paper` skill first to create or update a `source = 'external'` paper row keyed by the canonical release URL, then return here and attach evals to that row.
 
 **Always check HF model metadata `arxiv:` tags before falling back to an external row.** When the source is a HF model card (or a paper/README linked to a HF model), `uv run hf models info <repo_id>` returns a `tags` list that includes entries like `arxiv:2410.00037`. Each tag is the model's own declared canonical paper. Follow this resolution order:
 
@@ -112,7 +114,9 @@ Every evaluation row attaches to a `papers` row, regardless of which surface the
 2. If multiple `arxiv:` tags resolve to local papers (ambiguous, e.g. a finetune that tags both its own paper and the base-model paper), pick the one the model card / README clearly identifies as the technical report for this release. If you cannot tell, stop and ask the user; do not guess.
 3. If no `arxiv:` tag resolves to a local paper (none present, or all tags are unimported), fall back to the external-row path below. An ArXiv tag pointing at a paper we do not have is not, on its own, a reason to import a new ArXiv row in this skill — defer to the standard ingestion tooling and use an external row in the meantime if needed.
 
-Use an ArXiv row only when it is actually the source for the evaluated model and scores. Do not attach a model-card / README evaluation table to a related technique paper just because the source cites it. If a user says a release "should be external" but the source's own HF metadata, model search, or report clearly resolves to a local canonical ArXiv paper for the same release, use the ArXiv row and mention that choice rather than creating a duplicate external row. If the source is the primary surface for an unreleased or not-yet-paper-backed model, create or reuse an external paper row for the release title and canonical URL (HF model page, GitHub repo, or blog) instead.
+Use an ArXiv row only when it is actually the source for the evaluated model and scores. Do not attach a model-card / README evaluation table to a related technique paper just because the source cites it. If a user says a release "should be external" but the source's own HF metadata, model search, or report clearly resolves to a local canonical ArXiv paper for the same release, use the ArXiv row and mention that choice rather than creating a duplicate external row.
+
+If the source is the primary surface for an unreleased or not-yet-paper-backed model, **pause this workflow and run the `add-external-paper` skill before any evaluation import**. Follow that skill's scope decision and metadata rules to create or update the external paper row with `source = 'external'`, a canonical `source_url`, title, abstract or source-grounded summary, `date_published`, official GitHub/project links, and full HF artifact URLs. After `add-external-paper` verifies the external row, resume this workflow using that row's `paper_id`. Do not post evaluations to a related paper, leave the source row missing, or invent a minimal paper record inside this skill.
 
 Always populate `papers.date_published` for the source row. Scatter plots use this date to place benchmark progress over time, so do not leave external source rows undated. For ArXiv rows, use the paper's publication date. For external reports/blogs/model cards/README releases, use the source publication date from the page metadata, visible page date, release notes, or trusted source metadata; if you cannot determine it confidently, stop and ask the user instead of importing undated evaluations.
 
@@ -134,7 +138,7 @@ with get_engine().connect() as conn:
         print(dict(r._mapping))
 ```
 
-If no paper row exists, stop and ask the user how to proceed (import via the standard tooling, create/import an external source row, or use a related paper). Do not invent a paper. If the user chooses an external source row, create it with `source = 'external'`, `source_url`, title/abstract when available, any relevant HF/GitHub artifact links, and `date_published`. Store HF artifacts as absolute URLs in `hf_models`, `hf_datasets`, and `hf_spaces`, not bare repo ids, because the frontend uses these fields directly as links.
+If no paper row exists for an ArXiv-backed source, use the standard ArXiv/import tooling or ask the user how to proceed; do not silently create an external duplicate for a real ArXiv paper. If no paper row exists for a non-ArXiv source, run `add-external-paper` immediately and only continue once it has created or reused a verified external row. Store HF artifacts as absolute URLs in `hf_models`, `hf_datasets`, and `hf_spaces`, not bare repo ids, because the frontend uses these fields directly as links.
 
 When a release has a canonical ArXiv-backed model search on Hugging Face, prefer that search URL in `hf_models` over enumerating every individual model repo if it better represents the linked model family. Use the form `https://huggingface.co/models?other=arxiv:<arxiv_id>` for a paper-scoped model list, especially for external rows that summarize a collection or release with several official variants. Use individual model URLs such as `https://huggingface.co/org/model` when the source row is truly about one specific model, or when the user explicitly asks to link the exact repos.
 
@@ -192,7 +196,8 @@ Apply the exclusion rules in this order:
 5. Only use a canonical metric fallback when it preserves the same quantity, not merely the same benchmark name. For example, if a leaderboard only allows `Score`, an `MME Perception Score` or `MME Cognition Score` row must be skipped unless the source also reports enough official components to compute the overall `Score` and the source defines that sum as the leaderboard score. If a leaderboard only allows `Accuracy`, do not import `F1`, `Recall`, `Edit Distance`, or another table column as `Accuracy`.
 6. Treat configured broad or legacy task pages as intentional, but keep metric support as the hard gate. This repo has consolidated narrower multimodal tasks into broad parent tasks such as `Image Understanding` and `Video Understanding`, and some benchmarks may remain under an older task even after a better task page exists. It is fine to add evaluations to those existing leaderboards when the dataset is linked there and the exact source metric is supported. Do not skip solely because the task name is broad or imperfect; skip only when the source metric is not supported/configured, a component/subscore is being mistaken for a canonical total, or the source setup cannot be compared to the configured leaderboard.
 7. For each remaining benchmark, set `best_metric` to one of the already-linked metric names exactly as stored in `task_dataset_metrics`. The `metrics` JSON must contain only that selected metric key for the imported row unless every additional metric key is also linked to the same leaderboard and comparable on that page.
-8. Record `supports_harness` for the exact selected `(task_id, dataset_id)` row. This flag decides whether the API payload may include `harness`. If it is true, inspect the source notes, footnotes, model card metadata, official blog/report text, and linked official evaluation PRs or result files for a named harness before posting the row.
+8. Normalize score scale to the existing leaderboard, not just the source table's printed unit. Before posting a `Score` row, inspect existing rows for that exact `(task_id, dataset_id, best_metric)` and compare the source value's magnitude with the leaderboard's native scale. OCRBench is the important case: its configured leaderboard uses native `Score` on the 0-1000 scale, while model cards and blogs often report the same result as a percentage (for example `86.9%`). When importing OCRBench into dataset `OCRBench` / metric `Score`, convert percent-style values below 100 to native score by multiplying by 10 (`86.9` -> `869`, `91.90` -> `919`) and mention this normalization in `methodology`. Do not do this blindly for every benchmark named `Score`; if the existing leaderboard rows are mostly percent-scale or the source metric is a different quantity, keep the source value or skip and report the ambiguity.
+9. Record `supports_harness` for the exact selected `(task_id, dataset_id)` row. This flag decides whether the API payload may include `harness`. If it is true, inspect the source notes, footnotes, model card metadata, official blog/report text, and linked official evaluation PRs or result files for a named harness before posting the row.
 
 Keep an explicit "skipped" list of names + reasons to report at the end. Use reasons like `metric not configured for leaderboard`, `no DB match`, `no task association`, `component metric only; canonical total not reported`, or `source setup not comparable to configured leaderboard` so future cleanup is easy. Do not change task associations or leaderboard metrics in this pass; if the user explicitly wants to add tasks or metrics, defer to the `add-benchmark` skill instead.
 
@@ -225,8 +230,10 @@ If the source paper cannot be confidently identified, leave the dataset alone an
 
 Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per (selected best target model configuration × benchmark). Before posting each row, assert that `best_metric` is in the allowed metric list fetched for that exact `(task_id, dataset_id)` pair and that every key in the outgoing `metrics` object is allowed for that leaderboard. Include `harness` only when the selected leaderboard's `supports_harness` flag is true. The unique key is `(paper_id, task_id, dataset_id, model_name, harness, best_metric)`, so:
 
-- Use the model name as written in the paper/source, keeping it short, readable, and suitable for display. Normalize typographic/source formatting into plain title-style text: convert subscripts, all-caps size suffixes, and code-style names such as `LayoutLM_BASE`, `LayoutLM<sub>BASE</sub>`, or `BROS_LARGE` to `LayoutLM Base` and `BROS Large`. Put setup details such as "fine-tuned", parameter count, harness, mode, precision, or training recipe in `methodology` unless they are part of the source's actual model name.
-- Distinguish variants from the same release with `model_name`, e.g. `DeepSeek-V4-Pro Max` vs `DeepSeek-V4-Flash Max`. Do NOT bake harness names, parameter counts, or modes into `model_name` — keep `model_name` clean (e.g. `GLM-5.1`, not `GLM-5.1 (Terminus-2)` or `GLM-4.5 (355B)`).
+- Use the model name as written in the paper/source, keeping it short, readable, and suitable for display. Normalize typographic/source formatting into plain title-style text: convert subscripts, all-caps size suffixes, and code-style names such as `LayoutLM_BASE`, `LayoutLM<sub>BASE</sub>`, or `BROS_LARGE` to `LayoutLM Base` and `BROS Large`. Never include author-relative labels like `our`, `ours`, `our model`, or `ours model` in `model_name`; those phrases only identify the authors' own method in context and should be replaced with the actual model name or a neutral setup label such as `(full data mix)`, with the source phrasing noted in `methodology` if needed. Put setup details such as "fine-tuned", parameter count, harness, mode, precision, or training recipe in `methodology` unless they are part of the source's actual model name.
+- For papers that introduce a backbone or representation model, include the task framework, decoder, or head in `model_name` when the benchmark score is for the backbone inside a downstream system. This keeps leaderboard rows comparable and understandable: use names like `ConvNeXt-XL + UperNet` for ADE20K semantic segmentation or `ConvNeXt-XL + Cascade Mask R-CNN` for COCO detection/instance segmentation. Keep the backbone-only name for classification or direct backbone evaluation rows, and put pretraining/fine-tuning schedules in `methodology`.
+- Distinguish variants from the same release with `model_name`, e.g. `DeepSeek-V4-Pro Max` vs `DeepSeek-V4-Flash Max`. Do NOT bake harness names, parameter counts, or modes into `model_name` — keep `model_name` clean (e.g. `GLM-5.1`, not `GLM-5.1 (Terminus-2)` or `GLM-4.5 (355B)`). Parameter counts live in the dedicated `num_parameters` field instead (see below).
+- Set `num_parameters` only when the source confidently reports the model's raw parameter count. Send the raw integer total (`7_000_000_000` for a 7B model, `355_000_000_000` for `355B-A22B`, `1_500_000_000` for `1.5B`); the API rejects negative values and the column is a `BIGINT`, so do not pre-format it as `"7B"` or `"7000M"`. Use total parameters for MoE models by default and note `active=<n>` in `methodology` if the source also reports the active count. If a particular row's parameter count is not stated in the primary source or in an official linked artifact for that exact variant, omit the field for that row rather than guessing from a sibling model, the release headline, or organization convention. Two size variants of the same release (e.g. `Flash` vs `Pro`) always become separate rows with their own `num_parameters` values; never reuse one number across both.
 - Since the default import scope is the best target model only, model-name suffixes for ablations like `(4x)`, `(16x)`, `(Non-Think)`, or `(w/ tools)` should appear only when the user explicitly requested those variants or when they are needed to identify the single selected best setup.
 - Preserve benchmark shot-count comparability in `model_name`. If the source reports a multi-shot result for a benchmark whose leaderboard commonly compares 1-shot results, append the shot count to the model name, e.g. `Llama 2 70B (8-shot)`, `Llama 2 70B (5-shot)`, or `Llama 2 70B (3-shot)`. Keep plain `Model Name` for 1-shot rows. Mention the exact shot count in `methodology` either way.
 - Set `harness` only for leaderboards where `supports_harness = TRUE`. Use the source-attributed runtime/framework verbatim (`Terminus`, `Terminus-2`, `OpenHands`, `Claude Code`, `SWE-Agent`, etc.). If the source does not report a harness after checking the primary source and official linked artifacts, use `harness = "Not reported"` and mention the missing attribution in the final report.
@@ -234,6 +241,7 @@ Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per (selecte
 - Two harness variants of the same model on a harness-supporting leaderboard (e.g. `GLM-5.1` with `Claude Code` and `GLM-5.1` with `Terminus-2`) become two separate rows that differ only in `harness`. They are not duplicates.
 - Distinguish setups on the same benchmark that are NOT about harness (e.g. `HLE` vs `HLE w/ tools`) via a `model_name` suffix like `(w/ tools)` plus a clear `methodology` description, since the metric is shared. Only do this if the metric/methodology can clearly distinguish the rows — otherwise skip and report.
 - Skip component, subscore, split, or alternate-metric rows when their metric is not configured on the selected leaderboard. Examples: skip `MME Perception Score` and `MME Cognition Score` on an `MME` leaderboard that only allows `Score`; skip `MME-P` unless a separate MME-P dataset/leaderboard exists with that metric configured.
+- Normalize values to the leaderboard's native scale before posting. For OCRBench `Score`, store the native 0-1000 score (`869`), not the percent-style rendering (`86.9%`) commonly shown in VLM release tables. If you convert a source value, say so in `methodology` so future maintainers can trace why the stored value differs from the printed table.
 - Always include `methodology` summarizing the source's note for that row (shot count, metric label, mode, harness version, source surface — card/paper/README — etc.) so the row is traceable back to where the number came from.
 
 Skeleton:
@@ -243,9 +251,19 @@ import json, os, urllib.request, urllib.error
 ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
 BASE = "http://localhost:8000/api/v1"
 
+def normalize_score_for_leaderboard(dataset_name, metric, score):
+    # OCRBench's configured Score leaderboard uses the native 0-1000 scale.
+    # Many VLM release tables print the same number as a percentage.
+    if dataset_name == "OCRBench" and metric == "Score":
+        numeric = float(str(score).rstrip("%"))
+        if numeric < 100:
+            scaled = numeric * 10
+            return str(int(scaled)) if scaled.is_integer() else f"{scaled:g}"
+    return f"{score}".rstrip("%")
+
 def post_eval(
-    paper_id, task_id, dataset_id, model_name, metric, score, methodology,
-    harness=None,
+    paper_id, task_id, dataset_id, dataset_name, model_name, metric, score,
+    methodology, harness=None, num_parameters=None,
 ):
     allowed_metrics = allowed_metrics_by_leaderboard[(task_id, dataset_id)]
     outgoing_metric_keys = {metric}
@@ -253,6 +271,7 @@ def post_eval(
         raise ValueError(
             f"Metric {metric!r} is not configured for task={task_id}, dataset={dataset_id}"
         )
+    normalized_score = normalize_score_for_leaderboard(dataset_name, metric, score)
 
     body = {
         "paper_id": paper_id,
@@ -260,11 +279,15 @@ def post_eval(
         "dataset_id": dataset_id,
         "model_name": model_name,
         "methodology": methodology,
-        "metrics": {metric: f"{score}"},
+        "metrics": {metric: normalized_score},
         "best_metric": metric,
     }
     if harness:
         body["harness"] = harness
+    # Only include num_parameters when the source confidently reports it for
+    # this exact variant. Guessing here is worse than leaving the field unset.
+    if num_parameters is not None:
+        body["num_parameters"] = int(num_parameters)
     req = urllib.request.Request(
         f"{BASE}/evaluations/",
         data=json.dumps(body).encode(),
@@ -296,10 +319,12 @@ Then verify the imported rows:
 
 ```bash
 curl -s "http://localhost:8000/api/v1/evaluations/?paper_id=<paper_id>&page_size=200" \
-  | uv run python -c "import json,sys; d=json.load(sys.stdin); print(d['count']); [print(e['model_name'], '/', e.get('harness') or '-', e['dataset_name'], e['best_metric'], e['metrics'].get(e['best_metric']), 'rank=', e.get('best_rank')) for e in d['results']]"
+  | uv run python -c "import json,sys; d=json.load(sys.stdin); print(d['count']); [print(e['model_name'], '/', e.get('harness') or '-', e['dataset_name'], e['best_metric'], e['metrics'].get(e['best_metric']), 'rank=', e.get('best_rank'), 'params=', e.get('num_parameters') if e.get('num_parameters') is not None else '-') for e in d['results']]"
 ```
 
 And confirm there are no duplicate `(paper_id, task_id, dataset_id, model_name, harness, best_metric)` rows for the imported paper.
+
+For OCRBench imports, also verify that every imported `Score` value is on the native 0-1000 scale. A simple sanity check is that no newly imported OCRBench `Score` is below 100 unless the source and existing leaderboard rows prove that the benchmark is intentionally percent-scale.
 
 ## Reporting back
 
@@ -310,8 +335,10 @@ End by giving the user a concise report:
 - Which model variants were imported and how many rows were posted per variant. For harness-supporting leaderboards, list each `(model, harness)` combination explicitly.
 - The list of in-scope benchmarks, with `dataset_id`, `task`, `best_metric`, and `supports_harness`.
 - The list of skipped benchmarks or rows with the reason for each (no DB match / no task / metric not configured for leaderboard / component metric only / missing source paper / could not distinguish setup).
+- Any metric value normalizations applied before import, especially OCRBench percent-style values converted to the native 0-1000 `Score` scale.
 - Any benchmark metadata gaps left for follow-up (e.g. missing `introducing_paper_id`, no arXiv source paper, missing source publication date, missing harness attribution for a harness-supporting leaderboard).
 - Any harness details from the source that were downgraded into `methodology` or `model_name` because `supports_harness = FALSE`.
+- For each imported model variant, the `num_parameters` value used (or "not reported" when the source did not state it confidently). If a count was set, briefly note where it came from (HF `safetensors.total`, model card body, paper, README) and whether it represents total or active parameters for MoE models.
 
 ## When NOT to use this skill
 
@@ -334,4 +361,5 @@ End by giving the user a concise report:
 - Uniqueness for evaluations: `(paper_id, task_id, dataset_id, model_name, harness, best_metric)`.
 - Source rows must have `papers.date_published` populated from the source publication date so benchmark scatter plots can place results over time.
 - Harness column: optional `evaluations.harness` (VARCHAR(255)) — populate it only when the selected `(task_id, dataset_id)` row has `task_datasets.supports_harness = TRUE`; use the named runtime verbatim (for example `Terminus-2`, `OpenHands`, or `Claude Code`), or `Not reported` when the source omits it after checking primary and official linked sources. Leave null for non-supporting leaderboards and report any downgraded harness-like details.
+- Parameter count column: optional `evaluations.num_parameters` (BIGINT, non-negative) — raw integer total parameter count for the model row (e.g. `7000000000` for a 7B model). Populate only when the source confidently states the count for that exact variant; never guess from siblings, headlines, or organization conventions. Use total parameters for MoE models by default and note active counts in `methodology`. Omit the field entirely when the count is unknown.
 - Native benchmark source URL form: `https://paperswithcode.co/paper/{arxiv_id}`.

@@ -5,7 +5,7 @@ description: Add or update benchmark datasets/leaderboards in the paperswithcode
 
 # Add a benchmark
 
-This skill adds benchmark metadata in the database so task pages and benchmark pages render correctly.
+This skill adds benchmark metadata in the database so task pages, benchmark pages, and the benchmark source paper page render correctly.
 
 ## Core rule
 
@@ -15,7 +15,15 @@ Benchmark source links must be native Papers with Code paper URLs:
 https://paperswithcode.co/paper/{arxiv_id}
 ```
 
-Do not leave `datasets.paper_url` pointing to arXiv, OpenReview, a PDF, a project page, or a vendor blog when the benchmark has a source paper. First find or create the local `papers` row, set `datasets.introducing_paper_id`, then set `datasets.paper_url` to the native URL. If you cannot identify a source paper that can become a local paper page, stop and ask the user for the missing source details instead of inventing or storing an external source.
+For external non-ArXiv source papers, use the local external paper route:
+
+```text
+https://paperswithcode.co/paper/{paper_id}
+```
+
+Do not leave `datasets.paper_url` pointing to arXiv, OpenReview, a PDF, a project page, DOI page, or vendor blog when the benchmark has a source paper. First find or create the local `papers` row, set `datasets.introducing_paper_id`, then set `datasets.paper_url` to the native local paper URL. If you cannot identify a source paper that can become a local paper page, stop and ask the user for the missing source details instead of inventing or storing an external source.
+
+Be careful about provenance: the benchmark source paper is the paper that introduced or formally describes the benchmark/dataset, not a later model paper that merely evaluates on it. If a result paper cites a benchmark source, follow that citation and use the cited source paper for `datasets.introducing_paper_id` / `paper_url`. Use the result paper only when it truly introduces a new benchmark, split, evaluation set, or leaderboard definition.
 
 ## Workflow
 
@@ -29,26 +37,36 @@ Do not leave `datasets.paper_url` pointing to arXiv, OpenReview, a PDF, a projec
    - Create a new `datasets` row only when no good match exists.
 
 3. Normalize the source paper:
-   - Resolve the source paper's arXiv ID from the user-provided source, benchmark homepage, or public paper page.
-   - Find the local paper row in `papers` by `arxiv_id`.
-   - If the paper is missing, index/import it using existing repo tooling before linking the dataset.
+   - Resolve the source paper from the user-provided source, benchmark homepage, public paper page, or the citation in the model/result paper that uses the benchmark.
+   - Check whether the candidate source actually introduced/described the benchmark. Do not use a paper just because it reports scores on the benchmark.
+   - If the source has an arXiv ID, find the local paper row in `papers` by `arxiv_id`; if it is missing, index/import it using existing repo tooling.
+   - If the source is a non-ArXiv paper, DOI, technical demo, proceedings paper, benchmark website, or report, create or reuse an external `papers` row with `source = 'external'`, canonical `source_url`, title, authors, abstract/summary, and `date_published`.
    - Update the dataset with:
      - `introducing_paper_id = papers.id`
      - `introducing_paper_title = papers.title`
-     - `paper_url = 'https://paperswithcode.co/paper/' || papers.arxiv_id`
+     - `paper_url = 'https://paperswithcode.co/paper/' || papers.arxiv_id` for ArXiv rows
+     - `paper_url = 'https://paperswithcode.co/paper/' || papers.id` for external rows
 
-4. Link the benchmark to the task:
+4. Tag the source paper:
+   - Ensure the benchmark's introducing paper is linked to the relevant task in `paper_tasks`.
+   - Use `source = 'manual'` for these task links so keyword rebuilds do not remove them.
+   - If the source paper introduces or clearly uses methods that already exist in `methods`, ensure `(paper_id, method_id)` exists in `paper_methods`.
+   - Do not invent vague methods just to fill the page. Add method links only when the match is clear from the paper title/abstract/source or from an existing canonical method row.
+   - Preserve unrelated existing paper task/method links; only add missing links unless the user explicitly asks to retag the paper.
+
+5. Link the benchmark to the task:
    - Ensure `(task_id, dataset_id)` exists in `task_datasets`.
    - If the user asked for default display order, set `featured_rank` in `task_datasets` and clear stale ranks for that task as appropriate.
 
-5. Link metrics:
+6. Link metrics:
    - Use the requested metric, often `Accuracy`.
    - Ensure `(task_id, dataset_id, metric_id)` exists in `task_dataset_metrics`.
    - Do not duplicate metrics that are already present.
 
-6. Verify:
+7. Verify:
    - Query the ranked task benchmarks from `task_datasets`.
-   - Query the dataset rows and confirm `paper_url` starts with `https://paperswithcode.co/paper/`.
+   - Query `paper_tasks` and `paper_methods` for every source paper touched.
+   - Query the dataset rows and confirm `paper_url` starts with `https://paperswithcode.co/paper/` and points to the actual introducing/descriptive source paper, not merely a later evaluation paper.
    - Hit the relevant API endpoint when the app is running, for example:
 
 ```bash
@@ -72,8 +90,8 @@ Run Python with the repo environment:
 uv run --env-file backend/keys.env python ...
 ```
 
-Use SQLAlchemy through `backend.database.connection.get_engine()` for idempotent updates. Prefer `INSERT ... ON CONFLICT DO NOTHING/UPDATE` for `task_datasets` and `task_dataset_metrics`.
+Use SQLAlchemy through `backend.database.connection.get_engine()` for idempotent updates. Prefer `INSERT ... ON CONFLICT DO NOTHING/UPDATE` for `paper_tasks`, `paper_methods`, `task_datasets`, and `task_dataset_metrics`.
 
 ## Reporting back
 
-Report which benchmarks already existed, which were created, which metric was linked, and the final native source URL for each benchmark. If any source paper cannot be resolved to a native `paperswithcode.co/paper/{arxiv_id}` URL, clearly list what information is needed from the user.
+Report which benchmarks already existed, which were created, which metric was linked, which source-paper task/method tags were added, and the final native source URL for each benchmark. Mention when a tempting result paper was deliberately not used because it only evaluated on or cited the benchmark. If any source paper cannot be resolved to a native local paper URL, clearly list what information is needed from the user.
