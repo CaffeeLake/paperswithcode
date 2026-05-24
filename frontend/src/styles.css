@@ -917,6 +917,12 @@ a.paper-github-stats.is-link:focus-visible {
   padding-left: 22px;
   margin: 0 0 12px 0;
 }
+.method-description ul {
+  list-style-type: disc;
+}
+.method-description ol {
+  list-style-type: decimal;
+}
 .method-description li {
   margin-bottom: 4px;
 }

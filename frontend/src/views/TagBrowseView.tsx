@@ -4,6 +4,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { MethodChip, PaperCard } from "@/components";
 import { apiClient } from "@/lib/api";
+import type { Task } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -30,6 +31,15 @@ const SUBTASK_BENCH_PREVIEW = 3;
 // benchmark detail page still loads by slug and ignores this filter, so a
 // sparse benchmark linked directly from a paper remains reachable.
 const MIN_BENCH_EVAL_COUNT = 2;
+
+const sortSubtasksForDisplay = (subtasks: Task[]) =>
+  [...subtasks].sort((a, b) => {
+    const aIsClassic = a.slug === "classic-language-modeling";
+    const bIsClassic = b.slug === "classic-language-modeling";
+
+    if (aIsClassic !== bIsClassic) return aIsClassic ? 1 : -1;
+    return 0;
+  });
 
 const TagBrowseView: React.FC = () => {
   const { taskSlug } = useParams<{ taskSlug: string }>();
@@ -77,7 +87,7 @@ const TagBrowseView: React.FC = () => {
 
   // Subtasks (child tasks). Parent task pages render these as cards; benchmarks
   // are owned by the most-specific child task in the hierarchy. `visible_only`
-  // hides children flagged `is_visible=false` (e.g. `classic-language-modeling`).
+  // hides children flagged `is_visible=false`.
   const subtasksQ = useQuery({
     queryKey: ["task-children", taskQ.data?.id],
     queryFn: () =>
@@ -90,11 +100,10 @@ const TagBrowseView: React.FC = () => {
   });
 
   // Per-subtask benchmark queries depend on this list, so derive it before
-  // the dataset useQueries call. The backend already filters out hidden
-  // subtasks via `visible_only=true`, so this is a thin pass-through that
-  // keeps a stable identity for downstream memo deps.
+  // the dataset useQueries call. Classic LM is the historical catch-all, so
+  // keep it after the capability-oriented subtasks.
   const visibleSubtasks = useMemo(
-    () => subtasksQ.data?.results || [],
+    () => sortSubtasksForDisplay(subtasksQ.data?.results || []),
     [subtasksQ.data],
   );
 

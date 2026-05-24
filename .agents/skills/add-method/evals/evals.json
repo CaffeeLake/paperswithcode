@@ -1,0 +1,23 @@
+{
+  "skill_name": "add-method",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add a method for DeepSeek Sparse Attention (DSA). The source should be the DeepSeek-V3.2 paper already on our site at /paper/2512.02556, but use Sebastian Raschka's LLMs-from-scratch DSA page for the visual and code example: https://github.com/rasbt/LLMs-from-scratch/tree/main/ch04/09_dsa",
+      "expected_output": "Creates an idempotent migration for deepseek-sparse-attention, sets source_paper_id to the local DeepSeek-V3.2 paper instead of an external URL, inserts the paper_methods source association so the introduced banner appears, applies the migration, and verifies both method and paper APIs.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Can you add Sliding window attention as a method? It doesn't really have a source paper for our purposes, but this is a good explainer and has a visual we can use: https://github.com/rasbt/LLMs-from-scratch/tree/main/ch04/06_swa",
+      "expected_output": "Creates an idempotent migration for sliding-window-attention with source_url/source_title pointing at the explainer, no source_paper_id, direct image_url/image_credit from the explainer, relevant keywords, live DB application, and method API verification.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Add Multi-Head Latent Attention (MLA) as a method. I think the source is DeepSeek-V2, which should already have a paper page in our DB. If it does, make the method link to our paper page, not arxiv or a PDF. Also make sure the source paper shows the introduced-method banner.",
+      "expected_output": "Searches for an existing MLA method before writing, resolves the DeepSeek-V2 local paper row, creates or updates an idempotent migration using source_paper_id and native route behavior, inserts paper_methods for the source paper, avoids external source_url when a local paper exists, and verifies API/banner data.",
+      "files": []
+    }
+  ]
+}
