@@ -369,6 +369,44 @@ export interface PaperSubmitResponse {
   created: boolean;
 }
 
+/** Which paper-page surface a pending edit targets. */
+export type PendingEditType =
+  | 'tasks'
+  | 'methods'
+  | 'evaluations'
+  | 'repositories'
+  | 'project_pages'
+  | 'source_url';
+
+export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PendingPaperEdit {
+  id: number;
+  paper_id: number;
+  hf_username: string;
+  is_author: boolean;
+  edit_type: PendingEditType;
+  proposed_payload: Record<string, unknown>;
+  current_payload?: Record<string, unknown> | null;
+  status: PendingEditStatus;
+  admin_note?: string | null;
+  reviewed_by?: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at?: string | null;
+}
+
+export interface PendingPaperEditSubmitPayload {
+  paper_id: number;
+  edit_type: PendingEditType;
+  proposed_payload: Record<string, unknown>;
+}
+
+export interface PendingPaperEditsResponse {
+  count: number;
+  results: PendingPaperEdit[];
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -526,6 +564,14 @@ class ApiClient {
     return this.request<Paper>(endpoint, {
       method: 'PUT',
       body: JSON.stringify({ project_pages: projectPages }),
+    });
+  }
+
+  async updatePaperSourceUrl(paperId: string, sourceUrl: string): Promise<Paper> {
+    const endpoint = `/papers/${paperId}/source-url`;
+    return this.request<Paper>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify({ source_url: sourceUrl }),
     });
   }
 
@@ -816,7 +862,7 @@ class ApiClient {
   async getMethodPapers(methodId: string, params?: {
     page?: number;
     page_size?: number;
-    order_by?: 'date_published' | 'citation_count' | 'title';
+    order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
     order_dir?: 'asc' | 'desc';
     latest_only?: boolean;
     include_resources?: boolean;
@@ -1092,6 +1138,59 @@ class ApiClient {
     return this.request<MetricDirections>('/metrics/directions');
   }
 
+  // ── Pending paper edits (signed-in HF user) ──
+  async submitPendingPaperEdit(
+    payload: PendingPaperEditSubmitPayload,
+  ): Promise<PendingPaperEdit> {
+    return this.request<PendingPaperEdit>('/me/paper-edits', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // ── Pending paper edits (admin review) ──
+  async listPendingPaperEdits(params?: {
+    status?: PendingEditStatus;
+    edit_type?: PendingEditType;
+    paper_id?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<PendingPaperEditsResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.edit_type) searchParams.append('edit_type', params.edit_type);
+    if (params?.paper_id) searchParams.append('paper_id', params.paper_id.toString());
+    if (params?.limit) searchParams.append('limit', params.limit.toString());
+    if (params?.offset) searchParams.append('offset', params.offset.toString());
+
+    const endpoint = `/admin/paper-edits${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<PendingPaperEditsResponse>(endpoint);
+  }
+
+  async getPendingPaperEdit(id: number): Promise<PendingPaperEdit> {
+    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}`);
+  }
+
+  async approvePendingPaperEdit(
+    id: number,
+    body?: { admin_note?: string },
+  ): Promise<PendingPaperEdit> {
+    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+
+  async rejectPendingPaperEdit(
+    id: number,
+    body?: { admin_note?: string },
+  ): Promise<PendingPaperEdit> {
+    return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    });
+  }
+
   // ── Bookmarks (signed-in HF user) ──
   async getMyBookmarkIds(): Promise<BookmarkIdsResponse> {
     return this.request<BookmarkIdsResponse>('/me/bookmarks/ids');
@@ -1123,6 +1222,7 @@ export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
 export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);
 export const updatePaperProjectPages = apiClient.updatePaperProjectPages.bind(apiClient);
+export const updatePaperSourceUrl = apiClient.updatePaperSourceUrl.bind(apiClient);
 export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);
@@ -1165,4 +1265,9 @@ export const healthCheck = apiClient.healthCheck.bind(apiClient);
 export const getMyBookmarkIds = apiClient.getMyBookmarkIds.bind(apiClient);
 export const getMyBookmarks = apiClient.getMyBookmarks.bind(apiClient);
 export const addBookmark = apiClient.addBookmark.bind(apiClient);
+export const submitPendingPaperEdit = apiClient.submitPendingPaperEdit.bind(apiClient);
+export const listPendingPaperEdits = apiClient.listPendingPaperEdits.bind(apiClient);
+export const getPendingPaperEdit = apiClient.getPendingPaperEdit.bind(apiClient);
+export const approvePendingPaperEdit = apiClient.approvePendingPaperEdit.bind(apiClient);
+export const rejectPendingPaperEdit = apiClient.rejectPendingPaperEdit.bind(apiClient);
 export const removeBookmark = apiClient.removeBookmark.bind(apiClient);

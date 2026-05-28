@@ -5,9 +5,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getMethods, updatePaperMethods, type Method as APIMethod } from "@/lib/api";
+import {
+  getMethods,
+  submitPendingPaperEdit,
+  updatePaperMethods,
+  type Method as APIMethod,
+} from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
+import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 
 interface EditMethodsDialogProps {
   open: boolean;
@@ -19,6 +25,12 @@ interface EditMethodsDialogProps {
   // selected chips even when they don't match the active search.
   initialMethods?: Array<Pick<APIMethod, "id" | "name" | "slug" | "full_name" | "description">>;
   onSuccess?: () => void;
+  /** `direct` applies immediately (admin path). `pending` submits an edit for
+   *  admin review without touching live data. */
+  submitMode?: "direct" | "pending";
+  /** When `submitMode === "pending"` and the signed-in user is a linked
+   *  author of the paper, the notice copy acknowledges that. */
+  isAuthor?: boolean;
 }
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -34,6 +46,8 @@ export function EditMethodsDialog({
   initialMethodIds,
   initialMethods,
   onSuccess,
+  submitMode = "direct",
+  isAuthor = false,
 }: EditMethodsDialogProps) {
   const [selectedMethodIds, setSelectedMethodIds] = useState<number[]>(initialMethodIds);
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,10 +132,31 @@ export function EditMethodsDialog({
   }, [searchData, selectedMethodIds, knownMethods]);
 
   const updateMethodsMutation = useMutation({
-    mutationFn: ({ paperId, methodIds }: { paperId: string; methodIds: number[] }) =>
-      updatePaperMethods(paperId, methodIds),
+    mutationFn: async ({ paperId, methodIds }: { paperId: string; methodIds: number[] }) => {
+      if (submitMode === "pending") {
+        await submitPendingPaperEdit({
+          paper_id: parseInt(paperId),
+          edit_type: "methods",
+          proposed_payload: { method_ids: methodIds },
+        });
+        return null;
+      }
+      return updatePaperMethods(paperId, methodIds);
+    },
     onSuccess: (updatedPaper) => {
-      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      if (submitMode === "pending") {
+        toast({
+          title: "Edit submitted for review",
+          description:
+            "Thanks! An admin will review your proposed method changes shortly.",
+        });
+        onSuccess?.();
+        onOpenChange(false);
+        return;
+      }
+      if (updatedPaper) {
+        refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      }
       toast({
         title: "Methods updated",
         description: `Saved ${selectedMethodIds.length} method${
@@ -133,7 +168,11 @@ export function EditMethodsDialog({
     },
     onError: (err: unknown) => {
       const e = err as { response?: string; message?: string };
-      let description = e.message || "Failed to update paper methods.";
+      let description =
+        e.message ||
+        (submitMode === "pending"
+          ? "Failed to submit your edit. Please try again."
+          : "Failed to update paper methods.");
       if (e.response) {
         try {
           const parsed = JSON.parse(e.response);
@@ -147,7 +186,10 @@ export function EditMethodsDialog({
         }
       }
       toast({
-        title: "Could not save methods",
+        title:
+          submitMode === "pending"
+            ? "Could not submit edit"
+            : "Could not save methods",
         description,
         variant: "destructive",
       });
@@ -157,6 +199,15 @@ export function EditMethodsDialog({
   const handleSave = () => {
     updateMethodsMutation.mutate({ paperId, methodIds: selectedMethodIds });
   };
+
+  // Treat the selection as "changed" only when it differs from what the
+  // paper already has. Prevents pending-edit submissions that would be a
+  // no-op and clutter the /submissions dashboard with empty cards.
+  const hasChange = useMemo(() => {
+    if (selectedMethodIds.length !== initialMethodIds.length) return true;
+    const initialSet = new Set(initialMethodIds);
+    return selectedMethodIds.some((id) => !initialSet.has(id));
+  }, [selectedMethodIds, initialMethodIds]);
 
   const toggleMethod = (methodId: number, checked: boolean) => {
     setSelectedMethodIds((prev) => {
@@ -178,6 +229,7 @@ export function EditMethodsDialog({
             Select the methods and techniques used in this paper. You can select multiple methods.
           </DialogDescription>
         </DialogHeader>
+        {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -252,16 +304,19 @@ export function EditMethodsDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={updateMethodsMutation.isPending}>
+          <Button
+            onClick={handleSave}
+            disabled={updateMethodsMutation.isPending || !hasChange}
+          >
             {updateMethodsMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                {submitMode === "pending" ? "Submitting..." : "Saving..."}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Save Changes
+                {submitMode === "pending" ? "Submit for review" : "Save Changes"}
               </>
             )}
           </Button>

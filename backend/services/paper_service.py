@@ -1977,3 +1977,59 @@ class PaperService:
             if isinstance(e, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper project pages: {str(e)}")
+
+    def update_paper_source_url(self, paper_id: int, source_url: str) -> Paper:
+        """
+        Update the canonical source URL of an external paper.
+
+        Only valid for rows where ``source = 'external'``: ArXiv rows derive
+        their abstract URL from ``arxiv_id`` and must not have ``source_url``
+        rewritten. Raises :class:`DatabaseError` if another external row
+        already owns the new URL (the partial-unique constraint
+        ``uq_papers_source_url_external`` would otherwise raise a less
+        readable ``IntegrityError``).
+        """
+        try:
+            normalized = (source_url or "").strip()
+            if not normalized:
+                raise DatabaseError("source_url must be a non-empty string")
+            if len(normalized) > 2000:
+                raise DatabaseError("source_url must be at most 2000 characters")
+
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            if db_paper.source != "external":
+                raise DatabaseError(
+                    "source_url can only be edited on external papers; "
+                    "ArXiv rows derive their URL from arxiv_id"
+                )
+
+            if normalized == db_paper.source_url:
+                return self.get_paper_by_id(paper_id, include_resources=True)
+
+            collision = (
+                self.db.query(DBPaper.id)
+                .filter(
+                    DBPaper.source == "external",
+                    DBPaper.source_url == normalized,
+                    DBPaper.id != paper_id,
+                )
+                .first()
+            )
+            if collision is not None:
+                raise DatabaseError(
+                    f"Another external paper already uses source_url={normalized!r}"
+                )
+
+            db_paper.source_url = normalized
+            self.db.commit()
+
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper source URL: {str(e)}")

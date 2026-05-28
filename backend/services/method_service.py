@@ -9,7 +9,12 @@ from typing import Optional, List
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, asc, or_, case
 
-from backend.models.database import Method as DBMethod, PaperMethod
+from backend.models.database import (
+    Method as DBMethod,
+    PaperMethod,
+    Repository as DBRepository,
+    PaperRepository as DBPaperRepository,
+)
 from backend.models.api import Method, Methods
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
@@ -390,8 +395,8 @@ class MethodService:
             page: Page number (1-based)
             page_size: Number of papers per page
             latest_only: Whether to only include latest versions
-            order_by: Field to order by (date_published, title, citation_count)
-            order_dir: Order direction (asc, desc)
+            order_by: Field to order by (date_published, title, citation_count, trending)
+            order_dir: Order direction (asc, desc); ignored for trending which is always desc
             include_resources: Whether to include repositories and methods
 
         Returns:
@@ -442,19 +447,48 @@ class MethodService:
                 query = query.filter(DBPaper.is_latest_version)
 
             # Apply ordering
-            if order_by == "date_published":
-                order_field = DBPaper.date_published
-            elif order_by == "title":
-                order_field = DBPaper.title
-            elif order_by == "citation_count":
-                order_field = DBPaper.citation_count
-            else:
-                order_field = DBPaper.date_published
+            if order_by == "trending":
+                # Rank papers by their best official repository's EMA trending
+                # score. Papers without an official repo / score remain in the
+                # list but sort after scored papers via the coalesce fallbacks.
+                # Mirrors the task-page trending sort in TaskService.
+                trending_subq = (
+                    self.db.query(
+                        DBPaperRepository.paper_id.label("paper_id"),
+                        func.max(DBRepository.trending_score).label("trending_score"),
+                        func.max(DBRepository.num_stars).label("max_stars"),
+                    )
+                    .join(
+                        DBRepository,
+                        DBPaperRepository.repository_id == DBRepository.id,
+                    )
+                    .filter(DBPaperRepository.is_official.is_(True))
+                    .filter(DBRepository.trending_score.isnot(None))
+                    .group_by(DBPaperRepository.paper_id)
+                    .subquery()
+                )
 
-            if order_dir == "desc":
-                query = query.order_by(desc(order_field))
+                query = query.outerjoin(
+                    trending_subq, trending_subq.c.paper_id == DBPaper.id
+                ).order_by(
+                    desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
+                    desc(func.coalesce(trending_subq.c.max_stars, -1)),
+                    desc(DBPaper.date_published),
+                )
             else:
-                query = query.order_by(asc(order_field))
+                if order_by == "date_published":
+                    order_field = DBPaper.date_published
+                elif order_by == "title":
+                    order_field = DBPaper.title
+                elif order_by == "citation_count":
+                    order_field = DBPaper.citation_count
+                else:
+                    order_field = DBPaper.date_published
+
+                if order_dir == "desc":
+                    query = query.order_by(desc(order_field))
+                else:
+                    query = query.order_by(asc(order_field))
 
             # Get total count
             total_count = query.count()

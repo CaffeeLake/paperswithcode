@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { MethodChip, PaperCard } from "@/components";
+import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Task } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
@@ -247,21 +248,50 @@ const TagBrowseView: React.FC = () => {
         <span style={{ color: "var(--accent-text)" }}>{task.name.toUpperCase()}</span>
       </div>
 
-      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent-text)", letterSpacing: "0.1em", marginBottom: 8 }}>
-        TASK
-      </div>
-      <h1 className="domain-mega-title">{taskName}</h1>
-      {task.description && <p className="task-explainer">{task.description}</p>}
-      <div className="task-quickstats">
-        <span>
-          <span className="num">{(task.paper_count ?? 0).toLocaleString()}</span>PAPERS
-        </span>
-        <span>
-          <span className="num">{totalBenchmarkCount}</span>BENCHMARKS
-        </span>
-        <span>
-          <span className="num">{commonMethods.length}+</span>METHODS USED
-        </span>
+      <div className={task.image_url ? "task-hero-grid" : undefined}>
+        <div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent-text)", letterSpacing: "0.1em", marginBottom: 8 }}>
+            TASK
+          </div>
+          <h1 className="domain-mega-title">{taskName}</h1>
+          {task.description && (
+            <MarkdownText className="task-explainer" text={task.description} />
+          )}
+          <div className="task-quickstats">
+            <span>
+              <span className="num">{(task.paper_count ?? 0).toLocaleString()}</span>PAPERS
+            </span>
+            <span>
+              <span className="num">{totalBenchmarkCount}</span>BENCHMARKS
+            </span>
+            <span>
+              <span className="num">{commonMethods.length}+</span>METHODS USED
+            </span>
+          </div>
+        </div>
+        {task.image_url && (
+          <figure className="task-figure-card">
+            <div className="task-figure-img-wrap">
+              <img
+                className="task-figure-img"
+                src={task.image_url}
+                alt={`${taskName} schematic`}
+                onError={(e) => {
+                  (e.currentTarget.parentElement?.parentElement as HTMLElement | null)?.style.setProperty("display", "none");
+                }}
+              />
+            </div>
+            <figcaption>
+              Figure · {taskName}
+              {task.image_credit && (
+                <>
+                  <br />
+                  <MarkdownText className="task-image-credit" text={task.image_credit} />
+                </>
+              )}
+            </figcaption>
+          </figure>
+        )}
       </div>
 
       <div className="task-page-grid" style={{ marginTop: 28 }}>

@@ -20,7 +20,7 @@ The user-facing requirement is:
 - self-reported rows stay visually normal.
 - externally sourced rows get a subtle, small red `External` badge in paper-page evaluation tables.
 - hovering or focusing the badge shows the source URL or a friendly source label.
-- the source may be an internal benchmark page, a Hugging Face model card, a blog post, a GitHub README, or another paper.
+- the source may be an internal benchmark page, a Hugging Face model card linked from the paper page, a blog post, a GitHub README, or another paper.
 
 ## Current State
 
@@ -54,7 +54,7 @@ source_url TEXT NULL;
 Interpretation:
 
 - keep `paper_id` as the paper/work/model attribution. It means the evaluation belongs on that paper's page.
-- `external`: whether the score came from somewhere other than the paper/model identified by `paper_id`. Defaults to false.
+- `external`: whether the score was sourced from anywhere other than the paper text itself. Defaults to false. A linked model card, benchmark page, blog post, GitHub README, or another paper is still external even when it describes the same model/paper.
 - `source_url`: canonical source for the score. Required when `external = true`; null for normal self-reported rows. Usually this is a URL, but for paper-sourced external evals it can also be an internal paper reference encoded as `paper:<paper_id>` or as a canonical `/paper/...` URL.
 
 Do not add `source_label`, `source_type`, `source_paper_id`, or `source_metadata` for now. The frontend can derive a readable tooltip label from `source_url`.
@@ -97,7 +97,7 @@ source_url = https://arcprize.org/leaderboard
 model_name = GLM-5
 ```
 
-For a Hugging Face model card result linked to a known paper:
+For a Hugging Face model card result linked to a known paper, mark it external because the score is listed on the model card rather than in the paper:
 
 ```text
 paper_id = 82956
@@ -222,11 +222,11 @@ external
 source_url
 ```
 
-For the default self-reported case, populate `paper_id`, leave `external = false`, and leave `source_url` null.
+For the default self-reported case, populate `paper_id`, leave `external = false`, and leave `source_url` null. Use this only when the score is listed in the paper itself.
 
 For optional comparison rows, set `paper_id` to the paper/model being evaluated when known, set `external = true`, and set `source_url` to the paper/source where the score was reported.
 
-For non-paper evidence, such as a Hugging Face model card or blog post, set `source_url`, `external = true`, and `paper_id` when the evaluated paper/model is known.
+For any evidence outside the paper itself, set `source_url`, `external = true`, and `paper_id` when the evaluated paper/model is known. This includes a Hugging Face model card linked from the paper page; linked resources do not become self-reported just because they are associated with the paper.
 
 For Open ASR, update `backend/database/evaluations_setup/import_open_asr_evaluations.py` so newly imported rows use:
 

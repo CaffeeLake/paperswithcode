@@ -121,6 +121,94 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env \
 | Trending endpoint empty | Verify GitHub stars job is running and trending scores have at least two snapshots; check `repositories.trending_score_updated_at`. |
 | Cron dashboard shows “Unknown” | Ensure log file exists (`.github/workflows/scripts/logs/<job>_YYYYMMDD.log`) and job is scheduled in crontab. |
 | AI URL extraction stalls | Inspect `.github/workflows/scripts/logs/extract_urls_*.log` for CAPTCHA hits; consider slowing batch size or updating API key in `backend/keys.env`. |
+| Pending edits not landing in DB | Confirm the submitter is signed in (HF session cookie); the `POST /api/v1/me/paper-edits` endpoint requires `require_user`. Then run `SELECT * FROM pending_paper_edits WHERE status='pending' ORDER BY created_at DESC LIMIT 10;` to inspect recent submissions. |
+
+## Pending Paper Edits Review
+
+Non-admin Hugging Face users submit edits to the paper-page surfaces (tasks,
+methods, evaluations, GitHub repositories, project pages) through
+`POST /api/v1/me/paper-edits`. The submission lands in the
+`pending_paper_edits` table with `status = 'pending'`; live data does not
+change until an admin approves it. Admin direct edits via the existing
+`/papers/{id}/...` and `/evaluations/...` admin endpoints still bypass this
+queue. The frontend admin queue UI is intentionally deferred — review and
+approval happens through SQL plus the admin API.
+
+### List pending submissions
+
+Run this against the production DB to surface the current review queue:
+
+```sql
+SELECT id,
+       paper_id,
+       hf_username,
+       is_author,
+       edit_type,
+       created_at,
+       jsonb_pretty(proposed_payload) AS proposed_payload,
+       jsonb_pretty(current_payload)  AS current_payload
+FROM pending_paper_edits
+WHERE status = 'pending'
+ORDER BY created_at DESC;
+```
+
+For a quick triage view:
+
+```sql
+SELECT id, paper_id, hf_username, is_author, edit_type, created_at
+FROM pending_paper_edits
+WHERE status = 'pending'
+ORDER BY created_at DESC;
+```
+
+You can also ask the agent to surface pending edits — it will run the same
+query and summarize the diff between `current_payload` and `proposed_payload`
+for you.
+
+### Approve or reject via the admin API
+
+Both endpoints require the HF admin cookie (sign in via the site) or the
+`X-Admin-Token` header. Approval re-uses the same backend mutation services
+that admin direct edits call, so a future "auto-approve author edits" hook can
+reuse the exact same code path. Reject simply records the row as rejected with
+an optional note; it does not touch live data.
+
+```bash
+# Approve
+curl -X POST \
+    -H "X-Admin-Token: $PWC_ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"admin_note": "looks correct"}' \
+    https://paperswithcode.co/api/v1/admin/paper-edits/{edit_id}/approve
+
+# Reject
+curl -X POST \
+    -H "X-Admin-Token: $PWC_ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"admin_note": "task tag was incorrect"}' \
+    https://paperswithcode.co/api/v1/admin/paper-edits/{edit_id}/reject
+```
+
+`GET /api/v1/admin/paper-edits` lists rows server-side (status / paper_id /
+edit_type filters supported) and `GET /api/v1/admin/paper-edits/{id}` returns
+a single row including both payloads.
+
+Approved/rejected rows stay in the table for auditing; the same SQL query
+with `status = 'approved'` or `status = 'rejected'` shows historical
+decisions along with `reviewed_by` and `reviewed_at`.
+
+### Payload shapes
+
+Each `proposed_payload` matches the underlying admin mutation endpoint:
+
+- `tasks` &rarr; `{"task_ids": [int, ...]}`
+- `methods` &rarr; `{"method_ids": [int, ...]}`
+- `repositories` &rarr; `{"repositories": [{"url": str, "is_official": bool}, ...]}`
+- `project_pages` &rarr; `{"project_pages": [{"url": str, "is_official": bool}, ...]}`
+- `evaluations` &rarr; `{"operations": [{"op": "create" | "update" | "delete", ...}, ...]}`
+  - `create` &rarr; `{ "op": "create", "data": { task_id, dataset_id, metrics, best_metric, ... } }`
+  - `update` &rarr; `{ "op": "update", "evaluation_id": int, "data": { ... } }`
+  - `delete` &rarr; `{ "op": "delete", "evaluation_id": int }`
 | Cron logs filling disk | Run `uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup`; default policy keeps 30 days. |
 
 _Last updated: 7 November 2025_

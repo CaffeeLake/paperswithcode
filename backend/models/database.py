@@ -1006,3 +1006,86 @@ class UserBookmark(Base):
 
     def __repr__(self) -> str:
         return f"<UserBookmark(hf_username='{self.hf_username}', paper_id={self.paper_id})>"
+
+
+class PendingPaperEdit(Base):
+    """Edit submissions from non-admin Hugging Face users.
+
+    Each row records a proposed change to one of the paper-page edit surfaces
+    (tasks, methods, evaluation results, GitHub repositories, project pages).
+    Admin direct edits bypass this table and continue to mutate live data
+    through the existing admin endpoints. Approval of a pending row replays
+    ``proposed_payload`` through the same backend mutation services.
+
+    ``is_author`` is true when the submitting HF username matched a linked
+    author of the paper at submit time. It is informational today and used to
+    surface author-originated edits in review; a future change can use it to
+    auto-approve without going through admin review.
+    """
+
+    __tablename__ = "pending_paper_edits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    hf_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_author: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    edit_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    proposed_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    current_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    admin_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "edit_type IN ('tasks', 'methods', 'evaluations', 'repositories', 'project_pages', 'source_url')",
+            name="pending_paper_edits_edit_type_check",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')",
+            name="pending_paper_edits_status_check",
+        ),
+        Index(
+            "idx_pending_paper_edits_status_created_at",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "idx_pending_paper_edits_paper_edit_type",
+            "paper_id",
+            "edit_type",
+        ),
+        Index("idx_pending_paper_edits_hf_username", "hf_username"),
+        Index(
+            "idx_pending_paper_edits_author_pending",
+            "is_author",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PendingPaperEdit(id={self.id}, paper_id={self.paper_id}, "
+            f"hf_username='{self.hf_username}', edit_type='{self.edit_type}', "
+            f"status='{self.status}')>"
+        )

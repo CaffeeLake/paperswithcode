@@ -58,6 +58,7 @@ _PRIVATE_GET_PREFIXES = (
     "/api/v1/auth/",
     "/api/v1/me/",
     "/api/v1/cron/",
+    "/api/v1/admin/",
 )
 
 
@@ -152,10 +153,12 @@ def create_app() -> FastAPI:
         cron,
         auth,
         bookmarks,
+        pending_edits,
     )
 
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
+    app.include_router(pending_edits.router, prefix="/api/v1", tags=["pending_edits"])
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     # External-resource ingestion endpoints share the `/papers` prefix because
     # the resulting rows live in the same `papers` table.

@@ -5,16 +5,20 @@ Generates and uploads paper thumbnails to a Hugging Face Storage Bucket so that
 they are warm before browsers request them via /api/thumbnails/{filename}.
 
 Priority modes (selected via --priority):
-- `visible`: union of the candidate sets actually visible to users — top
-  --citation-top by citation count (matches the homepage default and
-  ?order_by=citation_count), top --trending-top trending papers, and top
-  --per-task papers per task tag. Yielded citation-first and deduplicated by
+- `visible`: union of every user-visible candidate set — homepage feed
+  (top --citation-top by citation count, top --trending-top trending,
+  top --newest-top by date_published) plus the top --per-task and
+  --per-method papers on every task and method page across all three
+  sort tabs (trending, newest, most cited). Yielded homepage-first
+  (citation -> trending -> newest -> tasks -> methods), deduplicated by
   paper id, then capped by --limit. Used by the hourly visible preload cron.
 - `trending`: candidates ranked by the EMA-smoothed `trending_papers_24h`
   view alone.
-- `task-top`: top --per-task papers per task tag (matches the default task
-  page ranking: trending score, then stars, then date). Used by the daily
-  task-page preload cron.
+- `task-top`: top --per-task papers per task tag across the three sort tabs
+  (trending, newest, most cited). Used by the daily task-page preload cron.
+- `method-top`: top --per-method papers per method tag across the three sort
+  tabs (trending, newest, most cited). Used by the daily method-page preload
+  cron.
 - `recent`: existing newest-first preload, optionally constrained to
   --recent-days. Used by the daily broad preload cron.
 - `missing-all`: oldest-first sweep over every latest-version ArXiv paper
@@ -70,14 +74,26 @@ DEFAULT_MAX_FAILURES = 50
 DEFAULT_REFRESH_REQUEST_DELAY_SECONDS = 6.0
 DEFAULT_TRENDING_MAX_AGE_DAYS = 180
 DEFAULT_PER_TASK = 50
+DEFAULT_PER_METHOD = 50
 DEFAULT_CITATION_TOP = 1000
 DEFAULT_TRENDING_TOP = 500
+DEFAULT_NEWEST_TOP = 300
 DEFAULT_VISIBLE_PER_TASK = 20
+DEFAULT_VISIBLE_PER_METHOD = 20
+
+# Whitelist of (join_table, group_id_column) pairs used by `_iter_group_top`.
+# Restricted to known values because the column / table identifiers are
+# interpolated into the SQL string (psycopg cannot parameterise identifiers).
+_GROUP_TOP_TABLES = {
+    "paper_tasks": "task_id",
+    "paper_methods": "method_id",
+}
 
 VALID_PRIORITIES = (
     "visible",
     "trending",
     "task-top",
+    "method-top",
     "recent",
     "missing-all",
     "external-missing",
@@ -102,9 +118,11 @@ class ThumbnailPreloadJob(CronJobBase):
         batch_size: int,
         recent_days: Optional[int],
         per_task: int,
+        per_method: int,
         trending_max_age_days: int,
         citation_top: int,
         trending_top: int,
+        newest_top: int,
         after_id: Optional[int],
         before_id: Optional[int],
         shard: Optional[Tuple[int, int]],
@@ -127,9 +145,11 @@ class ThumbnailPreloadJob(CronJobBase):
         self.batch_size = max(1, batch_size)
         self.recent_days = recent_days
         self.per_task = max(1, per_task)
+        self.per_method = max(1, per_method)
         self.trending_max_age_days = max(1, trending_max_age_days)
         self.citation_top = max(0, citation_top)
         self.trending_top = max(0, trending_top)
+        self.newest_top = max(0, newest_top)
         self.after_id = after_id
         self.before_id = before_id
         self.shard = shard
@@ -296,20 +316,26 @@ class ThumbnailPreloadJob(CronJobBase):
 
     def _iter_visible(self, session) -> Iterable[Candidate]:
         """
-        Union of the candidate sets actually visible to users:
-        - top by citation count (homepage default + ?order_by=citation_count),
-        - top trending (homepage default + trending feeds),
-        - top per-task (each task page first screenfuls).
+        Union of every candidate set actually visible to users, ordered so the
+        homepage feed is preloaded before per-task / per-method tails:
 
-        Yielded in citation-first order so the highest-visibility papers are
-        processed before any limit cap kicks in. Deduplicated by paper_id so
-        the same paper isn't generated twice within one run.
+        1. top by citation count            (homepage feed: most cited)
+        2. top trending                     (homepage feed: trending)
+        3. top by date_published            (homepage feed: newest)
+        4. top --per-task papers per task   (task pages, 3 sort tabs each)
+        5. top --per-method papers per method (method pages, 3 sort tabs each)
+
+        Deduplicated by paper_id so the same paper isn't generated twice
+        within one run; the truncation by --limit happens afterwards in
+        `_collect_candidates`, so any cap slices the lowest-visibility tail.
         """
         seen: set = set()
         sources: List[Iterable[Candidate]] = [
             self._iter_citation_top(session),
             self._iter_trending(session, limit_override=self.trending_top),
+            self._iter_newest_top(session),
             self._iter_task_top(session),
+            self._iter_method_top(session),
         ]
         for source in sources:
             for candidate in source:
@@ -318,44 +344,121 @@ class ThumbnailPreloadJob(CronJobBase):
                 seen.add(candidate.paper_id)
                 yield candidate
 
+    def _iter_newest_top(
+        self, session, limit_override: Optional[int] = None
+    ) -> Iterable[Candidate]:
+        """
+        Top latest-version arXiv papers ordered by `date_published`, matching
+        the "newest" sort tab on the homepage feed (and any other list view
+        opened with ?order_by=date_published).
+        """
+        effective_limit = (
+            limit_override if limit_override is not None else self.newest_top
+        )
+        if effective_limit <= 0:
+            return
+        query = (
+            session.query(DBPaper.id, DBPaper.arxiv_id, DBPaper.version)
+            .filter(
+                DBPaper.is_latest_version,
+                DBPaper.arxiv_id.isnot(None),
+                DBPaper.arxiv_id != "",
+            )
+            .order_by(
+                DBPaper.date_published.desc().nullslast(),
+                DBPaper.id.desc(),
+            )
+            .limit(effective_limit)
+        )
+        for row in query.yield_per(self.batch_size):
+            yield Candidate(row.id, row.arxiv_id, row.version or "v1")
+
     def _iter_task_top(self, session) -> Iterable[Candidate]:
+        yield from self._iter_group_top(
+            session,
+            join_table="paper_tasks",
+            per_group=self.per_task,
+        )
+
+    def _iter_method_top(self, session) -> Iterable[Candidate]:
+        yield from self._iter_group_top(
+            session,
+            join_table="paper_methods",
+            per_group=self.per_method,
+        )
+
+    def _iter_group_top(
+        self,
+        session,
+        *,
+        join_table: str,
+        per_group: int,
+    ) -> Iterable[Candidate]:
+        """
+        Top --per-group papers per task / method across the three sort tabs
+        present on every list page (trending, newest, most cited). Returns the
+        union of all three top-N subsets so the visible head of each tab gets
+        warmed regardless of which sort the user lands on.
+        """
+        if join_table not in _GROUP_TOP_TABLES:
+            raise ValueError(f"Unsupported join table {join_table!r}")
+        if per_group <= 0:
+            return
+
+        group_col = _GROUP_TOP_TABLES[join_table]
         sql = text(
-            """
+            f"""
             WITH scored AS (
                 SELECT
-                    pt.task_id,
-                    p.id AS paper_id,
+                    pg.{group_col} AS group_id,
+                    p.id           AS paper_id,
                     p.arxiv_id,
                     p.version,
                     p.date_published,
-                    COALESCE(MAX(r.trending_score), 0)        AS trending_score,
-                    COALESCE(MAX(r.num_stars), 0)              AS stars
-                FROM paper_tasks pt
-                JOIN papers p ON p.id = pt.paper_id
+                    p.citation_count,
+                    COALESCE(MAX(r.trending_score), 0) AS trending_score,
+                    COALESCE(MAX(r.num_stars), 0)      AS stars
+                FROM {join_table} pg
+                JOIN papers p ON p.id = pg.paper_id
                 LEFT JOIN paper_repositories pr
                   ON pr.paper_id = p.id AND pr.is_official = TRUE
                 LEFT JOIN repositories r ON r.id = pr.repository_id
                 WHERE p.is_latest_version
                   AND p.arxiv_id IS NOT NULL
                   AND p.arxiv_id <> ''
-                GROUP BY pt.task_id, p.id, p.arxiv_id, p.version, p.date_published
+                GROUP BY pg.{group_col}, p.id, p.arxiv_id, p.version,
+                         p.date_published, p.citation_count
             ), ranked AS (
-                SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY task_id
-                    ORDER BY trending_score DESC NULLS LAST,
-                             stars DESC NULLS LAST,
-                             date_published DESC NULLS LAST,
-                             paper_id DESC
-                ) AS rn
+                SELECT
+                    paper_id, arxiv_id, version,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY group_id
+                        ORDER BY trending_score DESC NULLS LAST,
+                                 stars DESC NULLS LAST,
+                                 date_published DESC NULLS LAST,
+                                 paper_id DESC
+                    ) AS rn_trending,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY group_id
+                        ORDER BY date_published DESC NULLS LAST,
+                                 paper_id DESC
+                    ) AS rn_newest,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY group_id
+                        ORDER BY citation_count DESC NULLS LAST,
+                                 paper_id DESC
+                    ) AS rn_citations
                 FROM scored
             )
             SELECT DISTINCT ON (paper_id) paper_id, arxiv_id, version
             FROM ranked
-            WHERE rn <= :per_task
+            WHERE rn_trending  <= :per_group
+               OR rn_newest    <= :per_group
+               OR rn_citations <= :per_group
             ORDER BY paper_id
             """
         )
-        rows = session.execute(sql, {"per_task": self.per_task}).fetchall()
+        rows = session.execute(sql, {"per_group": per_group}).fetchall()
         candidates = [Candidate(row[0], row[1], row[2] or "v1") for row in rows]
         if self.limit is not None and self.limit > 0:
             candidates = candidates[: self.limit]
@@ -442,6 +545,8 @@ class ThumbnailPreloadJob(CronJobBase):
             iterator = self._iter_trending(session)
         elif self.priority == "task-top":
             iterator = self._iter_task_top(session)
+        elif self.priority == "method-top":
+            iterator = self._iter_method_top(session)
         elif self.priority == "missing-all":
             iterator = self._iter_missing_all(session)
         elif self.priority == "external-missing":
@@ -531,8 +636,8 @@ class ThumbnailPreloadJob(CronJobBase):
         total = len(candidates)
         self.logger.info(
             "Found %d candidate papers "
-            "(priority=%s, limit=%s, recent_days=%s, per_task=%s, "
-            "citation_top=%s, trending_top=%s, "
+            "(priority=%s, limit=%s, recent_days=%s, per_task=%s, per_method=%s, "
+            "citation_top=%s, trending_top=%s, newest_top=%s, "
             "after_id=%s, before_id=%s, shard=%s, missing_only=%s, "
             "trust_local_cache=%s, dry_run=%s, refresh_existing=%s, "
             "request_delay_seconds=%.1f)",
@@ -541,8 +646,10 @@ class ThumbnailPreloadJob(CronJobBase):
             self.limit,
             self.recent_days,
             self.per_task if self.priority in ("task-top", "visible") else None,
+            self.per_method if self.priority in ("method-top", "visible") else None,
             self.citation_top if self.priority == "visible" else None,
             self.trending_top if self.priority == "visible" else None,
+            self.newest_top if self.priority == "visible" else None,
             self.after_id,
             self.before_id,
             f"{self.shard[0]}/{self.shard[1]}" if self.shard else None,
@@ -685,13 +792,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="recent",
         help=(
             "Which candidate set to process. 'visible' unions citation-top, "
-            "trending, and per-task papers (the user-visible surfaces) and "
-            "deduplicates citation-first. 'trending' uses the EMA "
-            "trending_papers_24h view, 'task-top' takes the top --per-task "
-            "papers per task tag, 'recent' is newest-first (optionally "
-            "constrained to --recent-days), and 'missing-all' sweeps every "
-            "latest-version ArXiv paper without a local thumbnail. "
-            "'external-missing' captures missing non-ArXiv thumbnails."
+            "trending-top, newest-top, per-task, and per-method papers (every "
+            "user-visible surface) and deduplicates homepage-first. 'trending' "
+            "uses the EMA trending_papers_24h view, 'task-top' takes the top "
+            "--per-task papers per task tag across the trending/newest/cited "
+            "sort tabs, 'method-top' does the same per method tag, 'recent' is "
+            "newest-first (optionally constrained to --recent-days), and "
+            "'missing-all' sweeps every latest-version ArXiv paper without a "
+            "local thumbnail. 'external-missing' captures missing non-ArXiv "
+            "thumbnails."
         ),
     )
     parser.add_argument(
@@ -721,7 +830,20 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_PER_TASK,
         help=(
-            "Top N papers per task to preload for --priority=task-top "
+            "Top N papers per task to preload for --priority=task-top and "
+            "--priority=visible. Each task contributes its top N papers from "
+            "each of the three sort tabs (trending, newest, most cited). "
+            "(default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--per-method",
+        type=int,
+        default=DEFAULT_PER_METHOD,
+        help=(
+            "Top N papers per method to preload for --priority=method-top and "
+            "--priority=visible. Each method contributes its top N papers from "
+            "each of the three sort tabs (trending, newest, most cited). "
             "(default: %(default)s)."
         ),
     )
@@ -750,6 +872,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help=(
             "Top N trending papers to include in --priority=visible "
             "(default: %(default)s). Pass 0 to skip the trending contribution."
+        ),
+    )
+    parser.add_argument(
+        "--newest-top",
+        type=int,
+        default=DEFAULT_NEWEST_TOP,
+        help=(
+            "Top N newest papers (by date_published) to include in "
+            "--priority=visible, matching the homepage 'newest' sort tab "
+            "(default: %(default)s). Pass 0 to skip the newest contribution."
         ),
     )
     parser.add_argument(
@@ -833,9 +965,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         batch_size=args.batch_size,
         recent_days=args.recent_days,
         per_task=args.per_task,
+        per_method=args.per_method,
         trending_max_age_days=args.trending_max_age_days,
         citation_top=args.citation_top,
         trending_top=args.trending_top,
+        newest_top=args.newest_top,
         after_id=args.after_id,
         before_id=args.before_id,
         shard=args.shard,

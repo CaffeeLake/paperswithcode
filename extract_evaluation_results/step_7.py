@@ -91,9 +91,9 @@ Use this context to better understand which tasks and datasets are commonly used
 ## CRITICAL: Understanding Leaderboards as Triples
 
 Leaderboards are defined by **(task, dataset, metric)** triples. For example:
-- (Image Classification, ImageNet-1k, Top-1 Accuracy)
-- (Image Classification, ImageNet-1k, Top-5 Accuracy)
-- (Image Generation, ImageNet-1k, FID)
+- (Image Classification, Imagenet-1k (ILSVRC-2012), Top-1 Accuracy)
+- (Image Classification, Imagenet-1k (ILSVRC-2012), Top-5 Accuracy)
+- (Image Generation, Imagenet-1k (ILSVRC-2012), FID)
 - (Object Detection, COCO, AP)
 - (Object Detection, COCO, AP50)
 

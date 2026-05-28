@@ -17,6 +17,10 @@ from backend.main import create_app
 from backend.models.database import (
     Base,
     Method as DBMethod,
+    Paper as DBPaper,
+    PaperMethod,
+    Repository as DBRepository,
+    PaperRepository as DBPaperRepository,
 )
 from backend.database.connection import get_database_session
 
@@ -134,6 +138,141 @@ def test_methods_search_ranks_name_matches_first(client, methods_with_image_keyw
     assert names.index("Image Transformer") < names.index("DALL-E")
 
     assert "Transformer" not in names
+
+
+@pytest.fixture
+def method_with_trending_papers():
+    """Create one method with papers covering each trending edge case.
+
+    Layout (all linked to method `transformer`):
+      - Paper 1: official repo, trending_score=10.0 (highest score)
+      - Paper 2: official repo, trending_score=2.5
+      - Paper 3: official repo, trending_score=NULL (no fresh score)
+      - Paper 4: non-official repo with trending_score=99.0 (must NOT win;
+                 only official repos contribute to trending sort)
+      - Paper 5: no repository at all
+    """
+    db = TestingSessionLocal()
+
+    method = DBMethod(
+        id=1,
+        name="Transformer",
+        slug="transformer",
+        full_name="Self-Attention Transformer",
+    )
+    db.add(method)
+
+    papers = [
+        DBPaper(
+            id=i,
+            title=f"Paper {i}",
+            abstract=f"Abstract {i}",
+            arxiv_id=f"2025.0{i:04d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for i in range(1, 6)
+    ]
+    db.add_all(papers)
+
+    repositories = [
+        DBRepository(
+            id=1,
+            url="https://github.com/owner/repo-1",
+            owner="owner",
+            name="repo-1",
+            num_stars=500,
+            trending_score=10.0,
+        ),
+        DBRepository(
+            id=2,
+            url="https://github.com/owner/repo-2",
+            owner="owner",
+            name="repo-2",
+            num_stars=200,
+            trending_score=2.5,
+        ),
+        DBRepository(
+            id=3,
+            url="https://github.com/owner/repo-3",
+            owner="owner",
+            name="repo-3",
+            num_stars=50,
+            trending_score=None,
+        ),
+        DBRepository(
+            id=4,
+            url="https://github.com/owner/repo-4",
+            owner="owner",
+            name="repo-4",
+            num_stars=10000,
+            trending_score=99.0,
+        ),
+    ]
+    db.add_all(repositories)
+    db.commit()
+
+    db.add_all(
+        [PaperMethod(paper_id=i, method_id=1) for i in range(1, 6)]
+        + [
+            DBPaperRepository(paper_id=1, repository_id=1, is_official=True),
+            DBPaperRepository(paper_id=2, repository_id=2, is_official=True),
+            DBPaperRepository(paper_id=3, repository_id=3, is_official=True),
+            DBPaperRepository(paper_id=4, repository_id=4, is_official=False),
+        ]
+    )
+    db.commit()
+    db.close()
+
+
+def test_method_papers_trending_orders_by_official_repo_trending_score(
+    client, method_with_trending_papers
+):
+    """`order_by=trending` ranks method papers by their best official repo score."""
+    response = client.get(
+        "/api/v1/methods/transformer/papers?order_by=trending&page_size=10"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    titles = [paper["title"] for paper in data["results"]]
+
+    # Papers 1 and 2 have official trending scores (10.0 and 2.5) and must
+    # come first, in that order. The remaining three papers have no
+    # qualifying official trending score and follow.
+    assert titles[:2] == ["Paper 1", "Paper 2"]
+    assert set(titles[2:]) == {"Paper 3", "Paper 4", "Paper 5"}
+    assert data["count"] == 5
+
+
+def test_method_papers_trending_ignores_non_official_repos(
+    client, method_with_trending_papers
+):
+    """A non-official repository's trending score must not influence ordering.
+
+    Paper 4's only repo has `trending_score=99.0` but is not official, so it
+    must not outrank Paper 1 (`trending_score=10.0` via official repo).
+    """
+    response = client.get(
+        "/api/v1/methods/transformer/papers?order_by=trending&page_size=10"
+    )
+
+    titles = [paper["title"] for paper in response.json()["results"]]
+
+    assert titles.index("Paper 1") < titles.index("Paper 4")
+
+
+def test_method_papers_default_ordering_unchanged(client, method_with_trending_papers):
+    """Default ordering (date_published desc) is unaffected by trending logic."""
+    response = client.get("/api/v1/methods/transformer/papers?page_size=10")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 5
+    assert {paper["title"] for paper in data["results"]} == {
+        f"Paper {i}" for i in range(1, 6)
+    }
 
 
 if __name__ == "__main__":

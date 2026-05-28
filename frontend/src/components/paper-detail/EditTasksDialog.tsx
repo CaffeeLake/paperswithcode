@@ -5,9 +5,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getTasks, updatePaperTasks, type Paper, type Task as APITask } from "@/lib/api";
+import {
+  getTasks,
+  submitPendingPaperEdit,
+  updatePaperTasks,
+  type Paper,
+  type Task as APITask,
+} from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
+import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 
 interface EditTasksDialogProps {
   open: boolean;
@@ -20,6 +27,12 @@ interface EditTasksDialogProps {
   // so the user can always uncheck a tag without first having to find it.
   initialTasks?: Array<Pick<APITask, "id" | "name" | "slug" | "description">>;
   onSuccess?: () => void;
+  /** `direct` applies immediately (admin path). `pending` submits an edit for
+   *  admin review without touching live data. */
+  submitMode?: "direct" | "pending";
+  /** When `submitMode === "pending"` and the signed-in user is a linked
+   *  author of the paper, the notice copy acknowledges that. */
+  isAuthor?: boolean;
 }
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -35,6 +48,8 @@ export function EditTasksDialog({
   initialTaskIds,
   initialTasks,
   onSuccess,
+  submitMode = "direct",
+  isAuthor = false,
 }: EditTasksDialogProps) {
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>(initialTaskIds);
   const [searchQuery, setSearchQuery] = useState("");
@@ -130,13 +145,28 @@ export function EditTasksDialog({
   }, [searchData, selectedTaskIds, knownTasks]);
 
   const updateTasksMutation = useMutation({
-    mutationFn: ({ paperId, taskIds }: { paperId: string; taskIds: number[] }) =>
-      updatePaperTasks(paperId, taskIds),
+    mutationFn: async ({ paperId, taskIds }: { paperId: string; taskIds: number[] }) => {
+      if (submitMode === "pending") {
+        await submitPendingPaperEdit({
+          paper_id: parseInt(paperId),
+          edit_type: "tasks",
+          proposed_payload: { task_ids: taskIds },
+        });
+        return null;
+      }
+      return updatePaperTasks(paperId, taskIds);
+    },
     // Apply the new task list to the paper detail cache *before* the network
     // round-trip so the chip the user just unchecked disappears immediately.
     // The dialog also closes here, then the canonical server response
     // reconciles the cache in `onSuccess` (or rolls back on `onError`).
     onMutate: async ({ taskIds }) => {
+      if (submitMode === "pending") {
+        // Pending submissions don't touch live data, so skip the optimistic
+        // update of the paper detail cache. We still close the dialog and
+        // surface a confirmation toast on success.
+        return { snapshots: [] };
+      }
       const optimisticTasks = taskIds
         .map((id) => knownTasks.get(id))
         .filter((t): t is APITask => Boolean(t))
@@ -182,7 +212,19 @@ export function EditTasksDialog({
       return { snapshots };
     },
     onSuccess: (updatedPaper) => {
-      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      if (submitMode === "pending") {
+        toast({
+          title: "Edit submitted for review",
+          description:
+            "Thanks! An admin will review your proposed task changes shortly.",
+        });
+        onSuccess?.();
+        onOpenChange(false);
+        return;
+      }
+      if (updatedPaper) {
+        refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      }
     },
     onError: (err: unknown, _vars, context) => {
       context?.snapshots?.forEach(({ key, data }) => {
@@ -190,7 +232,11 @@ export function EditTasksDialog({
       });
 
       const e = err as { response?: string; message?: string };
-      let description = e.message || "Failed to update paper tasks.";
+      let description =
+        e.message ||
+        (submitMode === "pending"
+          ? "Failed to submit your edit. Please try again."
+          : "Failed to update paper tasks.");
       if (e.response) {
         try {
           const parsed = JSON.parse(e.response);
@@ -204,7 +250,10 @@ export function EditTasksDialog({
         }
       }
       toast({
-        title: "Could not save tasks",
+        title:
+          submitMode === "pending"
+            ? "Could not submit edit"
+            : "Could not save tasks",
         description,
         variant: "destructive",
       });
@@ -214,6 +263,15 @@ export function EditTasksDialog({
   const handleSave = () => {
     updateTasksMutation.mutate({ paperId, taskIds: selectedTaskIds });
   };
+
+  // Treat the selection as "changed" only when it differs from what the
+  // paper already has. Prevents pending-edit submissions that would be a
+  // no-op and clutter the /submissions dashboard with empty cards.
+  const hasChange = useMemo(() => {
+    if (selectedTaskIds.length !== initialTaskIds.length) return true;
+    const initialSet = new Set(initialTaskIds);
+    return selectedTaskIds.some((id) => !initialSet.has(id));
+  }, [selectedTaskIds, initialTaskIds]);
 
   const toggleTask = (taskId: number, checked: boolean) => {
     setSelectedTaskIds((prev) => {
@@ -235,6 +293,7 @@ export function EditTasksDialog({
             Select the tasks that this paper addresses. You can select multiple tasks.
           </DialogDescription>
         </DialogHeader>
+        {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -304,16 +363,19 @@ export function EditTasksDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={updateTasksMutation.isPending}>
+          <Button
+            onClick={handleSave}
+            disabled={updateTasksMutation.isPending || !hasChange}
+          >
             {updateTasksMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                {submitMode === "pending" ? "Submitting..." : "Saving..."}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Save Changes
+                {submitMode === "pending" ? "Submit for review" : "Save Changes"}
               </>
             )}
           </Button>

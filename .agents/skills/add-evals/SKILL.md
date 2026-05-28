@@ -35,6 +35,59 @@ grep -E '^PWC_ADMIN_API_TOKEN=' backend/keys.env | head -1 | sed 's/=.*/=<redact
 
 If the server is not running, start it (or restart it without asking confirmation per AGENTS.md).
 
+## Common Shortcuts From Recent Curation
+
+### Transformers model docs
+
+When the user gives a Transformers model doc URL such as
+`https://github.com/huggingface/transformers/blob/main/docs/source/en/model_doc/<model>.md`,
+or points at `data/transformers_model_doc_papers.csv`, treat it as a normal source surface but use the CSV as a resolver:
+
+1. Look up the model doc slug or CSV line in `data/transformers_model_doc_papers.csv`.
+2. Use the CSV arXiv/paper mapping when it clearly identifies the source paper.
+3. Fetch the raw model doc markdown and parse its evaluation tables.
+4. If the doc describes a release with no matching arXiv paper, run `add-external-paper` first and attach the evals to that external row.
+
+For "next N rows" or "lines X-Y of the CSV", process each row independently through this skill and return a compact summary: source row, paper id, rows added, skipped benchmarks, and any blocker. For larger batches, it is fine to spawn one worker subagent per row with this skill loaded, but the parent agent should still merge the final summary and avoid duplicate writes.
+
+### Misattributed or moved evaluations
+
+If the user says existing evals landed on the wrong paper, first create or resolve the correct source row, then move only the matching rows in one transaction. Scope the update by `old_paper_id`, target `model_name` or benchmark set, and optional `external_source_url`; never move all rows from a paper unless the user explicitly asks.
+
+```bash
+uv run --env-file backend/keys.env python - <<'PY'
+from sqlalchemy import text
+from backend.database.connection import get_engine
+
+old_paper_id = <old_id>
+new_paper_id = <new_id>
+model_pattern = "%<model name>%"
+new_source_url = "<canonical source URL>"  # or None to preserve row-level sources
+
+with get_engine().begin() as conn:
+    before = conn.execute(text("""
+        SELECT id, model_name, dataset_id, best_metric
+        FROM evaluations
+        WHERE paper_id = :old_paper_id AND model_name ILIKE :model_pattern
+        ORDER BY id
+    """), {"old_paper_id": old_paper_id, "model_pattern": model_pattern}).mappings().all()
+    print("moving", len(before), "rows")
+    conn.execute(text("""
+        UPDATE evaluations
+        SET paper_id = :new_paper_id,
+            external_source_url = COALESCE(:new_source_url, external_source_url)
+        WHERE paper_id = :old_paper_id AND model_name ILIKE :model_pattern
+    """), {
+        "old_paper_id": old_paper_id,
+        "new_paper_id": new_paper_id,
+        "model_pattern": model_pattern,
+        "new_source_url": new_source_url,
+    })
+PY
+```
+
+After moving rows, verify zero matching rows remain on the old paper, the expected count appears on the new paper, and duplicate keys were not created.
+
 ## Workflow
 
 ### 1. Identify and fetch the evaluation source
@@ -51,14 +104,14 @@ Different starting points should converge on the same triple — a model identit
 
    The model card is the primary surface. If it has evaluation tables, that is your source. If it does not, read the `info.json` metadata: the card's `arxiv` tag (e.g. `arxiv:2401.12345`) or `papers` field points at a linked paper, and the card body or repo description often contains a GitHub URL. Fall through to step 2 / 3 with those identifiers.
 
-2. **Paper (arXiv, HF, or PapersWithCode paper with an arXiv ID)** — when the source is a paper directly, or the model card was missing evals, read the paper as markdown and inspect linked artifacts:
+2. **Paper (arXiv, HF, PDF report, or PapersWithCode paper with an arXiv ID)** — when the source is a paper directly, or the model card was missing evals, read the paper as markdown and inspect linked artifacts:
 
    ```bash
    uv run hf papers read <arxiv_id> > /tmp/<paper_slug>/paper.md
    uv run hf papers info <arxiv_id> > /tmp/<paper_slug>/paper-info.json
    ```
 
-   Extract evaluation tables from the paper body first. If the paper itself has no usable table, look for official artifacts linked from the paper text and metadata.
+   Extract evaluation tables from the paper body first. If the paper itself has no usable table, look for official artifacts linked from the paper text and metadata. For PDF reports that need an external paper row, inspect the extracted first pages for a real abstract/opening summary and pass that text verbatim to `add-external-paper`; do not generate a replacement summary when the PDF already contains one. Also distinguish official GitHub repositories from cited dependencies or frameworks before creating the external row, because official repo URLs should be marked official while incidental GitHub links should not be.
 
    For papers with an arXiv ID, also look for HF models tagged with that paper. The current `uv run hf papers info <arxiv_id>` output does not reliably expose linked models, so use the Hugging Face model search page directly:
 
@@ -248,7 +301,7 @@ Skeleton:
 
 ```python
 import json, os, urllib.request, urllib.error
-ADMIN_TOKEN = os.environ["ADMIN_TOKEN"]
+ADMIN_TOKEN = os.environ["PWC_ADMIN_API_TOKEN"]
 BASE = "http://localhost:8000/api/v1"
 
 def normalize_score_for_leaderboard(dataset_name, metric, score):
@@ -305,7 +358,53 @@ Common error responses:
 
 - `400 Failed to create evaluation: No leaderboard defined ...` — the dataset has no metric linked for that task. The benchmark should have been filtered out in step 5; recheck the inventory.
 - `400 Metric '<X>' is not allowed ...` — the row escaped the filter. Do not retry with a newly invented metric or a loose fallback; recheck the allowed metrics for that leaderboard and skip the source row if its metric is not configured.
-- `401 Unauthorized` — `X-Admin-Token` is missing or wrong; reload `backend/keys.env`.
+- `401 Unauthorized` — first check that `PWC_ADMIN_API_TOKEN` is loaded and the `X-Admin-Token` header is correct. If the local route is enforcing an HF-admin browser session despite the token, use `EvaluationService` directly from a short `uv run --env-file backend/keys.env python` script instead of changing auth behavior.
+
+Service fallback shape:
+
+```python
+from sqlalchemy import text
+from backend.database.connection import get_database_session
+from backend.services.evaluation_service import EvaluationService
+
+params = {
+    "paper_id": paper_id,
+    "task_id": task_id,
+    "dataset_id": dataset_id,
+    "model_name": model_name,
+    "harness": harness,
+    "best_metric": best_metric,
+}
+
+session_gen = get_database_session()
+db = next(session_gen)
+try:
+    existing = db.execute(text("""
+        SELECT id FROM evaluations
+        WHERE paper_id=:paper_id AND task_id=:task_id AND dataset_id=:dataset_id
+          AND model_name=:model_name
+          AND COALESCE(harness, '') = COALESCE(:harness, '')
+          AND best_metric=:best_metric
+    """), params).first()
+    if not existing:
+        EvaluationService(db).create_evaluation(
+            paper_id=paper_id,
+            task_id=task_id,
+            dataset_id=dataset_id,
+            model_name=model_name,
+            methodology=methodology,
+            metrics={best_metric: score},
+            best_metric=best_metric,
+            harness=harness,
+            external_source_url=source_url,
+            num_parameters=num_parameters,
+        )
+finally:
+    try:
+        next(session_gen)
+    except StopIteration:
+        pass
+```
 
 ### 8. Validate and verify
 
@@ -339,6 +438,7 @@ End by giving the user a concise report:
 - Any benchmark metadata gaps left for follow-up (e.g. missing `introducing_paper_id`, no arXiv source paper, missing source publication date, missing harness attribution for a harness-supporting leaderboard).
 - Any harness details from the source that were downgraded into `methodology` or `model_name` because `supports_harness = FALSE`.
 - For each imported model variant, the `num_parameters` value used (or "not reported" when the source did not state it confidently). If a count was set, briefly note where it came from (HF `safetensors.total`, model card body, paper, README) and whether it represents total or active parameters for MoE models.
+- Whether the source is part of a model-family chain and should be linked with predecessor/successor papers. If yes, run `link-paper-lineage` as a follow-up rather than doing ad hoc SQL in this skill.
 
 ## When NOT to use this skill
 

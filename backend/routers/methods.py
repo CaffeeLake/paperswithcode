@@ -144,7 +144,7 @@ async def get_method_papers(
     ),
     order_by: Optional[str] = Query(
         "date_published",
-        description="Field to order by: date_published, citation_count, title",
+        description="Field to order by: date_published, citation_count, title, trending",
     ),
     order_dir: Optional[str] = Query(
         "desc", description="Order direction: asc or desc"
@@ -167,6 +167,7 @@ async def get_method_papers(
     - `/api/v1/methods/1/papers` - Get papers using method ID 1
     - `/api/v1/methods/GPT-2/papers` - Get papers using GPT-2
     - `/api/v1/methods/Transformer/papers?order_by=citation_count&order_dir=desc` - Most cited papers
+    - `/api/v1/methods/Transformer/papers?order_by=trending` - Papers ranked by official repo trending score
     - `/api/v1/methods/BERT/papers?include_resources=true` - Include GitHub repos
     """
     try:

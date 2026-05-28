@@ -13,6 +13,8 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
 | `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` | `.github/workflows/scripts/hourly/extract_urls.py` |
 | `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | direct `uv run` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
+| `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` | `.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh` | `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` |
 
 The `test-database.yml` workflow is unrelated to cron scheduling.
 
@@ -29,6 +31,9 @@ The `test-database.yml` workflow is unrelated to cron scheduling.
 │   └── update_github_stars.py
 ├── backfill/
 │   └── backfill_hf_papers.py
+├── weekly/
+│   ├── link_methods_by_references.py
+│   └── link_papers_by_task_keywords.py
 ├── maintenance/
 │   ├── cleanup_invalid_repositories.py
 │   └── run_cleanup_invalid_repositories.sh

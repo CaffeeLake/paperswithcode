@@ -30,6 +30,7 @@ The current set of CRONs (read these files directly to confirm schedule and targ
 | `cron-preload-thumbnails.yml` | `0 */3 * * *` (every 3h), `0 4 * * *` (daily 04:00), `30 4 * * *` (daily 04:30) | Three priority modes feeding the same script: every-3h trending preload, daily task-top-50 preload, daily newest-30-days broad preload. Also accepts `priority=missing-all` via workflow_dispatch for chunked long-tail backfills. | local log `preload_thumbnails_*.log` |
 | `cron-mirror-thumbnails-to-disk.yml` | `0 5 * * *` (daily 05:00) | Mirrors the HF thumbnail bucket prefix to the VPS local cache served by `/api/thumbnails/{filename}` | local log `mirror_thumbnails_to_disk_*.log`; file count under `PWC_THUMBNAIL_TEMP_CACHE_DIR` should approach bucket file count |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` (Sun 04:00) | Tags new papers with methods by walking each paper's bibliography and matching against `methods.source_paper_id` via Semantic Scholar | local log `link_methods_by_references_weekly_*.log`; `papers.methods_scanned_at` should be set for newly imported papers; new rows in `paper_methods` |
+| `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` (Sun 05:00) | Backfills missing `paper_tasks` auto tags from current task keywords across the full corpus | local log `link_papers_by_task_keywords_weekly_*.log`; net growth in `paper_tasks` where `source = 'auto'` after keyword fixes |
 
 If a workflow file appears that you don't recognize, treat it as in-scope and figure out what it does — don't silently skip it.
 

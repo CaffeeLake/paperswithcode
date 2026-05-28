@@ -319,6 +319,11 @@ def trending_dataset():
         out by `share_lift > 1.0`.
       - small_domain: 3 recent papers, 4 baseline papers. Below the recent
         and baseline support gates and must be filtered out.
+      - surging_niche: 6 recent papers, 5 baseline papers. Has the highest
+        share lift in the dataset but a *lower* trend_score than
+        rising_domain, so it proves the sort key is share_lift, not the
+        volume-weighted composite. Excluded under default gates
+        (baseline < 10) so existing tests are unaffected.
       - filler_domain_*: 1 recent each, 50 baseline each. Used to pad the
         baseline window so flat_domain's baseline share stays large.
     """
@@ -335,6 +340,7 @@ def trending_dataset():
         DBTask(id=3, name="Small Domain", slug="small-domain", level=0),
         DBTask(id=4, name="Filler A", slug="filler-a", level=0),
         DBTask(id=5, name="Filler B", slug="filler-b", level=0),
+        DBTask(id=6, name="Surging Niche", slug="surging-niche", level=0),
     ]
     db.add_all(tasks)
 
@@ -373,6 +379,9 @@ def trending_dataset():
     add_papers(1, recent_day, 5)
     add_papers(50, baseline_day, 5)
 
+    add_papers(6, recent_day, 6)
+    add_papers(5, baseline_day, 6)
+
     db.add_all(papers)
     db.commit()
     db.add_all(
@@ -409,6 +418,32 @@ def test_trending_tasks_rank_by_share_lift(client, trending_dataset):
     assert rising.baseline_paper_count == 10
     assert rising.share_lift > 1.0
     assert rising.trend_score > 0
+
+
+def test_trending_tasks_sorted_by_share_lift(client, trending_dataset):
+    """Lift beats volume: results are ordered by descending share_lift, even
+    when a higher-volume domain has a larger trend_score."""
+    today = trending_dataset
+
+    db = TestingSessionLocal()
+    try:
+        service = TaskService(db)
+        response = service.get_trending_tasks(
+            today=today,
+            min_baseline_papers=5,
+        )
+    finally:
+        db.close()
+
+    lifts = [t.share_lift for t in response.results]
+    assert lifts == sorted(lifts, reverse=True)
+
+    names = [t.name for t in response.results]
+    surging = next(t for t in response.results if t.name == "Surging Niche")
+    rising = next(t for t in response.results if t.name == "Rising Domain")
+    assert surging.share_lift > rising.share_lift
+    assert surging.trend_score < rising.trend_score
+    assert names.index("Surging Niche") < names.index("Rising Domain")
 
 
 def test_trending_tasks_apply_support_gates(client, trending_dataset):

@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Check, Plus, Trash2, Globe, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { updatePaperProjectPages } from "@/lib/api";
+import { submitPendingPaperEdit, updatePaperProjectPages } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
+import { useToast } from "@/hooks/use-toast";
+import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 
 interface ProjectPage {
   url: string;
@@ -20,6 +22,12 @@ interface EditProjectPagesDialogProps {
   arxivId?: string;
   initialProjectPages: ProjectPage[];
   onSuccess?: () => void;
+  /** `direct` applies immediately (admin path). `pending` submits an edit for
+   *  admin review without touching live data. */
+  submitMode?: "direct" | "pending";
+  /** When `submitMode === "pending"` and the signed-in user is a linked
+   *  author of the paper, the notice copy acknowledges that. */
+  isAuthor?: boolean;
 }
 
 export function EditProjectPagesDialog({
@@ -29,10 +37,13 @@ export function EditProjectPagesDialog({
   arxivId,
   initialProjectPages,
   onSuccess,
+  submitMode = "direct",
+  isAuthor = false,
 }: EditProjectPagesDialogProps) {
   const [editedProjectPages, setEditedProjectPages] = useState<ProjectPage[]>(initialProjectPages);
   const [newProjectPageUrl, setNewProjectPageUrl] = useState("");
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // Only seed local state on the false→true transition of `open` so background
   // refetches of the paper don't wipe pending edits while the dialog is open.
@@ -49,13 +60,63 @@ export function EditProjectPagesDialog({
   }, [open, initialProjectPages]);
 
   const updateProjectPagesMutation = useMutation({
-    mutationFn: ({ paperId, projectPages }: { paperId: string; projectPages: ProjectPage[] }) =>
-      updatePaperProjectPages(paperId, projectPages),
+    mutationFn: async ({ paperId, projectPages }: { paperId: string; projectPages: ProjectPage[] }) => {
+      if (submitMode === "pending") {
+        await submitPendingPaperEdit({
+          paper_id: parseInt(paperId),
+          edit_type: "project_pages",
+          proposed_payload: { project_pages: projectPages },
+        });
+        return null;
+      }
+      return updatePaperProjectPages(paperId, projectPages);
+    },
     onSuccess: (updatedPaper) => {
-      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      if (submitMode === "pending") {
+        toast({
+          title: "Edit submitted for review",
+          description:
+            "Thanks! An admin will review your proposed project page changes shortly.",
+        });
+        onSuccess?.();
+        onOpenChange(false);
+        setNewProjectPageUrl("");
+        return;
+      }
+      if (updatedPaper) {
+        refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      }
       onSuccess?.();
       onOpenChange(false);
       setNewProjectPageUrl("");
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: string; message?: string };
+      let description =
+        e.message ||
+        (submitMode === "pending"
+          ? "Failed to submit your edit. Please try again."
+          : "Failed to update project pages.");
+      if (e.response) {
+        try {
+          const parsed = JSON.parse(e.response);
+          if (typeof parsed?.detail === "string") {
+            description = parsed.detail;
+          } else if (Array.isArray(parsed?.detail) && parsed.detail[0]?.msg) {
+            description = parsed.detail[0].msg;
+          }
+        } catch {
+          description = e.response;
+        }
+      }
+      toast({
+        title:
+          submitMode === "pending"
+            ? "Could not submit edit"
+            : "Could not save project pages",
+        description,
+        variant: "destructive",
+      });
     },
   });
 
@@ -100,6 +161,25 @@ export function EditProjectPagesDialog({
     updateProjectPagesMutation.mutate({ paperId, projectPages: next });
   };
 
+  // Compare the edited list against the initial list (URL + is_official) so
+  // we can disable submit when nothing actually changed. Includes the
+  // typed-but-not-yet-added URL so users don't see a disabled button after
+  // pasting a new project page.
+  const hasChange = useMemo(() => {
+    const trimmedNew = newProjectPageUrl.trim();
+    const candidate = trimmedNew
+      ? [...editedProjectPages, { url: trimmedNew, is_official: false }]
+      : editedProjectPages;
+    if (candidate.length !== initialProjectPages.length) return true;
+    const initialMap = new Map(
+      initialProjectPages.map((p) => [p.url.trim(), Boolean(p.is_official)]),
+    );
+    return candidate.some((p) => {
+      const initial = initialMap.get(p.url.trim());
+      return initial === undefined || initial !== Boolean(p.is_official);
+    });
+  }, [editedProjectPages, newProjectPageUrl, initialProjectPages]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[600px]">
@@ -109,6 +189,7 @@ export function EditProjectPagesDialog({
             Add or remove project page URLs (e.g. authors' demo or landing pages) associated with this paper. Mark pages as official if they are created by the paper authors.
           </DialogDescription>
         </DialogHeader>
+        {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
 
         <div className="space-y-2">
           <label className="text-sm font-medium">Add Project Page URL</label>
@@ -192,16 +273,19 @@ export function EditProjectPagesDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={updateProjectPagesMutation.isPending}>
+          <Button
+            onClick={handleSave}
+            disabled={updateProjectPagesMutation.isPending || !hasChange}
+          >
             {updateProjectPagesMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                {submitMode === "pending" ? "Submitting..." : "Saving..."}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Save Changes
+                {submitMode === "pending" ? "Submit for review" : "Save Changes"}
               </>
             )}
           </Button>

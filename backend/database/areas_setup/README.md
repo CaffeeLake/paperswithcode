@@ -222,7 +222,7 @@ The response format matches the legacy API:
 
 ## Notes
 
-- The areas table is part of the main database schema defined in `backend/database/migration/setup_paperswithcode_hf.sql`
+- The areas table is part of the main database schema — see `docs/DATABASE_SCHEMA_UML.md`
 - Areas are referenced by tasks via the `tasks.area_id` foreign key
 - The implementation follows the same patterns as the existing Papers and Authors APIs
 - All timestamps are stored in UTC with timezone awareness

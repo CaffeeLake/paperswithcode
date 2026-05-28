@@ -252,8 +252,8 @@ def get_leaderboard_triples() -> List[Tuple[str, str, str, str]]:
 
     Example:
         [
-            ("Computer Vision", "Image Classification", "ImageNet-1k", "Top-1 Accuracy"),
-            ("Computer Vision", "Image Classification", "ImageNet-1k", "Top-5 Accuracy"),
+            ("Computer Vision", "Image Classification", "Imagenet-1k (ILSVRC-2012)", "Top-1 Accuracy"),
+            ("Computer Vision", "Image Classification", "Imagenet-1k (ILSVRC-2012)", "Top-5 Accuracy"),
             ("NLP", "Question Answering", "SQuAD", "F1"),
             ...
         ]

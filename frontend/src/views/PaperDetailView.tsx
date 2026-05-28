@@ -22,7 +22,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -30,8 +29,28 @@ import { EditTasksDialog } from "@/components/paper-detail/EditTasksDialog";
 import { EditMethodsDialog } from "@/components/paper-detail/EditMethodsDialog";
 import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositoriesDialog";
 import { EditProjectPagesDialog } from "@/components/paper-detail/EditProjectPagesDialog";
+import { EditSourceUrlDialog } from "@/components/paper-detail/EditSourceUrlDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
+import { SignInToEditDialog } from "@/components/paper-detail/SignInToEditDialog";
 import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
+import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
+
+type EditSection =
+  | "tasks"
+  | "methods"
+  | "results"
+  | "repositories"
+  | "project-pages"
+  | "source-url";
+
+const EDIT_SECTION_LABEL: Record<EditSection, string> = {
+  tasks: "tasks",
+  methods: "methods",
+  results: "evaluation results",
+  repositories: "GitHub repositories",
+  "project-pages": "project pages",
+  "source-url": "source URL",
+};
 
 const ABSTRACT_PREVIEW_LEN = 360;
 const REPO_PREVIEW_LIMIT = 3;
@@ -67,7 +86,13 @@ const PaperDetailView: React.FC = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user } = useAuth();
-  const canEditPaper = user?.is_admin ?? false;
+  // Admins can save edits directly. Linked authors and everyone else go
+  // through the pending-edit queue for admin review.
+  const isAdmin = user?.is_admin ?? false;
+  const isSignedIn = !!user;
+  // Show edit affordances to every visitor on the paper page. Signed-out users
+  // are routed through a sign-in prompt before they can actually submit.
+  const canEditPaper = true;
 
   const { data: paper, isLoading, error, refetch } = usePaper(arxivId || "", !!arxivId);
   const [secondaryQueriesEnabled, setSecondaryQueriesEnabled] = useState(false);
@@ -171,7 +196,55 @@ const PaperDetailView: React.FC = () => {
     setIsEditingProjectPages,
     isEditingEvaluations,
     setIsEditingEvaluations,
+    isEditingSourceUrl,
+    setIsEditingSourceUrl,
   } = usePaperEditState();
+
+  const [signInSection, setSignInSection] = useState<EditSection | null>(null);
+
+  // Resolve whether the signed-in HF username matches one of the paper's
+  // linked authors. Used to surface "you're an author" copy in the pending
+  // edit notice; the backend re-checks this at submission time and records
+  // `is_author = true` for future auto-approval rules.
+  const isLinkedAuthor = useMemo(() => {
+    if (!user || !paper?.author_links) return false;
+    const me = user.username.toLowerCase();
+    return paper.author_links.some(
+      (a) =>
+        Boolean(a.hf_username) && a.hf_username!.toLowerCase() === me,
+    );
+  }, [user, paper?.author_links]);
+
+  // Admins save directly (existing behavior). Everyone else who is signed in
+  // submits an edit for admin review.
+  const editSubmitMode: "direct" | "pending" = isAdmin ? "direct" : "pending";
+
+  const openEdit = (section: EditSection): void => {
+    if (!isSignedIn) {
+      setSignInSection(section);
+      return;
+    }
+    switch (section) {
+      case "tasks":
+        setIsEditingTasks(true);
+        return;
+      case "methods":
+        setIsEditingMethods(true);
+        return;
+      case "results":
+        setIsEditingEvaluations(true);
+        return;
+      case "repositories":
+        setIsEditingRepositories(true);
+        return;
+      case "project-pages":
+        setIsEditingProjectPages(true);
+        return;
+      case "source-url":
+        setIsEditingSourceUrl(true);
+        return;
+    }
+  };
 
   // Auto-index if missing.
   const [indexState, setIndexState] = useState<"idle" | "indexing">("idle");
@@ -284,7 +357,7 @@ const PaperDetailView: React.FC = () => {
           </Alert>
         )}
         <div className="action-row">
-          {canEditPaper && (
+          {isAdmin && (
             <button className="action-btn" onClick={handleIndex} disabled={indexState === "indexing"}>
               <Icon name="sparkle" size={12} />
               {indexState === "indexing" ? "Indexing…" : "Index from arXiv"}
@@ -507,54 +580,98 @@ const PaperDetailView: React.FC = () => {
               </a>
             )}
             {paper.url_abs && (
-              <a className="action-btn" href={paper.url_abs} target="_blank" rel="noopener noreferrer">
-                <Icon name="external" size={12} /> {sourceActionLabel}
-              </a>
+              <EditableActionButton
+                showEdit={paper.source === "external" && canEditPaper}
+                onEdit={() => openEdit("source-url")}
+                editAriaLabel="Edit source URL"
+              >
+                <a
+                  className={
+                    paper.source === "external" && canEditPaper
+                      ? "action-btn-segment action-btn-main"
+                      : "action-btn"
+                  }
+                  href={paper.url_abs}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="external" size={12} /> {sourceActionLabel}
+                </a>
+              </EditableActionButton>
             )}
             {repoSummary.githubUrl && (
-              <a className="action-btn" href={repoSummary.githubUrl} target="_blank" rel="noopener noreferrer">
-                <Icon name="github" size={12} /> Code
-                {repoSummary.github != null && (
-                  <span style={{ opacity: 0.7, marginLeft: 4 }}>· {formatStars(repoSummary.github)} ★</span>
-                )}
-              </a>
-            )}
-            {projectPages.length === 1 && !canEditPaper ? (
-              <a className="action-btn" href={projectPages[0].url} target="_blank" rel="noopener noreferrer">
-                <Icon name="globe" size={12} /> Project page
-              </a>
-            ) : null}
-            {projectPages.length > 0 && (projectPages.length > 1 || canEditPaper) ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className="action-btn">
-                    <Icon name="globe" size={12} /> Project page
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="project-page-menu">
-                  {projectPages.map((page, index) => (
-                    <DropdownMenuItem key={page.url} asChild>
-                      <a href={page.url} target="_blank" rel="noopener noreferrer">
-                        {formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}
-                      </a>
-                    </DropdownMenuItem>
-                  ))}
-                  {canEditPaper && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onSelect={() => setIsEditingProjectPages(true)}>
-                        Add or edit project pages
-                      </DropdownMenuItem>
-                    </>
+              <EditableActionButton
+                showEdit={canEditPaper}
+                onEdit={() => openEdit("repositories")}
+                editAriaLabel="Edit code repositories"
+              >
+                <a
+                  className={
+                    canEditPaper ? "action-btn-segment action-btn-main" : "action-btn"
+                  }
+                  href={repoSummary.githubUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="github" size={12} /> Code
+                  {repoSummary.github != null && (
+                    <span style={{ opacity: 0.7, marginLeft: 4 }}>· {formatStars(repoSummary.github)} ★</span>
                   )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+                </a>
+              </EditableActionButton>
+            )}
+            {projectPages.length === 1 ? (
+              <EditableActionButton
+                showEdit={canEditPaper}
+                onEdit={() => openEdit("project-pages")}
+                editAriaLabel="Edit project pages"
+              >
+                <a
+                  className={
+                    canEditPaper ? "action-btn-segment action-btn-main" : "action-btn"
+                  }
+                  href={projectPages[0].url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="globe" size={12} /> Project page
+                </a>
+              </EditableActionButton>
             ) : null}
-            {canEditPaper && projectPages.length === 0 ? (
+            {projectPages.length > 1 ? (
+              <EditableActionButton
+                showEdit={canEditPaper}
+                onEdit={() => openEdit("project-pages")}
+                editAriaLabel="Edit project pages"
+              >
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className={
+                        canEditPaper ? "action-btn-segment action-btn-main" : "action-btn"
+                      }
+                    >
+                      <Icon name="globe" size={12} /> Project page
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="project-page-menu">
+                    {projectPages.map((page, index) => (
+                      <DropdownMenuItem key={page.url} asChild>
+                        <a href={page.url} target="_blank" rel="noopener noreferrer">
+                          {formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}
+                        </a>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </EditableActionButton>
+            ) : null}
+            {canEditPaper && projectPages.length === 0 && isSignedIn ? (
               <button
                 type="button"
                 className="action-btn"
-                onClick={() => setIsEditingProjectPages(true)}
+                onClick={() => openEdit("project-pages")}
                 title="Add project page"
               >
                 <Icon name="globe" size={12} /> Add project page
@@ -673,18 +790,9 @@ const PaperDetailView: React.FC = () => {
               {paper.tasks?.length || 0} tagged
               {canEditPaper && (
                 <button
-                  onClick={() => setIsEditingTasks(true)}
+                  type="button"
+                  onClick={() => openEdit("tasks")}
                   className="edit-link"
-                  style={{
-                    marginLeft: 8,
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--accent-text)",
-                    textDecoration: "underline",
-                    fontFamily: "var(--mono)",
-                    fontSize: 11,
-                  }}
                 >
                   edit
                 </button>
@@ -703,18 +811,9 @@ const PaperDetailView: React.FC = () => {
               {paper.methods?.length || 0} used
               {canEditPaper && (
                 <button
-                  onClick={() => setIsEditingMethods(true)}
+                  type="button"
+                  onClick={() => openEdit("methods")}
                   className="edit-link"
-                  style={{
-                    marginLeft: 8,
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--accent-text)",
-                    textDecoration: "underline",
-                    fontFamily: "var(--mono)",
-                    fontSize: 11,
-                  }}
                 >
                   edit
                 </button>
@@ -733,18 +832,9 @@ const PaperDetailView: React.FC = () => {
               {evaluations?.length || 0} benchmarks
               {canEditPaper && (
                 <button
-                  onClick={() => setIsEditingEvaluations(true)}
+                  type="button"
+                  onClick={() => openEdit("results")}
                   className="edit-link"
-                  style={{
-                    marginLeft: 8,
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--accent-text)",
-                    textDecoration: "underline",
-                    fontFamily: "var(--mono)",
-                    fontSize: 11,
-                  }}
                 >
                   edit
                 </button>
@@ -818,7 +908,7 @@ const PaperDetailView: React.FC = () => {
         </div>
 
         <aside className="detail-sidebar">
-          {(sortedRepos.length > 0 || canEditPaper) && (
+          {(sortedRepos.length > 0 || isSignedIn) && (
             <div className="sidebar-card">
               <div className="sidebar-card-title">
                 <span>GitHub</span>
@@ -826,18 +916,9 @@ const PaperDetailView: React.FC = () => {
                   {sortedRepos.length} repo{sortedRepos.length === 1 ? "" : "s"}
                   {canEditPaper && (
                     <button
-                      onClick={() => setIsEditingRepositories(true)}
+                      type="button"
+                      onClick={() => openEdit("repositories")}
                       className="edit-link"
-                      style={{
-                        marginLeft: 8,
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "var(--accent-text)",
-                        textDecoration: "underline",
-                        fontFamily: "var(--mono)",
-                        fontSize: 11,
-                      }}
                     >
                       edit
                     </button>
@@ -865,7 +946,7 @@ const PaperDetailView: React.FC = () => {
                   <span className="code-line-stars">★ {formatStars(r.num_stars)}</span>
                 </a>
               ))}
-              {sortedRepos.length === 0 && canEditPaper && (
+              {sortedRepos.length === 0 && isSignedIn && (
                 <div
                   style={{
                     fontFamily: "var(--mono)",
@@ -951,7 +1032,7 @@ const PaperDetailView: React.FC = () => {
         </aside>
       </div>
 
-      {/* Admin dialogs */}
+      {/* Edit dialogs (direct save for admins, pending submission for everyone else) */}
       <EditTasksDialog
         open={isEditingTasks}
         onOpenChange={setIsEditingTasks}
@@ -959,6 +1040,8 @@ const PaperDetailView: React.FC = () => {
         arxivId={arxivId}
         initialTaskIds={paper.tasks?.map((t) => parseInt(t.id)) || []}
         initialTasks={paper.tasks || []}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
       />
       <EditMethodsDialog
         open={isEditingMethods}
@@ -967,6 +1050,8 @@ const PaperDetailView: React.FC = () => {
         arxivId={arxivId}
         initialMethodIds={paper.methods?.map((m) => parseInt(m.id)) || []}
         initialMethods={paper.methods || []}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
       />
       <EditRepositoriesDialog
         open={isEditingRepositories}
@@ -976,6 +1061,8 @@ const PaperDetailView: React.FC = () => {
         initialRepositories={
           paper.repositories?.map((r) => ({ url: r.url, is_official: r.is_official || false })) || []
         }
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
       />
       <EditProjectPagesDialog
         open={isEditingProjectPages}
@@ -985,6 +1072,8 @@ const PaperDetailView: React.FC = () => {
         initialProjectPages={
           paper.project_pages?.map((p) => ({ url: p.url, is_official: p.is_official || false })) || []
         }
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
       />
       <EditEvaluationsDialog
         open={isEditingEvaluations}
@@ -992,6 +1081,27 @@ const PaperDetailView: React.FC = () => {
         paperId={paper.id}
         arxivId={arxivId}
         initialEvaluations={evaluations || []}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
+      />
+      <EditSourceUrlDialog
+        open={isEditingSourceUrl}
+        onOpenChange={setIsEditingSourceUrl}
+        paperId={paper.id}
+        arxivId={arxivId}
+        initialUrl={paper.source_url ?? paper.url_abs ?? ""}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
+      />
+      <SignInToEditDialog
+        open={signInSection !== null}
+        onOpenChange={(open) => {
+          if (!open) setSignInSection(null);
+        }}
+        sectionLabel={
+          signInSection ? EDIT_SECTION_LABEL[signInSection] : "this paper"
+        }
+        returnTo={typeof window !== "undefined" ? window.location.pathname : "/"}
       />
     </div>
   );

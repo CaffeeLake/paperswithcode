@@ -15,7 +15,8 @@
 | File | Strategy | Purpose |
 | --- | --- | --- |
 | `.github/workflows/scripts/daily/import_hf_daily_papers.py` | simple + longest | Auto-tag new Hugging Face papers with tasks/methods. |
-| `backend/database/tasks_setup/link_papers_by_task_keywords.py` | simple | Retag entire corpus for task coverage. |
+| `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` | simple | Weekly backfill of task tags for the full corpus when keywords change. |
+| `backend/database/tasks_setup/link_papers_by_task_keywords.py` | simple | Same matcher as the weekly cron; run manually for immediate backfills. |
 | `backend/database/methods_setup/link_papers_by_keywords.py` | longest | Retag corpus for methods while honoring hierarchical names. |
 
 The consolidation replaced dozens of one-off scripts—refer to `backend/database/{tasks_setup,methods_setup}/archive/` for historical imports.

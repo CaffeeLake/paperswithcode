@@ -231,10 +231,13 @@ class TaskService:
             share_lift     = recent_share / baseline_share
             trend_score    = share_lift * ln(1 + task_recent_papers)
 
-        The recent window is the last ``recent_days``, the baseline window is
-        the ``baseline_days`` immediately preceding it. Tasks below the
-        ``min_recent_papers`` / ``min_baseline_papers`` / ``min_share_lift``
-        gates are dropped so noisy or shrinking domains never surface.
+        Results are sorted by descending ``share_lift`` so the order matches
+        the multiplier shown in the UI; ``trend_score`` is used only as a
+        tiebreaker. The recent window is the last ``recent_days``, the
+        baseline window is the ``baseline_days`` immediately preceding it.
+        Tasks below the ``min_recent_papers`` / ``min_baseline_papers`` /
+        ``min_share_lift`` gates are dropped so noisy or shrinking domains
+        never surface.
         """
         try:
             today = today or datetime.now(timezone.utc).date()
@@ -319,7 +322,7 @@ class TaskService:
                     (trend_score, share_lift, recent_count, baseline_count, db_task)
                 )
 
-            scored.sort(key=lambda item: item[0], reverse=True)
+            scored.sort(key=lambda item: (item[1], item[0]), reverse=True)
 
             results = [
                 TrendingTask(

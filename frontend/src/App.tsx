@@ -53,6 +53,7 @@ const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
 const SubmitView = React.lazy(() => import("@/views/SubmitView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
+const SubmissionsDashboard = React.lazy(() => import("@/pages/SubmissionsDashboard"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
 const SearchOverlay = React.lazy(() => import("@/components/SearchOverlay"));
 
@@ -138,6 +139,7 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/cron-dashboard" element={<AuthGatedRoute element={<CronDashboard />} />} />
+            <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </React.Suspense>

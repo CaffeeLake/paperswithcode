@@ -73,15 +73,15 @@ For webpages, PDFs, blogs, and vendor reports, try the built-in metadata extract
 uv run --env-file backend/keys.env -m backend.genai_steps.extract_external_resource_metadata --url "<source_url>"
 ```
 
-The extractor returns title, abstract/summary, authors, date, GitHub URLs, and HF artifact URLs. Treat its output as a draft: verify against the source text and fill gaps manually from the page, README, card metadata, release notes, or visible dates.
+The extractor returns title, abstract/summary, authors, date, GitHub URLs, and HF artifact URLs. Treat its output as a draft: verify against the source text and fill gaps manually from the page, README, card metadata, release notes, or visible dates. For PDFs, if extraction returns no readable text or only a generated summary, download the PDF and extract text with `pdftotext -layout` (or another structured PDF text extractor already available in the environment) before writing metadata.
 
 ## Metadata Rules
 
 - `title`: use the actual release/report title, not browser chrome like `GitHub - owner/repo`.
-- `abstract`: prefer an explicit abstract, executive summary, TL;DR, or README overview. If there is no abstract, write a concise 2-5 sentence summary from the source. Do not invent claims beyond the source.
+- `abstract`: use the source's explicit abstract verbatim whenever one is present. For PDFs, inspect the extracted first pages before summarizing; do not replace an abstract-like opening block with a generated summary just because the metadata extractor failed. If there is no explicit abstract, executive summary, TL;DR, or README overview, write a concise 2-5 sentence summary from the source and make it clear in the report that the abstract was manually summarized.
 - `date_published`: required for external rows. Use the release/report publication date, not the scrape date. For GitHub-only releases, prefer a dated release/tag or README announcement date over repository creation time. If no credible date can be found, stop and ask the user.
 - `authors`: include human authors only. Do not store organization names such as "OpenAI", "Sapient", or "Hugging Face" as authors.
-- `github_repository_urls`: official GitHub repositories linked by the source or provided by the user.
+- `github_repository_urls`: official GitHub repositories linked by the source or provided by the user. Only include repos that the source presents as official code/tools for the release; passing a URL here marks the paper-repository relationship as official. If additional GitHub URLs are merely dependencies, citations, examples, or benchmark/framework references, either leave them unlinked or link them separately with `is_official = false` rather than mixing them into this field.
 - `hf_artifact_urls`: full `https://huggingface.co/...` URLs for model, dataset, and space artifacts. Store absolute URLs, not bare repo ids.
 - `project_pages`: official non-GitHub landing pages, demos, docs, reports, or blog/project pages connected to the release. Do not duplicate the canonical `source_url` as a project page unless it is useful as a project link in addition to being the paper source. For model-family releases, add the family/collection page and technical report as project pages, but keep individual HF model cards in `hf_artifact_urls`; the frontend groups project pages behind one "Project page" action and expands HF artifacts separately.
 
@@ -274,6 +274,53 @@ PY
 
 Preserve existing artifacts unless the user asked to replace them.
 
+## Migrate Existing Evaluations
+
+Use this when the external row is being created because evaluations were already attached to a related but wrong paper, such as a model-family arXiv paper that did not actually introduce the release. Keep the migration narrow and auditable:
+
+1. Query the old paper for candidate rows by `model_name`, benchmark set, or source URL.
+2. Confirm the new external row is the canonical source for those rows.
+3. Move only the matching evaluations to the new `paper_id`.
+4. Preserve `task_id`, `dataset_id`, `metrics`, `best_metric`, `harness`, ranks, and methodology.
+5. Set `external_source_url` to the canonical external source when the old rows have no row-level source or still point at the wrong source.
+
+```bash
+uv run --env-file backend/keys.env python - <<'PY'
+from sqlalchemy import text
+from backend.database.connection import get_engine
+
+old_paper_id = <old_id>
+new_paper_id = <new_external_id>
+model_pattern = "%<model name>%"
+canonical_source_url = "<external source URL>"
+
+with get_engine().begin() as conn:
+    rows = conn.execute(text("""
+        SELECT id, model_name, dataset_id, best_metric, external_source_url
+        FROM evaluations
+        WHERE paper_id = :old_paper_id
+          AND model_name ILIKE :model_pattern
+        ORDER BY id
+    """), {"old_paper_id": old_paper_id, "model_pattern": model_pattern}).mappings().all()
+    print("candidate_rows", len(rows))
+
+    conn.execute(text("""
+        UPDATE evaluations
+        SET paper_id = :new_paper_id,
+            external_source_url = :canonical_source_url
+        WHERE paper_id = :old_paper_id
+          AND model_name ILIKE :model_pattern
+    """), {
+        "old_paper_id": old_paper_id,
+        "new_paper_id": new_paper_id,
+        "model_pattern": model_pattern,
+        "canonical_source_url": canonical_source_url,
+    })
+PY
+```
+
+After the move, verify counts on both papers and check for duplicate `(paper_id, task_id, dataset_id, model_name, harness, best_metric)` rows. If the user is adding new evaluation rows after the move, return to `add-evals`.
+
 ## Verify
 
 Fetch the completed paper with resources:
@@ -307,6 +354,7 @@ End with a concise report:
 - Publication date and where it came from.
 - Tasks and methods linked, with IDs or slugs.
 - GitHub repositories, project pages, and HF artifacts linked.
+- Existing evaluations migrated, if any, with before/after counts.
 - Any taxonomy gaps or missing metadata that should be cleaned up later.
 
 ## When Not To Use This Skill

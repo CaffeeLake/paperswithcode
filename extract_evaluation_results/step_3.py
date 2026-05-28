@@ -103,7 +103,7 @@ Strategy: Start with 2-3 focused searches to gather core information, then refin
 - For speech/audio datasets → use "Automatic Speech Recognition" or "Audio Classification" or other Speech/Audio tasks
 - For video-language datasets (e.g., LVBench, MLVU, MVBench) → use "Video Understanding"
 - For vision-language datasets (e.g., MMMU, AI2D) → use "Image Understanding"
-- **For text-to-image (T2I) generation datasets** (e.g., TIIF-Bench, OneIG-Bench, COCO, ImageNet-1k when used for generation, GenEval, LongText-Bench, CVTG-2K, OmniContext) → use "Image Generation" (NOT "Image Understanding")
+- **For text-to-image (T2I) generation datasets** (e.g., TIIF-Bench, OneIG-Bench, COCO, Imagenet-1k (ILSVRC-2012) when used for generation, GenEval, LongText-Bench, CVTG-2K, OmniContext) → use "Image Generation" (NOT "Image Understanding")
 - For audio-language datasets (e.g., MuchoMusic, OpenAudioBench) → use "Audio-Language Models"
 - For "Omni" datasets that involve multiple modalities (e.g., OmniBench, Daily-Omni, Video-Holmes, WorldSense) → use "Omni models"
 - For robotics datasets (e.g., CALVIN, LIBERO, Meta-World) → use "Robotics"

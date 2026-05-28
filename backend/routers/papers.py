@@ -1289,3 +1289,47 @@ async def update_paper_project_pages(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class UpdateSourceUrlRequest(BaseModel):
+    """Request model for updating an external paper's canonical source URL."""
+
+    source_url: str = Field(
+        ...,
+        description=(
+            "New canonical URL for an external paper. Must start with "
+            "http:// or https:// and be at most 2000 characters."
+        ),
+    )
+
+
+@router.put(
+    "/papers/{paper_id}/source-url",
+    response_model=Paper,
+    summary="Update the canonical source URL of an external paper",
+    dependencies=[Depends(require_hf_admin)],
+)
+async def update_paper_source_url(
+    paper_id: int = Path(..., description="Database paper ID"),
+    request: UpdateSourceUrlRequest = Body(...),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Replace the ``source_url`` of an external paper. ArXiv rows are rejected
+    because their abstract URL is derived from ``arxiv_id``.
+    """
+    try:
+        service = PaperService(db)
+        return service.update_paper_source_url(paper_id, request.source_url)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        message = str(e)
+        if (
+            "can only be edited on external papers" in message
+            or "must be a non-empty string" in message
+            or "must be at most 2000 characters" in message
+            or "Another external paper already uses" in message
+        ):
+            raise HTTPException(status_code=400, detail=message)
+        raise HTTPException(status_code=500, detail=message)

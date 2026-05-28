@@ -130,6 +130,7 @@ def show_job_status(job_name: str = None, date: str = None):
                             "extract_urls": "extract_urls_hourly",
                             "calculate_trending_scores": "calculate_trending_scores",
                             "link_methods_by_references": "link_methods_by_references_weekly",
+                            "link_papers_by_task_keywords": "link_papers_by_task_keywords_weekly",
                         }
                         log_name = log_name_mapping.get(job_name, job_name)
 

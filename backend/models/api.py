@@ -1044,7 +1044,8 @@ class TrendingTasks(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     results: List[TrendingTask] = Field(
-        ..., description="Tasks sorted by descending trend score"
+        ...,
+        description=("Tasks sorted by descending share lift (trend score breaks ties)"),
     )
     recent_days: int = Field(..., description="Length of the recent window (days)")
     baseline_days: int = Field(

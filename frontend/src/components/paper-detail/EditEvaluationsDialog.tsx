@@ -3,8 +3,25 @@ import { Loader2, Check, Plus, Trash2, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SearchableSelect, type SearchableSelectOption } from "@/components/ui/searchable-select";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getTasks, getDatasets, createEvaluation, updateEvaluation, deleteEvaluation, type Task as APITask, type Dataset, type Evaluation as APIEvaluation } from "@/lib/api";
+import {
+  getTasks,
+  getDatasets,
+  getLeaderboardMetrics,
+  createEvaluation,
+  updateEvaluation,
+  deleteEvaluation,
+  submitPendingPaperEdit,
+  type Task as APITask,
+  type Dataset,
+  type Evaluation as APIEvaluation,
+  type LeaderboardMetric,
+} from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
+import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+
+const SEARCH_PAGE_SIZE = 100;
 
 interface EditableEvaluation {
   id?: string;
@@ -29,6 +46,12 @@ interface EditEvaluationsDialogProps {
   arxivId?: string;
   initialEvaluations: APIEvaluation[];
   onSuccess?: () => void;
+  /** `direct` applies immediately (admin path). `pending` submits an edit for
+   *  admin review without touching live data. */
+  submitMode?: "direct" | "pending";
+  /** When `submitMode === "pending"` and the signed-in user is a linked
+   *  author of the paper, the notice copy acknowledges that. */
+  isAuthor?: boolean;
 }
 
 function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEvaluation[] {
@@ -50,6 +73,39 @@ function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEval
   });
 }
 
+function buildKnownTasksFromEvaluations(evaluations: APIEvaluation[]): Map<string, APITask> {
+  const map = new Map<string, APITask>();
+  evaluations.forEach((evaluation) => {
+    if (evaluation.task_id && evaluation.task_name) {
+      map.set(evaluation.task_id, {
+        id: evaluation.task_id,
+        name: evaluation.task_name,
+        slug: evaluation.task_slug,
+        level: 0,
+      });
+    }
+  });
+  return map;
+}
+
+function buildKnownDatasetsFromEvaluations(evaluations: APIEvaluation[]): Map<string, Dataset> {
+  const map = new Map<string, Dataset>();
+  evaluations.forEach((evaluation) => {
+    if (evaluation.dataset_id && evaluation.dataset_name) {
+      map.set(evaluation.dataset_id, {
+        id: evaluation.dataset_id,
+        name: evaluation.dataset_name,
+        slug: evaluation.dataset_slug,
+      });
+    }
+  });
+  return map;
+}
+
+function leaderboardKey(taskId: string, datasetId: string): string {
+  return `${taskId}:${datasetId}`;
+}
+
 /** Parse the user-entered parameter count. Empty/whitespace -> `null` so the
  *  field can be explicitly cleared. Anything that doesn't parse as a
  *  non-negative integer falls back to `null` rather than rejecting the save —
@@ -69,18 +125,15 @@ export function EditEvaluationsDialog({
   arxivId,
   initialEvaluations,
   onSuccess,
+  submitMode = "direct",
+  isAuthor = false,
 }: EditEvaluationsDialogProps) {
   const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluation[]>([]);
+  const [knownTasks, setKnownTasks] = useState<Map<string, APITask>>(new Map());
+  const [knownDatasets, setKnownDatasets] = useState<Map<string, Dataset>>(new Map());
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
-  // Seed local state from props once per open session. The parent controls
-  // `open`, so initialization can't depend on Radix's `onOpenChange` callback
-  // firing (it doesn't when the parent flips `open` itself). `hasSeededRef`
-  // becomes true after a non-empty seed so background refetches of
-  // `initialEvaluations` don't clobber the form; `hasUserEditedRef` extends
-  // that protection to in-progress edits even if seeding hasn't run with
-  // non-empty data yet. The dialog still late-seeds once if it was opened
-  // before evaluations finished loading.
   const hasSeededRef = useRef(false);
   const hasUserEditedRef = useRef(false);
 
@@ -95,47 +148,39 @@ export function EditEvaluationsDialog({
     if (initialEvaluations.length === 0) return;
     hasSeededRef.current = true;
     setEditedEvaluations(mapApiEvaluationsToEditable(initialEvaluations));
+    setKnownTasks(buildKnownTasksFromEvaluations(initialEvaluations));
+    setKnownDatasets(buildKnownDatasetsFromEvaluations(initialEvaluations));
   }, [open, initialEvaluations]);
 
-  // Fetch all tasks and datasets for evaluation editing
-  const { data: allTasksForEvals } = useQuery({
-    queryKey: ['tasks-for-eval-edit'],
-    queryFn: () => getTasks({ page_size: 100 }),
-    enabled: open,
-  });
-
-  const { data: allDatasetsForEvals } = useQuery({
-    queryKey: ['datasets-for-eval-edit'],
-    queryFn: () => getDatasets({ page_size: 100 }),
-    enabled: open,
-  });
-
-  // Create a map of task_id -> datasets using React Query
   const uniqueTaskIds = useMemo(() => {
     return Array.from(new Set(editedEvaluations.map(e => e.task_id).filter(id => id && id !== '')));
   }, [editedEvaluations]);
 
-  // Fetch datasets for each unique task
-  const taskDatasetsQueries = useQuery({
-    queryKey: ['datasets-by-tasks', uniqueTaskIds, open],
-    queryFn: async () => {
-      if (!open) return {};
+  const uniqueLeaderboards = useMemo(() => {
+    const pairs = new Set<string>();
+    editedEvaluations.forEach((evaluation) => {
+      if (evaluation.task_id && evaluation.dataset_id) {
+        pairs.add(leaderboardKey(evaluation.task_id, evaluation.dataset_id));
+      }
+    });
+    return Array.from(pairs);
+  }, [editedEvaluations]);
 
+  const taskDatasetsQueries = useQuery({
+    queryKey: ['datasets-by-tasks-for-eval-edit', uniqueTaskIds, open],
+    queryFn: async () => {
       const datasetsMap: Record<string, Dataset[]> = {};
 
-      // Fetch datasets for each task in parallel
       await Promise.all(
         uniqueTaskIds.map(async (taskId) => {
-          if (taskId) {
-            try {
-              const response = await getDatasets({ task_id: parseInt(taskId), page_size: 100 });
-              datasetsMap[taskId] = response.results;
-            } catch (error) {
-              console.error(`Error fetching datasets for task ${taskId}:`, error);
-              datasetsMap[taskId] = [];
-            }
+          try {
+            const response = await getDatasets({ task_id: parseInt(taskId), page_size: SEARCH_PAGE_SIZE });
+            datasetsMap[taskId] = response.results;
+          } catch (error) {
+            console.error(`Error fetching datasets for task ${taskId}:`, error);
+            datasetsMap[taskId] = [];
           }
-        })
+        }),
       );
 
       return datasetsMap;
@@ -143,38 +188,184 @@ export function EditEvaluationsDialog({
     enabled: open && uniqueTaskIds.length > 0,
   });
 
-  // Function to get filtered datasets for a specific task
-  const getFilteredDatasetsForTask = (taskId: string): Dataset[] => {
-    // If no task is selected, return all datasets
-    if (!taskId) {
-      return allDatasetsForEvals?.results || [];
-    }
+  useEffect(() => {
+    if (!taskDatasetsQueries.data) return;
+    setKnownDatasets((prev) => {
+      const next = new Map(prev);
+      Object.values(taskDatasetsQueries.data).forEach((datasets) => {
+        datasets.forEach((dataset) => {
+          next.set(dataset.id, dataset);
+        });
+      });
+      return next;
+    });
+  }, [taskDatasetsQueries.data]);
 
-    // If we have task-specific datasets from our query, use those
-    if (taskDatasetsQueries.data && taskDatasetsQueries.data[taskId]) {
-      return taskDatasetsQueries.data[taskId];
-    }
+  const leaderboardMetricsQueries = useQuery({
+    queryKey: ['leaderboard-metrics-for-eval-edit', uniqueLeaderboards, open],
+    queryFn: async () => {
+      const metricsMap: Record<string, LeaderboardMetric[]> = {};
 
-    // Fallback to all datasets if the query hasn't loaded yet
-    return allDatasetsForEvals?.results || [];
+      await Promise.all(
+        uniqueLeaderboards.map(async (key) => {
+          const [taskId, datasetId] = key.split(':');
+          try {
+            metricsMap[key] = await getLeaderboardMetrics(datasetId, taskId);
+          } catch (error) {
+            console.error(`Error fetching metrics for leaderboard ${key}:`, error);
+            metricsMap[key] = [];
+          }
+        }),
+      );
+
+      return metricsMap;
+    },
+    enabled: open && uniqueLeaderboards.length > 0,
+  });
+
+  const searchTasks = async (query: string): Promise<SearchableSelectOption[]> => {
+    const response = await getTasks({
+      page_size: SEARCH_PAGE_SIZE,
+      visible_only: true,
+      ...(query ? { q: query } : {}),
+    });
+    setKnownTasks((prev) => {
+      const next = new Map(prev);
+      response.results.forEach((task) => next.set(task.id, task));
+      return next;
+    });
+    return response.results.map((task) => ({
+      value: task.id,
+      label: task.name,
+      description: task.description?.slice(0, 100),
+    }));
+  };
+
+  const searchDatasetsForTask = (taskId: string) => async (query: string): Promise<SearchableSelectOption[]> => {
+    const response = await getDatasets({
+      task_id: parseInt(taskId),
+      page_size: SEARCH_PAGE_SIZE,
+      ...(query ? { q: query } : {}),
+    });
+    setKnownDatasets((prev) => {
+      const next = new Map(prev);
+      response.results.forEach((dataset) => next.set(dataset.id, dataset));
+      return next;
+    });
+    return response.results.map((dataset) => ({
+      value: dataset.id,
+      label: dataset.name,
+      description: dataset.full_name,
+    }));
   };
 
   const selectedDatasetSupportsHarness = (taskId: string, datasetId: string): boolean => {
     if (!taskId || !datasetId) return false;
-    const dataset = getFilteredDatasetsForTask(taskId).find((d) => d.id === datasetId);
+    const dataset = knownDatasets.get(datasetId);
     return Boolean(dataset?.supports_harness);
   };
 
-  // Mutation for saving evaluations (handles create, update, delete)
+  const getMetricOptionsForLeaderboard = (
+    taskId: string,
+    datasetId: string,
+    currentMetricName: string,
+  ): SearchableSelectOption[] => {
+    if (!taskId || !datasetId) return [];
+
+    const configuredMetrics =
+      leaderboardMetricsQueries.data?.[leaderboardKey(taskId, datasetId)] || [];
+    const options = configuredMetrics.map((metric) => ({
+      value: metric.metric_name,
+      label: metric.metric_name,
+      description:
+        metric.metric_direction === 'higher_is_better'
+          ? 'Higher is better'
+          : 'Lower is better',
+    }));
+
+    if (
+      currentMetricName &&
+      !options.some((option) => option.value === currentMetricName)
+    ) {
+      options.unshift({
+        value: currentMetricName,
+        label: `${currentMetricName} (legacy)`,
+        description: undefined,
+      });
+    }
+
+    return options;
+  };
+
   const saveEvaluationsMutation = useMutation({
-    mutationFn: async ({ paperId, evaluations }: { paperId: string; evaluations: EditableEvaluation[] }) => {
-      // Process each evaluation based on its operation
+    mutationFn: async ({ paperId, evaluations }: { paperId: string; evaluations: EditableEvaluation[] }): Promise<{ submitted: boolean }> => {
+      if (submitMode === "pending") {
+        const operations: Array<
+          | { op: "create"; data: Record<string, unknown> }
+          | { op: "update"; evaluation_id: number; data: Record<string, unknown> }
+          | { op: "delete"; evaluation_id: number }
+        > = [];
+
+        for (const evalItem of evaluations) {
+          if (evalItem.operation === "delete" && evalItem.id) {
+            operations.push({ op: "delete", evaluation_id: parseInt(evalItem.id) });
+            continue;
+          }
+          const supportsHarness = selectedDatasetSupportsHarness(
+            evalItem.task_id,
+            evalItem.dataset_id,
+          );
+          if (evalItem.operation === "create") {
+            const numParameters = parseNumParametersInput(evalItem.num_parameters);
+            const data: Record<string, unknown> = {
+              task_id: parseInt(evalItem.task_id),
+              dataset_id: parseInt(evalItem.dataset_id),
+              metrics: { [evalItem.metric_name]: evalItem.metric_value },
+              best_metric: evalItem.metric_name,
+            };
+            if (evalItem.model_name) data.model_name = evalItem.model_name;
+            if (supportsHarness && evalItem.harness) data.harness = evalItem.harness;
+            if (evalItem.best_rank) data.best_rank = parseInt(evalItem.best_rank);
+            if (numParameters != null) data.num_parameters = numParameters;
+            operations.push({ op: "create", data });
+          } else if (evalItem.operation === "update" && evalItem.id) {
+            const data: Record<string, unknown> = {
+              task_id: parseInt(evalItem.task_id),
+              dataset_id: parseInt(evalItem.dataset_id),
+              model_name: evalItem.model_name || undefined,
+              harness: supportsHarness ? evalItem.harness || null : null,
+              metrics: { [evalItem.metric_name]: evalItem.metric_value },
+              best_metric: evalItem.metric_name,
+              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+              num_parameters: parseNumParametersInput(evalItem.num_parameters),
+            };
+            operations.push({
+              op: "update",
+              evaluation_id: parseInt(evalItem.id),
+              data,
+            });
+          }
+        }
+
+        if (operations.length === 0) {
+          return { submitted: false };
+        }
+
+        await submitPendingPaperEdit({
+          paper_id: parseInt(paperId),
+          edit_type: "evaluations",
+          proposed_payload: { operations },
+        });
+        return { submitted: true };
+      }
+
+      let anyDirectChange = false;
       for (const evalItem of evaluations) {
         if (evalItem.operation === 'delete' && evalItem.id) {
+          anyDirectChange = true;
           try {
             await deleteEvaluation(evalItem.id);
           } catch (error: unknown) {
-            // If the evaluation doesn't exist (404), that's fine - it's already gone
             const status = typeof error === 'object' && error !== null && 'status' in error
               ? (error as { status?: number }).status
               : undefined;
@@ -184,6 +375,7 @@ export function EditEvaluationsDialog({
             console.log(`Evaluation ${evalItem.id} already deleted or not found`);
           }
         } else if (evalItem.operation === 'create') {
+          anyDirectChange = true;
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           const numParameters = parseNumParametersInput(evalItem.num_parameters);
           await createEvaluation({
@@ -198,6 +390,7 @@ export function EditEvaluationsDialog({
             num_parameters: numParameters ?? undefined,
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
+          anyDirectChange = true;
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           await updateEvaluation(evalItem.id, {
             task_id: parseInt(evalItem.task_id),
@@ -211,12 +404,58 @@ export function EditEvaluationsDialog({
           });
         }
       }
+      return { submitted: anyDirectChange };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (submitMode === "pending") {
+        if (result?.submitted) {
+          toast({
+            title: "Edit submitted for review",
+            description:
+              "Thanks! An admin will review your proposed evaluation changes shortly.",
+          });
+        } else {
+          toast({
+            title: "No changes to submit",
+            description: "Your evaluation list matches the existing data.",
+          });
+        }
+        onSuccess?.();
+        onOpenChange(false);
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['paper-arxiv', arxivId] });
       queryClient.invalidateQueries({ queryKey: ['evaluations', 'paper', paperId] });
       onSuccess?.();
       onOpenChange(false);
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: string; message?: string };
+      let description =
+        e.message ||
+        (submitMode === "pending"
+          ? "Failed to submit your edit. Please try again."
+          : "Failed to update evaluations.");
+      if (e.response) {
+        try {
+          const parsed = JSON.parse(e.response);
+          if (typeof parsed?.detail === "string") {
+            description = parsed.detail;
+          } else if (Array.isArray(parsed?.detail) && parsed.detail[0]?.msg) {
+            description = parsed.detail[0].msg;
+          }
+        } catch {
+          description = e.response;
+        }
+      }
+      toast({
+        title:
+          submitMode === "pending"
+            ? "Could not submit edit"
+            : "Could not save evaluations",
+        description,
+        variant: "destructive",
+      });
     },
   });
 
@@ -242,14 +481,12 @@ export function EditEvaluationsDialog({
     hasUserEditedRef.current = true;
     const evaluation = editedEvaluations[index];
     if (evaluation.id) {
-      // Mark existing evaluation for deletion
       setEditedEvaluations(
         editedEvaluations.map((e, i) =>
           i === index ? { ...e, operation: 'delete' as const } : e
         )
       );
     } else {
-      // Remove new evaluation from list
       setEditedEvaluations(editedEvaluations.filter((_, i) => i !== index));
     }
   };
@@ -265,21 +502,19 @@ export function EditEvaluationsDialog({
         if (i !== index) return e;
         const updated = { ...e, [field]: value };
 
-        // If task changes, reset the dataset selection
         if (field === 'task_id') {
           updated.dataset_id = '';
+          updated.metric_name = '';
           updated.harness = '';
         }
 
-        if (
-          field === 'dataset_id' &&
-          value &&
-          !selectedDatasetSupportsHarness(updated.task_id, value)
-        ) {
-          updated.harness = '';
+        if (field === 'dataset_id') {
+          updated.metric_name = '';
+          if (value && !selectedDatasetSupportsHarness(updated.task_id, value)) {
+            updated.harness = '';
+          }
         }
 
-        // Mark as updated if it was previously unchanged
         if (e.operation === 'unchanged') {
           updated.operation = 'update';
         }
@@ -289,7 +524,6 @@ export function EditEvaluationsDialog({
   };
 
   const handleSave = () => {
-    // Filter out evaluations marked for deletion that are shown in UI
     const evaluationsToSave = editedEvaluations.filter(
       e => e.operation !== 'delete' || e.id
     );
@@ -308,6 +542,7 @@ export function EditEvaluationsDialog({
             Add, edit, or remove evaluation results for this paper. Each row represents a benchmark result.
           </DialogDescription>
         </DialogHeader>
+        {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
 
         <div className="py-4 overflow-y-auto max-h-[600px]">
           {editedEvaluations.filter(e => e.operation !== 'delete').length > 0 ? (
@@ -315,11 +550,11 @@ export function EditEvaluationsDialog({
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="text-left py-2 px-2 font-medium text-sm">Task</th>
-                    <th className="text-left py-2 px-2 font-medium text-sm">Dataset</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm min-w-[180px]">Task</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm min-w-[180px]">Dataset</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Model</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Harness</th>
-                    <th className="text-left py-2 px-2 font-medium text-sm">Metric</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm min-w-[140px]">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Parameters</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
@@ -329,35 +564,57 @@ export function EditEvaluationsDialog({
                   {editedEvaluations.map((evaluation, index) => {
                     if (evaluation.operation === 'delete') return null;
 
+                    const selectedTask = knownTasks.get(evaluation.task_id);
+                    const selectedDataset = knownDatasets.get(evaluation.dataset_id);
+                    const metricOptions = getMetricOptionsForLeaderboard(
+                      evaluation.task_id,
+                      evaluation.dataset_id,
+                      evaluation.metric_name,
+                    );
+                    const metricsLoading =
+                      Boolean(evaluation.task_id && evaluation.dataset_id) &&
+                      leaderboardMetricsQueries.isFetching;
+
                     return (
                       <tr key={index} className="border-b border-border">
                         <td className="py-2 px-2">
-                          <select
-                            className="w-full px-2 py-1 text-sm border border-border rounded-md bg-background"
+                          <SearchableSelect
                             value={evaluation.task_id}
-                            onChange={(e) => handleUpdateEvaluationField(index, 'task_id', e.target.value)}
-                          >
-                            <option value="">Select Task</option>
-                            {allTasksForEvals?.results?.map((task: APITask) => (
-                              <option key={task.id} value={task.id}>
-                                {task.name}
-                              </option>
-                            ))}
-                          </select>
+                            onChange={(value) => handleUpdateEvaluationField(index, 'task_id', value)}
+                            placeholder="Select task"
+                            searchPlaceholder="Search tasks..."
+                            emptyMessage="No tasks found."
+                            selectedOption={
+                              selectedTask
+                                ? { value: selectedTask.id, label: selectedTask.name }
+                                : null
+                            }
+                            queryKey={['eval-edit-task-search']}
+                            queryFn={searchTasks}
+                            enabled={open}
+                          />
                         </td>
                         <td className="py-2 px-2">
-                          <select
-                            className="w-full px-2 py-1 text-sm border border-border rounded-md bg-background"
+                          <SearchableSelect
                             value={evaluation.dataset_id}
-                            onChange={(e) => handleUpdateEvaluationField(index, 'dataset_id', e.target.value)}
-                          >
-                            <option value="">Select Dataset</option>
-                            {getFilteredDatasetsForTask(evaluation.task_id).map((dataset: Dataset) => (
-                              <option key={dataset.id} value={dataset.id}>
-                                {dataset.name}
-                              </option>
-                            ))}
-                          </select>
+                            onChange={(value) => handleUpdateEvaluationField(index, 'dataset_id', value)}
+                            placeholder={evaluation.task_id ? "Select dataset" : "Select task first"}
+                            searchPlaceholder="Search datasets..."
+                            emptyMessage={
+                              evaluation.task_id
+                                ? "No datasets found for this task."
+                                : "Select a task first."
+                            }
+                            disabled={!evaluation.task_id}
+                            selectedOption={
+                              selectedDataset
+                                ? { value: selectedDataset.id, label: selectedDataset.name }
+                                : null
+                            }
+                            queryKey={['eval-edit-dataset-search', evaluation.task_id]}
+                            queryFn={searchDatasetsForTask(evaluation.task_id)}
+                            enabled={open && Boolean(evaluation.task_id)}
+                          />
                         </td>
                         <td className="py-2 px-2">
                           <Input
@@ -384,13 +641,35 @@ export function EditEvaluationsDialog({
                           )}
                         </td>
                         <td className="py-2 px-2">
-                          <Input
-                            type="text"
-                            className="w-full text-sm"
-                            placeholder="AP, mAP, etc."
-                            value={evaluation.metric_name}
-                            onChange={(e) => handleUpdateEvaluationField(index, 'metric_name', e.target.value)}
-                          />
+                          {!evaluation.task_id || !evaluation.dataset_id ? (
+                            <span className="text-xs text-muted-foreground">
+                              Select task + dataset
+                            </span>
+                          ) : metricsLoading ? (
+                            <span className="inline-flex items-center text-xs text-muted-foreground">
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              Loading metrics...
+                            </span>
+                          ) : metricOptions.length > 0 ? (
+                            <select
+                              className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                              value={evaluation.metric_name}
+                              onChange={(e) =>
+                                handleUpdateEvaluationField(index, 'metric_name', e.target.value)
+                              }
+                            >
+                              <option value="">Select metric</option>
+                              {metricOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              No configured metrics
+                            </span>
+                          )}
                         </td>
                         <td className="py-2 px-2">
                           <Input
@@ -462,12 +741,12 @@ export function EditEvaluationsDialog({
             {saveEvaluationsMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                {submitMode === "pending" ? "Submitting..." : "Saving..."}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Save Changes
+                {submitMode === "pending" ? "Submit for review" : "Save Changes"}
               </>
             )}
           </Button>

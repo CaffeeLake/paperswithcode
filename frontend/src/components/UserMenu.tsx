@@ -69,6 +69,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
             Hugging Face profile
           </a>
         </DropdownMenuItem>
+        {user.is_admin && (
+          <DropdownMenuItem asChild>
+            <a href="/submissions">Review submissions</a>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={(event) => {

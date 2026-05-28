@@ -2,14 +2,19 @@ name: Cron - Preload Thumbnails
 
 on:
   schedule:
-    # Every 3h: warm thumbnails for the user-visible candidate sets (top by
-    # citation, top trending, top per task) so the homepage and task pages
-    # always have appropriate thumbnails. Missing-only with on-disk validity
-    # check so stale / wrong-size local files get regenerated.
+    # Every 3h: warm thumbnails for every user-visible candidate set --
+    # homepage feed (top citation / trending / newest) plus the top
+    # --per-task and --per-method papers across the three sort tabs
+    # (trending, newest, most cited) on every task and method page. Run with
+    # missing-only + on-disk validity check so stale / wrong-aspect local
+    # files get regenerated automatically.
     - cron: "0 */3 * * *"
-    # Daily 04:00 UTC: warm thumbnails for the top --per-task papers on every
-    # task page so task detail views render cleanly.
+    # Daily 04:00 UTC: deeper backfill of the top --per-task papers on every
+    # task page (covers the longer tail of each task's three sort tabs).
     - cron: "0 4 * * *"
+    # Daily 04:15 UTC: deeper backfill of the top --per-method papers on every
+    # method page (covers the longer tail of each method's three sort tabs).
+    - cron: "15 4 * * *"
     # Daily 04:30 UTC: broad newest-first preload covering the last 30 days,
     # after the HF daily import (03:00 UTC).
     - cron: "30 4 * * *"
@@ -19,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       priority:
-        description: "Priority mode: visible, trending, task-top, recent, missing-all, or external-missing"
+        description: "Priority mode: visible, trending, task-top, method-top, recent, missing-all, or external-missing"
         required: false
         default: "recent"
         type: choice
@@ -27,6 +32,7 @@ on:
           - visible
           - trending
           - task-top
+          - method-top
           - recent
           - missing-all
           - external-missing
@@ -39,7 +45,11 @@ on:
         required: false
         default: ""
       per_task:
-        description: "Top N papers per task (priority=task-top)"
+        description: "Top N papers per task (priority=task-top or visible)"
+        required: false
+        default: ""
+      per_method:
+        description: "Top N papers per method (priority=method-top or visible)"
         required: false
         default: ""
       trending_max_age_days:
@@ -52,6 +62,10 @@ on:
         default: ""
       trending_top:
         description: "Top N trending papers to include (priority=visible)"
+        required: false
+        default: ""
+      newest_top:
+        description: "Top N newest papers to include (priority=visible)"
         required: false
         default: ""
       after_id:
@@ -127,9 +141,11 @@ jobs:
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
           INPUT_RECENT_DAYS: ${{ github.event.inputs.recent_days }}
           INPUT_PER_TASK: ${{ github.event.inputs.per_task }}
+          INPUT_PER_METHOD: ${{ github.event.inputs.per_method }}
           INPUT_TRENDING_MAX_AGE_DAYS: ${{ github.event.inputs.trending_max_age_days }}
           INPUT_CITATION_TOP: ${{ github.event.inputs.citation_top }}
           INPUT_TRENDING_TOP: ${{ github.event.inputs.trending_top }}
+          INPUT_NEWEST_TOP: ${{ github.event.inputs.newest_top }}
           INPUT_AFTER_ID: ${{ github.event.inputs.after_id }}
           INPUT_BEFORE_ID: ${{ github.event.inputs.before_id }}
           INPUT_SHARD: ${{ github.event.inputs.shard }}
@@ -144,10 +160,13 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${GITHUB_EVENT_SCHEDULE}" in
               "0 */3 * * *")
-                ARGS=" --priority visible --citation-top 1000 --trending-top 500 --per-task 20 --limit 2500 --missing-only --trust-local-cache"
+                ARGS=" --priority visible --citation-top 1000 --trending-top 500 --newest-top 300 --per-task 20 --per-method 20 --limit 10000 --missing-only --trust-local-cache"
                 ;;
               "0 4 * * *")
                 ARGS=" --priority task-top --per-task 50 --missing-only --trust-local-cache"
+                ;;
+              "15 4 * * *")
+                ARGS=" --priority method-top --per-method 50 --missing-only --trust-local-cache"
                 ;;
               "30 4 * * *")
                 ARGS=" --priority recent --recent-days 30 --limit 500"
@@ -172,6 +191,9 @@ jobs:
             if [ -n "${INPUT_PER_TASK}" ]; then
               ARGS="${ARGS} --per-task ${INPUT_PER_TASK}"
             fi
+            if [ -n "${INPUT_PER_METHOD}" ]; then
+              ARGS="${ARGS} --per-method ${INPUT_PER_METHOD}"
+            fi
             if [ -n "${INPUT_TRENDING_MAX_AGE_DAYS}" ]; then
               ARGS="${ARGS} --trending-max-age-days ${INPUT_TRENDING_MAX_AGE_DAYS}"
             fi
@@ -180,6 +202,9 @@ jobs:
             fi
             if [ -n "${INPUT_TRENDING_TOP}" ]; then
               ARGS="${ARGS} --trending-top ${INPUT_TRENDING_TOP}"
+            fi
+            if [ -n "${INPUT_NEWEST_TOP}" ]; then
+              ARGS="${ARGS} --newest-top ${INPUT_NEWEST_TOP}"
             fi
             if [ -n "${INPUT_AFTER_ID}" ]; then
               ARGS="${ARGS} --after-id ${INPUT_AFTER_ID}"

@@ -147,10 +147,11 @@ async def get_trending_tasks(
     """
     Trending domains for the homepage sidebar.
 
-    Ranks tasks by `share_lift * ln(1 + recent_paper_count)`, where
-    `share_lift` compares each task's share of recent papers against its
-    share in the preceding baseline window. Lift > 1.0 means the task is
-    over-indexed in recent publications relative to its history.
+    Ranks tasks by descending `share_lift`, where `share_lift` compares each
+    task's share of recent papers against its share in the preceding baseline
+    window. Lift > 1.0 means the task is over-indexed in recent publications
+    relative to its history. `trend_score` is still returned (and used as a
+    tiebreaker) but no longer drives the primary order.
 
     **Example queries:**
     - `/api/v1/tasks/trending` - default 30d vs preceding 180d, top 8

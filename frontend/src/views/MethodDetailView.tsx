@@ -11,15 +11,28 @@ import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-type SortKey = "new" | "cited";
+type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [
+  ["trending", "trending"],
   ["new", "newest"],
   ["cited", "most cited"],
 ];
 
+const RELATED_METHODS_BY_SLUG: Record<string, string[]> = {
+  "on-policy-distillation": [
+    "fine-tuning",
+    "post-training",
+    "rlvr",
+    "rlhf",
+    "direct-preference-optimization-dpo",
+  ],
+  mcp: ["agent-skills"],
+  "agent-skills": ["mcp"],
+};
+
 const MethodDetailView: React.FC = () => {
   const { methodSlug } = useParams<{ methodSlug: string }>();
-  const [sortBy, setSortBy] = useState<SortKey>("new");
+  const [sortBy, setSortBy] = useState<SortKey>("trending");
 
   const methodQ = useQuery({
     queryKey: ["method", methodSlug],
@@ -28,7 +41,8 @@ const MethodDetailView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  const orderBy = sortBy === "cited" ? "citation_count" : "date_published";
+  const orderBy: "trending" | "citation_count" | "date_published" =
+    sortBy === "trending" ? "trending" : sortBy === "cited" ? "citation_count" : "date_published";
   const papersQ = useInfiniteQuery({
     queryKey: ["method-papers-infinite", methodSlug, orderBy],
     queryFn: ({ pageParam = 1 }) =>
@@ -46,21 +60,26 @@ const MethodDetailView: React.FC = () => {
     placeholderData: keepPreviousData,
   });
 
-  // Related methods: most-popular methods in the same area. Fetch only what
-  // we render (8 chips) so this small panel doesn't pull the entire methods
-  // catalog into the browser on every method page visit.
+  // Related methods: use curated siblings where available, otherwise fall back
+  // to the most-popular methods in the same area.
   const relatedQ = useQuery({
-    queryKey: ["methods-by-area", methodQ.data?.area_id, methodQ.data?.id],
-    queryFn: () =>
-      apiClient.getMethods({
+    queryKey: ["related-methods", methodQ.data?.slug, methodQ.data?.area_id, methodQ.data?.id],
+    queryFn: async () => {
+      const curatedSlugs = RELATED_METHODS_BY_SLUG[methodQ.data!.slug];
+      if (curatedSlugs) {
+        return Promise.all(curatedSlugs.map((slug) => apiClient.getMethod(slug)));
+      }
+
+      const res = await apiClient.getMethods({
         area_id: methodQ.data!.area_id!,
         exclude_id: methodQ.data!.id,
         ordering: "-paper_count",
         page_size: 8,
-      }),
-    enabled: !!methodQ.data?.area_id,
+      });
+      return res.results;
+    },
+    enabled: !!methodQ.data && (!!RELATED_METHODS_BY_SLUG[methodQ.data.slug] || !!methodQ.data.area_id),
     staleTime: 10 * 60 * 1000,
-    select: (res) => res.results,
   });
 
   const cards = useMemo(() => {
@@ -141,15 +160,13 @@ const MethodDetailView: React.FC = () => {
           </div>
         </div>
         <figure className="method-figure-card">
-          <div className="method-figure-svg">
-            <MethodFigure method={m} />
-          </div>
+          <MethodFigure method={m} />
           <figcaption>
             Figure · schematic of {m.name}
             {m.image_credit && (
               <>
                 <br />
-                <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--ink-faint)" }}>{m.image_credit}</span>
+                <MarkdownText className="method-image-credit" text={m.image_credit} />
               </>
             )}
           </figcaption>

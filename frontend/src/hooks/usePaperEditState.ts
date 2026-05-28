@@ -6,6 +6,7 @@ export function usePaperEditState() {
   const [isEditingRepositories, setIsEditingRepositories] = useState(false);
   const [isEditingProjectPages, setIsEditingProjectPages] = useState(false);
   const [isEditingEvaluations, setIsEditingEvaluations] = useState(false);
+  const [isEditingSourceUrl, setIsEditingSourceUrl] = useState(false);
 
   return {
     // Tasks
@@ -37,5 +38,11 @@ export function usePaperEditState() {
     openEvaluationsDialog: () => setIsEditingEvaluations(true),
     closeEvaluationsDialog: () => setIsEditingEvaluations(false),
     setIsEditingEvaluations,
+
+    // Source URL (external papers only)
+    isEditingSourceUrl,
+    openSourceUrlDialog: () => setIsEditingSourceUrl(true),
+    closeSourceUrlDialog: () => setIsEditingSourceUrl(false),
+    setIsEditingSourceUrl,
   };
 }

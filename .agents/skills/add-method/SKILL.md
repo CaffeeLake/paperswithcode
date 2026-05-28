@@ -1,6 +1,6 @@
 ---
 name: add-method
-description: Add or update AI/ML method taxonomy rows in the paperswithcode repo database. Use this whenever the user asks to add a method, technique, architecture, attention mechanism, training method, model-family method, or source/visual metadata for a method. This is repo-specific and should trigger even when the user only gives a method name plus a paper, arXiv id, PapersWithCode URL, Hugging Face report, GitHub explainer, blog post, or says "similarly add this method".
+description: Add or update AI/ML method taxonomy rows in the paperswithcode repo database. Use this whenever the user asks to add a method, technique, architecture, attention mechanism, training method, model-family method, or source/visual metadata for a method; says phrases like "make GPT-4 a method", "add X as a method", "link this method to the paper", or "update the method source to point to the paper page"; or gives a method name plus a paper, arXiv id, PapersWithCode URL, Hugging Face report, GitHub explainer, blog post, or says "similarly add this method".
 ---
 
 # Add a Method
@@ -30,6 +30,7 @@ Be careful about provenance. The source paper is the paper that introduced, name
    - If the user provides an arXiv id, arXiv URL, HF paper/report, or technical report, first check whether the local `papers` row already exists.
    - If the source is a non-ArXiv technical report or resource and no local paper row exists, use the `add-external-paper` skill first, then return to this workflow with the new `papers.id`.
    - If the user explicitly says there is no source paper, store the best explainer as `source_url`/`source_title` and keep `source_paper_id = NULL`.
+   - If the method is part of a model-family chain and the user also asks to connect predecessor/follow-up papers, run `link-paper-lineage` as a separate follow-up after the method row is correct.
 
 3. Choose metadata:
    - `name`: short display name, respecting capitalization users expect.

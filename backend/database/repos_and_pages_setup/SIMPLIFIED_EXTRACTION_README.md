@@ -147,9 +147,7 @@ ORDER BY year DESC;
 
 ## Files Changed
 
-1. **`backend/database/migration/add_urls_extracted_field.sql`** - Migration script
-2. **`backend/database/migration/run_migration.py`** - Python migration runner
-3. **`backend/database/repos_and_pages_setup/batch_extract.py`** - Simplified extraction logic
+1. **`backend/database/repos_and_pages_setup/batch_extract.py`** - Simplified extraction logic
 
 ## Backward Compatibility
 

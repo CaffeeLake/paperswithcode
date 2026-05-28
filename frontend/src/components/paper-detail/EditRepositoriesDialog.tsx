@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Check, Plus, Trash2, Github, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { updatePaperRepositories } from "@/lib/api";
+import { submitPendingPaperEdit, updatePaperRepositories } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
+import { useToast } from "@/hooks/use-toast";
+import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
 
 interface Repository {
   url: string;
@@ -20,6 +22,12 @@ interface EditRepositoriesDialogProps {
   arxivId?: string;
   initialRepositories: Repository[];
   onSuccess?: () => void;
+  /** `direct` applies immediately (admin path). `pending` submits an edit for
+   *  admin review without touching live data. */
+  submitMode?: "direct" | "pending";
+  /** When `submitMode === "pending"` and the signed-in user is a linked
+   *  author of the paper, the notice copy acknowledges that. */
+  isAuthor?: boolean;
 }
 
 export function EditRepositoriesDialog({
@@ -29,10 +37,13 @@ export function EditRepositoriesDialog({
   arxivId,
   initialRepositories,
   onSuccess,
+  submitMode = "direct",
+  isAuthor = false,
 }: EditRepositoriesDialogProps) {
   const [editedRepositories, setEditedRepositories] = useState<Repository[]>(initialRepositories);
   const [newRepositoryUrl, setNewRepositoryUrl] = useState("");
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // Only seed local state on the false→true transition of `open` so background
   // refetches of the paper don't wipe pending edits while the dialog is open.
@@ -49,13 +60,63 @@ export function EditRepositoriesDialog({
   }, [open, initialRepositories]);
 
   const updateRepositoriesMutation = useMutation({
-    mutationFn: ({ paperId, repositories }: { paperId: string; repositories: Repository[] }) =>
-      updatePaperRepositories(paperId, repositories),
+    mutationFn: async ({ paperId, repositories }: { paperId: string; repositories: Repository[] }) => {
+      if (submitMode === "pending") {
+        await submitPendingPaperEdit({
+          paper_id: parseInt(paperId),
+          edit_type: "repositories",
+          proposed_payload: { repositories },
+        });
+        return null;
+      }
+      return updatePaperRepositories(paperId, repositories);
+    },
     onSuccess: (updatedPaper) => {
-      refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      if (submitMode === "pending") {
+        toast({
+          title: "Edit submitted for review",
+          description:
+            "Thanks! An admin will review your proposed repository changes shortly.",
+        });
+        onSuccess?.();
+        onOpenChange(false);
+        setNewRepositoryUrl("");
+        return;
+      }
+      if (updatedPaper) {
+        refreshPaperQueries(queryClient, updatedPaper, [paperId, arxivId]);
+      }
       onSuccess?.();
       onOpenChange(false);
       setNewRepositoryUrl("");
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: string; message?: string };
+      let description =
+        e.message ||
+        (submitMode === "pending"
+          ? "Failed to submit your edit. Please try again."
+          : "Failed to update paper repositories.");
+      if (e.response) {
+        try {
+          const parsed = JSON.parse(e.response);
+          if (typeof parsed?.detail === "string") {
+            description = parsed.detail;
+          } else if (Array.isArray(parsed?.detail) && parsed.detail[0]?.msg) {
+            description = parsed.detail[0].msg;
+          }
+        } catch {
+          description = e.response;
+        }
+      }
+      toast({
+        title:
+          submitMode === "pending"
+            ? "Could not submit edit"
+            : "Could not save repositories",
+        description,
+        variant: "destructive",
+      });
     },
   });
 
@@ -100,6 +161,25 @@ export function EditRepositoriesDialog({
     updateRepositoriesMutation.mutate({ paperId, repositories: next });
   };
 
+  // Compare the edited list against the initial list (URL + is_official) so
+  // we can disable submit when nothing actually changed. Includes the
+  // typed-but-not-yet-added URL so users don't see a disabled button after
+  // pasting a new repo.
+  const hasChange = useMemo(() => {
+    const trimmedNew = newRepositoryUrl.trim();
+    const candidate = trimmedNew
+      ? [...editedRepositories, { url: trimmedNew, is_official: false }]
+      : editedRepositories;
+    if (candidate.length !== initialRepositories.length) return true;
+    const initialMap = new Map(
+      initialRepositories.map((r) => [r.url.trim(), Boolean(r.is_official)]),
+    );
+    return candidate.some((r) => {
+      const initial = initialMap.get(r.url.trim());
+      return initial === undefined || initial !== Boolean(r.is_official);
+    });
+  }, [editedRepositories, newRepositoryUrl, initialRepositories]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[600px]">
@@ -109,6 +189,7 @@ export function EditRepositoriesDialog({
             Add or remove GitHub repository URLs associated with this paper. Mark repositories as official if they are created by the paper authors.
           </DialogDescription>
         </DialogHeader>
+        {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
 
         {/* Add new repository */}
         <div className="space-y-2">
@@ -194,16 +275,19 @@ export function EditRepositoriesDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={updateRepositoriesMutation.isPending}>
+          <Button
+            onClick={handleSave}
+            disabled={updateRepositoriesMutation.isPending || !hasChange}
+          >
             {updateRepositoriesMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Saving...
+                {submitMode === "pending" ? "Submitting..." : "Saving..."}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Save Changes
+                {submitMode === "pending" ? "Submit for review" : "Save Changes"}
               </>
             )}
           </Button>

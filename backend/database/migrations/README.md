@@ -1,175 +1,52 @@
 # Database Migrations
 
-This directory contains database migration scripts for the PapersWithCode backend.
+Schema migration scripts for the PapersWithCode backend. One-off data curation
+migrations (method rows, benchmark backfills, task reorganizations) are removed
+after they land in production — use the agent skills under `.agents/skills/`
+for new curation work instead.
 
-## Running Migrations
+## Running migrations
 
-To run a migration, use the `psql` command:
-
-```bash
-psql -U postgres -d paperswithcode_hf -f backend/database/migrations/add_keywords_to_methods.sql
-```
-
-Or using environment variables:
+SQL-only (idempotent `IF NOT EXISTS` / `IF EXISTS`):
 
 ```bash
-psql -h localhost -U postgres -d paperswithcode_hf < backend/database/migrations/add_keywords_to_methods.sql
+psql -U postgres -d paperswithcode_hf -f backend/database/migrations/<file>.sql
 ```
 
-## Available Migrations
-
-### Add Paper Relations Table (2026-05-22)
-
-**Forward Migration:** `add_paper_relations.sql`
-- Creates the `paper_relations` junction table for directed predecessor/
-  successor edges between papers (e.g. DINOv2 -> DINOv3 follow-up).
-- Columns: `source_paper_id`, `target_paper_id` (both FK to `papers(id)`
-  with `ON DELETE CASCADE`), `created_at`. Primary key on the pair.
-- Adds a CHECK constraint preventing self-links and indexes on each FK.
-- Seeds the canonical DINOv2 -> DINOv3 edge when both arXiv rows
-  (`2304.07193` and `2508.10104`) already exist; uses `ON CONFLICT DO NOTHING`
-  so re-running is a no-op.
-
-**Wrapper:** `run_add_paper_relations.py`
-- Applies the SQL migration above and prints column metadata + row count.
+With a Python wrapper (applies SQL + verification / rank recalculation):
 
 ```bash
-uv run --env-file backend/keys.env python \
-    backend/database/migrations/run_add_paper_relations.py
+uv run --env-file backend/keys.env python backend/database/migrations/run_<name>.py
 ```
 
-### Add Evaluation Parameter Count Column (2026-05-21)
+## Current files
 
-**Forward Migration:** `add_evaluations_num_parameters.sql`
-- Adds nullable `evaluations.num_parameters` (`BIGINT`) for the raw model
-  parameter count of a given evaluation row (e.g. `7000000000` for a 7B
-  model). Existing rows stay `NULL` until backfilled.
-- Adds a CHECK constraint `num_parameters IS NULL OR num_parameters >= 0`
-- Idempotent: column add uses `IF NOT EXISTS` and the constraint is
-  dropped before being re-added so re-running is safe
+| Migration | Purpose |
+| --- | --- |
+| `add_v2_schema.sql` + `run_add_v2_schema.py` | `papers.tldr`, `papers.num_pages` |
+| `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
+| `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
+| `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
+| `add_external_resources_schema.sql` + `run_add_external_resources_schema.py` | external resources |
+| `add_trending_score.sql` + `run_add_trending_score.py` + `update_trending_view_for_ema.sql` | trending scores |
+| `add_dataset_variants_and_splits.sql` + `run_add_dataset_variants_and_splits.py` | dataset variants (rollback: `rollback_dataset_variants_and_splits.sql`) |
+| `add_keywords_to_methods.sql` | methods keywords column (rollback: `rollback_keywords_from_methods.sql`) |
+| `add_evaluations_num_parameters.sql` | `evaluations.num_parameters` |
+| `add_evaluations_harness.sql` | `evaluations.harness` |
+| `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
+| `add_task_datasets_featured_rank.sql` | `task_datasets.featured_rank` |
+| `add_tasks_is_visible.sql` | `tasks.is_visible` |
+| `add_paper_tasks_source.sql` | `paper_tasks.source` |
+| `add_methods_scanned_at_to_papers.sql` | `papers.methods_scanned_at` |
+| `add_method_source_paper_id.sql` | `methods.source_paper_id` |
+| `add_paper_performance_indexes.sql` | paper query indexes |
+| `add_missing_dataset_variant_fields.sql` | dataset variant columns |
 
-```bash
-psql -U postgres -d paperswithcode_hf \
-     -f backend/database/migrations/add_evaluations_num_parameters.sql
-```
+## Adding new migrations
 
-### Make Retrieval a Subtask of Embedding Models (2026-05-14)
+- **Schema changes**: add idempotent SQL here; add a `run_*.py` wrapper when
+  post-apply verification or service calls are needed (see `run_add_trending_score.py`).
+- **Method / benchmark / eval curation**: do not add one-off SQL files — use
+  `.agents/skills/add-method/`, `add-benchmark/`, or `add-evals/` instead.
 
-**Forward Migration:** `make_retrieval_embedding_subtask.sql`
-- Sets `retrieval.parent_id` to the `embedding-models` task id and
-  `retrieval.level = embedding-models.level + 1`
-- Clears `retrieval.area_id` so it no longer appears as a top-level card on
-  `/tasks` (matches the `language-modeling` subtask model)
-- Idempotent: a `DO $$ ... $$` block resolves both rows by slug and the UPDATE
-  is a no-op once `retrieval` is already reparented
-
-```bash
-psql -U postgres -d paperswithcode_hf \
-     -f backend/database/migrations/make_retrieval_embedding_subtask.sql
-```
-
-### Reorganize Task Areas by Modality (2026-05-13)
-
-**Forward Migration:** `reorganize_task_areas.sql`
-- Renames area `Computer Vision` -> `Vision` (description rewritten to focus on still images)
-- Renames area `Natural Language Processing` -> `Language`
-- Creates a new `Video` area
-- Moves `video-classification`, `video-generation`, `video-segmentation` from Vision -> Video
-- Moves `ocr` from Vision -> General
-- Moves `image-understanding` from General -> Vision and `video-understanding` from General -> Video
-- Resyncs the `areas_id_seq` sequence with `MAX(id)` before inserting Video so the autoincrement does not collide with pre-existing gap IDs
-- Idempotent: name updates are no-ops if already renamed; the Video insert is guarded by `NOT EXISTS`; the task moves use slug filters
-
-```bash
-psql -U postgres -d paperswithcode_hf \
-     -f backend/database/migrations/reorganize_task_areas.sql
-```
-
-### Add Language Modeling Subtasks (2026-05-13)
-
-**Forward Migration:** `add_language_modeling_subtasks.sql`
-- Creates 8 child tasks under `language-modeling` with their own descriptions
-  (`world-knowledge`, `long-context`, `instruction-following`, `math`,
-  `language-reasoning`, `coding`, `safety-and-grounding`,
-  `classic-language-modeling`)
-- Moves all `task_datasets`, `task_dataset_metrics`, and `evaluations` rows
-  from the parent `language-modeling` task to the appropriate child subtask
-  for each benchmark
-- Idempotent: uses `ON CONFLICT` and only rewrites rows still on the parent
-
-**Wrapper:** `run_add_language_modeling_subtasks.py`
-- Applies the SQL migration above and then recalculates `evaluations.best_rank`
-  per `(child_task_id, dataset_id, best_metric)` triple via
-  `EvaluationService.recalculate_ranks`
-
-```bash
-uv run --env-file backend/keys.env python \
-    backend/database/migrations/run_add_language_modeling_subtasks.py
-```
-
-### Add Evaluation Harness Column (2026-05-12)
-
-**Forward Migration:** `add_evaluations_harness.sql`
-- Adds nullable `evaluations.harness` (VARCHAR(255)) for model+harness benchmarks like Terminal-Bench
-- Backfills existing Terminal-Bench rows by splitting harness names out of `model_name`:
-  - `GLM-5.1 (best self-reported, Claude Code)` -> `GLM-5.1` + harness `Claude Code`
-  - `GLM-5.1 (Terminus-2)` -> `GLM-5.1` + harness `Terminus-2`
-  - `GLM-4.5 (355B)` -> `GLM-4.5` + harness `Terminus`
-  - `DeepSeek-V4-*` -> harness `unknown`
-- Idempotent: column add uses `IF NOT EXISTS`, backfills are scoped to the `terminal-bench` slug and match the original model names so re-running is a no-op
-
-### Normalize Benchmark Source Papers (2026-05-09)
-
-**Forward Migration:** `normalize_benchmark_source_papers.sql`
-- Links active benchmark datasets to local `papers` rows when `paper_url` contains a resolvable arXiv ID
-- Normalizes `introducing_paper_id`, `introducing_paper_title`, canonical arXiv `paper_url`, and missing `introduced_year`
-- Idempotent and limited to datasets used by evaluations or task-dataset metrics
-
-### Backfill Terminal Bench Source Paper (2026-05-09)
-
-**Forward Migration:** `backfill_terminal_bench_source_paper.sql`
-- Links the `terminal-bench` dataset to paper `2601.11868`
-- Sets `datasets.introducing_paper_id`, `introducing_paper_title`, and `paper_url`
-- Idempotent: only updates the `terminal-bench` slug and falls back gracefully if any field is already set
-
-### Remove Duplicate ViT Method (2026-05-09)
-
-**Forward Migration:** `remove_duplicate_vit_method.sql`
-- Moves any `vit` paper associations to the canonical `vision-transformer` method
-- Deletes the duplicate `vit` method row
-- Prints transferred association and deleted method counts
-
-### Add Method Source Paper Links (2026-05-09)
-
-**Forward Migration:** `add_method_source_paper_id.sql`
-- Adds nullable `methods.source_paper_id` referencing `papers(id)`
-- Backfills local `methods.source_url` paper routes into explicit source paper links
-- Inserts missing `paper_methods` rows for canonical source links
-- Prints a migration report with backfilled, already linked, non-local, and unresolved counts
-
-### Add Keywords to Methods (2025-10-13)
-
-**Forward Migration:** `add_keywords_to_methods.sql`
-- Adds a `keywords` TEXT column to the `methods` table
-- Creates a full-text search index on the keywords column
-- Allows storing comma-separated keywords for method matching
-
-**Rollback Migration:** `rollback_keywords_from_methods.sql`
-- Removes the `keywords` column from the `methods` table
-- Drops the associated index
-
-**Usage Example:**
-```bash
-# Apply the migration
-psql -U postgres -d paperswithcode_hf -f backend/database/migrations/add_keywords_to_methods.sql
-
-# Rollback if needed
-psql -U postgres -d paperswithcode_hf -f backend/database/migrations/rollback_keywords_from_methods.sql
-```
-
-## Notes
-
-- The `tasks` table already has a `keywords` column, so no migration is needed for tasks
-- Migrations use `IF NOT EXISTS` / `IF EXISTS` clauses to be idempotent
-- Always test migrations on a development database first
-- Create backups before running migrations on production
+No Alembic. Migrations are applied manually on the VPS with `psql` or `uv run`.

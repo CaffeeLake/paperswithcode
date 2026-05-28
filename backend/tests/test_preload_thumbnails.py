@@ -17,7 +17,9 @@ def _make_job(
     limit=None,
     citation_top: int = 1000,
     trending_top: int = 500,
+    newest_top: int = 300,
     per_task: int = 20,
+    per_method: int = 20,
     missing_only: bool = True,
     cache_dir: Path | None = None,
 ):
@@ -32,9 +34,11 @@ def _make_job(
     job.batch_size = 50
     job.recent_days = None
     job.per_task = per_task
+    job.per_method = per_method
     job.trending_max_age_days = 180
     job.citation_top = citation_top
     job.trending_top = trending_top
+    job.newest_top = newest_top
     job.after_id = None
     job.before_id = None
     job.shard = None
@@ -66,8 +70,14 @@ def test_iter_visible_dedups_paper_ids_citation_first():
     job._iter_trending = lambda session, limit_override=None: iter(
         [Candidate(2, "2345.6789", "v2"), Candidate(3, "3456.7890", "v1")]
     )
+    job._iter_newest_top = lambda session, limit_override=None: iter(
+        [Candidate(3, "3456.7890", "v1"), Candidate(5, "5678.9012", "v1")]
+    )
     job._iter_task_top = lambda session: iter(
         [Candidate(1, "1234.5678", "v1"), Candidate(4, "4567.8901", "v3")]
+    )
+    job._iter_method_top = lambda session: iter(
+        [Candidate(4, "4567.8901", "v3"), Candidate(6, "6789.0123", "v1")]
     )
 
     result = [
@@ -79,7 +89,9 @@ def test_iter_visible_dedups_paper_ids_citation_first():
         (1, "1234.5678", "v1"),
         (2, "2345.6789", "v2"),
         (3, "3456.7890", "v1"),
+        (5, "5678.9012", "v1"),
         (4, "4567.8901", "v3"),
+        (6, "6789.0123", "v1"),
     ]
 
 
@@ -94,7 +106,9 @@ def test_iter_visible_passes_trending_top_to_trending_iterator():
         return iter([])
 
     job._iter_trending = fake_trending
+    job._iter_newest_top = lambda session, limit_override=None: iter([])
     job._iter_task_top = lambda session: iter([])
+    job._iter_method_top = lambda session: iter([])
 
     list(job._iter_visible(session=None))
 
@@ -116,7 +130,9 @@ def test_collect_candidates_visible_caps_to_limit_after_dedup():
         ]
     )
     job._iter_trending = lambda session, limit_override=None: iter([])
+    job._iter_newest_top = lambda session, limit_override=None: iter([])
     job._iter_task_top = lambda session: iter([])
+    job._iter_method_top = lambda session: iter([])
 
     result = job._collect_candidates(session=None)
     assert len(result) == 2
@@ -147,7 +163,9 @@ def test_missing_only_filter_keeps_invalid_local_thumbnails(tmp_path: Path):
         ]
     )
     job._iter_trending = lambda session, limit_override=None: iter([])
+    job._iter_newest_top = lambda session, limit_override=None: iter([])
     job._iter_task_top = lambda session: iter([])
+    job._iter_method_top = lambda session: iter([])
 
     result = job._collect_candidates(session=None)
     paper_ids = sorted(candidate.paper_id for candidate in result)
@@ -191,6 +209,46 @@ def test_process_paper_regenerates_when_local_thumbnail_invalid(tmp_path: Path):
 
     assert status == "generated"
     assert captured["force"] is True
+
+
+def test_iter_group_top_uses_per_group_param_for_method_table():
+    job = _make_job(per_method=7)
+
+    captured = {}
+
+    class FakeSession:
+        def execute(self, stmt, params):
+            captured["sql"] = str(stmt)
+            captured["params"] = params
+
+            class _Result:
+                @staticmethod
+                def fetchall():
+                    return []
+
+            return _Result()
+
+    list(
+        job._iter_group_top(
+            FakeSession(), join_table="paper_methods", per_group=job.per_method
+        )
+    )
+
+    assert captured["params"] == {"per_group": 7}
+    assert "paper_methods" in captured["sql"]
+    assert "method_id" in captured["sql"]
+    assert "rn_trending" in captured["sql"]
+    assert "rn_newest" in captured["sql"]
+    assert "rn_citations" in captured["sql"]
+
+
+def test_iter_group_top_rejects_unknown_join_table():
+    import pytest
+
+    job = _make_job()
+
+    with pytest.raises(ValueError):
+        list(job._iter_group_top(session=None, join_table="paper_evil", per_group=10))
 
 
 def test_process_paper_treats_valid_local_thumbnail_as_cached(tmp_path: Path):

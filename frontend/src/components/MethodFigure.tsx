@@ -299,6 +299,39 @@ const RLHFFig: React.FC = () => (
   </svg>
 );
 
+const AGENT_SKILL_TREE_LINES: ReadonlyArray<readonly [string, string]> = [
+  ["my-skill/", ""],
+  ["├── SKILL.md", "# Required: metadata + instructions"],
+  ["├── scripts/", "# Optional: executable code"],
+  ["├── references/", "# Optional: documentation"],
+  ["├── assets/", "# Optional: templates, resources"],
+  ["└── ...", "# Any additional files or directories"],
+];
+
+const AgentSkillsFig: React.FC = () => (
+  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
+    <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">
+      Skill package layout
+    </text>
+    <rect x="28" y="48" width="304" height="318" rx="8" fill="#FFFDF8" stroke={C.faint} strokeWidth="1" />
+    {AGENT_SKILL_TREE_LINES.map(([entry, comment], index) => {
+      const y = 92 + index * 44;
+      return (
+        <g key={entry}>
+          <text x="44" y={y} fontSize="11" fontFamily="var(--mono)" fill={C.ink} dominantBaseline="middle">
+            {entry}
+          </text>
+          {comment ? (
+            <text x="138" y={y} fontSize="8.5" fontFamily="var(--mono)" fill={C.faint} dominantBaseline="middle">
+              {comment}
+            </text>
+          ) : null}
+        </g>
+      );
+    })}
+  </svg>
+);
+
 const FIGURE_BY_SLUG: Record<string, React.FC> = {
   transformer: TransformerFig,
   attention: AttentionFig,
@@ -315,6 +348,7 @@ const FIGURE_BY_SLUG: Record<string, React.FC> = {
   gan: GANFig,
   vae: VAEFig,
   rlhf: RLHFFig,
+  "agent-skills": AgentSkillsFig,
 };
 
 const GenericFig: React.FC<{ method: Pick<Method, "name"> }> = ({ method }) => (
@@ -337,15 +371,27 @@ interface MethodFigureProps {
 export const MethodFigure: React.FC<MethodFigureProps> = ({ method }) => {
   const slug = (method.slug || "").toLowerCase();
   const FigFromDict = FIGURE_BY_SLUG[slug];
-  if (FigFromDict) return <FigFromDict />;
-  if (method.image_url) {
+  if (FigFromDict) {
     return (
-      <img
-        src={method.image_url}
-        alt={`${method.name} schematic`}
-        style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-      />
+      <div className="method-figure-svg method-figure-svg--schematic">
+        <FigFromDict />
+      </div>
     );
   }
-  return <GenericFig method={method} />;
+  if (method.image_url) {
+    return (
+      <div className="method-figure-svg method-figure-svg--image">
+        <img
+          className="method-figure-img"
+          src={method.image_url}
+          alt={`${method.name} schematic`}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="method-figure-svg method-figure-svg--schematic">
+      <GenericFig method={method} />
+    </div>
+  );
 };

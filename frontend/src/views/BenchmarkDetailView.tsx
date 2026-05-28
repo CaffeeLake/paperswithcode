@@ -31,23 +31,31 @@ function extractSourcePaperRouteId(paperUrl?: string | null): string | null {
   return localMatch?.[1] ?? null;
 }
 
-interface SotaPoint {
+interface ChartPoint {
   value: number;
+  date: string;
   dateLabel: string;
   modelName: string;
   paperTitle: string;
   paperRouteId: string | null;
+  isSota: boolean;
 }
 
 interface BenchmarkChartProps {
-  points: SotaPoint[];
+  points: ChartPoint[];
   metric: string;
+}
+
+function parseChartDateMs(date: string): number {
+  const normalized = date.length === 7 ? `${date}-01` : date;
+  const t = new Date(normalized).getTime();
+  return Number.isFinite(t) ? t : 0;
 }
 
 // Always plots raw values: larger values appear higher on the Y-axis, smaller
 // values appear lower, regardless of whether the metric is higher- or
-// lower-is-better. Direction only affects which points `computeSeries` chooses
-// as the running best, not the visual orientation of the chart.
+// lower-is-better. Direction only affects which points `computeSeries` marks
+// as SOTA, not the visual orientation of the chart.
 const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, metric }) => {
   const navigate = useNavigate();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -63,25 +71,82 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
   const range = max - min || 1;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
-  const step = innerW / Math.max(1, dataPoints.length - 1);
-  const points = dataPoints.map((dp, i) => {
-    const x = padL + i * step;
+  const timestamps = dataPoints.map((d) => parseChartDateMs(d.date));
+  const xMin = Math.min(...timestamps);
+  const xMax = Math.max(...timestamps);
+  const xSpan = xMax - xMin || 1;
+  const xForTime = (t: number) =>
+    xMin === xMax ? padL + innerW / 2 : padL + ((t - xMin) / xSpan) * innerW;
+  const positioned = dataPoints.map((dp, idx) => {
+    const x = xForTime(parseChartDateMs(dp.date));
     const norm = (dp.value - min) / range;
     const y = padT + innerH * (1 - norm);
-    return { x, y, data: dp };
+    return { x, y, data: dp, idx };
   });
-  let path = `M${points[0].x},${points[0].y}`;
-  for (let i = 1; i < points.length; i++) {
-    const p0 = points[i - 1];
-    const p1 = points[i];
-    const cx = (p0.x + p1.x) / 2;
-    path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
+  const sotaPositioned = positioned.filter((p) => p.data.isSota);
+  let path = "";
+  if (sotaPositioned.length >= 2) {
+    path = `M${sotaPositioned[0].x},${sotaPositioned[0].y}`;
+    for (let i = 1; i < sotaPositioned.length; i++) {
+      const p0 = sotaPositioned[i - 1];
+      const p1 = sotaPositioned[i];
+      const cx = (p0.x + p1.x) / 2;
+      path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
+    }
+  }
+  const yearMin = new Date(xMin).getFullYear();
+  const yearMax = new Date(xMax).getFullYear();
+  const yearTickCount = 5;
+  const yearTicks: number[] = [];
+  if (yearMin === yearMax) {
+    yearTicks.push(yearMin);
+  } else {
+    for (let i = 0; i < yearTickCount; i++) {
+      yearTicks.push(Math.round(yearMin + ((yearMax - yearMin) * i) / (yearTickCount - 1)));
+    }
   }
   const tickCount = 5;
 
   const clearHover = (i: number) => setHoverIdx((cur) => (cur === i ? null : cur));
   const handleClick = (routeId: string | null) => {
     if (routeId) navigate(`/paper/${routeId}`);
+  };
+
+  const renderDotInteraction = (
+    p: (typeof positioned)[number],
+    visible: React.ReactNode,
+  ) => {
+    const label = p.data.modelName || p.data.paperTitle || "Unknown model";
+    const ariaLabel = `${label}: ${formatMetricValue(p.data.value)} on ${p.data.dateLabel}`;
+    const clickable = !!p.data.paperRouteId;
+    return (
+      <g key={p.idx}>
+        {visible}
+        <circle
+          cx={p.x}
+          cy={p.y}
+          r="10"
+          fill="transparent"
+          style={{ cursor: clickable ? "pointer" : "default", outline: "none" }}
+          tabIndex={0}
+          role={clickable ? "link" : "img"}
+          aria-label={ariaLabel}
+          onMouseEnter={() => setHoverIdx(p.idx)}
+          onMouseLeave={() => clearHover(p.idx)}
+          onFocus={() => setHoverIdx(p.idx)}
+          onBlur={() => clearHover(p.idx)}
+          onClick={() => handleClick(p.data.paperRouteId)}
+          onKeyDown={(e) => {
+            if (clickable && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              handleClick(p.data.paperRouteId);
+            }
+          }}
+        >
+          <title>{ariaLabel}</title>
+        </circle>
+      </g>
+    );
   };
 
   return (
@@ -110,56 +175,58 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
           </g>
         );
       })}
-      {points.map((p, i) => (
-        <text key={i} x={p.x} y={H - padB + 18} fontSize="11" fontFamily="var(--mono)" fill="var(--ink-soft)" textAnchor="middle">
-          {p.data.dateLabel}
-        </text>
-      ))}
-      <path d={path} stroke="var(--accent)" strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
-      {points.map((p, i) => {
-        const isHover = hoverIdx === i;
-        const label = p.data.modelName || p.data.paperTitle || "Unknown model";
-        const ariaLabel = `${label}: ${formatMetricValue(p.data.value)} on ${p.data.dateLabel}`;
-        const clickable = !!p.data.paperRouteId;
+      {yearTicks.map((year) => {
+        const x = xForTime(new Date(year, 0, 1).getTime());
         return (
-          <g key={i}>
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r={isHover ? 6 : 4.5}
-              fill={isHover ? "var(--accent)" : "var(--bg-elevated)"}
-              stroke="var(--accent)"
-              strokeWidth="2"
-              style={{ transition: "r 0.12s ease, fill 0.12s ease" }}
-            />
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r="14"
-              fill="transparent"
-              style={{ cursor: clickable ? "pointer" : "default", outline: "none" }}
-              tabIndex={0}
-              role={clickable ? "link" : "img"}
-              aria-label={ariaLabel}
-              onMouseEnter={() => setHoverIdx(i)}
-              onMouseLeave={() => clearHover(i)}
-              onFocus={() => setHoverIdx(i)}
-              onBlur={() => clearHover(i)}
-              onClick={() => handleClick(p.data.paperRouteId)}
-              onKeyDown={(e) => {
-                if (clickable && (e.key === "Enter" || e.key === " ")) {
-                  e.preventDefault();
-                  handleClick(p.data.paperRouteId);
-                }
-              }}
-            >
-              <title>{ariaLabel}</title>
-            </circle>
-          </g>
+          <text
+            key={year}
+            x={x}
+            y={H - padB + 18}
+            fontSize="11"
+            fontFamily="var(--mono)"
+            fill="var(--ink-soft)"
+            textAnchor="middle"
+          >
+            {year}
+          </text>
         );
       })}
-      {hoverIdx !== null && (() => {
-        const p = points[hoverIdx];
+      {positioned
+        .filter((p) => !p.data.isSota)
+        .map((p) => {
+          const isHover = hoverIdx === p.idx;
+          return renderDotInteraction(
+            p,
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={isHover ? 4 : 2.5}
+              fill="var(--ink-faint)"
+              opacity={isHover ? 1 : 0.45}
+              style={{ transition: "r 0.12s ease, opacity 0.12s ease" }}
+            />,
+          );
+        })}
+      {path && (
+        <path d={path} stroke="var(--accent)" strokeWidth="2" fill="none" strokeLinejoin="round" strokeLinecap="round" />
+      )}
+      {sotaPositioned.map((p) => {
+        const isHover = hoverIdx === p.idx;
+        return renderDotInteraction(
+          p,
+          <circle
+            cx={p.x}
+            cy={p.y}
+            r={isHover ? 6 : 4.5}
+            fill={isHover ? "var(--accent)" : "var(--bg-elevated)"}
+            stroke="var(--accent)"
+            strokeWidth="2"
+            style={{ transition: "r 0.12s ease, fill 0.12s ease" }}
+          />,
+        );
+      })}
+      {hoverIdx !== null && positioned[hoverIdx] && (() => {
+        const p = positioned[hoverIdx];
         const rawLabel = p.data.modelName || p.data.paperTitle || "Unknown model";
         const label = rawLabel.length > 40 ? rawLabel.slice(0, 39) + "…" : rawLabel;
         const meta = `${formatMetricValue(p.data.value)} · ${p.data.dateLabel}`;
@@ -237,7 +304,7 @@ function computeSeries(
   evals: Evaluation[],
   bestMetric: string,
   arrow: "↑" | "↓",
-): { points: SotaPoint[]; sota: number; sotaModel: string } {
+): { points: ChartPoint[]; sota: number; sotaModel: string } {
   if (evals.length === 0) return { points: [], sota: 0, sotaModel: "" };
 
   // Sort by published date ascending; require numeric values for the metric.
@@ -252,7 +319,7 @@ function computeSeries(
     )
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  const points: SotaPoint[] = [];
+  const points: ChartPoint[] = [];
   let runningBest: number | null = null;
   for (const it of items) {
     const better = runningBest == null
@@ -260,16 +327,16 @@ function computeSeries(
       : arrow === "↓"
         ? it.value < runningBest
         : it.value > runningBest;
-    if (better) {
-      runningBest = it.value;
-      points.push({
-        value: it.value,
-        dateLabel: it.date.slice(0, 7),
-        modelName: it.eval.model_name || "",
-        paperTitle: it.eval.paper_title || "",
-        paperRouteId: it.eval.paper_arxiv_id || it.eval.paper_id || null,
-      });
-    }
+    if (better) runningBest = it.value;
+    points.push({
+      value: it.value,
+      date: it.date,
+      dateLabel: it.date.slice(0, 7),
+      modelName: it.eval.model_name || "",
+      paperTitle: it.eval.paper_title || "",
+      paperRouteId: it.eval.paper_arxiv_id || it.eval.paper_id || null,
+      isSota: better,
+    });
   }
 
   // Headline SOTA is the best value for the currently selected metric.
@@ -718,7 +785,7 @@ const BenchmarkDetailView: React.FC = () => {
           </div>
         )}
 
-        {chartPoints.length >= 2 && (
+        {chartPoints.filter((p) => p.isSota).length >= 2 && (
           <div className="bm-card" ref={chartCardRef}>
             <div className="bm-card-screenshot-title" aria-hidden="true">
               <span className="bm-card-screenshot-eyebrow">Benchmark</span>
@@ -748,7 +815,7 @@ const BenchmarkDetailView: React.FC = () => {
             </div>
             <div className="bm-chart-foot">
               <span className="legend-dot"></span>
-              Best result over time · hover a point to see the model · click to open the paper
+              All models over time · highlighted dots track the running best · hover for the model · click to open the paper
             </div>
           </div>
         )}

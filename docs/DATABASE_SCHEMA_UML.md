@@ -154,6 +154,25 @@ Key capabilities:
 │ PK (source_paper_id, target_paper_id)
 │ CHECK source_paper_id <> target_paper_id
 └──────────────────────────────┘
+
+┌──────────────────────────────┐
+│    PENDING_PAPER_EDITS       │
+├──────────────────────────────┤
+│ id (PK)                      │
+│ paper_id (FK papers)         │◄──── PAPERS.id (ON DELETE CASCADE)
+│ hf_username                  │
+│ is_author (bool)             │
+│ edit_type (CHECK in [tasks,  │
+│   methods, evaluations,      │
+│   repositories, project_pages])
+│ proposed_payload (JSONB)     │
+│ current_payload (JSONB, NULL)│
+│ status (CHECK in [pending,   │
+│   approved, rejected])       │
+│ admin_note, reviewed_by      │
+│ created_at, updated_at,      │
+│ reviewed_at                  │
+└──────────────────────────────┘
 ```
 
 ## Core Tables (DDL highlights)
@@ -259,6 +278,19 @@ The following summarizes the live structure. See the database for full DDL.
 - Primary key: (hf_username, paper_id)
 - Indexes: idx_user_bookmarks_user (hf_username), idx_user_bookmarks_paper (paper_id)
 
+### PENDING_PAPER_EDITS
+- id BIGSERIAL (PK)
+- paper_id BIGINT (FK papers, ON DELETE CASCADE)
+- hf_username VARCHAR(255) — lowercased HF username from `pwc_session`
+- is_author BOOLEAN DEFAULT FALSE — true when submitter is a linked author of `paper_id` at submit time
+- edit_type VARCHAR(32) CHECK in [tasks, methods, evaluations, repositories, project_pages]
+- proposed_payload JSONB — shape matches the matching admin mutation endpoint
+- current_payload JSONB NULL — snapshot of live data at submit time for review diffing
+- status VARCHAR(16) DEFAULT 'pending' CHECK in [pending, approved, rejected]
+- admin_note TEXT, reviewed_by VARCHAR(255), reviewed_at TIMESTAMPTZ
+- created_at, updated_at TIMESTAMPTZ DEFAULT now()
+- Indexes: (status, created_at DESC), (paper_id, edit_type), (hf_username), partial (is_author) WHERE status='pending'
+
 ## Junction Tables
 
 - PAPER_AUTHORS(paper_id, author_id, author_order > 0) PK(paper_id, author_id)
@@ -271,6 +303,7 @@ The following summarizes the live structure. See the database for full DDL.
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 - USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
+- PENDING_PAPER_EDITS(id, paper_id, hf_username, is_author, edit_type, proposed_payload, current_payload, status, admin_note, reviewed_by, created_at, updated_at, reviewed_at) PK(id) — non-admin edit submissions awaiting admin approval. Approval applies `proposed_payload` through the same backend mutation services that admin direct edits use; rejected/pending rows never affect live data.
 
 **Note:** TASK_DATASETS owns task-specific *display metadata* (featured ordering, harness support) for a (task, dataset) pair. TASK_DATASET_METRICS defines the actual leaderboards by adding the metric dimension. Together they replace the legacy single-table design: TASK_DATASETS is what task pages render benchmark cards from, and TASK_DATASET_METRICS is what evaluation create/update validates against. Both tables key on `task_id`, which means subtasks (child tasks under `tasks.parent_id`) own benchmarks and leaderboards independently from their parent.
 
@@ -301,6 +334,7 @@ The following summarizes the live structure. See the database for full DDL.
 - **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
 - **User bookmarks:** persisted per HF account in USER_BOOKMARKS; written exclusively through `/api/v1/me/bookmarks` endpoints which require the `pwc_session` cookie.
+- **Pending paper edits:** non-admin edit submissions for paper-page surfaces (tasks, methods, evaluations, repositories, project pages) are written to PENDING_PAPER_EDITS through `/api/v1/me/paper-edits`. Admin direct edits bypass this table and continue mutating live data through the existing `/api/v1/papers/{id}/...` and `/api/v1/evaluations/...` admin endpoints. Approval of a pending row replays `proposed_payload` through the shared mutation services so live data only changes after admin confirmation.
 - **Paper lineage:** directed predecessor/successor edges between papers live in PAPER_RELATIONS (`source_paper_id` -> `target_paper_id`, predecessor -> successor). Surfaced on the paper detail API via `predecessor_papers` and `successor_papers`, and rendered as the lineage banner on the paper detail view (e.g. DINOv2 shows DINOv3 as the follow-up; DINOv3 shows DINOv2 as the predecessor).
 
 This document is synchronized with the live schema via schema dump and table descriptions.

@@ -17,6 +17,8 @@ The FastAPI application (`backend/main.py`) exposes REST endpoints under `/api/v
 | `metrics.py` | `/metrics` | Metric catalog (direction, descriptions). |
 | `cron.py` | `/cron` | Job status, detailed history, health endpoint for dashboard. |
 | `thumbnails.py` | `/thumbnails` | Serves cached paper thumbnails. |
+| `bookmarks.py` | `/me/bookmarks`, `/me/saved` | Per-HF-user bookmark CRUD; `pwc_session` cookie required. |
+| `pending_edits.py` | `/me/paper-edits`, `/admin/paper-edits` | Non-admin paper edit submissions (`require_user`) and admin review queue / approve / reject (`require_admin`). See `docs/operations.md` for the SQL + admin-API review workflow. |
 
 ### Service-Layer Pattern
 
