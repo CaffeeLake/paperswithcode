@@ -69,6 +69,49 @@ def normalize_hf_artifact_url(url: str) -> Optional[str]:
     return urlunparse(("https", host, path, "", "", ""))
 
 
+def normalize_hf_artifact_bucket(
+    urls: list[str],
+    expected_kind: HfArtifactKind,
+    *,
+    bucket_label: str,
+) -> list[str]:
+    """Normalize and validate a list of HF artifact URLs for one bucket.
+
+    Raises ``ValueError`` when a URL is invalid or classified into a different
+    artifact kind than ``expected_kind``.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls or []:
+        normalized = normalize_hf_artifact_url(raw_url)
+        if normalized is None:
+            raise ValueError(f"Invalid Hugging Face {bucket_label} URL: {raw_url!r}")
+        kind = classify_hf_artifact_url(normalized)
+        if kind != expected_kind:
+            raise ValueError(
+                f"URL {raw_url!r} is not a Hugging Face {bucket_label} link"
+            )
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def normalize_hf_artifact_payload(
+    hf_models: list[str],
+    hf_datasets: list[str],
+    hf_spaces: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """Normalize three HF artifact URL lists for storage on ``papers``."""
+    models = normalize_hf_artifact_bucket(hf_models, "model", bucket_label="model")
+    datasets = normalize_hf_artifact_bucket(
+        hf_datasets, "dataset", bucket_label="dataset"
+    )
+    spaces = normalize_hf_artifact_bucket(hf_spaces, "space", bucket_label="space")
+    return models, datasets, spaces
+
+
 def classify_hf_artifact_url(url: str) -> Optional[HfArtifactKind]:
     """
     Determine whether a Hugging Face URL points to a model, dataset, or space.

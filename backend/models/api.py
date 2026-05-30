@@ -249,6 +249,9 @@ class PaperSummary(BaseModel):
     citation_count: int = Field(
         default=0, description="Number of citations from Semantic Scholar"
     )
+    thumbnail_url: Optional[str] = Field(
+        None, description="URL to the paper thumbnail image"
+    )
 
     @field_validator("id", mode="before")
     @classmethod

@@ -228,6 +228,55 @@ def test_submit_source_url_change_succeeds(db_session, paper_fixture):
     assert row.proposed_payload == {"source_url": "https://example.com/paper/v2"}
 
 
+def test_submit_hf_artifacts_noop_rejects(db_session, paper_fixture):
+    service = PendingEditService(db_session)
+    with pytest.raises(PendingEditError, match="does not contain any changes"):
+        service.submit(
+            paper_id=1,
+            hf_username="alice",
+            edit_type="hf_artifacts",
+            proposed_payload={
+                "hf_models": [],
+                "hf_datasets": [],
+                "hf_spaces": [],
+            },
+        )
+    _no_rows_created(db_session)
+
+
+def test_submit_hf_artifacts_change_succeeds(db_session, paper_fixture):
+    row = PendingEditService(db_session).submit(
+        paper_id=1,
+        hf_username="alice",
+        edit_type="hf_artifacts",
+        proposed_payload={
+            "hf_models": ["https://huggingface.co/org/model-a"],
+            "hf_datasets": ["https://huggingface.co/datasets/org/data-a"],
+            "hf_spaces": ["https://huggingface.co/spaces/org/demo-a"],
+        },
+    )
+    assert row.id is not None
+    assert row.proposed_payload["hf_models"] == [
+        "https://huggingface.co/org/model-a",
+    ]
+
+
+def test_submit_hf_artifacts_invalid_bucket_rejects(db_session, paper_fixture):
+    service = PendingEditService(db_session)
+    with pytest.raises(PendingEditError, match="not a Hugging Face model"):
+        service.submit(
+            paper_id=1,
+            hf_username="alice",
+            edit_type="hf_artifacts",
+            proposed_payload={
+                "hf_models": ["https://huggingface.co/datasets/org/data-a"],
+                "hf_datasets": [],
+                "hf_spaces": [],
+            },
+        )
+    _no_rows_created(db_session)
+
+
 def test_submit_tasks_empty_against_empty_paper_rejects(db_session):
     db_session.add(
         DBPaper(

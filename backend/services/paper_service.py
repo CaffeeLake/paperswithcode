@@ -467,6 +467,13 @@ class PaperService:
             db_paper.source_url,
         )
 
+        thumbnail_url = db_paper.thumbnail_url
+        if thumbnail_url is None and db_paper.source == "arxiv" and db_paper.arxiv_id:
+            filename = build_thumbnail_filename(
+                db_paper.arxiv_id, db_paper.version or "v1"
+            )
+            thumbnail_url = build_thumbnail_url(filename)
+
         return PaperSummary(
             id=str(db_paper.id),
             title=db_paper.title,
@@ -477,6 +484,7 @@ class PaperService:
             published=db_paper.date_published,
             url_abs=url_abs,
             citation_count=db_paper.citation_count,
+            thumbnail_url=thumbnail_url,
         )
 
     def get_paper_by_id(self, paper_id: int, include_resources: bool = False) -> Paper:
@@ -2033,3 +2041,37 @@ class PaperService:
             if isinstance(e, (PaperNotFoundError, DatabaseError)):
                 raise
             raise DatabaseError(f"Error updating paper source URL: {str(e)}")
+
+    def update_paper_hf_artifacts(
+        self,
+        paper_id: int,
+        hf_models: List[str],
+        hf_datasets: List[str],
+        hf_spaces: List[str],
+    ) -> Paper:
+        """Replace explicit Hugging Face artifact URLs linked to a paper."""
+        from backend.utils.hf_utils import normalize_hf_artifact_payload
+
+        try:
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            models, datasets, spaces = normalize_hf_artifact_payload(
+                hf_models, hf_datasets, hf_spaces
+            )
+            db_paper.hf_models = models or None
+            db_paper.hf_datasets = datasets or None
+            db_paper.hf_spaces = spaces or None
+            self.db.commit()
+
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except ValueError as e:
+            self.db.rollback()
+            raise DatabaseError(str(e))
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper HF artifacts: {str(e)}")

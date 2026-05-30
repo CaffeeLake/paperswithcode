@@ -486,6 +486,45 @@ function EmptyInline({ children }: { children: React.ReactNode }) {
   return <span className="submission-muted">{children}</span>;
 }
 
+function HfArtifactsDiff({
+  currentPayload,
+  proposedPayload,
+}: {
+  currentPayload?: JsonRecord | null;
+  proposedPayload: JsonRecord;
+}) {
+  const current = asRecord(currentPayload);
+  const sections = [
+    { key: "hf_models", label: "Models" },
+    { key: "hf_datasets", label: "Datasets" },
+    { key: "hf_spaces", label: "Spaces" },
+  ] as const;
+
+  return (
+    <div className="submission-hf-artifacts-diff">
+      {sections.map(({ key, label }) => {
+        const currentUrls = Array.isArray(current[key])
+          ? (current[key] as unknown[]).filter((item): item is string => typeof item === "string")
+          : [];
+        const proposedUrls = Array.isArray(proposedPayload[key])
+          ? (proposedPayload[key] as unknown[]).filter((item): item is string => typeof item === "string")
+          : [];
+
+        return (
+          <div key={key} className="submission-hf-artifacts-section">
+            <div className="submission-diff-label">{label}</div>
+            <ResourceDiff
+              label={label.toLowerCase()}
+              currentItems={currentUrls.map((url) => ({ url, is_official: false }))}
+              proposedItems={proposedUrls.map((url) => ({ url, is_official: false }))}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function PendingEditDiff({ editType, currentPayload, proposedPayload }: PendingEditDiffProps) {
   const current = asRecord(currentPayload);
 
@@ -528,6 +567,8 @@ export function PendingEditDiff({ editType, currentPayload, proposedPayload }: P
     content = <EvaluationsDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
   } else if (editType === "source_url") {
     content = <SourceUrlDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
+  } else if (editType === "hf_artifacts") {
+    content = <HfArtifactsDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
   } else {
     content = (
       <div className="submission-empty submission-empty-warn">

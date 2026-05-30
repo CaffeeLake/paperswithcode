@@ -497,6 +497,10 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
   const containerRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
+    setErrored(false);
+  }, [thumbnailUrl]);
+
+  React.useEffect(() => {
     if (priority || shouldLoad) return;
     const node = containerRef.current;
     if (!node) return;

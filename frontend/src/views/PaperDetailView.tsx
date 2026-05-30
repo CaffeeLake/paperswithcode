@@ -31,6 +31,7 @@ import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositori
 import { EditProjectPagesDialog } from "@/components/paper-detail/EditProjectPagesDialog";
 import { EditSourceUrlDialog } from "@/components/paper-detail/EditSourceUrlDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
+import { EditHfArtifactsDialog } from "@/components/paper-detail/EditHfArtifactsDialog";
 import { SignInToEditDialog } from "@/components/paper-detail/SignInToEditDialog";
 import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
@@ -41,7 +42,8 @@ type EditSection =
   | "results"
   | "repositories"
   | "project-pages"
-  | "source-url";
+  | "source-url"
+  | "hf-artifacts";
 
 const EDIT_SECTION_LABEL: Record<EditSection, string> = {
   tasks: "tasks",
@@ -50,6 +52,7 @@ const EDIT_SECTION_LABEL: Record<EditSection, string> = {
   repositories: "GitHub repositories",
   "project-pages": "project pages",
   "source-url": "source URL",
+  "hf-artifacts": "Hugging Face artifacts",
 };
 
 const ABSTRACT_PREVIEW_LEN = 360;
@@ -198,6 +201,8 @@ const PaperDetailView: React.FC = () => {
     setIsEditingEvaluations,
     isEditingSourceUrl,
     setIsEditingSourceUrl,
+    isEditingHfArtifacts,
+    setIsEditingHfArtifacts,
   } = usePaperEditState();
 
   const [signInSection, setSignInSection] = useState<EditSection | null>(null);
@@ -242,6 +247,9 @@ const PaperDetailView: React.FC = () => {
         return;
       case "source-url":
         setIsEditingSourceUrl(true);
+        return;
+      case "hf-artifacts":
+        setIsEditingHfArtifacts(true);
         return;
     }
   };
@@ -390,18 +398,30 @@ const PaperDetailView: React.FC = () => {
             href: `https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`,
             count: hfRepos?.models,
             isLimited: hfRepos?.isLimited,
+            links: explicitHfArtifacts.models.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Model"),
+            })),
           },
           {
             label: "Datasets",
             href: `https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`,
             count: hfRepos?.datasets,
             isLimited: hfRepos?.isLimited,
+            links: explicitHfArtifacts.datasets.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Dataset"),
+            })),
           },
           {
             label: "Spaces",
-            href: `https://huggingface.co/spaces?other=arxiv:${paper.arxiv_id}`,
+            href: `https://huggingface.co/spaces?arxivIds=${paper.arxiv_id.replace(/v\d+$/, "")}`,
             count: hfRepos?.spaces,
             isLimited: hfRepos?.isLimited,
+            links: explicitHfArtifacts.spaces.map((href) => ({
+              href,
+              label: formatResourceLinkLabel(href, "Space"),
+            })),
           },
         ],
         footer: `Cite arxiv.org/abs/${paper.arxiv_id} in a HF README to link it here.`,
@@ -973,7 +993,11 @@ const PaperDetailView: React.FC = () => {
           )}
 
           {/* Hugging Face block */}
-          <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
+          <HuggingFaceArtifactsCard
+            viewer={hfArtifactViewer}
+            canEdit={canEditPaper}
+            onEdit={() => openEdit("hf-artifacts")}
+          />
 
           <div className="sidebar-card">
             <div className="sidebar-card-title">
@@ -1093,6 +1117,19 @@ const PaperDetailView: React.FC = () => {
         submitMode={editSubmitMode}
         isAuthor={isLinkedAuthor}
       />
+      <EditHfArtifactsDialog
+        open={isEditingHfArtifacts}
+        onOpenChange={setIsEditingHfArtifacts}
+        paperId={paper.id}
+        arxivId={arxivId}
+        initialArtifacts={{
+          hf_models: paper.hf_models ?? [],
+          hf_datasets: paper.hf_datasets ?? [],
+          hf_spaces: paper.hf_spaces ?? [],
+        }}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
+      />
       <SignInToEditDialog
         open={signInSection !== null}
         onOpenChange={(open) => {
@@ -1122,7 +1159,11 @@ interface HuggingFaceArtifactsViewer {
   footer: string | null;
 }
 
-const HuggingFaceArtifactsCard: React.FC<{ viewer: HuggingFaceArtifactsViewer }> = ({ viewer }) => (
+const HuggingFaceArtifactsCard: React.FC<{
+  viewer: HuggingFaceArtifactsViewer;
+  canEdit?: boolean;
+  onEdit?: () => void;
+}> = ({ viewer, canEdit = false, onEdit }) => (
   <div className="sidebar-card">
     <div className="sidebar-card-title">
       {viewer.paperHref ? (
@@ -1136,6 +1177,11 @@ const HuggingFaceArtifactsCard: React.FC<{ viewer: HuggingFaceArtifactsViewer }>
         </a>
       ) : (
         <span>🤗 Hugging Face</span>
+      )}
+      {canEdit && onEdit && (
+        <button type="button" onClick={onEdit} className="edit-link">
+          edit
+        </button>
       )}
     </div>
     {viewer.isLoading ? (

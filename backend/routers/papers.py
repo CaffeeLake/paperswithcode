@@ -1291,6 +1291,23 @@ async def update_paper_project_pages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class UpdateHfArtifactsRequest(BaseModel):
+    """Request model for updating explicit Hugging Face artifact URLs."""
+
+    hf_models: List[str] = Field(
+        default_factory=list,
+        description="Full Hugging Face model URLs linked to this paper",
+    )
+    hf_datasets: List[str] = Field(
+        default_factory=list,
+        description="Full Hugging Face dataset URLs linked to this paper",
+    )
+    hf_spaces: List[str] = Field(
+        default_factory=list,
+        description="Full Hugging Face Space URLs linked to this paper",
+    )
+
+
 class UpdateSourceUrlRequest(BaseModel):
     """Request model for updating an external paper's canonical source URL."""
 
@@ -1301,6 +1318,38 @@ class UpdateSourceUrlRequest(BaseModel):
             "http:// or https:// and be at most 2000 characters."
         ),
     )
+
+
+@router.put(
+    "/papers/{paper_id}/hf-artifacts",
+    response_model=Paper,
+    summary="Update Hugging Face artifacts for a paper",
+    dependencies=[Depends(require_hf_admin)],
+)
+async def update_paper_hf_artifacts(
+    paper_id: int = Path(..., description="Database paper ID"),
+    request: UpdateHfArtifactsRequest = Body(...),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Replace explicit Hugging Face model, dataset, and Space URLs linked to a
+    paper. URLs are normalized and must match their declared bucket.
+    """
+    try:
+        service = PaperService(db)
+        return service.update_paper_hf_artifacts(
+            paper_id,
+            request.hf_models,
+            request.hf_datasets,
+            request.hf_spaces,
+        )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        message = str(e)
+        if "Invalid Hugging Face" in message or "is not a Hugging Face" in message:
+            raise HTTPException(status_code=400, detail=message)
+        raise HTTPException(status_code=500, detail=message)
 
 
 @router.put(

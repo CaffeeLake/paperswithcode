@@ -37,6 +37,7 @@ EditType = Literal[
     "repositories",
     "project_pages",
     "source_url",
+    "hf_artifacts",
 ]
 StatusLiteral = Literal["pending", "approved", "rejected"]
 

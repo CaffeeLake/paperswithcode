@@ -41,6 +41,7 @@ EDIT_TYPES = frozenset(
         "repositories",
         "project_pages",
         "source_url",
+        "hf_artifacts",
     }
 )
 STATUSES = frozenset({"pending", "approved", "rejected"})
@@ -202,6 +203,24 @@ class PendingEditService:
             ]
         }
 
+    def _snapshot_hf_artifacts(self, paper_id: int) -> Dict[str, Any]:
+        row = (
+            self.db.query(
+                DBPaper.hf_models,
+                DBPaper.hf_datasets,
+                DBPaper.hf_spaces,
+            )
+            .filter(DBPaper.id == paper_id)
+            .first()
+        )
+        if row is None:
+            raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+        return {
+            "hf_models": list(row[0] or []),
+            "hf_datasets": list(row[1] or []),
+            "hf_spaces": list(row[2] or []),
+        }
+
     def _build_snapshot(self, paper_id: int, edit_type: str) -> Dict[str, Any]:
         if edit_type == "tasks":
             return self._snapshot_tasks(paper_id)
@@ -215,6 +234,8 @@ class PendingEditService:
             return self._snapshot_evaluations(paper_id)
         if edit_type == "source_url":
             return self._snapshot_source_url(paper_id)
+        if edit_type == "hf_artifacts":
+            return self._snapshot_hf_artifacts(paper_id)
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
 
     # ----------------------------------------------------------------
@@ -306,6 +327,33 @@ class PendingEditService:
             ):
                 raise PendingEditError("source_url must start with http:// or https://")
             return {"source_url": normalized}
+
+        if edit_type == "hf_artifacts":
+            from backend.utils.hf_utils import normalize_hf_artifact_payload
+
+            for key in ("hf_models", "hf_datasets", "hf_spaces"):
+                values = payload.get(key)
+                if not isinstance(values, list) or not all(
+                    isinstance(item, str) for item in values
+                ):
+                    raise PendingEditError(
+                        "HF artifacts payload must be "
+                        '{"hf_models": [str, ...], "hf_datasets": [str, ...], '
+                        '"hf_spaces": [str, ...]}'
+                    )
+            try:
+                models, datasets, spaces = normalize_hf_artifact_payload(
+                    list(payload.get("hf_models", [])),
+                    list(payload.get("hf_datasets", [])),
+                    list(payload.get("hf_spaces", [])),
+                )
+            except ValueError as exc:
+                raise PendingEditError(str(exc)) from exc
+            return {
+                "hf_models": models,
+                "hf_datasets": datasets,
+                "hf_spaces": spaces,
+            }
 
         if edit_type == "evaluations":
             operations = payload.get("operations")
@@ -409,6 +457,14 @@ class PendingEditService:
             current = (current_payload.get("source_url") or "").strip()
             proposed = (normalized_payload.get("source_url") or "").strip()
             return current == proposed
+
+        if edit_type == "hf_artifacts":
+            for key in ("hf_models", "hf_datasets", "hf_spaces"):
+                current = sorted(current_payload.get(key) or [])
+                proposed = sorted(normalized_payload.get(key) or [])
+                if current != proposed:
+                    return False
+            return True
 
         # `evaluations` already requires at least one operation; treat any
         # well-formed operation list as a real change for now.
@@ -587,6 +643,14 @@ class PendingEditService:
         if edit_type == "source_url":
             PaperService(self.db).update_paper_source_url(
                 paper_id, str(payload.get("source_url", ""))
+            )
+            return
+        if edit_type == "hf_artifacts":
+            PaperService(self.db).update_paper_hf_artifacts(
+                paper_id,
+                list(payload.get("hf_models", [])),
+                list(payload.get("hf_datasets", [])),
+                list(payload.get("hf_spaces", [])),
             )
             return
         if edit_type == "evaluations":

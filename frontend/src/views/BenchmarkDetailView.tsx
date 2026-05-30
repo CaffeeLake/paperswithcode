@@ -52,6 +52,73 @@ function parseChartDateMs(date: string): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+const CHART_MONTH_LABELS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+interface ChartTimeTick {
+  timestamp: number;
+  key: string;
+  label: string;
+}
+
+function chartDateParts(ms: number): { year: number; month: number } {
+  const d = new Date(ms);
+  return { year: d.getFullYear(), month: d.getMonth() };
+}
+
+/** Calendar-aware x-axis ticks: every year/month in range, with stepping only for very long spans. */
+function buildChartTimeTicks(xMin: number, xMax: number): ChartTimeTick[] {
+  if (xMin === xMax) {
+    const { year, month } = chartDateParts(xMin);
+    return [{
+      timestamp: new Date(year, month, 1).getTime(),
+      key: `${year}-${month}`,
+      label: `${CHART_MONTH_LABELS[month]} ${year}`,
+    }];
+  }
+
+  const start = chartDateParts(xMin);
+  const end = chartDateParts(xMax);
+
+  if (start.year === end.year) {
+    const monthCount = end.month - start.month + 1;
+    let step = 1;
+    const maxMonthTicks = 12;
+    if (monthCount > maxMonthTicks) {
+      step = Math.ceil(monthCount / maxMonthTicks);
+    }
+    const ticks: ChartTimeTick[] = [];
+    for (let month = start.month; month <= end.month; month += step) {
+      ticks.push({
+        timestamp: new Date(start.year, month, 1).getTime(),
+        key: `${start.year}-${month}`,
+        label: monthCount <= 3
+          ? `${CHART_MONTH_LABELS[month]} ${start.year}`
+          : CHART_MONTH_LABELS[month],
+      });
+    }
+    return ticks;
+  }
+
+  const yearCount = end.year - start.year + 1;
+  let step = 1;
+  const maxYearTicks = 12;
+  if (yearCount > maxYearTicks) {
+    step = Math.ceil(yearCount / maxYearTicks);
+  }
+  const ticks: ChartTimeTick[] = [];
+  for (let year = start.year; year <= end.year; year += step) {
+    ticks.push({
+      timestamp: new Date(year, 0, 1).getTime(),
+      key: String(year),
+      label: String(year),
+    });
+  }
+  return ticks;
+}
+
 // Always plots raw values: larger values appear higher on the Y-axis, smaller
 // values appear lower, regardless of whether the metric is higher- or
 // lower-is-better. Direction only affects which points `computeSeries` marks
@@ -94,17 +161,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
       path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
     }
   }
-  const yearMin = new Date(xMin).getFullYear();
-  const yearMax = new Date(xMax).getFullYear();
-  const yearTickCount = 5;
-  const yearTicks: number[] = [];
-  if (yearMin === yearMax) {
-    yearTicks.push(yearMin);
-  } else {
-    for (let i = 0; i < yearTickCount; i++) {
-      yearTicks.push(Math.round(yearMin + ((yearMax - yearMin) * i) / (yearTickCount - 1)));
-    }
-  }
+  const timeAxisTicks = buildChartTimeTicks(xMin, xMax);
   const tickCount = 5;
 
   const clearHover = (i: number) => setHoverIdx((cur) => (cur === i ? null : cur));
@@ -175,11 +232,11 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
           </g>
         );
       })}
-      {yearTicks.map((year) => {
-        const x = xForTime(new Date(year, 0, 1).getTime());
+      {timeAxisTicks.map((tick) => {
+        const x = xForTime(tick.timestamp);
         return (
           <text
-            key={year}
+            key={tick.key}
             x={x}
             y={H - padB + 18}
             fontSize="11"
@@ -187,7 +244,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
             fill="var(--ink-soft)"
             textAnchor="middle"
           >
-            {year}
+            {tick.label}
           </text>
         );
       })}
@@ -290,6 +347,64 @@ function parseMetricValue(raw: string | number | undefined | null): number | nul
   const s = raw.includes("±") ? raw.split("±")[0].trim() : raw.trim();
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
+}
+
+type MergedEvaluation = Evaluation & {
+  /** Source evaluation ids folded into this display row. */
+  sourceEvaluationIds: string[];
+  /** Per-metric stored ranks from the underlying evaluation rows. */
+  ranksByMetric: Record<string, number>;
+};
+
+function leaderboardRowKey(e: Evaluation): string {
+  return [
+    e.paper_id,
+    e.task_id,
+    e.dataset_id,
+    e.model_name,
+    e.harness ?? "",
+  ].join("|");
+}
+
+/**
+ * Fold separate evaluation rows that describe the same model on the same
+ * leaderboard (differing only in `best_metric`) into one row whose `metrics`
+ * object carries every configured value — e.g. LAMBADA Perplexity + Accuracy.
+ */
+function mergeLeaderboardEvaluations(evals: Evaluation[]): MergedEvaluation[] {
+  const groups = new Map<string, MergedEvaluation>();
+
+  for (const e of evals) {
+    const key = leaderboardRowKey(e);
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        ...e,
+        metrics: { ...(e.metrics || {}) },
+        sourceEvaluationIds: [e.id],
+        ranksByMetric:
+          e.best_metric && e.best_rank != null ? { [e.best_metric]: e.best_rank } : {},
+      });
+      continue;
+    }
+
+    existing.metrics = { ...existing.metrics, ...(e.metrics || {}) };
+    existing.sourceEvaluationIds.push(e.id);
+    if (e.best_metric && e.best_rank != null) {
+      existing.ranksByMetric[e.best_metric] = e.best_rank;
+    }
+  }
+
+  return Array.from(groups.values());
+}
+
+function evaluationMatchesHighlight(e: MergedEvaluation, highlightEvalId?: string): boolean {
+  if (!highlightEvalId) return false;
+  return e.id === highlightEvalId || e.sourceEvaluationIds.includes(highlightEvalId);
+}
+
+function storedRankForMetric(e: MergedEvaluation, metric: string): number {
+  return e.ranksByMetric[metric] ?? e.best_rank ?? 9999;
 }
 
 /**
@@ -537,17 +652,22 @@ const BenchmarkDetailView: React.FC = () => {
     return evals.filter((e) => e.task_id === currentTaskId);
   }, [evalsQ.data, currentTaskId]);
 
+  const mergedTaskEvals = useMemo(
+    () => mergeLeaderboardEvaluations(taskEvals),
+    [taskEvals],
+  );
+
   // Last-resort metric set when this leaderboard has no configured metrics
   // in `task_dataset_metrics` (e.g. legacy imports). Picked over data union
   // only when `configuredMetrics` is empty.
   const dataMetrics = useMemo(() => {
     const set = new Set<string>();
-    taskEvals.forEach((e) => {
+    mergedTaskEvals.forEach((e) => {
       if (e.best_metric) set.add(e.best_metric);
       Object.keys(e.metrics || {}).forEach((k) => set.add(k));
     });
     return Array.from(set);
-  }, [taskEvals]);
+  }, [mergedTaskEvals]);
 
   const configuredMetrics = useMemo(
     () => (leaderboardMetricsQ.data || []).map((m) => m.metric_name),
@@ -562,12 +682,13 @@ const BenchmarkDetailView: React.FC = () => {
   // default to the metric most papers actually rank on). Fall back to the
   // first allowed metric when no eval data is available yet.
   const defaultMetric = useMemo(() => {
-    if (taskEvals.length === 0) return allowedMetrics[0] || "";
+    if (mergedTaskEvals.length === 0) return allowedMetrics[0] || "";
     const counts = new Map<string, number>();
-    for (const e of taskEvals) {
-      if (!e.best_metric) continue;
-      if (configuredMetrics.length && !allowedMetrics.includes(e.best_metric)) continue;
-      counts.set(e.best_metric, (counts.get(e.best_metric) || 0) + 1);
+    for (const e of mergedTaskEvals) {
+      for (const metric of Object.keys(e.metrics || {})) {
+        if (configuredMetrics.length && !allowedMetrics.includes(metric)) continue;
+        counts.set(metric, (counts.get(metric) || 0) + 1);
+      }
     }
     let top: string | null = null;
     let topN = 0;
@@ -577,8 +698,8 @@ const BenchmarkDetailView: React.FC = () => {
         top = m;
       }
     }
-    return top || allowedMetrics[0] || taskEvals[0]?.best_metric || "";
-  }, [taskEvals, allowedMetrics, configuredMetrics]);
+    return top || allowedMetrics[0] || mergedTaskEvals[0]?.best_metric || "";
+  }, [mergedTaskEvals, allowedMetrics, configuredMetrics]);
 
   const activeMetric = bestMetric || defaultMetric;
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
@@ -612,8 +733,8 @@ const BenchmarkDetailView: React.FC = () => {
   }, [allowedMetrics, activeMetric]);
 
   const { points: chartPoints, sota, sotaModel } = useMemo(
-    () => computeSeries(taskEvals, activeMetric, arrow),
-    [taskEvals, activeMetric, arrow],
+    () => computeSeries(mergedTaskEvals, activeMetric, arrow),
+    [mergedTaskEvals, activeMetric, arrow],
   );
 
   // Bring the highlighted leaderboard row into view once the evaluations
@@ -664,7 +785,7 @@ const BenchmarkDetailView: React.FC = () => {
   // F1-primary benchmark, for example), we re-rank in-client by the actual
   // value. Rows that don't carry the active metric drop to the end, ordered
   // by their stored rank as a deterministic tie-breaker.
-  const sortedRows = taskEvals.slice().sort((a, b) => {
+  const sortedRows = mergedTaskEvals.slice().sort((a, b) => {
     const va = parseMetricValue(a.metrics?.[activeMetric]);
     const vb = parseMetricValue(b.metrics?.[activeMetric]);
     if (va !== null && vb !== null) {
@@ -672,11 +793,11 @@ const BenchmarkDetailView: React.FC = () => {
     }
     if (va !== null) return -1;
     if (vb !== null) return 1;
-    return (a.best_rank ?? 9999) - (b.best_rank ?? 9999);
+    return storedRankForMetric(a, activeMetric) - storedRankForMetric(b, activeMetric);
   });
   const showHarness = Boolean(dataset.supports_harness);
   const highlightedEval = highlightEvalId
-    ? sortedRows.find((e) => e.id === highlightEvalId) || null
+    ? sortedRows.find((e) => evaluationMatchesHighlight(e, highlightEvalId)) || null
     : null;
 
   const introducingPaper = dataset.introducing_paper ?? undefined;
@@ -711,19 +832,39 @@ const BenchmarkDetailView: React.FC = () => {
         </div>
 
         <h1 className="bm-title">{dataset.name}</h1>
-        <div className="bm-subtitle">
-          {activeMetric && (
-            <>
-              <span className="metric-tag">{activeMetric}</span>
-              <span style={{ color: "var(--hairline-strong)", margin: "0 8px" }}>·</span>
-            </>
-          )}
-          {sotaModel ? (
-            <span>
-              Best: <span className="best-name">{formatMetricValue(sota)}</span> by <span className="best-name" style={{ fontStyle: "normal" }}>{sotaModel}</span>
-            </span>
-          ) : (
-            <span>{sortedRows.length} evaluations</span>
+        <div
+          className="bm-subtitle"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <span>
+            {activeMetric && (
+              <>
+                <span className="metric-tag">{activeMetric}</span>
+                <span style={{ color: "var(--hairline-strong)", margin: "0 8px" }}>·</span>
+              </>
+            )}
+            {sotaModel ? (
+              <span>
+                Best: <span className="best-name">{formatMetricValue(sota)}</span> by <span className="best-name" style={{ fontStyle: "normal" }}>{sotaModel}</span>
+              </span>
+            ) : (
+              <span>{sortedRows.length} evaluations</span>
+            )}
+          </span>
+          {dataset.hf_url && (
+            <a
+              className="bm-action-btn"
+              href={dataset.hf_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span aria-hidden="true">🤗</span> View on Hugging Face
+            </a>
           )}
         </div>
 
@@ -943,7 +1084,7 @@ const BenchmarkDetailView: React.FC = () => {
                     const paperRouteId = e.paper_arxiv_id || e.paper_id;
                     const paperLabel =
                       e.paper_title || (e.paper_arxiv_id ? `arXiv:${e.paper_arxiv_id}` : null);
-                    const isHighlighted = highlightEvalId === e.id;
+                    const isHighlighted = evaluationMatchesHighlight(e, highlightEvalId);
                     return (
                       <tr
                         key={e.id}

@@ -216,7 +216,7 @@ export function useTrendingPapers(params: UseTrendingPapersParams = {}) {
     queryKey: ['trending-papers', { limit, max_age_days, min_velocity }],
     queryFn: () => apiClient.getTrendingPapers({ limit, max_age_days, min_velocity }),
     enabled,
-    staleTime: 2 * 60 * 1000, // 2 minutes (shorter for trending data)
-    refetchOnWindowFocus: false,
+    staleTime: 30 * 1000, // 30 seconds — thumbnails and velocity change frequently
+    refetchOnWindowFocus: true,
   });
 }

@@ -94,6 +94,11 @@ const LegacyPaperRedirect: React.FC = () => {
   return <Navigate to={arxivId ? `/paper/${arxivId}` : "/papers"} replace />;
 };
 
+const LegacyTaskRedirect: React.FC = () => {
+  const { taskSlug } = useParams();
+  return <Navigate to={taskSlug ? `/tasks/${taskSlug}` : "/tasks"} replace />;
+};
+
 // On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
 // cookie can't follow visitors across origins, so any view that requires
 // sign-in (bookmarks, CRON dashboard) is a dead-end. Redirect those routes
@@ -133,6 +138,7 @@ const Shell: React.FC = () => {
             <Route path="/paper/:arxivId" element={<PaperDetailView />} />
             <Route path="/tasks" element={<TagsIndexView />} />
             <Route path="/tasks/:taskSlug" element={<TagBrowseView />} />
+            <Route path="/task/:taskSlug" element={<LegacyTaskRedirect />} />
             <Route path="/methods" element={<MethodsIndexView />} />
             <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />

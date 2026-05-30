@@ -376,7 +376,8 @@ export type PendingEditType =
   | 'evaluations'
   | 'repositories'
   | 'project_pages'
-  | 'source_url';
+  | 'source_url'
+  | 'hf_artifacts';
 
 export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
 
@@ -572,6 +573,17 @@ class ApiClient {
     return this.request<Paper>(endpoint, {
       method: 'PUT',
       body: JSON.stringify({ source_url: sourceUrl }),
+    });
+  }
+
+  async updatePaperHfArtifacts(
+    paperId: string,
+    artifacts: { hf_models: string[]; hf_datasets: string[]; hf_spaces: string[] },
+  ): Promise<Paper> {
+    const endpoint = `/papers/${paperId}/hf-artifacts`;
+    return this.request<Paper>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify(artifacts),
     });
   }
 
@@ -1223,6 +1235,7 @@ export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);
 export const updatePaperProjectPages = apiClient.updatePaperProjectPages.bind(apiClient);
 export const updatePaperSourceUrl = apiClient.updatePaperSourceUrl.bind(apiClient);
+export const updatePaperHfArtifacts = apiClient.updatePaperHfArtifacts.bind(apiClient);
 export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);

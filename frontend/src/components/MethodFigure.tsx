@@ -199,35 +199,6 @@ const ViTFig: React.FC = () => (
   </svg>
 );
 
-const MoEFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Sparse routing of tokens to k of N experts</text>
-    <MFBox x={140} y={40} w={80} h={28} fill={C.pink} stroke={C.pinkS} label="Token x" fontSize={11} />
-    <MFBox x={120} y={90} w={120} h={30} fill={C.yellow} stroke={C.yellowS} label="Router (softmax)" fontSize={11} />
-    {[0, 1, 2, 3, 4].map((i) => {
-      const x = 50 + i * 65;
-      const active = i === 1 || i === 3;
-      return (
-        <g key={i}>
-          <rect
-            x={x}
-            y={185}
-            width="50"
-            height="60"
-            rx="3"
-            fill={active ? C.green : "#F2EFE8"}
-            stroke={active ? C.greenS : C.faint}
-            strokeWidth="1"
-          />
-          <text x={x + 25} y={210} fontSize="10" fontFamily="var(--mono)" fill={C.ink} textAnchor="middle">FFN</text>
-          <text x={x + 25} y={228} fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">E{i + 1}</text>
-        </g>
-      );
-    })}
-    <MFBox x={140} y={325} w={80} h={28} fill={C.purple} stroke={C.purpleS} label="Output y" fontSize={11} />
-  </svg>
-);
-
 const DiffusionFig: React.FC = () => (
   <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
     <text x="180" y="50" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Reverse process: pure noise → sample</text>
@@ -341,8 +312,6 @@ const FIGURE_BY_SLUG: Record<string, React.FC> = {
   unet: UNetFig,
   vit: ViTFig,
   "vision-transformer": ViTFig,
-  "mixture-of-experts": MoEFig,
-  moe: MoEFig,
   diffusion: DiffusionFig,
   ddpm: DiffusionFig,
   gan: GANFig,
