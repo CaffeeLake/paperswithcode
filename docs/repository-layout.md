@@ -97,7 +97,7 @@ paperswithcode/
 │   │   ├── extract_urls.py             # 50 papers/hour (AI-powered)
 │   │   └── calculate_trending_scores.py
 │   ├── daily/                # Legacy daily jobs
-│   │   └── import_hf_daily_papers.py   # Import HF papers (Tue-Sat)
+│   │   └── import_hf_daily_papers.py   # Import HF papers (hourly)
 │   ├── manage_cron.py        # CRON management script
 │   ├── logs/                 # CRON execution logs
 │   └── utils/                # Shared CRON utilities

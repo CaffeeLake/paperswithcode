@@ -2,8 +2,8 @@ name: Cron - Import HF Daily Papers
 
 on:
   schedule:
-    # Tue-Sat 03:00 UTC (papers are submitted Mon-Fri on HF; we import the previous day)
-    - cron: "0 3 * * 2-6"
+    # Hourly: check the current day's HF daily papers and import any not yet in the DB
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       date:

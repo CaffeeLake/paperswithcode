@@ -40,7 +40,7 @@ Recommended for production; more efficient than legacy daily batches.
 
 ### Import Hugging Face daily papers (`import_hf_daily_papers.py`)
 
-- **Schedule**: early morning UTC, Tue–Sat (HF paper weekdays)
+- **Schedule**: hourly (imports the current day's HF papers not yet in the DB)
 - **Purpose**: import curated HF submissions into papers, authors, repositories, project pages
 - **Command**: `PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.daily.import_hf_daily_papers`
 
@@ -61,7 +61,7 @@ Workflows live under `.github/workflows/cron-*.yml`. Each run SSHs to the Hetzne
 
 | Workflow | Schedule (UTC) | Runs on VPS |
 |----------|----------------|-------------|
-| `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-import-hf-daily-papers.yml` | `0 * * * *` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
 | `cron-update-github-stars.yml` | `0 * * * *` | `.github/workflows/scripts/run_github_stars.sh` |
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` |

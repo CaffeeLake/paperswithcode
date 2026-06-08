@@ -12,7 +12,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
 | `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` | `.github/workflows/scripts/hourly/extract_urls.py` |
-| `cron-import-hf-daily-papers.yml` | `0 3 * * 2-6` | direct `uv run` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-import-hf-daily-papers.yml` | `0 * * * *` | direct `uv run` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
 | `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` | `.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh` | `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` |
 
@@ -62,8 +62,9 @@ papers. Runs are bounded so hourly Actions do not pile up under API throttling.
 `extract_urls.py` uses Gemini to find official GitHub repositories and project
 pages for papers that still have `urls_extracted = false`.
 
-`import_hf_daily_papers.py` imports the previous weekday's Hugging Face papers
-and auto-tags tasks/methods using keyword matching.
+`import_hf_daily_papers.py` runs hourly, imports the current day's Hugging Face
+papers that are not yet in the database, and auto-tags tasks/methods using
+keyword matching.
 
 ## Manual Utilities
 

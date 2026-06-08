@@ -1,7 +1,8 @@
 """
-Daily Hugging Face Papers Import CRON Job
+Hourly Hugging Face Papers Import CRON Job
 
-Fetches the daily papers from Hugging Face API for the previous day and imports them into the database:
+Fetches the current day's daily papers from Hugging Face API and imports any not
+yet in the database (deduped per-paper by arxiv_id):
 - Papers table with metadata and abstracts
 - Authors table with Hugging Face profile information
 - Repositories table with GitHub links
@@ -13,14 +14,14 @@ Per-paper logic (DB inserts, author handling, repo/project page handling, keywor
 tagging) lives in `scripts.utils.hf_paper_importer.HuggingFacePaperImporterMixin`,
 which is shared with the historical backfill in `.github/workflows/scripts/backfill/`.
 
-Schedule: Daily at 3:00 AM UTC (after ArXiv update)
+Schedule: Hourly
 Dependencies: PostgreSQL, Hugging Face API
 """
 
 import argparse
 import asyncio
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -64,18 +65,9 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         if self.target_date:
             target_date = self.target_date
         else:
-            # Papers are submitted Mon-Fri on HF, so we import Tue-Sat to get previous day's papers
-            today = datetime.now()
-            weekday = today.weekday()
-            if weekday in [0, 6]:  # Monday or Sunday
-                day_name = today.strftime("%A")
-                self.logger.info(
-                    f"Skipping import on {day_name} - papers are only submitted Mon-Fri on Hugging Face"
-                )
-                return
-
-            yesterday = datetime.now() - timedelta(days=1)
-            target_date = yesterday.strftime("%Y-%m-%d")
+            # Scheduled hourly: target the current day's HF daily papers and let the
+            # per-paper arxiv_id dedupe import only papers not yet in the database.
+            target_date = datetime.now().strftime("%Y-%m-%d")
 
         self.logger.info(f"Fetching daily papers for date: {target_date}")
         self.load_task_keywords()
