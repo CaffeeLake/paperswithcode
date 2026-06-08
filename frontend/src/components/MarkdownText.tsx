@@ -18,7 +18,7 @@ const INTERNAL_HOSTS = new Set([
   '167.235.148.241',
 ]);
 
-const INTERNAL_PATH_PREFIXES = ['/methods', '/paper', '/papers', '/tasks', '/benchmark'];
+const INTERNAL_PATH_PREFIXES = ['/methods', '/paper', '/papers', '/tasks', '/benchmark', '/conferences'];
 
 const resolveInternalPath = (href: string | undefined): string | null => {
   if (!href) return null;

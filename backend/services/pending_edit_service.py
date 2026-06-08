@@ -191,6 +191,7 @@ class PendingEditService:
                     "methodology": row.methodology,
                     "metrics": row.metrics,
                     "uses_additional_data": row.uses_additional_data,
+                    "is_open": row.is_open,
                     "best_rank": row.best_rank,
                     "best_metric": row.best_metric,
                     "evaluated_on": row.evaluated_on.isoformat()
@@ -688,6 +689,7 @@ class PendingEditService:
                     methodology=data.get("methodology"),
                     metrics=data.get("metrics"),
                     uses_additional_data=data.get("uses_additional_data"),
+                    is_open=data.get("is_open"),
                     best_rank=data.get("best_rank"),
                     best_metric=data.get("best_metric"),
                     evaluated_on=data.get("evaluated_on"),
@@ -713,6 +715,7 @@ class PendingEditService:
                     harness=data.get("harness"),
                     methodology=data.get("methodology"),
                     uses_additional_data=bool(data.get("uses_additional_data", False)),
+                    is_open=bool(data.get("is_open", True)),
                     best_rank=data.get("best_rank"),
                     best_metric=data.get("best_metric"),
                     evaluated_on=data.get("evaluated_on"),

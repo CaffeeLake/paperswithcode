@@ -1105,6 +1105,39 @@ a.paper-github-stats.is-link:focus-visible {
   white-space: nowrap;
 }
 
+/* === DETAIL HERO (title + thumbnail) === */
+.detail-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  gap: 32px;
+  align-items: stretch;
+  margin-bottom: 32px;
+}
+.detail-hero-main {
+  min-width: 0;
+}
+.detail-hero .action-row {
+  margin-bottom: 0;
+}
+.detail-hero-thumb {
+  display: flex;
+  justify-content: center;
+  align-self: stretch;
+  min-height: 0;
+}
+.detail-hero-thumb > div {
+  width: 100% !important;
+  max-width: none;
+  height: 100% !important;
+  min-height: 180px;
+  aspect-ratio: unset;
+}
+.detail-hero-thumb > div > img,
+.detail-hero-thumb > div > svg {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* === DETAIL SIDEBAR === */
 .detail-sidebar { font-size: 13px; }
 .sidebar-card {
@@ -1286,6 +1319,14 @@ a.paper-github-stats.is-link:focus-visible {
   height: auto;
   display: block;
 }
+.method-figure-svg--compact .method-figure-img {
+  width: 50%;
+  margin: 0 auto;
+}
+.method-figure-svg--scaled-80 .method-figure-img {
+  width: 80%;
+  margin: 0 auto;
+}
 .method-figure-card figcaption {
   font-family: var(--serif);
   font-style: italic;
@@ -1331,21 +1372,19 @@ a.paper-github-stats.is-link:focus-visible {
 }
 .task-figure-img-wrap {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: var(--bg);
   border-radius: 4px;
   overflow: hidden;
+  line-height: 0;
 }
 .task-figure-img {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
+  width: 100%;
   height: auto;
-  object-fit: contain;
   display: block;
+}
+.task-figure-card--compact .task-figure-img {
+  width: 50%;
+  margin: 0 auto;
 }
 .task-figure-card figcaption {
   font-family: var(--serif);
@@ -1601,6 +1640,12 @@ a.paper-github-stats.is-link:focus-visible {
   letter-spacing: -0.025em;
   line-height: 1;
   margin-bottom: 16px;
+  overflow-wrap: break-word;
+}
+.method-hero-title {
+  font-family: var(--mono);
+  font-size: 48px;
+  letter-spacing: -0.01em;
 }
 .tag-hero-meta {
   display: flex;
@@ -2222,6 +2267,7 @@ a.paper-github-stats.is-link:focus-visible {
   text-transform: uppercase;
   margin-bottom: 0;
   color: var(--ink);
+  overflow-wrap: break-word;
 }
 
 /* Benchmark list rows on task page (compact, no charts) */
@@ -2350,6 +2396,7 @@ a.paper-github-stats.is-link:focus-visible {
   background: var(--bg-elevated);
   font-family: var(--sans);
   font-size: 13px;
+  font-style: normal;
   color: var(--ink);
   cursor: pointer;
   transition: border-color 0.15s;
@@ -2590,6 +2637,7 @@ a.paper-github-stats.is-link:focus-visible {
   text-decoration: none;
   text-wrap: pretty;
 }
+.bm-table .col-paper .katex { font-size: 1em; }
 .bm-table .col-paper a:hover { text-decoration: underline; }
 .bm-table .col-code { width: 60px; text-align: center; }
 .bm-table .col-year {
@@ -2798,6 +2846,88 @@ html { scroll-behavior: smooth; }
   box-shadow: 0 0 0 2px oklch(0.92 0.07 60);
 }
 
+/* Inline tag flagging a closed-source model on the leaderboard. Rendered as a
+ * button so it can act as an accessible, focusable tooltip trigger. */
+.bm-closed-source-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--surface-2, oklch(0.95 0.01 250));
+  border: 1px solid var(--border, oklch(0.88 0.01 250));
+  vertical-align: middle;
+  cursor: help;
+  line-height: 1.4;
+}
+.bm-closed-source-tag:focus-visible {
+  outline: 2px solid var(--hairline-strong);
+  outline-offset: 2px;
+}
+
+/* Settings page (/settings). */
+.settings-section {
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 20px 22px;
+  margin-top: 8px;
+  max-width: 640px;
+}
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  margin: 0 0 14px;
+}
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+.settings-row-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.settings-row-desc {
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+  max-width: 460px;
+}
+.settings-note {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.settings-note-action {
+  margin-top: 10px;
+}
+
+/* Settings link inside the closed-source model tooltip. */
+.closed-eval-tooltip-link {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ============================================================================
  * v2-frontend additions for components introduced during the migration
  *   - mobile hamburger menu
@@ -2969,6 +3099,19 @@ html { scroll-behavior: smooth; }
     grid-template-columns: 1fr;
     gap: 32px;
   }
+  .detail-hero {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .detail-hero-thumb {
+    justify-content: flex-start;
+  }
+  .detail-hero-thumb > div {
+    max-width: 200px;
+    min-height: 0;
+    aspect-ratio: 160 / 220;
+    height: auto !important;
+  }
   .detail-sidebar { font-size: 13px; }
 
   .task-page-grid {
@@ -2987,6 +3130,8 @@ html { scroll-behavior: smooth; }
 
   .feed-title { font-size: 32px; }
   .tag-hero-title { font-size: 40px; }
+  .method-hero-title { font-size: 40px; }
+  .domain-mega-title { font-size: 40px; }
   .detail-title { font-size: 28px; }
 
   .paper-card {
@@ -3068,6 +3213,8 @@ html { scroll-behavior: smooth; }
   .feed-title { font-size: 26px; }
   .tag-hero { padding: 32px 0 24px; margin-bottom: 24px; }
   .tag-hero-title { font-size: 30px; }
+  .method-hero-title { font-size: 30px; }
+  .domain-mega-title { font-size: 30px; }
   .detail-title { font-size: 24px; }
 
   .tag-grid { grid-template-columns: 1fr; }

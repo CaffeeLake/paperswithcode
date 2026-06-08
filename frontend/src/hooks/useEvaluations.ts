@@ -16,7 +16,8 @@ export function useEvaluationsByPaper(paperId: string | undefined, enabled: bool
       return getEvaluationsByPaper(paperId);
     },
     enabled: enabled && !!paperId,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 }
 

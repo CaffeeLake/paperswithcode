@@ -21,18 +21,27 @@ from urllib.parse import urlparse
 
 import httpx
 from huggingface_hub import HfFileSystem, batch_bucket_files, download_bucket_files
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from pdf2image import convert_from_bytes
 
 from backend.config import get_settings
 from backend.utils.exceptions import ThumbnailGenerationError
 from backend.services.arxiv_service import ArxivService
+from backend.utils.biorxiv import (
+    BioRxivMetadata,
+    download_biorxiv_pdf_bytes,
+    fetch_biorxiv_metadata,
+    parse_biorxiv_doi,
+)
 
 logger = logging.getLogger(__name__)
 
-THUMBNAIL_RENDERER_CACHE_BUST = "fit2"
+THUMBNAIL_RENDERER_CACHE_BUST = "fit3"
 EXPECTED_THUMBNAIL_WIDTH = 400
 EXPECTED_THUMBNAIL_FORMAT = "JPEG"
+# Paper cards render thumbnails in a 160×220 box; match that aspect so
+# object-fit: contain fills the frame without letterboxing.
+CARD_THUMB_ASPECT = 160 / 220
 # A correctly-rendered first-page thumbnail is portrait (PDF page is ~A4 /
 # US Letter, H/W ~= 1.2-1.4 after trimming). Older renders produced squat
 # thumbnails around H/W = 0.65 because the height was clipped, so we treat
@@ -89,6 +98,53 @@ def _trim_blank_page_margins(image: Image.Image) -> Image.Image:
         return image
 
     return image.crop(crop_box)
+
+
+def _trim_trailing_blank_rows(
+    image: Image.Image, min_white_fraction: float = 0.985
+) -> Image.Image:
+    """
+    Remove footer rows that are almost entirely blank after the main bbox trim.
+    PDF footers often include faint gray text that prevents a tight bottom crop.
+    """
+    rgb_image = image.convert("RGB")
+    width, height = rgb_image.size
+    bottom = height
+    while bottom > 0:
+        white_pixels = 0
+        for x in range(width):
+            r, g, b = rgb_image.getpixel((x, bottom - 1))
+            if r > 245 and g > 245 and b > 245:
+                white_pixels += 1
+        if white_pixels / width < min_white_fraction:
+            break
+        bottom -= 1
+
+    if bottom == height:
+        return image
+
+    return image.crop((0, 0, width, bottom))
+
+
+def _crop_to_card_aspect(image: Image.Image) -> Image.Image:
+    """
+    Crop to the paper-card display aspect ratio (160×220).
+
+    Width-heavy pages are center-cropped; height-heavy pages keep the top so
+    titles remain visible.
+    """
+    width, height = image.size
+    current_aspect = width / height
+    if abs(current_aspect - CARD_THUMB_ASPECT) < 0.005:
+        return image
+
+    if current_aspect > CARD_THUMB_ASPECT:
+        new_width = int(height * CARD_THUMB_ASPECT)
+        left = (width - new_width) // 2
+        return image.crop((left, 0, left + new_width, height))
+
+    new_height = int(width / CARD_THUMB_ASPECT)
+    return image.crop((0, 0, width, new_height))
 
 
 def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
@@ -292,6 +348,7 @@ class ThumbnailService:
 
             image = images[0]
             image = _trim_blank_page_margins(image)
+            image = _trim_trailing_blank_rows(image)
 
             # Resize the full first page to target width while maintaining aspect ratio
             aspect_ratio = image.height / image.width
@@ -300,6 +357,13 @@ class ThumbnailService:
             thumbnail = image.resize(
                 (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
             )
+            thumbnail = _crop_to_card_aspect(thumbnail)
+
+            if thumbnail.width != self.thumbnail_width:
+                card_height = int(self.thumbnail_width / CARD_THUMB_ASPECT)
+                thumbnail = thumbnail.resize(
+                    (self.thumbnail_width, card_height), Image.Resampling.LANCZOS
+                )
 
             return thumbnail
 
@@ -315,13 +379,91 @@ class ThumbnailService:
                 image = image.convert("RGB")
             aspect_ratio = image.height / image.width
             target_height = int(self.thumbnail_width * aspect_ratio)
-            return image.resize(
+            thumbnail = image.resize(
                 (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
             )
+            thumbnail = _crop_to_card_aspect(thumbnail)
+            if thumbnail.width != self.thumbnail_width:
+                card_height = int(self.thumbnail_width / CARD_THUMB_ASPECT)
+                thumbnail = thumbnail.resize(
+                    (self.thumbnail_width, card_height), Image.Resampling.LANCZOS
+                )
+            return thumbnail
         except Exception as e:
             raise ThumbnailGenerationError(
                 f"Failed to convert screenshot to thumbnail: {str(e)}"
             )
+
+    def _render_biorxiv_metadata_thumbnail(
+        self, metadata: BioRxivMetadata, server: str
+    ) -> Image.Image:
+        """
+        Render a readable card thumbnail from bioRxiv API metadata when the PDF
+        is not available via Europe PMC or the requester-pays S3 mirror.
+        """
+        width = self.thumbnail_width
+        height = int(width * 1.35)
+        image = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(image)
+        font_title = ImageFont.load_default(size=18)
+        font_body = ImageFont.load_default(size=13)
+        font_label = ImageFont.load_default(size=12)
+
+        margin = 20
+        y = margin
+        label = "medRxiv" if server == "medrxiv" else "bioRxiv"
+        draw.text((margin, y), label, fill="#2563eb", font=font_label)
+        y += 22
+
+        title = (metadata.title or "Untitled preprint").strip()
+        for line in self._wrap_text(title, font_title, width - 2 * margin):
+            draw.text((margin, y), line, fill="#111827", font=font_title)
+            y += 22
+            if y > height - 120:
+                break
+
+        if metadata.authors:
+            author_line = ", ".join(metadata.authors[:3])
+            if len(metadata.authors) > 3:
+                author_line += ", et al."
+            for line in self._wrap_text(author_line, font_body, width - 2 * margin):
+                draw.text((margin, y), line, fill="#4b5563", font=font_body)
+                y += 18
+                if y > height - 80:
+                    break
+
+        if metadata.abstract and y < height - 70:
+            y += 8
+            snippet = metadata.abstract.strip()
+            if len(snippet) > 320:
+                snippet = snippet[:317].rstrip() + "..."
+            for line in self._wrap_text(snippet, font_body, width - 2 * margin):
+                draw.text((margin, y), line, fill="#374151", font=font_body)
+                y += 17
+                if y > height - margin:
+                    break
+
+        return image
+
+    def _wrap_text(
+        self, text: str, font: ImageFont.ImageFont, max_width: int
+    ) -> list[str]:
+        words = text.split()
+        if not words:
+            return []
+
+        lines: list[str] = []
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            bbox = font.getbbox(candidate)
+            if bbox[2] - bbox[0] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
 
     def _normalize_external_pdf_url(self, source_url: str) -> str:
         """
@@ -611,9 +753,28 @@ class ThumbnailService:
         cache_path = self._get_active_cache_path(filename)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-        pdf_content = await self._download_external_pdf(source_url)
+        biorxiv_paper = parse_biorxiv_doi(source_url)
+        pdf_content = None
+        if biorxiv_paper is not None:
+            server, _ = biorxiv_paper
+            settings = get_settings()
+            pdf_content = await download_biorxiv_pdf_bytes(
+                source_url,
+                aws_access_key_id=settings.biorxiv_aws_access_key_id,
+                aws_secret_access_key=settings.biorxiv_aws_secret_access_key,
+            )
+        if pdf_content is None:
+            pdf_content = await self._download_external_pdf(source_url)
         if pdf_content is not None:
             thumbnail = self._convert_pdf_to_thumbnail(pdf_content)
+        elif biorxiv_paper is not None:
+            server, _ = biorxiv_paper
+            metadata = await fetch_biorxiv_metadata(source_url)
+            if metadata is None:
+                raise ThumbnailGenerationError(
+                    "Could not download bioRxiv/medRxiv PDF or metadata"
+                )
+            thumbnail = self._render_biorxiv_metadata_thumbnail(metadata, server)
         else:
             screenshot = await self._capture_external_page_screenshot(source_url)
             thumbnail = self._convert_screenshot_to_thumbnail(screenshot)

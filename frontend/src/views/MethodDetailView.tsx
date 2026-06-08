@@ -126,9 +126,7 @@ const MethodDetailView: React.FC = () => {
       <div className="tag-hero method-hero-grid">
         <div>
           <div className="tag-hero-eyebrow">METHOD</div>
-          <h1 className="tag-hero-title" style={{ fontFamily: "var(--mono)", fontSize: 48, letterSpacing: "-0.01em" }}>
-            {m.name}
-          </h1>
+          <h1 className="tag-hero-title method-hero-title">{m.name}</h1>
           {m.full_name && m.full_name !== m.name && (
             <div style={{ fontFamily: "var(--serif)", fontSize: 16, fontStyle: "italic", color: "var(--ink-soft)", marginTop: 8 }}>
               {m.full_name}
@@ -161,15 +159,11 @@ const MethodDetailView: React.FC = () => {
         </div>
         <figure className="method-figure-card">
           <MethodFigure method={m} />
-          <figcaption>
-            Figure · schematic of {m.name}
-            {m.image_credit && (
-              <>
-                <br />
-                <MarkdownText className="method-image-credit" text={m.image_credit} />
-              </>
-            )}
-          </figcaption>
+          {m.image_credit && (
+            <figcaption>
+              <MarkdownText className="method-image-credit" text={m.image_credit} />
+            </figcaption>
+          )}
         </figure>
       </div>
 

@@ -17,6 +17,8 @@ Case-Sensitivity Rules:
   * Uses word boundary matching to prevent false matches
 """
 
+import os
+
 import psycopg2
 from psycopg2.extras import RealDictCursor, execute_batch
 from typing import Dict, List
@@ -43,6 +45,17 @@ def load_methods_with_keywords(conn) -> List[Dict]:
     return methods
 
 
+def get_db_connection():
+    """Get database connection."""
+    return psycopg2.connect(
+        host=os.getenv("PWC_DB_HOST", "localhost"),
+        port=os.getenv("PWC_DB_PORT", "5432"),
+        database=os.getenv("PWC_DB_NAME", "paperswithcode_hf"),
+        user=os.getenv("PWC_DB_USER", "postgres"),
+        password=os.getenv("PWC_DB_PASSWORD", "postgres"),
+    )
+
+
 def link_papers_by_keywords():
     """Main function to link papers to methods based on keyword matching."""
 
@@ -51,16 +64,7 @@ def link_papers_by_keywords():
         print("Linking Papers to Methods Based on Keywords")
         print("=" * 80)
 
-        # Connect to database
-        conn = psycopg2.connect(
-            database="paperswithcode_hf",
-            user="postgres",
-            password="postgres",
-            host="localhost",
-            port="5432",
-        )
-
-        # Load methods and create keyword patterns
+        conn = get_db_connection()
         print("\n1. Loading methods with keywords...")
         methods = load_methods_with_keywords(conn)
         print(f"   ✓ Loaded {len(methods)} methods with keywords")

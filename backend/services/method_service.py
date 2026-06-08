@@ -474,6 +474,7 @@ class MethodService:
                     desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
                     desc(func.coalesce(trending_subq.c.max_stars, -1)),
                     desc(DBPaper.date_published),
+                    desc(DBPaper.id),
                 )
             else:
                 if order_by == "date_published":
@@ -486,9 +487,9 @@ class MethodService:
                     order_field = DBPaper.date_published
 
                 if order_dir == "desc":
-                    query = query.order_by(desc(order_field))
+                    query = query.order_by(desc(order_field), desc(DBPaper.id))
                 else:
-                    query = query.order_by(asc(order_field))
+                    query = query.order_by(asc(order_field), asc(DBPaper.id))
 
             # Get total count
             total_count = query.count()

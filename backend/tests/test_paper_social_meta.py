@@ -168,6 +168,22 @@ def test_resolve_social_image_accepts_absolute_url_without_disk_check():
     assert result.absolute_url == "https://example.com/preview.jpg"
 
 
+def test_build_paper_meta_decodes_latex_accents_in_title():
+    paper = _make_paper(
+        title=r"D\'ej\`a View: Looping Transformers for Multi-View 3D Reconstruction"
+    )
+    fake = _FakeThumbnailService(present=set())
+
+    meta = build_paper_meta(
+        paper,
+        route_identifier=paper.arxiv_id or paper.id,
+        origin="https://paperswithcode.co",
+        thumbnail_service=fake,
+    )
+
+    assert meta.title.startswith("Déjà View:")
+
+
 def test_inject_paper_meta_escapes_user_supplied_strings():
     paper = _make_paper()
     fake = _FakeThumbnailService(present={"2504_12516_v1.jpg"})

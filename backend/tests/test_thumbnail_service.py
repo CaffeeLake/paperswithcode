@@ -1,11 +1,15 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
 from backend.services.thumbnail_service import (
+    CARD_THUMB_ASPECT,
     EXPECTED_THUMBNAIL_WIDTH,
     ThumbnailService,
+    _crop_to_card_aspect,
     _trim_blank_page_margins,
+    _trim_trailing_blank_rows,
     is_thumbnail_valid,
 )
 
@@ -27,6 +31,29 @@ def test_trim_blank_page_margins_leaves_blank_page_unchanged():
     trimmed = _trim_blank_page_margins(image)
 
     assert trimmed.size == image.size
+
+
+def test_trim_trailing_blank_rows_removes_footer_whitespace():
+    image = Image.new("RGB", (100, 140), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 20, 79, 99), fill="black")
+    draw.text((30, 120), "footer", fill=(120, 120, 120))
+
+    trimmed = _trim_trailing_blank_rows(image)
+
+    assert trimmed.height < image.height
+    assert trimmed.getpixel((50, 59)) == (0, 0, 0)
+
+
+def test_crop_to_card_aspect_center_crops_wide_pages():
+    image = Image.new("RGB", (400, 504), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((180, 40, 219, 79), fill="black")
+
+    cropped = _crop_to_card_aspect(image)
+
+    assert cropped.width / cropped.height == pytest.approx(CARD_THUMB_ASPECT, rel=0.01)
+    assert cropped.getpixel((cropped.width // 2, 59)) == (0, 0, 0)
 
 
 def _save_jpeg(path: Path, width: int, height: int) -> None:

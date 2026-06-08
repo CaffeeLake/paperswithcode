@@ -2,16 +2,19 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { Icon, MethodChip, TagChip } from "@/components";
+import { Icon, MethodChip, PaperPreview, TagChip } from "@/components";
+import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import { apiClient, indexPaperFromArxiv } from "@/lib/api";
 import type { Paper } from "@/lib/api";
-import { apiUrl } from "@/lib/apiUrl";
+import { apiUrl, assetUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { summarizeRepos } from "@/lib/transform";
-import { formatMetricValue } from "@/lib/utils";
+import { formatPageTitle, DEFAULT_SITE_SUFFIX } from "@/lib/latexPlainText";
+import { formatMetricValue, normalizePaperRouteId } from "@/lib/utils";
 import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
+import { usePreferences } from "@/lib/preferencesContext";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
 import { usePaperEditState } from "@/hooks/usePaperEditState";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -85,7 +88,8 @@ function formatResourceLinkLabel(url: string, fallback: string): string {
 }
 
 const PaperDetailView: React.FC = () => {
-  const { arxivId } = useParams<{ arxivId: string }>();
+  const { arxivId: rawArxivId } = useParams<{ arxivId: string }>();
+  const arxivId = rawArxivId ? normalizePaperRouteId(rawArxivId) : "";
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user } = useAuth();
@@ -99,6 +103,20 @@ const PaperDetailView: React.FC = () => {
 
   const { data: paper, isLoading, error, refetch } = usePaper(arxivId || "", !!arxivId);
   const [secondaryQueriesEnabled, setSecondaryQueriesEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!rawArxivId || rawArxivId === arxivId) return;
+    const suffix = window.location.search + window.location.hash;
+    navigate(`/paper/${arxivId}${suffix}`, { replace: true });
+  }, [arxivId, navigate, rawArxivId]);
+
+  useEffect(() => {
+    if (!paper?.title) return;
+    document.title = formatPageTitle(paper.title);
+    return () => {
+      document.title = DEFAULT_SITE_SUFFIX;
+    };
+  }, [paper?.title]);
 
   useEffect(() => {
     setSecondaryQueriesEnabled(false);
@@ -115,6 +133,15 @@ const PaperDetailView: React.FC = () => {
     paper?.id,
     secondaryQueriesEnabled && !!paper?.id,
   );
+  const { preferences } = usePreferences();
+  // Rows shown in the read-only Results section honor the user's hide
+  // closed-source preference. The admin edit dialog still receives the full
+  // unfiltered list so editors can manage every row.
+  const visibleEvaluations = useMemo(() => {
+    if (!evaluations) return evaluations;
+    if (!preferences.hide_closed_source_evals) return evaluations;
+    return evaluations.filter((e) => e.is_open !== false);
+  }, [evaluations, preferences.hide_closed_source_evals]);
   const explicitHfArtifacts = useMemo(
     () => ({
       models: paper?.hf_models ?? [],
@@ -131,13 +158,13 @@ const PaperDetailView: React.FC = () => {
   // order of the Map) and within each group's rows so model variants on the
   // same benchmark stay together.
   const evaluationsByTask = useMemo(() => {
-    if (!evaluations) return [];
-    type EvalRow = (typeof evaluations)[number];
+    if (!visibleEvaluations) return [];
+    type EvalRow = (typeof visibleEvaluations)[number];
     const groups = new Map<
       string,
       { taskId: string; taskName: string; taskSlug?: string; rows: EvalRow[] }
     >();
-    for (const e of evaluations) {
+    for (const e of visibleEvaluations) {
       const key = e.task_id;
       const existing = groups.get(key);
       if (existing) {
@@ -152,7 +179,7 @@ const PaperDetailView: React.FC = () => {
       }
     }
     return Array.from(groups.values());
-  }, [evaluations]);
+  }, [visibleEvaluations]);
 
   // Paper version dropdown (PLAN.md §7.5)
   const versionsQ = useQuery({
@@ -510,6 +537,8 @@ const PaperDetailView: React.FC = () => {
 
       <div className="detail-grid">
         <div>
+          <div className="detail-hero">
+            <div className="detail-hero-main">
           <h1 className="detail-title">
             <LatexTitle title={paper.title} />
           </h1>
@@ -529,10 +558,21 @@ const PaperDetailView: React.FC = () => {
                 <span>{paper.citation_count.toLocaleString()} citations</span>
               </>
             )}
-            {paper.proceeding && (
+            {(paper.proceeding || paper.conference_slug) && (
               <>
                 <span>·</span>
-                <span>{paper.proceeding.replace(/\s+\d{1,2}$/, "")}</span>
+                {paper.conference_slug ? (
+                  <a
+                    href={`/conferences/${paper.conference_slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "var(--accent-text)" }}
+                  >
+                    {(paper.proceeding || paper.conference_name || "").replace(/\s+\d{1,2}$/, "")}
+                  </a>
+                ) : (
+                  <span>{paper.proceeding!.replace(/\s+\d{1,2}$/, "")}</span>
+                )}
               </>
             )}
             {versions.length > 1 && (
@@ -640,6 +680,16 @@ const PaperDetailView: React.FC = () => {
                 </a>
               </EditableActionButton>
             )}
+            {canEditPaper && !repoSummary.githubUrl ? (
+              <button
+                type="button"
+                className="action-btn"
+                onClick={() => openEdit("repositories")}
+                title="Add GitHub repository"
+              >
+                <Icon name="github" size={12} /> Add code
+              </button>
+            ) : null}
             {projectPages.length === 1 ? (
               <EditableActionButton
                 showEdit={canEditPaper}
@@ -702,7 +752,51 @@ const PaperDetailView: React.FC = () => {
                 <Icon name="external" size={12} /> Conference
               </a>
             )}
+            {(paper.organizations || []).map((o) => (
+              <Link
+                key={o.id}
+                to={`/${o.slug}`}
+                className="action-btn"
+                title={o.name}
+                aria-label={o.name}
+              >
+                {o.logo_url && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      height: 16,
+                      width: 16,
+                      borderRadius: 3,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <img
+                      src={o.logo_url}
+                      alt=""
+                      style={{ height: "150%", width: "150%", objectFit: "contain" }}
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
+                    />
+                  </span>
+                )}
+                {o.name}
+              </Link>
+            ))}
             <SavePaperButton paperId={paper.id} />
+          </div>
+            </div>
+
+            <div className="detail-hero-thumb detail-thumb-wrap">
+              <PaperPreview
+                paperId={paper.arxiv_id || paper.id}
+                title={paper.title}
+                thumbnailUrl={assetUrl(paper.thumbnail_url)}
+                priority
+              />
+            </div>
           </div>
 
           {hasIntroducedItems && (
@@ -753,7 +847,7 @@ const PaperDetailView: React.FC = () => {
                         className="introduced-pill lineage-pill"
                         onClick={() => navigate(`/paper/${p.route_identifier}`)}
                       >
-                        {p.title}
+                        <LatexTitle title={p.title} />
                         <span className="introduced-arrow">→</span>
                       </button>
                     ))}
@@ -774,7 +868,7 @@ const PaperDetailView: React.FC = () => {
                         onClick={() => navigate(`/paper/${p.route_identifier}`)}
                       >
                         <span className="introduced-arrow lineage-arrow-back">←</span>
-                        {p.title}
+                        <LatexTitle title={p.title} />
                       </button>
                     ))}
                   </div>
@@ -849,7 +943,7 @@ const PaperDetailView: React.FC = () => {
           <div className="section-rule">
             <span>Results</span>
             <span className="accent">
-              {evaluations?.length || 0} benchmarks
+              {visibleEvaluations?.length || 0} benchmarks
               {canEditPaper && (
                 <button
                   type="button"
@@ -907,6 +1001,7 @@ const PaperDetailView: React.FC = () => {
                         </td>
                         <td className="model" title={e.model_name || undefined}>
                           {e.model_name || "—"}
+                          {e.is_open === false && <ClosedSourceEvalBadge />}
                         </td>
                         <td className="metric">{e.best_metric}</td>
                         <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
@@ -928,7 +1023,7 @@ const PaperDetailView: React.FC = () => {
         </div>
 
         <aside className="detail-sidebar">
-          {(sortedRepos.length > 0 || isSignedIn) && (
+          {(sortedRepos.length > 0 || canEditPaper) && (
             <div className="sidebar-card">
               <div className="sidebar-card-title">
                 <span>GitHub</span>
@@ -966,7 +1061,7 @@ const PaperDetailView: React.FC = () => {
                   <span className="code-line-stars">★ {formatStars(r.num_stars)}</span>
                 </a>
               ))}
-              {sortedRepos.length === 0 && isSignedIn && (
+              {sortedRepos.length === 0 && (
                 <div
                   style={{
                     fontFamily: "var(--mono)",

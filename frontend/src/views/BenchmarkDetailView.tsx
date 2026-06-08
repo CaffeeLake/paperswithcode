@@ -4,12 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
 import type { Evaluation, LeaderboardMetric, MetricDirections, Task } from "@/lib/api";
+import { usePreferences } from "@/lib/preferencesContext";
 import { formatMetricValue } from "@/lib/utils";
 import { copyNodeAsPng } from "@/lib/copyScreenshot";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
 import { Icon } from "@/components";
+import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import { useToast } from "@/hooks/use-toast";
 
 /** Cap how many metric columns we render in the leaderboard at once. The
@@ -29,6 +31,16 @@ function extractSourcePaperRouteId(paperUrl?: string | null): string | null {
 
   const localMatch = url.match(/^(?:https?:\/\/(?:www\.)?paperswithcode\.co)?\/paper\/([^/?#]+)/i);
   return localMatch?.[1] ?? null;
+}
+
+function renderBenchmarkPaperTitle(
+  paperTitle: string | undefined,
+  paperLabel: string | null,
+): React.ReactNode {
+  if (paperTitle) {
+    return <LatexTitle title={paperTitle} />;
+  }
+  return paperLabel || "—";
 }
 
 interface ChartPoint {
@@ -558,6 +570,7 @@ const BenchmarkDetailView: React.FC = () => {
   // collide), so we deep-link by it and silently fall back to the normal
   // benchmark page when the id is missing or no longer present.
   const highlightEvalId = searchParams.get("eval") || undefined;
+  const { preferences } = usePreferences();
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
   const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const didScrollToHighlight = useRef(false);
@@ -647,10 +660,15 @@ const BenchmarkDetailView: React.FC = () => {
   // unrelated rows from other tasks don't pollute ranking / chart / column
   // population. Falls back to all evals when no task is resolved.
   const taskEvals = useMemo(() => {
-    const evals = evalsQ.data || [];
+    let evals = evalsQ.data || [];
+    // Hide closed-source model rows when the user opted in. Applied before
+    // merge/rank/chart so the leaderboard, SOTA chart, and counts all agree.
+    if (preferences.hide_closed_source_evals) {
+      evals = evals.filter((e) => e.is_open !== false);
+    }
     if (!currentTaskId) return evals;
     return evals.filter((e) => e.task_id === currentTaskId);
-  }, [evalsQ.data, currentTaskId]);
+  }, [evalsQ.data, currentTaskId, preferences.hide_closed_source_evals]);
 
   const mergedTaskEvals = useMemo(
     () => mergeLeaderboardEvaluations(taskEvals),
@@ -989,10 +1007,12 @@ const BenchmarkDetailView: React.FC = () => {
                       {paperLabel ? " · " : ""}
                     </>
                   ) : null}
-                  {paperLabel && paperRouteId ? (
-                    <Link to={`/paper/${paperRouteId}`}>{paperLabel}</Link>
+                  {paperRouteId ? (
+                    <Link to={`/paper/${paperRouteId}`}>
+                      {renderBenchmarkPaperTitle(highlightedEval.paper_title, paperLabel)}
+                    </Link>
                   ) : (
-                    paperLabel || null
+                    renderBenchmarkPaperTitle(highlightedEval.paper_title, paperLabel)
                   )}
                 </span>
               </div>
@@ -1095,6 +1115,7 @@ const BenchmarkDetailView: React.FC = () => {
                         <td className="col-model">
                           {isHighlighted && <span className="bm-row-marker" aria-hidden="true" />}
                           {e.model_name || "—"}
+                          {e.is_open === false && <ClosedSourceEvalBadge />}
                         </td>
                         {showHarness && (
                           <td className="col-harness">{e.harness || "—"}</td>
@@ -1115,9 +1136,11 @@ const BenchmarkDetailView: React.FC = () => {
                         })}
                         <td className="col-paper">
                           {paperRouteId ? (
-                            <Link to={`/paper/${paperRouteId}`}>{paperLabel || "—"}</Link>
+                            <Link to={`/paper/${paperRouteId}`}>
+                              {renderBenchmarkPaperTitle(e.paper_title, paperLabel)}
+                            </Link>
                           ) : (
-                            paperLabel || "—"
+                            renderBenchmarkPaperTitle(e.paper_title, paperLabel)
                           )}
                         </td>
                         <td className="col-year">{e.paper_published_date?.slice(0, 4) || "—"}</td>

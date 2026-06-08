@@ -258,18 +258,6 @@ const VAEFig: React.FC = () => (
   </svg>
 );
 
-const RLHFFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Three-stage post-training pipeline</text>
-    <MFBox x={40} y={45} w={280} h={36} fill={C.green} stroke={C.greenS} label="Supervised fine-tuning on demonstrations" fontSize={11} />
-    <MFBox x={40} y={105} w={120} h={36} fill={C.blue} stroke={C.blueS} label="Pairwise preferences" fontSize={10} />
-    <MFBox x={200} y={105} w={120} h={36} fill={C.yellow} stroke={C.yellowS} label="Reward model rθ" fontSize={11} />
-    <MFBox x={40} y={165} w={100} h={40} fill={C.pink} stroke={C.pinkS} label="Policy πφ (LLM)" fontSize={11} />
-    <MFBox x={180} y={165} w={70} h={40} fill={C.orange} stroke={C.orangeS} label="Sample y" fontSize={10} />
-    <MFBox x={250} y={220} w={70} h={40} fill={C.yellow} stroke={C.yellowS} label="rθ(y)" fontSize={11} />
-  </svg>
-);
-
 const AGENT_SKILL_TREE_LINES: ReadonlyArray<readonly [string, string]> = [
   ["my-skill/", ""],
   ["├── SKILL.md", "# Required: metadata + instructions"],
@@ -304,19 +292,16 @@ const AgentSkillsFig: React.FC = () => (
 );
 
 const FIGURE_BY_SLUG: Record<string, React.FC> = {
-  transformer: TransformerFig,
   attention: AttentionFig,
   "self-attention": AttentionFig,
   cnn: CNNFig,
   "u-net": UNetFig,
   unet: UNetFig,
   vit: ViTFig,
-  "vision-transformer": ViTFig,
   diffusion: DiffusionFig,
   ddpm: DiffusionFig,
   gan: GANFig,
   vae: VAEFig,
-  rlhf: RLHFFig,
   "agent-skills": AgentSkillsFig,
 };
 
@@ -348,12 +333,20 @@ export const MethodFigure: React.FC<MethodFigureProps> = ({ method }) => {
     );
   }
   if (method.image_url) {
+    const sizeClass =
+      slug === "transformer" || slug === "gpt-4" || slug === "gpt-4o"
+        ? " method-figure-svg--compact"
+        : slug === "rpn"
+          ? " method-figure-svg--scaled-80"
+          : "";
     return (
-      <div className="method-figure-svg method-figure-svg--image">
+      <div
+        className={`method-figure-svg method-figure-svg--image${sizeClass}`}
+      >
         <img
           className="method-figure-img"
           src={method.image_url}
-          alt={`${method.name} schematic`}
+          alt={`${method.name} figure`}
         />
       </div>
     );

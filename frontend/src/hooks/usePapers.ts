@@ -163,6 +163,97 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
   });
 }
 
+interface UseInfiniteConferencePapersParams {
+  conferenceSlug: string;
+  taskSlug?: string;
+  presentation?: 'oral' | 'spotlight' | 'outstanding' | 'best_paper_finalist';
+  page_size?: number;
+  order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
+  order_dir?: 'asc' | 'desc';
+  latest_only?: boolean;
+  include_resources?: boolean;
+  enabled?: boolean;
+}
+
+export function useInfiniteConferencePapers(params: UseInfiniteConferencePapersParams) {
+  const {
+    conferenceSlug,
+    taskSlug,
+    presentation,
+    page_size = 20,
+    order_by = 'date_published',
+    order_dir = 'desc',
+    latest_only = true,
+    include_resources = true,
+    enabled = true,
+  } = params;
+
+  return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
+    queryKey: ['conference-papers-infinite', conferenceSlug, taskSlug, presentation, { page_size, order_by, order_dir, latest_only, include_resources }],
+    queryFn: ({ pageParam = 1 }) =>
+      apiClient.getConferencePapers(conferenceSlug, {
+        task: taskSlug,
+        presentation,
+        page: pageParam as number,
+        page_size,
+        order_by,
+        order_dir,
+        latest_only,
+        include_resources,
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_page,
+    initialPageParam: 1,
+    enabled: enabled && !!conferenceSlug,
+    staleTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
+  });
+}
+
+interface UseInfiniteOrganizationPapersParams {
+  organizationSlug: string;
+  taskSlug?: string;
+  page_size?: number;
+  order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
+  order_dir?: 'asc' | 'desc';
+  latest_only?: boolean;
+  include_resources?: boolean;
+  enabled?: boolean;
+}
+
+export function useInfiniteOrganizationPapers(params: UseInfiniteOrganizationPapersParams) {
+  const {
+    organizationSlug,
+    taskSlug,
+    page_size = 20,
+    order_by = 'date_published',
+    order_dir = 'desc',
+    latest_only = true,
+    include_resources = true,
+    enabled = true,
+  } = params;
+
+  return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
+    queryKey: ['organization-papers-infinite', organizationSlug, taskSlug, { page_size, order_by, order_dir, latest_only, include_resources }],
+    queryFn: ({ pageParam = 1 }) =>
+      apiClient.getOrganizationPapers(organizationSlug, {
+        task: taskSlug,
+        page: pageParam as number,
+        page_size,
+        order_by,
+        order_dir,
+        latest_only,
+        include_resources,
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_page,
+    initialPageParam: 1,
+    enabled: enabled && !!organizationSlug,
+    staleTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
+  });
+}
+
 interface UseTrendingPapersParams {
   limit?: number;
   max_age_days?: number;
@@ -178,6 +269,8 @@ function findPaperInCachedQueries(
     ['papers'],
     ['papers-infinite'],
     ['task-papers-infinite'],
+    ['conference-papers-infinite'],
+    ['organization-papers-infinite'],
     ['method-papers-infinite'],
   ];
 
@@ -217,6 +310,7 @@ export function useTrendingPapers(params: UseTrendingPapersParams = {}) {
     queryFn: () => apiClient.getTrendingPapers({ limit, max_age_days, min_velocity }),
     enabled,
     staleTime: 30 * 1000, // 30 seconds — thumbnails and velocity change frequently
+    refetchInterval: 60 * 1000, // refresh while the feed stays open (thumbnails/velocity)
     refetchOnWindowFocus: true,
   });
 }

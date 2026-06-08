@@ -155,6 +155,36 @@ Key capabilities:
 │ CHECK source_paper_id <> target_paper_id
 └──────────────────────────────┘
 
+┌─────────────────┐     ┌───────────────────────┐
+│  CONFERENCES    │     │  PAPER_CONFERENCES    │
+├─────────────────┤     ├───────────────────────┤
+│ id (PK)         │◄────┤ conference_id (FK)    │
+│ name            │     │ paper_id (FK)         │◄── PAPERS.id
+│ slug (UNIQUE)   │     │ source                │
+│ short_name      │     │ PK (paper, conference)│
+│ year            │     └───────────────────────┘
+│ url             │
+│ start_date      │
+│ end_date        │
+│ venue, location │
+│ description     │
+│ created/updated │
+└─────────────────┘
+
+┌─────────────────┐     ┌────────────────────────────┐
+│  ORGANIZATIONS  │     │   PAPER_ORGANIZATIONS      │
+├─────────────────┤     ├────────────────────────────┤
+│ id (PK)         │◄────┤ organization_id (FK)       │
+│ name            │     │ paper_id (FK)              │◄── PAPERS.id
+│ slug (UNIQUE)   │     │ source                     │
+│ hf_url          │     │ PK (paper, organization)   │
+│ logo_url        │     └────────────────────────────┘
+│ website_url     │
+│ github_url      │
+│ description     │
+│ created/updated │
+└─────────────────┘
+
 ┌──────────────────────────────┐
 │    PENDING_PAPER_EDITS       │
 ├──────────────────────────────┤
@@ -278,6 +308,29 @@ The following summarizes the live structure. See the database for full DDL.
 - Primary key: (hf_username, paper_id)
 - Indexes: idx_user_bookmarks_user (hf_username), idx_user_bookmarks_paper (paper_id)
 
+### CONFERENCES
+- id (PK), name, slug (UNIQUE NOT NULL), short_name, year
+- url, start_date, end_date, venue, location, description
+- created_at, updated_at
+- Indexes: slug, year DESC
+
+### PAPER_CONFERENCES
+- paper_id (FK papers ON DELETE CASCADE), conference_id (FK conferences ON DELETE CASCADE), source VARCHAR(16) DEFAULT 'manual'
+- PK (paper_id, conference_id)
+- Indexes: conference_id, paper_id
+
+### ORGANIZATIONS
+- id (PK), name, slug (UNIQUE NOT NULL)
+- hf_url, logo_url, website_url, github_url, description
+- created_at, updated_at
+- Indexes: slug
+- Normalized organization rows (NVIDIA, Google, Meta, ...), sourced primarily from Hugging Face org profiles. Used to tag papers by the lab/company behind them and to power organization pages (e.g. `/nvidia`).
+
+### PAPER_ORGANIZATIONS
+- paper_id (FK papers ON DELETE CASCADE), organization_id (FK organizations ON DELETE CASCADE), source VARCHAR(32) DEFAULT 'manual'
+- PK (paper_id, organization_id)
+- Indexes: organization_id, paper_id
+
 ### PENDING_PAPER_EDITS
 - id BIGSERIAL (PK)
 - paper_id BIGINT (FK papers, ON DELETE CASCADE)
@@ -300,6 +353,8 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
 - PAPER_RELATIONS(source_paper_id, target_paper_id, created_at) PK(source_paper_id, target_paper_id) — directed lineage edges between papers. `source_paper_id` is the predecessor (earlier) paper and `target_paper_id` is the successor (follow-up) paper, e.g. DINOv2 -> DINOv3. CHECK constraint prevents self-edges; both FKs cascade on paper delete. Many-to-many in both directions: a paper can have multiple successors and multiple predecessors.
+- PAPER_CONFERENCES(paper_id, conference_id, source) PK(paper_id, conference_id) — links papers to normalized conference rows. `source` is `manual` (import scripts / admin) or `auto`. Display tags such as "CVPR 2026" on paper pages still use the denormalized `papers.proceeding` column alongside this junction.
+- PAPER_ORGANIZATIONS(paper_id, organization_id, source) PK(paper_id, organization_id) — links papers to normalized organization rows (e.g. NVIDIA). `source` is `manual` (admin) or an importer tag such as `hf_org_papers`. Powers org logo tags on paper pages and organization pages like `/nvidia`.
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 - USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
@@ -321,7 +376,7 @@ The following summarizes the live structure. See the database for full DDL.
 
 ## Functions & Triggers
 
-- update_updated_at_column() — BEFORE UPDATE sets updated_at on: areas, authors, datasets, methods, papers, tasks, evaluations
+- update_updated_at_column() — BEFORE UPDATE sets updated_at on: areas, authors, conferences, datasets, methods, papers, tasks, evaluations
 - project_pages_api_{insert,update,delete}() — maintain project_pages_normalized via view triggers
 - calculate_star_velocity(repository_id, hours_lookback=24)
 - calculate_trending_score(repository_id, hours_lookback=24, recency_weight=2.0)

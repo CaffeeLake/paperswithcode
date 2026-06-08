@@ -143,6 +143,12 @@ class Paper(Base):
     project_pages: Mapped[List["ProjectPage"]] = relationship(
         "ProjectPage", secondary="paper_project_pages", back_populates="papers"
     )
+    conferences: Mapped[List["Conference"]] = relationship(
+        "Conference", secondary="paper_conferences", back_populates="papers"
+    )
+    organizations: Mapped[List["Organization"]] = relationship(
+        "Organization", secondary="paper_organizations", back_populates="papers"
+    )
     evaluations: Mapped[List["Evaluation"]] = relationship(
         "Evaluation", back_populates="paper"
     )
@@ -695,6 +701,12 @@ class Evaluation(Base):
     methodology: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     metrics: Mapped[dict] = mapped_column(JSONB, nullable=False)  # JSONB field
     uses_additional_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Whether the evaluated model is open-source. Defaults to True; closed-source
+    # models (proprietary APIs, unreleased flagship LLMs) set this to False so the
+    # frontend can optionally hide them based on a per-user preference.
+    is_open: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
     best_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     best_metric: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     evaluated_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -875,6 +887,173 @@ class PaperRepository(Base):
     )
 
 
+class Conference(Base):
+    """Normalized conference metadata (CVPR, ICCV, NeurIPS, etc.)."""
+
+    __tablename__ = "conferences"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    short_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    venue: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    image_credit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    hf_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    tier: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
+    tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
+    country: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    papers: Mapped[List["Paper"]] = relationship(
+        "Paper", secondary="paper_conferences", back_populates="conferences"
+    )
+    deadlines: Mapped[List["ConferenceDeadline"]] = relationship(
+        "ConferenceDeadline",
+        back_populates="conference",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_conferences_slug", "slug"),
+        Index("idx_conferences_year", "year"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Conference(id={self.id}, slug='{self.slug}', name='{self.name}')>"
+
+
+class ConferenceDeadline(Base):
+    """A submission/abstract/rebuttal deadline for a conference instance."""
+
+    __tablename__ = "conference_deadlines"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conference_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("conferences.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deadline_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    label: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    deadline_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    timezone: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    conference: Mapped["Conference"] = relationship(
+        "Conference", back_populates="deadlines"
+    )
+
+    __table_args__ = (
+        Index("idx_conference_deadlines_conference_id", "conference_id"),
+        Index("idx_conference_deadlines_deadline_at", "deadline_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ConferenceDeadline(id={self.id}, "
+            f"conference_id={self.conference_id}, type='{self.deadline_type}')>"
+        )
+
+
+class PaperConference(Base):
+    """Junction table linking papers to conferences."""
+
+    __tablename__ = "paper_conferences"
+
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    conference_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("conferences.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    award: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    __table_args__ = (
+        Index("idx_paper_conferences_conference_id", "conference_id"),
+        Index("idx_paper_conferences_paper_id", "paper_id"),
+        Index(
+            "idx_paper_conferences_award",
+            "conference_id",
+            "award",
+            postgresql_where=text("award IS NOT NULL"),
+        ),
+    )
+
+
+class Organization(Base):
+    """Normalized organization metadata (NVIDIA, Google, Meta, etc.).
+
+    Organizations are sourced primarily from Hugging Face org profiles
+    (``hf_url``) and used to tag papers by the lab/company behind them.
+    """
+
+    __tablename__ = "organizations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    hf_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    logo_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    website_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    github_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    papers: Mapped[List["Paper"]] = relationship(
+        "Paper", secondary="paper_organizations", back_populates="organizations"
+    )
+
+    __table_args__ = (Index("idx_organizations_slug", "slug"),)
+
+    def __repr__(self) -> str:
+        return f"<Organization(id={self.id}, slug='{self.slug}', name='{self.name}')>"
+
+
+class PaperOrganization(Base):
+    """Junction table linking papers to organizations."""
+
+    __tablename__ = "paper_organizations"
+
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    organization_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+
+    __table_args__ = (
+        Index("idx_paper_organizations_organization_id", "organization_id"),
+        Index("idx_paper_organizations_paper_id", "paper_id"),
+    )
+
+
 class PaperRelation(Base):
     """Directed lineage edges between papers.
 
@@ -1006,6 +1185,41 @@ class UserBookmark(Base):
 
     def __repr__(self) -> str:
         return f"<UserBookmark(hf_username='{self.hf_username}', paper_id={self.paper_id})>"
+
+
+class UserPreference(Base):
+    """Per-HF-user account preferences.
+
+    Keyed on the lowercased HF username carried in the ``pwc_session`` JWT (see
+    ``backend.routers.auth``). Written exclusively through the
+    ``/api/v1/me/preferences`` endpoints which require the session cookie.
+    """
+
+    __tablename__ = "user_preferences"
+
+    hf_username: Mapped[str] = mapped_column(
+        String(255), primary_key=True, nullable=False
+    )
+    # When True, the user hides closed-source model rows (Evaluation.is_open is
+    # False) on benchmark leaderboards and paper evaluation tables.
+    hide_closed_source_evals: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserPreference(hf_username='{self.hf_username}', "
+            f"hide_closed_source_evals={self.hide_closed_source_evals})>"
+        )
 
 
 class PendingPaperEdit(Base):

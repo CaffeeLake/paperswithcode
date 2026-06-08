@@ -271,6 +271,32 @@ def get_paper_slug_from_title(title: str) -> str:
     return slug.strip("-")
 
 
+def normalize_paper_route_identifier(identifier: str) -> str:
+    """
+    Normalize a paper route segment from user-facing URLs.
+
+    Accepts common variants such as dash-separated modern ArXiv IDs
+    (``2606-02800`` -> ``2606.02800``) and strips trailing version suffixes.
+    """
+    import re
+
+    candidate = (identifier or "").strip()
+    if not candidate:
+        return candidate
+
+    dash_match = re.match(r"^(\d{4})-(\d{4,5})(v\d+)?$", candidate)
+    if dash_match:
+        candidate = (
+            f"{dash_match.group(1)}.{dash_match.group(2)}{dash_match.group(3) or ''}"
+        )
+
+    version_match = re.match(r"^(\d{4}\.\d{4,5})(v\d+)$", candidate)
+    if version_match:
+        candidate = version_match.group(1)
+
+    return candidate
+
+
 def validate_arxiv_id(arxiv_id: str) -> bool:
     """
     Validate ArXiv ID format.

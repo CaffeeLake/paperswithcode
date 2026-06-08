@@ -277,6 +277,13 @@ async def get_dataset_evaluations(
         "-best_rank",
         description="Order by field: created_at, best_rank, evaluated_on (prefix with '-' for descending)",
     ),
+    is_open: Optional[bool] = Query(
+        None,
+        description=(
+            "Filter by open-source status of the evaluated model. "
+            "Pass `true` to return only open-source rows (hides closed-source)."
+        ),
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -325,6 +332,7 @@ async def get_dataset_evaluations(
             page=page,
             page_size=page_size,
             dataset_id=dataset_id_int,
+            is_open=is_open,
             order_by=order_by,
             order_dir=order_dir,
         )

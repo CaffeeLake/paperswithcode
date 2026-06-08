@@ -2,7 +2,9 @@
 
 Most admin endpoints accept either an HF OAuth session cookie or the legacy
 ``X-Admin-Token`` header for CLI/cron workflows. User-facing paper-page edits
-use :func:`require_hf_admin` so only allowlisted HF accounts can mutate them.
+on paper metadata use :func:`require_hf_admin` so only allowlisted HF accounts
+can mutate them; evaluation CRUD uses :func:`require_admin` so scripts can
+import rows with ``X-Admin-Token``.
 """
 
 from typing import Optional

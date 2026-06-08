@@ -29,10 +29,28 @@ from backend.models.api import (
 )
 
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.utils.github_utils import normalize_github_url
+from backend.utils.github_utils import normalize_github_url, parse_github_url
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def find_repository_by_url(session: Session, url: str) -> Optional[DBRepository]:
+    """Find a repository row, matching GitHub URLs case-insensitively."""
+    normalized = normalize_github_url(url)
+    lookup_url = normalized or url.strip()
+    if not lookup_url:
+        return None
+
+    if "github.com" in lookup_url.lower():
+        return (
+            session.query(DBRepository)
+            .filter(func.lower(DBRepository.url) == lookup_url.lower())
+            .order_by(DBRepository.id)
+            .first()
+        )
+
+    return session.query(DBRepository).filter(DBRepository.url == lookup_url).first()
 
 
 class RepositoryService:
@@ -358,14 +376,16 @@ class RepositoryService:
             normalized_url = normalize_github_url(url)
             if normalized_url:
                 url = normalized_url
+                parsed_owner, parsed_name = parse_github_url(url)
+                owner = owner or parsed_owner
+                name = name or parsed_name
                 logger.debug(f"Normalized GitHub URL to: {url}")
 
-            # Check if repository already exists (case-insensitive for GitHub URLs)
-            existing_repo = (
-                self.db.query(DBRepository).filter(DBRepository.url == url).first()
-            )
+            existing_repo = find_repository_by_url(self.db, url)
 
             if existing_repo:
+                if existing_repo.url != url:
+                    existing_repo.url = url
                 # Update existing repository
                 existing_repo.owner = owner or existing_repo.owner
                 existing_repo.name = name or existing_repo.name

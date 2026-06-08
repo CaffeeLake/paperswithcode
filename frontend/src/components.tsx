@@ -12,7 +12,7 @@ import React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
-import LatexTitle from "@/components/LatexTitle";
+import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import PaperThumbnail from "@/components/PaperThumbnail";
 import HfSignInButton from "@/components/HfSignInButton";
 import UserMenu from "@/components/UserMenu";
@@ -493,12 +493,21 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
   priority = false,
 }) => {
   const [errored, setErrored] = React.useState(false);
+  const [imgAttempt, setImgAttempt] = React.useState(0);
   const [shouldLoad, setShouldLoad] = React.useState(priority);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     setErrored(false);
+    setImgAttempt(0);
   }, [thumbnailUrl]);
+
+  const resolvedThumbnailUrl = React.useMemo(() => {
+    if (!thumbnailUrl) return null;
+    if (imgAttempt === 0) return thumbnailUrl;
+    const separator = thumbnailUrl.includes("?") ? "&" : "?";
+    return `${thumbnailUrl}${separator}retry=${imgAttempt}`;
+  }, [thumbnailUrl, imgAttempt]);
 
   React.useEffect(() => {
     if (priority || shouldLoad) return;
@@ -534,15 +543,22 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
           position: "relative",
         }}
       >
-        {shouldLoad && (
+        {shouldLoad && resolvedThumbnailUrl && (
           <img
-            src={thumbnailUrl}
+            key={resolvedThumbnailUrl}
+            src={resolvedThumbnailUrl}
             alt={`Thumbnail for ${title}`}
             loading={priority ? "eager" : "lazy"}
             decoding="async"
             fetchPriority={priority ? "high" : "auto"}
             style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-            onError={() => setErrored(true)}
+            onError={() => {
+              if (imgAttempt < 1) {
+                setImgAttempt((n) => n + 1);
+                return;
+              }
+              setErrored(true);
+            }}
           />
         )}
       </div>
@@ -613,7 +629,11 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
               </>
             )}
           </div>
-          {paper.abstract && <p className="paper-abstract">{paper.abstract}</p>}
+          {paper.abstract && (
+            <p className="paper-abstract">
+              <LatexText text={paper.abstract} />
+            </p>
+          )}
           {paper.tags.length > 0 && (
             <div className="paper-tags">
               {paper.tags.map((slug) => (

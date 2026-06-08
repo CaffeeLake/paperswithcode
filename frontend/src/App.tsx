@@ -25,6 +25,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
 import { isAuthDisabled, shouldUseHashRouter } from "@/lib/apiUrl";
 import { AuthProvider } from "@/lib/authContext";
+import { PreferencesProvider } from "@/lib/preferencesContext";
 
 // HF Static Spaces (a) boot the iframe at `/index.html` and (b) return a
 // hard 404 for any deep link, so on those builds we switch to `HashRouter`.
@@ -48,9 +49,17 @@ const PaperDetailView = React.lazy(() => import("@/views/PaperDetailView"));
 const TagsIndexView = React.lazy(() => import("@/views/TagsIndexView"));
 const TagBrowseView = React.lazy(() => import("@/views/TagBrowseView"));
 const MethodsIndexView = React.lazy(() => import("@/views/MethodsIndexView"));
+const ConferencesIndexView = React.lazy(() => import("@/views/ConferencesIndexView"));
+const AiDeadlinesView = React.lazy(() => import("@/views/AiDeadlinesView"));
+const ConferenceDetailView = React.lazy(() => import("@/views/ConferenceDetailView"));
+const ConferenceTaskView = React.lazy(() => import("@/views/ConferenceTaskView"));
+const OrganizationsIndexView = React.lazy(() => import("@/views/OrganizationsIndexView"));
+const OrganizationDetailView = React.lazy(() => import("@/views/OrganizationDetailView"));
+const OrganizationTaskView = React.lazy(() => import("@/views/OrganizationTaskView"));
 const MethodDetailView = React.lazy(() => import("@/views/MethodDetailView"));
 const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView"));
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
+const SettingsView = React.lazy(() => import("@/views/SettingsView"));
 const SubmitView = React.lazy(() => import("@/views/SubmitView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const SubmissionsDashboard = React.lazy(() => import("@/pages/SubmissionsDashboard"));
@@ -99,6 +108,19 @@ const LegacyTaskRedirect: React.FC = () => {
   return <Navigate to={taskSlug ? `/tasks/${taskSlug}` : "/tasks"} replace />;
 };
 
+// Organization pages are canonical at the top level (e.g. `/nvidia`).
+// `/organizations/:orgSlug` is a secondary route that redirects to the alias.
+const OrganizationAliasRedirect: React.FC = () => {
+  const { orgSlug, taskSlug } = useParams();
+  if (!orgSlug) return <Navigate to="/organizations" replace />;
+  return (
+    <Navigate
+      to={taskSlug ? `/${orgSlug}/${taskSlug}` : `/${orgSlug}`}
+      replace
+    />
+  );
+};
+
 // On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
 // cookie can't follow visitors across origins, so any view that requires
 // sign-in (bookmarks, CRON dashboard) is a dead-end. Redirect those routes
@@ -141,11 +163,24 @@ const Shell: React.FC = () => {
             <Route path="/task/:taskSlug" element={<LegacyTaskRedirect />} />
             <Route path="/methods" element={<MethodsIndexView />} />
             <Route path="/methods/:methodSlug" element={<MethodDetailView />} />
+            <Route path="/conferences" element={<ConferencesIndexView />} />
+            <Route path="/ai-deadlines" element={<AiDeadlinesView />} />
+            <Route path="/conferences/:confSlug" element={<ConferenceDetailView />} />
+            <Route path="/conferences/:confSlug/:taskSlug" element={<ConferenceTaskView />} />
+            <Route path="/organizations" element={<OrganizationsIndexView />} />
+            <Route path="/organizations/:orgSlug" element={<OrganizationAliasRedirect />} />
+            <Route path="/organizations/:orgSlug/:taskSlug" element={<OrganizationAliasRedirect />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
+            <Route path="/settings" element={<SettingsView />} />
             <Route path="/cron-dashboard" element={<AuthGatedRoute element={<CronDashboard />} />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
+            {/* Top-level organization aliases (e.g. /nvidia). Placed last so
+                static routes always win; unknown slugs render NotFound from
+                inside the views on a 404. */}
+            <Route path="/:orgSlug" element={<OrganizationDetailView />} />
+            <Route path="/:orgSlug/:taskSlug" element={<OrganizationTaskView />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </React.Suspense>
@@ -162,14 +197,16 @@ const Shell: React.FC = () => {
 const App: React.FC = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
-      <TooltipProvider>
-        <Router>
-          <Shell />
-        </Router>
-        <Toaster />
-        <SonnerToaster />
-        {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
-      </TooltipProvider>
+      <PreferencesProvider>
+        <TooltipProvider>
+          <Router>
+            <Shell />
+          </Router>
+          <Toaster />
+          <SonnerToaster />
+          {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+        </TooltipProvider>
+      </PreferencesProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

@@ -91,7 +91,7 @@ export function SearchableSelect({
   }, [displayedOptions, placeholder, selectedOption, value]);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -109,14 +109,19 @@ export function SearchableSelect({
           <ChevronsUpDown className="ml-1 h-3.5 w-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
-        <Command shouldFilter={false}>
+      <PopoverContent
+        className="z-[60] w-[var(--radix-popover-trigger-width)] max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0"
+        align="start"
+        collisionPadding={8}
+        onWheel={(e) => e.stopPropagation()}
+      >
+        <Command shouldFilter={false} className="h-full">
           <CommandInput
             placeholder={searchPlaceholder}
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
-          <CommandList>
+          <CommandList className="max-h-[min(300px,calc(var(--radix-popover-content-available-height)-2.75rem))] min-h-0 overscroll-contain">
             {isFetching ? (
               <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

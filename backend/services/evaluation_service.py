@@ -237,6 +237,7 @@ class EvaluationService:
         include_descendants: bool = False,
         dataset_id: Optional[int] = None,
         best_metric: Optional[str] = None,
+        is_open: Optional[bool] = None,
         order_by: str = "created_at",
         order_dir: str = "desc",
     ) -> Evaluations:
@@ -299,6 +300,9 @@ class EvaluationService:
 
             if best_metric is not None:
                 query = query.filter(DBEvaluation.best_metric == best_metric)
+
+            if is_open is not None:
+                query = query.filter(DBEvaluation.is_open == is_open)
 
             # Get total count before pagination
             total_count = query.count()
@@ -397,6 +401,7 @@ class EvaluationService:
                     "methodology": db_evaluation.methodology,
                     "metrics": db_evaluation.metrics,
                     "uses_additional_data": db_evaluation.uses_additional_data,
+                    "is_open": db_evaluation.is_open,
                     "best_rank": db_evaluation.best_rank,
                     "best_metric": db_evaluation.best_metric,
                     "evaluated_on": db_evaluation.evaluated_on,
@@ -488,6 +493,7 @@ class EvaluationService:
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
+                "is_open": db_evaluation.is_open,
                 "best_rank": db_evaluation.best_rank,
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,
@@ -546,6 +552,7 @@ class EvaluationService:
         harness: Optional[str] = None,
         methodology: Optional[str] = None,
         uses_additional_data: bool = False,
+        is_open: bool = True,
         best_rank: Optional[int] = None,
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
@@ -608,6 +615,7 @@ class EvaluationService:
                 methodology=methodology,
                 metrics=metrics,
                 uses_additional_data=uses_additional_data,
+                is_open=is_open,
                 best_rank=best_rank,
                 best_metric=best_metric,
                 evaluated_on=evaluated_on,
@@ -659,6 +667,7 @@ class EvaluationService:
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
+                "is_open": db_evaluation.is_open,
                 "best_rank": db_evaluation.best_rank,
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,
@@ -695,6 +704,7 @@ class EvaluationService:
         methodology: Optional[str] = None,
         metrics: Optional[dict] = None,
         uses_additional_data: Optional[bool] = None,
+        is_open: Optional[bool] = None,
         best_rank: Optional[int] = None,
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
@@ -805,6 +815,8 @@ class EvaluationService:
                 db_evaluation.metrics = metrics
             if uses_additional_data is not None:
                 db_evaluation.uses_additional_data = uses_additional_data
+            if is_open is not None:
+                db_evaluation.is_open = is_open
             if best_rank is not None:
                 db_evaluation.best_rank = best_rank
             if best_metric is not None:
@@ -886,6 +898,7 @@ class EvaluationService:
                 "methodology": db_evaluation.methodology,
                 "metrics": db_evaluation.metrics,
                 "uses_additional_data": db_evaluation.uses_additional_data,
+                "is_open": db_evaluation.is_open,
                 "best_rank": db_evaluation.best_rank,
                 "best_metric": db_evaluation.best_metric,
                 "evaluated_on": db_evaluation.evaluated_on,

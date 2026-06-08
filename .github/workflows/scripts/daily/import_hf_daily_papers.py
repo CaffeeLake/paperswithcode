@@ -26,6 +26,11 @@ from typing import Dict, List, Optional
 import aiohttp
 
 from backend.config import get_settings
+from backend.database.connection import db_manager
+from backend.database.paper_merge import (
+    find_external_paper_for_title,
+    merge_external_paper_into_arxiv,
+)
 from scripts.utils.cron_helpers import DatabaseCronJob
 from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 
@@ -159,6 +164,32 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.process_authors(paper_id, paper_info.get("authors", []))
         self.tag_paper_with_tasks(paper_id, title, abstract)
         self.tag_paper_with_methods(paper_id, title, abstract)
+
+        session = db_manager.session_local()
+        try:
+            external_match = find_external_paper_for_title(session, title)
+            if external_match is not None:
+                stats = merge_external_paper_into_arxiv(
+                    session, external_match.id, paper_id
+                )
+                session.commit()
+                self.logger.info(
+                    "Merged external paper %s into new ArXiv row %s (%s): %s",
+                    external_match.id,
+                    paper_id,
+                    arxiv_id,
+                    stats,
+                )
+        except Exception as exc:
+            session.rollback()
+            self.logger.error(
+                "Failed to merge external duplicate for %s into paper %s: %s",
+                arxiv_id,
+                paper_id,
+                exc,
+            )
+        finally:
+            session.close()
 
         github_repo, project_page = asyncio.run(self.fetch_paper_urls_legacy(arxiv_id))
         if github_repo:

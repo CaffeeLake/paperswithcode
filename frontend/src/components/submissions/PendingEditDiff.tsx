@@ -40,6 +40,7 @@ interface EvaluationLike {
   methodology?: string | null;
   metrics?: Record<string, string | number>;
   uses_additional_data?: boolean;
+  is_open?: boolean;
   best_rank?: number | null;
   best_metric?: string | null;
   evaluated_on?: string | null;
@@ -415,6 +416,16 @@ function EvaluationFields({
       <Field label="Harness" value={evaluation.harness || null} />
       <Field label="Best rank" value={evaluation.best_rank ?? null} />
       <Field label="Parameters" value={evaluation.num_parameters ?? null} />
+      <Field
+        label="Open source"
+        value={
+          evaluation.is_open === undefined
+            ? null
+            : evaluation.is_open
+              ? "Yes"
+              : "No"
+        }
+      />
       <div className="submission-eval-metrics">
         <div className="submission-diff-label">Metrics</div>
         {Object.keys(metrics).length > 0 ? (

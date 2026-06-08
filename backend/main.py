@@ -44,10 +44,11 @@ _PUBLIC_CACHEABLE_PREFIXES = (
     "/api/v1/datasets/",
     "/api/v1/areas/",
     "/api/v1/metrics/",
-    "/api/v1/evaluations/",
     "/api/v1/repositories/",
     "/api/v1/project-pages/",
     "/api/v1/authors/",
+    "/api/v1/conferences/",
+    "/api/v1/organizations/",
 )
 
 # Endpoints that must never be cached even on GET because their response
@@ -153,11 +154,15 @@ def create_app() -> FastAPI:
         cron,
         auth,
         bookmarks,
+        preferences,
         pending_edits,
+        conferences,
+        organizations,
     )
 
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
+    app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])
     app.include_router(pending_edits.router, prefix="/api/v1", tags=["pending_edits"])
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     # External-resource ingestion endpoints share the `/papers` prefix because
@@ -173,6 +178,8 @@ def create_app() -> FastAPI:
     app.include_router(datasets.router, prefix="/api/v1", tags=["datasets"])
     app.include_router(evaluations.router, prefix="/api/v1", tags=["evaluations"])
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
+    app.include_router(conferences.router, prefix="/api/v1", tags=["conferences"])
+    app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
     # Server-rendered paper-page HTML for social previews. Mounted at the
     # app root because the public URL shape is `/paper/{id}` (not under

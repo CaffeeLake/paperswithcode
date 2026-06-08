@@ -18,5 +18,7 @@
 - Add scientific benchmarks of https://huggingface.co/internlm/Intern-S1-Pro
 - Import all time-series benchmarks like GIFT-eval
 - Add all Artificial Analysis scores using their API
-- Auto-tag papers with orgs, e.g.
+- Auto-tag papers with orgs, e.g. DeepSeek, Qwen, etc
 - Add paperswithcode.co/paper-series, where the follow-up papers can be read
+- Use the Biorxiv API to generate thumbnails for biology papers
+- Add legacy PwC data, like data/imagenet1k_missing_from_legacy.csv.

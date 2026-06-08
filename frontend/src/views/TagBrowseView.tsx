@@ -55,6 +55,14 @@ const TagBrowseView: React.FC = () => {
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set());
 
+  const benchmarkPath = (datasetSlug: string, taskContext?: string) => {
+    const slug = datasetSlug || "";
+    if (taskContext) {
+      return `/benchmark/${slug}?task=${encodeURIComponent(taskContext)}`;
+    }
+    return `/benchmark/${slug}`;
+  };
+
   const taskQ = useQuery({
     queryKey: ["task", taskSlug],
     queryFn: () => apiClient.getTask(taskSlug!),
@@ -270,7 +278,11 @@ const TagBrowseView: React.FC = () => {
           </div>
         </div>
         {task.image_url && (
-          <figure className="task-figure-card">
+          <figure
+            className={`task-figure-card${
+              task.slug === "omni-models" ? " task-figure-card--compact" : ""
+            }`}
+          >
             <div className="task-figure-img-wrap">
               <img
                 className="task-figure-img"
@@ -305,7 +317,7 @@ const TagBrowseView: React.FC = () => {
                 </div>
               </div>
               {(benchmarksExpanded ? datasets : datasets.slice(0, 5)).map((d, i) => (
-                <div key={d.id} className="bench-row" onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}>
+                <div key={d.id} className="bench-row" onClick={() => navigate(benchmarkPath(d.slug || d.id, taskSlug))}>
                   <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
                   <div className="bench-row-main">
                     <div className="bench-row-name">{d.name}</div>
@@ -369,7 +381,7 @@ const TagBrowseView: React.FC = () => {
                         <div
                           key={d.id}
                           className="bench-row"
-                          onClick={() => navigate(`/benchmark/${d.slug || d.id}`)}
+                          onClick={() => navigate(benchmarkPath(d.slug || d.id, s.slug || s.id))}
                         >
                           <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
                           <div className="bench-row-main">

@@ -36,6 +36,8 @@ interface EditableEvaluation {
    *  Empty string means "no value" (sent as `null` on PUT to clear, or omitted
    *  on POST). Stored as integers server-side. */
   num_parameters: string;
+  /** Whether the evaluated model is open-source. Defaults to true. */
+  is_open: boolean;
   operation?: 'create' | 'update' | 'delete' | 'unchanged';
 }
 
@@ -68,6 +70,7 @@ function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEval
       metric_value: String(metricValue || ''),
       best_rank: e.best_rank ? String(e.best_rank) : '',
       num_parameters: e.num_parameters != null ? String(e.num_parameters) : '',
+      is_open: e.is_open !== false,
       operation: 'unchanged' as const,
     };
   });
@@ -327,6 +330,7 @@ export function EditEvaluationsDialog({
             if (supportsHarness && evalItem.harness) data.harness = evalItem.harness;
             if (evalItem.best_rank) data.best_rank = parseInt(evalItem.best_rank);
             if (numParameters != null) data.num_parameters = numParameters;
+            data.is_open = evalItem.is_open;
             operations.push({ op: "create", data });
           } else if (evalItem.operation === "update" && evalItem.id) {
             const data: Record<string, unknown> = {
@@ -338,6 +342,7 @@ export function EditEvaluationsDialog({
               best_metric: evalItem.metric_name,
               best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
               num_parameters: parseNumParametersInput(evalItem.num_parameters),
+              is_open: evalItem.is_open,
             };
             operations.push({
               op: "update",
@@ -388,6 +393,7 @@ export function EditEvaluationsDialog({
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
             num_parameters: numParameters ?? undefined,
+            is_open: evalItem.is_open,
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
           anyDirectChange = true;
@@ -401,6 +407,7 @@ export function EditEvaluationsDialog({
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
             num_parameters: parseNumParametersInput(evalItem.num_parameters),
+            is_open: evalItem.is_open,
           });
         }
       }
@@ -472,6 +479,7 @@ export function EditEvaluationsDialog({
         metric_value: '',
         best_rank: '',
         num_parameters: '',
+        is_open: true,
         operation: 'create',
       },
     ]);
@@ -523,6 +531,20 @@ export function EditEvaluationsDialog({
     );
   };
 
+  const handleToggleEvaluationOpen = (index: number, isOpen: boolean) => {
+    hasUserEditedRef.current = true;
+    setEditedEvaluations(
+      editedEvaluations.map((e, i) => {
+        if (i !== index) return e;
+        const updated = { ...e, is_open: isOpen };
+        if (e.operation === 'unchanged') {
+          updated.operation = 'update';
+        }
+        return updated;
+      })
+    );
+  };
+
   const handleSave = () => {
     const evaluationsToSave = editedEvaluations.filter(
       e => e.operation !== 'delete' || e.id
@@ -557,6 +579,7 @@ export function EditEvaluationsDialog({
                     <th className="text-left py-2 px-2 font-medium text-sm min-w-[140px]">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Parameters</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm w-20">Open source</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
                   </tr>
                 </thead>
@@ -690,6 +713,15 @@ export function EditEvaluationsDialog({
                             value={evaluation.num_parameters}
                             onChange={(e) => handleUpdateEvaluationField(index, 'num_parameters', e.target.value)}
                             title="Raw model parameter count (e.g. 7000000000 for a 7B model). Leave blank if unknown."
+                          />
+                        </td>
+                        <td className="py-2 px-2 text-center">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 align-middle"
+                            checked={evaluation.is_open}
+                            onChange={(e) => handleToggleEvaluationOpen(index, e.target.checked)}
+                            title="Whether the evaluated model is open-source. Uncheck for closed-source models."
                           />
                         </td>
                         <td className="py-2 px-2">

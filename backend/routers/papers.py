@@ -33,6 +33,7 @@ from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
 from backend.services.arxiv_service import ArxivService
 from backend.services.thumbnail_service import (
+    ThumbnailService,
     build_thumbnail_filename,
     build_thumbnail_url,
 )
@@ -349,6 +350,7 @@ async def get_trending_papers(
             for author_row in authors_results:
                 authors_dict.setdefault(author_row[0], []).append(author_row[1])
 
+        thumbnail_service = ThumbnailService()
         papers = []
         for row in results:
             paper_id = row[0]
@@ -361,6 +363,8 @@ async def get_trending_papers(
             if thumbnail_url is None and source == "arxiv" and arxiv_id:
                 filename = build_thumbnail_filename(arxiv_id, paper_version)
                 thumbnail_url = build_thumbnail_url(filename)
+            elif thumbnail_url is None and source == "external":
+                thumbnail_url = thumbnail_service.get_external_thumbnail_url(paper_id)
 
             # Get tasks for this paper
             paper_tasks = tasks_dict.get(paper_id, [])
@@ -1150,6 +1154,40 @@ async def update_paper_methods(
     try:
         service = PaperService(db)
         return service.update_paper_methods(paper_id, method_ids)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/papers/{paper_id}/organizations",
+    response_model=Paper,
+    summary="Update organizations for a paper",
+    dependencies=[Depends(require_hf_admin)],
+)
+async def update_paper_organizations(
+    paper_id: int = Path(..., description="Database paper ID"),
+    organization_ids: List[int] = Query(
+        default=[],
+        description="List of organization IDs to associate with the paper. "
+        "An empty list clears all organization associations.",
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Update the organizations associated with a paper.
+
+    Replaces all existing organization associations with the provided list.
+
+    **Example:**
+    ```
+    PUT /api/v1/papers/123/organizations?organization_ids=1&organization_ids=2
+    ```
+    """
+    try:
+        service = PaperService(db)
+        return service.update_paper_organizations(paper_id, organization_ids)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

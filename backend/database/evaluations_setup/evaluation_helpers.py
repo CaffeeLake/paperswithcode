@@ -46,6 +46,7 @@ def get_or_create_evaluation(
     metrics: Dict[str, Any],
     methodology: Optional[str] = None,
     uses_additional_data: bool = False,
+    is_open: bool = True,
     best_rank: Optional[int] = None,
     best_metric: Optional[str] = None,
     evaluated_on: Optional[Any] = None,
@@ -133,6 +134,9 @@ def get_or_create_evaluation(
             existing.external_source_url = external_source_url
         if num_parameters is not None and existing.num_parameters is None:
             existing.num_parameters = num_parameters
+        # Closed-source marking should win when explicitly set on a re-import.
+        if not is_open:
+            existing.is_open = False
 
         db.add(existing)
         db.commit()
@@ -167,6 +171,7 @@ def get_or_create_evaluation(
             methodology=methodology,
             metrics=metrics,
             uses_additional_data=uses_additional_data,
+            is_open=is_open,
             best_rank=best_rank,
             best_metric=best_metric,
             evaluated_on=evaluated_on,
@@ -239,6 +244,7 @@ def bulk_create_evaluations_with_consolidation(
                 "metrics": {},
                 "methodology": eval_data.get("methodology"),
                 "uses_additional_data": eval_data.get("uses_additional_data", False),
+                "is_open": eval_data.get("is_open", True),
                 "best_rank": eval_data.get("best_rank"),
                 "best_metric": eval_data.get("best_metric"),
                 "evaluated_on": eval_data.get("evaluated_on"),

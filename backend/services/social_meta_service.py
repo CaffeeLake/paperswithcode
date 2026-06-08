@@ -29,6 +29,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from backend.models.api import Paper
 from backend.services.thumbnail_service import ThumbnailService
+from backend.utils.latex_text import latex_to_plain_text
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ def _build_description(paper: Paper) -> str:
 
 
 def _build_title(paper: Paper) -> str:
-    paper_title = (paper.title or "").strip() or "Paper"
+    paper_title = latex_to_plain_text((paper.title or "").strip()) or "Paper"
     return f"{paper_title} | Papers with Code"
 
 

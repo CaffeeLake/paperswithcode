@@ -41,6 +41,7 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
     Repository as DBRepository,
 )
+from backend.database.paper_merge import find_arxiv_paper_for_title
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import DatabaseError
 from backend.utils.github_utils import normalize_github_url, parse_github_url
@@ -118,6 +119,32 @@ class ExternalResourceService:
             raise ExternalResourceError(
                 "date_published is required for external resources; "
                 "supply it manually if extraction failed"
+            )
+
+        arxiv_match = find_arxiv_paper_for_title(self.db, payload.title)
+        if arxiv_match is not None:
+            paper_id = arxiv_match.id
+            authors_added, authors_existing = self._link_authors(
+                paper_id, payload.authors
+            )
+            repos_added, repos_existing = self._link_github_repositories(
+                paper_id, payload.github_repository_urls
+            )
+            hf_counts = self._set_hf_artifacts(paper_id, payload.hf_artifact_urls)
+            self.db.commit()
+            paper_api = PaperService(self.db).get_paper_by_id(
+                paper_id, include_resources=True
+            )
+            return ExternalResourceIngestionResult(
+                paper=paper_api,
+                repositories_added=repos_added,
+                repositories_existing=repos_existing,
+                hf_models_added=hf_counts["models_added"],
+                hf_datasets_added=hf_counts["datasets_added"],
+                hf_spaces_added=hf_counts["spaces_added"],
+                hf_artifacts_existing=hf_counts["existing"],
+                authors_added=authors_added,
+                authors_existing=authors_existing,
             )
 
         try:

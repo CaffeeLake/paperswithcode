@@ -17,7 +17,7 @@ from backend.models.api import (
 )
 from backend.services.evaluation_service import EvaluationService
 from backend.database.connection import get_database_session
-from backend.utils.auth import require_admin, require_hf_admin
+from backend.utils.auth import require_admin
 from backend.utils.exceptions import DatabaseError
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
@@ -45,6 +45,13 @@ async def list_evaluations(
     dataset_id: Optional[int] = Query(None, description="Filter by dataset ID"),
     best_metric: Optional[str] = Query(
         None, description="Filter by best metric (e.g., 'AbsRel', 'delta1')"
+    ),
+    is_open: Optional[bool] = Query(
+        None,
+        description=(
+            "Filter by open-source status of the evaluated model. "
+            "Pass `true` to return only open-source rows (hides closed-source)."
+        ),
     ),
     ordering: Optional[str] = Query(
         "-created_at",
@@ -105,6 +112,7 @@ async def list_evaluations(
             include_descendants=include_descendants,
             dataset_id=dataset_id,
             best_metric=best_metric,
+            is_open=is_open,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -149,7 +157,7 @@ async def get_evaluation(
     "/",
     response_model=Evaluation,
     status_code=201,
-    dependencies=[Depends(require_hf_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def create_evaluation(
     request: EvaluationCreateRequest,
@@ -195,6 +203,7 @@ async def create_evaluation(
             methodology=request.methodology,
             metrics=request.metrics,
             uses_additional_data=request.uses_additional_data,
+            is_open=request.is_open,
             best_rank=request.best_rank,
             best_metric=request.best_metric,
             evaluated_on=request.evaluated_on,
@@ -214,7 +223,7 @@ async def create_evaluation(
 @router.put(
     "/{evaluation_id}",
     response_model=Evaluation,
-    dependencies=[Depends(require_hf_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def update_evaluation(
     evaluation_id: int,
@@ -258,6 +267,7 @@ async def update_evaluation(
             methodology=request.methodology,
             metrics=request.metrics,
             uses_additional_data=request.uses_additional_data,
+            is_open=request.is_open,
             best_rank=request.best_rank,
             best_metric=request.best_metric,
             evaluated_on=request.evaluated_on,
@@ -281,7 +291,7 @@ async def update_evaluation(
 @router.delete(
     "/{evaluation_id}",
     status_code=204,
-    dependencies=[Depends(require_hf_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def delete_evaluation(
     evaluation_id: int,

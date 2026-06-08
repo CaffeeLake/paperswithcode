@@ -28,8 +28,15 @@ from backend.models.database import (
     ProjectPage as DBProjectPage,
     PaperProjectPage as DBPaperProjectPage,
     Dataset as DBDataset,
+    Conference as DBConference,
+    PaperConference as DBPaperConference,
+    Organization as DBOrganization,
+    PaperOrganization as DBPaperOrganization,
 )
 from backend.services.thumbnail_service import (
+    ThumbnailService,
+    build_custom_thumbnail_url,
+    build_external_thumbnail_filename,
     build_thumbnail_filename,
     build_thumbnail_url,
 )
@@ -47,6 +54,7 @@ from backend.models.api import (
     RelatedPaperSummary,
     VersionComparison,
     AuthorLink,
+    OrganizationSummary,
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
@@ -69,6 +77,28 @@ class PaperService:
     def __init__(self, db: Session):
         self.db = db
         self.settings = get_settings()
+        self._thumbnail_service: Optional[ThumbnailService] = None
+
+    def _get_thumbnail_service(self) -> ThumbnailService:
+        if self._thumbnail_service is None:
+            self._thumbnail_service = ThumbnailService()
+        return self._thumbnail_service
+
+    def _resolve_thumbnail_url(self, db_paper: DBPaper) -> Optional[str]:
+        """Return the public thumbnail URL for a paper row."""
+        if db_paper.thumbnail_url:
+            return db_paper.thumbnail_url
+        if db_paper.source == "arxiv" and db_paper.arxiv_id:
+            filename = build_thumbnail_filename(
+                db_paper.arxiv_id, db_paper.version or "v1"
+            )
+            if self._get_thumbnail_service().get_local_thumbnail_path(filename):
+                return build_thumbnail_url(filename)
+        if db_paper.source == "external":
+            filename = build_external_thumbnail_filename(db_paper.id)
+            if self._get_thumbnail_service().get_local_custom_thumbnail_path(filename):
+                return build_custom_thumbnail_url(filename)
+        return None
 
     @staticmethod
     def _convert_db_method_to_summary(
@@ -124,6 +154,8 @@ class PaperService:
             "introduced_benchmarks": defaultdict(list),
             "predecessor_papers": defaultdict(list),
             "successor_papers": defaultdict(list),
+            "conferences": {},
+            "organizations": defaultdict(list),
         }
 
         if not unique_ids:
@@ -234,6 +266,41 @@ class PaperService:
         for paper_id, related in predecessor_rows:
             relation_data["predecessor_papers"][paper_id].append(
                 self._convert_db_paper_to_related_summary(related)
+            )
+
+        conference_rows = (
+            self.db.query(DBPaperConference.paper_id, DBConference)
+            .join(DBConference, DBPaperConference.conference_id == DBConference.id)
+            .filter(DBPaperConference.paper_id.in_(unique_ids))
+            .order_by(
+                DBPaperConference.paper_id,
+                desc(DBConference.year),
+                DBConference.name,
+            )
+            .all()
+        )
+        for paper_id, conference in conference_rows:
+            if paper_id not in relation_data["conferences"]:
+                relation_data["conferences"][paper_id] = conference
+
+        organization_rows = (
+            self.db.query(DBPaperOrganization.paper_id, DBOrganization)
+            .join(
+                DBOrganization,
+                DBPaperOrganization.organization_id == DBOrganization.id,
+            )
+            .filter(DBPaperOrganization.paper_id.in_(unique_ids))
+            .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
+            .all()
+        )
+        for paper_id, organization in organization_rows:
+            relation_data["organizations"][paper_id].append(
+                OrganizationSummary(
+                    id=str(organization.id),
+                    name=organization.name,
+                    slug=organization.slug,
+                    logo_url=organization.logo_url,
+                )
             )
 
         if include_resources:
@@ -364,14 +431,7 @@ class PaperService:
             db_paper.source, db_paper.arxiv_id, db_paper.version
         )
 
-        # External rows may store an explicit captured thumbnail. ArXiv rows
-        # continue to derive their stable thumbnail URL from arxiv_id/version.
-        thumbnail_url = db_paper.thumbnail_url
-        if thumbnail_url is None and db_paper.source == "arxiv" and db_paper.arxiv_id:
-            filename = build_thumbnail_filename(
-                db_paper.arxiv_id, db_paper.version or "v1"
-            )
-            thumbnail_url = build_thumbnail_url(filename)
+        thumbnail_url = self._resolve_thumbnail_url(db_paper)
 
         tasks = relation_data["tasks"].get(db_paper.id) or None
         methods = relation_data["methods"].get(db_paper.id) or None
@@ -382,6 +442,8 @@ class PaperService:
             relation_data["predecessor_papers"].get(db_paper.id) or None
         )
         successor_papers = relation_data["successor_papers"].get(db_paper.id) or None
+        organizations = relation_data["organizations"].get(db_paper.id) or None
+        linked_conference = relation_data["conferences"].get(db_paper.id)
         repositories = (
             relation_data["repositories"].get(db_paper.id) or None
             if include_resources
@@ -411,6 +473,8 @@ class PaperService:
             "conference_url_abs": db_paper.conference_url_abs,
             "conference_url_pdf": db_paper.conference_url_pdf,
             "proceeding": db_paper.proceeding,
+            "conference_slug": linked_conference.slug if linked_conference else None,
+            "conference_name": linked_conference.name if linked_conference else None,
             "version": db_paper.version,
             "is_latest_version": db_paper.is_latest_version,
             "citation_count": db_paper.citation_count,
@@ -431,6 +495,7 @@ class PaperService:
             "introduced_benchmarks": introduced_benchmarks,
             "predecessor_papers": predecessor_papers,
             "successor_papers": successor_papers,
+            "organizations": organizations,
         }
 
         return Paper(**paper_data)
@@ -467,12 +532,7 @@ class PaperService:
             db_paper.source_url,
         )
 
-        thumbnail_url = db_paper.thumbnail_url
-        if thumbnail_url is None and db_paper.source == "arxiv" and db_paper.arxiv_id:
-            filename = build_thumbnail_filename(
-                db_paper.arxiv_id, db_paper.version or "v1"
-            )
-            thumbnail_url = build_thumbnail_url(filename)
+        thumbnail_url = self._resolve_thumbnail_url(db_paper)
 
         return PaperSummary(
             id=str(db_paper.id),
@@ -534,7 +594,13 @@ class PaperService:
         ArXiv lookups are attempted first when the identifier matches the
         ArXiv format. Otherwise the identifier is parsed as an integer ID.
         """
-        from backend.utils.urls import validate_arxiv_id
+        from backend.database.paper_merge import lookup_paper_merge_redirect
+        from backend.utils.urls import (
+            normalize_paper_route_identifier,
+            validate_arxiv_id,
+        )
+
+        identifier = normalize_paper_route_identifier(identifier)
 
         if validate_arxiv_id(identifier):
             try:
@@ -550,6 +616,12 @@ class PaperService:
             paper_id = int(identifier)
         except (TypeError, ValueError):
             raise PaperNotFoundError(f"No paper found for identifier '{identifier}'")
+
+        redirect = lookup_paper_merge_redirect(self.db, paper_id)
+        if redirect:
+            return self.get_paper_by_id_or_arxiv(
+                redirect, include_resources=include_resources
+            )
 
         return self.get_paper_by_id(paper_id, include_resources=include_resources)
 
@@ -1751,6 +1823,64 @@ class PaperService:
                 raise
             raise DatabaseError(f"Error updating paper tasks: {str(e)}")
 
+    def update_paper_organizations(
+        self, paper_id: int, organization_ids: List[int]
+    ) -> Paper:
+        """
+        Update the organizations associated with a paper.
+
+        Replaces all existing paper_organizations associations with the
+        provided list. Rows inserted here are marked source='manual'.
+
+        Args:
+            paper_id: Database paper ID
+            organization_ids: List of organization IDs to associate
+
+        Returns:
+            Updated Paper object
+
+        Raises:
+            PaperNotFoundError: If paper is not found
+            DatabaseError: If update fails
+        """
+        try:
+            db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if not db_paper:
+                raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
+
+            existing_orgs = (
+                self.db.query(DBOrganization)
+                .filter(DBOrganization.id.in_(organization_ids))
+                .all()
+            )
+            existing_org_ids = {org.id for org in existing_orgs}
+            invalid_org_ids = set(organization_ids) - existing_org_ids
+            if invalid_org_ids:
+                raise DatabaseError(f"Invalid organization IDs: {invalid_org_ids}")
+
+            self.db.query(DBPaperOrganization).filter(
+                DBPaperOrganization.paper_id == paper_id
+            ).delete()
+
+            for organization_id in organization_ids:
+                self.db.add(
+                    DBPaperOrganization(
+                        paper_id=paper_id,
+                        organization_id=organization_id,
+                        source="manual",
+                    )
+                )
+
+            self.db.commit()
+
+            return self.get_paper_by_id(paper_id, include_resources=True)
+
+        except Exception as e:
+            self.db.rollback()
+            if isinstance(e, (PaperNotFoundError, DatabaseError)):
+                raise
+            raise DatabaseError(f"Error updating paper organizations: {str(e)}")
+
     def update_paper_methods(self, paper_id: int, method_ids: List[int]) -> Paper:
         """
         Update the methods associated with a paper.
@@ -1839,6 +1969,12 @@ class PaperService:
                 PaperRepository.paper_id == paper_id
             ).delete()
 
+            from backend.services.repository_service import find_repository_by_url
+            from backend.utils.github_utils import (
+                normalize_github_url,
+                parse_github_url,
+            )
+
             # Process each repository URL
             for repo_data in repositories:
                 url = repo_data.get("url", "").strip()
@@ -1847,39 +1983,37 @@ class PaperService:
                 if not url:
                     continue
 
-                # Check if repository already exists
-                existing_repo = (
-                    self.db.query(DBRepository).filter(DBRepository.url == url).first()
-                )
+                normalized = normalize_github_url(url)
+                if normalized:
+                    url = normalized
+
+                existing_repo = find_repository_by_url(self.db, url)
 
                 if existing_repo:
-                    # Use existing repository
+                    if existing_repo.url != url:
+                        existing_repo.url = url
                     repository_id = existing_repo.id
                 else:
-                    # Create new repository
-                    # Extract owner and name from GitHub URL
-                    owner = None
-                    name = None
-                    github_match = re.match(
-                        r"https?://github\.com/([^/]+)/([^/]+)(?:/.*)?", url
-                    )
-                    if github_match:
-                        owner = github_match.group(1)
-                        name = github_match.group(2)
-                        # Remove .git suffix if present
-                        if name.endswith(".git"):
-                            name = name[:-4]
+                    owner, name = parse_github_url(url) if normalized else (None, None)
+                    if not owner or not name:
+                        github_match = re.match(
+                            r"https?://github\.com/([^/]+)/([^/]+)(?:/.*)?", url
+                        )
+                        if github_match:
+                            owner = github_match.group(1)
+                            name = github_match.group(2)
+                            if name.endswith(".git"):
+                                name = name[:-4]
 
-                    # Create new repository entry
                     new_repo = DBRepository(
                         url=url,
                         owner=owner,
                         name=name,
                         num_stars=0,
-                        source="manual",  # Marked as manually added by admin
+                        source="manual",
                     )
                     self.db.add(new_repo)
-                    self.db.flush()  # Get the ID without committing
+                    self.db.flush()
                     repository_id = new_repo.id
 
                 # Create paper-repository association

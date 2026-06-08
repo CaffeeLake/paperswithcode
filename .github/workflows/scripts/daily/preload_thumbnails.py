@@ -25,8 +25,9 @@ Priority modes (selected via --priority):
   whose thumbnail is missing locally. Supports `--shard i/n` and `--after-id`
   / `--before-id` for chunked manual backfills.
 - `external-missing`: sweep over non-ArXiv external papers missing an explicit
-  captured thumbnail. Direct PDF source URLs are rendered from page one; other
-  source pages are captured with headless Chrome.
+  captured thumbnail. Direct PDF source URLs are rendered from page one; bioRxiv
+  and medRxiv papers use the bioRxiv API plus Europe PMC / S3 TDM mirrors;
+  other source pages are captured with headless Chrome.
 
 The local cache is the source of truth for "do we have this thumbnail" during
 backfills: candidates whose .jpg already exists on disk are skipped without any

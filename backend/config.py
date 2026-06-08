@@ -141,6 +141,17 @@ class Settings(BaseSettings):
         description="Small local cache for bucket-backed thumbnail responses",
     )
 
+    # bioRxiv / medRxiv TDM (requester-pays S3 bucket). Optional: when unset,
+    # thumbnails fall back to Europe PMC PDF mirrors where available.
+    biorxiv_aws_access_key_id: str = Field(
+        default="",
+        description="AWS access key for bioRxiv/medRxiv requester-pays S3 PDF downloads",
+    )
+    biorxiv_aws_secret_access_key: str = Field(
+        default="",
+        description="AWS secret key for bioRxiv/medRxiv requester-pays S3 PDF downloads",
+    )
+
     class Config:
         env_file = ["keys.env"]
         env_prefix = "PWC_"

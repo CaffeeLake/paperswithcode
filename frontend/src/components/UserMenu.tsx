@@ -7,6 +7,7 @@
  */
 
 import React from "react";
+import { Link } from "react-router-dom";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -74,6 +75,9 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
             <a href="/submissions">Review submissions</a>
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem asChild>
+          <Link to="/settings">Settings</Link>
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={(event) => {

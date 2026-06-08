@@ -77,6 +77,9 @@ export interface Paper {
   conference_url_abs?: string;
   conference_url_pdf?: string;
   proceeding?: string;
+  conference_slug?: string;
+  conference_name?: string;
+  conference_award?: 'outstanding' | 'honorable_mention' | 'best_paper_finalist' | null;
   version: string;
   is_latest_version: boolean;
   citation_count: number;
@@ -101,6 +104,9 @@ export interface Paper {
    *  paper). Powers the "Follow-up paper" pill in the lineage banner on the
    *  paper detail view. */
   successor_papers?: RelatedPaperSummary[];
+  /** Organizations (labs/companies) this paper is attributed to, e.g. NVIDIA.
+   *  Powers the org logo tags on the paper page. */
+  organizations?: OrganizationSummary[];
 }
 
 export interface Author {
@@ -134,6 +140,112 @@ export interface AreaWithTasks {
 
 export interface AreasWithTasks {
   results: AreaWithTasks[];
+}
+
+export interface ConferenceDeadline {
+  type?: string;
+  label?: string;
+  deadline_at: string;
+  timezone?: string;
+}
+
+export interface Conference {
+  id: string;
+  name: string;
+  slug: string;
+  short_name?: string;
+  year?: number;
+  url?: string;
+  start_date?: string;
+  end_date?: string;
+  venue?: string;
+  location?: string;
+  description?: string;
+  image_url?: string;
+  image_credit?: string;
+  hf_url?: string;
+  paper_count?: number;
+  tier?: string;
+  tags?: string[];
+  country?: string;
+  city?: string;
+  deadlines?: ConferenceDeadline[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Conferences {
+  count: number;
+  results: Conference[];
+}
+
+export interface ConferenceDeadlines {
+  count: number;
+  results: Conference[];
+}
+
+export interface ConferenceTaskSummary {
+  id: string;
+  name: string;
+  slug?: string;
+  paper_count: number;
+}
+
+export interface ConferenceAreaWithTasks {
+  id: string;
+  name: string;
+  description?: string;
+  tasks: ConferenceTaskSummary[];
+}
+
+export interface ConferenceAreasWithTasks {
+  conference: Conference;
+  total_paper_count: number;
+  oral_paper_count: number;
+  spotlight_paper_count: number;
+  outstanding_paper_count: number;
+  best_paper_finalist_paper_count: number;
+  results: ConferenceAreaWithTasks[];
+}
+
+/** Lightweight organization summary embedded in paper responses. */
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  slug: string;
+  logo_url?: string | null;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  hf_url?: string | null;
+  logo_url?: string | null;
+  website_url?: string | null;
+  github_url?: string | null;
+  description?: string | null;
+  paper_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Organizations {
+  count: number;
+  results: Organization[];
+}
+
+export interface OrganizationAreaWithTasks {
+  id: string;
+  name: string;
+  description?: string;
+  tasks: ConferenceTaskSummary[];
+}
+
+export interface OrganizationAreasWithTasks {
+  organization: Organization;
+  total_paper_count: number;
+  results: OrganizationAreaWithTasks[];
 }
 
 export interface Task {
@@ -234,6 +346,9 @@ export interface Evaluation {
   methodology?: string;
   metrics: Record<string, string | number>;
   uses_additional_data: boolean;
+  /** Whether the evaluated model is open-source. True by default; false for
+   *  closed-source models (proprietary APIs, unreleased flagship LLMs). */
+  is_open: boolean;
   best_rank?: number;
   best_metric?: string;
   evaluated_on?: string;
@@ -253,6 +368,12 @@ export interface Evaluation {
   task_slug?: string;
   dataset_name?: string;
   dataset_slug?: string;
+}
+
+export interface UserPreferences {
+  /** When true, hide closed-source model rows on benchmark and paper
+   *  evaluation tables. */
+  hide_closed_source_evals: boolean;
 }
 
 export interface Metric {
@@ -599,7 +720,7 @@ class ApiClient {
     if (params?.min_velocity !== undefined) searchParams.append('min_velocity', params.min_velocity.toString());
 
     const endpoint = `/papers/trending${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-    return this.request<TrendingPaper[]>(endpoint);
+    return this.request<TrendingPaper[]>(endpoint, { cache: 'no-store' });
   }
 
   // Repositories API
@@ -708,6 +829,90 @@ class ApiClient {
 
   async getAreasWithTasks(): Promise<AreasWithTasks> {
     return this.request<AreasWithTasks>(`/areas/with-tasks/`);
+  }
+
+  // Conferences API
+  async getConferences(): Promise<Conferences> {
+    return this.request<Conferences>(`/conferences/`);
+  }
+
+  async getConferenceDeadlines(): Promise<ConferenceDeadlines> {
+    return this.request<ConferenceDeadlines>(`/conferences/deadlines`);
+  }
+
+  async getConference(slug: string): Promise<Conference> {
+    return this.request<Conference>(`/conferences/${slug}`);
+  }
+
+  async getConferenceAreasWithTasks(slug: string): Promise<ConferenceAreasWithTasks> {
+    return this.request<ConferenceAreasWithTasks>(`/conferences/${slug}/areas-with-tasks`);
+  }
+
+  async getConferencePapers(slug: string, params?: {
+    task?: string;
+    presentation?: 'oral' | 'spotlight' | 'outstanding' | 'best_paper_finalist';
+    page?: number;
+    page_size?: number;
+    latest_only?: boolean;
+    order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
+    order_dir?: 'asc' | 'desc';
+    include_resources?: boolean;
+  }): Promise<PaginatedResponse<Paper>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.task) searchParams.append('task', params.task);
+    if (params?.presentation) searchParams.append('presentation', params.presentation);
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+    if (params?.include_resources) searchParams.append('include_resources', 'true');
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString
+      ? `/conferences/${slug}/papers?${queryString}`
+      : `/conferences/${slug}/papers`;
+    return this.request<PaginatedResponse<Paper>>(endpoint);
+  }
+
+  // Organizations API
+  async getOrganizations(): Promise<Organizations> {
+    return this.request<Organizations>(`/organizations/`);
+  }
+
+  async getOrganization(slug: string): Promise<Organization> {
+    return this.request<Organization>(`/organizations/${slug}`);
+  }
+
+  async getOrganizationAreasWithTasks(slug: string): Promise<OrganizationAreasWithTasks> {
+    return this.request<OrganizationAreasWithTasks>(`/organizations/${slug}/areas-with-tasks`);
+  }
+
+  async getOrganizationPapers(slug: string, params?: {
+    task?: string;
+    page?: number;
+    page_size?: number;
+    latest_only?: boolean;
+    order_by?: 'trending' | 'date_published' | 'citation_count' | 'title';
+    order_dir?: 'asc' | 'desc';
+    include_resources?: boolean;
+  }): Promise<PaginatedResponse<Paper>> {
+    const searchParams = new URLSearchParams();
+
+    if (params?.task) searchParams.append('task', params.task);
+    if (params?.page) searchParams.append('page', params.page.toString());
+    if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
+    if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
+    if (params?.order_by) searchParams.append('order_by', params.order_by);
+    if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
+    if (params?.include_resources) searchParams.append('include_resources', 'true');
+
+    const queryString = searchParams.toString();
+    const endpoint = queryString
+      ? `/organizations/${slug}/papers?${queryString}`
+      : `/organizations/${slug}/papers`;
+    return this.request<PaginatedResponse<Paper>>(endpoint);
   }
 
   async getAreaTasks(areaId: string, params?: {
@@ -997,7 +1202,9 @@ class ApiClient {
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/evaluations/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-    return this.request<PaginatedResponse<Evaluation>>(endpoint);
+    // Evaluation rows are added by admins at any time; bypass browser HTTP cache
+    // so paper pages don't keep showing stale empty result sets.
+    return this.request<PaginatedResponse<Evaluation>>(endpoint, { cache: 'no-store' });
   }
 
   async getEvaluation(id: string): Promise<Evaluation> {
@@ -1052,6 +1259,7 @@ class ApiClient {
     methodology?: string;
     metrics: Record<string, string | number>;
     uses_additional_data?: boolean;
+    is_open?: boolean;
     best_rank?: number;
     best_metric?: string;
     evaluated_on?: string;
@@ -1073,6 +1281,7 @@ class ApiClient {
     methodology?: string;
     metrics?: Record<string, string | number>;
     uses_additional_data?: boolean;
+    is_open?: boolean;
     best_rank?: number;
     best_metric?: string;
     evaluated_on?: string;
@@ -1219,6 +1428,18 @@ class ApiClient {
   async removeBookmark(paperId: string | number): Promise<void> {
     await this.request<void>(`/me/bookmarks/${paperId}`, { method: 'DELETE' });
   }
+
+  // ── Account preferences (signed-in HF user) ──
+  async getMyPreferences(): Promise<UserPreferences> {
+    return this.request<UserPreferences>('/me/preferences');
+  }
+
+  async updateMyPreferences(prefs: UserPreferences): Promise<UserPreferences> {
+    return this.request<UserPreferences>('/me/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(prefs),
+    });
+  }
 }
 
 // Create and export a singleton instance
@@ -1246,6 +1467,15 @@ export const getAuthor = apiClient.getAuthor.bind(apiClient);
 export const getAreas = apiClient.getAreas.bind(apiClient);
 export const getArea = apiClient.getArea.bind(apiClient);
 export const getAreasWithTasks = apiClient.getAreasWithTasks.bind(apiClient);
+export const getConferences = apiClient.getConferences.bind(apiClient);
+export const getConferenceDeadlines = apiClient.getConferenceDeadlines.bind(apiClient);
+export const getConference = apiClient.getConference.bind(apiClient);
+export const getConferenceAreasWithTasks = apiClient.getConferenceAreasWithTasks.bind(apiClient);
+export const getConferencePapers = apiClient.getConferencePapers.bind(apiClient);
+export const getOrganizations = apiClient.getOrganizations.bind(apiClient);
+export const getOrganization = apiClient.getOrganization.bind(apiClient);
+export const getOrganizationAreasWithTasks = apiClient.getOrganizationAreasWithTasks.bind(apiClient);
+export const getOrganizationPapers = apiClient.getOrganizationPapers.bind(apiClient);
 export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);
 export const getTasks = apiClient.getTasks.bind(apiClient);
 export const getTask = apiClient.getTask.bind(apiClient);
@@ -1278,6 +1508,8 @@ export const healthCheck = apiClient.healthCheck.bind(apiClient);
 export const getMyBookmarkIds = apiClient.getMyBookmarkIds.bind(apiClient);
 export const getMyBookmarks = apiClient.getMyBookmarks.bind(apiClient);
 export const addBookmark = apiClient.addBookmark.bind(apiClient);
+export const getMyPreferences = apiClient.getMyPreferences.bind(apiClient);
+export const updateMyPreferences = apiClient.updateMyPreferences.bind(apiClient);
 export const submitPendingPaperEdit = apiClient.submitPendingPaperEdit.bind(apiClient);
 export const listPendingPaperEdits = apiClient.listPendingPaperEdits.bind(apiClient);
 export const getPendingPaperEdit = apiClient.getPendingPaperEdit.bind(apiClient);

@@ -276,7 +276,7 @@ def ensure_task(session) -> int:
                 "and IIIT5K, plus irregular datasets such as IC15, SVTP, and CUTE80."
             ),
             keywords=(
-                "scene text recognition,STR,text recognition,OCR,cropped word recognition"
+                "scene text recognition,STR,text recognition,cropped word recognition"
             ),
             area_id=GENERAL_AREA_ID,
         )
