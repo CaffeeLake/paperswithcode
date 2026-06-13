@@ -36,6 +36,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
 | `add_task_datasets_featured_rank.sql` | `task_datasets.featured_rank` |
 | `add_tasks_is_visible.sql` | `tasks.is_visible` |
+| `add_task_sister_tasks.sql` + `run_add_task_sister_tasks.py` | `task_sister_tasks` table (explicit sister tasks) |
 | `add_paper_tasks_source.sql` | `paper_tasks.source` |
 | `add_methods_scanned_at_to_papers.sql` | `papers.methods_scanned_at` |
 | `add_method_source_paper_id.sql` | `methods.source_paper_id` |

@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from PIL import Image as PILImage
+
 from backend.models.api import Paper
 from backend.services.thumbnail_service import ThumbnailService
 from backend.utils.latex_text import latex_to_plain_text
@@ -38,6 +40,12 @@ PRODUCTION_ORIGIN = "https://paperswithcode.co"
 FALLBACK_IMAGE_PATH = "/api/og/default.png"
 MAX_DESCRIPTION_CHARS = 280
 
+# The default OG image (backend/services/default_og_image.py) is a 1200x630 PNG,
+# the standard summary_large_image size.
+FALLBACK_IMAGE_MIME = "image/png"
+FALLBACK_IMAGE_WIDTH = 1200
+FALLBACK_IMAGE_HEIGHT = 630
+
 
 @dataclass(frozen=True)
 class _ResolvedImage:
@@ -45,6 +53,9 @@ class _ResolvedImage:
 
     absolute_url: str
     is_fallback: bool
+    mime_type: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
 
 
 def build_request_origin(
@@ -107,6 +118,40 @@ def _strip_thumbnail_query_for_external_check(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
+def _guess_image_mime(url: str) -> Optional[str]:
+    """Best-effort MIME type from a thumbnail URL's file extension."""
+    leaf = urlsplit(url).path.rsplit("/", 1)[-1].lower()
+    if leaf.endswith(".png"):
+        return "image/png"
+    if leaf.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if leaf.endswith(".webp"):
+        return "image/webp"
+    if leaf.endswith(".gif"):
+        return "image/gif"
+    return None
+
+
+def _read_image_dimensions(path: Path) -> tuple[Optional[int], Optional[int]]:
+    """Return ``(width, height)`` from an on-disk image, or ``(None, None)``."""
+    try:
+        with PILImage.open(path) as img:
+            return img.width, img.height
+    except Exception as exc:
+        logger.debug("Could not read image dimensions for %s: %s", path, exc)
+        return None, None
+
+
+def _fallback_image(origin: str) -> _ResolvedImage:
+    return _ResolvedImage(
+        _absolutize(FALLBACK_IMAGE_PATH, origin),
+        is_fallback=True,
+        mime_type=FALLBACK_IMAGE_MIME,
+        width=FALLBACK_IMAGE_WIDTH,
+        height=FALLBACK_IMAGE_HEIGHT,
+    )
+
+
 def resolve_social_image_url(
     paper: Paper,
     origin: str,
@@ -121,17 +166,15 @@ def resolve_social_image_url(
     """
     raw_thumb = (paper.thumbnail_url or "").strip()
     if not raw_thumb:
-        return _ResolvedImage(
-            _absolutize(FALLBACK_IMAGE_PATH, origin), is_fallback=True
-        )
+        return _fallback_image(origin)
 
     if raw_thumb.startswith(("http://", "https://")):
-        return _ResolvedImage(raw_thumb, is_fallback=False)
+        return _ResolvedImage(
+            raw_thumb, is_fallback=False, mime_type=_guess_image_mime(raw_thumb)
+        )
 
     if not raw_thumb.startswith("/"):
-        return _ResolvedImage(
-            _absolutize(FALLBACK_IMAGE_PATH, origin), is_fallback=True
-        )
+        return _fallback_image(origin)
 
     if _is_arxiv_thumbnail_url(raw_thumb) or _is_custom_thumbnail_url(raw_thumb):
         path_only = _strip_thumbnail_query_for_external_check(raw_thumb)
@@ -141,22 +184,29 @@ def resolve_social_image_url(
             on_disk = _check_thumbnail_on_disk(
                 service, filename, _is_custom_thumbnail_url(raw_thumb)
             )
-            if on_disk:
-                return _ResolvedImage(_absolutize(raw_thumb, origin), is_fallback=False)
+            if on_disk is not None:
+                width, height = _read_image_dimensions(on_disk)
+                return _ResolvedImage(
+                    _absolutize(raw_thumb, origin),
+                    is_fallback=False,
+                    mime_type=_guess_image_mime(path_only) or "image/jpeg",
+                    width=width,
+                    height=height,
+                )
 
-    return _ResolvedImage(_absolutize(FALLBACK_IMAGE_PATH, origin), is_fallback=True)
+    return _fallback_image(origin)
 
 
 def _check_thumbnail_on_disk(
     service: ThumbnailService, filename: str, is_custom: bool
-) -> bool:
+) -> Optional[Path]:
     """
-    Check whether the thumbnail JPEG is materialised on the local mirror.
+    Return the local path to the thumbnail JPEG if it is materialised.
 
-    ``get_local_thumbnail_path`` already filters out missing files, so we
-    only need to check that it returned a path. Custom thumbnails go
-    through the same disk-only path to avoid per-request HF bucket
-    round-trips on the public preview hot path.
+    ``get_local_thumbnail_path`` already filters out missing files, so a
+    non-``None`` return means the file is on the local mirror. Custom
+    thumbnails go through the same disk-only path to avoid per-request HF
+    bucket round-trips on the public preview hot path.
     """
     try:
         if is_custom:
@@ -165,8 +215,8 @@ def _check_thumbnail_on_disk(
             path = service.get_local_thumbnail_path(filename)
     except Exception as exc:
         logger.debug("Thumbnail existence check failed for %s: %s", filename, exc)
-        return False
-    return path is not None
+        return None
+    return path
 
 
 def _authors_line(authors: list[str], max_authors: int = 5) -> str:
@@ -197,6 +247,15 @@ def _build_title(paper: Paper) -> str:
     return f"{paper_title} | Papers with Code"
 
 
+def _build_image_alt(paper: Paper, is_fallback: bool) -> str:
+    if is_fallback:
+        return "Papers with Code"
+    paper_title = latex_to_plain_text((paper.title or "").strip())
+    if paper_title:
+        return f"First page preview of {paper_title}"
+    return "Paper preview"
+
+
 def _build_canonical_url(origin: str, route_identifier: str) -> str:
     return f"{origin.rstrip('/')}/paper/{route_identifier}"
 
@@ -210,6 +269,10 @@ class PaperMetaTags:
     canonical_url: str
     image_url: str
     is_fallback_image: bool
+    image_alt: str
+    image_mime_type: Optional[str] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
 
 def build_paper_meta(
@@ -226,6 +289,10 @@ def build_paper_meta(
         canonical_url=_build_canonical_url(origin, route_identifier),
         image_url=image.absolute_url,
         is_fallback_image=image.is_fallback,
+        image_alt=_build_image_alt(paper, image.is_fallback),
+        image_mime_type=image.mime_type,
+        image_width=image.width,
+        image_height=image.height,
     )
 
 
@@ -236,6 +303,34 @@ _HEAD_CLOSE_RE = re.compile(r"</head\s*>", re.IGNORECASE)
 _TITLE_TAG_RE = re.compile(r"<title>.*?</title>", re.IGNORECASE | re.DOTALL)
 _META_NAME_RE_TEMPLATE = r'<meta\s+name=["\']{name}["\'][^>]*/?>'
 _META_PROPERTY_RE_TEMPLATE = r'<meta\s+property=["\']{prop}["\'][^>]*/?>'
+_CANONICAL_LINK_RE = re.compile(
+    r'<link\s+rel=["\']canonical["\'][^>]*/?>', re.IGNORECASE
+)
+
+# Static social tags shipped in frontend/index.html that we replace with
+# paper-specific values. Listed exhaustively so crawlers never see a generic
+# site-wide tag ahead of (or alongside) the per-paper one.
+_STATIC_META_NAMES = (
+    "description",
+    "twitter:card",
+    "twitter:title",
+    "twitter:description",
+    "twitter:image",
+    "twitter:image:alt",
+)
+_STATIC_META_PROPERTIES = (
+    "og:title",
+    "og:description",
+    "og:type",
+    "og:url",
+    "og:image",
+    "og:image:secure_url",
+    "og:image:type",
+    "og:image:width",
+    "og:image:height",
+    "og:image:alt",
+    "og:site_name",
+)
 
 
 def _escape(value: str) -> str:
@@ -261,12 +356,15 @@ def inject_paper_meta(html: str, meta: PaperMetaTags) -> str:
     just for this hot, per-request path.
     """
     rewritten = _TITLE_TAG_RE.sub("", html, count=1)
-    for name in ("description", "twitter:card"):
-        pattern = re.compile(_META_NAME_RE_TEMPLATE.format(name=name), re.IGNORECASE)
-        rewritten = _replace_or_remove(rewritten, pattern)
-    for prop in ("og:title", "og:description", "og:type"):
+    rewritten = _CANONICAL_LINK_RE.sub("", rewritten, count=1)
+    for name in _STATIC_META_NAMES:
         pattern = re.compile(
-            _META_PROPERTY_RE_TEMPLATE.format(prop=prop), re.IGNORECASE
+            _META_NAME_RE_TEMPLATE.format(name=re.escape(name)), re.IGNORECASE
+        )
+        rewritten = _replace_or_remove(rewritten, pattern)
+    for prop in _STATIC_META_PROPERTIES:
+        pattern = re.compile(
+            _META_PROPERTY_RE_TEMPLATE.format(prop=re.escape(prop)), re.IGNORECASE
         )
         rewritten = _replace_or_remove(rewritten, pattern)
 
@@ -285,6 +383,7 @@ def _render_meta_block(meta: PaperMetaTags) -> str:
     description = _escape(meta.description)
     canonical = _escape(meta.canonical_url)
     image = _escape(meta.image_url)
+    image_alt = _escape(meta.image_alt)
 
     lines = [
         f"    <title>{title}</title>",
@@ -295,18 +394,31 @@ def _render_meta_block(meta: PaperMetaTags) -> str:
         '    <meta property="og:type" content="article" />',
         f'    <meta property="og:url" content="{canonical}" />',
         f'    <meta property="og:image" content="{image}" />',
-        '    <meta property="og:site_name" content="Papers with Code" />',
-        '    <meta name="twitter:card" content="summary_large_image" />',
-        f'    <meta name="twitter:title" content="{title}" />',
-        f'    <meta name="twitter:description" content="{description}" />',
-        f'    <meta name="twitter:image" content="{image}" />',
     ]
-    if meta.is_fallback_image:
-        lines.extend(
-            [
-                '    <meta property="og:image:width" content="1200" />',
-                '    <meta property="og:image:height" content="630" />',
-            ]
+    if meta.image_url.startswith("https://"):
+        lines.append(f'    <meta property="og:image:secure_url" content="{image}" />')
+    if meta.image_mime_type:
+        lines.append(
+            f'    <meta property="og:image:type" content="{_escape(meta.image_mime_type)}" />'
         )
+    if meta.image_width:
+        lines.append(
+            f'    <meta property="og:image:width" content="{meta.image_width}" />'
+        )
+    if meta.image_height:
+        lines.append(
+            f'    <meta property="og:image:height" content="{meta.image_height}" />'
+        )
+    lines.extend(
+        [
+            f'    <meta property="og:image:alt" content="{image_alt}" />',
+            '    <meta property="og:site_name" content="Papers with Code" />',
+            '    <meta name="twitter:card" content="summary_large_image" />',
+            f'    <meta name="twitter:title" content="{title}" />',
+            f'    <meta name="twitter:description" content="{description}" />',
+            f'    <meta name="twitter:image" content="{image}" />',
+            f'    <meta name="twitter:image:alt" content="{image_alt}" />',
+        ]
+    )
 
     return "\n" + "\n".join(lines) + "\n  "

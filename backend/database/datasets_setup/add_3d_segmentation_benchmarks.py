@@ -81,8 +81,7 @@ SEM_BENCHMARKS = [
         "modalities": ["Images", "3D", "RGB-D"],
     },
     {
-        "name": "ScanNet Plus Plus",
-        "display_name": "ScanNet++",
+        "name": "ScanNet++",
         "slug": "scannet-plus-plus",
         "full_name": "ScanNet++",
         "description": (

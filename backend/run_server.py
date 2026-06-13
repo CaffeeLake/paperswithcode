@@ -24,12 +24,16 @@ def main():
     print(f"📚 API Docs: http://{settings.host}:{settings.port}/docs")
     print("-" * 50)
 
-    # Run the server
+    # Run the server. In development we keep a single auto-reloading worker.
+    # In production we run multiple workers so a slow request handled by one
+    # worker cannot stall every other in-flight request (reload and workers
+    # are mutually exclusive in uvicorn).
     uvicorn.run(
         "backend.main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.is_development,
+        workers=None if settings.is_development else 2,
         log_level=settings.log_level.lower(),
         access_log=True,
         reload_dirs=[str(project_root / "backend")]

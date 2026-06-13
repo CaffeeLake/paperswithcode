@@ -43,6 +43,89 @@ class DatasetService:
             query = query.filter(TaskDataset.task_id == task_id)
         return any(supports for (supports,) in query.all())
 
+    def _supports_harness_for_datasets(
+        self, dataset_ids: List[int], task_id: Optional[int] = None
+    ) -> dict:
+        """Batched variant of `_supports_harness`.
+
+        Returns a `dataset_id -> bool` map computed in one query over all page
+        dataset IDs, replacing the previous per-row N+1 (`_supports_harness`
+        was called once per dataset on every listing). A dataset supports
+        harness values when *any* of its in-scope leaderboards allow them.
+        """
+        if not dataset_ids:
+            return {}
+
+        query = self.db.query(
+            TaskDataset.dataset_id, TaskDataset.supports_harness
+        ).filter(TaskDataset.dataset_id.in_(dataset_ids))
+        if task_id is not None:
+            query = query.filter(TaskDataset.task_id == task_id)
+
+        result: dict = {}
+        for dataset_id, supports in query.all():
+            result[dataset_id] = result.get(dataset_id, False) or bool(supports)
+        return result
+
+    def _best_models_for_datasets(
+        self, dataset_ids: List[int], scoped_task_ids: List[int]
+    ) -> dict:
+        """Map dataset_id -> best (rank 1) model name for the scoped task(s).
+
+        Mirrors the benchmark page's primary-metric logic: a (task, dataset)
+        can host multiple metric leaderboards, so we first pick the metric the
+        most evaluation rows rank on, then take that metric's rank-1 model.
+        Done in two batched queries (no N+1) since the task page renders up to
+        ~100 benchmark rows.
+        """
+        if not dataset_ids:
+            return {}
+
+        # Step 1: per dataset, find the metric carried by the most ranked rows.
+        metric_counts = (
+            self.db.query(
+                DBEvaluation.dataset_id,
+                DBEvaluation.best_metric,
+                func.count(DBEvaluation.id).label("n"),
+            )
+            .filter(
+                DBEvaluation.dataset_id.in_(dataset_ids),
+                DBEvaluation.task_id.in_(scoped_task_ids),
+                DBEvaluation.best_metric.isnot(None),
+            )
+            .group_by(DBEvaluation.dataset_id, DBEvaluation.best_metric)
+            .all()
+        )
+        primary_metric: dict = {}
+        best_n: dict = {}
+        for dataset_id, metric, n in metric_counts:
+            if n > best_n.get(dataset_id, -1):
+                best_n[dataset_id] = n
+                primary_metric[dataset_id] = metric
+
+        if not primary_metric:
+            return {}
+
+        # Step 2: fetch the rank-1 model for each dataset's primary metric.
+        rank_one = (
+            self.db.query(
+                DBEvaluation.dataset_id,
+                DBEvaluation.best_metric,
+                DBEvaluation.model_name,
+            )
+            .filter(
+                DBEvaluation.dataset_id.in_(list(primary_metric.keys())),
+                DBEvaluation.task_id.in_(scoped_task_ids),
+                DBEvaluation.best_rank == 1,
+            )
+            .all()
+        )
+        best_models: dict = {}
+        for dataset_id, metric, model_name in rank_one:
+            if metric == primary_metric.get(dataset_id) and model_name:
+                best_models.setdefault(dataset_id, model_name)
+        return best_models
+
     def get_datasets(
         self,
         page: int = 1,
@@ -86,13 +169,29 @@ class DatasetService:
             # leaderboard table. Counting `paper_datasets` instead drifts to 0
             # for benchmarks that only exist as evaluation rows.
             task_dataset_filter = aliased(TaskDataset)
+            scoped_task_ids: Optional[List[int]] = None
+            if task_id is not None:
+                scoped_task_ids = (
+                    collect_descendant_task_ids(self.db, task_id)
+                    if include_descendants
+                    else [task_id]
+                )
+
+            eval_join = DBDataset.id == DBEvaluation.dataset_id
+            if scoped_task_ids is not None:
+                # Same dataset can host separate leaderboards per task (e.g.
+                # supervised Video segmentation vs unsupervised VIS). When a task
+                # filter is active, count only evaluations on that task's
+                # leaderboard — not every row on the shared dataset.
+                eval_join = eval_join & DBEvaluation.task_id.in_(scoped_task_ids)
+
             query = (
                 self.db.query(
                     DBDataset,
                     func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
-                .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
+                .outerjoin(DBEvaluation, eval_join)
                 .outerjoin(TaskDataset, DBDataset.id == TaskDataset.dataset_id)
                 .group_by(DBDataset.id)
             )
@@ -118,17 +217,12 @@ class DatasetService:
             if full_name:
                 query = query.filter(DBDataset.full_name.ilike(f"%{full_name}%"))
 
-            if task_id is not None:
+            if scoped_task_ids is not None:
                 # Filter datasets by task association via task_datasets so display
                 # metadata stays independent from per-metric leaderboard triples.
                 # When `include_descendants` is true, expand the filter to all
                 # subtasks under `task_id` so a parent task page can roll up
                 # benchmarks from its child tasks (subtasks).
-                if include_descendants:
-                    task_ids = collect_descendant_task_ids(self.db, task_id)
-                else:
-                    task_ids = [task_id]
-
                 query = (
                     query.add_columns(
                         task_dataset_filter.featured_rank.label("featured_rank")
@@ -137,7 +231,7 @@ class DatasetService:
                         task_dataset_filter,
                         DBDataset.id == task_dataset_filter.dataset_id,
                     )
-                    .filter(task_dataset_filter.task_id.in_(task_ids))
+                    .filter(task_dataset_filter.task_id.in_(scoped_task_ids))
                     .group_by(task_dataset_filter.featured_rank)
                 )
 
@@ -172,14 +266,16 @@ class DatasetService:
                 desc(order_field) if order_dir == "desc" else asc(order_field)
             )
             if task_id is not None:
-                # Task pages sort benchmarks by the requested ordering first
-                # (typically -paper_count, i.e. evaluation-count popularity).
-                # `featured_rank` is kept around as dormant curation metadata
-                # and only used as a final tie-breaker between equally
-                # popular benchmarks, so popularity drives the visible order.
+                # Task pages pin curated benchmarks first: any row with a
+                # non-null `featured_rank` is ordered ahead of the rest by
+                # ascending rank, so an admin can force e.g. SWE-Bench Pro to
+                # the top regardless of evaluation count. Unranked benchmarks
+                # (`featured_rank IS NULL`) fall back to the requested ordering
+                # (typically -paper_count popularity), with name as the final
+                # tie-breaker.
                 query = query.order_by(
-                    order_clause,
                     asc(task_dataset_filter.featured_rank).nulls_last(),
+                    order_clause,
                     asc(DBDataset.name),
                 )
             else:
@@ -189,19 +285,32 @@ class DatasetService:
             offset = (page - 1) * page_size
             results = query.offset(offset).limit(page_size).all()
 
+            page_dataset_ids = [row[0].id for row in results]
+
+            # Best (rank 1) model per benchmark, only when task-scoped. The
+            # dataset index (no task filter) skips this so it stays untouched.
+            best_models: dict = {}
+            if scoped_task_ids is not None:
+                best_models = self._best_models_for_datasets(
+                    page_dataset_ids, scoped_task_ids
+                )
+
+            # Batched harness-support lookup for the whole page in one query.
+            # When rolling up descendants, harness support belongs to the
+            # owning child task, not the requested parent, so drop the task
+            # scoping and reflect whether *any* leaderboard allows harness
+            # values.
+            harness_task_id = None if include_descendants else task_id
+            supports_harness_map = self._supports_harness_for_datasets(
+                page_dataset_ids, harness_task_id
+            )
+
             # Convert to API models
             dataset_list = []
             for row in results:
                 db_dataset, paper_count, task_count = row[:3]
                 featured_rank = row[3] if task_id is not None else None
-                # When rolling up descendants, harness support belongs to the
-                # owning child task, not the requested parent. Drop the task
-                # scoping so the dataset reflects whether *any* of its
-                # leaderboards allow harness values.
-                harness_task_id = None if include_descendants else task_id
-                supports_harness = self._supports_harness(
-                    db_dataset.id, harness_task_id
-                )
+                supports_harness = supports_harness_map.get(db_dataset.id, False)
                 dataset_dict = {
                     "id": str(db_dataset.id),
                     "name": db_dataset.name,
@@ -247,6 +356,7 @@ class DatasetService:
                     "task_count": task_count,
                     "featured_rank": featured_rank,
                     "supports_harness": supports_harness,
+                    "best_model_name": best_models.get(db_dataset.id),
                 }
                 dataset_list.append(Dataset(**dataset_dict))
 

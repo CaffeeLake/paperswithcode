@@ -484,6 +484,37 @@ function SourceUrlDiff({ currentPayload, proposedPayload }: {
   );
 }
 
+function TaxonomySuggestionDiff({
+  kind,
+  proposedPayload,
+}: {
+  kind: "task" | "method";
+  proposedPayload: JsonRecord;
+}) {
+  const name = typeof proposedPayload.name === "string" ? proposedPayload.name : "";
+  const description =
+    typeof proposedPayload.description === "string" ? proposedPayload.description : "";
+
+  return (
+    <div className="submission-diff-columns">
+      <DiffColumn title={`Suggested ${kind} name`}>
+        {name ? (
+          <span className="submission-diff-pill added">{name}</span>
+        ) : (
+          <EmptyInline>No name provided</EmptyInline>
+        )}
+      </DiffColumn>
+      <DiffColumn title="Description">
+        {description ? (
+          <span className="submission-field-value">{description}</span>
+        ) : (
+          <EmptyInline>No description provided</EmptyInline>
+        )}
+      </DiffColumn>
+    </div>
+  );
+}
+
 function DiffColumn({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="submission-diff-column">
@@ -580,6 +611,10 @@ export function PendingEditDiff({ editType, currentPayload, proposedPayload }: P
     content = <SourceUrlDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
   } else if (editType === "hf_artifacts") {
     content = <HfArtifactsDiff currentPayload={currentPayload} proposedPayload={proposedPayload} />;
+  } else if (editType === "new_task") {
+    content = <TaxonomySuggestionDiff kind="task" proposedPayload={proposedPayload} />;
+  } else if (editType === "new_method") {
+    content = <TaxonomySuggestionDiff kind="method" proposedPayload={proposedPayload} />;
   } else {
     content = (
       <div className="submission-empty submission-empty-warn">

@@ -35,6 +35,8 @@ const EDIT_TYPE_FILTERS: Array<PendingEditType | "all"> = [
   "repositories",
   "project_pages",
   "source_url",
+  "new_task",
+  "new_method",
 ];
 const COUNT_STATUSES: PendingEditStatus[] = ["pending", "approved", "rejected"];
 

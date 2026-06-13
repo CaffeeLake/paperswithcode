@@ -103,7 +103,7 @@ def get_job_description(job_name: str, category: str) -> Optional[str]:
     summary="Get CRON jobs status",
     dependencies=[Depends(require_admin)],
 )
-async def get_cron_status(
+def get_cron_status(
     days: int = Query(
         1, ge=1, le=7, description="Number of days to look back for status"
     ),
@@ -205,7 +205,7 @@ async def get_cron_status(
     summary="Get detailed status for a specific job",
     dependencies=[Depends(require_admin)],
 )
-async def get_job_detail(
+def get_job_detail(
     job_name: str,
     days: int = Query(3, ge=1, le=30, description="Number of days of history to fetch"),
 ):
@@ -278,7 +278,7 @@ async def get_job_detail(
     summary="Get CRON system health",
     dependencies=[Depends(require_admin)],
 )
-async def get_cron_health():
+def get_cron_health():
     """
     Get overall CRON system health status.
 

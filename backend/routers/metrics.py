@@ -17,7 +17,7 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 
 @router.get("/", response_model=Metrics)
-async def list_metrics(
+def list_metrics(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
         100, ge=1, le=500, description="Number of metrics per page (max 500)"
@@ -86,7 +86,7 @@ async def list_metrics(
 
 
 @router.get("/directions", response_model=MetricDirections)
-async def get_metric_directions(
+def get_metric_directions(
     db: Session = Depends(get_database_session),
 ):
     """
@@ -124,7 +124,7 @@ async def get_metric_directions(
 
 
 @router.get("/{metric_name}", response_model=Metric)
-async def get_metric(
+def get_metric(
     metric_name: str,
     db: Session = Depends(get_database_session),
 ):

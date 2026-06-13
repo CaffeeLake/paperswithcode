@@ -26,7 +26,7 @@ router = APIRouter(prefix="/conferences", tags=["conferences"])
     response_model=Conferences,
     summary="List all conferences",
 )
-async def get_conferences(
+def get_conferences(
     db: Session = Depends(get_database_session),
 ):
     try:
@@ -41,7 +41,7 @@ async def get_conferences(
     response_model=ConferenceDeadlines,
     summary="List conferences with their submission deadlines",
 )
-async def get_conference_deadlines(
+def get_conference_deadlines(
     db: Session = Depends(get_database_session),
 ):
     try:
@@ -56,7 +56,7 @@ async def get_conference_deadlines(
     response_model=Conference,
     summary="Get conference details",
 )
-async def get_conference(
+def get_conference(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
@@ -74,7 +74,7 @@ async def get_conference(
     response_model=ConferenceAreasWithTasks,
     summary="Get conference taxonomy grouped by area and task",
 )
-async def get_conference_areas_with_tasks(
+def get_conference_areas_with_tasks(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     db: Session = Depends(get_database_session),
 ):
@@ -92,7 +92,7 @@ async def get_conference_areas_with_tasks(
     response_model=Papers,
     summary="List papers for a conference, optionally filtered by task",
 )
-async def get_conference_papers(
+def get_conference_papers(
     slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
     task: Optional[str] = Query(
         None, description="Optional task slug to filter papers"

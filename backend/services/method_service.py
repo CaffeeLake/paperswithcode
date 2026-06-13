@@ -503,7 +503,9 @@ class MethodService:
 
             paper_service = PaperService(self.db)
             relation_data = paper_service._get_paper_relation_data(
-                [paper.id for paper in db_papers], include_resources=include_resources
+                [paper.id for paper in db_papers],
+                include_resources=include_resources,
+                card_view=True,
             )
 
             papers = []

@@ -27,7 +27,7 @@ fi
 
 log_message "Environment file found, starting job"
 
-if uv run --env-file backend/keys.env python -m scripts.weekly.link_papers_by_task_keywords "$@" 2>> "$WRAPPER_LOG"; then
+if timeout -k 60s 6h nice -n 19 ionice -c3 uv run --env-file backend/keys.env python -m scripts.weekly.link_papers_by_task_keywords "$@" 2>> "$WRAPPER_LOG"; then
     log_message "link_papers_by_task_keywords job completed successfully"
     exit 0
 else

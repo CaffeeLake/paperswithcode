@@ -171,6 +171,8 @@ const TASK_ACRONYMS = new Set(["OCR"]);
 const TASK_DISPLAY_NAMES = new Map([
   ["3d-generation", "3D generation"],
   ["3d-understanding", "3D understanding"],
+  ["3d-semantic-segmentation", "3D semantic segmentation"],
+  ["3d-instance-segmentation", "3D instance segmentation"],
 ]);
 
 export function displayTaskName(name?: string, slug?: string): string {

@@ -34,7 +34,7 @@ router = APIRouter()
     response_model=Repositories,
     summary="Get repositories with pagination and filtering",
 )
-async def get_repositories(
+def get_repositories(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         None, ge=1, le=500, description="Number of repositories per page"
@@ -83,7 +83,7 @@ async def get_repositories(
     response_model=Repository,
     summary="Get repository by ID",
 )
-async def get_repository_by_id(
+def get_repository_by_id(
     repository_id: str = Path(..., description="Repository ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -104,7 +104,7 @@ async def get_repository_by_id(
     response_model=List[Repository],
     summary="Get repositories by owner",
 )
-async def get_repositories_by_owner(
+def get_repositories_by_owner(
     owner: str = Path(
         ..., description="Repository owner (GitHub username/organization)"
     ),
@@ -129,7 +129,7 @@ async def get_repositories_by_owner(
     response_model=List[Repository],
     summary="Get repositories by owner and name",
 )
-async def get_repositories_by_owner_and_name(
+def get_repositories_by_owner_and_name(
     owner: str = Path(..., description="Repository owner"),
     name: str = Path(..., description="Repository name"),
     db: Session = Depends(get_database_session),
@@ -149,7 +149,7 @@ async def get_repositories_by_owner_and_name(
     response_model=RepositoryStarHistoryList,
     summary="Get star count history for a repository",
 )
-async def get_repository_star_history(
+def get_repository_star_history(
     repository_id: str = Path(..., description="Repository ID"),
     limit: Optional[int] = Query(
         None, ge=1, le=1000, description="Maximum number of snapshots to return"
@@ -220,7 +220,7 @@ async def get_repository_star_history(
     response_model=ProjectPages,
     summary="Get project pages with pagination and filtering",
 )
-async def get_project_pages(
+def get_project_pages(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         None, ge=1, le=500, description="Number of project pages per page"
@@ -263,7 +263,7 @@ async def get_project_pages(
     response_model=ProjectPage,
     summary="Get project page by ID",
 )
-async def get_project_page_by_id(
+def get_project_page_by_id(
     page_id: str = Path(..., description="Project page ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -285,7 +285,7 @@ async def get_project_page_by_id(
     status_code=201,
     summary="Create a new project page",
 )
-async def create_project_page(
+def create_project_page(
     request: ProjectPageCreateRequest,
     db: Session = Depends(get_database_session),
 ):
@@ -322,7 +322,7 @@ async def create_project_page(
     response_model=ProjectPage,
     summary="Update a project page",
 )
-async def update_project_page(
+def update_project_page(
     page_id: str = Path(..., description="Project page ID"),
     request: ProjectPageUpdateRequest = ...,
     db: Session = Depends(get_database_session),
@@ -363,7 +363,7 @@ async def update_project_page(
     status_code=204,
     summary="Delete a project page",
 )
-async def delete_project_page(
+def delete_project_page(
     page_id: str = Path(..., description="Project page ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -398,7 +398,7 @@ async def delete_project_page(
     response_model=List[Repository],
     summary="Get repositories for a paper",
 )
-async def get_repositories_for_paper(
+def get_repositories_for_paper(
     paper_id: str = Path(..., description="Paper ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -419,7 +419,7 @@ async def get_repositories_for_paper(
     response_model=List[ProjectPage],
     summary="Get project pages for a paper",
 )
-async def get_project_pages_for_paper(
+def get_project_pages_for_paper(
     paper_id: str = Path(..., description="Paper ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -440,7 +440,7 @@ async def get_project_pages_for_paper(
     response_model=ProjectPageWithPapers,
     summary="Get project page with associated papers",
 )
-async def get_project_page_with_papers(
+def get_project_page_with_papers(
     page_id: str = Path(..., description="Project page ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -464,7 +464,7 @@ async def get_project_page_with_papers(
     response_model=List[PaperProjectPage],
     summary="Get paper-project page relationships",
 )
-async def get_paper_project_page_relationships(
+def get_paper_project_page_relationships(
     paper_id: Optional[str] = Query(None, description="Filter by paper ID"),
     project_page_id: Optional[str] = Query(
         None, description="Filter by project page ID"

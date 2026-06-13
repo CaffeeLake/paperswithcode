@@ -253,6 +253,12 @@ Apply the exclusion rules in this order:
 8. Normalize score scale to the existing leaderboard, not just the source table's printed unit. Before posting a `Score` row, inspect existing rows for that exact `(task_id, dataset_id, best_metric)` and compare the source value's magnitude with the leaderboard's native scale. OCRBench is the important case: its configured leaderboard uses native `Score` on the 0-1000 scale, while model cards and blogs often report the same result as a percentage (for example `86.9%`). When importing OCRBench into dataset `OCRBench` / metric `Score`, convert percent-style values below 100 to native score by multiplying by 10 (`86.9` -> `869`, `91.90` -> `919`) and mention this normalization in `methodology`. Do not do this blindly for every benchmark named `Score`; if the existing leaderboard rows are mostly percent-scale or the source metric is a different quantity, keep the source value or skip and report the ambiguity.
 9. For `FPS` rows, prefer an **optimized deployment speed** when the source reports one alongside a baseline runtime number. Papers and READMEs often headline TensorRT, ONNX, Triton, compiled inference, quantization, or cache-assisted speeds in parentheses or a second column (for example `18.6 (100.2)` meaning PyTorch vs TensorRT). Import the optimized figure as the `FPS` value and record the stack in `methodology` (e.g. "TensorRT with language cache; PyTorch Float32 speed is 18.6 FPS"). Do not skip optimized FPS just because it is not the unoptimized reference implementation; do not post two FPS rows for the same model unless the user asks for both setups separately.
 10. Record `supports_harness` for the exact selected `(task_id, dataset_id)` row. This flag decides whether the API payload may include `harness`. If it is true, inspect the source notes, footnotes, model card metadata, official blog/report text, and linked official evaluation PRs or result files for a named harness before posting the row.
+11. **Image-text retrieval direction is fixed per dataset slug — never mix directions on one leaderboard and never infer direction from existing rows:**
+    - **`flickr30k-image-to-text` / `coco-captions-image-to-text`** (`Flickr30K Image-to-Text Retrieval` / `COCO Captions Image-to-Text Retrieval`) → import **image-to-text (I→T)** R@1 only (query image, retrieve caption).
+    - **`flickr30k-text-to-image` / `coco-captions-text-to-image`** (`Flickr30K Text-to-Image Retrieval` / `COCO Captions Text-to-Image Retrieval`) → import **text-to-image (T→I)** R@1 only (query caption, retrieve image).
+    - Do not import DataComp Table 9 aggregate “Flickr” / “MSCOCO” cells — those are the **arithmetic mean** of I→T and T→I, not either direction.
+    - When a paper table lists both directions (TR/IR or image→text / text→image), pick the row matching the target dataset slug; put the other direction on the sibling text-retrieval benchmark if importing both is in scope.
+    - Preserve setup suffixes such as `(zero-shot)` when they distinguish rows on the same leaderboard; do not strip `(image retrieval)` / `(text retrieval)` by folding into a shared name unless the directions live on separate benchmark slugs.
 
 Keep an explicit "skipped" list of names + reasons to report at the end. Use reasons like `metric not configured for leaderboard`, `no DB match`, `no task association`, `component metric only; canonical total not reported`, or `source setup not comparable to configured leaderboard` so future cleanup is easy. Do not change task associations or leaderboard metrics in this pass; if the user explicitly wants to add tasks or metrics, defer to the `add-benchmark` skill instead.
 
@@ -300,6 +306,32 @@ Use `POST /api/v1/evaluations/` with `X-Admin-Token`. Build one row per benchmar
 - Normalize values to the leaderboard's native scale before posting. For OCRBench `Score`, store the native 0-1000 score (`869`), not the percent-style rendering (`86.9%`) commonly shown in VLM release tables. If you convert a source value, say so in `methodology` so future maintainers can trace why the stored value differs from the printed table.
 - For `FPS`, use the optimized deployment speed when the source reports both baseline and optimized numbers (TensorRT, ONNX, compiled inference, language cache, etc.). Put the optimization stack in `methodology` and note the baseline FPS there too when available.
 - Always include `methodology` summarizing the source's note for that row (shot count, metric label, mode, harness version, source surface — card/paper/README — etc.) so the row is traceable back to where the number came from.
+- Set `is_open` on every row. The API defaults to `true`, but many frontier releases are closed-source API models. Users can hide closed rows via Settings → "Hide closed-source models"; rows missing this flag look like open-weight results. Decide once per imported model variant, then reuse the same boolean on every row for that variant.
+
+#### Closed-source (`is_open = false`)
+
+Set `is_open: false` when there is **no evidence of an open-weight release** for the evaluated model variant. This is the common case for proprietary frontier models from Anthropic (Claude), OpenAI (GPT / o-series), Google (Gemini), xAI (Grok), and similar API-only vendors.
+
+Treat a release as closed-source when any of these hold and none of the open-source signals below apply:
+
+- The source is a blog post, system card, vendor report, or API announcement with pricing/access details but no public weights.
+- Weights are unavailable, restricted (trusted-access / allowlist / enterprise-only), or inference-only through a vendor API.
+- The only linked Hugging Face artifact is a demo Space, dataset, or unrelated base model — not downloadable weights for the evaluated checkpoint.
+- The evaluated product is clearly a proprietary model name (`Claude …`, `GPT-…`, `Gemini …`, etc.) with no accompanying open-weight release in the same source chain.
+
+Recent examples: Claude Opus/Fable/Mythos, GPT-5.x, Gemini 3.x — all `is_open: false` unless the release also ships open weights.
+
+#### Open-source (`is_open = true`)
+
+Keep `is_open: true` (the API default) only when the evaluated variant has clear open-weight evidence:
+
+- An official Hugging Face **model** repo with downloadable weights for that checkpoint (not just a paper link or `arxiv:` tag).
+- An official GitHub release that distributes weights or states they are publicly released under an open license.
+- The paper/card/README explicitly open-sources the exact evaluated model and links the artifact.
+
+When evidence is mixed (API product plus a separate open research checkpoint), set `is_open` from the **evaluated row's model variant**, not the lab's general policy. If the leaderboard row is for an API-only flagship and a smaller open checkpoint also exists, the flagship row stays closed.
+
+When genuinely uncertain after checking the primary source plus official linked artifacts, prefer `is_open: false` for major closed vendors and mention the ambiguity in the final report rather than defaulting to open.
 
 Skeleton:
 
@@ -318,9 +350,31 @@ def normalize_score_for_leaderboard(dataset_name, metric, score):
             return str(int(scaled)) if scaled.is_integer() else f"{scaled:g}"
     return f"{score}".rstrip("%")
 
+def determine_is_open(source_urls, hf_model_repo_ids=None):
+    """Return False for proprietary API releases unless open weights are evidenced."""
+    hf_model_repo_ids = hf_model_repo_ids or []
+    open_weight_markers = (
+        "apache", "mit license", "open weights", "open-weight", "open source weights",
+        "model weights are available", "weights available on hugging face",
+    )
+    blob = " ".join(source_urls).lower()
+    if any(marker in blob for marker in open_weight_markers):
+        return True
+    if hf_model_repo_ids:
+        return True
+    closed_vendors = ("anthropic.com", "openai.com", "blog.google", "deepmind.google", "x.ai")
+    if any(v in blob for v in closed_vendors):
+        return False
+    return True  # non-vendor academic/GitHub releases default open unless proven otherwise
+
+IS_OPEN = determine_is_open(
+    source_urls=["<announcement/system card/github readme>"],
+    hf_model_repo_ids=[],  # e.g. ["org/open-model-7b"] when weights are official
+)
+
 def post_eval(
     paper_id, task_id, dataset_id, dataset_name, model_name, metric, score,
-    methodology, harness=None, num_parameters=None,
+    methodology, harness=None, num_parameters=None, is_open=IS_OPEN,
 ):
     allowed_metrics = allowed_metrics_by_leaderboard[(task_id, dataset_id)]
     outgoing_metric_keys = {metric}
@@ -338,6 +392,7 @@ def post_eval(
         "methodology": methodology,
         "metrics": {metric: normalized_score},
         "best_metric": metric,
+        "is_open": is_open,
     }
     if harness:
         body["harness"] = harness
@@ -371,6 +426,8 @@ from sqlalchemy import text
 from backend.database.connection import get_database_session
 from backend.services.evaluation_service import EvaluationService
 
+is_open = False  # set from determine_is_open(...) before the loop
+
 params = {
     "paper_id": paper_id,
     "task_id": task_id,
@@ -402,6 +459,7 @@ try:
             harness=harness,
             external_source_url=source_url,
             num_parameters=num_parameters,
+            is_open=is_open,
         )
 finally:
     try:
@@ -421,8 +479,8 @@ uv run --env-file backend/keys.env python backend/database/validate_evaluation_m
 Then verify the imported rows:
 
 ```bash
-curl -s "http://localhost:8000/api/v1/evaluations/?paper_id=<paper_id>&page_size=200" \
-  | uv run python -c "import json,sys; d=json.load(sys.stdin); print(d['count']); [print(e['model_name'], '/', e.get('harness') or '-', e['dataset_name'], e['best_metric'], e['metrics'].get(e['best_metric']), 'rank=', e.get('best_rank'), 'params=', e.get('num_parameters') if e.get('num_parameters') is not None else '-') for e in d['results']]"
+curl -s "http://localhost:8000/api/v1/evaluations/?paper_id=<paper_id>&page_size=100" \
+  | uv run python -c "import json,sys; d=json.load(sys.stdin); print(d['count']); [print(e['model_name'], '/', e.get('harness') or '-', e['dataset_name'], e['best_metric'], e['metrics'].get(e['best_metric']), 'open=', e.get('is_open'), 'rank=', e.get('best_rank'), 'params=', e.get('num_parameters') if e.get('num_parameters') is not None else '-') for e in d['results']]"
 ```
 
 And confirm there are no duplicate `(paper_id, task_id, dataset_id, model_name, harness, best_metric)` rows for the imported paper.
@@ -442,6 +500,7 @@ End by giving the user a concise report:
 - Any benchmark metadata gaps left for follow-up (e.g. missing `introducing_paper_id`, no arXiv source paper, missing source publication date, missing harness attribution for a harness-supporting leaderboard).
 - Any harness details from the source that were downgraded into `methodology` or `model_name` because `supports_harness = FALSE`.
 - For each imported model variant, the `num_parameters` value used (or "not reported" when the source did not state it confidently). If a count was set, briefly note where it came from (HF `safetensors.total`, model card body, paper, README) and whether it represents total or active parameters for MoE models.
+- The `is_open` value used for each imported variant (`true` = open-weight release evidenced; `false` = closed/proprietary API model). If you marked a row closed, note briefly why (e.g. "Anthropic API release, no public weights").
 - Whether the source is part of a model-family chain and should be linked with predecessor/successor papers. If yes, run `link-paper-lineage` as a follow-up rather than doing ad hoc SQL in this skill.
 
 ## When NOT to use this skill
@@ -466,5 +525,6 @@ End by giving the user a concise report:
 - Source rows must have `papers.date_published` populated from the source publication date so benchmark scatter plots can place results over time.
 - Harness column: optional `evaluations.harness` (VARCHAR(255)) — populate it only when the selected `(task_id, dataset_id)` row has `task_datasets.supports_harness = TRUE`; use the named runtime verbatim (for example `Terminus-2`, `OpenHands`, or `Claude Code`), or `Not reported` when the source omits it after checking primary and official linked sources. Leave null for non-supporting leaderboards and report any downgraded harness-like details.
 - Parameter count column: optional `evaluations.num_parameters` (BIGINT, non-negative) — raw integer total parameter count for the model row (e.g. `7000000000` for a 7B model). Populate only when the source confidently states the count for that exact variant; never guess from siblings, headlines, or organization conventions. Use total parameters for MoE models by default and note active counts in `methodology`. Omit the field entirely when the count is unknown.
+- Open-source flag: optional `evaluations.is_open` (BOOLEAN, default `true`) — set `is_open: false` on POST for proprietary API models (typical Claude/GPT/Gemini releases) when no open-weight artifact is evidenced; keep `true` when official HF/GitHub weights exist for the evaluated checkpoint.
 - FPS rows: when a source reports both baseline and optimized inference speed, import the optimized figure (TensorRT, ONNX, compiled inference, language cache, etc.) and document the stack plus baseline FPS in `methodology`.
 - Native benchmark source URL form: `https://paperswithcode.co/paper/{arxiv_id}`.

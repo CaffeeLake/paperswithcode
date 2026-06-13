@@ -15,6 +15,7 @@ import {
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 interface EditTasksDialogProps {
   open: boolean;
@@ -52,6 +53,7 @@ export function EditTasksDialog({
   isAuthor = false,
 }: EditTasksDialogProps) {
   const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>(initialTaskIds);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   // Pool of Task records we have full data for. Seeded with `initialTasks`
@@ -360,6 +362,13 @@ export function EditTasksDialog({
           )}
         </div>
         <DialogFooter>
+          <Button
+            variant="ghost"
+            className="sm:mr-auto"
+            onClick={() => setIsSuggesting(true)}
+          >
+            Suggest a new task
+          </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -381,6 +390,12 @@ export function EditTasksDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <SuggestTaxonomyDialog
+        open={isSuggesting}
+        onOpenChange={setIsSuggesting}
+        paperId={paperId}
+        kind="task"
+      />
     </Dialog>
   );
 }

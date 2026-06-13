@@ -19,7 +19,7 @@ router = APIRouter(prefix="/methods", tags=["methods"])
 
 
 @router.get("/", response_model=Methods)
-async def list_methods(
+def list_methods(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
         50, ge=1, le=500, description="Number of methods per page (max 500)"
@@ -104,7 +104,7 @@ async def list_methods(
 
 
 @router.get("/{method_id}", response_model=Method)
-async def get_method(
+def get_method(
     method_id: str,
     db: Session = Depends(get_database_session),
 ):
@@ -136,7 +136,7 @@ async def get_method(
 
 
 @router.get("/{method_id}/papers", response_model=Papers)
-async def get_method_papers(
+def get_method_papers(
     method_id: str,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
@@ -192,7 +192,7 @@ async def get_method_papers(
     response_model=Method,
     dependencies=[Depends(require_admin)],
 )
-async def add_method_keywords(
+def add_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),
@@ -228,7 +228,7 @@ async def add_method_keywords(
     response_model=Method,
     dependencies=[Depends(require_admin)],
 )
-async def remove_method_keywords(
+def remove_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),
@@ -264,7 +264,7 @@ async def remove_method_keywords(
     response_model=Method,
     dependencies=[Depends(require_admin)],
 )
-async def replace_method_keywords(
+def replace_method_keywords(
     method_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),

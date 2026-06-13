@@ -25,7 +25,7 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
     response_model=Organizations,
     summary="List all organizations",
 )
-async def get_organizations(
+def get_organizations(
     db: Session = Depends(get_database_session),
 ):
     try:
@@ -40,7 +40,7 @@ async def get_organizations(
     response_model=Organization,
     summary="Get organization details",
 )
-async def get_organization(
+def get_organization(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
@@ -58,7 +58,7 @@ async def get_organization(
     response_model=OrganizationAreasWithTasks,
     summary="Get organization taxonomy grouped by area and task",
 )
-async def get_organization_areas_with_tasks(
+def get_organization_areas_with_tasks(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     db: Session = Depends(get_database_session),
 ):
@@ -76,7 +76,7 @@ async def get_organization_areas_with_tasks(
     response_model=Papers,
     summary="List papers for an organization, optionally filtered by task",
 )
-async def get_organization_papers(
+def get_organization_papers(
     slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
     task: Optional[str] = Query(
         None, description="Optional task slug to filter papers"

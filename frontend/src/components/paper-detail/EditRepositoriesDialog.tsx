@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { submitPendingPaperEdit, updatePaperRepositories } from "@/lib/api";
+import { githubUrlsMatch, normalizeGithubUrl } from "@/lib/github";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
@@ -120,18 +121,40 @@ export function EditRepositoriesDialog({
     },
   });
 
+  const dedupeRepositories = (repos: Repository[]): Repository[] => {
+    const merged: Repository[] = [];
+    for (const repo of repos) {
+      const existing = merged.find((r) => githubUrlsMatch(r.url, repo.url));
+      if (existing) {
+        existing.is_official = existing.is_official || repo.is_official;
+      } else {
+        const normalized = normalizeGithubUrl(repo.url);
+        merged.push({
+          url: normalized ?? repo.url.trim(),
+          is_official: repo.is_official,
+        });
+      }
+    }
+    return merged;
+  };
+
   // Returns the repositories to commit, optionally folding in the typed-but-not-yet-added URL.
   // Returns null when the typed URL is a duplicate so callers can abort.
   const getRepositoriesForSubmission = (): Repository[] | null => {
     const trimmedUrl = newRepositoryUrl.trim();
-    if (!trimmedUrl) return editedRepositories;
+    const base = trimmedUrl
+      ? [...editedRepositories, { url: trimmedUrl, is_official: false }]
+      : editedRepositories;
 
-    if (editedRepositories.some(r => r.url === trimmedUrl)) {
+    if (
+      trimmedUrl &&
+      editedRepositories.some((r) => githubUrlsMatch(r.url, trimmedUrl))
+    ) {
       alert("This repository URL is already added");
       return null;
     }
 
-    return [...editedRepositories, { url: trimmedUrl, is_official: false }];
+    return dedupeRepositories(base);
   };
 
   const handleAddRepository = () => {
@@ -171,12 +194,19 @@ export function EditRepositoriesDialog({
       ? [...editedRepositories, { url: trimmedNew, is_official: false }]
       : editedRepositories;
     if (candidate.length !== initialRepositories.length) return true;
+    const initial = dedupeRepositories(initialRepositories);
+    const proposed = dedupeRepositories(candidate);
+    if (proposed.length !== initial.length) return true;
     const initialMap = new Map(
-      initialRepositories.map((r) => [r.url.trim(), Boolean(r.is_official)]),
+      initial.map((r) => [
+        normalizeGithubUrl(r.url) ?? r.url.trim(),
+        Boolean(r.is_official),
+      ]),
     );
-    return candidate.some((r) => {
-      const initial = initialMap.get(r.url.trim());
-      return initial === undefined || initial !== Boolean(r.is_official);
+    return proposed.some((r) => {
+      const key = normalizeGithubUrl(r.url) ?? r.url.trim();
+      const prev = initialMap.get(key);
+      return prev === undefined || prev !== Boolean(r.is_official);
     });
   }, [editedRepositories, newRepositoryUrl, initialRepositories]);
 

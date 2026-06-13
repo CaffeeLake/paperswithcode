@@ -274,6 +274,23 @@ export interface TrendingTask extends Task {
   trend_score: number;
 }
 
+export interface TaskSubtaskBenchmarks {
+  subtask_id: string;
+  benchmarks: Dataset[];
+}
+
+/** Bundled task-page payload returned by `GET /tasks/{id}/page`. Collapses the
+ *  task-detail page's initial fan-out (detail, parents, sisters, children,
+ *  direct benchmarks, per-child benchmark previews) into one round trip. */
+export interface TaskPage {
+  task: Task;
+  parents: Task[];
+  sisters: Task[];
+  children: Task[];
+  benchmarks: Dataset[];
+  subtask_benchmarks: TaskSubtaskBenchmarks[];
+}
+
 export interface TrendingTasksResponse {
   results: TrendingTask[];
   recent_days: number;
@@ -321,6 +338,7 @@ export interface Dataset {
   paper_count?: number;
   featured_rank?: number | null;
   supports_harness?: boolean;
+  best_model_name?: string | null;
   introducing_paper_id?: string;
   introducing_paper_title?: string;
   paper_url?: string;
@@ -498,7 +516,9 @@ export type PendingEditType =
   | 'repositories'
   | 'project_pages'
   | 'source_url'
-  | 'hf_artifacts';
+  | 'hf_artifacts'
+  | 'new_task'
+  | 'new_method';
 
 export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
 
@@ -1019,6 +1039,12 @@ class ApiClient {
     return this.request<Task[]>(`/tasks/${taskId}/parents`);
   }
 
+  /** Fetch the bundled task-page payload (task + parents + sisters + children
+   *  + benchmarks + per-child benchmark previews) in a single request. */
+  async getTaskPage(taskId: string): Promise<TaskPage> {
+    return this.request<TaskPage>(`/tasks/${taskId}/page`);
+  }
+
   async getTaskPapers(taskId: string, params?: {
     page?: number;
     page_size?: number;
@@ -1483,6 +1509,7 @@ export const getTopTasks = apiClient.getTopTasks.bind(apiClient);
 export const getTrendingTasks = apiClient.getTrendingTasks.bind(apiClient);
 export const getTaskChildren = apiClient.getTaskChildren.bind(apiClient);
 export const getTaskParents = apiClient.getTaskParents.bind(apiClient);
+export const getTaskPage = apiClient.getTaskPage.bind(apiClient);
 export const getTaskPapers = apiClient.getTaskPapers.bind(apiClient);
 export const getMethods = apiClient.getMethods.bind(apiClient);
 export const getMethod = apiClient.getMethod.bind(apiClient);

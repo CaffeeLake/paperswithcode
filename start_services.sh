@@ -61,6 +61,28 @@ check_port() {
     fi
 }
 
+port_is_free() { ! check_port "$1"; }
+pattern_is_gone() { ! pgrep -f "$1" >/dev/null 2>&1; }
+
+# Poll a condition (passed as a command + args) up to `max_tenths` tenths of a
+# second, returning the instant it succeeds. Used so backend restarts proceed
+# as soon as the old process exits instead of sleeping a fixed window — the
+# previous fixed `sleep 2; ...; sleep 1` waits kept :8000 down for ~5-6s on
+# every restart, which is exactly when nginx logged `connection refused` bursts.
+wait_until() {
+    local max_tenths=$1
+    shift
+    local i=0
+    while [ "$i" -lt "$max_tenths" ]; do
+        if "$@"; then
+            return 0
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # Function to kill processes on a specific port
 kill_port_processes() {
     local port=$1
@@ -72,10 +94,12 @@ kill_port_processes() {
         if [ -n "$pids" ]; then
             echo -e "${YELLOW}🔄 Killing existing $service_name processes: $pids${NC}"
             kill -TERM $pids 2>/dev/null || true
-            sleep 2
-            # Force kill if still running
-            kill -KILL $pids 2>/dev/null || true
-            sleep 1
+            # Wait up to 5s for a graceful exit, proceeding the moment the port
+            # frees so we minimize the restart downtime window.
+            if ! wait_until 50 port_is_free "$port"; then
+                kill -KILL $pids 2>/dev/null || true
+                wait_until 20 port_is_free "$port" || true
+            fi
         fi
     fi
 }
@@ -89,13 +113,11 @@ kill_processes_by_pattern() {
     if [ -n "$pids" ]; then
         echo -e "${YELLOW}🔄 Killing existing $service_name processes: $pids${NC}"
         kill -TERM $pids 2>/dev/null || true
-        sleep 2
-        # Force kill if still running
-        pids=$(pgrep -f "$pattern" 2>/dev/null || true)
-        if [ -n "$pids" ]; then
-            kill -KILL $pids 2>/dev/null || true
+        if ! wait_until 50 pattern_is_gone "$pattern"; then
+            # Force kill any stragglers, then give them a moment to die.
+            pgrep -f "$pattern" 2>/dev/null | xargs -r kill -KILL 2>/dev/null || true
+            wait_until 20 pattern_is_gone "$pattern" || true
         fi
-        sleep 1
     fi
 }
 

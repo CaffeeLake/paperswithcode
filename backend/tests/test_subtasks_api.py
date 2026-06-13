@@ -346,7 +346,8 @@ def _seed_paper_with_three_benchmarks(db):
     # One TaskDataset entry per (task, dataset) so the dataset listing endpoint
     # surfaces all three benchmarks under task 10. featured_rank is set
     # adversarially: the *least* popular benchmark gets the smallest
-    # featured_rank, so popularity ordering must override featured_rank.
+    # featured_rank, so pinned ordering (featured_rank first) must surface the
+    # least-popular ranked benchmark ahead of the most-popular unranked one.
     db.add_all(
         [
             TaskDataset(task_id=10, dataset_id=100, featured_rank=None),
@@ -601,11 +602,14 @@ def test_paper_evaluations_within_benchmark_sorted_by_best_rank(client):
     assert benchpop_ranks == [1, 3, None]
 
 
-def test_task_benchmarks_sorted_by_paper_count_overrides_featured_rank(client):
-    """The task page benchmark list must sort benchmarks by evaluation-count
-    popularity, not by `featured_rank`. The seed sets featured_rank=1 on the
-    least popular benchmark, so the previous behavior would have surfaced it
-    at the top; the new behavior must surface MCP-Atlas first."""
+def test_task_benchmarks_pinned_by_featured_rank_over_paper_count(client):
+    """The task page benchmark list must pin benchmarks that carry a
+    `featured_rank` ahead of unranked ones, ordered by ascending rank, even
+    when an unranked benchmark has far more evaluations. The seed sets
+    featured_rank=1 on Niche (1 eval) and featured_rank=2 on BrowseComp (2
+    evals), leaving MCP-Atlas (5 evals) unranked; the pinned order must be
+    Niche, BrowseComp, then MCP-Atlas, so popularity only orders the unranked
+    tail."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -617,9 +621,9 @@ def test_task_benchmarks_sorted_by_paper_count_overrides_featured_rank(client):
     payload = response.json()
 
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
+    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
     # paper_count is the per-dataset evaluation row count; sanity check it
-    # matches the seeded counts so we know we're testing the intended sort key.
+    # matches the seeded counts so we know the pin beat the popularity sort.
     counts = {d["slug"]: d["paper_count"] for d in payload["results"]}
     assert counts == {"mcp-atlas": 5, "browsecomp": 2, "niche": 1}
 
@@ -639,8 +643,10 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     assert response.status_code == 200
     payload = response.json()
 
+    # Niche (1 eval) is filtered out; the survivors keep the pinned order, so
+    # ranked BrowseComp leads the more-popular but unranked MCP-Atlas.
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["mcp-atlas", "browsecomp"]
+    assert slugs == ["browsecomp", "mcp-atlas"]
     assert payload["count"] == 2
 
 
@@ -659,7 +665,7 @@ def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):
     payload = response.json()
 
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
+    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
     assert payload["count"] == 3
 
 

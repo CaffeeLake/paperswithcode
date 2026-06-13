@@ -56,7 +56,9 @@ Be careful about provenance: the benchmark source paper is the paper that introd
 
 5. Link the benchmark to the task:
    - Ensure `(task_id, dataset_id)` exists in `task_datasets`.
-   - If the user asked for default display order, set `featured_rank` in `task_datasets` and clear stale ranks for that task as appropriate.
+   - **Leave `featured_rank` NULL by default.** A non-null `featured_rank` is what drives the frontend **pinned** badge on task pages and forces those benchmarks to the top of the list. Only set it when the user explicitly asks to pin, feature, or set default display order for specific benchmarks on a task page.
+   - When pinning is requested, set `featured_rank` on only the named benchmark(s) for that task (lower rank = higher priority), and leave every other benchmark on the task with `featured_rank = NULL`.
+   - Do not copy `featured_rank` values from setup scripts or other tasks as a placeholder — most benchmarks should stay unpinned.
 
 6. Link metrics:
    - Use the requested metric, often `Accuracy`.
@@ -91,6 +93,21 @@ uv run --env-file backend/keys.env python ...
 ```
 
 Use SQLAlchemy through `backend.database.connection.get_engine()` for idempotent updates. Prefer `INSERT ... ON CONFLICT DO NOTHING/UPDATE` for `paper_tasks`, `paper_methods`, `task_datasets`, and `task_dataset_metrics`.
+
+When linking a benchmark to a task, omit `featured_rank` unless pinning was explicitly requested:
+
+```python
+session.execute(
+    text(
+        """
+        INSERT INTO task_datasets (task_id, dataset_id, supports_harness)
+        VALUES (:t, :d, FALSE)
+        ON CONFLICT (task_id, dataset_id) DO NOTHING
+        """
+    ),
+    {"t": task_id, "d": dataset_id},
+)
+```
 
 ## Reporting back
 

@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { Pin, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
-import type { Task } from "@/lib/api";
+import type { Dataset, Task } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -63,101 +64,41 @@ const TagBrowseView: React.FC = () => {
     return `/benchmark/${slug}`;
   };
 
-  const taskQ = useQuery({
-    queryKey: ["task", taskSlug],
-    queryFn: () => apiClient.getTask(taskSlug!),
+  // One bundled request for the whole task-page shell: task detail, parent
+  // chain, sister tasks, visible children, this task's benchmarks, and a short
+  // benchmark preview per child. This replaces the previous fan-out of six+
+  // independent task/dataset queries on initial load (see Speed plan §1).
+  const pageQ = useQuery({
+    queryKey: ["task-page", taskSlug],
+    queryFn: () => apiClient.getTaskPage(taskSlug!),
     enabled: !!taskSlug,
     staleTime: 10 * 60 * 1000,
   });
 
-  // Parent task chain for the breadcrumb. The endpoint returns parents ordered
-  // immediate-parent first, so we reverse to render root -> leaf.
-  const parentsQ = useQuery({
-    queryKey: ["task-parents", taskQ.data?.id],
-    queryFn: () => apiClient.getTaskParents(taskQ.data!.id),
-    enabled: !!taskQ.data?.id,
-    staleTime: 10 * 60 * 1000,
-  });
-
-  // Sister tasks: tasks under the same area_id. `visible_only=true` mirrors
-  // the public `/tasks` taxonomy so hidden tasks (`is_visible=false`) don't
-  // appear in the sidebar even when they share an area with the current task.
-  const sistersQ = useQuery({
-    queryKey: ["task-sisters", taskQ.data?.area_id, taskQ.data?.id],
-    queryFn: () =>
-      apiClient.getTasks({
-        area_id: Number(taskQ.data!.area_id),
-        page_size: 50,
-        visible_only: true,
-      }),
-    enabled: !!taskQ.data?.area_id,
-    staleTime: 10 * 60 * 1000,
-  });
-
-  // Subtasks (child tasks). Parent task pages render these as cards; benchmarks
-  // are owned by the most-specific child task in the hierarchy. `visible_only`
-  // hides children flagged `is_visible=false`.
-  const subtasksQ = useQuery({
-    queryKey: ["task-children", taskQ.data?.id],
-    queryFn: () =>
-      apiClient.getTaskChildren(taskQ.data!.id, {
-        page_size: 50,
-        visible_only: true,
-      }),
-    enabled: !!taskQ.data?.id,
-    staleTime: 10 * 60 * 1000,
-  });
-
-  // Per-subtask benchmark queries depend on this list, so derive it before
-  // the dataset useQueries call. Classic LM is the historical catch-all, so
-  // keep it after the capability-oriented subtasks.
+  // Subtasks (child tasks). Classic LM is the historical catch-all, so keep it
+  // after the capability-oriented subtasks.
   const visibleSubtasks = useMemo(
-    () => sortSubtasksForDisplay(subtasksQ.data?.results || []),
-    [subtasksQ.data],
+    () => sortSubtasksForDisplay(pageQ.data?.children || []),
+    [pageQ.data],
   );
 
-  // Direct benchmarks for this task only. Subtask benchmarks render in their
-  // own per-subtask section below, so this list intentionally excludes
-  // descendants — otherwise parent tasks like `object-detection` would have
-  // their own benchmarks (e.g. `COCO val2017`, `Open Images V7`) hidden the
-  // moment any subtask happened to expose a benchmark too.
-  const datasetsQ = useQuery({
-    queryKey: ["task-datasets", taskQ.data?.id, false, MIN_BENCH_EVAL_COUNT],
-    queryFn: () =>
-      apiClient.getDatasets({
-        task_id: Number(taskQ.data!.id),
-        page_size: 100,
-        ordering: "-paper_count",
-        min_eval_count: MIN_BENCH_EVAL_COUNT,
-      }),
-    enabled: !!taskQ.data?.id,
-    staleTime: 10 * 60 * 1000,
-  });
-
-  // Per-subtask top benchmarks. Fetched in parallel so each subtask section can
-  // render its own preview list. page_size:20 gives the "show more" expand
-  // something to reveal without an extra round trip.
-  const subtaskDatasetQs = useQueries({
-    queries: visibleSubtasks.map((s) => ({
-      queryKey: ["task-datasets", s.id, false, MIN_BENCH_EVAL_COUNT],
-      queryFn: () =>
-        apiClient.getDatasets({
-          task_id: Number(s.id),
-          page_size: 20,
-          ordering: "-paper_count",
-          min_eval_count: MIN_BENCH_EVAL_COUNT,
-        }),
-      staleTime: 10 * 60 * 1000,
-    })),
-  });
+  // Map each child task id -> its benchmark preview list, so the per-subtask
+  // sections can look up benchmarks by id instead of by array index.
+  const subtaskBenchmarksById = useMemo(() => {
+    const map = new Map<string, Dataset[]>();
+    (pageQ.data?.subtask_benchmarks || []).forEach((entry) => {
+      map.set(entry.subtask_id, entry.benchmarks || []);
+    });
+    return map;
+  }, [pageQ.data]);
 
   const papersQ = useInfiniteTaskPapers({
-    taskId: taskQ.data?.id || "",
+    taskId: pageQ.data?.task?.id || "",
     page_size: 12,
     order_by: orderBy,
     order_dir: "desc",
     include_resources: true,
-    enabled: !!taskQ.data?.id,
+    enabled: !!pageQ.data?.task?.id,
   });
 
   const cards = useMemo(() => {
@@ -187,7 +128,7 @@ const TagBrowseView: React.FC = () => {
     }
   }, [isIntersecting, papersQ.hasNextPage, papersQ.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (taskQ.isLoading) {
+  if (pageQ.isLoading) {
     return (
       <div className="page">
         <Skeleton className="h-12 w-1/2 mb-4" />
@@ -197,7 +138,7 @@ const TagBrowseView: React.FC = () => {
     );
   }
 
-  if (taskQ.error || !taskQ.data) {
+  if (pageQ.error || !pageQ.data) {
     return (
       <div className="page">
         <Alert variant="destructive">
@@ -207,14 +148,14 @@ const TagBrowseView: React.FC = () => {
     );
   }
 
-  const task = taskQ.data;
+  const task = pageQ.data.task;
+  const parents = pageQ.data.parents || [];
   const taskName = displayTaskName(task.name, task.slug);
-  const sisters = (sistersQ.data?.results || []).filter((s) => s.id !== task.id);
-  const datasets = datasetsQ.data?.results || [];
-  const hasVisibleSubtaskBenchmarks = visibleSubtasks.some((_, idx) => {
-    const subDatasets = subtaskDatasetQs[idx]?.data?.results || [];
-    return subDatasets.length > 0;
-  });
+  const sisters = (pageQ.data.sisters || []).filter((s) => s.id !== task.id);
+  const datasets = pageQ.data.benchmarks || [];
+  const hasVisibleSubtaskBenchmarks = visibleSubtasks.some(
+    (s) => (subtaskBenchmarksById.get(s.id) || []).length > 0,
+  );
   const shouldShowBenchmarkList = datasets.length > 0;
 
   // Total unique benchmarks for the BENCHMARKS quickstat: direct task
@@ -223,8 +164,8 @@ const TagBrowseView: React.FC = () => {
   const totalBenchmarkCount = (() => {
     const ids = new Set<string>();
     datasets.forEach((d) => ids.add(d.id));
-    subtaskDatasetQs.forEach((q) =>
-      (q.data?.results || []).forEach((d) => ids.add(d.id)),
+    subtaskBenchmarksById.forEach((list) =>
+      list.forEach((d) => ids.add(d.id)),
     );
     return ids.size;
   })();
@@ -244,7 +185,7 @@ const TagBrowseView: React.FC = () => {
         <Link to="/">Papers</Link>
         <span className="sep">/</span>
         <Link to="/tasks">Tasks</Link>
-        {[...(parentsQ.data || [])].reverse().map((parent) => (
+        {[...parents].reverse().map((parent) => (
           <React.Fragment key={parent.id}>
             <span className="sep">/</span>
             <Link to={`/tasks/${parent.slug || parent.id}`}>
@@ -322,6 +263,11 @@ const TagBrowseView: React.FC = () => {
                   <div className="bench-row-main">
                     <div className="bench-row-name">{d.name}</div>
                     <div className="bench-row-sub">
+                      {d.featured_rank != null && (
+                        <span className="bench-pin">
+                          <Pin size={11} className="bench-pin-icon" /> pinned
+                        </span>
+                      )}
                       {d.paper_count != null && (
                         <span>
                           <strong>{d.paper_count}</strong> ENTRIES
@@ -329,6 +275,12 @@ const TagBrowseView: React.FC = () => {
                       )}
                     </div>
                   </div>
+                  {d.best_model_name && (
+                    <div className="bench-row-best">
+                      <Trophy size={13} className="bench-row-best-icon" />
+                      <span className="bench-row-best-name">{d.best_model_name}</span>
+                    </div>
+                  )}
                   <div className="bench-row-arrow">→</div>
                 </div>
               ))}
@@ -358,9 +310,8 @@ const TagBrowseView: React.FC = () => {
                 </div>
               </div>
               <div className="subtask-grid">
-                {visibleSubtasks.map((s, idx) => {
-                  const q = subtaskDatasetQs[idx];
-                  const subDatasets = q?.data?.results || [];
+                {visibleSubtasks.map((s) => {
+                  const subDatasets = subtaskBenchmarksById.get(s.id) || [];
                   if (subDatasets.length === 0) return null;
                   const isExpanded = expandedSubtasks.has(s.id);
                   const visibleDatasets = isExpanded
@@ -387,6 +338,11 @@ const TagBrowseView: React.FC = () => {
                           <div className="bench-row-main">
                             <div className="bench-row-name">{d.name}</div>
                             <div className="bench-row-sub">
+                              {d.featured_rank != null && (
+                                <span className="bench-pin">
+                                  <Pin size={11} className="bench-pin-icon" /> pinned
+                                </span>
+                              )}
                               {d.paper_count != null && (
                                 <span>
                                   <strong>{d.paper_count}</strong> ENTRIES

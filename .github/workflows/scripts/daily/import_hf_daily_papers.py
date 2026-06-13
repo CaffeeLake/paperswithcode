@@ -20,8 +20,9 @@ Dependencies: PostgreSQL, Hugging Face API
 
 import argparse
 import asyncio
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -39,10 +40,23 @@ from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
     """Daily job to import papers from Hugging Face daily papers API."""
 
-    def __init__(self, target_date: Optional[str] = None):
+    DEFAULT_LOOKBACK_DAYS = 7
+
+    def __init__(
+        self,
+        target_date: Optional[str] = None,
+        lookback_days: Optional[int] = None,
+    ):
         super().__init__(job_name="import_hf_daily_papers", log_level="INFO")
         self.settings = get_settings()
         self.target_date = target_date
+        if lookback_days is None:
+            lookback_days = int(
+                os.environ.get(
+                    "PWC_HF_IMPORT_LOOKBACK_DAYS", self.DEFAULT_LOOKBACK_DAYS
+                )
+            )
+        self.lookback_days = max(1, lookback_days)
         self.processed_count = 0
         self.error_count = 0
         self.new_papers_count = 0
@@ -63,34 +77,41 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.logger.info("Starting Hugging Face daily papers import")
 
         if self.target_date:
-            target_date = self.target_date
+            # Manual/backfill: import exactly the requested day.
+            target_dates = [self.target_date]
         else:
-            # Scheduled hourly: target the current day's HF daily papers and let the
-            # per-paper arxiv_id dedupe import only papers not yet in the database.
-            target_date = datetime.now().strftime("%Y-%m-%d")
+            # Scheduled hourly: scan a rolling window of recent days. HF keeps
+            # back-filling papers into past days' lists, so re-scanning the last
+            # few days (deduped per-paper by arxiv_id) catches late additions
+            # that a today-only query would miss.
+            today = datetime.now()
+            target_dates = [
+                (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+                for offset in range(self.lookback_days)
+            ]
 
-        self.logger.info(f"Fetching daily papers for date: {target_date}")
+        self.logger.info(f"Target dates: {', '.join(target_dates)}")
         self.load_task_keywords()
         self.load_method_keywords()
 
-        daily_papers = asyncio.run(self.fetch_daily_papers(target_date))
+        for target_date in target_dates:
+            self.logger.info(f"Fetching daily papers for date: {target_date}")
+            daily_papers = asyncio.run(self.fetch_daily_papers(target_date))
 
-        if not daily_papers:
-            self.logger.info("No papers found for the target date")
-            return
+            if not daily_papers:
+                self.logger.info(f"No papers found for date: {target_date}")
+                continue
 
-        self.logger.info(
-            f"Found {len(daily_papers)} papers from Hugging Face daily papers"
-        )
+            self.logger.info(f"Found {len(daily_papers)} papers for date {target_date}")
 
-        for paper_data in daily_papers:
-            try:
-                self.process_paper(paper_data)
-                self.processed_count += 1
-            except Exception as e:
-                self.error_count += 1
-                arxiv_id = paper_data.get("paper", {}).get("id", "unknown")
-                self.logger.error(f"Failed to process paper {arxiv_id}: {e}")
+            for paper_data in daily_papers:
+                try:
+                    self.process_paper(paper_data)
+                    self.processed_count += 1
+                except Exception as e:
+                    self.error_count += 1
+                    arxiv_id = paper_data.get("paper", {}).get("id", "unknown")
+                    self.logger.error(f"Failed to process paper {arxiv_id}: {e}")
 
         self.logger.info("Hugging Face daily papers import completed:")
         self.logger.info(f"  - Papers processed: {self.processed_count}")
@@ -120,6 +141,14 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
                 ) as response:
                     if response.status == 200:
                         return await response.json()
+                    if response.status == 400:
+                        # HF returns 400 for a date whose daily-papers list does
+                        # not exist yet (e.g. the current day shortly after
+                        # 00:00 UTC). Expected, not an error.
+                        self.logger.info(
+                            f"No daily-papers list yet for {date} (HTTP 400)"
+                        )
+                        return []
                     self.logger.error(
                         f"Failed to fetch daily papers: HTTP {response.status}"
                     )
@@ -196,7 +225,18 @@ if __name__ == "__main__":
         "--date",
         help=(
             "Import a specific Hugging Face daily-papers date in YYYY-MM-DD "
-            "format. Defaults to yesterday."
+            "format. When omitted, scans a rolling window of recent days."
+        ),
+    )
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=None,
+        help=(
+            "Number of recent days to scan on the scheduled (no --date) path. "
+            "Defaults to PWC_HF_IMPORT_LOOKBACK_DAYS or "
+            f"{HuggingFaceDailyPapersJob.DEFAULT_LOOKBACK_DAYS}. Ignored when "
+            "--date is given."
         ),
     )
     args = parser.parse_args()
@@ -204,6 +244,8 @@ if __name__ == "__main__":
     if args.date:
         datetime.strptime(args.date, "%Y-%m-%d")
 
-    job = HuggingFaceDailyPapersJob(target_date=args.date)
+    job = HuggingFaceDailyPapersJob(
+        target_date=args.date, lookback_days=args.lookback_days
+    )
     success = job.execute()
     sys.exit(0 if success else 1)

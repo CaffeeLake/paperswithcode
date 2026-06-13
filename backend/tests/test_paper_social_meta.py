@@ -12,11 +12,13 @@ These tests focus on:
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image as PILImage
 
 from backend.database.connection import get_database_session
 from backend.main import create_app
@@ -35,22 +37,35 @@ from backend.utils.exceptions import PaperNotFoundError
 
 
 class _FakeThumbnailService:
-    """In-memory ThumbnailService stand-in for resolve_social_image_url tests."""
+    """ThumbnailService stand-in that materialises real JPEGs on disk.
+
+    Real JPEG bytes are written so ``resolve_social_image_url`` can read back
+    actual image dimensions, mirroring the production code path.
+    """
 
     def __init__(
-        self, present: Optional[set[str]] = None, custom: Optional[set[str]] = None
+        self,
+        present: Optional[set[str]] = None,
+        custom: Optional[set[str]] = None,
+        width: int = 400,
+        height: int = 550,
     ):
+        self._dir = Path(tempfile.mkdtemp(prefix="pwc-thumb-test-"))
         self._present = present or set()
         self._custom = custom or set()
+        for name in self._present | self._custom:
+            PILImage.new("RGB", (width, height), (210, 210, 210)).save(
+                self._dir / name, "JPEG"
+            )
 
     def get_local_thumbnail_path(self, filename: str) -> Optional[Path]:
         if filename in self._present:
-            return Path("/tmp") / filename
+            return self._dir / filename
         return None
 
     def get_existing_custom_thumbnail_path(self, filename: str) -> Optional[Path]:
         if filename in self._custom:
-            return Path("/tmp") / filename
+            return self._dir / filename
         return None
 
     def get_local_custom_thumbnail_path(self, filename: str) -> Optional[Path]:
@@ -124,6 +139,8 @@ def test_resolve_social_image_uses_existing_arxiv_thumbnail():
     assert result.absolute_url == (
         "https://paperswithcode.co/api/thumbnails/2504_12516_v1.jpg?fit=fit2"
     )
+    assert result.mime_type == "image/jpeg"
+    assert (result.width, result.height) == (400, 550)
 
 
 def test_resolve_social_image_falls_back_when_thumbnail_missing():
@@ -136,6 +153,8 @@ def test_resolve_social_image_falls_back_when_thumbnail_missing():
 
     assert result.is_fallback is True
     assert result.absolute_url == ("https://paperswithcode.co/api/og/default.png")
+    assert result.mime_type == "image/png"
+    assert (result.width, result.height) == (1200, 630)
 
 
 def test_resolve_social_image_uses_existing_custom_thumbnail():
@@ -229,6 +248,25 @@ def test_inject_paper_meta_escapes_user_supplied_strings():
         'twitter:image" content="https://paperswithcode.co/api/thumbnails/'
         '2504_12516_v1.jpg?fit=fit2"'
     ) in html
+    # Exactly one image tag of each kind so crawlers never see conflicts.
+    assert html.count('property="og:image"') == 1
+    assert html.count('name="twitter:image"') == 1
+    # Crawler-friendly image metadata for the real JPEG thumbnail.
+    assert 'og:image:type" content="image/jpeg"' in html
+    assert 'og:image:width" content="400"' in html
+    assert 'og:image:height" content="550"' in html
+    assert (
+        'og:image:secure_url" content="https://paperswithcode.co/api/thumbnails/'
+        in html
+    )
+    assert (
+        'og:image:alt" content="First page preview of '
+        "A &lt;Great&gt; Paper &amp; Friends" in html
+    )
+    assert (
+        'twitter:image:alt" content="First page preview of '
+        "A &lt;Great&gt; Paper &amp; Friends" in html
+    )
 
 
 def test_inject_paper_meta_uses_fallback_image_when_disk_misses():
@@ -244,10 +282,75 @@ def test_inject_paper_meta_uses_fallback_image_when_disk_misses():
     html = inject_paper_meta("<html><head></head><body></body></html>", meta)
 
     assert 'og:image" content="https://paperswithcode.co/api/og/default.png"' in html
-    # Fallback image carries explicit dimensions so summary_large_image
-    # cards render cleanly even before the platform has scraped the asset.
+    # Fallback image carries explicit dimensions and type so
+    # summary_large_image cards render cleanly even before the platform has
+    # scraped the asset.
+    assert 'og:image:type" content="image/png"' in html
     assert 'og:image:width" content="1200"' in html
     assert 'og:image:height" content="630"' in html
+    assert 'og:image:alt" content="Papers with Code"' in html
+    assert 'twitter:image:alt" content="Papers with Code"' in html
+
+
+_STATIC_INDEX_HEAD = (
+    "<!doctype html><html><head>"
+    '<meta charset="UTF-8" />'
+    "<title>Papers with Code</title>"
+    '<meta name="description" content="Trending AI research papers." />'
+    '<meta property="og:title" content="Papers with Code" />'
+    '<meta property="og:description" content="Trending AI research papers." />'
+    '<meta property="og:type" content="website" />'
+    '<meta property="og:url" content="https://paperswithcode.co/" />'
+    '<meta property="og:site_name" content="Papers with Code" />'
+    '<meta property="og:image" content="https://paperswithcode.co/og-image.png?v=2" />'
+    '<meta property="og:image:width" content="1200" />'
+    '<meta property="og:image:height" content="630" />'
+    '<meta property="og:image:alt" content="Papers with Code" />'
+    '<meta name="twitter:card" content="summary_large_image" />'
+    '<meta name="twitter:title" content="Papers with Code" />'
+    '<meta name="twitter:description" content="Trending AI research papers." />'
+    '<meta name="twitter:image" content="https://paperswithcode.co/og-image.png?v=2" />'
+    "</head><body></body></html>"
+)
+
+
+def test_inject_paper_meta_strips_all_generic_static_tags():
+    paper = _make_paper()
+    fake = _FakeThumbnailService(present={"2504_12516_v1.jpg"})
+
+    meta = build_paper_meta(
+        paper,
+        route_identifier=paper.arxiv_id or paper.id,
+        origin="https://paperswithcode.co",
+        thumbnail_service=fake,
+    )
+    html = inject_paper_meta(_STATIC_INDEX_HEAD, meta)
+
+    # The generic site-wide preview image must be gone entirely so X cannot
+    # cache it ahead of the per-paper thumbnail.
+    assert "og-image.png" not in html
+    # Generic site values must be replaced, not duplicated.
+    assert 'og:url" content="https://paperswithcode.co/"' not in html
+    assert 'og:type" content="website"' not in html
+    # Exactly one of each social tag survives.
+    for needle in (
+        'property="og:image"',
+        'name="twitter:image"',
+        'property="og:url"',
+        'property="og:title"',
+        'name="twitter:title"',
+        'property="og:site_name"',
+        'name="twitter:card"',
+        'property="og:image:width"',
+        'property="og:image:height"',
+        'property="og:image:alt"',
+    ):
+        assert html.count(needle) == 1, needle
+    # And the single survivor points at the paper thumbnail.
+    assert (
+        'og:image" content="https://paperswithcode.co/api/thumbnails/'
+        '2504_12516_v1.jpg?fit=fit2"'
+    ) in html
 
 
 def test_inject_paper_meta_uses_authors_when_abstract_empty():

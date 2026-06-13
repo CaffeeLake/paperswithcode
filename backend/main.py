@@ -6,6 +6,8 @@ PapersWithCode API, starting with the Paper endpoints. It integrates with the
 PostgreSQL database and provides compatible API responses.
 """
 
+import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,6 +16,14 @@ from fastapi.responses import JSONResponse
 
 from backend.config import get_settings
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+
+# Requests slower than this (in milliseconds) are logged so production slow
+# pages can be correlated without ad-hoc instrumentation. Tune via the
+# `PWC_SLOW_REQUEST_MS` env var.
+import os
+
+_SLOW_REQUEST_MS = float(os.getenv("PWC_SLOW_REQUEST_MS", "1000"))
+_timing_logger = logging.getLogger("backend.timing")
 
 
 def _is_mutable_paper_detail_path(path: str) -> bool:
@@ -104,6 +114,25 @@ def create_app() -> FastAPI:
     if settings.extra_allowed_origin_regex:
         cors_kwargs["allow_origin_regex"] = settings.extra_allowed_origin_regex
     app.add_middleware(CORSMiddleware, **cors_kwargs)
+
+    @app.middleware("http")
+    async def log_slow_requests(request, call_next):
+        # Outermost middleware (added last), so the measured duration covers
+        # the whole handler including cache-header logic.
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        # Expose timing for ad-hoc debugging / curl -D.
+        response.headers["X-Process-Time-Ms"] = f"{duration_ms:.1f}"
+        if duration_ms >= _SLOW_REQUEST_MS:
+            _timing_logger.warning(
+                "slow request: %s %s status=%s duration_ms=%.1f",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
+        return response
 
     @app.middleware("http")
     async def add_public_cache_headers(request, call_next):

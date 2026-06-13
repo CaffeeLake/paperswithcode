@@ -23,7 +23,7 @@ router = APIRouter()
     response_model=Areas,
     summary="List research areas with pagination and filtering",
 )
-async def get_areas(
+def get_areas(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         50, ge=1, le=500, description="Number of areas per page"
@@ -108,7 +108,7 @@ async def get_areas(
     response_model=AreasWithTasks,
     summary="Get all research areas with their tasks (taxonomy index)",
 )
-async def get_areas_with_tasks(
+def get_areas_with_tasks(
     db: Session = Depends(get_database_session),
 ):
     """
@@ -131,7 +131,7 @@ async def get_areas_with_tasks(
     response_model=Area,
     summary="Get specific research area details",
 )
-async def get_area(
+def get_area(
     area_id: str = Path(..., description="Area ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -180,7 +180,7 @@ async def get_area(
     response_model=Tasks,
     summary="Get tasks for a specific research area",
 )
-async def get_area_tasks(
+def get_area_tasks(
     area_id: str = Path(..., description="Area ID"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(

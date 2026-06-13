@@ -8,6 +8,7 @@ import { usePreferences } from "@/lib/preferencesContext";
 import { formatMetricValue } from "@/lib/utils";
 import { copyNodeAsPng } from "@/lib/copyScreenshot";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
 import { Icon } from "@/components";
@@ -570,7 +571,7 @@ const BenchmarkDetailView: React.FC = () => {
   // collide), so we deep-link by it and silently fall back to the normal
   // benchmark page when the id is missing or no longer present.
   const highlightEvalId = searchParams.get("eval") || undefined;
-  const { preferences } = usePreferences();
+  const { preferences, setHideClosedSourceEvals } = usePreferences();
   const [bestMetric, setBestMetric] = useState<string | undefined>(undefined);
   const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const didScrollToHighlight = useRef(false);
@@ -612,6 +613,13 @@ const BenchmarkDetailView: React.FC = () => {
     staleTime: 60 * 60 * 1000,
   });
 
+  // When Compare → deep-links with `?eval=<id>`, resolve the originating row
+  // so we land on the correct (task, metric) even if `?task=` is missing.
+  const highlightEval = useMemo(() => {
+    if (!highlightEvalId || !evalsQ.data?.length) return null;
+    return evalsQ.data.find((e) => e.id === highlightEvalId) || null;
+  }, [highlightEvalId, evalsQ.data]);
+
   // Pick the (task, dataset) leaderboard whose configured metrics drive the
   // table columns. Prefer `?task=<slug>` (set by PaperDetailView links); for
   // benchmarks with multiple linked tasks but no URL hint, fall back to the
@@ -621,6 +629,9 @@ const BenchmarkDetailView: React.FC = () => {
   const currentTaskId = useMemo<string | null>(() => {
     const tasks = datasetTasksQ.data || [];
     if (tasks.length === 0) return null;
+    if (highlightEval?.task_id && tasks.some((t) => t.id === highlightEval.task_id)) {
+      return highlightEval.task_id;
+    }
     if (taskSlugFromQuery) {
       const match = tasks.find((t) => t.slug === taskSlugFromQuery);
       if (match) return match.id;
@@ -644,7 +655,7 @@ const BenchmarkDetailView: React.FC = () => {
       if (topId) return topId;
     }
     return tasks[0].id;
-  }, [datasetTasksQ.data, evalsQ.data, taskSlugFromQuery]);
+  }, [datasetTasksQ.data, evalsQ.data, taskSlugFromQuery, highlightEval]);
 
   // Configured metrics for the current leaderboard — the canonical column
   // set rendered in the table. Missing for legacy/unconfigured (task,
@@ -719,7 +730,7 @@ const BenchmarkDetailView: React.FC = () => {
     return top || allowedMetrics[0] || mergedTaskEvals[0]?.best_metric || "";
   }, [mergedTaskEvals, allowedMetrics, configuredMetrics]);
 
-  const activeMetric = bestMetric || defaultMetric;
+  const activeMetric = bestMetric || highlightEval?.best_metric || defaultMetric;
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
   const arrow: "↑" | "↓" = direction === "lower_is_better" ? "↓" : "↑";
 
@@ -966,6 +977,17 @@ const BenchmarkDetailView: React.FC = () => {
                     </select>
                   </label>
                 )}
+                <label className="bm-closed-toggle" title="Show or hide evaluations of closed-source models">
+                  <Switch
+                    className="bm-closed-toggle-switch"
+                    checked={!preferences.hide_closed_source_evals}
+                    onCheckedChange={(checked) => {
+                      void setHideClosedSourceEvals(!checked);
+                    }}
+                    aria-label="Show closed-source models"
+                  />
+                  <span className="bm-closed-toggle-label">Closed-source</span>
+                </label>
                 <CopyScreenshotButton targetRef={chartCardRef} label="SOTA chart" />
               </div>
             </div>
@@ -1041,6 +1063,17 @@ const BenchmarkDetailView: React.FC = () => {
                   </select>
                 </label>
               )}
+              <label className="bm-closed-toggle" title="Show or hide evaluations of closed-source models">
+                <Switch
+                  className="bm-closed-toggle-switch"
+                  checked={!preferences.hide_closed_source_evals}
+                  onCheckedChange={(checked) => {
+                    void setHideClosedSourceEvals(!checked);
+                  }}
+                  aria-label="Show closed-source models"
+                />
+                <span className="bm-closed-toggle-label">Closed-source</span>
+              </label>
               <CopyScreenshotButton targetRef={leaderboardCardRef} label="leaderboard" />
             </div>
           </div>
@@ -1053,6 +1086,7 @@ const BenchmarkDetailView: React.FC = () => {
           ) : sortedRows.length === 0 ? (
             <div className="no-results">No evaluations submitted yet.</div>
           ) : (
+            <div className="bm-table-scroll">
             <table className="bm-table">
               <thead>
                 <tr>
@@ -1150,6 +1184,7 @@ const BenchmarkDetailView: React.FC = () => {
                 })()}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>

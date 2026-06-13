@@ -14,6 +14,7 @@ import {
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 interface EditMethodsDialogProps {
   open: boolean;
@@ -50,6 +51,7 @@ export function EditMethodsDialog({
   isAuthor = false,
 }: EditMethodsDialogProps) {
   const [selectedMethodIds, setSelectedMethodIds] = useState<number[]>(initialMethodIds);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [knownMethods, setKnownMethods] = useState<Map<number, APIMethod>>(new Map());
@@ -301,6 +303,13 @@ export function EditMethodsDialog({
           )}
         </div>
         <DialogFooter>
+          <Button
+            variant="ghost"
+            className="sm:mr-auto"
+            onClick={() => setIsSuggesting(true)}
+          >
+            Suggest a new method
+          </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -322,6 +331,12 @@ export function EditMethodsDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <SuggestTaxonomyDialog
+        open={isSuggesting}
+        onOpenChange={setIsSuggesting}
+        paperId={paperId}
+        kind="method"
+      />
     </Dialog>
   );
 }

@@ -1475,6 +1475,10 @@ class Dataset(BaseModel):
         False,
         description="Whether this task-dataset leaderboard allows evaluation harness values",
     )
+    best_model_name: Optional[str] = Field(
+        None,
+        description="Top-ranked model on this benchmark for the scoped task",
+    )
 
     # Allowed metrics for this dataset
     allowed_metrics: Optional[List[str]] = Field(
@@ -1538,6 +1542,57 @@ class Datasets(BaseModel):
         None, description="Number of the previous page"
     )
     results: List[Dataset] = Field(..., description="List of datasets on this page")
+
+
+class TaskSubtaskBenchmarks(BaseModel):
+    """Benchmark preview list for a single child task on the task page."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    subtask_id: str = Field(..., description="Child task ID")
+    benchmarks: List[Dataset] = Field(
+        default_factory=list, description="Top benchmarks for the child task"
+    )
+
+    @field_validator("subtask_id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v) if v is not None else v
+
+
+class TaskPage(BaseModel):
+    """
+    Bundled task-page payload.
+
+    Collapses the task-detail page's initial request fan-out (detail, parents,
+    sister tasks, children, direct benchmarks, and per-child benchmark
+    previews) into a single response so the frontend issues one round trip
+    instead of many.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    task: Task = Field(..., description="The task this page is for")
+    parents: List[Task] = Field(
+        default_factory=list, description="Ancestor tasks, nearest parent first"
+    )
+    sisters: List[Task] = Field(
+        default_factory=list,
+        description=(
+            "Explicitly configured sister tasks for this task, ordered by "
+            "display_order (from `task_sister_tasks`). Independent of area."
+        ),
+    )
+    children: List[Task] = Field(
+        default_factory=list, description="Direct visible child tasks"
+    )
+    benchmarks: List[Dataset] = Field(
+        default_factory=list, description="Benchmarks directly tied to this task"
+    )
+    subtask_benchmarks: List[TaskSubtaskBenchmarks] = Field(
+        default_factory=list,
+        description="Per-child benchmark previews, aligned with `children`",
+    )
 
 
 class DatasetCreateRequest(BaseModel):

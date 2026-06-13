@@ -17,8 +17,9 @@ if ! flock -n 200; then
     exit 0
 fi
 
-# Run the trending scores calculation script
-/root/.local/bin/uv run --env-file backend/keys.env python -m scripts.hourly.calculate_trending_scores
+# Run the trending scores calculation de-prioritised (CPU + IO) and time-boxed
+# so it cannot starve the API workers or run past the next hourly tick.
+timeout -k 60s 50m nice -n 19 ionice -c3 /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.hourly.calculate_trending_scores
 
 # Release lock (automatic on exit, but explicit is clearer)
 flock -u 200

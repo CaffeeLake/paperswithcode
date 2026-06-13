@@ -12,6 +12,7 @@ from typing import Optional, List
 from backend.models.api import (
     Task,
     Tasks,
+    TaskPage,
     Papers,
     KeywordUpdate,
     TaskCreateRequest,
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @router.get("/", response_model=Tasks)
-async def list_tasks(
+def list_tasks(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
         50, ge=1, le=100, description="Number of tasks per page (max 100)"
@@ -106,7 +107,7 @@ async def list_tasks(
 
 
 @router.get("/trending", response_model=TrendingTasks)
-async def get_trending_tasks(
+def get_trending_tasks(
     limit: int = Query(
         8, ge=1, le=50, description="Maximum number of trending tasks to return"
     ),
@@ -173,7 +174,7 @@ async def get_trending_tasks(
 
 
 @router.get("/top", response_model=List[Task])
-async def get_top_tasks(
+def get_top_tasks(
     limit: int = Query(
         8, ge=1, le=50, description="Maximum number of top tasks to return"
     ),
@@ -193,7 +194,7 @@ async def get_top_tasks(
 
 
 @router.get("/{task_id}", response_model=Task)
-async def get_task(
+def get_task(
     task_id: str,
     db: Session = Depends(get_database_session),
 ):
@@ -222,8 +223,35 @@ async def get_task(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{task_id}/page", response_model=TaskPage)
+def get_task_page(
+    task_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Get the bundled task-page payload in a single request.
+
+    Returns the task plus its parents, explicitly configured sister tasks
+    (from `task_sister_tasks`, ordered by display_order), visible children,
+    directly-associated benchmarks, and a short benchmark preview for each
+    child. This collapses the task-detail page's initial request fan-out into
+    one round trip.
+
+    **Examples:**
+    - `/api/v1/tasks/language-modeling/page`
+    - `/api/v1/tasks/5/page`
+    """
+    try:
+        service = TaskService(db)
+        return service.get_task_page(task_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{task_id}/children", response_model=Tasks)
-async def get_task_children(
+def get_task_children(
     task_id: str,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
@@ -259,7 +287,7 @@ async def get_task_children(
 
 
 @router.get("/{task_id}/parents", response_model=list[Task])
-async def get_task_parents(
+def get_task_parents(
     task_id: str,
     db: Session = Depends(get_database_session),
 ):
@@ -282,7 +310,7 @@ async def get_task_parents(
 
 
 @router.get("/{task_id}/papers", response_model=Papers)
-async def get_task_papers(
+def get_task_papers(
     task_id: str,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
@@ -331,7 +359,7 @@ async def get_task_papers(
 
 
 @router.post("/", response_model=Task, status_code=201)
-async def create_task(
+def create_task(
     request: TaskCreateRequest,
     db: Session = Depends(get_database_session),
 ):
@@ -382,7 +410,7 @@ async def create_task(
 
 
 @router.post("/{task_id}/keywords", response_model=Task)
-async def add_task_keywords(
+def add_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),
@@ -414,7 +442,7 @@ async def add_task_keywords(
 
 
 @router.delete("/{task_id}/keywords", response_model=Task)
-async def remove_task_keywords(
+def remove_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),
@@ -446,7 +474,7 @@ async def remove_task_keywords(
 
 
 @router.put("/{task_id}/keywords", response_model=Task)
-async def replace_task_keywords(
+def replace_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,
     db: Session = Depends(get_database_session),

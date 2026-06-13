@@ -22,7 +22,7 @@ router = APIRouter()
     response_model=Authors,
     summary="List authors with pagination and filtering",
 )
-async def get_authors(
+def get_authors(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         50, ge=1, le=500, description="Number of authors per page"
@@ -99,7 +99,7 @@ async def get_authors(
     response_model=Author,
     summary="Get specific author details",
 )
-async def get_author(
+def get_author(
     author_id: str = Path(..., description="Author ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -140,7 +140,7 @@ async def get_author(
     response_model=Papers,
     summary="Get papers by specific author",
 )
-async def get_author_papers(
+def get_author_papers(
     author_id: str = Path(..., description="Author ID"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
@@ -215,7 +215,7 @@ async def get_author_papers(
     response_model=Authors,
     summary="Search authors by name or username",
 )
-async def search_authors(
+def search_authors(
     q: str = Query(
         ..., min_length=2, description="Search query (minimum 2 characters)"
     ),

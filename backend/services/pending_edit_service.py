@@ -42,6 +42,8 @@ EDIT_TYPES = frozenset(
         "project_pages",
         "source_url",
         "hf_artifacts",
+        "new_task",
+        "new_method",
     }
 )
 STATUSES = frozenset({"pending", "approved", "rejected"})
@@ -237,6 +239,10 @@ class PendingEditService:
             return self._snapshot_source_url(paper_id)
         if edit_type == "hf_artifacts":
             return self._snapshot_hf_artifacts(paper_id)
+        if edit_type in ("new_task", "new_method"):
+            # Suggestions for brand-new taxonomy entries have no existing live
+            # state to diff against.
+            return {}
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
 
     # ----------------------------------------------------------------
@@ -356,6 +362,31 @@ class PendingEditService:
                 "hf_spaces": spaces,
             }
 
+        if edit_type in ("new_task", "new_method"):
+            name = payload.get("name")
+            description = payload.get("description")
+            if not isinstance(name, str):
+                raise PendingEditError("Suggestion 'name' must be a string")
+            normalized_name = name.strip()
+            if not normalized_name:
+                raise PendingEditError("Suggestion 'name' must be a non-empty string")
+            if len(normalized_name) > 200:
+                raise PendingEditError(
+                    "Suggestion 'name' must be at most 200 characters"
+                )
+            if not isinstance(description, str):
+                raise PendingEditError("Suggestion 'description' must be a string")
+            normalized_description = description.strip()
+            if not normalized_description:
+                raise PendingEditError(
+                    "Suggestion 'description' must be a non-empty string"
+                )
+            if len(normalized_description) > 2000:
+                raise PendingEditError(
+                    "Suggestion 'description' must be at most 2000 characters"
+                )
+            return {"name": normalized_name, "description": normalized_description}
+
         if edit_type == "evaluations":
             operations = payload.get("operations")
             if not isinstance(operations, list) or not operations:
@@ -466,6 +497,11 @@ class PendingEditService:
                 if current != proposed:
                     return False
             return True
+
+        if edit_type in ("new_task", "new_method"):
+            # Suggestions for new taxonomy entries are never a no-op; there is
+            # no existing entry to compare against.
+            return False
 
         # `evaluations` already requires at least one operation; treat any
         # well-formed operation list as a real change for now.
@@ -656,6 +692,10 @@ class PendingEditService:
             return
         if edit_type == "evaluations":
             self._apply_evaluations(paper_id, payload)
+            return
+        if edit_type in ("new_task", "new_method"):
+            # Taxonomy suggestions are informational. Approving simply marks the
+            # row reviewed; an admin creates the actual task/method by hand.
             return
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
 

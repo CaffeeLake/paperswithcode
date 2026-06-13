@@ -32,8 +32,11 @@ class DatabaseManager:
             self._engine = create_engine(
                 self.settings.database_url,
                 poolclass=QueuePool,
-                pool_size=10,
-                max_overflow=20,
+                # Kept small per-process: the API runs multiple uvicorn workers
+                # in production and shares Postgres with the CRON scripts, so a
+                # smaller per-worker pool avoids exhausting `max_connections`.
+                pool_size=5,
+                max_overflow=10,
                 pool_pre_ping=True,
                 pool_recycle=300,
                 echo=self.settings.is_development,  # Log SQL queries in development

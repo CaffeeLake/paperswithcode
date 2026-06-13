@@ -5,7 +5,6 @@
 - Download all Arxiv PDFs in a private HF bucket, so that they can easily be reused later for extracting evaluation results/thumbnail generation/chatting purposes.
 - Add a CRON job to check whose methods are cited by papers, so that these methods can serve as tags on those papers
 - Add the ability to copy paste/screenshot a leaderboard, similar to AA.
-- Clean up evals of https://paperswithcode.co/paper/2509.17765
 - Reasoning: task or subtask of language modeling?
 - Update scatter plots for lower is better, like https://paperswithcode.co/benchmark/librispeech-clean
 - A backup!!!
@@ -21,4 +20,7 @@
 - Auto-tag papers with orgs, e.g. DeepSeek, Qwen, etc
 - Add paperswithcode.co/paper-series, where the follow-up papers can be read
 - Use the Biorxiv API to generate thumbnails for biology papers
-- Add legacy PwC data, like data/imagenet1k_missing_from_legacy.csv.
+- Add legacy PwC data, like data/imagenet1k_missing_from_legacy.csv
+- Add paperswithcode.co/trends, see https://www.youtube.com/watch?v=TU3koPyFZfw
+- Implement related papers using pgvector
+- Add "Propose a new task..." and "Propose a new method"... buttons at the edit pop-ups

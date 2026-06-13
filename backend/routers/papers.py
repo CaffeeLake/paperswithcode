@@ -57,7 +57,7 @@ router = APIRouter()
     response_model=Papers,
     summary="Get papers with pagination and filtering",
 )
-async def get_papers(
+def get_papers(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         None, ge=1, le=500, description="Number of papers per page"
@@ -120,7 +120,7 @@ async def get_papers(
     response_model=List[PaperSummary],
     summary="Search papers with citation-based ranking",
 )
-async def search_papers(
+def search_papers(
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
     db: Session = Depends(get_database_session),
@@ -147,7 +147,7 @@ async def search_papers(
 @router.get(
     "/papers/recent", response_model=List[PaperSummary], summary="Get recent papers"
 )
-async def get_recent_papers(
+def get_recent_papers(
     limit: int = Query(10, ge=1, le=100, description="Maximum number of papers"),
     db: Session = Depends(get_database_session),
 ):
@@ -165,7 +165,7 @@ async def get_recent_papers(
 
 
 @router.get("/papers/stats", summary="Get paper statistics")
-async def get_paper_stats(db: Session = Depends(get_database_session)):
+def get_paper_stats(db: Session = Depends(get_database_session)):
     """
     Get statistics about the papers in the database.
 
@@ -187,7 +187,7 @@ async def get_paper_stats(db: Session = Depends(get_database_session)):
     response_model=List[Dict[str, Any]],
     summary="Get trending papers based on GitHub star velocity",
 )
-async def get_trending_papers(
+def get_trending_papers(
     limit: int = Query(
         20, ge=1, le=100, description="Maximum number of trending papers"
     ),
@@ -410,7 +410,7 @@ async def get_trending_papers(
     response_model=Paper,
     summary="Get paper by ArXiv ID or database ID",
 )
-async def get_paper_by_id(
+def get_paper_by_id(
     paper_id: str = Path(
         ...,
         description=(
@@ -447,7 +447,7 @@ async def get_paper_by_id(
 @router.get(
     "/papers/arxiv/{arxiv_id}", response_model=Paper, summary="Get paper by ArXiv ID"
 )
-async def get_paper_by_arxiv_id(
+def get_paper_by_arxiv_id(
     arxiv_id: str = Path(..., description="ArXiv ID (e.g., '1805.10616')"),
     version: Optional[str] = Query(
         None,
@@ -495,7 +495,7 @@ async def get_paper_by_arxiv_id(
     response_model=PaperVersions,
     summary="Get all versions of a paper",
 )
-async def get_paper_versions(
+def get_paper_versions(
     arxiv_id: str = Path(..., description="ArXiv ID"),
     db: Session = Depends(get_database_session),
 ):
@@ -528,7 +528,7 @@ async def get_paper_versions(
     response_model=VersionComparison,
     summary="Compare two versions of a paper",
 )
-async def compare_paper_versions(
+def compare_paper_versions(
     arxiv_id: str = Path(..., description="ArXiv ID"),
     from_version: str = Path(..., description="Source version (e.g., 'v1')"),
     to_version: str = Path(..., description="Target version (e.g., 'v2')"),
@@ -1036,7 +1036,7 @@ async def update_citation_counts(
     "/papers/{paper_id}/methods/",
     summary="Get methods used in a paper",
 )
-async def get_paper_methods(
+def get_paper_methods(
     paper_id: str = Path(..., description="Paper ID or ArXiv ID"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
@@ -1082,7 +1082,7 @@ async def get_paper_methods(
     summary="Update tasks for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_tasks(
+def update_paper_tasks(
     paper_id: int = Path(..., description="Database paper ID"),
     task_ids: List[int] = Query(
         default=[],
@@ -1124,7 +1124,7 @@ async def update_paper_tasks(
     summary="Update methods for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_methods(
+def update_paper_methods(
     paper_id: int = Path(..., description="Database paper ID"),
     method_ids: List[int] = Query(
         default=[],
@@ -1166,7 +1166,7 @@ async def update_paper_methods(
     summary="Update organizations for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_organizations(
+def update_paper_organizations(
     paper_id: int = Path(..., description="Database paper ID"),
     organization_ids: List[int] = Query(
         default=[],
@@ -1234,7 +1234,7 @@ class UpdateProjectPagesRequest(BaseModel):
     summary="Update repositories for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_repositories(
+def update_paper_repositories(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateRepositoriesRequest = Body(...),
     db: Session = Depends(get_database_session),
@@ -1284,7 +1284,7 @@ async def update_paper_repositories(
     summary="Update project pages for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_project_pages(
+def update_paper_project_pages(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateProjectPagesRequest = Body(...),
     db: Session = Depends(get_database_session),
@@ -1364,7 +1364,7 @@ class UpdateSourceUrlRequest(BaseModel):
     summary="Update Hugging Face artifacts for a paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_hf_artifacts(
+def update_paper_hf_artifacts(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateHfArtifactsRequest = Body(...),
     db: Session = Depends(get_database_session),
@@ -1396,7 +1396,7 @@ async def update_paper_hf_artifacts(
     summary="Update the canonical source URL of an external paper",
     dependencies=[Depends(require_hf_admin)],
 )
-async def update_paper_source_url(
+def update_paper_source_url(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateSourceUrlRequest = Body(...),
     db: Session = Depends(get_database_session),

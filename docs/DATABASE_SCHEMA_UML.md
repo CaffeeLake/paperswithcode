@@ -155,6 +155,17 @@ Key capabilities:
 │ CHECK source_paper_id <> target_paper_id
 └──────────────────────────────┘
 
+┌──────────────────────────────┐
+│      TASK_SISTER_TASKS       │
+├──────────────────────────────┤
+│ task_id (FK tasks)           │◄──── TASKS.id (the task page, ON DELETE CASCADE)
+│ sister_task_id (FK tasks)    │◄──── TASKS.id (a sibling shown, ON DELETE CASCADE)
+│ display_order (INT, default 0)
+│ created_at                   │
+│ PK (task_id, sister_task_id) │
+│ CHECK task_id <> sister_task_id
+└──────────────────────────────┘
+
 ┌─────────────────┐     ┌───────────────────────┐
 │  CONFERENCES    │     │  PAPER_CONFERENCES    │
 ├─────────────────┤     ├───────────────────────┤
@@ -241,6 +252,10 @@ The following summarizes the live structure. See the database for full DDL.
   child subtasks `world-knowledge`, `long-context`, `instruction-following`,
   `math`, `language-reasoning`, `coding`, `safety-and-grounding`, and
   `classic-language-modeling` (all level 1).
+- **Sister tasks:** the "Sister Tasks" sidebar on a task page is driven by the
+  explicit `task_sister_tasks` table, not by `area_id`. `area_id` only groups
+  tasks for the taxonomy index and search; the curated sister list is
+  per-task and ordered by `display_order`.
 
 ### METHODS
 - id (PK), name, full_name, description, introduced_year
@@ -353,6 +368,7 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
 - PAPER_RELATIONS(source_paper_id, target_paper_id, created_at) PK(source_paper_id, target_paper_id) — directed lineage edges between papers. `source_paper_id` is the predecessor (earlier) paper and `target_paper_id` is the successor (follow-up) paper, e.g. DINOv2 -> DINOv3. CHECK constraint prevents self-edges; both FKs cascade on paper delete. Many-to-many in both directions: a paper can have multiple successors and multiple predecessors.
+- TASK_SISTER_TASKS(task_id, sister_task_id, display_order, created_at) PK(task_id, sister_task_id) — explicit, ordered sister-task relationships rendered on a task page's sidebar. `task_id` is the page; `sister_task_id` is a task shown in that page's "Sister Tasks" list, sorted by `display_order` (ascending, 0 first). Directed and NOT automatically symmetric (configuring B on A's page does not add A to B's page). CHECK prevents self-edges; both FKs cascade on task delete. This replaces the previous behavior of deriving sisters from every visible task sharing the same `area_id`.
 - PAPER_CONFERENCES(paper_id, conference_id, source) PK(paper_id, conference_id) — links papers to normalized conference rows. `source` is `manual` (import scripts / admin) or `auto`. Display tags such as "CVPR 2026" on paper pages still use the denormalized `papers.proceeding` column alongside this junction.
 - PAPER_ORGANIZATIONS(paper_id, organization_id, source) PK(paper_id, organization_id) — links papers to normalized organization rows (e.g. NVIDIA). `source` is `manual` (admin) or an importer tag such as `hf_org_papers`. Powers org logo tags on paper pages and organization pages like `/nvidia`.
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)

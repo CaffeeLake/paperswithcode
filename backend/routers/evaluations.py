@@ -24,7 +24,7 @@ router = APIRouter(prefix="/evaluations", tags=["evaluations"])
 
 
 @router.get("/", response_model=Evaluations)
-async def list_evaluations(
+def list_evaluations(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
         50, ge=1, le=100, description="Number of evaluations per page (max 100)"
@@ -124,7 +124,7 @@ async def list_evaluations(
 
 
 @router.get("/{evaluation_id}", response_model=Evaluation)
-async def get_evaluation(
+def get_evaluation(
     evaluation_id: int,
     db: Session = Depends(get_database_session),
 ):
@@ -159,7 +159,7 @@ async def get_evaluation(
     status_code=201,
     dependencies=[Depends(require_admin)],
 )
-async def create_evaluation(
+def create_evaluation(
     request: EvaluationCreateRequest,
     db: Session = Depends(get_database_session),
 ):
@@ -225,7 +225,7 @@ async def create_evaluation(
     response_model=Evaluation,
     dependencies=[Depends(require_admin)],
 )
-async def update_evaluation(
+def update_evaluation(
     evaluation_id: int,
     request: EvaluationUpdateRequest,
     db: Session = Depends(get_database_session),
@@ -293,7 +293,7 @@ async def update_evaluation(
     status_code=204,
     dependencies=[Depends(require_admin)],
 )
-async def delete_evaluation(
+def delete_evaluation(
     evaluation_id: int,
     db: Session = Depends(get_database_session),
 ):
@@ -326,7 +326,7 @@ async def delete_evaluation(
     status_code=200,
     dependencies=[Depends(require_admin)],
 )
-async def recalculate_ranks(
+def recalculate_ranks(
     task_id: int = Query(..., description="Task ID for the leaderboard"),
     dataset_id: int = Query(..., description="Dataset ID for the leaderboard"),
     uses_additional_data: Optional[bool] = Query(

@@ -157,7 +157,7 @@ def _is_secure_origin(request: Request) -> bool:
 
 
 @router.get("/auth/hf/login")
-async def hf_login(
+def hf_login(
     request: Request,
     return_to: Optional[str] = Query(default=None),
 ):
@@ -286,14 +286,14 @@ async def hf_callback(
 
 
 @router.post("/auth/logout")
-async def logout(request: Request):
+def logout(request: Request):
     response = JSONResponse({"ok": True})
     _clear_session_cookie(response, secure=_is_secure_origin(request))
     return response
 
 
 @router.get("/auth/me", response_model=AuthMe)
-async def me(request: Request):
+def me(request: Request):
     token = request.cookies.get(SESSION_COOKIE_NAME)
     payload = decode_session_cookie(token or "")
     if not payload:

@@ -14,6 +14,15 @@ export PYTHONPATH="$PROJECT_DIR/.github/workflows:${PYTHONPATH:-}"
 # Set working directory
 cd "$PROJECT_DIR" || exit 1
 
+# Prevent overlapping runs piling up (hourly job; can hang on the Semantic
+# Scholar API). Without this, stalled runs accumulate and starve the box.
+LOCKFILE="/tmp/citations.lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+    echo "$(date) - Another citations instance is running, exiting"
+    exit 0
+fi
+
 # Create log file for wrapper script errors
 WRAPPER_LOG="$SCRIPT_DIR/logs/citations_wrapper_$(date +%Y%m%d).log"
 mkdir -p "$SCRIPT_DIR/logs"
@@ -35,7 +44,7 @@ log_message "Environment file found, starting job"
 
 # Run the job with proper error handling
 # Job writes to its own log via DatabaseCronJob class, we just capture stderr to wrapper log
-if uv run --env-file backend/keys.env python -m scripts.hourly.update_citations 2>> "$WRAPPER_LOG"; then
+if timeout -k 60s 50m nice -n 19 ionice -c3 uv run --env-file backend/keys.env python -m scripts.hourly.update_citations 2>> "$WRAPPER_LOG"; then
     log_message "Citations job completed successfully"
     exit 0
 else

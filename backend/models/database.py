@@ -1090,6 +1090,47 @@ class PaperRelation(Base):
         )
 
 
+class TaskSisterTask(Base):
+    """Explicit, ordered sister-task relationships for a task page.
+
+    ``task_id`` is the task whose page renders the sister list;
+    ``sister_task_id`` is a task shown in that page's sister-task sidebar,
+    sorted by ``display_order``. The relation is directed and not
+    automatically symmetric. A self-edge is forbidden via CHECK constraint.
+    """
+
+    __tablename__ = "task_sister_tasks"
+
+    task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    sister_task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    display_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "task_id <> sister_task_id",
+            name="task_sister_tasks_no_self_link",
+        ),
+        Index("idx_task_sister_tasks_task_id", "task_id"),
+        Index("idx_task_sister_tasks_sister_task_id", "sister_task_id"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<TaskSisterTask(task_id={self.task_id}, "
+            f"sister_task_id={self.sister_task_id}, "
+            f"display_order={self.display_order})>"
+        )
+
+
 class TaskDataset(Base):
     """
     Task-specific dataset membership and display metadata.
@@ -1272,7 +1313,7 @@ class PendingPaperEdit(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "edit_type IN ('tasks', 'methods', 'evaluations', 'repositories', 'project_pages', 'source_url', 'hf_artifacts')",
+            "edit_type IN ('tasks', 'methods', 'evaluations', 'repositories', 'project_pages', 'source_url', 'hf_artifacts', 'new_task', 'new_method')",
             name="pending_paper_edits_edit_type_check",
         ),
         CheckConstraint(

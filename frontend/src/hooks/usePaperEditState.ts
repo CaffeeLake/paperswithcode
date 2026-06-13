@@ -7,7 +7,6 @@ export function usePaperEditState() {
   const [isEditingProjectPages, setIsEditingProjectPages] = useState(false);
   const [isEditingEvaluations, setIsEditingEvaluations] = useState(false);
   const [isEditingSourceUrl, setIsEditingSourceUrl] = useState(false);
-  const [isEditingHfArtifacts, setIsEditingHfArtifacts] = useState(false);
 
   return {
     // Tasks
@@ -45,11 +44,5 @@ export function usePaperEditState() {
     openSourceUrlDialog: () => setIsEditingSourceUrl(true),
     closeSourceUrlDialog: () => setIsEditingSourceUrl(false),
     setIsEditingSourceUrl,
-
-    // Hugging Face artifacts
-    isEditingHfArtifacts,
-    openHfArtifactsDialog: () => setIsEditingHfArtifacts(true),
-    closeHfArtifactsDialog: () => setIsEditingHfArtifacts(false),
-    setIsEditingHfArtifacts,
   };
 }

@@ -124,7 +124,7 @@ class ExternalResourceIngestionResponse(BaseModel):
     response_model=ExternalResourceIngestionResponse,
     summary="Create or update an external (non-ArXiv) paper row",
 )
-async def create_external_resource(
+def create_external_resource(
     request: ExternalResourceCreateRequest = Body(...),
     db: Session = Depends(get_database_session),
 ):

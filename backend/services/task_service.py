@@ -5,17 +5,17 @@ This service provides methods for retrieving and managing AI/ML task data,
 including pagination, filtering, hierarchical relationships, and paper associations.
 """
 
-import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, or_, case, and_
+from sqlalchemy import func, desc, asc, or_, case, and_, cast, Float
 
 from backend.models.database import (
     Task as DBTask,
     Area as DBArea,
     Paper as DBPaper,
     PaperTask,
+    TaskSisterTask as DBTaskSisterTask,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
 )
@@ -23,6 +23,8 @@ from backend.models.api import (
     Task,
     Tasks,
     TaskCreateRequest,
+    TaskPage,
+    TaskSubtaskBenchmarks,
     TrendingTask,
     TrendingTasks,
 )
@@ -282,47 +284,51 @@ class TaskService:
                     baseline_days=baseline_days,
                 )
 
-            recent_count_col = func.count(case((in_recent, DBPaper.id))).label(
-                "recent_count"
+            recent_count_expr = func.count(case((in_recent, DBPaper.id)))
+            baseline_count_expr = func.count(case((in_baseline, DBPaper.id)))
+
+            # Express the ranking maths in SQL so Postgres can filter, sort and
+            # LIMIT server-side instead of returning every qualifying task for
+            # Python to score and sort. `all_recent`/`all_baseline` are known
+            # scalars (computed above), so:
+            #   share_lift  = (recent/all_recent) / (baseline/all_baseline)
+            #               = (recent * all_baseline) / (baseline * all_recent)
+            #   trend_score = share_lift * ln(1 + recent)
+            # The min_baseline_papers gate guarantees baseline_count > 0, and
+            # all_recent/all_baseline are non-zero (checked above), so the
+            # divisions are always defined. Casts force float (not integer)
+            # division.
+            share_lift_expr = (cast(recent_count_expr, Float) * float(all_baseline)) / (
+                cast(baseline_count_expr, Float) * float(all_recent)
             )
-            baseline_count_col = func.count(case((in_baseline, DBPaper.id))).label(
-                "baseline_count"
-            )
+            trend_score_expr = share_lift_expr * func.ln(1.0 + recent_count_expr)
+
+            recent_count_col = recent_count_expr.label("recent_count")
+            baseline_count_col = baseline_count_expr.label("baseline_count")
+            share_lift_col = share_lift_expr.label("share_lift")
+            trend_score_col = trend_score_expr.label("trend_score")
 
             per_task_query = (
                 self.db.query(
                     DBTask,
                     recent_count_col,
                     baseline_count_col,
+                    share_lift_col,
+                    trend_score_col,
                 )
                 .join(PaperTask, PaperTask.task_id == DBTask.id)
                 .join(DBPaper, DBPaper.id == PaperTask.paper_id)
                 .filter(in_window)
                 .group_by(DBTask.id)
-                .having(recent_count_col >= min_recent_papers)
-                .having(baseline_count_col >= min_baseline_papers)
+                .having(recent_count_expr >= min_recent_papers)
+                .having(baseline_count_expr >= min_baseline_papers)
+                .having(share_lift_expr > min_share_lift)
+                .order_by(desc("share_lift"), desc("trend_score"))
+                .limit(limit)
             )
 
             if level is not None:
                 per_task_query = per_task_query.filter(DBTask.level == level)
-
-            scored: List[tuple] = []
-            for db_task, recent_count, baseline_count in per_task_query.all():
-                recent_count = int(recent_count or 0)
-                baseline_count = int(baseline_count or 0)
-                recent_share = recent_count / all_recent
-                baseline_share = baseline_count / all_baseline
-                if baseline_share <= 0:
-                    continue
-                share_lift = recent_share / baseline_share
-                if share_lift <= min_share_lift:
-                    continue
-                trend_score = share_lift * math.log(1 + recent_count)
-                scored.append(
-                    (trend_score, share_lift, recent_count, baseline_count, db_task)
-                )
-
-            scored.sort(key=lambda item: (item[1], item[0]), reverse=True)
 
             results = [
                 TrendingTask(
@@ -334,19 +340,17 @@ class TaskService:
                     parent_id=str(db_task.parent_id) if db_task.parent_id else None,
                     area_id=str(db_task.area_id) if db_task.area_id else None,
                     level=db_task.level,
-                    paper_count=recent_count + baseline_count,
+                    paper_count=int(recent_count or 0) + int(baseline_count or 0),
                     image_url=db_task.image_url,
                     image_credit=db_task.image_credit,
                     created_at=db_task.created_at,
                     updated_at=db_task.updated_at,
-                    recent_paper_count=recent_count,
-                    baseline_paper_count=baseline_count,
-                    share_lift=share_lift,
-                    trend_score=trend_score,
+                    recent_paper_count=int(recent_count or 0),
+                    baseline_paper_count=int(baseline_count or 0),
+                    share_lift=float(share_lift),
+                    trend_score=float(trend_score),
                 )
-                for trend_score, share_lift, recent_count, baseline_count, db_task in scored[
-                    :limit
-                ]
+                for db_task, recent_count, baseline_count, share_lift, trend_score in per_task_query.all()
             ]
 
             return TrendingTasks(
@@ -513,6 +517,108 @@ class TaskService:
             raise
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve parent tasks: {str(e)}")
+
+    def get_task_sisters(self, task_id: str) -> List[Task]:
+        """
+        Get the explicitly configured sister tasks for a task.
+
+        Sister tasks are curated per task in `task_sister_tasks` and returned
+        in ascending `display_order`. This is independent of the task's
+        `area_id`; a task page shows exactly the sisters configured for it.
+
+        Args:
+            task_id: The task ID whose sister list to retrieve
+
+        Returns:
+            Ordered list of sister tasks (empty if none configured)
+
+        Raises:
+            DatabaseError: If database query fails
+        """
+        try:
+            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            rows = (
+                self.db.query(DBTask, paper_count_col, DBTaskSisterTask.display_order)
+                .join(
+                    DBTaskSisterTask,
+                    DBTaskSisterTask.sister_task_id == DBTask.id,
+                )
+                .outerjoin(PaperTask, PaperTask.task_id == DBTask.id)
+                .filter(DBTaskSisterTask.task_id == int(task_id))
+                .group_by(DBTask.id, DBTaskSisterTask.display_order)
+                .order_by(asc(DBTaskSisterTask.display_order), asc(DBTask.name))
+                .all()
+            )
+
+            return [
+                self._build_task_model(db_task, int(paper_count or 0))
+                for db_task, paper_count, _ in rows
+            ]
+
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve sister tasks: {str(e)}")
+
+    def get_task_page(
+        self,
+        task_id: str,
+        direct_benchmark_limit: int = 100,
+        subtask_benchmark_limit: int = 20,
+        min_eval_count: int = 2,
+    ) -> TaskPage:
+        """
+        Build the bundled task-page payload in a single call.
+
+        Collapses the task-detail page's initial fan-out (detail, parents,
+        sister tasks, children, direct benchmarks, per-child benchmark
+        previews) so the frontend makes one request instead of many.
+        """
+        # Import here to avoid a circular import at module load time.
+        from backend.services.dataset_service import DatasetService
+
+        # Resolve the task by numeric id or slug.
+        if str(task_id).isdigit():
+            task = self.get_task_by_id(str(task_id))
+        else:
+            task = self.get_task_by_slug(task_id)
+
+        parents = self.get_task_parents(task.id)
+
+        sisters = self.get_task_sisters(task.id)
+
+        children = self.get_task_children(
+            task.id, page_size=50, visible_only=True
+        ).results
+
+        dataset_service = DatasetService(self.db)
+        benchmarks = dataset_service.get_datasets(
+            task_id=int(task.id),
+            page_size=direct_benchmark_limit,
+            order_by="paper_count",
+            order_dir="desc",
+            min_eval_count=min_eval_count,
+        ).results
+
+        subtask_benchmarks: List[TaskSubtaskBenchmarks] = []
+        for child in children:
+            child_benchmarks = dataset_service.get_datasets(
+                task_id=int(child.id),
+                page_size=subtask_benchmark_limit,
+                order_by="paper_count",
+                order_dir="desc",
+                min_eval_count=min_eval_count,
+            ).results
+            subtask_benchmarks.append(
+                TaskSubtaskBenchmarks(subtask_id=child.id, benchmarks=child_benchmarks)
+            )
+
+        return TaskPage(
+            task=task,
+            parents=parents,
+            sisters=sisters,
+            children=children,
+            benchmarks=benchmarks,
+            subtask_benchmarks=subtask_benchmarks,
+        )
 
     def get_tasks_by_area(
         self,
@@ -699,7 +805,9 @@ class TaskService:
 
             paper_service = PaperService(self.db)
             relation_data = paper_service._get_paper_relation_data(
-                [paper.id for paper in db_papers], include_resources=include_resources
+                [paper.id for paper in db_papers],
+                include_resources=include_resources,
+                card_view=True,
             )
 
             papers = []

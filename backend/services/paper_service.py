@@ -138,10 +138,20 @@ class PaperService:
         )
 
     def _get_paper_relation_data(
-        self, paper_ids: List[int], include_resources: bool = False
+        self,
+        paper_ids: List[int],
+        include_resources: bool = False,
+        card_view: bool = False,
     ) -> Dict[str, Dict[int, list]]:
         """
         Load paper relationships in batches for API serialization.
+
+        When `card_view` is True, only the relations the paper-card UI actually
+        renders are loaded (authors, tasks, methods, and — when
+        `include_resources` is set — repositories and project pages). The
+        heavier detail-only relations (author links, introduced benchmarks,
+        paper lineage, conference, organizations) are skipped to cut both SQL
+        round-trips and serialized payload size for list endpoints.
         """
         unique_ids = list(dict.fromkeys(int(paper_id) for paper_id in paper_ids))
         relation_data = {
@@ -170,9 +180,10 @@ class PaperService:
         )
         for paper_id, author_name, hf_username in author_rows:
             relation_data["authors"][paper_id].append(author_name)
-            relation_data["author_links"][paper_id].append(
-                AuthorLink(name=author_name, hf_username=hf_username)
-            )
+            if not card_view:
+                relation_data["author_links"][paper_id].append(
+                    AuthorLink(name=author_name, hf_username=hf_username)
+                )
 
         task_rows = (
             self.db.query(PaperTask.paper_id, DBTask)
@@ -214,94 +225,100 @@ class PaperService:
                 )
             )
 
-        introduced_dataset_rows = (
-            self.db.query(DBDataset)
-            .filter(DBDataset.introducing_paper_id.in_(unique_ids))
-            .order_by(DBDataset.introducing_paper_id, DBDataset.name)
-            .all()
-        )
-        for dataset in introduced_dataset_rows:
-            relation_data["introduced_benchmarks"][dataset.introducing_paper_id].append(
-                BenchmarkSummary(
-                    id=str(dataset.id),
-                    name=dataset.name,
-                    slug=dataset.slug,
-                    full_name=dataset.full_name,
-                    introduced_year=dataset.introduced_year,
+        # Detail-only relations. Paper cards never render introduced
+        # benchmarks, lineage banners, the conference badge, or organizations,
+        # so list endpoints skip these queries and payloads via `card_view`.
+        if not card_view:
+            introduced_dataset_rows = (
+                self.db.query(DBDataset)
+                .filter(DBDataset.introducing_paper_id.in_(unique_ids))
+                .order_by(DBDataset.introducing_paper_id, DBDataset.name)
+                .all()
+            )
+            for dataset in introduced_dataset_rows:
+                relation_data["introduced_benchmarks"][
+                    dataset.introducing_paper_id
+                ].append(
+                    BenchmarkSummary(
+                        id=str(dataset.id),
+                        name=dataset.name,
+                        slug=dataset.slug,
+                        full_name=dataset.full_name,
+                        introduced_year=dataset.introduced_year,
+                    )
                 )
-            )
 
-        # Directed paper lineage edges. For each requested paper, load
-        # successors (outgoing edges where the requested paper is the
-        # predecessor) and predecessors (incoming edges where the requested
-        # paper is the successor). Two batched queries with eager-loaded
-        # related Paper rows keep round-trips at O(1) per detail call.
-        successor_rows = (
-            self.db.query(DBPaperRelation.source_paper_id, DBPaper)
-            .join(DBPaper, DBPaperRelation.target_paper_id == DBPaper.id)
-            .filter(DBPaperRelation.source_paper_id.in_(unique_ids))
-            .order_by(
-                DBPaperRelation.source_paper_id,
-                DBPaper.date_published.asc().nullslast(),
-                DBPaper.id,
-            )
-            .all()
-        )
-        for paper_id, related in successor_rows:
-            relation_data["successor_papers"][paper_id].append(
-                self._convert_db_paper_to_related_summary(related)
-            )
-
-        predecessor_rows = (
-            self.db.query(DBPaperRelation.target_paper_id, DBPaper)
-            .join(DBPaper, DBPaperRelation.source_paper_id == DBPaper.id)
-            .filter(DBPaperRelation.target_paper_id.in_(unique_ids))
-            .order_by(
-                DBPaperRelation.target_paper_id,
-                DBPaper.date_published.asc().nullslast(),
-                DBPaper.id,
-            )
-            .all()
-        )
-        for paper_id, related in predecessor_rows:
-            relation_data["predecessor_papers"][paper_id].append(
-                self._convert_db_paper_to_related_summary(related)
-            )
-
-        conference_rows = (
-            self.db.query(DBPaperConference.paper_id, DBConference)
-            .join(DBConference, DBPaperConference.conference_id == DBConference.id)
-            .filter(DBPaperConference.paper_id.in_(unique_ids))
-            .order_by(
-                DBPaperConference.paper_id,
-                desc(DBConference.year),
-                DBConference.name,
-            )
-            .all()
-        )
-        for paper_id, conference in conference_rows:
-            if paper_id not in relation_data["conferences"]:
-                relation_data["conferences"][paper_id] = conference
-
-        organization_rows = (
-            self.db.query(DBPaperOrganization.paper_id, DBOrganization)
-            .join(
-                DBOrganization,
-                DBPaperOrganization.organization_id == DBOrganization.id,
-            )
-            .filter(DBPaperOrganization.paper_id.in_(unique_ids))
-            .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
-            .all()
-        )
-        for paper_id, organization in organization_rows:
-            relation_data["organizations"][paper_id].append(
-                OrganizationSummary(
-                    id=str(organization.id),
-                    name=organization.name,
-                    slug=organization.slug,
-                    logo_url=organization.logo_url,
+            # Directed paper lineage edges. For each requested paper, load
+            # successors (outgoing edges where the requested paper is the
+            # predecessor) and predecessors (incoming edges where the requested
+            # paper is the successor). Two batched queries with eager-loaded
+            # related Paper rows keep round-trips at O(1) per detail call.
+            successor_rows = (
+                self.db.query(DBPaperRelation.source_paper_id, DBPaper)
+                .join(DBPaper, DBPaperRelation.target_paper_id == DBPaper.id)
+                .filter(DBPaperRelation.source_paper_id.in_(unique_ids))
+                .order_by(
+                    DBPaperRelation.source_paper_id,
+                    DBPaper.date_published.asc().nullslast(),
+                    DBPaper.id,
                 )
+                .all()
             )
+            for paper_id, related in successor_rows:
+                relation_data["successor_papers"][paper_id].append(
+                    self._convert_db_paper_to_related_summary(related)
+                )
+
+            predecessor_rows = (
+                self.db.query(DBPaperRelation.target_paper_id, DBPaper)
+                .join(DBPaper, DBPaperRelation.source_paper_id == DBPaper.id)
+                .filter(DBPaperRelation.target_paper_id.in_(unique_ids))
+                .order_by(
+                    DBPaperRelation.target_paper_id,
+                    DBPaper.date_published.asc().nullslast(),
+                    DBPaper.id,
+                )
+                .all()
+            )
+            for paper_id, related in predecessor_rows:
+                relation_data["predecessor_papers"][paper_id].append(
+                    self._convert_db_paper_to_related_summary(related)
+                )
+
+            conference_rows = (
+                self.db.query(DBPaperConference.paper_id, DBConference)
+                .join(DBConference, DBPaperConference.conference_id == DBConference.id)
+                .filter(DBPaperConference.paper_id.in_(unique_ids))
+                .order_by(
+                    DBPaperConference.paper_id,
+                    desc(DBConference.year),
+                    DBConference.name,
+                )
+                .all()
+            )
+            for paper_id, conference in conference_rows:
+                if paper_id not in relation_data["conferences"]:
+                    relation_data["conferences"][paper_id] = conference
+
+            organization_rows = (
+                self.db.query(DBPaperOrganization.paper_id, DBOrganization)
+                .join(
+                    DBOrganization,
+                    DBPaperOrganization.organization_id == DBOrganization.id,
+                )
+                .filter(DBPaperOrganization.paper_id.in_(unique_ids))
+                .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
+                .all()
+            )
+            for paper_id, organization in organization_rows:
+                relation_data["organizations"][paper_id].append(
+                    OrganizationSummary(
+                        id=str(organization.id),
+                        name=organization.name,
+                        slug=organization.slug,
+                        logo_url=organization.logo_url,
+                    )
+                )
 
         if include_resources:
             repository_rows = (
@@ -781,8 +798,12 @@ class PaperService:
             offset = (page - 1) * page_size
             db_papers = query.offset(offset).limit(page_size).all()
 
+            # Paginated list endpoints render paper cards, so fetch only the
+            # card relations rather than full detail-page relation sets.
             relation_data = self._get_paper_relation_data(
-                [paper.id for paper in db_papers], include_resources=include_resources
+                [paper.id for paper in db_papers],
+                include_resources=include_resources,
+                card_view=True,
             )
 
             # Convert to API models
@@ -928,8 +949,13 @@ class PaperService:
                 if paper_id in papers_by_id
             ]
 
+            # The homepage feed renders paper cards, so only fetch the relations
+            # the card UI needs (card_view=True) instead of the full detail-page
+            # relation set (lineage, introduced benchmarks, conferences, orgs).
             relation_data = self._get_paper_relation_data(
-                [paper.id for paper in db_papers], include_resources=include_resources
+                [paper.id for paper in db_papers],
+                include_resources=include_resources,
+                card_view=True,
             )
 
             # Convert to API models
@@ -1975,7 +2001,11 @@ class PaperService:
                 parse_github_url,
             )
 
-            # Process each repository URL
+            # Resolve URLs to repository rows, then dedupe by repository_id.
+            # Legacy data may list the same GitHub repo twice (e.g. base URL and
+            # a /tree/... subpath); find_repository_by_url collapses both to one
+            # row, so we must not insert duplicate paper_repositories keys.
+            associations: dict[int, bool] = {}
             for repo_data in repositories:
                 url = repo_data.get("url", "").strip()
                 is_official = repo_data.get("is_official", False)
@@ -1990,8 +2020,9 @@ class PaperService:
                 existing_repo = find_repository_by_url(self.db, url)
 
                 if existing_repo:
-                    if existing_repo.url != url:
-                        existing_repo.url = url
+                    # find_repository_by_url matches case-insensitively; do not
+                    # rewrite url here — another row may already own the
+                    # normalized lowercase form (repositories.url is unique).
                     repository_id = existing_repo.id
                 else:
                     owner, name = parse_github_url(url) if normalized else (None, None)
@@ -2016,7 +2047,14 @@ class PaperService:
                     self.db.flush()
                     repository_id = new_repo.id
 
-                # Create paper-repository association
+                if repository_id in associations:
+                    associations[repository_id] = (
+                        associations[repository_id] or is_official
+                    )
+                else:
+                    associations[repository_id] = is_official
+
+            for repository_id, is_official in associations.items():
                 paper_repository = PaperRepository(
                     paper_id=paper_id,
                     repository_id=repository_id,

@@ -31,7 +31,7 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
 @router.get("/", response_model=Datasets)
-async def list_datasets(
+def list_datasets(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
         50, ge=1, le=100, description="Number of datasets per page (max 100)"
@@ -133,7 +133,7 @@ async def list_datasets(
 
 
 @router.get("/{dataset_id}", response_model=Dataset)
-async def get_dataset(
+def get_dataset(
     dataset_id: str,
     include_paper: bool = Query(
         False,
@@ -186,7 +186,7 @@ async def get_dataset(
 
 
 @router.get("/{dataset_id}/tasks/")
-async def get_dataset_tasks(
+def get_dataset_tasks(
     dataset_id: str,
     db: Session = Depends(get_database_session),
 ):
@@ -267,7 +267,7 @@ async def get_dataset_tasks(
 
 
 @router.get("/{dataset_id}/evaluations/", response_model=dict)
-async def get_dataset_evaluations(
+def get_dataset_evaluations(
     dataset_id: str,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(
@@ -354,7 +354,7 @@ async def get_dataset_evaluations(
 
 
 @router.post("/", response_model=Dataset, status_code=201)
-async def create_dataset(
+def create_dataset(
     request: DatasetCreateRequest,
     db: Session = Depends(get_database_session),
 ):
@@ -409,7 +409,7 @@ async def create_dataset(
 
 
 @router.put("/{dataset_id}", response_model=Dataset)
-async def update_dataset(
+def update_dataset(
     dataset_id: str,
     request: DatasetUpdateRequest,
     db: Session = Depends(get_database_session),
@@ -472,7 +472,7 @@ async def update_dataset(
 
 
 @router.get("/{dataset_id}/tasks/{task_id}/metrics", response_model=dict)
-async def get_leaderboard_metrics(
+def get_leaderboard_metrics(
     dataset_id: str,
     task_id: str,
     db: Session = Depends(get_database_session),
@@ -531,7 +531,7 @@ async def get_leaderboard_metrics(
 @router.post(
     "/{dataset_id}/tasks/{task_id}/metrics", response_model=dict, status_code=201
 )
-async def add_metric_to_leaderboard(
+def add_metric_to_leaderboard(
     dataset_id: str,
     task_id: str,
     request: DatasetMetricAddRequest,
@@ -583,7 +583,7 @@ async def add_metric_to_leaderboard(
 
 
 @router.put("/{dataset_id}/tasks/{task_id}/metrics", response_model=dict)
-async def set_leaderboard_metrics(
+def set_leaderboard_metrics(
     dataset_id: str,
     task_id: str,
     request: DatasetMetricSetRequest,
@@ -631,7 +631,7 @@ async def set_leaderboard_metrics(
 
 
 @router.delete("/{dataset_id}/tasks/{task_id}/metrics/{metric_name}", status_code=204)
-async def remove_metric_from_leaderboard(
+def remove_metric_from_leaderboard(
     dataset_id: str,
     task_id: str,
     metric_name: str,
@@ -678,7 +678,7 @@ async def remove_metric_from_leaderboard(
 
 
 @router.get("/{dataset_id}/metrics", response_model=DatasetMetrics, deprecated=True)
-async def get_dataset_metrics_deprecated(
+def get_dataset_metrics_deprecated(
     dataset_id: str,
     db: Session = Depends(get_database_session),
 ):

@@ -29,7 +29,7 @@ def get_thumbnail_service() -> ThumbnailService:
 
 
 @router.get("/custom/{filename}")
-async def serve_custom_thumbnail(
+def serve_custom_thumbnail(
     filename: str, thumbnail_service: ThumbnailService = Depends(get_thumbnail_service)
 ):
     """
@@ -59,7 +59,7 @@ async def serve_custom_thumbnail(
 
 
 @router.get("/{filename}")
-async def serve_thumbnail(
+def serve_thumbnail(
     filename: str, thumbnail_service: ThumbnailService = Depends(get_thumbnail_service)
 ):
     """
@@ -215,7 +215,7 @@ async def generate_thumbnail(
 
 
 @router.get("/status/{paper_id}")
-async def get_thumbnail_status(
+def get_thumbnail_status(
     paper_id: str,
     db: Session = Depends(get_database_session),
     thumbnail_service: ThumbnailService = Depends(get_thumbnail_service),
@@ -279,7 +279,7 @@ async def get_thumbnail_status(
 
 
 @router.get("/cache/stats")
-async def get_cache_stats(
+def get_cache_stats(
     thumbnail_service: ThumbnailService = Depends(get_thumbnail_service),
 ):
     """
@@ -292,7 +292,7 @@ async def get_cache_stats(
 
 
 @router.post("/cache/cleanup")
-async def cleanup_cache(
+def cleanup_cache(
     max_age_days: int = 30,
     thumbnail_service: ThumbnailService = Depends(get_thumbnail_service),
 ):

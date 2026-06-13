@@ -29,7 +29,6 @@ import sys
 import time
 import gc
 from datetime import datetime, timedelta
-from typing import Optional
 from sqlalchemy import text
 
 from backend.database.connection import db_manager
@@ -104,270 +103,119 @@ def get_repositories_needing_trending_update(
         gc.collect()
 
 
-def get_repository_snapshots(
-    session, repository_id: int, limit: int = 2, logger=None
-) -> list:
+def process_repository_batch(session, repository_ids: list, logger=None) -> dict:
+    """Calculate and persist trending scores for a whole batch in one SQL pass.
+
+    Replaces the previous per-repository approach (three queries plus a commit
+    for every repository), which made the hourly job CPU/IO bound for ~20
+    minutes against the 4.6M-row star-history table. The EMA maths is expressed
+    directly in SQL using a LATERAL top-2 lookup that rides the
+    ``(repository_id, snapshot_at DESC)`` index:
+
+        raw_velocity = (current_stars - previous_stars) / hours_between_snapshots
+        new_score    = alpha * raw_velocity + (1 - alpha) * previous_score
+                       (or raw_velocity when there is no previous score)
+
+    A repository with a single snapshot is seeded to 0.0; a repository whose two
+    latest snapshots are < MIN_HOURS_BETWEEN_SNAPSHOTS apart is left untouched
+    (matching the original behaviour).
+
+    Returns a dict with ``updated`` (EMA scores written) and ``insufficient``
+    (single-snapshot repos seeded to 0.0) counts.
     """
-    Get the most recent snapshots for a repository.
+    if not repository_ids:
+        return {"updated": 0, "insufficient": 0}
 
-    Args:
-        session: Database session
-        repository_id: Repository ID
-        limit: Number of snapshots to retrieve (default 2: current + previous)
-        logger: Optional logger instance
-
-    Returns:
-        List of snapshot tuples (num_stars, snapshot_at)
-    """
-    try:
-        query = text("""
-            SELECT num_stars, snapshot_at
-            FROM repository_star_history
-            WHERE repository_id = :repository_id
-            ORDER BY snapshot_at DESC
-            LIMIT :limit
-        """)
-
-        result = session.execute(
-            query,
-            {
-                "repository_id": repository_id,
-                "limit": limit,
-            },
-        ).fetchall()
-
-        return result
-
-    except Exception as e:
-        if logger:
-            logger.error(
-                f"Error fetching snapshots for repository {repository_id}: {e}"
-            )
-        return []
-    finally:
-        gc.collect()
-
-
-def get_current_trending_score(
-    session, repository_id: int, logger=None
-) -> Optional[float]:
-    """
-    Get the current trending score for a repository.
-
-    Args:
-        session: Database session
-        repository_id: Repository ID
-        logger: Optional logger instance
-
-    Returns:
-        Current trending score or None
-    """
-    try:
-        query = text("""
-            SELECT trending_score
+    query = text("""
+        WITH candidates AS (
+            SELECT id, trending_score AS prev_score
             FROM repositories
-            WHERE id = :repository_id
-        """)
-
-        result = session.execute(
-            query,
-            {"repository_id": repository_id},
-        ).fetchone()
-
-        return float(result[0]) if result and result[0] is not None else None
-
-    except Exception as e:
-        if logger:
-            logger.error(
-                f"Error fetching trending score for repository {repository_id}: {e}"
-            )
-        return None
-    finally:
-        gc.collect()
-
-
-def calculate_raw_stars_per_hour(
-    current_stars: int, previous_stars: int, hours_elapsed: float
-) -> float:
-    """
-    Calculate raw stars per hour (velocity).
-
-    Args:
-        current_stars: Current star count
-        previous_stars: Previous star count
-        hours_elapsed: Time elapsed between snapshots (in hours)
-
-    Returns:
-        Stars per hour (velocity)
-    """
-    if hours_elapsed < MIN_HOURS_BETWEEN_SNAPSHOTS:
-        return 0.0
-
-    stars_gained = current_stars - previous_stars
-    return stars_gained / hours_elapsed
-
-
-def calculate_ema_trending_score(
-    raw_stars_per_hour: float,
-    previous_trending_score: Optional[float],
-    alpha: float = ALPHA,
-) -> float:
-    """
-    Calculate trending score using Exponential Moving Average (EMA).
-
-    Formula:
-    trendingScore = α × rawStarsPerHour + (1 - α) × previousTrendingScore
-
-    If this is the first calculation (no previous score), use raw value directly.
-
-    Args:
-        raw_stars_per_hour: Current velocity (stars/hour)
-        previous_trending_score: Previous EMA trending score (None if first calculation)
-        alpha: Smoothing factor (0.75 by default)
-
-    Returns:
-        New trending score
-    """
-    if previous_trending_score is None:
-        # First calculation - use raw value directly
-        return raw_stars_per_hour
-
-    # Apply EMA formula
-    return alpha * raw_stars_per_hour + (1 - alpha) * previous_trending_score
-
-
-def update_repository_trending_score(
-    session, repository_id: int, trending_score: float, logger=None
-) -> bool:
-    """
-    Update the trending score for a repository.
-
-    Args:
-        session: Database session
-        repository_id: Repository ID
-        trending_score: New trending score
-        logger: Optional logger instance
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        query = text("""
-            UPDATE repositories
-            SET
-                trending_score = :trending_score,
+            WHERE id = ANY(:repo_ids)
+        ),
+        snap2 AS (
+            SELECT c.id AS repository_id, c.prev_score, s.num_stars,
+                   s.snapshot_at, s.rn
+            FROM candidates c
+            CROSS JOIN LATERAL (
+                SELECT num_stars, snapshot_at,
+                       ROW_NUMBER() OVER (ORDER BY snapshot_at DESC) AS rn
+                FROM repository_star_history rsh
+                WHERE rsh.repository_id = c.id
+                ORDER BY snapshot_at DESC
+                LIMIT 2
+            ) s
+        ),
+        pivoted AS (
+            SELECT
+                repository_id,
+                MAX(prev_score) AS prev_score,
+                COUNT(*) AS snap_count,
+                MAX(num_stars) FILTER (WHERE rn = 1) AS current_stars,
+                MAX(snapshot_at) FILTER (WHERE rn = 1) AS current_at,
+                MAX(num_stars) FILTER (WHERE rn = 2) AS previous_stars,
+                MAX(snapshot_at) FILTER (WHERE rn = 2) AS previous_at
+            FROM snap2
+            GROUP BY repository_id
+        ),
+        computed AS (
+            SELECT
+                repository_id,
+                snap_count,
+                CASE
+                    WHEN snap_count = 1 THEN 0.0
+                    WHEN snap_count >= 2
+                         AND EXTRACT(EPOCH FROM (current_at - previous_at))
+                             / 3600.0 >= :min_hours
+                    THEN
+                        CASE
+                            WHEN prev_score IS NULL
+                            THEN (current_stars - previous_stars)
+                                 / (EXTRACT(EPOCH FROM (current_at - previous_at))
+                                    / 3600.0)
+                            ELSE :alpha * ((current_stars - previous_stars)
+                                 / (EXTRACT(EPOCH FROM (current_at - previous_at))
+                                    / 3600.0))
+                                 + (1 - :alpha) * prev_score
+                        END
+                    ELSE NULL
+                END AS new_score
+            FROM pivoted
+        ),
+        updated AS (
+            UPDATE repositories r
+            SET trending_score = c.new_score,
                 trending_score_updated_at = NOW(),
                 updated_at = NOW()
-            WHERE id = :repository_id
-        """)
+            FROM computed c
+            WHERE r.id = c.repository_id
+              AND c.new_score IS NOT NULL
+            RETURNING r.id, c.snap_count
+        )
+        SELECT
+            COUNT(*) FILTER (WHERE snap_count >= 2) AS updated_count,
+            COUNT(*) FILTER (WHERE snap_count = 1) AS insufficient_count
+        FROM updated
+    """)
 
-        session.execute(
+    try:
+        row = session.execute(
             query,
             {
-                "repository_id": repository_id,
-                "trending_score": trending_score,
+                "repo_ids": repository_ids,
+                "min_hours": MIN_HOURS_BETWEEN_SNAPSHOTS,
+                "alpha": ALPHA,
             },
-        )
-
+        ).fetchone()
         session.commit()
-        return True
-
+        return {
+            "updated": int(row[0] or 0),
+            "insufficient": int(row[1] or 0),
+        }
     except Exception as e:
         session.rollback()
         if logger:
-            logger.error(
-                f"Error updating trending score for repository {repository_id}: {e}"
-            )
-        return False
-    finally:
-        gc.collect()
-
-
-def process_repository_trending(
-    session, repository_id: int, logger=None
-) -> Optional[dict]:
-    """
-    Process trending score calculation for a single repository.
-
-    Args:
-        session: Database session
-        repository_id: Repository ID
-        logger: Optional logger instance
-
-    Returns:
-        Dictionary with calculation results or None if failed
-    """
-    try:
-        # Get the two most recent snapshots
-        snapshots = get_repository_snapshots(
-            session, repository_id, limit=2, logger=logger
-        )
-
-        if len(snapshots) < 2:
-            # Not enough history to calculate velocity
-            # If we have 1 snapshot, initialize trending score to 0
-            if len(snapshots) == 1:
-                update_repository_trending_score(
-                    session, repository_id, 0.0, logger=logger
-                )
-                return {
-                    "repository_id": repository_id,
-                    "trending_score": 0.0,
-                    "raw_stars_per_hour": 0.0,
-                    "reason": "insufficient_history",
-                }
-            return None
-
-        # Extract snapshot data
-        current_stars, current_time = snapshots[0]
-        previous_stars, previous_time = snapshots[1]
-
-        # Calculate time elapsed in hours
-        time_diff = current_time - previous_time
-        hours_elapsed = time_diff.total_seconds() / 3600
-
-        if hours_elapsed < MIN_HOURS_BETWEEN_SNAPSHOTS:
-            # Snapshots too close together
-            return None
-
-        # Calculate raw stars per hour (velocity)
-        raw_stars_per_hour = calculate_raw_stars_per_hour(
-            current_stars, previous_stars, hours_elapsed
-        )
-
-        # Get previous trending score
-        previous_trending_score = get_current_trending_score(
-            session, repository_id, logger=logger
-        )
-
-        # Calculate new EMA trending score
-        new_trending_score = calculate_ema_trending_score(
-            raw_stars_per_hour, previous_trending_score, ALPHA
-        )
-
-        # Update database
-        success = update_repository_trending_score(
-            session, repository_id, new_trending_score, logger=logger
-        )
-
-        if success:
-            return {
-                "repository_id": repository_id,
-                "current_stars": current_stars,
-                "previous_stars": previous_stars,
-                "hours_elapsed": hours_elapsed,
-                "raw_stars_per_hour": raw_stars_per_hour,
-                "previous_trending_score": previous_trending_score,
-                "new_trending_score": new_trending_score,
-                "stars_gained": current_stars - previous_stars,
-            }
-        else:
-            return None
-
-    except Exception as e:
-        if logger:
-            logger.error(f"Error processing repository {repository_id}: {e}")
-        return None
+            logger.error(f"Error processing trending batch: {e}")
+        return {"updated": 0, "insufficient": 0}
     finally:
         gc.collect()
 
@@ -453,41 +301,15 @@ class TrendingScoresCalculationJob(DatabaseCronJob):
                     f"Batch {batch_num + 1}: Processing {len(repository_ids)} repositories"
                 )
 
-                batch_updated = 0
-                batch_insufficient = 0
+                batch_result = process_repository_batch(
+                    session, repository_ids, logger=self.logger
+                )
+                batch_updated = batch_result["updated"]
+                batch_insufficient = batch_result["insufficient"]
 
-                for repo_id in repository_ids:
-                    result = process_repository_trending(
-                        session, repo_id, logger=self.logger
-                    )
-
-                    if result:
-                        total_processed += 1
-
-                        if result.get("reason") == "insufficient_history":
-                            batch_insufficient += 1
-                            total_insufficient_history += 1
-                        else:
-                            batch_updated += 1
-                            total_updated += 1
-
-                            # Log detailed update for interesting changes
-                            if (
-                                result.get("stars_gained", 0) > 0
-                                or result.get("new_trending_score", 0) > 0.1
-                            ):
-                                prev_score = result.get("previous_trending_score")
-                                prev_score_str = (
-                                    f"{prev_score:.4f}"
-                                    if prev_score is not None
-                                    else "N/A"
-                                )
-                                self.logger.info(
-                                    f"  Repo {repo_id}: {result['previous_stars']} → {result['current_stars']} stars "
-                                    f"({result['stars_gained']:+d} in {result['hours_elapsed']:.1f}h) | "
-                                    f"Velocity: {result['raw_stars_per_hour']:.4f} stars/h | "
-                                    f"Trending: {prev_score_str} → {result['new_trending_score']:.4f}"
-                                )
+                total_updated += batch_updated
+                total_insufficient_history += batch_insufficient
+                total_processed += batch_updated + batch_insufficient
 
                 self.logger.info(
                     f"Batch {batch_num + 1} complete: {batch_updated} updated, {batch_insufficient} insufficient history"

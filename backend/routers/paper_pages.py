@@ -139,7 +139,7 @@ def _render_paper_html(
 
 
 @router.get("/paper/{paper_id}", response_class=HTMLResponse, include_in_schema=False)
-async def get_paper_page(
+def get_paper_page(
     request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
@@ -149,7 +149,7 @@ async def get_paper_page(
 
 
 @router.get("/papers/{paper_id}", response_class=HTMLResponse, include_in_schema=False)
-async def get_paper_page_legacy(
+def get_paper_page_legacy(
     request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
@@ -168,7 +168,7 @@ async def get_paper_page_legacy(
     "/api/og/default.png",
     include_in_schema=False,
 )
-async def get_default_og_image() -> Response:
+def get_default_og_image() -> Response:
     """
     Serve the static fallback Open Graph image used when a paper has no
     thumbnail on disk yet.

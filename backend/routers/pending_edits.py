@@ -38,6 +38,8 @@ EditType = Literal[
     "project_pages",
     "source_url",
     "hf_artifacts",
+    "new_task",
+    "new_method",
 ]
 StatusLiteral = Literal["pending", "approved", "rejected"]
 

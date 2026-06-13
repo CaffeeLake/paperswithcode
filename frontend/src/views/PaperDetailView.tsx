@@ -34,7 +34,6 @@ import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositori
 import { EditProjectPagesDialog } from "@/components/paper-detail/EditProjectPagesDialog";
 import { EditSourceUrlDialog } from "@/components/paper-detail/EditSourceUrlDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
-import { EditHfArtifactsDialog } from "@/components/paper-detail/EditHfArtifactsDialog";
 import { SignInToEditDialog } from "@/components/paper-detail/SignInToEditDialog";
 import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
@@ -45,8 +44,7 @@ type EditSection =
   | "results"
   | "repositories"
   | "project-pages"
-  | "source-url"
-  | "hf-artifacts";
+  | "source-url";
 
 const EDIT_SECTION_LABEL: Record<EditSection, string> = {
   tasks: "tasks",
@@ -55,7 +53,6 @@ const EDIT_SECTION_LABEL: Record<EditSection, string> = {
   repositories: "GitHub repositories",
   "project-pages": "project pages",
   "source-url": "source URL",
-  "hf-artifacts": "Hugging Face artifacts",
 };
 
 const ABSTRACT_PREVIEW_LEN = 360;
@@ -228,8 +225,6 @@ const PaperDetailView: React.FC = () => {
     setIsEditingEvaluations,
     isEditingSourceUrl,
     setIsEditingSourceUrl,
-    isEditingHfArtifacts,
-    setIsEditingHfArtifacts,
   } = usePaperEditState();
 
   const [signInSection, setSignInSection] = useState<EditSection | null>(null);
@@ -274,9 +269,6 @@ const PaperDetailView: React.FC = () => {
         return;
       case "source-url":
         setIsEditingSourceUrl(true);
-        return;
-      case "hf-artifacts":
-        setIsEditingHfArtifacts(true);
         return;
     }
   };
@@ -451,7 +443,7 @@ const PaperDetailView: React.FC = () => {
             })),
           },
         ],
-        footer: `Cite arxiv.org/abs/${paper.arxiv_id} in a HF README to link it here.`,
+        footer: `Cite arxiv.org/abs/${paper.arxiv_id.replace(/v\d+$/, "")} in a HF README to link it here.`,
       }
     : {
         isLoading: false,
@@ -658,6 +650,17 @@ const PaperDetailView: React.FC = () => {
                   <Icon name="external" size={12} /> {sourceActionLabel}
                 </a>
               </EditableActionButton>
+            )}
+            {hfArtifactViewer.paperHref && hfRepos?.paperExists && (
+              <a
+                className="bm-action-btn"
+                href={hfArtifactViewer.paperHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="View on Hugging Face"
+              >
+                View on <span aria-hidden="true">🤗</span>
+              </a>
             )}
             {repoSummary.githubUrl && (
               <EditableActionButton
@@ -974,10 +977,11 @@ const PaperDetailView: React.FC = () => {
                 </div>
                 <table className="results-table">
                   <colgroup>
-                    <col style={{ width: "30%" }} />
-                    <col style={{ width: "30%" }} />
-                    <col style={{ width: "15%" }} />
-                    <col style={{ width: "15%" }} />
+                    <col style={{ width: "28%" }} />
+                    <col style={{ width: "28%" }} />
+                    <col style={{ width: "14%" }} />
+                    <col style={{ width: "12%" }} />
+                    <col style={{ width: "8%" }} />
                     <col style={{ width: "10%" }} />
                   </colgroup>
                   <thead>
@@ -986,6 +990,7 @@ const PaperDetailView: React.FC = () => {
                       <th>Model</th>
                       <th>Metric</th>
                       <th>Value</th>
+                      <th>Rank</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1005,9 +1010,19 @@ const PaperDetailView: React.FC = () => {
                         </td>
                         <td className="metric">{e.best_metric}</td>
                         <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
+                        <td className="rank">{e.best_rank != null ? `#${e.best_rank}` : "—"}</td>
                         <td className="compare">
                           {e.dataset_slug && (
-                            <Link to={`/benchmark/${e.dataset_slug}?eval=${encodeURIComponent(e.id)}`}>Compare →</Link>
+                            <Link
+                              to={`/benchmark/${e.dataset_slug}?${[
+                                e.task_slug ? `task=${encodeURIComponent(e.task_slug)}` : "",
+                                `eval=${encodeURIComponent(e.id)}`,
+                              ]
+                                .filter(Boolean)
+                                .join("&")}`}
+                            >
+                              Compare →
+                            </Link>
                           )}
                         </td>
                       </tr>
@@ -1088,11 +1103,7 @@ const PaperDetailView: React.FC = () => {
           )}
 
           {/* Hugging Face block */}
-          <HuggingFaceArtifactsCard
-            viewer={hfArtifactViewer}
-            canEdit={canEditPaper}
-            onEdit={() => openEdit("hf-artifacts")}
-          />
+          <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
 
           <div className="sidebar-card">
             <div className="sidebar-card-title">
@@ -1212,19 +1223,6 @@ const PaperDetailView: React.FC = () => {
         submitMode={editSubmitMode}
         isAuthor={isLinkedAuthor}
       />
-      <EditHfArtifactsDialog
-        open={isEditingHfArtifacts}
-        onOpenChange={setIsEditingHfArtifacts}
-        paperId={paper.id}
-        arxivId={arxivId}
-        initialArtifacts={{
-          hf_models: paper.hf_models ?? [],
-          hf_datasets: paper.hf_datasets ?? [],
-          hf_spaces: paper.hf_spaces ?? [],
-        }}
-        submitMode={editSubmitMode}
-        isAuthor={isLinkedAuthor}
-      />
       <SignInToEditDialog
         open={signInSection !== null}
         onOpenChange={(open) => {
@@ -1256,9 +1254,7 @@ interface HuggingFaceArtifactsViewer {
 
 const HuggingFaceArtifactsCard: React.FC<{
   viewer: HuggingFaceArtifactsViewer;
-  canEdit?: boolean;
-  onEdit?: () => void;
-}> = ({ viewer, canEdit = false, onEdit }) => (
+}> = ({ viewer }) => (
   <div className="sidebar-card">
     <div className="sidebar-card-title">
       {viewer.paperHref ? (
@@ -1272,11 +1268,6 @@ const HuggingFaceArtifactsCard: React.FC<{
         </a>
       ) : (
         <span>🤗 Hugging Face</span>
-      )}
-      {canEdit && onEdit && (
-        <button type="button" onClick={onEdit} className="edit-link">
-          edit
-        </button>
       )}
     </div>
     {viewer.isLoading ? (
