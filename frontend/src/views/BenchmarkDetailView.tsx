@@ -143,7 +143,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
   const H = 320;
   const padL = 60;
   const padR = 30;
-  const padT = 24;
+  const padT = 40;
   const padB = 50;
   const values = dataPoints.map((d) => d.value);
   const min = Math.min(...values);
@@ -174,6 +174,35 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
       path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
     }
   }
+  // Model-name labels above SOTA dots, de-cluttered greedily left-to-right so
+  // only non-overlapping names render (matching the legacy PapersWithCode look).
+  const labelCharW = 5.4;
+  const labelGap = 8;
+  const sotaLabels: { x: number; y: number; text: string; anchor: "start" | "middle" | "end" }[] = [];
+  let lastLabelRight = -Infinity;
+  for (const p of sotaPositioned) {
+    const raw = p.data.modelName || p.data.paperTitle || "";
+    if (!raw) continue;
+    const text = raw.length > 22 ? raw.slice(0, 21) + "…" : raw;
+    const w = text.length * labelCharW;
+    let left = p.x - w / 2;
+    let right = p.x + w / 2;
+    let anchor: "start" | "middle" | "end" = "middle";
+    if (left < padL) {
+      left = padL;
+      right = padL + w;
+      anchor = "start";
+    } else if (right > W - padR) {
+      right = W - padR;
+      left = right - w;
+      anchor = "end";
+    }
+    if (left < lastLabelRight + labelGap) continue;
+    lastLabelRight = right;
+    const lx = anchor === "start" ? padL : anchor === "end" ? W - padR : p.x;
+    sotaLabels.push({ x: lx, y: p.y - 9, text, anchor });
+  }
+
   const timeAxisTicks = buildChartTimeTicks(xMin, xMax);
   const tickCount = 5;
 
@@ -295,14 +324,28 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
           />,
         );
       })}
+      {sotaLabels.map((l, i) => (
+        <text
+          key={`label-${i}`}
+          x={l.x}
+          y={l.y}
+          fontSize="9.5"
+          fontFamily="var(--mono)"
+          fill="var(--ink-soft)"
+          textAnchor={l.anchor}
+          pointerEvents="none"
+        >
+          {l.text}
+        </text>
+      ))}
       {hoverIdx !== null && positioned[hoverIdx] && (() => {
         const p = positioned[hoverIdx];
         const rawLabel = p.data.modelName || p.data.paperTitle || "Unknown model";
-        const label = rawLabel.length > 40 ? rawLabel.slice(0, 39) + "…" : rawLabel;
-        const meta = `${formatMetricValue(p.data.value)} · ${p.data.dateLabel}`;
+        const name = rawLabel.length > 40 ? rawLabel.slice(0, 39) + "…" : rawLabel;
+        const label = `${name}: ${formatMetricValue(p.data.value)}`;
         const charW = 6.6;
-        const tooltipW = Math.max(140, Math.min(320, Math.max(label.length, meta.length) * charW + 24));
-        const tooltipH = 46;
+        const tooltipW = Math.max(120, Math.min(340, label.length * charW + 24));
+        const tooltipH = 30;
         let tx = p.x - tooltipW / 2;
         if (tx < padL) tx = padL;
         if (tx + tooltipW > W - padR) tx = W - padR - tooltipW;
@@ -331,15 +374,6 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
               fontWeight={500}
             >
               {label}
-            </text>
-            <text
-              x={tx + 12}
-              y={ty + 36}
-              fontSize="11"
-              fontFamily="var(--mono)"
-              fill="var(--ink-soft)"
-            >
-              {meta}
             </text>
           </g>
         );
