@@ -36,6 +36,9 @@ interface EditableEvaluation {
    *  Empty string means "no value" (sent as `null` on PUT to clear, or omitted
    *  on POST). Stored as integers server-side. */
   num_parameters: string;
+  /** Optional Hugging Face model page URL. Empty string means "no value"
+   *  (sent as `null` on PUT to clear, or omitted on POST). */
+  hf_model_url: string;
   /** Whether the evaluated model is open-source. Defaults to true. */
   is_open: boolean;
   operation?: 'create' | 'update' | 'delete' | 'unchanged';
@@ -70,6 +73,7 @@ function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEval
       metric_value: String(metricValue || ''),
       best_rank: e.best_rank ? String(e.best_rank) : '',
       num_parameters: e.num_parameters != null ? String(e.num_parameters) : '',
+      hf_model_url: e.hf_model_url || '',
       is_open: e.is_open !== false,
       operation: 'unchanged' as const,
     };
@@ -119,6 +123,14 @@ function parseNumParametersInput(value: string): number | null {
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.trunc(parsed);
+}
+
+/** Normalize the user-entered HF model URL. Empty/whitespace -> `null` so the
+ *  field can be explicitly cleared. The backend has a CHECK constraint that
+ *  requires non-null values to start with https://huggingface.co/. */
+function parseHfModelUrlInput(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 export function EditEvaluationsDialog({
@@ -326,10 +338,12 @@ export function EditEvaluationsDialog({
               metrics: { [evalItem.metric_name]: evalItem.metric_value },
               best_metric: evalItem.metric_name,
             };
+            const hfModelUrl = parseHfModelUrlInput(evalItem.hf_model_url);
             if (evalItem.model_name) data.model_name = evalItem.model_name;
             if (supportsHarness && evalItem.harness) data.harness = evalItem.harness;
             if (evalItem.best_rank) data.best_rank = parseInt(evalItem.best_rank);
             if (numParameters != null) data.num_parameters = numParameters;
+            if (hfModelUrl != null) data.hf_model_url = hfModelUrl;
             data.is_open = evalItem.is_open;
             operations.push({ op: "create", data });
           } else if (evalItem.operation === "update" && evalItem.id) {
@@ -342,6 +356,7 @@ export function EditEvaluationsDialog({
               best_metric: evalItem.metric_name,
               best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
               num_parameters: parseNumParametersInput(evalItem.num_parameters),
+              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
               is_open: evalItem.is_open,
             };
             operations.push({
@@ -393,6 +408,7 @@ export function EditEvaluationsDialog({
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
             num_parameters: numParameters ?? undefined,
+            hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url) ?? undefined,
             is_open: evalItem.is_open,
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
@@ -407,6 +423,7 @@ export function EditEvaluationsDialog({
             best_metric: evalItem.metric_name,
             best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
             num_parameters: parseNumParametersInput(evalItem.num_parameters),
+            hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
             is_open: evalItem.is_open,
           });
         }
@@ -479,6 +496,7 @@ export function EditEvaluationsDialog({
         metric_value: '',
         best_rank: '',
         num_parameters: '',
+        hf_model_url: '',
         is_open: true,
         operation: 'create',
       },
@@ -579,6 +597,7 @@ export function EditEvaluationsDialog({
                     <th className="text-left py-2 px-2 font-medium text-sm min-w-[140px]">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Parameters</th>
+                    <th className="text-left py-2 px-2 font-medium text-sm min-w-[200px]">HF model URL</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-20">Open source</th>
                     <th className="text-left py-2 px-2 font-medium text-sm w-16">Action</th>
                   </tr>
@@ -713,6 +732,16 @@ export function EditEvaluationsDialog({
                             value={evaluation.num_parameters}
                             onChange={(e) => handleUpdateEvaluationField(index, 'num_parameters', e.target.value)}
                             title="Raw model parameter count (e.g. 7000000000 for a 7B model). Leave blank if unknown."
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <Input
+                            type="url"
+                            className="w-full text-sm"
+                            placeholder="https://huggingface.co/org/model"
+                            value={evaluation.hf_model_url}
+                            onChange={(e) => handleUpdateEvaluationField(index, 'hf_model_url', e.target.value)}
+                            title="Hugging Face model page for this row (must start with https://huggingface.co/). Leave blank if none."
                           />
                         </td>
                         <td className="py-2 px-2 text-center">

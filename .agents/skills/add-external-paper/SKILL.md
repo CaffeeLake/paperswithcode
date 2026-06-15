@@ -1,11 +1,11 @@
 ---
 name: add-external-paper
-description: Add non-ArXiv external papers/resources to the paperswithcode repo database. Use this whenever the user asks to add, index, submit, or populate a paper/resource/release that does not have an arXiv paper, including Hugging Face model cards, GitHub repositories, blog posts, vendor technical reports, external PDFs, project pages, or release announcements. This skill should trigger even when the user casually says "add this repo/model/blog to paperswithcode" or gives a URL such as GitHub, Hugging Face, a company blog, a PDF, or a technical report and wants it to appear as a paper page with tasks, methods, code, project links, and HF artifacts.
+description: Add non-ArXiv external papers/resources to the paperswithcode repo database. Use this whenever the user asks to add, index, submit, or populate a paper/resource/release that does not have an arXiv paper, including Hugging Face model cards, GitHub repositories, blog posts, vendor technical reports, external PDFs, project pages, or release announcements. This skill should trigger even when the user casually says "add this repo/model/blog to paperswithcode" or gives a URL such as GitHub, Hugging Face, a company blog, a PDF, or a technical report and wants it to appear as a paper page with tasks, methods, code, project links, HF artifacts, and a thumbnail.
 ---
 
 # Add External Paper
 
-This skill creates or updates a `papers` row with `source = 'external'` for research outputs that are paper-like but are not backed by an arXiv ID. The goal is a complete local paper page: title, abstract or short summary, publication date, authors when available, appropriate task and method tags from the current taxonomy, official GitHub repository links, project pages, and explicit Hugging Face artifacts.
+This skill creates or updates a `papers` row with `source = 'external'` for research outputs that are paper-like but are not backed by an arXiv ID. The goal is a complete local paper page: title, abstract or short summary, publication date, authors when available, appropriate task and method tags from the current taxonomy, official GitHub repository links, project pages, explicit Hugging Face artifacts, and a paper thumbnail.
 
 Use the existing application paths first. Direct SQL is acceptable for fields that have no admin API surface, but keep writes idempotent and scoped.
 
@@ -139,6 +139,84 @@ result = await ExternalResourceService(db).add_from_url(
     hf_artifact_urls_extra=["https://huggingface.co/<org>/<model>"],
 )
 ```
+
+## Generate Thumbnail
+
+After the external row exists, generate a thumbnail before finishing unless `papers.thumbnail_url` is already set and the cached file still serves. External paper cards and social previews look incomplete without one.
+
+Pick the render source URL in this order:
+
+1. A direct PDF URL linked by the source (for example `https://aclanthology.org/Q19-1026.pdf` when the canonical `source_url` is the HTML landing page).
+2. The canonical `source_url` when it is itself a PDF.
+3. The canonical `source_url` for HTML pages, blogs, GitHub README surfaces, or HF model cards. `ThumbnailService` falls back to a first-viewport screenshot when no PDF is available.
+
+Prefer PDF first-page rendering over HTML screenshots whenever a credible PDF exists.
+
+```bash
+uv run --env-file backend/keys.env python - <<'PY'
+import asyncio
+from backend.database.connection import get_database_session
+from backend.models.database import Paper as DBPaper
+from backend.services.thumbnail_service import (
+    ThumbnailService,
+    build_custom_thumbnail_url,
+)
+
+paper_id = <paper_id>
+thumbnail_source_url = "<PDF or page URL to render>"
+
+async def main() -> None:
+    service = ThumbnailService()
+    filename = service.get_external_filename(paper_id)
+    existing_url = service.get_external_thumbnail_url(paper_id)
+    if existing_url:
+        session_gen = get_database_session()
+        db = next(session_gen)
+        try:
+            paper = db.get(DBPaper, paper_id)
+            if paper is not None and not paper.thumbnail_url:
+                paper.thumbnail_url = existing_url
+                db.commit()
+            print("thumbnail_url", existing_url, "status=cached")
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+        return
+
+    await service.generate_external_thumbnail(
+        paper_id,
+        thumbnail_source_url,
+        force=False,
+    )
+    thumbnail_url = build_custom_thumbnail_url(filename)
+
+    session_gen = get_database_session()
+    db = next(session_gen)
+    try:
+        paper = db.get(DBPaper, paper_id)
+        paper.thumbnail_url = thumbnail_url
+        db.commit()
+        print("thumbnail_url", thumbnail_url, "status=generated")
+    finally:
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+asyncio.run(main())
+PY
+```
+
+Verify the image is reachable:
+
+```bash
+curl -s "http://localhost:8000/api/v1/papers/<paper_id>" | uv run python -c "import json,sys; p=json.load(sys.stdin); print(p.get('thumbnail_url'))"
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/thumbnails/custom/external_<paper_id>.jpg?fit=fit3"
+```
+
+If generation fails because headless Chrome or PDF tooling is unavailable, note the failure in the report. The `preload_thumbnails` cron may backfill later, but do not skip an inline attempt during ingestion.
 
 ## Tag With Existing Tasks And Methods
 
@@ -334,6 +412,7 @@ For model-family releases, explicitly inspect that:
 - `project_pages` contains the durable project/collection/report links you expect.
 - `hf_models`, `hf_datasets`, and `hf_spaces` contain every individual artifact, not just the first or canonical model.
 - Individual model cards were not duplicated as project pages unless the model card is the canonical release surface.
+- `thumbnail_url` is set and the custom thumbnail endpoint returns HTTP 200.
 
 Check the local route:
 
@@ -354,6 +433,7 @@ End with a concise report:
 - Publication date and where it came from.
 - Tasks and methods linked, with IDs or slugs.
 - GitHub repositories, project pages, and HF artifacts linked.
+- Thumbnail status: generated, cached, already present, or failed with reason.
 - Existing evaluations migrated, if any, with before/after counts.
 - Any taxonomy gaps or missing metadata that should be cleaned up later.
 

@@ -1079,6 +1079,7 @@ async def add_evaluation_result(
     evaluated_on: Optional[str] = None,
     external_source_url: Optional[str] = None,
     num_parameters: Optional[int] = None,
+    hf_model_url: Optional[str] = None,
 ) -> str:
     """Add a new evaluation result to the database.
 
@@ -1099,6 +1100,9 @@ async def add_evaluation_result(
         num_parameters: Raw number of model parameters for this evaluation row
             (e.g. 7000000000 for a 7B model). Optional metadata that lets later
             leaderboards filter and visualize by model size.
+        hf_model_url: Hugging Face model page for the evaluated model
+            (e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3). Optional; when
+            set, the frontend turns the model name into a link to this page.
 
     Returns:
         A success message with evaluation details, or an error message if creation failed.
@@ -1218,6 +1222,7 @@ async def add_evaluation_result(
             evaluated_on=evaluated_on,
             external_source_url=external_source_url,
             num_parameters=num_parameters,
+            hf_model_url=hf_model_url,
         )
 
         # Format success response

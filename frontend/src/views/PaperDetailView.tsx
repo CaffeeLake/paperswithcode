@@ -1005,7 +1005,19 @@ const PaperDetailView: React.FC = () => {
                           )}
                         </td>
                         <td className="model" title={e.model_name || undefined}>
-                          {e.model_name || "—"}
+                          {e.hf_model_url ? (
+                            <a
+                              href={e.hf_model_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="model-hf-link"
+                              title={`Open ${e.model_name || "model"} on Hugging Face`}
+                            >
+                              {e.model_name || "—"}
+                            </a>
+                          ) : (
+                            e.model_name || "—"
+                          )}
                           {e.is_open === false && <ClosedSourceEvalBadge />}
                         </td>
                         <td className="metric">{e.best_metric}</td>

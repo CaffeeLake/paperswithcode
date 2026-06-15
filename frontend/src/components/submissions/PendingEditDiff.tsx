@@ -46,6 +46,7 @@ interface EvaluationLike {
   evaluated_on?: string | null;
   external_source_url?: string | null;
   num_parameters?: number | null;
+  hf_model_url?: string | null;
 }
 
 interface EvaluationOperation {
@@ -416,6 +417,7 @@ function EvaluationFields({
       <Field label="Harness" value={evaluation.harness || null} />
       <Field label="Best rank" value={evaluation.best_rank ?? null} />
       <Field label="Parameters" value={evaluation.num_parameters ?? null} />
+      <Field label="HF model URL" value={evaluation.hf_model_url || null} />
       <Field
         label="Open source"
         value={

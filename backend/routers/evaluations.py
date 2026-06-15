@@ -209,6 +209,7 @@ def create_evaluation(
             evaluated_on=request.evaluated_on,
             external_source_url=request.external_source_url,
             num_parameters=request.num_parameters,
+            hf_model_url=request.hf_model_url,
         )
 
     except ValueError as e:
@@ -273,8 +274,10 @@ def update_evaluation(
             evaluated_on=request.evaluated_on,
             external_source_url=request.external_source_url,
             num_parameters=request.num_parameters,
+            hf_model_url=request.hf_model_url,
             harness_set="harness" in request.model_fields_set,
             num_parameters_set="num_parameters" in request.model_fields_set,
+            hf_model_url_set="hf_model_url" in request.model_fields_set,
         )
 
     except ValueError as e:

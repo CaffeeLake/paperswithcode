@@ -44,7 +44,7 @@ This directory contains GitHub Actions workflows for running production cron job
 
 **What it does**:
 - Installs Python and frontend dependencies.
-- Runs `scripts/deploy_hf_space.py` with `--skip-restore` because CI is not serving `frontend/dist` through nginx.
+- Runs `.github/workflows/scripts/deploy_hf_space.py` with `--skip-restore` because CI is not serving `frontend/dist` through nginx.
 - Uploads the generated static bundle to the Space using the `HF_TOKEN` repository secret.
 
 ## Database Configuration

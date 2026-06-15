@@ -4,7 +4,7 @@ FastAPI router for conference endpoints.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
@@ -15,7 +15,13 @@ from backend.models.api import (
     Conferences,
     Papers,
 )
+from backend.models.database import Conference as DBConference
 from backend.services.conference_service import ConferenceService
+from backend.utils.entity_images import (
+    IMAGE_CACHE_HEADERS,
+    IMAGE_MISSING_HEADERS,
+    load_entity_image,
+)
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 router = APIRouter(prefix="/conferences", tags=["conferences"])
@@ -67,6 +73,31 @@ def get_conference(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/{slug}/image",
+    summary="Serve the DB-backed conference hero image",
+)
+def get_conference_image(
+    slug: str = Path(..., description="Conference slug (e.g., cvpr-2026)"),
+    db: Session = Depends(get_database_session),
+):
+    """
+    Serve the DB-backed hero image for a conference by slug.
+
+    Returns the raw image bytes stored in `conferences.image_data`. 404s when
+    the conference does not exist or has no stored image.
+    """
+    result = load_entity_image(db, DBConference, slug)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Image not available",
+            headers=IMAGE_MISSING_HEADERS,
+        )
+    data, mime = result
+    return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 
 @router.get(

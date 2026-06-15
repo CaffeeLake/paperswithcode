@@ -5,14 +5,20 @@ Provides endpoints for accessing AI/ML method data, including filtering by year,
 collection, and paper associations.
 """
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.models.api import Method, Methods, Papers, KeywordUpdate
+from backend.models.database import Method as DBMethod
 from backend.services.method_service import MethodService
 from backend.database.connection import get_database_session
 from backend.utils.auth import require_admin
+from backend.utils.entity_images import (
+    IMAGE_CACHE_HEADERS,
+    IMAGE_MISSING_HEADERS,
+    load_entity_image,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter(prefix="/methods", tags=["methods"])
@@ -133,6 +139,28 @@ def get_method(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{method_id}/image")
+def get_method_image(
+    method_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Serve the DB-backed figure for a method by ID or slug.
+
+    Returns the raw image bytes stored in `methods.image_data`. 404s when the
+    method does not exist or has no stored image.
+    """
+    result = load_entity_image(db, DBMethod, method_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Image not available",
+            headers=IMAGE_MISSING_HEADERS,
+        )
+    data, mime = result
+    return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 
 @router.get("/{method_id}/papers", response_model=Papers)

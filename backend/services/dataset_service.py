@@ -7,7 +7,7 @@ including pagination, filtering, paper associations, and evaluation data.
 
 from typing import Optional, List
 from sqlalchemy.orm import Session, aliased
-from sqlalchemy import func, desc, asc, or_
+from sqlalchemy import func, desc, asc, or_, case, cast, String
 
 from backend.models.database import (
     Dataset as DBDataset,
@@ -17,7 +17,6 @@ from backend.models.database import (
     Task as DBTask,
     Paper as DBPaper,
 )
-from backend.utils.task_hierarchy import collect_descendant_task_ids
 from backend.models.api import (
     Dataset,
     Datasets,
@@ -27,6 +26,42 @@ from backend.models.api import (
 )
 from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
+from backend.utils.task_hierarchy import collect_descendant_task_ids
+
+# Separator unlikely to collide with real data, used to build the logical
+# leaderboard-row key (see `_leaderboard_row_count`).
+_ROW_KEY_SEP = "\x1f"
+
+
+def _leaderboard_row_count():
+    """SQL aggregate counting distinct *logical* leaderboard rows.
+
+    The benchmark page folds separate evaluation records that describe the
+    same model on the same leaderboard (differing only in `best_metric`) into
+    a single display row keyed by
+    `paper_id + task_id + dataset_id + model_name + harness`
+    (see `mergeLeaderboardEvaluations` in `BenchmarkDetailView.tsx`). Counting
+    raw evaluation rows would over-report a single multi-metric entry as N
+    entries, so we count distinct row keys instead to match what users see.
+
+    The key is wrapped in a CASE on `evaluations.id` so the outer join leaves a
+    NULL key for datasets with no evaluations (count(distinct NULL) = 0),
+    rather than counting the all-empty coalesced key as one phantom row.
+    """
+    key = (
+        func.coalesce(cast(DBEvaluation.paper_id, String), "")
+        + _ROW_KEY_SEP
+        + func.coalesce(cast(DBEvaluation.task_id, String), "")
+        + _ROW_KEY_SEP
+        + func.coalesce(cast(DBEvaluation.dataset_id, String), "")
+        + _ROW_KEY_SEP
+        + func.coalesce(DBEvaluation.model_name, "")
+        + _ROW_KEY_SEP
+        + func.coalesce(DBEvaluation.harness, "")
+    )
+    return func.count(
+        func.distinct(case((DBEvaluation.id.isnot(None), key), else_=None))
+    )
 
 
 class DatasetService:
@@ -163,11 +198,12 @@ class DatasetService:
         """
         try:
             # Base query with paper count and task count.
-            # `paper_count` here means leaderboard entry count: number of
-            # evaluation rows on this dataset. This matches what the task page
-            # labels as "ENTRIES" and the benchmark page renders in its
-            # leaderboard table. Counting `paper_datasets` instead drifts to 0
-            # for benchmarks that only exist as evaluation rows.
+            # `paper_count` here means leaderboard entry count: the number of
+            # *logical* leaderboard rows on this dataset, i.e. distinct
+            # (paper, task, dataset, model, harness) groups. This matches the
+            # row count the benchmark page renders after merging per-metric
+            # evaluation records, so a single model evaluated on four metrics
+            # counts as one entry, not four.
             task_dataset_filter = aliased(TaskDataset)
             scoped_task_ids: Optional[List[int]] = None
             if task_id is not None:
@@ -188,7 +224,7 @@ class DatasetService:
             query = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
+                    _leaderboard_row_count().label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(DBEvaluation, eval_join)
@@ -237,14 +273,12 @@ class DatasetService:
 
             if min_eval_count is not None and min_eval_count > 0:
                 # Hide sparse benchmarks. `paper_count` is the count of
-                # distinct evaluation rows on a dataset, so a HAVING on the
-                # same aggregate suppresses low-signal benchmarks from
+                # distinct logical leaderboard rows on a dataset, so a HAVING
+                # on the same aggregate suppresses low-signal benchmarks from
                 # default task-page lists without touching the underlying
                 # data or the dataset detail page (which loads benchmarks
                 # by slug directly, bypassing this filter).
-                query = query.having(
-                    func.count(func.distinct(DBEvaluation.id)) >= min_eval_count
-                )
+                query = query.having(_leaderboard_row_count() >= min_eval_count)
 
             # Get total count before pagination
             total_count = query.count()
@@ -257,8 +291,8 @@ class DatasetService:
             elif order_by == "created_at":
                 order_field = DBDataset.created_at
             elif order_by == "paper_count":
-                # Order by the aggregated leaderboard entry count.
-                order_field = func.count(func.distinct(DBEvaluation.id))
+                # Order by the aggregated leaderboard entry count (logical rows).
+                order_field = _leaderboard_row_count()
             else:
                 order_field = DBDataset.name
 
@@ -422,13 +456,14 @@ class DatasetService:
             DatabaseError: If database query fails
         """
         try:
-            # Query dataset with counts. `paper_count` is the number of
-            # evaluation rows on the dataset (leaderboard entries) so it stays
-            # in sync with the benchmark page leaderboard table.
+            # Query dataset with counts. `paper_count` is the number of logical
+            # leaderboard rows on the dataset (distinct paper/task/dataset/
+            # model/harness groups) so it stays in sync with the benchmark page
+            # leaderboard table after per-metric rows are merged.
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
+                    _leaderboard_row_count().label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)
@@ -520,11 +555,12 @@ class DatasetService:
         """
         try:
             # Query dataset with counts. `paper_count` mirrors the benchmark
-            # leaderboard size (evaluation rows) instead of `paper_datasets`.
+            # leaderboard size (logical rows: distinct paper/task/dataset/
+            # model/harness groups) instead of `paper_datasets`.
             result = (
                 self.db.query(
                     DBDataset,
-                    func.count(func.distinct(DBEvaluation.id)).label("paper_count"),
+                    _leaderboard_row_count().label("paper_count"),
                     func.count(func.distinct(TaskDataset.task_id)).label("task_count"),
                 )
                 .outerjoin(DBEvaluation, DBDataset.id == DBEvaluation.dataset_id)

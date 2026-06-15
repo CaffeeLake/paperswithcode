@@ -29,6 +29,7 @@ from backend.models.database import PaperRepository as DBPaperRepository
 from backend.models.database import PaperTask
 from backend.models.database import Repository as DBRepository
 from backend.models.database import Task as DBTask
+from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
@@ -82,7 +83,12 @@ class ConferenceService:
             venue=db_conference.venue,
             location=db_conference.location,
             description=db_conference.description,
-            image_url=db_conference.image_url,
+            image_url=entity_image_url(
+                "conferences",
+                db_conference.slug,
+                db_conference.image_mime_type is not None,
+                db_conference.image_url,
+            ),
             image_credit=db_conference.image_credit,
             hf_url=db_conference.hf_url,
             paper_count=paper_count,

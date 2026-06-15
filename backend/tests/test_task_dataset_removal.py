@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from backend.models.database import (
     Base,
     Dataset as DBDataset,
+    Evaluation as DBEvaluation,
     Metric as DBMetric,
     Paper as DBPaper,
     PaperDataset,
@@ -188,3 +189,141 @@ def test_unfiltered_dataset_queries_do_not_populate_featured_rank(
         "SWE-Bench Verified",
     ]
     assert all(dataset.featured_rank is None for dataset in result.results)
+
+
+def test_paper_count_merges_per_metric_evaluation_rows(db_session):
+    """A single model evaluated on one benchmark across multiple metrics is
+    stored as one evaluation row per metric, but the benchmark page merges
+    them into a single leaderboard row keyed by
+    (paper, task, dataset, model, harness). The task-page `paper_count` must
+    report that merged row count, so four per-metric rows count as one entry.
+    """
+    task = DBTask(id=1, name="Object Counting", slug="object-counting", level=0)
+    dataset = DBDataset(id=1, name="Blood Cell Detection", slug="blood-cell-detection")
+    db_session.add_all([task, dataset])
+
+    metrics = [
+        DBMetric(id=1, name="MAE", direction="lower_is_better"),
+        DBMetric(id=2, name="RMSE", direction="lower_is_better"),
+        DBMetric(id=3, name="AP", direction="higher_is_better"),
+        DBMetric(id=4, name="AP50", direction="higher_is_better"),
+    ]
+    db_session.add_all(metrics)
+
+    db_session.add(TaskDataset(task_id=1, dataset_id=1))
+    db_session.add_all(
+        [TaskDatasetMetric(task_id=1, dataset_id=1, metric_id=m.id) for m in metrics]
+    )
+
+    db_session.add(
+        DBPaper(
+            id=1,
+            title="Counting Paper",
+            abstract="A",
+            arxiv_id="2026.00001",
+            version="v1",
+            is_latest_version=True,
+        )
+    )
+
+    # Same paper/task/dataset/model, one row per metric — these collapse to a
+    # single logical leaderboard row.
+    db_session.add_all(
+        [
+            DBEvaluation(
+                id=100 + i,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="CountModel",
+                metrics={metric.name: "1.0"},
+                best_metric=metric.name,
+            )
+            for i, metric in enumerate(metrics)
+        ]
+    )
+    db_session.commit()
+
+    result = DatasetService(db_session).get_datasets(
+        task_id=1, order_by="paper_count", order_dir="desc"
+    )
+
+    assert [dataset.slug for dataset in result.results] == ["blood-cell-detection"]
+    assert result.results[0].paper_count == 1
+
+
+def test_paper_count_distinguishes_models_and_papers(db_session):
+    """Distinct models (and distinct papers) on the same benchmark are
+    separate leaderboard rows, so the merged `paper_count` reflects each
+    unique (paper, model) entry even when they share metrics.
+    """
+    task = DBTask(id=1, name="Object Counting", slug="object-counting", level=0)
+    dataset = DBDataset(id=1, name="Blood Cell Detection", slug="blood-cell-detection")
+    db_session.add_all([task, dataset])
+
+    db_session.add(DBMetric(id=1, name="MAE", direction="lower_is_better"))
+    db_session.add(DBMetric(id=2, name="RMSE", direction="lower_is_better"))
+    db_session.add(TaskDataset(task_id=1, dataset_id=1))
+    db_session.add_all(
+        [
+            TaskDatasetMetric(task_id=1, dataset_id=1, metric_id=1),
+            TaskDatasetMetric(task_id=1, dataset_id=1, metric_id=2),
+        ]
+    )
+    db_session.add_all(
+        [
+            DBPaper(id=1, title="P1", abstract="A", arxiv_id="2026.00001"),
+            DBPaper(id=2, title="P2", abstract="B", arxiv_id="2026.00002"),
+        ]
+    )
+
+    db_session.add_all(
+        [
+            # Paper 1 / Model A across two metrics -> 1 row.
+            DBEvaluation(
+                id=101,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="ModelA",
+                metrics={"MAE": "1.0"},
+                best_metric="MAE",
+            ),
+            DBEvaluation(
+                id=102,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="ModelA",
+                metrics={"RMSE": "2.0"},
+                best_metric="RMSE",
+            ),
+            # Paper 1 / Model B -> 1 row.
+            DBEvaluation(
+                id=103,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="ModelB",
+                metrics={"MAE": "1.5"},
+                best_metric="MAE",
+            ),
+            # Paper 2 / Model A -> 1 row (different paper).
+            DBEvaluation(
+                id=104,
+                paper_id=2,
+                task_id=1,
+                dataset_id=1,
+                model_name="ModelA",
+                metrics={"MAE": "0.9"},
+                best_metric="MAE",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = DatasetService(db_session).get_datasets(
+        task_id=1, order_by="paper_count", order_dir="desc"
+    )
+
+    assert result.results[0].paper_count == 3

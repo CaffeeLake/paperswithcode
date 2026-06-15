@@ -8,16 +8,16 @@ cookies), then pushes the resulting `dist/` folder to the target Space repo.
 
 Usage:
 
-    uv run --env-file backend/keys.env python scripts/deploy_hf_space.py \\
+    uv run --env-file backend/keys.env python .github/workflows/scripts/deploy_hf_space.py \\
         --space nielsr/paperswithcode-mirror
 
     # First time only: creates the Space repo with sdk=static.
-    uv run --env-file backend/keys.env python scripts/deploy_hf_space.py \\
+    uv run --env-file backend/keys.env python .github/workflows/scripts/deploy_hf_space.py \\
         --space nielsr/paperswithcode-mirror --create
 
 The Space then serves a static SPA that calls the live API at
 `https://paperswithcode.co`. The backend must allow the Space origin in its
-CORS config — see `extra_allowed_origins` / `extra_allowed_origin_regex` in
+CORS config -- see `extra_allowed_origins` / `extra_allowed_origin_regex` in
 `backend/config.py`.
 """
 
@@ -34,7 +34,7 @@ from textwrap import dedent
 from huggingface_hub import HfApi
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIR = REPO_ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 
@@ -77,7 +77,7 @@ def _readme_for_space(space_id: str, api_url: str) -> str:
         Regenerate with:
 
         ```bash
-        uv run --env-file backend/keys.env python scripts/deploy_hf_space.py \\
+        uv run --env-file backend/keys.env python .github/workflows/scripts/deploy_hf_space.py \\
             --space <owner>/<space>
         ```
         """
@@ -151,7 +151,7 @@ def ensure_space(api: HfApi, space_id: str, create: bool) -> None:
 
 
 def upload_dist(api: HfApi, space_id: str) -> None:
-    print(f"[deploy] uploading {DIST_DIR} → {space_id}", flush=True)
+    print(f"[deploy] uploading {DIST_DIR} -> {space_id}", flush=True)
     api.upload_folder(
         repo_id=space_id,
         repo_type="space",
@@ -241,7 +241,7 @@ def main() -> None:
         build_frontend(api_url=args.api_url, disable_auth=not args.keep_auth)
 
     if not (DIST_DIR / "index.html").exists():
-        sys.exit("[deploy] frontend/dist/index.html missing — run without --no-build")
+        sys.exit("[deploy] frontend/dist/index.html missing -- run without --no-build")
 
     write_space_readme(args.space, args.api_url)
 
@@ -252,7 +252,7 @@ def main() -> None:
         ensure_space(api, args.space, create=args.create)
         upload_dist(api, args.space)
         print(
-            f"[deploy] done → https://huggingface.co/spaces/{args.space}",
+            f"[deploy] done -> https://huggingface.co/spaces/{args.space}",
             flush=True,
         )
     finally:

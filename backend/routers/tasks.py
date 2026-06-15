@@ -5,7 +5,7 @@ Provides endpoints for accessing AI/ML task data, including hierarchical relatio
 filtering by area, and paper associations.
 """
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
@@ -18,8 +18,14 @@ from backend.models.api import (
     TaskCreateRequest,
     TrendingTasks,
 )
+from backend.models.database import Task as DBTask
 from backend.services.task_service import TaskService
 from backend.database.connection import get_database_session
+from backend.utils.entity_images import (
+    IMAGE_CACHE_HEADERS,
+    IMAGE_MISSING_HEADERS,
+    load_entity_image,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -221,6 +227,28 @@ def get_task(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{task_id}/image")
+def get_task_image(
+    task_id: str,
+    db: Session = Depends(get_database_session),
+):
+    """
+    Serve the DB-backed hero image for a task by ID or slug.
+
+    Returns the raw image bytes stored in `tasks.image_data`. 404s when the
+    task does not exist or has no stored image.
+    """
+    result = load_entity_image(db, DBTask, task_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Image not available",
+            headers=IMAGE_MISSING_HEADERS,
+        )
+    data, mime = result
+    return Response(content=data, media_type=mime, headers=IMAGE_CACHE_HEADERS)
 
 
 @router.get("/{task_id}/page", response_model=TaskPage)

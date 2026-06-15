@@ -111,9 +111,7 @@ paperswithcode/
 │   ├── arxiv_papers_hf.csv   # Hugging Face papers export
 │   └── paper_task_links_pwc/ # Task-paper associations
 ├── docs/                      # Documentation
-├── scripts/                   # Utility scripts
-│   ├── export_tasks_to_csv.py
-│   └── import_tasks_from_csv.py
+├── scripts/                   # Ops/maintenance scripts (backups, DB access, data audits)
 ├── pyproject.toml            # Python dependencies managed by uv
 ├── uv.lock                   # Lockfile for Python dependencies
 ├── start_services.sh         # Start backend + frontend

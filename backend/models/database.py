@@ -13,6 +13,7 @@ from sqlalchemy import (
     CheckConstraint,
     Integer,
     BigInteger,
+    LargeBinary,
     String,
     Text,
     Date,
@@ -294,6 +295,14 @@ class Task(Base):
     # Metadata columns
     image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     image_credit: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # DB-backed hero image. `image_data` holds the raw bytes and is deferred so
+    # list queries never load the (potentially large) blob; `image_mime_type`
+    # is small, always loaded, and doubles as the "has a DB image" flag the API
+    # layer checks to build the `/api/v1/tasks/{slug}/image` URL.
+    image_data: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True
+    )
+    image_mime_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     useful_leaderboards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Visibility in user-facing pickers (the /tasks taxonomy index and the
@@ -369,6 +378,11 @@ class Method(Base):
     code_snippet_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     image_credit: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # DB-backed figure (see Task.image_data for the deferred/flag rationale).
+    image_data: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True
+    )
+    image_mime_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     collection_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     collection_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     collection_parent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -717,6 +731,10 @@ class Evaluation(Base):
     # for a 7B model). Kept on the evaluation rather than baked into
     # `model_name` so future leaderboards can filter / sort by size.
     num_parameters: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Optional link to the Hugging Face model page for the evaluated model
+    # (e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3). Stored per evaluation
+    # so each leaderboard row can link the model name directly to its HF page.
+    hf_model_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -905,6 +923,11 @@ class Conference(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     image_credit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # DB-backed hero image (see Task.image_data for the deferred/flag rationale).
+    image_data: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True
+    )
+    image_mime_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     hf_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     tier: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
     tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)

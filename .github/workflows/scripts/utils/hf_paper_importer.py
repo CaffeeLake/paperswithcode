@@ -17,6 +17,7 @@ import aiohttp
 
 from backend.utils.github_utils import parse_github_url
 from backend.utils.keyword_matching import (
+    apply_task_supersession_rules,
     create_keyword_patterns,
     create_keyword_patterns_with_metadata,
     find_matching_items_simple,
@@ -43,7 +44,7 @@ class HuggingFacePaperImporterMixin:
     def load_task_keywords(self) -> None:
         """Load tasks with keywords for simple-matching auto-tagging."""
         query = """
-            SELECT id, name, keywords
+            SELECT id, slug, name, keywords
             FROM tasks
             WHERE keywords IS NOT NULL AND keywords != ''
             ORDER BY id
@@ -52,6 +53,8 @@ class HuggingFacePaperImporterMixin:
         if not tasks:
             self.logger.warning("No tasks with keywords found")
             return
+
+        self.task_slug_to_id = {task["slug"]: task["id"] for task in tasks}
 
         (
             self.task_case_sensitive_patterns,
@@ -527,6 +530,8 @@ class HuggingFacePaperImporterMixin:
             self.task_case_sensitive_patterns,
             self.task_case_insensitive_patterns,
         )
+        slug_to_id = getattr(self, "task_slug_to_id", {})
+        matching_task_ids = apply_task_supersession_rules(matching_task_ids, slug_to_id)
         if not matching_task_ids:
             return
 

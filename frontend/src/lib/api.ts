@@ -375,6 +375,10 @@ export interface Evaluation {
    *  Optional metadata used by future leaderboards to filter and visualize
    *  results by model size. */
   num_parameters?: number | null;
+  /** Optional Hugging Face model page for the evaluated model
+   *  (e.g. "https://huggingface.co/MiniMaxAI/MiniMax-M3"). When present, the
+   *  model name is rendered as a link to this page. */
+  hf_model_url?: string | null;
   created_at: string;
   updated_at: string;
   paper_title?: string;
@@ -1291,6 +1295,7 @@ class ApiClient {
     evaluated_on?: string;
     external_source_url?: string;
     num_parameters?: number | null;
+    hf_model_url?: string | null;
   }): Promise<Evaluation> {
     const endpoint = '/evaluations/';
     return this.request<Evaluation>(endpoint, {
@@ -1313,6 +1318,7 @@ class ApiClient {
     evaluated_on?: string;
     external_source_url?: string;
     num_parameters?: number | null;
+    hf_model_url?: string | null;
   }): Promise<Evaluation> {
     const endpoint = `/evaluations/${evaluationId}`;
     return this.request<Evaluation>(endpoint, {

@@ -7,6 +7,7 @@ import { MethodChip, PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Dataset, Task } from "@/lib/api";
+import { assetUrl } from "@/lib/apiUrl";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -227,7 +228,7 @@ const TagBrowseView: React.FC = () => {
             <div className="task-figure-img-wrap">
               <img
                 className="task-figure-img"
-                src={task.image_url}
+                src={assetUrl(task.image_url) ?? undefined}
                 alt={`${taskName} schematic`}
                 onError={(e) => {
                   (e.currentTarget.parentElement?.parentElement as HTMLElement | null)?.style.setProperty("display", "none");

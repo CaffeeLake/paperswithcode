@@ -285,6 +285,7 @@ The following summarizes the live structure. See the database for full DDL.
 - model_name, harness (optional), methodology, metrics (JSONB)
 - uses_additional_data (bool), best_rank, best_metric (string), evaluated_on, external_source_url
 - num_parameters (BIGINT, NULL — raw model parameter count, e.g. 7000000000 for a 7B model; non-negative CHECK)
+- hf_model_url (TEXT, NULL — Hugging Face model page for the evaluated model, e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3; CHECK must start with https://huggingface.co/)
 - created_at, updated_at
 - Indexes: GIN(metrics), (paper_id, task_id, dataset_id), (task_id, dataset_id, best_metric)
 - **Hierarchy semantics:** `task_id` may reference any task in the hierarchy

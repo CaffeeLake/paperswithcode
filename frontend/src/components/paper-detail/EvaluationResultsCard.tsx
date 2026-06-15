@@ -286,7 +286,19 @@ const calculateColumnWidths = (metricCount: number) => {
                                 </td>
                                 <td className="py-4 px-4 font-medium text-sm">
                                   <div className="truncate" title={evaluation.model_name || 'N/A'}>
-                                    {truncateText(evaluation.model_name || 'N/A', nameCharLimits.model)}
+                                    {evaluation.hf_model_url ? (
+                                      <a
+                                        href={evaluation.hf_model_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary hover:underline"
+                                        title={`Open ${evaluation.model_name || 'model'} on Hugging Face`}
+                                      >
+                                        {truncateText(evaluation.model_name || 'N/A', nameCharLimits.model)}
+                                      </a>
+                                    ) : (
+                                      truncateText(evaluation.model_name || 'N/A', nameCharLimits.model)
+                                    )}
                                   </div>
                                 </td>
                                 {/* Render actual metric values only */}

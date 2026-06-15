@@ -201,6 +201,7 @@ class PendingEditService:
                     else None,
                     "external_source_url": row.external_source_url,
                     "num_parameters": row.num_parameters,
+                    "hf_model_url": row.hf_model_url,
                 }
                 for row in rows
             ]
@@ -720,6 +721,7 @@ class PendingEditService:
                 # clearing harness/num_parameters still works after approval.
                 harness_set = "harness" in data
                 num_parameters_set = "num_parameters" in data
+                hf_model_url_set = "hf_model_url" in data
                 service.update_evaluation(
                     evaluation_id=evaluation_id,
                     task_id=data.get("task_id"),
@@ -735,8 +737,10 @@ class PendingEditService:
                     evaluated_on=data.get("evaluated_on"),
                     external_source_url=data.get("external_source_url"),
                     num_parameters=data.get("num_parameters"),
+                    hf_model_url=data.get("hf_model_url"),
                     harness_set=harness_set,
                     num_parameters_set=num_parameters_set,
+                    hf_model_url_set=hf_model_url_set,
                 )
                 continue
 
@@ -761,6 +765,7 @@ class PendingEditService:
                     evaluated_on=data.get("evaluated_on"),
                     external_source_url=data.get("external_source_url"),
                     num_parameters=data.get("num_parameters"),
+                    hf_model_url=data.get("hf_model_url"),
                 )
                 continue
 

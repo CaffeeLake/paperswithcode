@@ -52,6 +52,7 @@ def get_or_create_evaluation(
     evaluated_on: Optional[Any] = None,
     external_source_url: Optional[str] = None,
     num_parameters: Optional[int] = None,
+    hf_model_url: Optional[str] = None,
     merge_metrics: bool = True,
 ) -> DBEvaluation:
     """
@@ -134,6 +135,8 @@ def get_or_create_evaluation(
             existing.external_source_url = external_source_url
         if num_parameters is not None and existing.num_parameters is None:
             existing.num_parameters = num_parameters
+        if hf_model_url and not existing.hf_model_url:
+            existing.hf_model_url = hf_model_url
         # Closed-source marking should win when explicitly set on a re-import.
         if not is_open:
             existing.is_open = False
@@ -177,6 +180,7 @@ def get_or_create_evaluation(
             evaluated_on=evaluated_on,
             external_source_url=external_source_url,
             num_parameters=num_parameters,
+            hf_model_url=hf_model_url,
         )
 
         db.add(evaluation)
@@ -250,6 +254,7 @@ def bulk_create_evaluations_with_consolidation(
                 "evaluated_on": eval_data.get("evaluated_on"),
                 "external_source_url": eval_data.get("external_source_url"),
                 "num_parameters": eval_data.get("num_parameters"),
+                "hf_model_url": eval_data.get("hf_model_url"),
             }
 
         # Merge metrics

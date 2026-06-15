@@ -24,6 +24,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | Migration | Purpose |
 | --- | --- |
 | `add_v2_schema.sql` + `run_add_v2_schema.py` | `papers.tldr`, `papers.num_pages` |
+| `add_entity_image_data.sql` + `run_add_entity_image_data.py` | DB-backed `image_data`/`image_mime_type` on `tasks`/`methods`/`conferences` (backfills from `frontend/public/images/`) |
 | `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
 | `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
@@ -33,6 +34,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_keywords_to_methods.sql` | methods keywords column (rollback: `rollback_keywords_from_methods.sql`) |
 | `add_evaluations_num_parameters.sql` | `evaluations.num_parameters` |
 | `add_evaluations_harness.sql` | `evaluations.harness` |
+| `add_evaluations_hf_model_url.sql` | `evaluations.hf_model_url` |
 | `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
 | `add_task_datasets_featured_rank.sql` | `task_datasets.featured_rank` |
 | `add_tasks_is_visible.sql` | `tasks.is_visible` |
@@ -47,7 +49,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 
 - **Schema changes**: add idempotent SQL here; add a `run_*.py` wrapper when
   post-apply verification or service calls are needed (see `run_add_trending_score.py`).
-- **Method / benchmark / eval curation**: do not add one-off SQL files — use
-  `.agents/skills/add-method/`, `add-benchmark/`, or `add-evals/` instead.
+- **Method / benchmark / task / eval curation**: do not add one-off SQL files — use
+  `.agents/skills/add-method/`, `add-task/`, `add-benchmark/`, or `add-evals/` instead.
 
 No Alembic. Migrations are applied manually on the VPS with `psql` or `uv run`.

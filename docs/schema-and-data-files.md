@@ -12,7 +12,7 @@ High-level picture of PostgreSQL contents and on-disk legacy dumps. For connecti
 - **`tasks`**: task hierarchy via `parent_id` self-FK and `level`. Subtasks are first-class child rows (e.g. `language-modeling` → `world-knowledge`, `math`, …) with their own description, page, benchmarks, and evaluations
 - **`methods`**: techniques (ResNet, Transformer, Adam, …)
 - **`datasets`**: benchmark datasets (COCO, ImageNet, …)
-- **`evaluations`**: benchmark results with metrics and ranks. `task_id` may reference any task in the hierarchy (top-level OR subtask) but each row belongs to exactly one `(task_id, dataset_id, best_metric)` leaderboard; pick the most-specific child task. Optional `harness` column for model+harness benchmarks (e.g. Terminal-Bench scores a model running inside an agentic harness like `Claude Code` or `Terminus`); leave NULL for plain model-only benchmarks
+- **`evaluations`**: benchmark results with metrics and ranks. `task_id` may reference any task in the hierarchy (top-level OR subtask) but each row belongs to exactly one `(task_id, dataset_id, best_metric)` leaderboard; pick the most-specific child task. Optional `harness` column for model+harness benchmarks (e.g. Terminal-Bench scores a model running inside an agentic harness like `Claude Code` or `Terminus`); leave NULL for plain model-only benchmarks. Optional `hf_model_url` column links the evaluated model to its Hugging Face model page (e.g. `https://huggingface.co/MiniMaxAI/MiniMax-M3`) so the leaderboard model name can become an outbound link
 - **`metrics`**: evaluation metrics (AP, WER, BLEU, …)
 - **`areas`**: research areas (Computer Vision, NLP, …)
 

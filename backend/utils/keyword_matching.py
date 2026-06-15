@@ -114,6 +114,27 @@ def create_keyword_patterns_with_metadata(
     return dict(case_sensitive), dict(case_insensitive)
 
 
+# When the superseding task matches, drop the generic/subsuming task tag.
+TASK_SUPERSESSION_RULES: tuple[tuple[str, str], ...] = (
+    ("3d-object-detection", "object-detection"),
+    ("video-matting", "image-matting"),
+)
+
+
+def apply_task_supersession_rules(
+    matched_task_ids: Set[int],
+    slug_to_id: Dict[str, int],
+) -> Set[int]:
+    """Remove subsumed task IDs when a more specific task also matched."""
+    result = set(matched_task_ids)
+    for superseding_slug, excluded_slug in TASK_SUPERSESSION_RULES:
+        superseding_id = slug_to_id.get(superseding_slug)
+        excluded_id = slug_to_id.get(excluded_slug)
+        if superseding_id in result and excluded_id is not None:
+            result.discard(excluded_id)
+    return result
+
+
 def find_matching_items_simple(
     text: str,
     case_sensitive_patterns: Dict[str, List[int]],

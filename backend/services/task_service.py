@@ -28,6 +28,7 @@ from backend.models.api import (
     TrendingTask,
     TrendingTasks,
 )
+from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
 
@@ -51,7 +52,12 @@ class TaskService:
             area_id=str(db_task.area_id) if db_task.area_id else None,
             level=db_task.level,
             paper_count=paper_count or 0,
-            image_url=db_task.image_url,
+            image_url=entity_image_url(
+                "tasks",
+                db_task.slug,
+                db_task.image_mime_type is not None,
+                db_task.image_url,
+            ),
             image_credit=db_task.image_credit,
             is_visible=db_task.is_visible,
             created_at=db_task.created_at,
@@ -341,7 +347,12 @@ class TaskService:
                     area_id=str(db_task.area_id) if db_task.area_id else None,
                     level=db_task.level,
                     paper_count=int(recent_count or 0) + int(baseline_count or 0),
-                    image_url=db_task.image_url,
+                    image_url=entity_image_url(
+                        "tasks",
+                        db_task.slug,
+                        db_task.image_mime_type is not None,
+                        db_task.image_url,
+                    ),
                     image_credit=db_task.image_credit,
                     created_at=db_task.created_at,
                     updated_at=db_task.updated_at,

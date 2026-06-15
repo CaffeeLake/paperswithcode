@@ -1730,6 +1730,14 @@ class Evaluation(BaseModel):
             "future leaderboards filter and visualize by model size."
         ),
     )
+    hf_model_url: Optional[str] = Field(
+        None,
+        description=(
+            "Optional Hugging Face model page for the evaluated model "
+            "(e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3). When present, "
+            "the frontend turns the model name into a link to this page."
+        ),
+    )
     created_at: datetime = Field(..., description="Timestamp when record was created")
     updated_at: datetime = Field(
         ..., description="Timestamp when record was last updated"
@@ -1814,6 +1822,13 @@ class EvaluationCreateRequest(BaseModel):
         ge=0,
         description=("Raw number of model parameters (e.g. 7000000000 for a 7B model)"),
     )
+    hf_model_url: Optional[str] = Field(
+        None,
+        description=(
+            "Optional Hugging Face model page for the evaluated model "
+            "(e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3)"
+        ),
+    )
 
 
 class EvaluationUpdateRequest(BaseModel):
@@ -1848,6 +1863,14 @@ class EvaluationUpdateRequest(BaseModel):
         ge=0,
         description=(
             "Raw number of model parameters (e.g. 7000000000 for a 7B model). "
+            "Pass `null` to clear an existing value."
+        ),
+    )
+    hf_model_url: Optional[str] = Field(
+        None,
+        description=(
+            "Optional Hugging Face model page for the evaluated model "
+            "(e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3). "
             "Pass `null` to clear an existing value."
         ),
     )

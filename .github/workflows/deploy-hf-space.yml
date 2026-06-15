@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
-      - "scripts/deploy_hf_space.py"
+      - ".github/workflows/scripts/deploy_hf_space.py"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/deploy-hf-space.yml"
@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
 
-          uv run python scripts/deploy_hf_space.py \
+          uv run python .github/workflows/scripts/deploy_hf_space.py \
             --space "$SPACE_ID" \
             --api-url "$API_URL" \
             --skip-restore

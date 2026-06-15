@@ -16,6 +16,7 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
 )
 from backend.models.api import Method, Methods
+from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
 
@@ -47,7 +48,12 @@ class MethodService:
             ),
             source_title=db_method.source_title,
             code_snippet_url=db_method.code_snippet_url,
-            image_url=db_method.image_url,
+            image_url=entity_image_url(
+                "methods",
+                db_method.slug,
+                db_method.image_mime_type is not None,
+                db_method.image_url,
+            ),
             image_credit=db_method.image_credit,
             collection_name=db_method.collection_name,
             collection_description=db_method.collection_description,

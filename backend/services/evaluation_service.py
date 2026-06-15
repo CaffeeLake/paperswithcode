@@ -407,6 +407,7 @@ class EvaluationService:
                     "evaluated_on": db_evaluation.evaluated_on,
                     "external_source_url": db_evaluation.external_source_url,
                     "num_parameters": db_evaluation.num_parameters,
+                    "hf_model_url": db_evaluation.hf_model_url,
                     "created_at": db_evaluation.created_at,
                     "updated_at": db_evaluation.updated_at,
                     "paper_title": paper_title,
@@ -499,6 +500,7 @@ class EvaluationService:
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
                 "num_parameters": db_evaluation.num_parameters,
+                "hf_model_url": db_evaluation.hf_model_url,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,
@@ -558,6 +560,7 @@ class EvaluationService:
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
         num_parameters: Optional[int] = None,
+        hf_model_url: Optional[str] = None,
     ) -> Evaluation:
         """
         Create a new evaluation.
@@ -621,6 +624,7 @@ class EvaluationService:
                 evaluated_on=evaluated_on,
                 external_source_url=external_source_url,
                 num_parameters=num_parameters,
+                hf_model_url=hf_model_url,
             )
 
             self.db.add(db_evaluation)
@@ -673,6 +677,7 @@ class EvaluationService:
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
                 "num_parameters": db_evaluation.num_parameters,
+                "hf_model_url": db_evaluation.hf_model_url,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,
@@ -710,8 +715,10 @@ class EvaluationService:
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
         num_parameters: Optional[int] = None,
+        hf_model_url: Optional[str] = None,
         harness_set: bool = False,
         num_parameters_set: bool = False,
+        hf_model_url_set: bool = False,
     ) -> Evaluation:
         """
         Update an existing evaluation.
@@ -827,6 +834,8 @@ class EvaluationService:
                 db_evaluation.external_source_url = external_source_url
             if num_parameters_set:
                 db_evaluation.num_parameters = num_parameters
+            if hf_model_url_set:
+                db_evaluation.hf_model_url = hf_model_url
 
             self.db.commit()
             self.db.refresh(db_evaluation)
@@ -904,6 +913,7 @@ class EvaluationService:
                 "evaluated_on": db_evaluation.evaluated_on,
                 "external_source_url": db_evaluation.external_source_url,
                 "num_parameters": db_evaluation.num_parameters,
+                "hf_model_url": db_evaluation.hf_model_url,
                 "created_at": db_evaluation.created_at,
                 "updated_at": db_evaluation.updated_at,
                 "paper_title": paper_title,

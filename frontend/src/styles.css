@@ -1860,6 +1860,15 @@ a.paper-github-stats.is-link:focus-visible {
 }
 .results-table .task-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .results-table .model { color: var(--ink); }
+.results-table .model-hf-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+.results-table .model-hf-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.results-table .model-hf-link svg { opacity: 0.6; flex-shrink: 0; }
 .results-table .benchmark { color: var(--ink); }
 .results-table .benchmark a { color: inherit; text-decoration: none; }
 .results-table .benchmark a:hover {
@@ -2477,16 +2486,35 @@ a.paper-github-stats.is-link:focus-visible {
  * html-to-image render pass so the exported PNG includes the benchmark
  * name. The same `is-capturing` toggle hides the copy button itself so it
  * doesn't appear in the screenshot. */
-.bm-card-screenshot-title {
+.bm-card-screenshot-header {
   display: none;
 }
-.bm-card.is-capturing .bm-card-screenshot-title {
+.bm-card.is-capturing .bm-card-screenshot-header {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
   margin-bottom: 18px;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--hairline);
+}
+.bm-card-screenshot-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bm-card-screenshot-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.bm-card-screenshot-url {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
 }
 .bm-card-screenshot-eyebrow {
   font-family: var(--mono);
@@ -2647,6 +2675,15 @@ a.paper-github-stats.is-link:focus-visible {
 .bm-table tbody tr:last-child td { border-bottom: none; }
 .bm-table .col-rank { width: 64px; color: var(--ink-faint); font-family: var(--mono); font-feature-settings: "tnum"; }
 .bm-table .col-model { font-weight: 600; color: var(--ink); }
+.bm-model-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+.bm-model-link:hover { text-decoration: underline; }
+.bm-model-link svg { opacity: 0.6; flex-shrink: 0; }
 .bm-table .col-harness {
   font-family: var(--mono);
   font-size: 12px;

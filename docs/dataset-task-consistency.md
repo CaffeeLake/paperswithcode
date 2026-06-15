@@ -84,19 +84,6 @@ uv run --env-file backend/keys.env python scripts/fix_dataset_task_inconsistenci
   --fix --dataset 58 --from-task 8 --to-task 9
 ```
 
-#### Test Script: `scripts/test_evaluation_validation.py`
-
-Comprehensive test suite that verifies:
-- Incorrect tasks are blocked
-- Correct tasks are allowed
-- Multi-task datasets work properly
-- Error messages are helpful
-
-Usage:
-```bash
-uv run --env-file backend/keys.env python scripts/test_evaluation_validation.py
-```
-
 ## Results
 
 ### Before Fix

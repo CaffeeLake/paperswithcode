@@ -32,6 +32,7 @@ from psycopg2.extras import RealDictCursor, execute_batch
 from collections import defaultdict
 
 from backend.utils.keyword_matching import (
+    apply_task_supersession_rules,
     create_keyword_patterns,
     find_matching_items_simple,
 )
@@ -52,7 +53,7 @@ def load_tasks_with_keywords(conn) -> List[Dict]:
     """Load all tasks that have keywords defined."""
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT id, name, keywords
+        SELECT id, slug, name, keywords
         FROM tasks
         WHERE keywords IS NOT NULL AND keywords != ''
         ORDER BY id
@@ -80,6 +81,7 @@ def link_papers_by_task_keywords(rebuild: bool = False):
         print("\n1. Loading tasks with keywords...")
         tasks = load_tasks_with_keywords(conn)
         print(f"   ✓ Loaded {len(tasks)} tasks with keywords")
+        slug_to_id = {task["slug"]: task["id"] for task in tasks}
 
         print("\n2. Building keyword patterns...")
         case_sensitive_patterns, case_insensitive_patterns = create_keyword_patterns(
@@ -155,6 +157,9 @@ def link_papers_by_task_keywords(rebuild: bool = False):
 
             matching_task_ids = find_matching_items_simple(
                 text, case_sensitive_patterns, case_insensitive_patterns
+            )
+            matching_task_ids = apply_task_supersession_rules(
+                matching_task_ids, slug_to_id
             )
 
             if matching_task_ids:

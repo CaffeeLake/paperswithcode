@@ -174,20 +174,22 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
       path += ` C${cx},${p0.y} ${cx},${p1.y} ${p1.x},${p1.y}`;
     }
   }
-  // Model-name labels above SOTA dots, de-cluttered greedily left-to-right so
-  // only non-overlapping names render (matching the legacy PapersWithCode look).
+  // Model-name labels above the highlighted SOTA dots (legacy PapersWithCode
+  // look). Greedily de-cluttered left-to-right so labels never overlap each
+  // other, clamped to stay inside the plot (out of the y-axis gutter), and the
+  // latest SOTA point is always reserved a slot since it's the current best.
+  type SotaLabel = { x: number; y: number; text: string; anchor: "start" | "middle" | "end" };
   const labelCharW = 5.4;
   const labelGap = 8;
-  const sotaLabels: { x: number; y: number; text: string; anchor: "start" | "middle" | "end" }[] = [];
-  let lastLabelRight = -Infinity;
-  for (const p of sotaPositioned) {
+  const labelDotGap = 9;
+  const labelBox = (p: (typeof sotaPositioned)[number]): (SotaLabel & { left: number; right: number }) | null => {
     const raw = p.data.modelName || p.data.paperTitle || "";
-    if (!raw) continue;
+    if (!raw) return null;
     const text = raw.length > 22 ? raw.slice(0, 21) + "…" : raw;
     const w = text.length * labelCharW;
     let left = p.x - w / 2;
     let right = p.x + w / 2;
-    let anchor: "start" | "middle" | "end" = "middle";
+    let anchor: SotaLabel["anchor"] = "middle";
     if (left < padL) {
       left = padL;
       right = padL + w;
@@ -197,11 +199,22 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
       left = right - w;
       anchor = "end";
     }
-    if (left < lastLabelRight + labelGap) continue;
-    lastLabelRight = right;
-    const lx = anchor === "start" ? padL : anchor === "end" ? W - padR : p.x;
-    sotaLabels.push({ x: lx, y: p.y - 9, text, anchor });
+    const x = anchor === "start" ? padL : anchor === "end" ? W - padR : p.x;
+    return { x, y: p.y - labelDotGap, text, anchor, left, right };
+  };
+  const sotaLabels: SotaLabel[] = [];
+  // Reserve the latest SOTA point's label first so it's never dropped.
+  const reserved = sotaPositioned.length > 0 ? labelBox(sotaPositioned[sotaPositioned.length - 1]) : null;
+  let lastLabelRight = -Infinity;
+  for (let i = 0; i < sotaPositioned.length - 1; i++) {
+    const box = labelBox(sotaPositioned[i]);
+    if (!box) continue;
+    if (box.left < lastLabelRight + labelGap) continue;
+    if (reserved && box.right > reserved.left - labelGap) continue;
+    lastLabelRight = box.right;
+    sotaLabels.push({ x: box.x, y: box.y, text: box.text, anchor: box.anchor });
   }
+  if (reserved) sotaLabels.push({ x: reserved.x, y: reserved.y, text: reserved.text, anchor: reserved.anchor });
 
   const timeAxisTicks = buildChartTimeTicks(xMin, xMax);
   const tickCount = 5;
@@ -299,7 +312,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
             <circle
               cx={p.x}
               cy={p.y}
-              r={isHover ? 4 : 2.5}
+              r={isHover ? 3 : 2}
               fill="var(--ink-faint)"
               opacity={isHover ? 1 : 0.45}
               style={{ transition: "r 0.12s ease, opacity 0.12s ease" }}
@@ -316,10 +329,10 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
           <circle
             cx={p.x}
             cy={p.y}
-            r={isHover ? 6 : 4.5}
+            r={isHover ? 4.5 : 3}
             fill={isHover ? "var(--accent)" : "var(--bg-elevated)"}
             stroke="var(--accent)"
-            strokeWidth="2"
+            strokeWidth="1.5"
             style={{ transition: "r 0.12s ease, fill 0.12s ease" }}
           />,
         );
@@ -334,6 +347,7 @@ const BenchmarkChart: React.FC<BenchmarkChartProps> = ({ points: dataPoints, met
           fill="var(--ink-soft)"
           textAnchor={l.anchor}
           pointerEvents="none"
+          style={{ paintOrder: "stroke", stroke: "var(--bg-elevated)", strokeWidth: 3, strokeLinejoin: "round" }}
         >
           {l.text}
         </text>
@@ -991,9 +1005,18 @@ const BenchmarkDetailView: React.FC = () => {
 
         {chartPoints.filter((p) => p.isSota).length >= 2 && (
           <div className="bm-card" ref={chartCardRef}>
-            <div className="bm-card-screenshot-title" aria-hidden="true">
-              <span className="bm-card-screenshot-eyebrow">Benchmark</span>
-              <span className="bm-card-screenshot-name">{dataset.name}</span>
+            <div className="bm-card-screenshot-header" aria-hidden="true">
+              <div className="bm-card-screenshot-title">
+                <span className="bm-card-screenshot-eyebrow">Benchmark</span>
+                <span className="bm-card-screenshot-name">{dataset.name}</span>
+              </div>
+              <div className="bm-card-screenshot-brand">
+                <span className="brand">
+                  <span className="brand-mark"></span>
+                  <span className="brand-name">Papers <em>With Code</em></span>
+                </span>
+                <span className="bm-card-screenshot-url">paperswithcode.co</span>
+              </div>
             </div>
             <div className="bm-card-head">
               <div className="bm-card-title">SOTA progression</div>
@@ -1077,9 +1100,18 @@ const BenchmarkDetailView: React.FC = () => {
         })()}
 
         <div className="bm-card" ref={leaderboardCardRef}>
-          <div className="bm-card-screenshot-title" aria-hidden="true">
-            <span className="bm-card-screenshot-eyebrow">Benchmark</span>
-            <span className="bm-card-screenshot-name">{dataset.name}</span>
+          <div className="bm-card-screenshot-header" aria-hidden="true">
+            <div className="bm-card-screenshot-title">
+              <span className="bm-card-screenshot-eyebrow">Benchmark</span>
+              <span className="bm-card-screenshot-name">{dataset.name}</span>
+            </div>
+            <div className="bm-card-screenshot-brand">
+              <span className="brand">
+                <span className="brand-mark"></span>
+                <span className="brand-name">Papers <em>With Code</em></span>
+              </span>
+              <span className="bm-card-screenshot-url">paperswithcode.co</span>
+            </div>
           </div>
           <div className="bm-card-head">
             <div className="bm-card-title">Leaderboard</div>
@@ -1182,7 +1214,19 @@ const BenchmarkDetailView: React.FC = () => {
                         <td className="col-rank">{rank ?? "—"}</td>
                         <td className="col-model">
                           {isHighlighted && <span className="bm-row-marker" aria-hidden="true" />}
-                          {e.model_name || "—"}
+                          {e.hf_model_url ? (
+                            <a
+                              href={e.hf_model_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="bm-model-link"
+                              title={`Open ${e.model_name || "model"} on Hugging Face`}
+                            >
+                              {e.model_name || "—"}
+                            </a>
+                          ) : (
+                            e.model_name || "—"
+                          )}
                           {e.is_open === false && <ClosedSourceEvalBadge />}
                         </td>
                         {showHarness && (

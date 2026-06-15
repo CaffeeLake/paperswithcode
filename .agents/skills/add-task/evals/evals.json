@@ -1,0 +1,23 @@
+{
+  "skill_name": "add-task",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add a task for Document Layout Analysis — papers that parse PDFs and documents into structured regions (text blocks, tables, figures). It should live under Vision. Use a sensible description and keywords so our keyword matcher picks up related papers.",
+      "expected_output": "Creates idempotent migration for document-layout-analysis under Vision, writes description/keywords, applies to live DB, runs keyword backfill, verifies task API, returns https://paperswithcode.co/tasks/document-layout-analysis and recommended benchmarks (e.g. DocLayNet, PubLayNet, D4LA).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "We need a subtask under Language Modeling for Tool Use — LLMs calling APIs, function calling, and agentic tool invocation. Don't add benchmarks yet, just the task page.",
+      "expected_output": "Creates subtask with parent language-modeling, level 1, inherits Language area, keywords covering function calling/tool use/MCP, applies migration, skips benchmark ingestion, returns task URL and a separate recommended-benchmark list (e.g. Berkeley Function Calling Leaderboard, API-Bank).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Similarly add Spoken Language Understanding as a task in Audio. Here's a diagram we can use for the hero image: [user would attach an image]. Recommend ASR-adjacent benchmarks afterward.",
+      "expected_output": "Follows similarly-add flow from conversation context, copies user image to frontend/public/images/tasks/spoken-language-understanding.png, sets self-hosted image_url, rebuilds frontend, applies migration, keyword backfill, returns production URL plus ASR/SLU benchmark recommendations (SLURP, Fluent Speech Commands, etc.).",
+      "files": []
+    }
+  ]
+}
