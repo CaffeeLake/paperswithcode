@@ -155,6 +155,8 @@ jobs:
           INPUT_REFRESH_EXISTING: ${{ github.event.inputs.refresh_existing }}
           INPUT_REQUEST_DELAY_SECONDS: ${{ github.event.inputs.request_delay_seconds }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           ARGS=""
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
@@ -232,5 +234,5 @@ jobs:
             fi
           fi
           ssh -o StrictHostKeyChecking=yes \
-              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "${VPS_USER}@${VPS_HOST}" \
               "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.preload_thumbnails${ARGS}"

@@ -54,6 +54,8 @@ jobs:
         env:
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
           INPUT_DELETE: ${{ github.event.inputs.delete }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           ARGS=""
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
@@ -63,5 +65,5 @@ jobs:
             ARGS="${ARGS} --delete"
           fi
           ssh -o StrictHostKeyChecking=yes \
-              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "${VPS_USER}@${VPS_HOST}" \
               "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.mirror_thumbnails_to_disk${ARGS} >/dev/null"

@@ -47,11 +47,14 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Run link_papers_by_task_keywords on VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           REMOTE_COMMAND='/root/python_projects/paperswithcode/.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh'
           if [ "${{ github.event.inputs.rebuild }}" = "true" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --rebuild"
           fi
           ssh -o StrictHostKeyChecking=yes \
-              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "${VPS_USER}@${VPS_HOST}" \
               "$REMOTE_COMMAND"

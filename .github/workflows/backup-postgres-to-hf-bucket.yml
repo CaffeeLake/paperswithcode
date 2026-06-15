@@ -38,9 +38,12 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Run Postgres backup on VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           ssh -o StrictHostKeyChecking=yes \
-              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "${VPS_USER}@${VPS_HOST}" \
               'set -euo pipefail
                systemctl start pwc-postgres-backup.service
                service_result="$(systemctl show pwc-postgres-backup.service --property=Result --value)"
