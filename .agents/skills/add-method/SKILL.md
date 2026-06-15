@@ -7,6 +7,8 @@ description: Add or update AI/ML method taxonomy rows in the paperswithcode repo
 
 This skill adds curated rows to the `methods` table so method pages, paper pages, and "Introduced" banners render correctly. Prefer small idempotent migrations plus applying the same change to the live database.
 
+> **Image storage:** seed PNG → `data/entity_image_seeds/methods/<slug>.png` → `import_entity_image.py` → SQL bytes served at `/api/v1/methods/<slug>/image`. Do **not** put method figures in `frontend/public/` (that folder is for browser assets only: favicons, `og-image.png`, logos).
+
 When the user says **"similarly add X"** (often with just a name and source arXiv id), run the full workflow below without re-asking — same area, citation linking, thumbnail, and deploy steps as the prior method in the conversation unless they specify otherwise.
 
 When the user asks **"should we add X?"**, briefly judge whether the technique is distinct enough from an existing method slug (e.g. Fast Conformer vs Conformer, TDT vs RNN-Transducer). If yes, add it; if it is only a hyperparameter variant or product name with no introducing paper, say so and stop.
@@ -18,11 +20,10 @@ For a typical new method with a source paper:
 1. Confirm the method does not already exist (`slug`, `name`, `keywords`).
 2. Confirm the source `papers` row exists (import first if needed).
 3. Write metadata + migration SQL.
-4. Add thumbnail under `frontend/public/images/methods/<slug>.png` (user image or figure from paper).
+4. Add hero image: save seed PNG under `data/entity_image_seeds/methods/<slug>.png`, then import into SQL (see Thumbnail).
 5. Apply migration to the live DB.
 6. Link **all local papers that cite the source paper** (see Citation linking).
-7. Rebuild frontend if the thumbnail changed: `cd frontend && npm run build && cd .. && nginx -t && nginx -s reload`
-8. Verify API + report production URL.
+7. Verify API + report production URL.
 
 Skip citation linking only when the user explicitly asks for the method row alone.
 
@@ -61,17 +62,17 @@ Be careful about provenance. The source paper is the paper that introduced, name
 - **`area_id`**: resolve by area name. Live DB areas include `Audio`, `Vision`, `Language`, `Video`, `General`, `Other`. Use the area the user names (e.g. speech/ASR methods → `Audio`).
 - **`introduced_year`**: source paper publication year.
 - **`code_snippet_url`**: optional pointer to a canonical implementation file (NeMo, ESPnet, torchaudio, official repo) — not the introducing paper PDF.
-- **`image_url`**: `https://paperswithcode.co/images/methods/<slug>.png` (see Thumbnail).
+- **`image_url`**: leave NULL for new self-hosted images — the API resolves `/api/v1/methods/<slug>/image` once `image_mime_type` is set. Use an external URL only when you cannot self-host.
 - **`image_credit`**: relative markdown link to the source paper, e.g. `[Paper title](/paper/2005.08100)`.
 
 ### 4. Thumbnail
 
-Production serves method images from `frontend/public/images/methods/` (built into `frontend/dist`).
+Method figures are DB-backed. Save a seed PNG, import it, then verify the API image endpoint.
 
 **If the user provides an image**, copy it to:
 
 ```text
-frontend/public/images/methods/<slug>.png
+data/entity_image_seeds/methods/<slug>.png
 ```
 
 **Otherwise**, extract a figure from the source PDF:
@@ -79,16 +80,19 @@ frontend/public/images/methods/<slug>.png
 1. Download `https://arxiv.org/pdf/<arxiv_id>.pdf`.
 2. Use PyMuPDF (`fitz`) to find figure captions (`Figure 1`, `Figure 2`, …) and large drawing bounding boxes per page.
 3. Render the best architecture diagram (not a table-only or caption-only crop) at 3× zoom with `page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=clip_rect)`.
-4. Save to `frontend/public/images/methods/<slug>.png`.
+4. Save to `data/entity_image_seeds/methods/<slug>.png`.
 5. Visually sanity-check the crop — exclude caption text below the figure when possible.
+
+After the method row exists, import the PNG into SQL:
+
+```bash
+uv run --env-file backend/keys.env python backend/database/import_entity_image.py \
+    methods <slug> data/entity_image_seeds/methods/<slug>.png
+```
 
 Prefer the main architecture diagram (encoder block, lattice, joint network) over alignment heatmaps unless the user asks otherwise.
 
-Always rebuild and reload nginx after adding or replacing a thumbnail:
-
-```bash
-cd frontend && npm run build && cd .. && nginx -t && nginx -s reload
-```
+No frontend rebuild is needed for entity images — they are served from the backend API.
 
 ### 5. Create and apply migration
 
@@ -129,7 +133,7 @@ VALUES (
     NULL,
     '<source paper title>',
     '<implementation URL>',
-    'https://paperswithcode.co/images/methods/<slug>.png',
+    NULL,
     '[<source paper title>](/paper/<arxiv_id>)'
 )
 ON CONFLICT (slug) DO UPDATE SET
@@ -226,10 +230,11 @@ JOIN methods m ON m.id = pm.method_id
 WHERE m.slug = '<slug>';
 ```
 
-4. Method API (`paper_count` should reflect source + citing papers):
+4. Method API (`paper_count` should reflect source + citing papers; expect DB image URL when imported):
 
 ```bash
 curl -fsS "http://localhost:8000/api/v1/methods/<slug>" | uv run python3 -m json.tool
+curl -fsS -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/v1/methods/<slug>/image"
 ```
 
 5. Source paper lists the method (introduced banner):
@@ -249,7 +254,7 @@ Always include:
 - Source behavior: native `/paper/<arxiv_id>` via `source_paper_id`, or external `source_url`
 - Whether `paper_methods` includes the source paper (introduced banner)
 - Citation linking summary: how many Semantic Scholar citations fetched, how many local papers linked (`paper_count` on the method API)
-- Thumbnail: confirm image deployed (note hard-refresh if Cloudflare may cache an replaced file)
+- Thumbnail: confirm `/api/v1/methods/<slug>/image` returns HTTP 200 after import
 
 ## Reference: recent Audio methods
 

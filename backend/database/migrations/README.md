@@ -24,12 +24,13 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | Migration | Purpose |
 | --- | --- |
 | `add_v2_schema.sql` + `run_add_v2_schema.py` | `papers.tldr`, `papers.num_pages` |
-| `add_entity_image_data.sql` + `run_add_entity_image_data.py` | DB-backed `image_data`/`image_mime_type` on `tasks`/`methods`/`conferences` (backfills from `frontend/public/images/`) |
+| `add_entity_image_data.sql` + `run_add_entity_image_data.py` | DB-backed `image_data`/`image_mime_type` on `tasks`/`methods`/`conferences` (bulk backfill from `data/entity_image_seeds/`; single-file import via `backend/database/import_entity_image.py`) |
 | `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
 | `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
 | `add_external_resources_schema.sql` + `run_add_external_resources_schema.py` | external resources |
-| `add_trending_score.sql` + `run_add_trending_score.py` + `update_trending_view_for_ema.sql` | trending scores |
+| `add_trending_score.sql` + `run_add_trending_score.py` + `update_trending_view_for_ema.sql` | repository (GitHub) trending scores |
+| `add_paper_hf_trending.sql` + `run_add_paper_hf_trending.py` | composite paper trending: `hf_artifacts`, `paper_hf_artifacts`, and `papers.trending_score`/components (rollback: `rollback_paper_hf_trending.sql`) |
 | `add_dataset_variants_and_splits.sql` + `run_add_dataset_variants_and_splits.py` | dataset variants (rollback: `rollback_dataset_variants_and_splits.sql`) |
 | `add_keywords_to_methods.sql` | methods keywords column (rollback: `rollback_keywords_from_methods.sql`) |
 | `add_evaluations_num_parameters.sql` | `evaluations.num_parameters` |

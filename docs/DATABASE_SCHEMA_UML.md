@@ -243,8 +243,10 @@ The following summarizes the live structure. See the database for full DDL.
 - id (PK), name, description, slug (UNIQUE)
 - parent_id (FK self), area_id (FK), level (default 0)
 - keywords, image_url, image_credit, useful_leaderboards
+- image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed hero image bytes; ORM defers `image_data` so list queries never load the blob; `image_mime_type` doubles as the "has DB image" flag
 - created_at, updated_at
 - Indexes: parent_id, area_id, slug
+- **Images:** curated self-hosted heroes are stored in `image_data`/`image_mime_type` and served at `/api/v1/tasks/{slug}/image`. The API resolves `image_url` to that endpoint when `image_mime_type` is set; otherwise it falls back to the stored external `image_url`.
 - **Hierarchy:** subtasks are child rows linked through `parent_id`. `level`
   is `0` for top-level tasks, `1` for subtasks under a top-level task,
   `2` for sub-subtasks, etc. Each subtask has its own page, description,
@@ -262,8 +264,10 @@ The following summarizes the live structure. See the database for full DDL.
 - source_url, source_title, code_snippet_url
 - collection_name, collection_description, collection_parent
 - area_id (FK), image_url, image_credit, slug (UNIQUE), keywords
+- image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed figure bytes (deferred in ORM); served at `/api/v1/methods/{slug}/image` when populated
 - created_at, updated_at
 - Indexes: area_id, keywords (GIN, partial), image_url (partial), slug unique
+- **Images:** same DB-first / external-fallback semantics as TASKS (`entity_image_url` in `backend/utils/entity_images.py`).
 
 ### DATASETS
 - id (PK), name, full_name, description, url, hf_url
@@ -327,6 +331,8 @@ The following summarizes the live structure. See the database for full DDL.
 ### CONFERENCES
 - id (PK), name, slug (UNIQUE NOT NULL), short_name, year
 - url, start_date, end_date, venue, location, description
+- image_url, image_credit — external fallback URLs / attribution
+- image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed hero bytes (deferred in ORM); served at `/api/v1/conferences/{slug}/image` when populated
 - created_at, updated_at
 - Indexes: slug, year DESC
 
@@ -408,5 +414,6 @@ The following summarizes the live structure. See the database for full DDL.
 - **User bookmarks:** persisted per HF account in USER_BOOKMARKS; written exclusively through `/api/v1/me/bookmarks` endpoints which require the `pwc_session` cookie.
 - **Pending paper edits:** non-admin edit submissions for paper-page surfaces (tasks, methods, evaluations, repositories, project pages) are written to PENDING_PAPER_EDITS through `/api/v1/me/paper-edits`. Admin direct edits bypass this table and continue mutating live data through the existing `/api/v1/papers/{id}/...` and `/api/v1/evaluations/...` admin endpoints. Approval of a pending row replays `proposed_payload` through the shared mutation services so live data only changes after admin confirmation.
 - **Paper lineage:** directed predecessor/successor edges between papers live in PAPER_RELATIONS (`source_paper_id` -> `target_paper_id`, predecessor -> successor). Surfaced on the paper detail API via `predecessor_papers` and `successor_papers`, and rendered as the lineage banner on the paper detail view (e.g. DINOv2 shows DINOv3 as the follow-up; DINOv3 shows DINOv2 as the predecessor).
+- **Entity images (tasks, methods, conferences):** curated hero/figure images live in SQL (`image_data` + `image_mime_type`), not in `frontend/public`. Seed PNGs for import live under `data/entity_image_seeds/{tasks,methods,conferences}/` and are loaded with `backend/database/import_entity_image.py` or bulk backfill via `run_add_entity_image_data.py`. Browser-only assets (favicons, `og-image.png`, logos) remain static under `frontend/public`. Datasets and papers still use URL columns (`image_url`, `thumbnail_url`, etc.) — they are not DB-blob backed today.
 
 This document is synchronized with the live schema via schema dump and table descriptions.

@@ -7,6 +7,8 @@ description: Add or update AI/ML task taxonomy rows in the paperswithcode repo d
 
 This skill adds curated rows to the `tasks` table so task pages, paper tagging, and benchmark leaderboards render correctly. Prefer small idempotent migrations plus applying the same change to the live database.
 
+> **Image storage:** seed PNG → `data/entity_image_seeds/tasks/<slug>.png` → `import_entity_image.py` → SQL bytes served at `/api/v1/tasks/<slug>/image`. Do **not** put task heroes in `frontend/public/` (that folder is for browser assets only: favicons, `og-image.png`, logos).
+
 When the user says **"similarly add X"** (often with just a name and area), run the full workflow below without re-asking — same area, parent, keywords, thumbnail, keyword backfill, and deploy steps as the prior task in the conversation unless they specify otherwise.
 
 When the user asks **"should we add X?"**, briefly judge whether the topic is distinct enough from an existing task slug (e.g. `object-detection` vs `3d-object-detection`, `image-restoration` vs `image-super-resolution`). If yes, add it; if it is only a synonym or a narrow variant of an existing task, say so and suggest updating keywords on the existing row instead.
@@ -18,14 +20,14 @@ For a typical new top-level task:
 1. Confirm the task does not already exist (`slug`, `name`, `keywords`).
 2. Pick the right **area** and optional **parent** (subtask vs top-level).
 3. Write metadata + migration SQL (or `ensure_task` Python script).
-4. Add thumbnail under `frontend/public/images/tasks/<slug>.png` when possible (user image or sourced diagram).
+4. Add hero image: save seed PNG under `data/entity_image_seeds/tasks/<slug>.png`, then import into SQL (see Thumbnail).
 5. Apply migration to the live DB.
 6. Run keyword backfill so existing papers get tagged (see Keyword linking).
-7. Rebuild frontend if the thumbnail changed: `cd frontend && npm run build && cd .. && nginx -t && nginx -s reload`
-8. Verify API + report production URL.
-9. **Recommend benchmarks** the user should add next (do not auto-add unless they ask — use `add-benchmark` for ingestion).
+7. Verify API + report production URL.
 
 Skip keyword backfill only when the user explicitly asks for the task row alone.
+
+8. **Recommend benchmarks** the user should add next (do not auto-add unless they ask — use `add-benchmark` for ingestion).
 
 ## Core Rules
 
@@ -37,7 +39,7 @@ Tasks are first-class taxonomy nodes. Each task gets its own page at `/tasks/<sl
 - **`is_visible`**: default `true` for user-facing taxonomy pages. Set `false` only when the user wants a hidden/internal task reachable by direct slug.
 - **`keywords`**: comma-separated phrases used by the keyword matcher to tag papers. Include exact name, hyphenated variants, common abbreviations, and related phrasing researchers use in titles/abstracts. Follow casing rules in `docs/keyword-matching.md` (lowercase for phrases, preserve caps for acronyms like `ASR`, `MOT`, `VLM`).
 - **Descriptions**: one concise paragraph — what the task is, typical inputs/outputs, and why it matters. Link related on-site tasks with relative markdown, e.g. `[Object Detection](/tasks/object-detection)`, `[Image Segmentation](/tasks/image-segmentation)`. Never hard-code `paperswithcode.co` or localhost inside markdown fields.
-- **Images**: prefer self-hosted assets at `https://paperswithcode.co/images/tasks/<slug>.png` (see Thumbnail). Legacy tasks may use external `image_url` values; new tasks should host locally when you add or replace an image.
+- **Images**: curated self-hosted heroes are stored in SQL (`image_data` / `image_mime_type`) and served at `/api/v1/tasks/{slug}/image`. Do **not** add runtime assets under `frontend/public/images/`. Legacy rows may still have external `image_url` values; new tasks should import a local PNG into the DB (see Thumbnail).
 
 ## Workflow
 
@@ -74,34 +76,37 @@ Area lookup in SQL:
 - **`area_id`**: resolve by area name (see table above).
 - **`parent_id` / `level`**: set only for subtasks. Look up parent by slug; `level = parent.level + 1`.
 - **`is_visible`**: default `true`.
-- **`image_url`**: `https://paperswithcode.co/images/tasks/<slug>.png` when hosting locally (preferred).
+- **`image_url`**: leave NULL for new self-hosted images — the API resolves `/api/v1/tasks/<slug>/image` once `image_mime_type` is set. Use an external URL only when you cannot self-host.
 - **`image_credit`**: attribution as markdown link or plain URL, e.g. `[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)` or a source paper link `[Paper title](/paper/2005.08100)`.
 - **`useful_leaderboards`**: optional comma-separated external leaderboard URLs (HF Spaces, community leaderboards) when the user provides them or you find a canonical one for the domain.
 
 ### 3. Thumbnail
 
-Production serves task images from `frontend/public/images/tasks/` (built into `frontend/dist`).
+Task hero images are DB-backed. Save a seed PNG, import it, then verify the API image endpoint.
 
 **If the user provides an image**, copy it to:
 
 ```text
-frontend/public/images/tasks/<slug>.png
+data/entity_image_seeds/tasks/<slug>.png
 ```
 
 **Otherwise**, find a suitable diagram:
 
 1. Check whether a related task, survey paper, or benchmark homepage has a clear task illustration.
 2. For arXiv-backed domains, download `https://arxiv.org/pdf/<arxiv_id>.pdf` and extract a figure with PyMuPDF (`fitz`) — same approach as `add-method`: locate figure captions, crop the main task diagram (not tables-only), render at 3× zoom.
-3. Save to `frontend/public/images/tasks/<slug>.png`.
+3. Save to `data/entity_image_seeds/tasks/<slug>.png`.
 4. Set `image_credit` to the source.
 
-Prefer self-hosted images for new tasks. External hotlinks are acceptable only when licensing/hosting makes local copy impractical and the user agrees.
-
-Always rebuild and reload nginx after adding or replacing a thumbnail:
+After the task row exists, import the PNG into SQL:
 
 ```bash
-cd frontend && npm run build && cd .. && nginx -t && nginx -s reload
+uv run --env-file backend/keys.env python backend/database/import_entity_image.py \
+    tasks <slug> data/entity_image_seeds/tasks/<slug>.png
 ```
+
+Prefer self-hosted DB images for new tasks. External hotlinks are acceptable only when licensing/hosting makes local copy impractical and the user agrees.
+
+No frontend rebuild is needed for entity images — they are served from the backend API.
 
 ### 4. Create and apply migration
 
@@ -123,7 +128,7 @@ VALUES (
     0,
     NULL,
     true,
-    'https://paperswithcode.co/images/tasks/<slug>.png',
+    NULL,
     '[<credit label>](<url>)',
     NULL  -- or comma-separated external leaderboard URLs
 )
@@ -263,7 +268,7 @@ Before reporting done:
 
 ```sql
 SELECT t.id, t.slug, t.name, t.area_id, a.name AS area,
-       t.parent_id, t.level, t.is_visible, t.image_url
+       t.parent_id, t.level, t.is_visible, t.image_url, t.image_mime_type
 FROM tasks t
 LEFT JOIN areas a ON a.id = t.area_id
 WHERE t.slug = '<slug>';
@@ -277,10 +282,11 @@ JOIN tasks t ON t.id = pt.task_id
 WHERE t.slug = '<slug>';
 ```
 
-3. Task API:
+3. Task API (expect `"image_url": "/api/v1/tasks/<slug>/image"` when DB image imported):
 
 ```bash
 curl -fsS "http://localhost:8000/api/v1/tasks/<slug>" | uv run python3 -m json.tool
+curl -fsS -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/v1/tasks/<slug>/image"
 ```
 
 4. Task datasets (may be empty until benchmarks are added):
@@ -298,7 +304,7 @@ Always include:
 - **Production task URL**: `https://paperswithcode.co/tasks/<slug>`
 - **Hierarchy**: top-level or subtask of `<parent-slug>` (with level)
 - **Area** assigned
-- **Thumbnail**: confirm image deployed (note hard-refresh if Cloudflare may cache a replaced file)
+- **Thumbnail**: confirm `/api/v1/tasks/<slug>/image` returns HTTP 200 after import
 - **Keyword linking summary**: how many papers tagged after backfill
 - **Recommended benchmarks** — numbered list with:
   - Benchmark name

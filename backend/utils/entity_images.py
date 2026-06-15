@@ -2,7 +2,8 @@
 Helpers for DB-backed entity images (tasks, methods, conferences).
 
 Curated hero/figure images used to live as static files under
-`frontend/public/images/<entity>/<slug>.png`. They now live in the database in
+`frontend/public/images/<entity>/<slug>.png` and seed PNGs under
+`data/entity_image_seeds/<entity>/`. They now live in the database in
 two columns per row:
 
   - `image_data`       BYTEA, deferred so list queries never load the blob.

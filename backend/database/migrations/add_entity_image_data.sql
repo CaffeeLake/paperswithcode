@@ -2,7 +2,10 @@
 --
 -- Curated hero/figure images for tasks, methods, and conferences previously
 -- lived as static files under `frontend/public/images/<entity>/<slug>.png`.
--- These columns let us store the image bytes directly on the owning row:
+-- Seed PNGs now live under `data/entity_image_seeds/<entity>/` and are imported
+-- with `backend/database/import_entity_image.py` or bulk backfill via
+-- `run_add_entity_image_data.py`. These columns store the image bytes directly
+-- on the owning row:
 --
 --   - image_data       (BYTEA)        -> raw image bytes (deferred in the ORM
 --                                         so list queries never load the blob).
