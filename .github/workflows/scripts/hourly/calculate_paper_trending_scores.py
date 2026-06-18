@@ -22,15 +22,21 @@ Schedule: Hourly, after update_github_stars and update_hf_artifacts.
 """
 
 import gc
+import json
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import text
 
 from backend.database.connection import db_manager
 from backend.utils.trending import (
     KIND_WEIGHTS,
+    apply_decaying_pin,
     compute_paper_score,
+    decaying_pin_floor,
+    parse_trending_pin_specs,
     sorted_positive,
 )
 
@@ -40,6 +46,9 @@ SCORING_WINDOW_DAYS = 365
 # GitHub repo scores older than this are treated as stale (no live signal).
 GITHUB_FRESHNESS_HOURS = 24
 WRITE_CHUNK_SIZE = 500
+PIN_STATE_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "trending_pin_state.json"
+)
 
 
 def log(message: str):
@@ -178,6 +187,95 @@ def write_scores(session, updates, clears):
     return written, cleared
 
 
+def _load_pin_state() -> dict:
+    if not PIN_STATE_PATH.exists():
+        return {}
+    return json.loads(PIN_STATE_PATH.read_text())
+
+
+def _save_pin_state(state: dict) -> None:
+    PIN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PIN_STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def apply_decaying_trending_pins(session) -> int:
+    """Raise pinned papers toward 100, linearly decaying to their true score.
+
+    ``PWC_TRENDING_PIN_ARXIV_IDS`` entries look like ``2606.16140:72`` (arXiv id
+    and decay hours; hours default to 72). Pin start times are persisted in
+    ``trending_pin_state.json`` so the fade continues across hourly runs.
+    """
+    specs = parse_trending_pin_specs(os.getenv("PWC_TRENDING_PIN_ARXIV_IDS", ""))
+    if not specs:
+        return 0
+
+    state = _load_pin_state()
+    now = datetime.now(timezone.utc)
+
+    for arxiv_id, decay_hours in specs.items():
+        if arxiv_id not in state:
+            state[arxiv_id] = {
+                "started_at": now.isoformat(),
+                "decay_hours": decay_hours,
+            }
+        else:
+            state[arxiv_id]["decay_hours"] = decay_hours
+
+    state = {arxiv_id: state[arxiv_id] for arxiv_id in specs if arxiv_id in state}
+    _save_pin_state(state)
+
+    rows = session.execute(
+        text("""
+            SELECT id, arxiv_id, trending_score
+            FROM papers
+            WHERE arxiv_id = ANY(:arxiv_ids)
+              AND is_latest_version = TRUE
+        """),
+        {"arxiv_ids": list(specs.keys())},
+    ).fetchall()
+
+    applied = 0
+    for row in rows:
+        pin = state[row.arxiv_id]
+        started_at = datetime.fromisoformat(pin["started_at"])
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        hours_elapsed = (now - started_at).total_seconds() / 3600.0
+        decay_hours = float(pin["decay_hours"])
+        computed = float(row.trending_score) if row.trending_score is not None else None
+        floor = decaying_pin_floor(hours_elapsed, decay_hours)
+        final = apply_decaying_pin(computed, hours_elapsed, decay_hours)
+
+        if floor <= 0 and computed is not None:
+            log(f"Decaying pin finished for {row.arxiv_id} (computed={computed:.2f})")
+            continue
+
+        if computed is not None and abs(final - computed) < 1e-4:
+            continue
+
+        session.execute(
+            text("""
+                UPDATE papers
+                SET trending_score = :score,
+                    trending_score_updated_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id
+            """),
+            {"id": row.id, "score": round(final, 4)},
+        )
+        applied += 1
+        computed_label = f"{computed:.2f}" if computed is not None else "none"
+        log(
+            f"Decaying pin {row.arxiv_id}: computed={computed_label}, "
+            f"floor={floor:.2f}, final={final:.2f} "
+            f"({hours_elapsed:.1f}h / {decay_hours:.0f}h)"
+        )
+
+    if applied:
+        session.commit()
+    return applied
+
+
 def log_top_papers(session, limit: int = 10):
     """Log top composite and top GitHub-only papers for trial comparison."""
     log("-" * 80)
@@ -266,6 +364,7 @@ def main():
 
         log(f"Papers with signal: {len(updates)}; clearing stale: {len(clears)}")
         written, cleared = write_scores(session, updates, clears)
+        pinned = apply_decaying_trending_pins(session)
 
         log_top_papers(session)
 
@@ -275,6 +374,7 @@ def main():
         log("=" * 80)
         log(f"Scores written: {written}")
         log(f"Stale scores cleared: {cleared}")
+        log(f"Decaying pins applied: {pinned}")
         log(f"Runtime: {elapsed:.1f} minutes")
         log("=" * 80)
     except Exception as e:

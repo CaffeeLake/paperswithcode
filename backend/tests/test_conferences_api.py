@@ -1,7 +1,7 @@
 """Conference API tests."""
 
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +11,7 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.config import get_settings
 from backend.database.conferences_setup.cvpr2026_best_paper_finalist_order import (
     CVPR_2026_BEST_PAPER_FINALIST_ARXIV_ORDER,
 )
@@ -24,6 +25,17 @@ from backend.models.database import (
     PaperRepository,
     Repository,
 )
+
+
+# Trending scores older than 24h are treated as missing, so test rows stamp a
+# fresh timestamp to be eligible for the trending sort.
+_FRESH = datetime.now(timezone.utc)
+_STALE = datetime.now(timezone.utc) - timedelta(hours=48)
+
+
+def _pin_trending_mode(monkeypatch, mode: str) -> None:
+    """Force the active trending ranking mode for a test, regardless of env."""
+    monkeypatch.setattr(get_settings(), "trending_ranking_mode", mode)
 
 
 @compiles(ARRAY, "sqlite")
@@ -301,3 +313,116 @@ def test_cvpr_2026_best_paper_finalists_follow_announcement_order(
     assert [
         paper["arxiv_id"] for paper in data["results"]
     ] == CVPR_2026_BEST_PAPER_FINALIST_ARXIV_ORDER
+
+
+@pytest.fixture
+def composite_conf_client():
+    """Conference whose papers carry paper-level composite trending scores.
+
+    Conference `cvpr-2097`:
+      - Paper A: papers.trending_score=80 (fresh), official repo velocity 1.0
+      - Paper B: papers.trending_score=40 (fresh), official repo velocity 50.0
+      - Paper C: papers.trending_score=99 but STALE (must be ignored)
+      - Paper D: no paper-level trending_score
+
+    Paper A must outrank Paper B by its higher *paper* score even though Paper
+    B's repo velocity is far higher.
+    """
+    Base.metadata.create_all(bind=engine)
+    db = TestingSessionLocal()
+
+    conference = Conference(
+        id=4,
+        name="CVPR 2097",
+        slug="cvpr-2097",
+        short_name="CVPR",
+        year=2097,
+        url="https://example.com/",
+        start_date=date(2097, 6, 1),
+        end_date=date(2097, 6, 5),
+    )
+    db.add(conference)
+
+    specs = {
+        301: ("Paper A", 80.0, _FRESH),
+        302: ("Paper B", 40.0, _FRESH),
+        303: ("Paper C", 99.0, _STALE),
+        304: ("Paper D", None, None),
+    }
+    for paper_id, (title, score, stamp) in specs.items():
+        paper = Paper(
+            id=paper_id,
+            arxiv_id=f"2097.{paper_id:05d}",
+            title=title,
+            version="v1",
+            is_latest_version=True,
+            source="arxiv",
+            proceeding="CVPR 2097",
+            trending_score=score,
+            trending_score_updated_at=stamp,
+        )
+        db.add(paper)
+        db.add(
+            PaperConference(
+                paper_id=paper.id, conference_id=conference.id, source="test"
+            )
+        )
+
+    repos = [
+        Repository(
+            id=1,
+            url="https://github.com/owner/repo-a",
+            owner="owner",
+            name="repo-a",
+            num_stars=100,
+            trending_score=1.0,
+            trending_score_updated_at=_FRESH,
+            source="test",
+        ),
+        Repository(
+            id=2,
+            url="https://github.com/owner/repo-b",
+            owner="owner",
+            name="repo-b",
+            num_stars=100,
+            trending_score=50.0,
+            trending_score_updated_at=_FRESH,
+            source="test",
+        ),
+    ]
+    db.add_all(repos)
+    db.commit()
+    db.add_all(
+        [
+            PaperRepository(paper_id=301, repository_id=1, is_official=True),
+            PaperRepository(paper_id=302, repository_id=2, is_official=True),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    app = create_app()
+    app.dependency_overrides[get_database_session] = override_get_database_session
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    Base.metadata.drop_all(bind=engine)
+
+
+def test_conference_papers_trending_composite_ranks_by_paper_score(
+    composite_conf_client, monkeypatch
+):
+    """In composite mode, conference papers rank by `papers.trending_score`."""
+    _pin_trending_mode(monkeypatch, "composite")
+    response = composite_conf_client.get(
+        "/api/v1/conferences/cvpr-2097/papers?order_by=trending&page_size=10"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    titles = [paper["title"] for paper in data["results"]]
+
+    assert titles[:2] == ["Paper A", "Paper B"]
+    assert set(titles[2:]) == {"Paper C", "Paper D"}
+    assert data["count"] == 4

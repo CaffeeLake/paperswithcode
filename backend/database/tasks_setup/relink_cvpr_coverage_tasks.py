@@ -53,10 +53,6 @@ TASK_KEYWORDS: dict[str, str] = {
     "stereo-matching": (
         "stereo matching, stereo disparity, disparity estimation, depth from stereo"
     ),
-    "slam-and-localization": (
-        "simultaneous localization and mapping, visual odometry, visual SLAM, "
-        "RGB-D SLAM, LiDAR SLAM, monocular SLAM, Gaussian Splatting SLAM"
-    ),
     "omni-models": (
         "omni model, omni models, omni-modal, omnimodal, any-to-any model, "
         "interleaved multimodal, omni understanding"

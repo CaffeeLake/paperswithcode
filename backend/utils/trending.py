@@ -51,6 +51,50 @@ KIND_WEIGHTS: Dict[str, float] = {
 # Final score multiplier (single-signal top ~= 50, both-signal top ~= 100).
 SCORE_SCALE = 100.0
 
+# Editorial decaying pin: temporary boost that linearly fades to the computed score.
+PIN_PEAK_SCORE = 100.0
+DEFAULT_PIN_DECAY_HOURS = 72.0
+
+
+def parse_trending_pin_specs(
+    raw: str, default_decay_hours: float = DEFAULT_PIN_DECAY_HOURS
+) -> Dict[str, float]:
+    """Parse ``arxiv[:hours],...`` into ``{arxiv_id: decay_hours}``."""
+    specs: Dict[str, float] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            arxiv_id, hours_str = part.split(":", 1)
+            specs[arxiv_id.strip()] = float(hours_str.strip())
+        else:
+            specs[part] = default_decay_hours
+    return specs
+
+
+def decaying_pin_floor(
+    hours_elapsed: float,
+    decay_hours: float,
+    peak: float = PIN_PEAK_SCORE,
+) -> float:
+    """Linear editorial floor that fades from ``peak`` to 0 over ``decay_hours``."""
+    if decay_hours <= 0 or hours_elapsed >= decay_hours:
+        return 0.0
+    return peak * (1.0 - hours_elapsed / decay_hours)
+
+
+def apply_decaying_pin(
+    computed: float | None,
+    hours_elapsed: float,
+    decay_hours: float,
+    peak: float = PIN_PEAK_SCORE,
+) -> float:
+    """Blend a decaying editorial floor with the computed composite score."""
+    floor = decaying_pin_floor(hours_elapsed, decay_hours, peak=peak)
+    base = float(computed) if computed is not None else 0.0
+    return max(base, floor)
+
 
 def sorted_positive(values: Iterable[float]) -> List[float]:
     """Return a sorted list of the strictly-positive values (the rank corpus)."""

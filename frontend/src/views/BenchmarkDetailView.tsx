@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import LatexTitle from "@/components/LatexTitle";
 import { Icon } from "@/components";
 import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
+import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import { useToast } from "@/hooks/use-toast";
 
 /** Cap how many metric columns we render in the leaderboard at once. The
@@ -782,32 +783,22 @@ const BenchmarkDetailView: React.FC = () => {
   const direction = directionsQ.data?.directions?.[activeMetric] || "higher_is_better";
   const arrow: "↑" | "↓" = direction === "lower_is_better" ? "↓" : "↑";
 
-  // Subset of `allowedMetrics` actually rendered as table columns. Always
-  // includes `activeMetric` (so the sort column is never hidden); the rest
-  // fill in from `allowedMetrics` in their original configured order. The
-  // active metric is NOT bubbled to the front, matching the legacy PwC
-  // layout where columns kept their leaderboard ordering and the sort key
-  // was indicated by an arrow.
-  const visibleMetrics = useMemo(() => {
-    if (allowedMetrics.length === 0) return activeMetric ? [activeMetric] : [];
-    if (allowedMetrics.length <= MAX_METRIC_COLUMNS) return allowedMetrics;
-    const result: string[] = [];
-    const activeIncluded = activeMetric && allowedMetrics.includes(activeMetric);
-    const budget = activeIncluded ? MAX_METRIC_COLUMNS - 1 : MAX_METRIC_COLUMNS;
-    let taken = 0;
-    for (const m of allowedMetrics) {
-      if (m === activeMetric) continue;
-      if (taken >= budget) continue;
-      result.push(m);
-      taken++;
-    }
-    if (activeIncluded) {
-      const insertAt = allowedMetrics.findIndex((m) => m === activeMetric);
-      const before = allowedMetrics.slice(0, insertAt).filter((m) => result.includes(m)).length;
-      result.splice(before, 0, activeMetric);
-    }
-    return result;
+  // Metric ordering shared by the table columns and the View dropdowns. The
+  // metric currently shown in the chart (`activeMetric`) leads, so the
+  // default/selected metric is always the first metric column; the rest
+  // follow in their configured leaderboard order.
+  const orderedMetrics = useMemo(() => {
+    if (!activeMetric || !allowedMetrics.includes(activeMetric)) return allowedMetrics;
+    return [activeMetric, ...allowedMetrics.filter((m) => m !== activeMetric)];
   }, [allowedMetrics, activeMetric]);
+
+  // Subset of `orderedMetrics` actually rendered as table columns, capped at
+  // `MAX_METRIC_COLUMNS`. Since `activeMetric` leads, the active/default
+  // metric is always shown first and never hidden by the cap.
+  const visibleMetrics = useMemo(() => {
+    if (orderedMetrics.length === 0) return activeMetric ? [activeMetric] : [];
+    return orderedMetrics.slice(0, MAX_METRIC_COLUMNS);
+  }, [orderedMetrics, activeMetric]);
 
   const { points: chartPoints, sota, sotaModel } = useMemo(
     () => computeSeries(mergedTaskEvals, activeMetric, arrow),
@@ -1028,7 +1019,7 @@ const BenchmarkDetailView: React.FC = () => {
                       value={activeMetric}
                       onChange={(e) => setBestMetric(e.target.value)}
                     >
-                      {allowedMetrics.map((m) => (
+                      {orderedMetrics.map((m) => (
                         <option key={m} value={m}>{m}</option>
                       ))}
                     </select>
@@ -1123,7 +1114,7 @@ const BenchmarkDetailView: React.FC = () => {
                     value={activeMetric}
                     onChange={(e) => setBestMetric(e.target.value)}
                   >
-                    {allowedMetrics.map((m) => (
+                    {orderedMetrics.map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1228,6 +1219,9 @@ const BenchmarkDetailView: React.FC = () => {
                             e.model_name || "—"
                           )}
                           {e.is_open === false && <ClosedSourceEvalBadge />}
+                          {(e.external ?? e.is_external) && (
+                            <ExternalSourceEvalBadge sourceUrl={e.source_url || e.external_source_url || e.result_url} />
+                          )}
                         </td>
                         {showHarness && (
                           <td className="col-harness">{e.harness || "—"}</td>

@@ -95,7 +95,7 @@ const TagBrowseView: React.FC = () => {
 
   const papersQ = useInfiniteTaskPapers({
     taskId: pageQ.data?.task?.id || "",
-    page_size: 12,
+    page_size: 20,
     order_by: orderBy,
     order_dir: "desc",
     include_resources: true,

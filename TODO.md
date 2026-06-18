@@ -24,3 +24,8 @@
 - Add paperswithcode.co/trends, see https://www.youtube.com/watch?v=TU3koPyFZfw
 - Implement related papers using pgvector
 - Add "Propose a new task..." and "Propose a new method"... buttons at the edit pop-ups
+- Complete https://paperswithcode.co/tasks/semi-supervised-image-classification
+- Do something around KV cache education based on https://research.nvidia.com/labs/eai/blogs/kv-cache-compression-and-its-infra-problems/
+- Add Artificial Analysis evals using an API key
+- Build agents which post trending stuff on Reddit, X, LinkedIn etc.
+- Add papers for Gemini 3 Deep Think, Qwen3.7 Max, Gemini 3.5 Flash, Muse Spark, Grok 4.3 and add the missing external CritPt evals from Artificial Analysis

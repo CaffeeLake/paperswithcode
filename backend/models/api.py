@@ -169,6 +169,13 @@ class Paper(BaseModel):
             "(populated for external rows only)"
         ),
     )
+    hf_artifact_summary: Optional["HfArtifactSummary"] = Field(
+        None,
+        description=(
+            "Compact Hugging Face artifact summary (per-kind counts plus the "
+            "most popular category link) used by paper feed cards."
+        ),
+    )
 
     # Associated resources (optional, populated when requested)
     repositories: Optional[List["Repository"]] = Field(
@@ -490,6 +497,35 @@ class Repository(BaseModel):
     def ensure_string_id(cls, v):
         """Ensure ID is always a string."""
         return str(v)
+
+
+class HfArtifactSummary(BaseModel):
+    """
+    Compact Hugging Face artifact summary for paper cards.
+
+    Carries the per-kind counts plus the single "best" (most populated)
+    category so the feed card can render one clickable Hugging Face link
+    pointing at the most popular artifact type for this paper.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    model_count: int = Field(default=0, description="Number of linked HF models")
+    dataset_count: int = Field(default=0, description="Number of linked HF datasets")
+    space_count: int = Field(default=0, description="Number of linked HF Spaces")
+    best_kind: Optional[str] = Field(
+        None,
+        description="Most populated artifact kind: 'model', 'dataset', or 'space'",
+    )
+    best_count: int = Field(default=0, description="Artifact count for the best kind")
+    best_url: Optional[str] = Field(
+        None,
+        description=(
+            "URL to the most popular artifact category on Hugging Face. For "
+            "ArXiv papers this is the arxiv-filtered listing; for external "
+            "papers it is the first stored URL in the winning category."
+        ),
+    )
 
 
 class RepositoryStarHistory(BaseModel):
@@ -1721,6 +1757,20 @@ class Evaluation(BaseModel):
     external_source_url: Optional[str] = Field(
         None, description="URL to external source (e.g., competition)"
     )
+    source_url: Optional[str] = Field(
+        None, description="Canonical URL or paper reference where the score was found"
+    )
+    external: bool = Field(
+        default=False,
+        description="True when source_url is independent of the evaluated paper/model",
+    )
+    is_external: bool = Field(
+        default=False,
+        description=(
+            "Legacy alias for external. True when source_url is independent "
+            "of the evaluated paper/model."
+        ),
+    )
     num_parameters: Optional[int] = Field(
         None,
         ge=0,
@@ -1817,6 +1867,9 @@ class EvaluationCreateRequest(BaseModel):
     best_metric: Optional[str] = Field(None, description="Best metric name")
     evaluated_on: Optional[date] = Field(None, description="Evaluation date")
     external_source_url: Optional[str] = Field(None, description="External source URL")
+    source_url: Optional[str] = Field(
+        None, description="Canonical source URL or paper reference for this score"
+    )
     num_parameters: Optional[int] = Field(
         None,
         ge=0,
@@ -1858,6 +1911,9 @@ class EvaluationUpdateRequest(BaseModel):
     best_metric: Optional[str] = Field(None, description="Best metric name")
     evaluated_on: Optional[date] = Field(None, description="Evaluation date")
     external_source_url: Optional[str] = Field(None, description="External source URL")
+    source_url: Optional[str] = Field(
+        None, description="Canonical source URL or paper reference for this score"
+    )
     num_parameters: Optional[int] = Field(
         None,
         ge=0,

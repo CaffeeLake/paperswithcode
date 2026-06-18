@@ -13,7 +13,11 @@ Key Features:
 - Memory efficient processing for 4GB RAM systems
 
 Update Strategy:
-- Recent papers (< 6 months old): Update every hour (for accurate velocity tracking)
+- Hot papers (any linked paper < 30 days old): Update every hour, processed
+  first by newest paper date. Uses MAX(date_published) so a new paper on a
+  repo shared with older work is not downgraded.
+- Recent papers (any linked paper < 6 months old): Update every hour, after hot
+- Never-updated old repos: Backfill tier, after hot/recent
 - Regular papers: Update every 7 days
 - Each update stores a historical snapshot for trending calculations
 
@@ -32,6 +36,10 @@ import requests
 from backend.database.connection import db_manager
 from backend.services.repository_service import RepositoryService
 from sqlalchemy import text
+
+# Repos with any linked paper newer than this get hourly updates and jump the
+# queue ahead of older work sharing the same GitHub repo.
+HOT_PAPER_WINDOW_DAYS = 30
 
 
 def log(message: str):
@@ -53,10 +61,14 @@ def get_next_repository_group(
     Get the next unique repository (by owner/name) that needs updating.
     Returns all repository IDs that share the same owner/name.
 
-    Priority system:
-    1. Recent papers (< 6 months old): Update every hour
-    2. Regular papers: Update every 7 days
-    3. Never-updated repositories: Highest priority
+    Priority system (uses MAX linked paper date, not MIN):
+    1. Hot: any linked paper published within HOT_PAPER_WINDOW_DAYS
+    2. Recent: any linked paper published within 6 months
+    3. Never-updated repositories (old papers only — backfill tier)
+    4. Regular: older papers, 7-day cadence
+
+    Within each tier, newest linked paper is processed first so fresh releases
+    are not stuck behind stale backfill work.
 
     Args:
         session: Database session
@@ -70,8 +82,12 @@ def get_next_repository_group(
         threshold_recent = datetime.now() - timedelta(hours=threshold_hours_recent)
         threshold_regular = datetime.now() - timedelta(days=threshold_days_regular)
         six_months_ago = datetime.now() - timedelta(days=180)
+        thirty_days_ago = datetime.now() - timedelta(days=HOT_PAPER_WINDOW_DAYS)
 
-        # Query to find repositories that need updating, grouped by owner/name
+        # Query to find repositories that need updating, grouped by owner/name.
+        # Eligibility and priority use MAX(p.date_published): a brand-new paper
+        # linked to a repo that also backs older work must not inherit the old
+        # paper's refresh cadence.
         query = text("""
             SELECT
                 r.owner,
@@ -80,11 +96,12 @@ def get_next_repository_group(
                 COUNT(DISTINCT r.id) as url_count,
                 MIN(r.num_stars_updated_at) as oldest_update,
                 MAX(r.num_stars) as current_stars,
-                MIN(p.date_published) as oldest_paper_date,
+                MAX(p.date_published) as newest_paper_date,
                 CASE
-                    WHEN MIN(r.num_stars_updated_at) IS NULL THEN 1
-                    WHEN MIN(p.date_published) >= :six_months_ago THEN 2
-                    ELSE 3
+                    WHEN MAX(p.date_published) >= :thirty_days_ago THEN 1
+                    WHEN MAX(p.date_published) >= :six_months_ago THEN 2
+                    WHEN MIN(r.num_stars_updated_at) IS NULL THEN 3
+                    ELSE 4
                 END as priority
             FROM repositories r
             JOIN paper_repositories pr ON r.id = pr.repository_id
@@ -95,22 +112,22 @@ def get_next_repository_group(
             AND r.name != ''
             AND pr.is_official = TRUE
             AND p.is_latest_version = TRUE
-            AND (
-                r.num_stars_updated_at IS NULL
+            GROUP BY r.owner, r.name
+            HAVING (
+                MIN(r.num_stars_updated_at) IS NULL
                 OR (
-                    p.date_published >= :six_months_ago
-                    AND r.num_stars_updated_at < :threshold_recent
+                    MAX(p.date_published) >= :six_months_ago
+                    AND MIN(r.num_stars_updated_at) < :threshold_recent
                 )
                 OR (
-                    p.date_published < :six_months_ago
-                    AND r.num_stars_updated_at < :threshold_regular
+                    MAX(p.date_published) < :six_months_ago
+                    AND MIN(r.num_stars_updated_at) < :threshold_regular
                 )
             )
-            GROUP BY r.owner, r.name
             ORDER BY
                 priority ASC,
+                MAX(p.date_published) DESC,
                 MIN(r.num_stars_updated_at) ASC NULLS FIRST,
-                MIN(p.date_published) DESC,
                 COUNT(DISTINCT r.id) DESC
             LIMIT 1
         """)
@@ -121,6 +138,7 @@ def get_next_repository_group(
                 "threshold_recent": threshold_recent,
                 "threshold_regular": threshold_regular,
                 "six_months_ago": six_months_ago,
+                "thirty_days_ago": thirty_days_ago,
             },
         ).fetchone()
 
@@ -132,7 +150,7 @@ def get_next_repository_group(
                 "url_count": result[3],
                 "oldest_update": result[4],
                 "current_stars": result[5] or 0,
-                "oldest_paper_date": result[6],
+                "newest_paper_date": result[6],
                 "priority": result[7],
             }
 
@@ -380,20 +398,22 @@ def main():
             repository_ids = repo_group["repository_ids"]
             url_count = repo_group["url_count"]
             current_stars = repo_group.get("current_stars", 0)
-            oldest_paper_date = repo_group.get("oldest_paper_date")
-            priority = repo_group.get("priority", 3)
+            newest_paper_date = repo_group.get("newest_paper_date")
+            priority = repo_group.get("priority", 4)
 
-            # Calculate paper age
-            if oldest_paper_date:
-                paper_age_days = (datetime.now().date() - oldest_paper_date).days
+            # Calculate age of the newest linked paper (drives queue tier).
+            if newest_paper_date:
+                paper_age_days = (datetime.now().date() - newest_paper_date).days
             else:
                 paper_age_days = 0
 
             # Determine priority label
             if priority == 1:
-                priority_label = "NEW"
+                priority_label = "HOT"
             elif priority == 2:
                 priority_label = "RECENT"
+            elif priority == 3:
+                priority_label = "NEW"
             else:
                 priority_label = "REGULAR"
 

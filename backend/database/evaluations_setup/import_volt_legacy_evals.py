@@ -37,19 +37,6 @@ DATASETS = {
 
 EVALS = [
     {
-        "arxiv_id": "2312.10035",
-        "task_id": SEM_TASK_ID,
-        "dataset": "scannet-plus-plus",
-        "model_name": "Point Transformer V3 + PPT",
-        "metric": "mIoU",
-        "score": "41.4",
-        "methodology": (
-            "ScanNet++ test mIoU from Volt Table 1 joint multi-dataset training row "
-            "(PTv3/PPT); source papers: arXiv 2312.10035 and Volt 2604.19609."
-        ),
-        "source_url": "https://arxiv.org/pdf/2604.19609",
-    },
-    {
         "arxiv_id": "2210.05666",
         "task_id": SEM_TASK_ID,
         "dataset": "scannet-plus-plus",

@@ -36,6 +36,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_evaluations_num_parameters.sql` | `evaluations.num_parameters` |
 | `add_evaluations_harness.sql` | `evaluations.harness` |
 | `add_evaluations_hf_model_url.sql` | `evaluations.hf_model_url` |
+| `add_evaluations_source_attribution.sql` | `evaluations.source_url` and `evaluations.external` |
 | `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
 | `add_task_datasets_featured_rank.sql` | `task_datasets.featured_rank` |
 | `add_tasks_is_visible.sql` | `tasks.is_visible` |

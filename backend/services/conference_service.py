@@ -25,9 +25,7 @@ from backend.models.database import Conference as DBConference
 from backend.models.database import ConferenceDeadline as DBConferenceDeadline
 from backend.models.database import Paper as DBPaper
 from backend.models.database import PaperConference
-from backend.models.database import PaperRepository as DBPaperRepository
 from backend.models.database import PaperTask
-from backend.models.database import Repository as DBRepository
 from backend.models.database import Task as DBTask
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
@@ -368,29 +366,13 @@ class ConferenceService:
                 else:
                     query = query.order_by(asc(DBPaper.title), asc(DBPaper.id))
             elif order_by == "trending":
-                trending_subq = (
-                    self.db.query(
-                        DBPaperRepository.paper_id.label("paper_id"),
-                        func.max(DBRepository.trending_score).label("trending_score"),
-                        func.max(DBRepository.num_stars).label("max_stars"),
-                    )
-                    .join(
-                        DBRepository,
-                        DBPaperRepository.repository_id == DBRepository.id,
-                    )
-                    .filter(DBPaperRepository.is_official.is_(True))
-                    .filter(DBRepository.trending_score.isnot(None))
-                    .group_by(DBPaperRepository.paper_id)
-                    .subquery()
-                )
-                query = query.outerjoin(
-                    trending_subq, trending_subq.c.paper_id == DBPaper.id
-                ).order_by(
-                    desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
-                    desc(func.coalesce(trending_subq.c.max_stars, -1)),
-                    desc(DBPaper.date_published),
-                    desc(DBPaper.id),
-                )
+                # Match the home feed: rank by the active trending metric
+                # (paper-level composite score or official-repo velocity per
+                # PWC_TRENDING_RANKING_MODE). Unscored papers stay in the list
+                # but sort after scored papers.
+                from backend.services.paper_service import PaperService
+
+                query = PaperService(self.db).apply_scoped_trending_order(query)
             elif presentation not in ("outstanding", "best_paper_finalist"):
                 if order_by == "date_published":
                     order_field = DBPaper.date_published

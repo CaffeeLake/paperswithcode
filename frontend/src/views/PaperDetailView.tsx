@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Icon, MethodChip, PaperPreview, TagChip } from "@/components";
 import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
+import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
 import { apiClient, indexPaperFromArxiv } from "@/lib/api";
 import type { Paper } from "@/lib/api";
@@ -57,6 +58,7 @@ const EDIT_SECTION_LABEL: Record<EditSection, string> = {
 
 const ABSTRACT_PREVIEW_LEN = 360;
 const REPO_PREVIEW_LIMIT = 3;
+const HF_LINK_PREVIEW_LIMIT = 3;
 
 function formatLongDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -147,6 +149,38 @@ const PaperDetailView: React.FC = () => {
     }),
     [paper?.hf_models, paper?.hf_datasets, paper?.hf_spaces],
   );
+  // Combine explicitly linked HF artifacts with those discovered via the Hub
+  // arXiv endpoint (deduped), then cap each category to the top few links. The
+  // full count stays reachable via the clickable count on each row.
+  const hfArtifactLinks = useMemo(() => {
+    const buildLinks = (
+      explicit: string[],
+      discovered: string[] | undefined,
+      fallbackLabel: string,
+    ) => {
+      const seen = new Set<string>();
+      const links: Array<{ href: string; label: string }> = [];
+      for (const href of [...explicit, ...(discovered ?? [])]) {
+        if (seen.has(href)) continue;
+        seen.add(href);
+        links.push({ href, label: formatResourceLinkLabel(href, fallbackLabel) });
+        if (links.length >= HF_LINK_PREVIEW_LIMIT) break;
+      }
+      return links;
+    };
+    return {
+      models: buildLinks(explicitHfArtifacts.models, hfRepos?.modelUrls, "Model"),
+      datasets: buildLinks(explicitHfArtifacts.datasets, hfRepos?.datasetUrls, "Dataset"),
+      spaces: buildLinks(explicitHfArtifacts.spaces, hfRepos?.spaceUrls, "Space"),
+    };
+  }, [
+    explicitHfArtifacts.models,
+    explicitHfArtifacts.datasets,
+    explicitHfArtifacts.spaces,
+    hfRepos?.modelUrls,
+    hfRepos?.datasetUrls,
+    hfRepos?.spaceUrls,
+  ]);
 
   // Group evaluations by task so the results section can show one mini-table
   // per task with a shared heading, instead of repeating the task on every row.
@@ -407,43 +441,35 @@ const PaperDetailView: React.FC = () => {
     return (b.num_stars || 0) - (a.num_stars || 0);
   });
   const visibleRepos = reposExpanded ? sortedRepos : sortedRepos.slice(0, REPO_PREVIEW_LIMIT);
+  const canonicalArxivId = paper.arxiv_id?.replace(/v\d+$/, "") ?? null;
   const hfArtifactViewer = paper.arxiv_id
     ? {
         isLoading: hfLoading,
-        paperHref: `https://huggingface.co/papers/${paper.arxiv_id.replace(/v\d+$/, "")}`,
+        paperHref: `https://huggingface.co/papers/${canonicalArxivId}`,
         rows: [
           {
             label: "Models",
             href: `https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`,
             count: hfRepos?.models,
             isLimited: hfRepos?.isLimited,
-            links: explicitHfArtifacts.models.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Model"),
-            })),
+            links: hfArtifactLinks.models,
           },
           {
             label: "Datasets",
             href: `https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`,
             count: hfRepos?.datasets,
             isLimited: hfRepos?.isLimited,
-            links: explicitHfArtifacts.datasets.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Dataset"),
-            })),
+            links: hfArtifactLinks.datasets,
           },
           {
             label: "Spaces",
-            href: `https://huggingface.co/spaces?arxivIds=${paper.arxiv_id.replace(/v\d+$/, "")}`,
+            href: `https://huggingface.co/spaces?arxivIds=${canonicalArxivId}`,
             count: hfRepos?.spaces,
             isLimited: hfRepos?.isLimited,
-            links: explicitHfArtifacts.spaces.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Space"),
-            })),
+            links: hfArtifactLinks.spaces,
           },
         ],
-        footer: `Cite arxiv.org/abs/${paper.arxiv_id.replace(/v\d+$/, "")} in a HF README to link it here.`,
+        footer: `Cite arxiv.org/abs/${canonicalArxivId} in a HF README to link it here.`,
       }
     : {
         isLoading: false,
@@ -453,28 +479,19 @@ const PaperDetailView: React.FC = () => {
             label: "Models",
             href: hfArtifactGroupHref(explicitHfArtifacts.models),
             count: explicitHfArtifacts.models.length,
-            links: explicitHfArtifacts.models.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Model"),
-            })),
+            links: hfArtifactLinks.models,
           },
           {
             label: "Datasets",
             href: hfArtifactGroupHref(explicitHfArtifacts.datasets),
             count: explicitHfArtifacts.datasets.length,
-            links: explicitHfArtifacts.datasets.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Dataset"),
-            })),
+            links: hfArtifactLinks.datasets,
           },
           {
             label: "Spaces",
             href: hfArtifactGroupHref(explicitHfArtifacts.spaces),
             count: explicitHfArtifacts.spaces.length,
-            links: explicitHfArtifacts.spaces.map((href) => ({
-              href,
-              label: formatResourceLinkLabel(href, "Space"),
-            })),
+            links: hfArtifactLinks.spaces,
           },
         ],
         footer: null,
@@ -991,7 +1008,7 @@ const PaperDetailView: React.FC = () => {
                       <th>Metric</th>
                       <th>Value</th>
                       <th>Rank</th>
-                      <th></th>
+                      <th>Compare</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1019,6 +1036,9 @@ const PaperDetailView: React.FC = () => {
                             e.model_name || "—"
                           )}
                           {e.is_open === false && <ClosedSourceEvalBadge />}
+                          {(e.external ?? e.is_external) && (
+                            <ExternalSourceEvalBadge sourceUrl={e.source_url || e.external_source_url || e.result_url} />
+                          )}
                         </td>
                         <td className="metric">{e.best_metric}</td>
                         <td className="value">{formatMetricValue(e.metrics?.[e.best_metric || ""])}</td>
@@ -1301,33 +1321,39 @@ const HuggingFaceArtifactsCard: React.FC<{
 
 const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) => {
   const hasLinks = (links?.length ?? 0) > 0;
-  const header = (
-    <div className="hf-artifact-row-header">
-      <span>{label}</span>
-      <span style={{ fontWeight: 600, color: count ? "var(--ink)" : "var(--ink-faint)" }}>
-        {count != null ? `${count}${isLimited ? "+" : ""}` : "—"}
-      </span>
-    </div>
-  );
-
-  if (!hasLinks) {
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="hf-artifact-row">
-        {header}
+  const countLabel = count != null ? `${count}${isLimited ? "+" : ""}` : "—";
+  // The count itself links to the aggregate listing on Hugging Face (e.g.
+  // huggingface.co/models?other=arxiv:<id>) so the full set stays reachable
+  // even when only the top few direct links are shown.
+  const countNode =
+    count ? (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="hf-artifact-count"
+      >
+        {countLabel}
       </a>
+    ) : (
+      <span className="hf-artifact-count hf-artifact-count--empty">{countLabel}</span>
     );
-  }
 
   return (
     <div className="hf-artifact-row">
-      {header}
-      <div className="hf-artifact-links">
-        {links!.map((link) => (
-          <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer">
-            {link.label}
-          </a>
-        ))}
+      <div className="hf-artifact-row-header">
+        <span>{label}</span>
+        {countNode}
       </div>
+      {hasLinks && (
+        <div className="hf-artifact-links">
+          {links!.map((link) => (
+            <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer">
+              {link.label}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

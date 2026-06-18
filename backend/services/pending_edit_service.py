@@ -720,6 +720,7 @@ class PendingEditService:
                 # the same way the EvaluationUpdateRequest handler does, so
                 # clearing harness/num_parameters still works after approval.
                 harness_set = "harness" in data
+                source_url_set = "source_url" in data
                 num_parameters_set = "num_parameters" in data
                 hf_model_url_set = "hf_model_url" in data
                 service.update_evaluation(
@@ -736,9 +737,11 @@ class PendingEditService:
                     best_metric=data.get("best_metric"),
                     evaluated_on=data.get("evaluated_on"),
                     external_source_url=data.get("external_source_url"),
+                    source_url=data.get("source_url"),
                     num_parameters=data.get("num_parameters"),
                     hf_model_url=data.get("hf_model_url"),
                     harness_set=harness_set,
+                    source_url_set=source_url_set,
                     num_parameters_set=num_parameters_set,
                     hf_model_url_set=hf_model_url_set,
                 )
@@ -764,6 +767,7 @@ class PendingEditService:
                     best_metric=data.get("best_metric"),
                     evaluated_on=data.get("evaluated_on"),
                     external_source_url=data.get("external_source_url"),
+                    source_url=data.get("source_url"),
                     num_parameters=data.get("num_parameters"),
                     hf_model_url=data.get("hf_model_url"),
                 )

@@ -367,8 +367,9 @@ def parse_arxiv_url(url: str) -> Optional[tuple[str, Optional[str]]]:
     # Examples:
     # https://arxiv.org/abs/1805.10616
     # https://arxiv.org/abs/1805.10616v2
+    # https://arxiv.org/html/2606.13141v1
     # https://arxiv.org/pdf/1805.10616v2.pdf
-    arxiv_pattern = r"arxiv\.org/(?:abs|pdf)/([^v\s]+)(v\d+)?(?:\.pdf)?"
+    arxiv_pattern = r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(v\d+)?(?:\.pdf)?"
 
     match = re.search(arxiv_pattern, url)
     if match:
@@ -379,6 +380,24 @@ def parse_arxiv_url(url: str) -> Optional[tuple[str, Optional[str]]]:
             return arxiv_id, version
 
     return None
+
+
+def external_source_url_to_paper_url(url: Optional[str]) -> Optional[str]:
+    """
+    Map an external evaluation source URL to our paper page when it cites ArXiv.
+
+    ArXiv abs/pdf/html links are rewritten to ``/paper/{arxiv_id}`` so users
+    stay on Papers with Code. Other URLs are returned unchanged.
+    """
+    if not url:
+        return url
+
+    parsed = parse_arxiv_url(url)
+    if not parsed:
+        return url
+
+    arxiv_id, _version = parsed
+    return f"/paper/{arxiv_id}"
 
 
 def extract_arxiv_id_from_text(text: str) -> Optional[str]:

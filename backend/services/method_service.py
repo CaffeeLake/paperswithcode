@@ -12,8 +12,6 @@ from sqlalchemy import func, desc, asc, or_, case
 from backend.models.database import (
     Method as DBMethod,
     PaperMethod,
-    Repository as DBRepository,
-    PaperRepository as DBPaperRepository,
 )
 from backend.models.api import Method, Methods
 from backend.utils.entity_images import entity_image_url
@@ -454,34 +452,13 @@ class MethodService:
 
             # Apply ordering
             if order_by == "trending":
-                # Rank papers by their best official repository's EMA trending
-                # score. Papers without an official repo / score remain in the
-                # list but sort after scored papers via the coalesce fallbacks.
-                # Mirrors the task-page trending sort in TaskService.
-                trending_subq = (
-                    self.db.query(
-                        DBPaperRepository.paper_id.label("paper_id"),
-                        func.max(DBRepository.trending_score).label("trending_score"),
-                        func.max(DBRepository.num_stars).label("max_stars"),
-                    )
-                    .join(
-                        DBRepository,
-                        DBPaperRepository.repository_id == DBRepository.id,
-                    )
-                    .filter(DBPaperRepository.is_official.is_(True))
-                    .filter(DBRepository.trending_score.isnot(None))
-                    .group_by(DBPaperRepository.paper_id)
-                    .subquery()
-                )
+                # Match the home feed: rank by the active trending metric
+                # (paper-level composite score or official-repo velocity per
+                # PWC_TRENDING_RANKING_MODE). Unscored papers stay in the list
+                # but sort after scored papers.
+                from backend.services.paper_service import PaperService
 
-                query = query.outerjoin(
-                    trending_subq, trending_subq.c.paper_id == DBPaper.id
-                ).order_by(
-                    desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
-                    desc(func.coalesce(trending_subq.c.max_stars, -1)),
-                    desc(DBPaper.date_published),
-                    desc(DBPaper.id),
-                )
+                query = PaperService(self.db).apply_scoped_trending_order(query)
             else:
                 if order_by == "date_published":
                     order_field = DBPaper.date_published

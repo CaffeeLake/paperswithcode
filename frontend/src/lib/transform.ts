@@ -30,6 +30,8 @@ export interface PaperCardProps {
   authors: string[];
   /** paper.tasks[*].slug, used by TagChip */
   tags: string[];
+  /** paper.methods[*] reduced to the fields MethodChip needs */
+  methods: { id?: string; name: string; slug?: string }[];
   citations: number;
   /** stars for the featured repo; null when no repo */
   github: number | null;
@@ -51,6 +53,34 @@ export interface PaperCardProps {
   version: string;
   /** /api/v1/papers/trending velocity_24h, when known */
   velocity24h: number | null;
+  /** label for the most popular HF artifact category, e.g. "models"; null when none */
+  hfKind: "models" | "datasets" | "spaces" | null;
+  /** count for the most popular HF artifact category */
+  hfCount: number;
+  /** link to the most popular HF artifact category; null when none */
+  hfUrl: string | null;
+}
+
+const HF_KIND_LABELS: Record<string, "models" | "datasets" | "spaces"> = {
+  model: "models",
+  dataset: "datasets",
+  space: "spaces",
+};
+
+function summarizeHfArtifacts(paper: Paper): {
+  hfKind: "models" | "datasets" | "spaces" | null;
+  hfCount: number;
+  hfUrl: string | null;
+} {
+  const summary = paper.hf_artifact_summary;
+  if (!summary || !summary.best_kind || !summary.best_url || summary.best_count <= 0) {
+    return { hfKind: null, hfCount: 0, hfUrl: null };
+  }
+  return {
+    hfKind: HF_KIND_LABELS[summary.best_kind] ?? null,
+    hfCount: summary.best_count,
+    hfUrl: summary.best_url,
+  };
 }
 
 /**
@@ -100,7 +130,13 @@ function isoYear(iso: string | null | undefined): number | null {
  */
 export function transformPaperForCard(paper: Paper): PaperCardProps {
   const { github, githubUrl, velocity24h } = summarizeRepos(paper.repositories);
+  const { hfKind, hfCount, hfUrl } = summarizeHfArtifacts(paper);
   const tags = (paper.tasks || []).map((t) => t.slug || "").filter(Boolean);
+  const methods = (paper.methods || []).map((m) => ({
+    id: m.id,
+    name: m.name,
+    slug: m.slug,
+  }));
   return {
     id: paper.arxiv_id || paper.id,
     dbId: paper.id,
@@ -108,6 +144,7 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     abstract: paper.abstract || "",
     authors: paper.authors || [],
     tags,
+    methods,
     citations: paper.citation_count || 0,
     github,
     githubUrl,
@@ -119,6 +156,9 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     tldr: (paper as any).tldr || null,
     version: paper.version || "v1",
     velocity24h,
+    hfKind,
+    hfCount,
+    hfUrl,
   };
 }
 
@@ -134,6 +174,7 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     abstract: t.abstract || "",
     authors: t.authors || [],
     tags: (t.tasks || []).map((x) => x.slug).filter(Boolean),
+    methods: [],
     citations: 0,
     github: t.repository?.num_stars ?? null,
     githubUrl: t.repository?.url ?? null,
@@ -145,6 +186,9 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     tldr: null,
     version: "v1",
     velocity24h: t.trending?.velocity_24h ?? null,
+    hfKind: null,
+    hfCount: 0,
+    hfUrl: null,
   };
 }
 

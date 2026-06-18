@@ -47,6 +47,7 @@ export function useEvaluations(params?: {
   paper_id?: number;
   task_id?: number;
   dataset_id?: number;
+  external?: boolean;
   page?: number;
   page_size?: number;
 }) {

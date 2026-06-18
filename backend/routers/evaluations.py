@@ -53,6 +53,10 @@ def list_evaluations(
             "Pass `true` to return only open-source rows (hides closed-source)."
         ),
     ),
+    external: Optional[bool] = Query(
+        None,
+        description="Filter by external source attribution status.",
+    ),
     ordering: Optional[str] = Query(
         "-created_at",
         description=(
@@ -113,6 +117,7 @@ def list_evaluations(
             dataset_id=dataset_id,
             best_metric=best_metric,
             is_open=is_open,
+            external=external,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -208,6 +213,7 @@ def create_evaluation(
             best_metric=request.best_metric,
             evaluated_on=request.evaluated_on,
             external_source_url=request.external_source_url,
+            source_url=request.source_url,
             num_parameters=request.num_parameters,
             hf_model_url=request.hf_model_url,
         )
@@ -273,9 +279,11 @@ def update_evaluation(
             best_metric=request.best_metric,
             evaluated_on=request.evaluated_on,
             external_source_url=request.external_source_url,
+            source_url=request.source_url,
             num_parameters=request.num_parameters,
             hf_model_url=request.hf_model_url,
             harness_set="harness" in request.model_fields_set,
+            source_url_set="source_url" in request.model_fields_set,
             num_parameters_set="num_parameters" in request.model_fields_set,
             hf_model_url_set="hf_model_url" in request.model_fields_set,
         )

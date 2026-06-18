@@ -6,7 +6,7 @@ relies on `/api/v1/tasks/?ordering=-paper_count` returning the tasks with
 the most associated papers first.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +26,19 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
 )
 from backend.database.connection import get_database_session
+from backend.config import get_settings
 from backend.services.task_service import TaskService
+
+
+# Trending scores older than 24h are treated as missing, so test repos/papers
+# stamp a fresh timestamp to be eligible for the trending sort.
+_FRESH = datetime.now(timezone.utc)
+_STALE = datetime.now(timezone.utc) - timedelta(hours=48)
+
+
+def _pin_trending_mode(monkeypatch, mode: str) -> None:
+    """Force the active trending ranking mode for a test, regardless of env."""
+    monkeypatch.setattr(get_settings(), "trending_ranking_mode", mode)
 
 
 # The ORM uses Postgres-only types for unrelated columns; teach SQLite to
@@ -213,6 +225,7 @@ def task_with_trending_papers():
             name="repo-1",
             num_stars=500,
             trending_score=10.0,
+            trending_score_updated_at=_FRESH,
         ),
         DBRepository(
             id=2,
@@ -221,6 +234,7 @@ def task_with_trending_papers():
             name="repo-2",
             num_stars=200,
             trending_score=2.5,
+            trending_score_updated_at=_FRESH,
         ),
         DBRepository(
             id=3,
@@ -237,6 +251,7 @@ def task_with_trending_papers():
             name="repo-4",
             num_stars=10000,
             trending_score=99.0,
+            trending_score_updated_at=_FRESH,
         ),
     ]
     db.add_all(repositories)
@@ -256,9 +271,10 @@ def task_with_trending_papers():
 
 
 def test_task_papers_trending_orders_by_official_repo_trending_score(
-    client, task_with_trending_papers
+    client, task_with_trending_papers, monkeypatch
 ):
     """`order_by=trending` ranks task papers by their best official repo score."""
+    _pin_trending_mode(monkeypatch, "github")
     response = client.get(
         "/api/v1/tasks/audio-classification/papers?order_by=trending&page_size=10"
     )
@@ -277,13 +293,14 @@ def test_task_papers_trending_orders_by_official_repo_trending_score(
 
 
 def test_task_papers_trending_ignores_non_official_repos(
-    client, task_with_trending_papers
+    client, task_with_trending_papers, monkeypatch
 ):
     """A non-official repository's trending score must not influence ordering.
 
     Paper 4's only repo has `trending_score=99.0` but is not official, so it
     must not outrank Paper 1 (`trending_score=10.0` via official repo).
     """
+    _pin_trending_mode(monkeypatch, "github")
     response = client.get(
         "/api/v1/tasks/audio-classification/papers?order_by=trending&page_size=10"
     )
@@ -303,6 +320,97 @@ def test_task_papers_default_ordering_unchanged(client, task_with_trending_paper
     assert {paper["title"] for paper in data["results"]} == {
         f"Paper {i}" for i in range(1, 6)
     }
+
+
+@pytest.fixture
+def task_with_composite_trending_papers():
+    """Papers exercising composite (paper-level) trending for a single task.
+
+    All linked to task `composite-ranking`:
+      - Paper 1: papers.trending_score=80 (fresh), official repo velocity 1.0
+      - Paper 2: papers.trending_score=40 (fresh), official repo velocity 50.0
+      - Paper 3: papers.trending_score=99 but STALE (must be ignored)
+      - Paper 4: no paper-level trending_score
+
+    Paper 1 must outrank Paper 2 by its higher *paper* score even though
+    Paper 2's repo velocity is far higher, proving composite mode ranks by
+    `papers.trending_score`, not official-repo velocity.
+    """
+    db = TestingSessionLocal()
+
+    task = DBTask(id=1, name="Composite Ranking", slug="composite-ranking", level=0)
+    db.add(task)
+
+    paper_scores = {1: (80.0, _FRESH), 2: (40.0, _FRESH), 3: (99.0, _STALE), 4: None}
+    papers = []
+    for i in range(1, 5):
+        score = paper_scores[i]
+        papers.append(
+            DBPaper(
+                id=i,
+                title=f"Paper {i}",
+                abstract=f"Abstract {i}",
+                arxiv_id=f"2025.1{i:04d}",
+                version="v1",
+                is_latest_version=True,
+                trending_score=score[0] if score else None,
+                trending_score_updated_at=score[1] if score else None,
+            )
+        )
+    db.add_all(papers)
+
+    repositories = [
+        DBRepository(
+            id=1,
+            url="https://github.com/owner/repo-1",
+            owner="owner",
+            name="repo-1",
+            num_stars=100,
+            trending_score=1.0,
+            trending_score_updated_at=_FRESH,
+        ),
+        DBRepository(
+            id=2,
+            url="https://github.com/owner/repo-2",
+            owner="owner",
+            name="repo-2",
+            num_stars=100,
+            trending_score=50.0,
+            trending_score_updated_at=_FRESH,
+        ),
+    ]
+    db.add_all(repositories)
+    db.commit()
+
+    db.add_all(
+        [PaperTask(paper_id=i, task_id=1) for i in range(1, 5)]
+        + [
+            DBPaperRepository(paper_id=1, repository_id=1, is_official=True),
+            DBPaperRepository(paper_id=2, repository_id=2, is_official=True),
+        ]
+    )
+    db.commit()
+    db.close()
+
+
+def test_task_papers_trending_composite_ranks_by_paper_score(
+    client, task_with_composite_trending_papers, monkeypatch
+):
+    """In composite mode, task papers rank by `papers.trending_score`."""
+    _pin_trending_mode(monkeypatch, "composite")
+    response = client.get(
+        "/api/v1/tasks/composite-ranking/papers?order_by=trending&page_size=10"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    titles = [paper["title"] for paper in data["results"]]
+
+    # Paper 1 (score 80) and Paper 2 (score 40) lead in that order; the stale
+    # and unscored papers follow without being dropped.
+    assert titles[:2] == ["Paper 1", "Paper 2"]
+    assert set(titles[2:]) == {"Paper 3", "Paper 4"}
+    assert data["count"] == 4
 
 
 @pytest.fixture

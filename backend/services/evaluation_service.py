@@ -5,7 +5,9 @@ This service provides methods for retrieving and managing benchmark evaluation d
 including pagination, filtering by paper, task, and dataset.
 """
 
+import re
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, or_, func
 
@@ -14,6 +16,10 @@ from backend.models.database import (
     Paper as DBPaper,
     Task as DBTask,
     Dataset as DBDataset,
+    HfArtifact as DBHfArtifact,
+    PaperHfArtifact as DBPaperHfArtifact,
+    ProjectPage as DBProjectPage,
+    PaperProjectPage as DBPaperProjectPage,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
     TaskDataset,
@@ -23,7 +29,183 @@ from backend.models.database import (
 from backend.models.api import Evaluation, Evaluations
 from backend.utils.exceptions import DatabaseError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
+from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
+
+_PAPER_REF = re.compile(r"^paper:(\d+)$", re.IGNORECASE)
+
+
+def _normalize_url_for_match(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    raw = url.strip()
+    if not raw:
+        return None
+
+    paper_ref = _PAPER_REF.match(raw)
+    if paper_ref:
+        return f"paper:{paper_ref.group(1)}"
+
+    parsed_arxiv = parse_arxiv_url(raw)
+    if parsed_arxiv:
+        return f"arxiv:{parsed_arxiv[0].lower()}"
+
+    parsed = urlparse(raw)
+    if not parsed.scheme and raw.startswith("/paper/"):
+        return raw.rstrip("/").lower()
+    if not parsed.scheme or not parsed.netloc:
+        return raw.rstrip("/").lower()
+
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/")
+    return urlunparse((scheme, netloc, path, "", "", "")).lower()
+
+
+def _paper_pdf_url(paper_arxiv_id: Optional[str]) -> Optional[str]:
+    if not paper_arxiv_id:
+        return None
+    return f"https://arxiv.org/pdf/{paper_arxiv_id}.pdf"
+
+
+def _paper_route_keys(paper_id: int, paper_arxiv_id: Optional[str]) -> set[str]:
+    keys = {
+        f"paper:{paper_id}",
+        f"/paper/{paper_id}",
+        _normalize_url_for_match(f"https://paperswithcode.co/paper/{paper_id}"),
+    }
+    if paper_arxiv_id:
+        base = paper_arxiv_id.lower().split("v")[0]
+        keys.update(
+            {
+                f"arxiv:{base}",
+                f"/paper/{base}",
+                _normalize_url_for_match(f"https://paperswithcode.co/paper/{base}"),
+                _normalize_url_for_match(f"https://arxiv.org/abs/{base}"),
+                _normalize_url_for_match(f"https://arxiv.org/pdf/{base}.pdf"),
+            }
+        )
+    return {key for key in keys if key}
+
+
+def evaluation_is_external(
+    source_url: Optional[str],
+    paper_arxiv_id: Optional[str],
+    paper_id: int,
+    db: Optional[Session] = None,
+) -> bool:
+    """True when a score source is independent of the evaluated paper/model."""
+    if not source_url:
+        return False
+
+    normalized_source = _normalize_url_for_match(source_url)
+    if not normalized_source:
+        return False
+
+    related = _paper_route_keys(paper_id, paper_arxiv_id)
+    if db is not None:
+        related.update(_related_source_keys(db, paper_id, paper_arxiv_id))
+
+    return normalized_source not in related
+
+
+def evaluation_public_source_url(
+    source_url: Optional[str],
+    db: Optional[Session] = None,
+) -> Optional[str]:
+    """Public link for an evaluation source."""
+    if not source_url:
+        return None
+    paper_ref = _PAPER_REF.match(source_url.strip())
+    if paper_ref:
+        paper_id = int(paper_ref.group(1))
+        if db is not None:
+            paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+            if paper and paper.arxiv_id:
+                return f"/paper/{paper.arxiv_id}"
+        return f"/paper/{paper_id}"
+    return external_source_url_to_paper_url(source_url)
+
+
+def evaluation_result_url(
+    source_url: Optional[str],
+    paper_id: int,
+    paper_arxiv_id: Optional[str],
+    paper_source_url: Optional[str],
+    db: Optional[Session] = None,
+) -> Optional[str]:
+    """Resolve the result/source link shown on evaluation rows."""
+    if source_url:
+        normalized_source = _normalize_url_for_match(source_url)
+        if normalized_source in _paper_route_keys(paper_id, paper_arxiv_id):
+            return _paper_pdf_url(paper_arxiv_id) or evaluation_public_source_url(
+                source_url, db
+            )
+        return evaluation_public_source_url(source_url, db)
+    if paper_arxiv_id:
+        return f"https://arxiv.org/abs/{paper_arxiv_id}"
+    return paper_source_url
+
+
+def _related_source_keys(
+    db: Session,
+    paper_id: int,
+    paper_arxiv_id: Optional[str],
+) -> set[str]:
+    """Known official/linked source keys for a paper/model."""
+    keys = _paper_route_keys(paper_id, paper_arxiv_id)
+
+    paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+    if paper:
+        for url in [
+            paper.source_url,
+            *(paper.hf_models or []),
+            *(paper.hf_datasets or []),
+            *(paper.hf_spaces or []),
+        ]:
+            key = _normalize_url_for_match(url)
+            if key:
+                keys.add(key)
+
+    repo_urls = (
+        db.query(DBRepository.url)
+        .join(DBPaperRepository, DBRepository.id == DBPaperRepository.repository_id)
+        .filter(DBPaperRepository.paper_id == paper_id)
+        .all()
+    )
+    for (url,) in repo_urls:
+        key = _normalize_url_for_match(url)
+        if key:
+            keys.add(key)
+
+    project_page_urls = (
+        db.query(DBProjectPage.url)
+        .join(
+            DBPaperProjectPage,
+            DBProjectPage.id == DBPaperProjectPage.project_page_id,
+        )
+        .filter(DBPaperProjectPage.paper_id == paper_id)
+        .all()
+    )
+    for (url,) in project_page_urls:
+        key = _normalize_url_for_match(url)
+        if key:
+            keys.add(key)
+
+    hf_urls = (
+        db.query(DBHfArtifact.url)
+        .join(DBPaperHfArtifact, DBHfArtifact.id == DBPaperHfArtifact.hf_artifact_id)
+        .filter(DBPaperHfArtifact.paper_id == paper_id)
+        .all()
+    )
+    for (url,) in hf_urls:
+        key = _normalize_url_for_match(url)
+        if key:
+            keys.add(key)
+
+    return keys
 
 
 class EvaluationService:
@@ -148,6 +330,83 @@ class EvaluationService:
         except Exception:
             return None
 
+    def _serialize_evaluation(self, db_evaluation: DBEvaluation) -> Evaluation:
+        (
+            paper_title,
+            paper_arxiv_id,
+            code_url,
+            paper_published_date,
+            _paper_source,
+            paper_source_url,
+        ) = self._get_paper_info(db_evaluation.paper_id)
+
+        task_name, task_slug = self._get_task_name_and_slug(db_evaluation.task_id)
+        dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
+        dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
+
+        stored_source_url = (
+            db_evaluation.source_url or db_evaluation.external_source_url
+        )
+        public_source_url = evaluation_public_source_url(stored_source_url, self.db)
+        result_url = evaluation_result_url(
+            stored_source_url,
+            db_evaluation.paper_id,
+            paper_arxiv_id,
+            paper_source_url,
+            self.db,
+        )
+        external = bool(
+            db_evaluation.external
+            or evaluation_is_external(
+                stored_source_url,
+                paper_arxiv_id,
+                db_evaluation.paper_id,
+                self.db,
+            )
+        )
+
+        return Evaluation(
+            id=str(db_evaluation.id),
+            paper_id=str(db_evaluation.paper_id),
+            task_id=str(db_evaluation.task_id),
+            dataset_id=str(db_evaluation.dataset_id),
+            model_name=db_evaluation.model_name,
+            harness=db_evaluation.harness,
+            methodology=db_evaluation.methodology,
+            metrics=db_evaluation.metrics,
+            uses_additional_data=db_evaluation.uses_additional_data,
+            is_open=db_evaluation.is_open,
+            best_rank=db_evaluation.best_rank,
+            best_metric=db_evaluation.best_metric,
+            evaluated_on=db_evaluation.evaluated_on,
+            external_source_url=public_source_url,
+            source_url=public_source_url,
+            external=external,
+            is_external=external,
+            num_parameters=db_evaluation.num_parameters,
+            hf_model_url=db_evaluation.hf_model_url,
+            created_at=db_evaluation.created_at,
+            updated_at=db_evaluation.updated_at,
+            paper_title=paper_title,
+            paper_arxiv_id=paper_arxiv_id,
+            code_url=code_url,
+            paper_published_date=paper_published_date,
+            result_url=result_url,
+            task_name=task_name,
+            task_slug=task_slug,
+            dataset_name=dataset_name,
+            dataset_slug=dataset_slug,
+        )
+
+    def _derive_external(self, paper_id: int, source_url: Optional[str]) -> bool:
+        paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
+        return evaluation_is_external(
+            source_url,
+            paper.arxiv_id if paper else None,
+            paper_id,
+            self.db,
+        )
+
     def _validate_dataset_task_consistency(
         self, task_id: int, dataset_id: int
     ) -> tuple[bool, Optional[str]]:
@@ -238,6 +497,7 @@ class EvaluationService:
         dataset_id: Optional[int] = None,
         best_metric: Optional[str] = None,
         is_open: Optional[bool] = None,
+        external: Optional[bool] = None,
         order_by: str = "created_at",
         order_dir: str = "desc",
     ) -> Evaluations:
@@ -304,6 +564,9 @@ class EvaluationService:
             if is_open is not None:
                 query = query.filter(DBEvaluation.is_open == is_open)
 
+            if external is not None:
+                query = query.filter(DBEvaluation.external == external)
+
             # Get total count before pagination
             total_count = query.count()
 
@@ -365,62 +628,7 @@ class EvaluationService:
             # Convert to API models
             evaluation_list = []
             for db_evaluation in results:
-                # Get paper info (title, ArXiv ID, code URL, and publication date)
-                (
-                    paper_title,
-                    paper_arxiv_id,
-                    code_url,
-                    paper_published_date,
-                    paper_source,
-                    paper_source_url,
-                ) = self._get_paper_info(db_evaluation.paper_id)
-
-                # Get task and dataset names
-                task_name, task_slug = self._get_task_name_and_slug(
-                    db_evaluation.task_id
-                )
-                dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
-                dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
-
-                # Result URL precedence: explicit `external_source_url` on the
-                # evaluation, then the paper's ArXiv abstract URL, then the
-                # paper's `source_url` for external rows that have no ArXiv.
-                result_url = db_evaluation.external_source_url
-                if not result_url and paper_arxiv_id:
-                    result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
-                if not result_url and paper_source_url:
-                    result_url = paper_source_url
-
-                evaluation_dict = {
-                    "id": str(db_evaluation.id),
-                    "paper_id": str(db_evaluation.paper_id),
-                    "task_id": str(db_evaluation.task_id),
-                    "dataset_id": str(db_evaluation.dataset_id),
-                    "model_name": db_evaluation.model_name,
-                    "harness": db_evaluation.harness,
-                    "methodology": db_evaluation.methodology,
-                    "metrics": db_evaluation.metrics,
-                    "uses_additional_data": db_evaluation.uses_additional_data,
-                    "is_open": db_evaluation.is_open,
-                    "best_rank": db_evaluation.best_rank,
-                    "best_metric": db_evaluation.best_metric,
-                    "evaluated_on": db_evaluation.evaluated_on,
-                    "external_source_url": db_evaluation.external_source_url,
-                    "num_parameters": db_evaluation.num_parameters,
-                    "hf_model_url": db_evaluation.hf_model_url,
-                    "created_at": db_evaluation.created_at,
-                    "updated_at": db_evaluation.updated_at,
-                    "paper_title": paper_title,
-                    "paper_arxiv_id": paper_arxiv_id,
-                    "code_url": code_url,
-                    "paper_published_date": paper_published_date,
-                    "result_url": result_url,
-                    "task_name": task_name,
-                    "task_slug": task_slug,
-                    "dataset_name": dataset_name,
-                    "dataset_slug": dataset_slug,
-                }
-                evaluation_list.append(Evaluation(**evaluation_dict))
+                evaluation_list.append(self._serialize_evaluation(db_evaluation))
 
             # Calculate pagination
             total_pages = (total_count + page_size - 1) // page_size
@@ -460,61 +668,7 @@ class EvaluationService:
             if not db_evaluation:
                 return None
 
-            # Get paper info (title, ArXiv ID, code URL, publication date,
-            # and source metadata for external rows).
-            (
-                paper_title,
-                paper_arxiv_id,
-                code_url,
-                paper_published_date,
-                paper_source,
-                paper_source_url,
-            ) = self._get_paper_info(db_evaluation.paper_id)
-
-            # Get task and dataset names
-            task_name, task_slug = self._get_task_name_and_slug(db_evaluation.task_id)
-            dataset_name = self._get_dataset_name(db_evaluation.dataset_id)
-            dataset_slug = self._get_dataset_slug(db_evaluation.dataset_id)
-
-            # Result URL precedence: explicit `external_source_url`, then ArXiv
-            # URL, then the paper's `source_url` for external rows.
-            result_url = db_evaluation.external_source_url
-            if not result_url and paper_arxiv_id:
-                result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
-            if not result_url and paper_source_url:
-                result_url = paper_source_url
-
-            evaluation_dict = {
-                "id": str(db_evaluation.id),
-                "paper_id": str(db_evaluation.paper_id),
-                "task_id": str(db_evaluation.task_id),
-                "dataset_id": str(db_evaluation.dataset_id),
-                "model_name": db_evaluation.model_name,
-                "harness": db_evaluation.harness,
-                "methodology": db_evaluation.methodology,
-                "metrics": db_evaluation.metrics,
-                "uses_additional_data": db_evaluation.uses_additional_data,
-                "is_open": db_evaluation.is_open,
-                "best_rank": db_evaluation.best_rank,
-                "best_metric": db_evaluation.best_metric,
-                "evaluated_on": db_evaluation.evaluated_on,
-                "external_source_url": db_evaluation.external_source_url,
-                "num_parameters": db_evaluation.num_parameters,
-                "hf_model_url": db_evaluation.hf_model_url,
-                "created_at": db_evaluation.created_at,
-                "updated_at": db_evaluation.updated_at,
-                "paper_title": paper_title,
-                "paper_arxiv_id": paper_arxiv_id,
-                "code_url": code_url,
-                "paper_published_date": paper_published_date,
-                "result_url": result_url,
-                "task_name": task_name,
-                "task_slug": task_slug,
-                "dataset_name": dataset_name,
-                "dataset_slug": dataset_slug,
-            }
-
-            return Evaluation(**evaluation_dict)
+            return self._serialize_evaluation(db_evaluation)
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve evaluation: {str(e)}")
@@ -559,6 +713,7 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
+        source_url: Optional[str] = None,
         num_parameters: Optional[int] = None,
         hf_model_url: Optional[str] = None,
     ) -> Evaluation:
@@ -609,6 +764,9 @@ class EvaluationService:
             if not is_valid:
                 raise ValueError(error_message)
 
+            canonical_source_url = source_url or external_source_url
+            derived_external = self._derive_external(paper_id, canonical_source_url)
+
             db_evaluation = DBEvaluation(
                 paper_id=paper_id,
                 task_id=task_id,
@@ -622,7 +780,9 @@ class EvaluationService:
                 best_rank=best_rank,
                 best_metric=best_metric,
                 evaluated_on=evaluated_on,
-                external_source_url=external_source_url,
+                external_source_url=canonical_source_url,
+                source_url=canonical_source_url,
+                external=derived_external,
                 num_parameters=num_parameters,
                 hf_model_url=hf_model_url,
             )
@@ -642,52 +802,7 @@ class EvaluationService:
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
 
-            # Get paper info (title, ArXiv ID, code URL, publication date,
-            # and source metadata for external rows).
-            (
-                paper_title,
-                paper_arxiv_id,
-                code_url,
-                paper_published_date,
-                paper_source,
-                paper_source_url,
-            ) = self._get_paper_info(db_evaluation.paper_id)
-
-            # Result URL precedence: explicit `external_source_url`, then ArXiv
-            # URL, then the paper's `source_url` for external rows.
-            result_url = db_evaluation.external_source_url
-            if not result_url and paper_arxiv_id:
-                result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
-            if not result_url and paper_source_url:
-                result_url = paper_source_url
-
-            evaluation_dict = {
-                "id": str(db_evaluation.id),
-                "paper_id": str(db_evaluation.paper_id),
-                "task_id": str(db_evaluation.task_id),
-                "dataset_id": str(db_evaluation.dataset_id),
-                "model_name": db_evaluation.model_name,
-                "harness": db_evaluation.harness,
-                "methodology": db_evaluation.methodology,
-                "metrics": db_evaluation.metrics,
-                "uses_additional_data": db_evaluation.uses_additional_data,
-                "is_open": db_evaluation.is_open,
-                "best_rank": db_evaluation.best_rank,
-                "best_metric": db_evaluation.best_metric,
-                "evaluated_on": db_evaluation.evaluated_on,
-                "external_source_url": db_evaluation.external_source_url,
-                "num_parameters": db_evaluation.num_parameters,
-                "hf_model_url": db_evaluation.hf_model_url,
-                "created_at": db_evaluation.created_at,
-                "updated_at": db_evaluation.updated_at,
-                "paper_title": paper_title,
-                "paper_arxiv_id": paper_arxiv_id,
-                "code_url": code_url,
-                "paper_published_date": paper_published_date,
-                "result_url": result_url,
-            }
-
-            return Evaluation(**evaluation_dict)
+            return self._serialize_evaluation(db_evaluation)
 
         except ValueError:
             self.db.rollback()
@@ -714,9 +829,11 @@ class EvaluationService:
         best_metric: Optional[str] = None,
         evaluated_on: Optional[str] = None,
         external_source_url: Optional[str] = None,
+        source_url: Optional[str] = None,
         num_parameters: Optional[int] = None,
         hf_model_url: Optional[str] = None,
         harness_set: bool = False,
+        source_url_set: bool = False,
         num_parameters_set: bool = False,
         hf_model_url_set: bool = False,
     ) -> Evaluation:
@@ -830,8 +947,15 @@ class EvaluationService:
                 db_evaluation.best_metric = best_metric
             if evaluated_on is not None:
                 db_evaluation.evaluated_on = evaluated_on
-            if external_source_url is not None:
-                db_evaluation.external_source_url = external_source_url
+            if source_url_set or external_source_url is not None:
+                canonical_source_url = (
+                    source_url if source_url_set else external_source_url
+                )
+                db_evaluation.source_url = canonical_source_url
+                db_evaluation.external_source_url = canonical_source_url
+                db_evaluation.external = self._derive_external(
+                    db_evaluation.paper_id, canonical_source_url
+                )
             if num_parameters_set:
                 db_evaluation.num_parameters = num_parameters
             if hf_model_url_set:
@@ -878,52 +1002,7 @@ class EvaluationService:
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
 
-            # Get paper info (title, ArXiv ID, code URL, publication date,
-            # and source metadata for external rows).
-            (
-                paper_title,
-                paper_arxiv_id,
-                code_url,
-                paper_published_date,
-                paper_source,
-                paper_source_url,
-            ) = self._get_paper_info(db_evaluation.paper_id)
-
-            # Result URL precedence: explicit `external_source_url`, then ArXiv
-            # URL, then the paper's `source_url` for external rows.
-            result_url = db_evaluation.external_source_url
-            if not result_url and paper_arxiv_id:
-                result_url = f"https://arxiv.org/abs/{paper_arxiv_id}"
-            if not result_url and paper_source_url:
-                result_url = paper_source_url
-
-            evaluation_dict = {
-                "id": str(db_evaluation.id),
-                "paper_id": str(db_evaluation.paper_id),
-                "task_id": str(db_evaluation.task_id),
-                "dataset_id": str(db_evaluation.dataset_id),
-                "model_name": db_evaluation.model_name,
-                "harness": db_evaluation.harness,
-                "methodology": db_evaluation.methodology,
-                "metrics": db_evaluation.metrics,
-                "uses_additional_data": db_evaluation.uses_additional_data,
-                "is_open": db_evaluation.is_open,
-                "best_rank": db_evaluation.best_rank,
-                "best_metric": db_evaluation.best_metric,
-                "evaluated_on": db_evaluation.evaluated_on,
-                "external_source_url": db_evaluation.external_source_url,
-                "num_parameters": db_evaluation.num_parameters,
-                "hf_model_url": db_evaluation.hf_model_url,
-                "created_at": db_evaluation.created_at,
-                "updated_at": db_evaluation.updated_at,
-                "paper_title": paper_title,
-                "paper_arxiv_id": paper_arxiv_id,
-                "code_url": code_url,
-                "paper_published_date": paper_published_date,
-                "result_url": result_url,
-            }
-
-            return Evaluation(**evaluation_dict)
+            return self._serialize_evaluation(db_evaluation)
 
         except ValueError:
             self.db.rollback()

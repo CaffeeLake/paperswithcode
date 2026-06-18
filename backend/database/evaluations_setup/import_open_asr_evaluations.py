@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 ASR_TASK_SLUG = "automatic-speech-recognition"
 LEADERBOARD_DATASET_SLUG = "open-asr-leaderboard"
 LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard"
+OPEN_ASR_SOURCE_URL = "https://paperswithcode.co/benchmark/open-asr-leaderboard"
 
 # Map YAML `task_id` values from the Open ASR Leaderboard schema to the
 # corresponding existing dataset slugs in our database. Only entries listed
@@ -146,7 +147,7 @@ MODEL_PAPER_OVERRIDES: dict[str, str] = {
 # entries, the importer reuses the canonical model's `source='external'`
 # paper row instead of creating a per-variant one. Each evaluation still
 # carries the variant-specific `external_source_url`, so leaderboard rows
-# keep linking to the right HF model. Key is the variant model_id, value is
+# keep tracing the right HF model in methodology. Key is the variant model_id, value is
 # the canonical model_id that owns the consolidated paper row.
 MODEL_FAMILY_CANONICAL: dict[str, str] = {
     "UsefulSensors/moonshine-streaming-tiny": (
@@ -689,7 +690,10 @@ def main() -> None:
                     metrics=parent_metrics,
                     best_metric="WER",
                     evaluated_on=entry.eval_date,
-                    external_source_url=f"https://huggingface.co/{entry.model_id}",
+                    external_source_url=OPEN_ASR_SOURCE_URL,
+                    source_url=OPEN_ASR_SOURCE_URL,
+                    external=True,
+                    hf_model_url=f"https://huggingface.co/{entry.model_id}",
                 )
             )
             summary.parent_rows_created += 1
@@ -715,7 +719,10 @@ def main() -> None:
                         metrics={"WER": f"{yaml_values[yaml_task_id]}"},
                         best_metric="WER",
                         evaluated_on=entry.eval_date,
-                        external_source_url=f"https://huggingface.co/{entry.model_id}",
+                        external_source_url=OPEN_ASR_SOURCE_URL,
+                        source_url=OPEN_ASR_SOURCE_URL,
+                        external=True,
+                        hf_model_url=f"https://huggingface.co/{entry.model_id}",
                     )
                 )
                 summary.sub_rows_created += 1

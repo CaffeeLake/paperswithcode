@@ -1,0 +1,73 @@
+/**
+ * Inline "external" badge shown when a score came from an independent source
+ * rather than the evaluated paper/model's own release materials.
+ */
+
+import React from "react";
+
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+
+type Props = {
+  sourceUrl?: string | null;
+};
+
+function sourceLabel(sourceUrl?: string | null): string {
+  if (!sourceUrl) return "Evaluation sourced outside this paper";
+  const lower = sourceUrl.toLowerCase();
+  if (lower.includes("open-asr-leaderboard")) return "Open ASR Leaderboard";
+  if (lower.includes("arcprize.org")) return "ARC Prize Leaderboard";
+  if (lower.includes("frontierswe.com")) return "FrontierSWE";
+  try {
+    const parsed = new URL(sourceUrl, "https://paperswithcode.co");
+    if (parsed.pathname.startsWith("/paper/")) return "Source paper";
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return sourceUrl;
+  }
+}
+
+export const ExternalSourceEvalBadge: React.FC<Props> = ({ sourceUrl }) => {
+  const label = sourceLabel(sourceUrl);
+  return (
+    <HoverCard openDelay={120} closeDelay={120}>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          className="bm-external-source-tag"
+          aria-label={`Externally sourced evaluation: ${label}`}
+        >
+          External
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="start"
+        className="w-auto max-w-[280px] p-3 text-sm leading-snug"
+      >
+        This score was sourced outside this paper.
+        {sourceUrl ? (
+          <>
+            {" "}
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="external-eval-tooltip-link"
+            >
+              {label}
+            </a>
+            .
+          </>
+        ) : (
+          <> {label}.</>
+        )}
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
+
+export default ExternalSourceEvalBadge;

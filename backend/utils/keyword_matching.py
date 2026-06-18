@@ -120,10 +120,32 @@ TASK_SUPERSESSION_RULES: tuple[tuple[str, str], ...] = (
     ("video-matting", "image-matting"),
 )
 
+# Strong Image Classification signals — explicit task/benchmark mentions that justify
+# keeping an image-classification tag even when an audio-classification tag also matched.
+_STRONG_IMAGE_CLASSIFICATION_PATTERNS: tuple[str, ...] = (
+    r"\bimage classifications?\b",
+    r"\bcifar-?10\b",
+    r"\bcifar-?100\b",
+    r"\bilsvrc\b",
+    r"\bvtab\b",
+)
+
+
+def has_strong_image_classification_signal(text: str) -> bool:
+    """Return True when text explicitly signals an image-classification benchmark/task."""
+    if not text:
+        return False
+    text_lower = text.lower()
+    return any(
+        re.search(pattern, text_lower)
+        for pattern in _STRONG_IMAGE_CLASSIFICATION_PATTERNS
+    )
+
 
 def apply_task_supersession_rules(
     matched_task_ids: Set[int],
     slug_to_id: Dict[str, int],
+    text: str | None = None,
 ) -> Set[int]:
     """Remove subsumed task IDs when a more specific task also matched."""
     result = set(matched_task_ids)
@@ -132,6 +154,19 @@ def apply_task_supersession_rules(
         excluded_id = slug_to_id.get(excluded_slug)
         if superseding_id in result and excluded_id is not None:
             result.discard(excluded_id)
+
+    # Audio papers often cite ViT/ImageNet/ResNet as cross-modal pretraining baselines.
+    # Drop image-classification unless the abstract also names an IC benchmark/task.
+    audio_task_id = slug_to_id.get("audio-classification")
+    image_task_id = slug_to_id.get("image-classification")
+    if (
+        text
+        and audio_task_id in result
+        and image_task_id in result
+        and not has_strong_image_classification_signal(text)
+    ):
+        result.discard(image_task_id)
+
     return result
 
 

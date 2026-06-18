@@ -394,64 +394,66 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   gap: 28px;
 }
 .paper-body-main { min-width: 0; flex: 1; }
-.paper-github-stats {
+.paper-resources {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 14px;
+  align-items: center;
+  gap: 18px;
   flex: 0 0 auto;
   width: 92px;
-  text-align: right;
   border-left: 1px solid var(--hairline);
   padding-left: 20px;
 }
-a.paper-github-stats.is-link {
+.paper-resource {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   color: inherit;
+}
+a.paper-resource.is-link {
   text-decoration: none;
   cursor: pointer;
   border-radius: 4px;
-  transition: border-color 0.15s, transform 0.15s;
+  transition: transform 0.15s;
 }
-a.paper-github-stats.is-link:hover {
-  border-left-color: var(--ink);
+a.paper-resource.is-link:hover {
   transform: translateY(-1px);
 }
-a.paper-github-stats.is-link:hover .gh-stars,
-a.paper-github-stats.is-link:hover .gh-rate {
+a.paper-resource.is-link:hover .resource-value {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-a.paper-github-stats.is-link:focus-visible {
+a.paper-resource.is-link:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
-.paper-github-stats .gh-stat-block {
+.paper-resource .resource-stat {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   gap: 2px;
 }
-.paper-github-stats .gh-value-row {
+.paper-resource .resource-value {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 14px;
   color: var(--ink);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
-.paper-github-stats .gh-stars,
-.paper-github-stats .gh-rate { color: var(--ink); }
-.paper-github-stats .gh-stars-label {
+.paper-resource .resource-label {
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-faint);
 }
-.paper-github-stats .gh-rate-arrow {
+.paper-resource .gh-rate-arrow {
   color: var(--accent-text);
   font-size: 13px;
   transform: translateY(-0.5px);
@@ -506,6 +508,19 @@ a.paper-github-stats.is-link:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+/* Feed/list cards: cap tags to two rows so papers with many task + method
+ * chips do not grow the card and break thumbnail alignment. Chip line-height
+ * is pinned here so the row height is deterministic; the method chip (4px
+ * vertical padding) is the tallest, hence a 26px row height. */
+.paper-tags--clamped {
+  --tag-row-height: 26px;
+  max-height: calc(var(--tag-row-height) * 2 + 6px);
+  overflow: hidden;
+}
+.paper-tags--clamped .tag-chip,
+.paper-tags--clamped .method-chip {
+  line-height: 16px;
 }
 .paper-stats {
   display: flex;
@@ -1166,14 +1181,22 @@ a.paper-github-stats.is-link:focus-visible {
   color: var(--ink-soft);
   text-decoration: none;
 }
-.hf-artifact-row:hover .hf-artifact-row-header {
-  color: var(--ink);
-}
 .hf-artifact-row-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+}
+.hf-artifact-count {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+}
+.hf-artifact-count:hover {
+  text-decoration: underline;
+}
+.hf-artifact-count--empty {
+  color: var(--ink-faint);
 }
 .hf-artifact-links {
   display: flex;
@@ -1899,11 +1922,14 @@ a.paper-github-stats.is-link:focus-visible {
 .results-table .compare {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--accent-text);
-  cursor: pointer;
   text-align: right;
 }
-.results-table .compare:hover { text-decoration: underline; text-underline-offset: 3px; }
+.results-table .compare a {
+  color: var(--accent-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.results-table .compare a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* === TLDR BOX === */
 .tldr-box {
@@ -2977,6 +3003,29 @@ html { scroll-behavior: smooth; }
   outline-offset: 2px;
 }
 
+/* Inline tag flagging a score cited from another paper's benchmark table. */
+.bm-external-source-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: oklch(0.42 0.08 250);
+  background: oklch(0.95 0.03 250);
+  border: 1px solid oklch(0.86 0.05 250);
+  vertical-align: middle;
+  cursor: help;
+  line-height: 1.4;
+}
+.bm-external-source-tag:focus-visible {
+  outline: 2px solid var(--hairline-strong);
+  outline-offset: 2px;
+}
+
 /* Settings page (/settings). */
 .settings-section {
   border: 1px solid var(--hairline);
@@ -3030,6 +3079,11 @@ html { scroll-behavior: smooth; }
 
 /* Settings link inside the closed-source model tooltip. */
 .closed-eval-tooltip-link {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.external-eval-tooltip-link {
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -3251,19 +3305,22 @@ html { scroll-behavior: smooth; }
     align-items: stretch;
     gap: 12px;
   }
-  .paper-github-stats {
+  .paper-resources {
     width: auto;
     flex-direction: row;
     align-items: center;
     justify-content: flex-start;
-    gap: 18px;
-    text-align: left;
+    gap: 24px;
     border-left: none;
     border-top: 1px solid var(--hairline);
     padding-left: 0;
     padding-top: 12px;
   }
-  .paper-github-stats .gh-stat-block {
+  .paper-resource {
+    flex-direction: row;
+    gap: 8px;
+  }
+  .paper-resource .resource-stat {
     align-items: flex-start;
   }
 
@@ -3338,7 +3395,7 @@ html { scroll-behavior: smooth; }
     grid-template-columns: 1fr;
     gap: 12px;
   }
-  .paper-github-stats {
+  .paper-resources {
     border-top: none;
     padding-top: 0;
   }

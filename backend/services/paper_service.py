@@ -8,11 +8,12 @@ This service handles all paper-related operations, including:
 - Managing paper versions
 """
 
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_, func, text
+from sqlalchemy import desc, asc, or_, func, text, case
 
 from backend.models.database import (
     Paper as DBPaper,
@@ -32,6 +33,8 @@ from backend.models.database import (
     PaperConference as DBPaperConference,
     Organization as DBOrganization,
     PaperOrganization as DBPaperOrganization,
+    HfArtifact as DBHfArtifact,
+    PaperHfArtifact as DBPaperHfArtifact,
 )
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -55,6 +58,7 @@ from backend.models.api import (
     VersionComparison,
     AuthorLink,
     OrganizationSummary,
+    HfArtifactSummary,
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
@@ -166,6 +170,7 @@ class PaperService:
             "successor_papers": defaultdict(list),
             "conferences": {},
             "organizations": defaultdict(list),
+            "hf_artifact_counts": defaultdict(dict),
         }
 
         if not unique_ids:
@@ -224,6 +229,26 @@ class PaperService:
                     source_papers_by_id.get(method.source_paper_id),
                 )
             )
+
+        # Hugging Face artifact counts per paper, grouped by kind. Powers the
+        # feed-card HF link, which points at the most populated category. One
+        # batched aggregate query keeps round-trips at O(1) for list views.
+        hf_count_rows = (
+            self.db.query(
+                DBPaperHfArtifact.paper_id,
+                DBHfArtifact.kind,
+                func.count().label("cnt"),
+            )
+            .join(
+                DBHfArtifact,
+                DBPaperHfArtifact.hf_artifact_id == DBHfArtifact.id,
+            )
+            .filter(DBPaperHfArtifact.paper_id.in_(unique_ids))
+            .group_by(DBPaperHfArtifact.paper_id, DBHfArtifact.kind)
+            .all()
+        )
+        for paper_id, kind, cnt in hf_count_rows:
+            relation_data["hf_artifact_counts"][paper_id][kind] = int(cnt)
 
         # Detail-only relations. Paper cards never render introduced
         # benchmarks, lineage banners, the conference badge, or organizations,
@@ -390,6 +415,66 @@ class PaperService:
 
         return relation_data
 
+    # Map the singular DB artifact kind to the Hugging Face listing path segment.
+    _HF_KIND_TO_PATH = {"model": "models", "dataset": "datasets", "space": "spaces"}
+
+    @staticmethod
+    def _build_hf_artifact_summary(
+        db_paper: DBPaper,
+        junction_counts: Dict[str, int],
+    ) -> Optional[HfArtifactSummary]:
+        """
+        Build the compact HF artifact summary used by feed cards.
+
+        Counts combine the normalized junction-table artifacts (populated by the
+        HF cron, authoritative for ArXiv papers) with any explicit URL arrays on
+        the paper (used by `source='external'` rows). The winning category is the
+        most populated kind, with a deterministic tie-break: model > dataset >
+        space.
+        """
+        explicit = {
+            "model": db_paper.hf_models or [],
+            "dataset": db_paper.hf_datasets or [],
+            "space": db_paper.hf_spaces or [],
+        }
+        counts = {
+            kind: max(junction_counts.get(kind, 0), len(explicit[kind]))
+            for kind in ("model", "dataset", "space")
+        }
+
+        if not any(counts.values()):
+            return None
+
+        # Deterministic tie-break order: model, then dataset, then space.
+        best_kind = max(
+            ("model", "dataset", "space"),
+            key=lambda kind: counts[kind],
+        )
+        best_count = counts[best_kind]
+
+        path = PaperService._HF_KIND_TO_PATH[best_kind]
+        if db_paper.arxiv_id:
+            if best_kind == "space":
+                # HF has no working arXiv filter on the Spaces catalog; the paper
+                # page lists linked Spaces instead.
+                canonical = re.sub(r"v\d+$", "", db_paper.arxiv_id.strip())
+                best_url = f"https://huggingface.co/papers/{canonical}"
+            else:
+                best_url = (
+                    f"https://huggingface.co/{path}?other=arxiv:{db_paper.arxiv_id}"
+                )
+        else:
+            best_url = explicit[best_kind][0] if explicit[best_kind] else None
+
+        return HfArtifactSummary(
+            model_count=counts["model"],
+            dataset_count=counts["dataset"],
+            space_count=counts["space"],
+            best_kind=best_kind,
+            best_count=best_count,
+            best_url=best_url,
+        )
+
     @staticmethod
     def _get_published_after_for_time_window(
         time_window: str,
@@ -461,6 +546,10 @@ class PaperService:
         successor_papers = relation_data["successor_papers"].get(db_paper.id) or None
         organizations = relation_data["organizations"].get(db_paper.id) or None
         linked_conference = relation_data["conferences"].get(db_paper.id)
+        hf_artifact_summary = self._build_hf_artifact_summary(
+            db_paper,
+            relation_data["hf_artifact_counts"].get(db_paper.id) or {},
+        )
         repositories = (
             relation_data["repositories"].get(db_paper.id) or None
             if include_resources
@@ -505,6 +594,7 @@ class PaperService:
             "hf_models": db_paper.hf_models or [],
             "hf_datasets": db_paper.hf_datasets or [],
             "hf_spaces": db_paper.hf_spaces or [],
+            "hf_artifact_summary": hf_artifact_summary,
             "repositories": repositories,
             "project_pages": project_pages,
             "tasks": tasks,
@@ -1061,6 +1151,74 @@ class PaperService:
 
         except Exception as e:
             raise DatabaseError(f"Error fetching trending papers: {str(e)}")
+
+    def apply_scoped_trending_order(self, query):
+        """Order an existing ``DBPaper`` query by the active trending metric.
+
+        This is the shared ranking used by scoped paper feeds (task, method,
+        conference, and organization pages) so they match the home feed. The
+        ranking mirrors ``PWC_TRENDING_RANKING_MODE``:
+
+        - ``composite``: rank by the paper-level composite score
+          (``papers.trending_score``), the GitHub velocity + Hugging Face
+          artifact blend computed by ``calculate_paper_trending_scores``.
+        - otherwise (``github``, the rollback path): rank by the best official
+          repository's EMA star velocity (``repositories.trending_score``).
+
+        Scores older than 24h are treated as missing, matching the home feed's
+        freshness window. Papers without a fresh score remain in the result set
+        but sort after scored papers (via the ``-1`` fallbacks), so scoped pages
+        never drop tagged papers. ``query`` must select ``DBPaper`` rows.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+        # Best official-repo stats per paper: max stars (a stable tie-breaker)
+        # and the freshest official repo velocity. Stale repo scores are
+        # ignored via the CASE so they don't outrank fresh signals.
+        repo_stats = (
+            self.db.query(
+                DBPaperRepository.paper_id.label("paper_id"),
+                func.max(DBRepository.num_stars).label("max_stars"),
+                func.max(
+                    case(
+                        (
+                            DBRepository.trending_score_updated_at >= cutoff,
+                            DBRepository.trending_score,
+                        )
+                    )
+                ).label("repo_trending_score"),
+            )
+            .join(DBRepository, DBPaperRepository.repository_id == DBRepository.id)
+            .filter(DBPaperRepository.is_official.is_(True))
+            .group_by(DBPaperRepository.paper_id)
+            .subquery()
+        )
+
+        query = query.outerjoin(repo_stats, repo_stats.c.paper_id == DBPaper.id)
+
+        if self.settings.trending_ranking_mode == "composite":
+            paper_score = func.coalesce(
+                case(
+                    (
+                        DBPaper.trending_score_updated_at >= cutoff,
+                        DBPaper.trending_score,
+                    )
+                ),
+                -1.0,
+            )
+            return query.order_by(
+                desc(paper_score),
+                desc(func.coalesce(repo_stats.c.max_stars, -1)),
+                desc(DBPaper.date_published),
+                desc(DBPaper.id),
+            )
+
+        return query.order_by(
+            desc(func.coalesce(repo_stats.c.repo_trending_score, -1.0)),
+            desc(func.coalesce(repo_stats.c.max_stars, -1)),
+            desc(DBPaper.date_published),
+            desc(DBPaper.id),
+        )
 
     def get_paper_versions(self, arxiv_id: str) -> PaperVersions:
         """

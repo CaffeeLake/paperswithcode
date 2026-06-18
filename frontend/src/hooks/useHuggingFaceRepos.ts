@@ -4,11 +4,23 @@ interface HuggingFaceRepoCounts {
   models: number;
   datasets: number;
   spaces: number;
+  /** Full model URLs discovered via the Hub arXiv endpoint. */
+  modelUrls: string[];
+  /** Full dataset URLs discovered via the Hub arXiv endpoint. */
+  datasetUrls: string[];
+  /** Full Space URLs discovered via the Hub arXiv endpoint. */
+  spaceUrls: string[];
   isLimited: boolean; // Indicates if counts might be higher than displayed
   paperExists: boolean; // Whether huggingface.co/papers/<id> exists
 }
 
 const canonicalArxivId = (arxivId: string) => arxivId.replace(/v\d+$/, "");
+
+const HF_URL_PREFIX: Record<'models' | 'datasets' | 'spaces', string> = {
+  models: 'https://huggingface.co/',
+  datasets: 'https://huggingface.co/datasets/',
+  spaces: 'https://huggingface.co/spaces/',
+};
 
 const countFromRepos = (
   reposData: Record<string, unknown[]>,
@@ -17,6 +29,26 @@ const countFromRepos = (
   const count = (reposData[type] || []).length;
   if (count < 100) return { count, isLimited: false };
   return { count, isLimited: true };
+};
+
+const repoUrlsFromRepos = (
+  reposData: Record<string, unknown[]>,
+  type: 'models' | 'datasets' | 'spaces',
+): string[] => {
+  const entries = reposData[type];
+  if (!Array.isArray(entries)) return [];
+
+  return entries
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') {
+        const record = entry as { id?: string; repoId?: string };
+        return record.id || record.repoId || null;
+      }
+      return null;
+    })
+    .filter((repoId): repoId is string => !!repoId)
+    .map((repoId) => `${HF_URL_PREFIX[type]}${repoId}`);
 };
 
 const checkPaperExists = async (arxivId: string): Promise<boolean> => {
@@ -48,7 +80,16 @@ const fetchHuggingFaceRepos = async (arxivId: string): Promise<HuggingFaceRepoCo
   ]);
 
   if (!reposData) {
-    return { models: 0, datasets: 0, spaces: 0, isLimited: false, paperExists };
+    return {
+      models: 0,
+      datasets: 0,
+      spaces: 0,
+      modelUrls: [],
+      datasetUrls: [],
+      spaceUrls: [],
+      isLimited: false,
+      paperExists,
+    };
   }
 
   const modelsResult = countFromRepos(reposData, 'models');
@@ -59,6 +100,9 @@ const fetchHuggingFaceRepos = async (arxivId: string): Promise<HuggingFaceRepoCo
     models: modelsResult.count,
     datasets: datasetsResult.count,
     spaces: spacesResult.count,
+    modelUrls: repoUrlsFromRepos(reposData, 'models'),
+    datasetUrls: repoUrlsFromRepos(reposData, 'datasets'),
+    spaceUrls: repoUrlsFromRepos(reposData, 'spaces'),
     isLimited: modelsResult.isLimited || datasetsResult.isLimited || spacesResult.isLimited,
     paperExists,
   };

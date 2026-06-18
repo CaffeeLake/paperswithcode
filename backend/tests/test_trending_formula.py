@@ -10,10 +10,13 @@ from backend.utils.trending import (
     GITHUB_WEIGHT,
     HF_WEIGHT,
     SCORE_SCALE,
+    apply_decaying_pin,
     compute_paper_score,
     composite_score,
+    decaying_pin_floor,
     github_component,
     hf_component,
+    parse_trending_pin_specs,
     quantile_rank,
     sorted_positive,
 )
@@ -117,3 +120,24 @@ def test_deepseek_like_paper_trends_on_hf_alone():
 def test_no_signal_paper_scores_zero():
     score, g, h = compute_paper_score(0.0, [1.0, 2.0], [], {"model": [1.0]})
     assert (score, g, h) == (0.0, 0.0, 0.0)
+
+
+def test_parse_trending_pin_specs():
+    assert parse_trending_pin_specs("") == {}
+    assert parse_trending_pin_specs("2606.16140") == {"2606.16140": 72.0}
+    assert parse_trending_pin_specs("2606.16140:48,2606.10804") == {
+        "2606.16140": 48.0,
+        "2606.10804": 72.0,
+    }
+
+
+def test_decaying_pin_fades_to_computed_score():
+    assert decaying_pin_floor(0, 72) == 100.0
+    assert decaying_pin_floor(36, 72) == 50.0
+    assert decaying_pin_floor(72, 72) == 0.0
+
+    # True score wins once it exceeds the fading floor.
+    assert apply_decaying_pin(51.7, 0, 72) == 100.0
+    assert apply_decaying_pin(51.7, 36, 72) == 51.7
+    assert apply_decaying_pin(80.0, 36, 72) == 80.0
+    assert apply_decaying_pin(51.7, 80, 72) == 51.7

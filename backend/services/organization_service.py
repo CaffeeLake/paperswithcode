@@ -19,9 +19,7 @@ from backend.models.database import Area as DBArea
 from backend.models.database import Organization as DBOrganization
 from backend.models.database import Paper as DBPaper
 from backend.models.database import PaperOrganization
-from backend.models.database import PaperRepository as DBPaperRepository
 from backend.models.database import PaperTask
-from backend.models.database import Repository as DBRepository
 from backend.models.database import Task as DBTask
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -208,29 +206,13 @@ class OrganizationService:
                 query = query.filter(DBPaper.is_latest_version)
 
             if order_by == "trending":
-                trending_subq = (
-                    self.db.query(
-                        DBPaperRepository.paper_id.label("paper_id"),
-                        func.max(DBRepository.trending_score).label("trending_score"),
-                        func.max(DBRepository.num_stars).label("max_stars"),
-                    )
-                    .join(
-                        DBRepository,
-                        DBPaperRepository.repository_id == DBRepository.id,
-                    )
-                    .filter(DBPaperRepository.is_official.is_(True))
-                    .filter(DBRepository.trending_score.isnot(None))
-                    .group_by(DBPaperRepository.paper_id)
-                    .subquery()
-                )
-                query = query.outerjoin(
-                    trending_subq, trending_subq.c.paper_id == DBPaper.id
-                ).order_by(
-                    desc(func.coalesce(trending_subq.c.trending_score, -1.0)),
-                    desc(func.coalesce(trending_subq.c.max_stars, -1)),
-                    desc(DBPaper.date_published),
-                    desc(DBPaper.id),
-                )
+                # Match the home feed: rank by the active trending metric
+                # (paper-level composite score or official-repo velocity per
+                # PWC_TRENDING_RANKING_MODE). Unscored papers stay in the list
+                # but sort after scored papers.
+                from backend.services.paper_service import PaperService
+
+                query = PaperService(self.db).apply_scoped_trending_order(query)
             else:
                 if order_by == "title":
                     order_field = DBPaper.title
@@ -254,6 +236,7 @@ class OrganizationService:
             relation_data = paper_service._get_paper_relation_data(
                 [paper.id for paper in db_papers],
                 include_resources=include_resources,
+                card_view=True,
             )
 
             papers = [

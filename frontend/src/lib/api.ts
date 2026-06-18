@@ -33,6 +33,18 @@ export interface ProjectPage {
   updated_at?: string;
 }
 
+/** Compact Hugging Face artifact summary for paper cards: per-kind counts plus
+ *  the most populated category and a link to it. */
+export interface HfArtifactSummary {
+  model_count: number;
+  dataset_count: number;
+  space_count: number;
+  /** 'model' | 'dataset' | 'space'; null when no artifacts exist. */
+  best_kind: 'model' | 'dataset' | 'space' | null;
+  best_count: number;
+  best_url: string | null;
+}
+
 export interface BenchmarkSummary {
   id: string;
   name: string;
@@ -93,6 +105,8 @@ export interface Paper {
   hf_datasets?: string[];
   /** Hugging Face Space URLs explicitly linked to this paper. External rows only. */
   hf_spaces?: string[];
+  /** Compact HF artifact summary used by feed cards (counts + best-category link). */
+  hf_artifact_summary?: HfArtifactSummary | null;
   tasks?: Task[];
   methods?: Method[];
   introduced_benchmarks?: BenchmarkSummary[];
@@ -371,6 +385,11 @@ export interface Evaluation {
   best_metric?: string;
   evaluated_on?: string;
   external_source_url?: string;
+  source_url?: string;
+  /** True when the score source is independent of the evaluated paper/model. */
+  external?: boolean;
+  /** Legacy alias for external. */
+  is_external?: boolean;
   /** Raw number of model parameters (e.g. 7000000000 for a 7B model).
    *  Optional metadata used by future leaderboards to filter and visualize
    *  results by model size. */
@@ -1217,6 +1236,7 @@ class ApiClient {
     include_descendants?: boolean;
     dataset_id?: number;
     best_metric?: string;
+    external?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Evaluation>> {
     const searchParams = new URLSearchParams();
@@ -1229,6 +1249,7 @@ class ApiClient {
     if (params?.include_descendants) searchParams.append('include_descendants', 'true');
     if (params?.dataset_id) searchParams.append('dataset_id', params.dataset_id.toString());
     if (params?.best_metric) searchParams.append('best_metric', params.best_metric);
+    if (params?.external !== undefined) searchParams.append('external', String(params.external));
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/evaluations/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -1294,6 +1315,7 @@ class ApiClient {
     best_metric?: string;
     evaluated_on?: string;
     external_source_url?: string;
+    source_url?: string;
     num_parameters?: number | null;
     hf_model_url?: string | null;
   }): Promise<Evaluation> {
@@ -1317,6 +1339,7 @@ class ApiClient {
     best_metric?: string;
     evaluated_on?: string;
     external_source_url?: string;
+    source_url?: string | null;
     num_parameters?: number | null;
     hf_model_url?: string | null;
   }): Promise<Evaluation> {

@@ -149,19 +149,6 @@ TASKS = [
             "stereo matching, stereo disparity, disparity estimation, depth from stereo"
         ),
     },
-    {
-        "slug": "slam-and-localization",
-        "name": "SLAM and Localization",
-        "area_id": VISION_AREA_ID,
-        "description": (
-            "SLAM and visual localization estimate camera pose and build maps from "
-            "visual observations, including visual odometry and structure-from-motion."
-        ),
-        "keywords": (
-            "simultaneous localization and mapping, visual odometry, visual SLAM, "
-            "RGB-D SLAM, LiDAR SLAM, monocular SLAM, Gaussian Splatting SLAM"
-        ),
-    },
 ]
 
 

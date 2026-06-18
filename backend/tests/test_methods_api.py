@@ -5,6 +5,8 @@ that paper edit pickers surface methods whose name/full_name matches the
 query before methods that only mention the term in their description.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -23,6 +25,18 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
 )
 from backend.database.connection import get_database_session
+from backend.config import get_settings
+
+
+# Trending scores older than 24h are treated as missing, so test repos/papers
+# stamp a fresh timestamp to be eligible for the trending sort.
+_FRESH = datetime.now(timezone.utc)
+_STALE = datetime.now(timezone.utc) - timedelta(hours=48)
+
+
+def _pin_trending_mode(monkeypatch, mode: str) -> None:
+    """Force the active trending ranking mode for a test, regardless of env."""
+    monkeypatch.setattr(get_settings(), "trending_ranking_mode", mode)
 
 
 @compiles(ARRAY, "sqlite")
@@ -183,6 +197,7 @@ def method_with_trending_papers():
             name="repo-1",
             num_stars=500,
             trending_score=10.0,
+            trending_score_updated_at=_FRESH,
         ),
         DBRepository(
             id=2,
@@ -191,6 +206,7 @@ def method_with_trending_papers():
             name="repo-2",
             num_stars=200,
             trending_score=2.5,
+            trending_score_updated_at=_FRESH,
         ),
         DBRepository(
             id=3,
@@ -207,6 +223,7 @@ def method_with_trending_papers():
             name="repo-4",
             num_stars=10000,
             trending_score=99.0,
+            trending_score_updated_at=_FRESH,
         ),
     ]
     db.add_all(repositories)
@@ -226,9 +243,10 @@ def method_with_trending_papers():
 
 
 def test_method_papers_trending_orders_by_official_repo_trending_score(
-    client, method_with_trending_papers
+    client, method_with_trending_papers, monkeypatch
 ):
     """`order_by=trending` ranks method papers by their best official repo score."""
+    _pin_trending_mode(monkeypatch, "github")
     response = client.get(
         "/api/v1/methods/transformer/papers?order_by=trending&page_size=10"
     )
@@ -247,13 +265,14 @@ def test_method_papers_trending_orders_by_official_repo_trending_score(
 
 
 def test_method_papers_trending_ignores_non_official_repos(
-    client, method_with_trending_papers
+    client, method_with_trending_papers, monkeypatch
 ):
     """A non-official repository's trending score must not influence ordering.
 
     Paper 4's only repo has `trending_score=99.0` but is not official, so it
     must not outrank Paper 1 (`trending_score=10.0` via official repo).
     """
+    _pin_trending_mode(monkeypatch, "github")
     response = client.get(
         "/api/v1/methods/transformer/papers?order_by=trending&page_size=10"
     )
@@ -273,6 +292,97 @@ def test_method_papers_default_ordering_unchanged(client, method_with_trending_p
     assert {paper["title"] for paper in data["results"]} == {
         f"Paper {i}" for i in range(1, 6)
     }
+
+
+@pytest.fixture
+def method_with_composite_trending_papers():
+    """Papers exercising composite (paper-level) trending for a single method.
+
+    All linked to method `transformer`:
+      - Paper 1: papers.trending_score=80 (fresh), official repo velocity 1.0
+      - Paper 2: papers.trending_score=40 (fresh), official repo velocity 50.0
+      - Paper 3: papers.trending_score=99 but STALE (must be ignored)
+      - Paper 4: no paper-level trending_score
+
+    Paper 1 must outrank Paper 2 by its higher *paper* score even though
+    Paper 2's repo velocity is far higher, proving composite mode ranks by
+    `papers.trending_score`, not official-repo velocity.
+    """
+    db = TestingSessionLocal()
+
+    method = DBMethod(id=1, name="Transformer", slug="transformer")
+    db.add(method)
+
+    paper_scores = {1: (80.0, _FRESH), 2: (40.0, _FRESH), 3: (99.0, _STALE), 4: None}
+    papers = []
+    for i in range(1, 5):
+        score = paper_scores[i]
+        papers.append(
+            DBPaper(
+                id=i,
+                title=f"Paper {i}",
+                abstract=f"Abstract {i}",
+                arxiv_id=f"2025.1{i:04d}",
+                version="v1",
+                is_latest_version=True,
+                trending_score=score[0] if score else None,
+                trending_score_updated_at=score[1] if score else None,
+            )
+        )
+    db.add_all(papers)
+
+    repositories = [
+        DBRepository(
+            id=1,
+            url="https://github.com/owner/repo-1",
+            owner="owner",
+            name="repo-1",
+            num_stars=100,
+            trending_score=1.0,
+            trending_score_updated_at=_FRESH,
+        ),
+        DBRepository(
+            id=2,
+            url="https://github.com/owner/repo-2",
+            owner="owner",
+            name="repo-2",
+            num_stars=100,
+            trending_score=50.0,
+            trending_score_updated_at=_FRESH,
+        ),
+    ]
+    db.add_all(repositories)
+    db.commit()
+
+    db.add_all(
+        [PaperMethod(paper_id=i, method_id=1) for i in range(1, 5)]
+        + [
+            DBPaperRepository(paper_id=1, repository_id=1, is_official=True),
+            DBPaperRepository(paper_id=2, repository_id=2, is_official=True),
+        ]
+    )
+    db.commit()
+    db.close()
+
+
+def test_method_papers_trending_composite_ranks_by_paper_score(
+    client, method_with_composite_trending_papers, monkeypatch
+):
+    """In composite mode, method papers rank by `papers.trending_score`."""
+    _pin_trending_mode(monkeypatch, "composite")
+    response = client.get(
+        "/api/v1/methods/transformer/papers?order_by=trending&page_size=10"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    titles = [paper["title"] for paper in data["results"]]
+
+    # Paper 1 (score 80) and Paper 2 (score 40) lead in that order; the stale
+    # and unscored papers follow without being dropped.
+    assert titles[:2] == ["Paper 1", "Paper 2"]
+    assert set(titles[2:]) == {"Paper 3", "Paper 4"}
+    assert data["count"] == 4
 
 
 if __name__ == "__main__":

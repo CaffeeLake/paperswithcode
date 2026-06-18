@@ -82,15 +82,6 @@ VALUES
         (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
         0,
         true
-    ),
-    (
-        'SLAM and Localization',
-        'slam-and-localization',
-        'SLAM and visual localization estimate camera pose and build maps from visual observations, including visual odometry and structure-from-motion.',
-        'simultaneous localization and mapping, visual odometry, visual SLAM, RGB-D SLAM, LiDAR SLAM, monocular SLAM, Gaussian Splatting SLAM',
-        (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
-        0,
-        true
     )
 ON CONFLICT (slug) DO UPDATE SET
     name = EXCLUDED.name,

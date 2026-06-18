@@ -835,6 +835,10 @@ class Evaluation(Base):
     external_source_url: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True
     )
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    external: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     # Raw number of model parameters for this evaluation row (e.g. 7000000000
     # for a 7B model). Kept on the evaluation rather than baked into
     # `model_name` so future leaderboards can filter / sort by size.
@@ -863,6 +867,8 @@ class Evaluation(Base):
             "idx_evaluations_paper_task_dataset", "paper_id", "task_id", "dataset_id"
         ),
         Index("idx_evaluations_best_rank", "best_rank"),
+        Index("idx_evaluations_external", "external"),
+        Index("idx_evaluations_source_url", "source_url"),
     )
 
     def __repr__(self) -> str:

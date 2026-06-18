@@ -51,6 +51,7 @@ def get_or_create_evaluation(
     best_metric: Optional[str] = None,
     evaluated_on: Optional[Any] = None,
     external_source_url: Optional[str] = None,
+    source_url: Optional[str] = None,
     num_parameters: Optional[int] = None,
     hf_model_url: Optional[str] = None,
     merge_metrics: bool = True,
@@ -94,14 +95,23 @@ def get_or_create_evaluation(
         ... )
         >>> # eval2.metrics now contains: {"WER": "5.2", "RTFx": "0.8"}
     """
+    from backend.services.evaluation_service import EvaluationService
+
+    canonical_source_url = source_url or external_source_url
+    service = EvaluationService(db)
+    external = service._derive_external(paper_id, canonical_source_url)
+
     # Check if evaluation already exists
     existing = (
         db.query(DBEvaluation)
         .filter(
             DBEvaluation.paper_id == paper_id,
+            DBEvaluation.external == external,
+            DBEvaluation.source_url == canonical_source_url,
             DBEvaluation.task_id == task_id,
             DBEvaluation.dataset_id == dataset_id,
             DBEvaluation.model_name == model_name,
+            DBEvaluation.best_metric == best_metric,
         )
         .first()
     )
@@ -131,8 +141,10 @@ def get_or_create_evaluation(
             existing.best_metric = best_metric
         if evaluated_on and not existing.evaluated_on:
             existing.evaluated_on = evaluated_on
-        if external_source_url and not existing.external_source_url:
-            existing.external_source_url = external_source_url
+        if canonical_source_url and not existing.source_url:
+            existing.source_url = canonical_source_url
+            existing.external_source_url = canonical_source_url
+            existing.external = external
         if num_parameters is not None and existing.num_parameters is None:
             existing.num_parameters = num_parameters
         if hf_model_url and not existing.hf_model_url:
@@ -146,9 +158,6 @@ def get_or_create_evaluation(
         db.refresh(existing)
 
         # Recalculate ranks for this leaderboard after update
-        from backend.services.evaluation_service import EvaluationService
-
-        service = EvaluationService(db)
         service.recalculate_ranks(
             task_id=task_id,
             dataset_id=dataset_id,
@@ -178,7 +187,9 @@ def get_or_create_evaluation(
             best_rank=best_rank,
             best_metric=best_metric,
             evaluated_on=evaluated_on,
-            external_source_url=external_source_url,
+            external_source_url=canonical_source_url,
+            source_url=canonical_source_url,
+            external=external,
             num_parameters=num_parameters,
             hf_model_url=hf_model_url,
         )
@@ -188,9 +199,6 @@ def get_or_create_evaluation(
         db.refresh(evaluation)
 
         # Recalculate ranks for this leaderboard after creation
-        from backend.services.evaluation_service import EvaluationService
-
-        service = EvaluationService(db)
         service.recalculate_ranks(
             task_id=task_id,
             dataset_id=dataset_id,
@@ -253,6 +261,7 @@ def bulk_create_evaluations_with_consolidation(
                 "best_metric": eval_data.get("best_metric"),
                 "evaluated_on": eval_data.get("evaluated_on"),
                 "external_source_url": eval_data.get("external_source_url"),
+                "source_url": eval_data.get("source_url"),
                 "num_parameters": eval_data.get("num_parameters"),
                 "hf_model_url": eval_data.get("hf_model_url"),
             }

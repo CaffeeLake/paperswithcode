@@ -457,7 +457,7 @@ const PaperDetail = () => {
                     <span>🤗 Spaces</span>
                     {paper.arxiv_id && (
                       <a
-                        href={`https://huggingface.co/spaces?arxivIds=${paper.arxiv_id.replace(/v\d+$/, "")}`}
+                        href={`https://huggingface.co/papers/${paper.arxiv_id.replace(/v\d+$/, "")}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="hover:opacity-80 transition-opacity"

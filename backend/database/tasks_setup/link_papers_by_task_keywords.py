@@ -159,7 +159,7 @@ def link_papers_by_task_keywords(rebuild: bool = False):
                 text, case_sensitive_patterns, case_insensitive_patterns
             )
             matching_task_ids = apply_task_supersession_rules(
-                matching_task_ids, slug_to_id
+                matching_task_ids, slug_to_id, text
             )
 
             if matching_task_ids:
