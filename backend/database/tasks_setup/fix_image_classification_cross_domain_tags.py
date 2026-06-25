@@ -1,8 +1,9 @@
-"""Remove mistaken image-classification auto tags on audio-domain papers.
+"""Remove mistaken image-classification auto tags.
 
-Audio papers frequently cite ViT, ImageNet, ResNet, or VGG as cross-modal
-pretraining baselines. Those citations should not tag the paper with
-image-classification unless the abstract also names an IC benchmark/task.
+Papers often cite ImageNet, ViT, or ResNet as pretraining/eval baselines without
+being image-classification work. Auto tags should survive only when current task
+keywords still match after supersession rules (e.g. CIFAR, ILSVRC, VTAB, or an
+explicit "image classification" mention).
 
 Run:
     uv run --env-file backend/keys.env \
@@ -17,7 +18,11 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.database.connection import db_manager
-from backend.utils.keyword_matching import has_strong_image_classification_signal
+from backend.utils.keyword_matching import (
+    apply_task_supersession_rules,
+    create_keyword_patterns,
+    find_matching_items_simple,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,12 +42,21 @@ def apply_migration() -> None:
 
 def cleanup_false_positive_tags() -> int:
     with db_manager.engine.begin() as conn:
+        tasks = (
+            conn.execute(
+                text("SELECT id, slug, keywords FROM tasks WHERE keywords IS NOT NULL")
+            )
+            .mappings()
+            .all()
+        )
         image_task_id = conn.execute(
             text("SELECT id FROM tasks WHERE slug = 'image-classification'")
         ).scalar_one()
-        audio_task_id = conn.execute(
-            text("SELECT id FROM tasks WHERE slug = 'audio-classification'")
-        ).scalar_one()
+
+        case_sensitive, case_insensitive = create_keyword_patterns(
+            [dict(t) for t in tasks]
+        )
+        slug_to_id = {t["slug"]: t["id"] for t in tasks}
 
         rows = (
             conn.execute(
@@ -50,17 +64,14 @@ def cleanup_false_positive_tags() -> int:
                     """
                 SELECT p.id, p.arxiv_id, p.title, p.abstract
                 FROM papers p
-                JOIN paper_tasks pt_ic
-                  ON pt_ic.paper_id = p.id
-                 AND pt_ic.task_id = :image_task_id
-                 AND pt_ic.source = 'auto'
-                JOIN paper_tasks pt_audio
-                  ON pt_audio.paper_id = p.id
-                 AND pt_audio.task_id = :audio_task_id
+                JOIN paper_tasks pt
+                  ON pt.paper_id = p.id
+                 AND pt.task_id = :image_task_id
+                 AND pt.source = 'auto'
                 WHERE p.is_latest_version
                 """
                 ),
-                {"image_task_id": image_task_id, "audio_task_id": audio_task_id},
+                {"image_task_id": image_task_id},
             )
             .mappings()
             .all()
@@ -69,13 +80,17 @@ def cleanup_false_positive_tags() -> int:
         to_delete: list[int] = []
         for row in rows:
             blob = f"{row['title'] or ''} {row['abstract'] or ''}".strip()
-            if not has_strong_image_classification_signal(blob):
-                to_delete.append(row["id"])
-                logger.info(
-                    "Removing auto image-classification tag from %s (%s)",
-                    row["arxiv_id"],
-                    (row["title"] or "")[:70],
-                )
+            matched = find_matching_items_simple(blob, case_sensitive, case_insensitive)
+            matched = apply_task_supersession_rules(matched, slug_to_id, blob)
+            if image_task_id in matched:
+                continue
+
+            to_delete.append(row["id"])
+            logger.info(
+                "Removing auto image-classification tag from %s (%s)",
+                row["arxiv_id"],
+                (row["title"] or "")[:70],
+            )
 
         if not to_delete:
             return 0

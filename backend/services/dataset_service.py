@@ -278,7 +278,17 @@ class DatasetService:
                 # default task-page lists without touching the underlying
                 # data or the dataset detail page (which loads benchmarks
                 # by slug directly, bypassing this filter).
-                query = query.having(_leaderboard_row_count() >= min_eval_count)
+                # Pinned benchmarks (`featured_rank` set on this task) always
+                # stay visible so curation is not defeated by low entry count.
+                if task_id is not None:
+                    query = query.having(
+                        or_(
+                            _leaderboard_row_count() >= min_eval_count,
+                            task_dataset_filter.featured_rank.isnot(None),
+                        )
+                    )
+                else:
+                    query = query.having(_leaderboard_row_count() >= min_eval_count)
 
             # Get total count before pagination
             total_count = query.count()
@@ -694,7 +704,13 @@ class DatasetService:
             raise DatabaseError(f"Failed to retrieve tasks for dataset: {str(e)}")
 
     def search_datasets(
-        self, query: str, page: int = 1, page_size: int = 50
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 50,
+        task_id: Optional[int] = None,
+        include_descendants: bool = False,
+        min_eval_count: Optional[int] = None,
     ) -> Datasets:
         """
         Search datasets by name, full_name, or description.
@@ -703,6 +719,9 @@ class DatasetService:
             query: Search query string
             page: Page number (1-based)
             page_size: Number of datasets per page
+            task_id: When set, restrict results to benchmarks linked to this task
+            include_descendants: Expand ``task_id`` to subtasks when filtering
+            min_eval_count: Hide benchmarks below this evaluation row count
 
         Returns:
             Datasets object with pagination info and results
@@ -714,6 +733,9 @@ class DatasetService:
             page=page,
             page_size=page_size,
             search=query,
+            task_id=task_id,
+            include_descendants=include_descendants,
+            min_eval_count=min_eval_count,
             order_by="name",
             order_dir="asc",
         )

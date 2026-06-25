@@ -97,7 +97,8 @@ SOURCE_PAPERS = {
         "date_published": date(2025, 6, 18),
     },
     "pairtally": {
-        "source_url": "https://ieeexplore.ieee.org/document/10825678",
+        "arxiv_id": "2509.13939",
+        "source_url": "https://arxiv.org/abs/2509.13939",
         "title": "Can Current AI Models Count What We Mean, Not What They See? A Benchmark and Systematic Evaluation",
         "abstract": (
             "Introduces PairTally, a fine-grained object counting benchmark with dense "
@@ -120,13 +121,28 @@ SOURCE_PAPERS = {
 
 BENCHMARKS = [
     {
+        "name": "FSC-147",
+        "full_name": "Few-Shot Counting 147",
+        "description": (
+            "FSC-147 is a dataset of 147 object categories with over 6000 images for "
+            "few-shot open-world object counting. Each instance is annotated with a dot "
+            "at its center; three exemplar instances per image also have bounding boxes."
+        ),
+        "short_description": "Few-shot open-world object counting benchmark.",
+        "homepage": "https://github.com/cvlab-stonybrook/LearningToCountEverything",
+        "introduced_date": date(2021, 4, 16),
+        "source_key": "fsc147",
+        "metrics": [MAE_METRIC_ID, RMSE_METRIC_ID],
+    },
+    {
         "name": "FSCD-147",
         "full_name": "Few-Shot Counting and Detection 147",
         "description": (
             "FSCD-147 adds bounding boxes to the FSC-147 validation and test splits for "
-            "joint open-world counting and detection evaluation."
+            "joint open-world counting and detection evaluation. Use this benchmark for "
+            "methods that output instance bounding boxes."
         ),
-        "short_description": "FSC-147 val/test with bounding boxes for counting and detection.",
+        "short_description": "FSC-147 val/test with boxes for counting-and-detection methods.",
         "homepage": "https://github.com/vinairesearch/counting-detr",
         "introduced_date": date(2022, 7, 22),
         "source_key": "fscd147",
@@ -205,7 +221,7 @@ BENCHMARKS = [
             "differences between mixed object categories."
         ),
         "short_description": "Fine-grained mixed-object counting benchmark.",
-        "homepage": "https://github.com/gknguyen/pairtally",
+        "homepage": "https://github.com/bbvisual/PairTally_Benchmark",
         "introduced_date": date(2025, 11, 1),
         "source_key": "pairtally",
         "metrics": [MAE_METRIC_ID, RMSE_METRIC_ID],

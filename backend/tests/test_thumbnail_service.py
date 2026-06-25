@@ -8,7 +8,10 @@ from backend.services.thumbnail_service import (
     EXPECTED_THUMBNAIL_WIDTH,
     ThumbnailService,
     _crop_to_card_aspect,
+    _resize_to_card_fill,
     _trim_blank_page_margins,
+    _trim_leading_blank_rows,
+    _trim_sparse_footer_rows,
     _trim_trailing_blank_rows,
     is_thumbnail_valid,
 )
@@ -43,6 +46,43 @@ def test_trim_trailing_blank_rows_removes_footer_whitespace():
 
     assert trimmed.height < image.height
     assert trimmed.getpixel((50, 59)) == (0, 0, 0)
+
+
+def test_trim_leading_blank_rows_removes_top_whitespace():
+    image = Image.new("RGB", (100, 140), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 40, 79, 119), fill="black")
+
+    trimmed = _trim_leading_blank_rows(image)
+
+    assert trimmed.height < image.height
+    assert trimmed.getpixel((50, 19)) == (0, 0, 0)
+
+
+def test_trim_sparse_footer_rows_removes_copyright_line():
+    image = Image.new("RGB", (100, 140), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 20, 79, 99), fill="black")
+    draw.text((30, 120), "© 2025", fill=(120, 120, 120))
+
+    trimmed = _trim_sparse_footer_rows(image)
+
+    assert trimmed.height < image.height
+    assert trimmed.getpixel((50, 59)) == (0, 0, 0)
+
+
+def test_resize_to_card_fill_matches_card_aspect():
+    image = Image.new("RGB", (400, 800), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((180, 40, 219, 79), fill="black")
+
+    filled = _resize_to_card_fill(image)
+
+    assert filled.size == (
+        EXPECTED_THUMBNAIL_WIDTH,
+        int(EXPECTED_THUMBNAIL_WIDTH / CARD_THUMB_ASPECT),
+    )
+    assert filled.getpixel((filled.width // 2, 59)) == (0, 0, 0)
 
 
 def test_crop_to_card_aspect_center_crops_wide_pages():

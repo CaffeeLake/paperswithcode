@@ -632,7 +632,8 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     """`min_eval_count=2` hides single-evaluation benchmarks from the default
     task-page listing so sparse leaderboards don't clutter the UI. The
     benchmark fixture seeds MCP-Atlas (5 evals), BrowseComp (2), Niche (1);
-    only Niche should be filtered out and the reported count must match."""
+    unranked sparse rows are filtered out, but pinned Niche (featured_rank=1)
+    must still appear."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -643,11 +644,24 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     assert response.status_code == 200
     payload = response.json()
 
-    # Niche (1 eval) is filtered out; the survivors keep the pinned order, so
-    # ranked BrowseComp leads the more-popular but unranked MCP-Atlas.
+    # Niche (1 eval) stays visible because it is pinned; unranked benchmarks
+    # below the min_eval_count threshold are dropped.
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["browsecomp", "mcp-atlas"]
-    assert payload["count"] == 2
+    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
+    assert payload["count"] == 3
+
+
+def test_task_page_keeps_pinned_sparse_benchmark(client):
+    """The bundled task-page payload applies min_eval_count=2 by default but
+    must not hide a pinned benchmark that only has one evaluation row."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.close()
+
+    response = client.get("/api/v1/tasks/10/page")
+    assert response.status_code == 200
+    slugs = [d["slug"] for d in response.json()["benchmarks"]]
+    assert slugs[0] == "niche"
 
 
 def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):

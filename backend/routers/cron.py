@@ -1,100 +1,48 @@
 """
 FastAPI router for CRON job monitoring endpoints.
-
-This module provides API endpoints for monitoring and managing CRON jobs.
 """
 
 from datetime import datetime, timedelta
-from pathlib import Path
-import sys
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
-if str(WORKFLOWS_DIR) not in sys.path:
-    sys.path.insert(0, str(WORKFLOWS_DIR))
-
-from scripts.utils.cron_helpers import get_cron_job_status  # noqa: E402
-from backend.utils.auth import require_admin  # noqa: E402
+from backend.services.cron_health import build_cron_dashboard, to_iso8601
+from backend.services.cron_registry import get_cron_job
+from backend.utils.auth import require_admin
 
 
 router = APIRouter()
 
 
 class CronJobStatus(BaseModel):
-    """Status information for a single cron job."""
-
     job_name: str
+    display_name: str
     category: str
-    status: str  # success, success_no_work, failed, running, unknown
+    status: str
+    log_status: Optional[str] = None
+    status_reason: str
     last_run: Optional[str] = None
+    last_db_write: Optional[str] = None
+    recent_write_count: Optional[int] = None
     duration: Optional[float] = None
     is_running: bool = False
     error: Optional[str] = None
     next_run: Optional[str] = None
     schedule: Optional[str] = None
-    work_metrics: Dict[str, Any] = {}
+    critical: bool = False
+    work_metrics: Dict[str, Any] = Field(default_factory=dict)
     work_summary: Optional[str] = None
+    db_metrics: Dict[str, Any] = Field(default_factory=dict)
+    lock_stale: bool = False
+    diagnostics: Optional[str] = None
 
 
 class CronJobsResponse(BaseModel):
-    """Response model for cron jobs list."""
-
     timestamp: str
     jobs: List[CronJobStatus]
     summary: Dict[str, Any]
-
-
-def get_available_jobs() -> Dict[str, List[str]]:
-    """Get all available cron jobs organized by category."""
-    jobs = {}
-
-    categories = ["hourly", "daily", "weekly", "monthly"]
-    for category in categories:
-        category_dir = SCRIPTS_DIR / category
-        if category_dir.exists():
-            jobs[category] = []
-            for script in category_dir.glob("*.py"):
-                if script.name != "__init__.py":
-                    jobs[category].append(script.stem)
-
-    return jobs
-
-
-def get_job_description(job_name: str, category: str) -> Optional[str]:
-    """Get job description from docstring."""
-    try:
-        script_path = SCRIPTS_DIR / category / f"{job_name}.py"
-
-        if not script_path.exists():
-            return None
-
-        with open(script_path, "r") as f:
-            lines = f.readlines()
-
-        in_docstring = False
-        description = ""
-
-        for line in lines:
-            if '"""' in line and not in_docstring:
-                in_docstring = True
-                after_quotes = line.split('"""', 1)[1]
-                if after_quotes.strip():
-                    description = after_quotes.strip()
-                    break
-            elif in_docstring and '"""' in line:
-                break
-            elif in_docstring and line.strip():
-                description = line.strip()
-                break
-
-        return description if description else None
-
-    except Exception:
-        return None
 
 
 @router.get(
@@ -108,95 +56,10 @@ def get_cron_status(
         1, ge=1, le=7, description="Number of days to look back for status"
     ),
 ):
-    """
-    Get comprehensive status of all CRON jobs.
-
-    Returns information about:
-    - Job execution status
-    - Last run time and duration
-    - Errors if any
-    - Next scheduled run time
-    - Overall system health
-    """
-    today = datetime.utcnow().strftime("%Y%m%d")
-
-    # Get available and active jobs
-    available_jobs = get_available_jobs()
-
-    jobs_status = []
-
-    # Map script names to actual log file names
-    log_name_mapping = {
-        "update_github_stars": "github_stars_cron",
-        "update_citations": "update_citations_hourly",
-        "extract_urls": "extract_urls_hourly",
-        "calculate_trending_scores": "calculate_trending_scores",
-    }
-
-    # Process each category
-    for category, job_names in available_jobs.items():
-        for job_name in job_names:
-            # Skip wrapper jobs to avoid duplicates
-            if "wrapper" in job_name:
-                continue
-
-            # Get the log name
-            log_name = log_name_mapping.get(job_name, job_name)
-
-            # Get job status from logs
-            status = get_cron_job_status(log_name, today)
-
-            # Convert last_run to ISO 8601 format with Z suffix (UTC)
-            last_run_iso = None
-            if status["last_run"]:
-                try:
-                    # Parse the timestamp (format: "2025-10-11 12:06:18")
-                    dt = datetime.strptime(status["last_run"], "%Y-%m-%d %H:%M:%S")
-                    # Convert to ISO 8601 with Z suffix
-                    last_run_iso = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                except ValueError:
-                    last_run_iso = status["last_run"]
-
-            job_status = CronJobStatus(
-                job_name=job_name,
-                category=category,
-                status=status["status"],
-                last_run=last_run_iso,
-                duration=status["duration"],
-                is_running=status["is_running"],
-                error=status["error"],
-                next_run=None,
-                schedule=None,
-                work_metrics=status.get("work_metrics", {}),
-                work_summary=status.get("work_summary"),
-            )
-
-            jobs_status.append(job_status)
-
-    # Calculate summary statistics
-    total_jobs = len(jobs_status)
-    success_count = sum(1 for j in jobs_status if j.status == "success")
-    success_no_work_count = sum(1 for j in jobs_status if j.status == "success_no_work")
-    failed_count = sum(1 for j in jobs_status if j.status == "failed")
-    running_count = sum(1 for j in jobs_status if j.is_running)
-    unknown_count = sum(1 for j in jobs_status if j.status == "unknown")
-
-    # For health score, count both "success" and "success_no_work" as healthy
-    healthy_count = success_count + success_no_work_count
-
-    summary = {
-        "total_jobs": total_jobs,
-        "success": success_count,
-        "success_no_work": success_no_work_count,
-        "failed": failed_count,
-        "running": running_count,
-        "unknown": unknown_count,
-        "health_score": (healthy_count / total_jobs * 100) if total_jobs > 0 else 0,
-    }
-
-    return CronJobsResponse(
-        timestamp=datetime.utcnow().isoformat() + "Z", jobs=jobs_status, summary=summary
-    )
+    """Return registry-backed CRON health with database freshness checks."""
+    _ = days  # reserved for future history windows
+    payload = build_cron_dashboard()
+    return CronJobsResponse(**payload)
 
 
 @router.get(
@@ -209,57 +72,55 @@ def get_job_detail(
     job_name: str,
     days: int = Query(3, ge=1, le=30, description="Number of days of history to fetch"),
 ):
-    """
-    Get detailed status and history for a specific CRON job.
+    """Get detailed status and recent log history for a registry job."""
+    import sys
+    from pathlib import Path
 
-    Returns:
-    - Current status
-    - Historical runs for the specified number of days
-    - Performance metrics
-    - Error history
-    """
+    job = get_cron_job(job_name)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    workflows_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    if str(workflows_dir) not in sys.path:
+        sys.path.insert(0, str(workflows_dir))
+    from scripts.utils.cron_helpers import get_cron_job_status
+
     job_history = []
-
-    # Get status for the last N days
-    for i in range(days):
-        date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y%m%d")
-        status = get_cron_job_status(job_name, date)
-
+    for offset in range(days):
+        date = (datetime.utcnow() - timedelta(days=offset)).strftime("%Y%m%d")
+        status = get_cron_job_status(job.log_name, date)
         if status["exists"]:
-            # Convert last_run to ISO 8601 format with Z suffix (UTC)
-            last_run_iso = None
-            if status["last_run"]:
-                try:
-                    dt = datetime.strptime(status["last_run"], "%Y-%m-%d %H:%M:%S")
-                    last_run_iso = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                except ValueError:
-                    last_run_iso = status["last_run"]
-
             job_history.append(
                 {
                     "date": date,
                     "status": status["status"],
-                    "last_run": last_run_iso,
+                    "last_run": to_iso8601(status.get("last_run")),
                     "duration": status["duration"],
                     "error": status["error"],
                 }
             )
 
-    if not job_history:
+    current = build_cron_dashboard()["jobs"]
+    current_status = next(
+        (item for item in current if item["job_name"] == job_name), None
+    )
+
+    if not job_history and current_status is None:
         raise HTTPException(
             status_code=404, detail="Job not found or no logs available"
         )
 
-    # Calculate performance metrics
-    successful_runs = [h for h in job_history if h["status"] == "success"]
-    failed_runs = [h for h in job_history if h["status"] == "failed"]
-
-    durations = [h["duration"] for h in successful_runs if h["duration"] is not None]
+    successful_runs = [item for item in job_history if item["status"] == "success"]
+    failed_runs = [item for item in job_history if item["status"] == "failed"]
+    durations = [
+        item["duration"] for item in successful_runs if item["duration"] is not None
+    ]
     avg_duration = sum(durations) / len(durations) if durations else None
 
     return {
         "job_name": job_name,
-        "current_status": job_history[0] if job_history else None,
+        "display_name": job.display_name,
+        "current_status": current_status or (job_history[0] if job_history else None),
         "history": job_history,
         "metrics": {
             "total_runs": len(job_history),
@@ -279,38 +140,19 @@ def get_job_detail(
     dependencies=[Depends(require_admin)],
 )
 def get_cron_health():
-    """
-    Get overall CRON system health status.
-
-    Returns a simple health check with critical job statuses.
-    """
-    today = datetime.utcnow().strftime("%Y%m%d")
-
-    # Define critical jobs that must be running
-    critical_jobs = [
-        "github_stars_cron",
-        "calculate_trending_scores",
-        "update_citations_hourly",
-        "extract_urls_hourly",
-    ]
-
-    all_healthy = True
-    issues = []
-
-    for job in critical_jobs:
-        status = get_cron_job_status(job, today)
-        if status["status"] == "failed":
-            all_healthy = False
-            issues.append(f"{job}: FAILED - {status.get('error', 'Unknown error')}")
-        elif status["status"] == "unknown" and not status["is_running"]:
-            all_healthy = False
-            issues.append(f"{job}: NOT RUN TODAY")
+    """Return overall CRON health based on registry jobs and DB freshness."""
+    payload = build_cron_dashboard()
+    summary = payload["summary"]
+    issues = summary.get("critical_issues") or []
+    healthy = summary["broken"] == 0 and summary["stuck"] == 0 and not issues
 
     return {
-        "healthy": all_healthy,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "issues": issues if not all_healthy else [],
+        "healthy": healthy,
+        "timestamp": payload["timestamp"],
+        "issues": issues,
+        "what_to_check_next": summary.get("what_to_check_next"),
+        "summary": summary,
         "message": "All critical jobs healthy"
-        if all_healthy
-        else f"{len(issues)} issue(s) detected",
+        if healthy
+        else f"{len(issues)} critical issue(s) detected",
     }

@@ -110,9 +110,16 @@ def list_datasets(
                 if task_obj:
                     task_id = task_obj.id
 
-        # Use search if q parameter is provided
+        # Search still respects task / descendant / min_eval_count filters.
         if q:
-            return service.search_datasets(query=q, page=page, page_size=page_size)
+            return service.search_datasets(
+                query=q,
+                page=page,
+                page_size=page_size,
+                task_id=task_id,
+                include_descendants=include_descendants,
+                min_eval_count=min_eval_count,
+            )
 
         return service.get_datasets(
             page=page,

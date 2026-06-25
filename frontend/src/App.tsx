@@ -19,12 +19,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 
 import Header from "@/components/Header";
+import HfSignInButton from "@/components/HfSignInButton";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
 import { isAuthDisabled, shouldUseHashRouter } from "@/lib/apiUrl";
-import { AuthProvider } from "@/lib/authContext";
+import { AuthProvider, useAuth } from "@/lib/authContext";
 import { PreferencesProvider } from "@/lib/preferencesContext";
 
 // HF Static Spaces (a) boot the iframe at `/index.html` and (b) return a
@@ -132,6 +133,50 @@ const AuthGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) => 
   return <>{element}</>;
 };
 
+const AdminGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) => {
+  const { user, isLoading } = useAuth();
+  const authDisabled = isAuthDisabled();
+
+  if (authDisabled) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="page">
+        <div className="submission-loading">
+          <span>Checking admin session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="page">
+        <div className="submission-empty submission-empty-warn">
+          <h1>Sign in required</h1>
+          <p>Sign in with an allowlisted Hugging Face admin account to view CRON job health.</p>
+          <HfSignInButton returnTo="/cron-dashboard" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!user.is_admin) {
+    return (
+      <div className="page">
+        <div className="submission-empty submission-empty-warn">
+          <h1>Admin access required</h1>
+          <p>Signed in as @{user.username}. This dashboard is limited to allowlisted admin accounts.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{element}</>;
+};
+
 const Shell: React.FC = () => {
   const [searchOpen, setSearchOpen] = React.useState(false);
 
@@ -174,7 +219,7 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
-            <Route path="/cron-dashboard" element={<AuthGatedRoute element={<CronDashboard />} />} />
+            <Route path="/cron-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
             {/* Top-level organization aliases (e.g. /nvidia). Placed last so
                 static routes always win; unknown slugs render NotFound from

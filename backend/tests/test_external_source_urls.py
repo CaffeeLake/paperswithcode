@@ -1,5 +1,6 @@
 from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
 from backend.services.evaluation_service import (
+    evaluation_external_flag,
     evaluation_is_external,
     evaluation_public_source_url,
     evaluation_result_url,
@@ -130,4 +131,73 @@ def test_evaluation_is_external_false_when_source_matches_same_paper():
         None,
         40193,
         db,
+    )
+
+
+def test_evaluation_external_flag_prefers_computed_value_over_stored_true():
+    source_url = "https://example.com/this-paper"
+    db = _FakeDB(_FakePaper(paper_id=40193, source_url=source_url))
+    assert not evaluation_external_flag(
+        stored_external=True,
+        source_url=source_url,
+        paper_arxiv_id=None,
+        paper_id=40193,
+        db=db,
+    )
+
+
+def test_evaluation_external_flag_falls_back_to_stored_when_source_missing():
+    assert evaluation_external_flag(
+        stored_external=True,
+        source_url=None,
+        paper_arxiv_id="2411.13093",
+        paper_id=40193,
+    )
+
+
+COUNTSE_PAPER_HTML = (
+    "https://openaccess.thecvf.com/content/ICCV2025/html/"
+    "Liu_CountSE_Soft_Exemplar_Open-set_Object_Counting_ICCV_2025_paper.html"
+)
+COUNTSE_PAPER_PDF = (
+    "https://openaccess.thecvf.com/content/ICCV2025/papers/"
+    "Liu_CountSE_Soft_Exemplar_Open-set_Object_Counting_ICCV_2025_paper.pdf"
+)
+OTHER_CVF_PAPER_PDF = (
+    "https://openaccess.thecvf.com/content/ICCV2025/papers/"
+    "Some_Other_Paper_ICCV_2025_paper.pdf"
+)
+
+
+def test_evaluation_is_external_false_for_cvf_html_pdf_variants():
+    db = _FakeDB(_FakePaper(paper_id=98356, source_url=COUNTSE_PAPER_HTML))
+    assert not evaluation_is_external(
+        COUNTSE_PAPER_PDF,
+        None,
+        98356,
+        db,
+    )
+
+
+def test_evaluation_is_external_true_for_unrelated_cvf_paper():
+    db = _FakeDB(_FakePaper(paper_id=98356, source_url=COUNTSE_PAPER_HTML))
+    assert evaluation_is_external(
+        OTHER_CVF_PAPER_PDF,
+        None,
+        98356,
+        db,
+    )
+
+
+def test_evaluation_result_url_uses_paper_source_for_cvf_pdf():
+    db = _FakeDB(_FakePaper(paper_id=98356, source_url=COUNTSE_PAPER_HTML))
+    assert (
+        evaluation_result_url(
+            COUNTSE_PAPER_PDF,
+            98356,
+            None,
+            COUNTSE_PAPER_HTML,
+            db,
+        )
+        == COUNTSE_PAPER_HTML
     )

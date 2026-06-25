@@ -177,14 +177,14 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               Submit feedback
             </a>
             {!authDisabled && (
-              <>
-                <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>
-                  Saved papers
-                </NavLink>
-                <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
-                  CRON dashboard
-                </NavLink>
-              </>
+              <NavLink to="/saved" className="mobile-nav-link" onClick={closeMobile}>
+                Saved papers
+              </NavLink>
+            )}
+            {!authDisabled && user?.is_admin && (
+              <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
+                CRON dashboard
+              </NavLink>
             )}
           </div>
         </div>

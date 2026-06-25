@@ -522,6 +522,70 @@ a.paper-resource.is-link:focus-visible {
 .paper-tags--clamped .method-chip {
   line-height: 16px;
 }
+/* SOTA / top-3 leaderboard placements, shown on a single line between the
+ * abstract and the task/method tags, e.g. "SOTA 🏆 on A, B · #2 on C · #3 on D".
+ * The line never wraps (one line height, preserving thumbnail alignment); the
+ * SotaBadges component measures the available width and collapses the overflow
+ * into a "· +N more" suffix. */
+.paper-sota {
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+/* On the paper page we stack one truncated line per rank group (SOTA / #2 / #3)
+ * and separate them from the action buttons with a hairline matching the
+ * .detail-meta divider spacing (16px above the line). */
+.paper-sota-stack {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+}
+.paper-sota-stack .paper-sota {
+  margin-bottom: 4px;
+}
+.paper-sota-stack .paper-sota:last-child {
+  margin-bottom: 0;
+}
+/* Off-screen sizer used to measure each benchmark segment width. `pre` keeps
+ * the prefix spaces so the measurement matches the rendered line. */
+.paper-sota-measure {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+.paper-sota-label {
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+.paper-sota-label--sota {
+  color: #B8860B;
+}
+.paper-sota-sep,
+.paper-sota-on {
+  color: var(--ink-faint);
+}
+.paper-sota-name {
+  color: var(--accent-text);
+}
+.paper-sota-name:hover {
+  text-decoration: underline;
+}
+.paper-sota-more {
+  font-size: 11px;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.paper-sota-more:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
 .paper-stats {
   display: flex;
   flex-direction: column;
@@ -1972,6 +2036,28 @@ a.paper-resource.is-link:focus-visible {
 }
 .section-rule .accent { color: var(--ink-soft); font-family: var(--serif); font-style: italic; text-transform: none; letter-spacing: 0; font-size: 12px; }
 .section-rule a:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+
+/* Paper detail section deep links (e.g. /paper/98456#results) */
+.paper-section-anchor {
+  scroll-margin-top: 80px;
+}
+.section-anchor-link {
+  color: inherit;
+  text-decoration: none;
+}
+.section-anchor-link:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.results-task-permalink {
+  margin-left: 6px;
+  font-size: 11px;
+  opacity: 0.55;
+}
+.results-task-permalink:hover {
+  opacity: 1;
+}
 
 /* Inline "edit" link used next to section headers and sidebar cards on the
    paper detail page. Replaces the previously inlined style block to keep

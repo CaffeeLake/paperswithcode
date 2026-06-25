@@ -19,11 +19,11 @@ PAPER_ARXIV = {
 }
 
 ROWS = [
-    # Table 1 — FSCD-147 text only
+    # Table 1 — FSC-147 text only (counting without detection)
     (
         "groundingrec",
         "GroundingREC",
-        "FSCD-147",
+        "FSC-147",
         "MAE",
         10.12,
         "Text-only positive prompt, Table 1",
@@ -31,7 +31,7 @@ ROWS = [
     (
         "groundingrec",
         "GroundingREC",
-        "FSCD-147",
+        "FSC-147",
         "RMSE",
         107.19,
         "Text-only positive prompt, Table 1",
@@ -39,7 +39,7 @@ ROWS = [
     (
         "countse",
         "CountSE",
-        "FSCD-147",
+        "FSC-147",
         "MAE",
         7.84,
         "Text-only positive prompt, Table 1",
@@ -47,7 +47,7 @@ ROWS = [
     (
         "countse",
         "CountSE",
-        "FSCD-147",
+        "FSC-147",
         "RMSE",
         82.99,
         "Text-only positive prompt, Table 1",
@@ -177,6 +177,7 @@ ROWS = [
 ]
 
 DATASET_SLUG = {
+    "FSC-147": "fsc-147",
     "FSCD-147": "fscd-147",
     "ShanghaiTech Part A": "shanghaitech-part-a",
     "PrACo": "praco",

@@ -21,6 +21,7 @@ function sourceLabel(sourceUrl?: string | null): string {
   if (lower.includes("open-asr-leaderboard")) return "Open ASR Leaderboard";
   if (lower.includes("arcprize.org")) return "ARC Prize Leaderboard";
   if (lower.includes("frontierswe.com")) return "FrontierSWE";
+  if (lower.includes("deepswe.datacurve.ai")) return "DeepSWE";
   try {
     const parsed = new URL(sourceUrl, "https://paperswithcode.co");
     if (parsed.pathname.startsWith("/paper/")) return "Source paper";

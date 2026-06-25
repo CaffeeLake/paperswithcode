@@ -33,6 +33,15 @@ from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
 
 _PAPER_REF = re.compile(r"^paper:(\d+)$", re.IGNORECASE)
+_CVF_OPENACCESS_PATH = re.compile(
+    r"^/content/([^/]+)/(?:html|papers)/([^/]+?)(?:\.(?:html|pdf))?$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_paper_slug(segment: str) -> bool:
+    base = segment.rsplit(".", 1)[0] if "." in segment else segment
+    return "_" in base or len(base) >= 20
 
 
 def _normalize_url_for_match(url: Optional[str]) -> Optional[str]:
@@ -90,6 +99,46 @@ def _paper_route_keys(paper_id: int, paper_arxiv_id: Optional[str]) -> set[str]:
     return {key for key in keys if key}
 
 
+def _source_match_keys(url: Optional[str]) -> set[str]:
+    """Normalized URL keys plus equivalence keys for alternate paper surfaces."""
+    keys: set[str] = set()
+    normalized = _normalize_url_for_match(url)
+    if normalized:
+        keys.add(normalized)
+
+    if not url:
+        return keys
+
+    raw = url.strip()
+    if not raw or _PAPER_REF.match(raw) or parse_arxiv_url(raw):
+        return keys
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        return keys
+
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/")
+
+    cvf_match = _CVF_OPENACCESS_PATH.match(path)
+    if cvf_match and netloc == "openaccess.thecvf.com":
+        conf, slug = cvf_match.group(1).lower(), cvf_match.group(2).lower()
+        keys.add(f"cvf:{conf}:{slug}")
+
+    segment = path.rsplit("/", 1)[-1]
+    if segment and _looks_like_paper_slug(segment):
+        slug_base = segment.rsplit(".", 1)[0].lower()
+        keys.add(f"hostslug:{netloc}:{slug_base}")
+
+    return {key for key in keys if key}
+
+
+def _extend_keys_from_url(keys: set[str], url: Optional[str]) -> None:
+    keys.update(_source_match_keys(url))
+
+
 def evaluation_is_external(
     source_url: Optional[str],
     paper_arxiv_id: Optional[str],
@@ -100,15 +149,28 @@ def evaluation_is_external(
     if not source_url:
         return False
 
-    normalized_source = _normalize_url_for_match(source_url)
-    if not normalized_source:
+    source_keys = _source_match_keys(source_url)
+    if not source_keys:
         return False
 
     related = _paper_route_keys(paper_id, paper_arxiv_id)
     if db is not None:
         related.update(_related_source_keys(db, paper_id, paper_arxiv_id))
 
-    return normalized_source not in related
+    return not source_keys.intersection(related)
+
+
+def evaluation_external_flag(
+    stored_external: bool,
+    source_url: Optional[str],
+    paper_arxiv_id: Optional[str],
+    paper_id: int,
+    db: Optional[Session] = None,
+) -> bool:
+    """Resolve whether an evaluation is externally sourced for API display."""
+    if source_url:
+        return evaluation_is_external(source_url, paper_arxiv_id, paper_id, db)
+    return bool(stored_external)
 
 
 def evaluation_public_source_url(
@@ -138,11 +200,16 @@ def evaluation_result_url(
 ) -> Optional[str]:
     """Resolve the result/source link shown on evaluation rows."""
     if source_url:
-        normalized_source = _normalize_url_for_match(source_url)
-        if normalized_source in _paper_route_keys(paper_id, paper_arxiv_id):
-            return _paper_pdf_url(paper_arxiv_id) or evaluation_public_source_url(
-                source_url, db
-            )
+        source_keys = _source_match_keys(source_url)
+        related = _paper_route_keys(paper_id, paper_arxiv_id)
+        if db is not None:
+            related.update(_related_source_keys(db, paper_id, paper_arxiv_id))
+        if source_keys.intersection(related):
+            if paper_arxiv_id:
+                return _paper_pdf_url(paper_arxiv_id) or evaluation_public_source_url(
+                    source_url, db
+                )
+            return paper_source_url or f"/paper/{paper_id}"
         return evaluation_public_source_url(source_url, db)
     if paper_arxiv_id:
         return f"https://arxiv.org/abs/{paper_arxiv_id}"
@@ -165,9 +232,7 @@ def _related_source_keys(
             *(paper.hf_datasets or []),
             *(paper.hf_spaces or []),
         ]:
-            key = _normalize_url_for_match(url)
-            if key:
-                keys.add(key)
+            _extend_keys_from_url(keys, url)
 
     repo_urls = (
         db.query(DBRepository.url)
@@ -176,9 +241,7 @@ def _related_source_keys(
         .all()
     )
     for (url,) in repo_urls:
-        key = _normalize_url_for_match(url)
-        if key:
-            keys.add(key)
+        _extend_keys_from_url(keys, url)
 
     project_page_urls = (
         db.query(DBProjectPage.url)
@@ -190,9 +253,7 @@ def _related_source_keys(
         .all()
     )
     for (url,) in project_page_urls:
-        key = _normalize_url_for_match(url)
-        if key:
-            keys.add(key)
+        _extend_keys_from_url(keys, url)
 
     hf_urls = (
         db.query(DBHfArtifact.url)
@@ -201,9 +262,7 @@ def _related_source_keys(
         .all()
     )
     for (url,) in hf_urls:
-        key = _normalize_url_for_match(url)
-        if key:
-            keys.add(key)
+        _extend_keys_from_url(keys, url)
 
     return keys
 
@@ -355,14 +414,12 @@ class EvaluationService:
             paper_source_url,
             self.db,
         )
-        external = bool(
-            db_evaluation.external
-            or evaluation_is_external(
-                stored_source_url,
-                paper_arxiv_id,
-                db_evaluation.paper_id,
-                self.db,
-            )
+        external = evaluation_external_flag(
+            db_evaluation.external,
+            stored_source_url,
+            paper_arxiv_id,
+            db_evaluation.paper_id,
+            self.db,
         )
 
         return Evaluation(
@@ -791,13 +848,15 @@ class EvaluationService:
             self.db.commit()
             self.db.refresh(db_evaluation)
 
-            # Recalculate ranks for this leaderboard after creation
-            # Recalculate only for the specific metric if best_metric is set
-            self.recalculate_ranks(
-                db_evaluation.task_id,
-                db_evaluation.dataset_id,
-                metric_name=db_evaluation.best_metric,
-            )
+            # Recalculate ranks for every metric this row carries
+            for metric in self._metric_names_for_rank_refresh(
+                db_evaluation.metrics, db_evaluation.best_metric
+            ):
+                self.recalculate_ranks(
+                    db_evaluation.task_id,
+                    db_evaluation.dataset_id,
+                    metric_name=metric,
+                )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
@@ -870,10 +929,11 @@ class EvaluationService:
             if not db_evaluation:
                 raise DatabaseError(f"Evaluation {evaluation_id} not found")
 
-            # Store old task_id, dataset_id, and best_metric for rank recalculation
+            # Store old task_id, dataset_id, best_metric, and metrics for rank recalculation
             old_task_id = db_evaluation.task_id
             old_dataset_id = db_evaluation.dataset_id
             old_best_metric = db_evaluation.best_metric
+            old_metrics = dict(db_evaluation.metrics or {})
 
             # Determine which dataset to validate against
             target_dataset_id = dataset_id if dataset_id is not None else old_dataset_id
@@ -964,40 +1024,27 @@ class EvaluationService:
             self.db.commit()
             self.db.refresh(db_evaluation)
 
-            # Recalculate ranks for affected leaderboards
-            # If task or dataset changed, recalculate both old and new leaderboards
+            metric_names = self._metric_names_for_rank_refresh(
+                old_metrics, old_best_metric
+            )
+            metric_names.extend(
+                self._metric_names_for_rank_refresh(
+                    db_evaluation.metrics, db_evaluation.best_metric
+                )
+            )
+            metric_names = list(dict.fromkeys(metric_names))
+
+            leaderboards = {(db_evaluation.task_id, db_evaluation.dataset_id)}
             if (task_id is not None and task_id != old_task_id) or (
                 dataset_id is not None and dataset_id != old_dataset_id
             ):
-                # Recalculate old leaderboard (where evaluation was removed)
-                self.recalculate_ranks(
-                    old_task_id, old_dataset_id, metric_name=old_best_metric
-                )
-                # Recalculate new leaderboard (where evaluation was added)
-                self.recalculate_ranks(
-                    db_evaluation.task_id,
-                    db_evaluation.dataset_id,
-                    metric_name=db_evaluation.best_metric,
-                )
-            elif best_metric is not None and best_metric != old_best_metric:
-                # If best_metric changed, recalculate both old and new metric leaderboards
-                self.recalculate_ranks(
-                    db_evaluation.task_id,
-                    db_evaluation.dataset_id,
-                    metric_name=old_best_metric,
-                )
-                self.recalculate_ranks(
-                    db_evaluation.task_id,
-                    db_evaluation.dataset_id,
-                    metric_name=db_evaluation.best_metric,
-                )
-            else:
-                # Only recalculate current leaderboard for current metric
-                self.recalculate_ranks(
-                    db_evaluation.task_id,
-                    db_evaluation.dataset_id,
-                    metric_name=db_evaluation.best_metric,
-                )
+                leaderboards.add((old_task_id, old_dataset_id))
+
+            for task_id_lb, dataset_id_lb in leaderboards:
+                for metric in metric_names:
+                    self.recalculate_ranks(
+                        task_id_lb, dataset_id_lb, metric_name=metric
+                    )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
@@ -1037,22 +1084,35 @@ class EvaluationService:
             if not db_evaluation:
                 raise DatabaseError(f"Evaluation {evaluation_id} not found")
 
-            # Store task_id, dataset_id, and best_metric before deletion for rank recalculation
+            # Store task_id, dataset_id, best_metric, and metrics before deletion
             task_id = db_evaluation.task_id
             dataset_id = db_evaluation.dataset_id
             best_metric = db_evaluation.best_metric
+            metrics = dict(db_evaluation.metrics or {})
 
             self.db.delete(db_evaluation)
             self.db.commit()
 
-            # Recalculate ranks for this leaderboard after deletion
-            self.recalculate_ranks(task_id, dataset_id, metric_name=best_metric)
+            for metric in self._metric_names_for_rank_refresh(metrics, best_metric):
+                self.recalculate_ranks(task_id, dataset_id, metric_name=metric)
 
             return True
 
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to delete evaluation: {str(e)}")
+
+    @staticmethod
+    def _metric_names_for_rank_refresh(
+        metrics: Optional[dict], best_metric: Optional[str]
+    ) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for name in [best_metric, *(metrics or {}).keys()]:
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
 
     def recalculate_ranks(
         self,
@@ -1064,13 +1124,18 @@ class EvaluationService:
         """
         Recalculate ranks for evaluations in a specific leaderboard.
 
-        This method orders evaluations by their best_metric value and assigns ranks accordingly.
+        For each metric, every evaluation on the (task, dataset) pair that carries a
+        parseable value for that metric in `metrics` participates in ranking — including
+        rows whose primary metric is different (e.g. mAP-primary rows that also report FPS).
+        `best_rank` is written only on rows where `best_metric` matches the metric being
+        ranked.
+
         The ranking direction (higher is better vs lower is better) is determined by the
         metrics table. Evaluations with the same metric value get the same rank.
 
-        Leaderboards are now defined by (task, dataset, metric) triples. If metric_name is
+        Leaderboards are defined by (task, dataset, metric) triples. If metric_name is
         provided, only recalculates ranks for that specific metric. If None, recalculates
-        for all metrics present in evaluations for this task-dataset pair.
+        for all metrics present as `best_metric` on evaluations for this task-dataset pair.
 
         Args:
             task_id: Task ID to recalculate ranks for
@@ -1090,7 +1155,6 @@ class EvaluationService:
             if metric_name:
                 metrics_to_process = [metric_name]
             else:
-                # Get all unique best_metric values for this task-dataset pair
                 unique_metrics = (
                     self.db.query(DBEvaluation.best_metric)
                     .filter(
@@ -1103,6 +1167,20 @@ class EvaluationService:
                 )
                 metrics_to_process = [m[0] for m in unique_metrics]
 
+                all_evals = self.db.query(DBEvaluation).filter(
+                    DBEvaluation.task_id == task_id,
+                    DBEvaluation.dataset_id == dataset_id,
+                )
+                if uses_additional_data is not None:
+                    all_evals = all_evals.filter(
+                        DBEvaluation.uses_additional_data == uses_additional_data
+                    )
+                for eval_obj in all_evals.all():
+                    if eval_obj.metrics:
+                        for key in eval_obj.metrics:
+                            if key not in metrics_to_process:
+                                metrics_to_process.append(key)
+
             if not metrics_to_process:
                 return 0
 
@@ -1110,20 +1188,16 @@ class EvaluationService:
 
             # Process each metric separately
             for current_metric in metrics_to_process:
-                # Build query for evaluations in this specific leaderboard (task, dataset, metric)
                 query = self.db.query(DBEvaluation).filter(
                     DBEvaluation.task_id == task_id,
                     DBEvaluation.dataset_id == dataset_id,
-                    DBEvaluation.best_metric == current_metric,
                 )
 
-                # Optionally filter by uses_additional_data
                 if uses_additional_data is not None:
                     query = query.filter(
                         DBEvaluation.uses_additional_data == uses_additional_data
                     )
 
-                # Get all evaluations for this leaderboard
                 evaluations = query.all()
 
                 if not evaluations:
@@ -1151,28 +1225,20 @@ class EvaluationService:
                         f"Defaulting to 'higher_is_better' for ranking."
                     )
 
-                # Extract metric values for sorting - rank ALL evaluations together
-                # (uses_additional_data is displayed as a tag but doesn't affect ranking)
                 eval_scores = []
                 for eval_obj in evaluations:
-                    # Get the value of the best_metric from metrics dict
                     metric_value = None
-                    if eval_obj.best_metric and eval_obj.metrics:
-                        # Handle both string and numeric metric values
-                        raw_value = eval_obj.metrics.get(eval_obj.best_metric)
+                    if eval_obj.metrics:
+                        raw_value = eval_obj.metrics.get(current_metric)
                         if raw_value is not None:
                             try:
-                                # Convert to float for comparison
-                                # First, handle values that contain "±" (e.g., "88.55 ± 0.04")
                                 if isinstance(raw_value, str) and "±" in raw_value:
-                                    # Extract just the first number before the ±
                                     metric_value = float(
                                         raw_value.split("±")[0].strip()
                                     )
                                 else:
                                     metric_value = float(raw_value)
                             except (ValueError, TypeError):
-                                # If conversion fails, skip this evaluation
                                 pass
 
                     eval_scores.append((eval_obj, metric_value))
@@ -1200,19 +1266,22 @@ class EvaluationService:
                 previous_score = None
 
                 for idx, (eval_obj, score) in enumerate(eval_scores):
-                    # Skip evaluations without valid metric values
                     if score is None:
-                        eval_obj.best_rank = None
-                        total_updated += 1
+                        if eval_obj.best_metric == current_metric:
+                            eval_obj.best_rank = None
+                            total_updated += 1
                         continue
 
-                    # If score is different from previous, update rank
                     if previous_score is not None and score != previous_score:
                         current_rank = idx + 1
+                    elif previous_score is None:
+                        current_rank = idx + 1
 
-                    eval_obj.best_rank = current_rank
+                    if eval_obj.best_metric == current_metric:
+                        eval_obj.best_rank = current_rank
+                        total_updated += 1
+
                     previous_score = score
-                    total_updated += 1
 
             # Commit all rank updates
             self.db.commit()

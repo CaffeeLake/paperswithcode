@@ -112,3 +112,11 @@ session.execute(
 ## Reporting back
 
 Report which benchmarks already existed, which were created, which metric was linked, which source-paper task/method tags were added, and the final native source URL for each benchmark. Mention when a tempting result paper was deliberately not used because it only evaluated on or cited the benchmark. If any source paper cannot be resolved to a native local paper URL, clearly list what information is needed from the user.
+
+**Always end with the benchmark page URL(s)** so the user can open them directly:
+
+```text
+https://paperswithcode.co/benchmark/{dataset_slug}
+```
+
+Use the `datasets.slug` value (from the created or reused row). When a benchmark is task-scoped, you may append `?task={task_slug}` for the task-filtered leaderboard view, but the bare `/benchmark/{slug}` URL is sufficient by default.

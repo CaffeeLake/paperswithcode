@@ -36,7 +36,7 @@ from backend.utils.biorxiv import (
 
 logger = logging.getLogger(__name__)
 
-THUMBNAIL_RENDERER_CACHE_BUST = "fit3"
+THUMBNAIL_RENDERER_CACHE_BUST = "fit5"
 EXPECTED_THUMBNAIL_WIDTH = 400
 EXPECTED_THUMBNAIL_FORMAT = "JPEG"
 # Paper cards render thumbnails in a 160×220 box; match that aspect so
@@ -100,6 +100,40 @@ def _trim_blank_page_margins(image: Image.Image) -> Image.Image:
     return image.crop(crop_box)
 
 
+def _row_white_fraction(image: Image.Image, row_index: int) -> float:
+    """Return the fraction of near-white pixels on one horizontal scanline."""
+    rgb_image = image.convert("RGB")
+    width, _ = rgb_image.size
+    white_pixels = 0
+    for x in range(width):
+        r, g, b = rgb_image.getpixel((x, row_index))
+        if r > 245 and g > 245 and b > 245:
+            white_pixels += 1
+    return white_pixels / width
+
+
+def _row_ink_fraction(image: Image.Image, row_index: int) -> float:
+    """Return the fraction of non-white pixels on one horizontal scanline."""
+    return 1.0 - _row_white_fraction(image, row_index)
+
+
+def _trim_leading_blank_rows(
+    image: Image.Image, min_white_fraction: float = 0.985
+) -> Image.Image:
+    """Remove blank rows from the top after the main bbox trim."""
+    width, height = image.size
+    top = 0
+    while top < height:
+        if _row_white_fraction(image, top) < min_white_fraction:
+            break
+        top += 1
+
+    if top == 0:
+        return image
+
+    return image.crop((0, top, width, height))
+
+
 def _trim_trailing_blank_rows(
     image: Image.Image, min_white_fraction: float = 0.985
 ) -> Image.Image:
@@ -107,16 +141,34 @@ def _trim_trailing_blank_rows(
     Remove footer rows that are almost entirely blank after the main bbox trim.
     PDF footers often include faint gray text that prevents a tight bottom crop.
     """
-    rgb_image = image.convert("RGB")
-    width, height = rgb_image.size
+    width, height = image.size
     bottom = height
     while bottom > 0:
-        white_pixels = 0
-        for x in range(width):
-            r, g, b = rgb_image.getpixel((x, bottom - 1))
-            if r > 245 and g > 245 and b > 245:
-                white_pixels += 1
-        if white_pixels / width < min_white_fraction:
+        if _row_white_fraction(image, bottom - 1) < min_white_fraction:
+            break
+        bottom -= 1
+
+    if bottom == height:
+        return image
+
+    return image.crop((0, 0, width, bottom))
+
+
+def _trim_sparse_footer_rows(
+    image: Image.Image, max_footer_ink_fraction: float = 0.25
+) -> Image.Image:
+    """
+    Drop thin copyright / page-number rows at the bottom so trailing whitespace
+    above them can be removed by :func:`_trim_trailing_blank_rows`.
+    """
+    width, height = image.size
+    bottom = height
+    while bottom > 0:
+        ink = _row_ink_fraction(image, bottom - 1)
+        if ink <= 0:
+            bottom -= 1
+            continue
+        if ink >= max_footer_ink_fraction:
             break
         bottom -= 1
 
@@ -145,6 +197,37 @@ def _crop_to_card_aspect(image: Image.Image) -> Image.Image:
 
     new_height = int(width / CARD_THUMB_ASPECT)
     return image.crop((0, 0, width, new_height))
+
+
+def _resize_to_card_fill(
+    image: Image.Image, target_width: int = EXPECTED_THUMBNAIL_WIDTH
+) -> Image.Image:
+    """
+    Scale and crop so the card frame is filled without letterboxing.
+
+    The card uses ``object-fit: contain``, so thumbnails must already match the
+    160×220 aspect. Cover-style scaling removes the large PDF margins that would
+    otherwise appear as empty white bands in the card.
+    """
+    target_height = int(target_width / CARD_THUMB_ASPECT)
+    width, height = image.size
+    scale = max(target_width / width, target_height / height)
+    resized_width = max(1, int(width * scale + 0.5))
+    resized_height = max(1, int(height * scale + 0.5))
+    resized = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+
+    left = max(0, (resized_width - target_width) // 2)
+    top = 0
+    return resized.crop((left, top, left + target_width, top + target_height))
+
+
+def _prepare_first_page_for_card(image: Image.Image) -> Image.Image:
+    """Trim PDF margins/footers and fit the card frame."""
+    image = _trim_blank_page_margins(image)
+    image = _trim_leading_blank_rows(image)
+    image = _trim_sparse_footer_rows(image)
+    image = _trim_trailing_blank_rows(image)
+    return _resize_to_card_fill(image)
 
 
 def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
@@ -347,25 +430,7 @@ class ThumbnailService:
                 raise ThumbnailGenerationError("No pages found in PDF")
 
             image = images[0]
-            image = _trim_blank_page_margins(image)
-            image = _trim_trailing_blank_rows(image)
-
-            # Resize the full first page to target width while maintaining aspect ratio
-            aspect_ratio = image.height / image.width
-            target_height = int(self.thumbnail_width * aspect_ratio)
-
-            thumbnail = image.resize(
-                (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
-            )
-            thumbnail = _crop_to_card_aspect(thumbnail)
-
-            if thumbnail.width != self.thumbnail_width:
-                card_height = int(self.thumbnail_width / CARD_THUMB_ASPECT)
-                thumbnail = thumbnail.resize(
-                    (self.thumbnail_width, card_height), Image.Resampling.LANCZOS
-                )
-
-            return thumbnail
+            return _prepare_first_page_for_card(image)
 
         except Exception as e:
             raise ThumbnailGenerationError(f"Failed to convert PDF to image: {str(e)}")
@@ -377,18 +442,7 @@ class ThumbnailService:
         try:
             if image.mode != "RGB":
                 image = image.convert("RGB")
-            aspect_ratio = image.height / image.width
-            target_height = int(self.thumbnail_width * aspect_ratio)
-            thumbnail = image.resize(
-                (self.thumbnail_width, target_height), Image.Resampling.LANCZOS
-            )
-            thumbnail = _crop_to_card_aspect(thumbnail)
-            if thumbnail.width != self.thumbnail_width:
-                card_height = int(self.thumbnail_width / CARD_THUMB_ASPECT)
-                thumbnail = thumbnail.resize(
-                    (self.thumbnail_width, card_height), Image.Resampling.LANCZOS
-                )
-            return thumbnail
+            return _resize_to_card_fill(image)
         except Exception as e:
             raise ThumbnailGenerationError(
                 f"Failed to convert screenshot to thumbnail: {str(e)}"

@@ -213,7 +213,7 @@ Verify the image is reachable:
 
 ```bash
 curl -s "http://localhost:8000/api/v1/papers/<paper_id>" | uv run python -c "import json,sys; p=json.load(sys.stdin); print(p.get('thumbnail_url'))"
-curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/thumbnails/custom/external_<paper_id>.jpg?fit=fit3"
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8000/api/thumbnails/custom/external_<paper_id>.jpg?fit=fit4"
 ```
 
 If generation fails because headless Chrome or PDF tooling is unavailable, note the failure in the report. The `preload_thumbnails` cron may backfill later, but do not skip an inline attempt during ingestion.

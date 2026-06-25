@@ -215,6 +215,13 @@ class Paper(BaseModel):
             "e.g. NVIDIA. Powers the org logo tags on the paper page."
         ),
     )
+    leaderboard_ranks: Optional[List["LeaderboardRankSummary"]] = Field(
+        None,
+        description=(
+            "Top-3 leaderboard placements (best_rank <= 3) for this paper, "
+            "deduped by dataset. Powers the SOTA/#2/#3 badges on paper cards."
+        ),
+    )
 
     @field_validator("authors", mode="before")
     @classmethod
@@ -869,6 +876,24 @@ class BenchmarkSummary(BaseModel):
         if v is None:
             return v
         return str(v)
+
+
+class LeaderboardRankSummary(BaseModel):
+    """
+    Lightweight leaderboard placement used to render SOTA/#2/#3 badges on
+    paper cards. One entry per benchmark (dataset) the paper ranks top-3 on.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    dataset_name: str = Field(..., description="Benchmark (dataset) name")
+    dataset_slug: Optional[str] = Field(
+        None, description="URL-friendly dataset slug for the benchmark page link"
+    )
+    best_rank: int = Field(..., description="Best rank on this benchmark (1, 2, or 3)")
+    best_metric: Optional[str] = Field(
+        None, description="Metric the rank was computed on"
+    )
 
 
 class RelatedPaperSummary(BaseModel):

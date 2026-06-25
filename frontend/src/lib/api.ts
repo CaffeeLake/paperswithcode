@@ -53,6 +53,16 @@ export interface BenchmarkSummary {
   introduced_year?: number;
 }
 
+/** A top-3 leaderboard placement for a paper, used to render the SOTA/#2/#3
+ *  badges on feed cards. One entry per benchmark (dataset), deduped to the
+ *  paper's best rank on that benchmark. */
+export interface LeaderboardRankSummary {
+  dataset_name: string;
+  dataset_slug?: string | null;
+  best_rank: number;
+  best_metric?: string | null;
+}
+
 /** Lightweight summary of a related paper (predecessor or successor)
  *  embedded in the paper detail response. Used to power the lineage banner
  *  on the paper page (e.g. DINOv2 -> DINOv3). */
@@ -121,6 +131,9 @@ export interface Paper {
   /** Organizations (labs/companies) this paper is attributed to, e.g. NVIDIA.
    *  Powers the org logo tags on the paper page. */
   organizations?: OrganizationSummary[];
+  /** Top-3 leaderboard placements (best_rank <= 3) for this paper, deduped by
+   *  dataset. Powers the SOTA/#2/#3 badges on feed cards. */
+  leaderboard_ranks?: LeaderboardRankSummary[];
 }
 
 export interface Author {
@@ -541,7 +554,9 @@ export type PendingEditType =
   | 'source_url'
   | 'hf_artifacts'
   | 'new_task'
-  | 'new_method';
+  | 'new_method'
+  | 'new_benchmark'
+  | 'new_metric';
 
 export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
 
@@ -1292,13 +1307,31 @@ class ApiClient {
   }
 
   async getEvaluationsByDataset(datasetId: string, bestMetric?: string): Promise<Evaluation[]> {
-    const response = await this.getEvaluations({
-      dataset_id: parseInt(datasetId),
+    const pageSize = 100;
+    const dataset_id = parseInt(datasetId);
+    const firstPage = await this.getEvaluations({
+      dataset_id,
       best_metric: bestMetric,
-      page_size: 100,
-      ordering: 'best_rank'  // Sort by rank ascending (rank 1 first)
+      page_size: pageSize,
+      ordering: 'best_rank',
     });
-    return response.results;
+
+    const results = [...firstPage.results];
+    let nextPage = firstPage.next_page;
+
+    while (nextPage) {
+      const response = await this.getEvaluations({
+        dataset_id,
+        best_metric: bestMetric,
+        page: nextPage,
+        page_size: pageSize,
+        ordering: 'best_rank',
+      });
+      results.push(...response.results);
+      nextPage = response.next_page;
+    }
+
+    return results;
   }
 
   async createEvaluation(data: {

@@ -21,9 +21,7 @@ Ranks are automatically recalculated after:
    - `task_id` + `dataset_id` (defines a leaderboard)
    - `uses_additional_data` (separate rankings for models with/without additional training data)
 
-2. **Sorting**: Within each group, evaluations are sorted by their `best_metric` value:
-   - Higher metric values = better rank (lower rank number)
-   - Example: mAP 65.90 gets rank 1, mAP 60.5 gets rank 2
+2. **Sorting**: Within each (task, dataset) group, evaluations are ranked per metric using every row that carries a parseable value for that metric in `metrics` — not only rows whose `best_metric` matches. For example, FPS rank includes mAP-primary detectors that also report throughput. `best_rank` is stored only on rows where `best_metric` equals the metric being ranked.
 
 3. **Tied Ranks**: Evaluations with identical metric values receive the same rank
 

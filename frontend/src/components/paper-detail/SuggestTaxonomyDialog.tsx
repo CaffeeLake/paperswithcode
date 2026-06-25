@@ -13,10 +13,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useMutation } from "@tanstack/react-query";
-import { submitPendingPaperEdit } from "@/lib/api";
+import { submitPendingPaperEdit, type PendingEditType } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
-type TaxonomyKind = "task" | "method";
+type TaxonomyKind = "task" | "method" | "benchmark" | "metric";
 
 interface SuggestTaxonomyDialogProps {
   open: boolean;
@@ -28,6 +28,29 @@ interface SuggestTaxonomyDialogProps {
 const NAME_MAX = 200;
 const DESCRIPTION_MAX = 2000;
 
+const KIND_EDIT_TYPE: Record<TaxonomyKind, PendingEditType> = {
+  task: "new_task",
+  method: "new_method",
+  benchmark: "new_benchmark",
+  metric: "new_metric",
+};
+
+const KIND_NAME_PLACEHOLDER: Record<TaxonomyKind, string> = {
+  task: "e.g. Long-context Retrieval",
+  method: "e.g. Rotary Position Embedding",
+  benchmark: "e.g. ImageNet (ReaL)",
+  metric: "e.g. Top-5 Accuracy",
+};
+
+const KIND_DESCRIPTION_PLACEHOLDER: Record<TaxonomyKind, string> = {
+  task: "Briefly describe this task and what it covers.",
+  method: "Briefly describe this method and what it covers.",
+  benchmark:
+    "Briefly describe this benchmark, the task it belongs to, and where it comes from.",
+  metric:
+    "Briefly describe this metric and whether higher or lower is better.",
+};
+
 export function SuggestTaxonomyDialog({
   open,
   onOpenChange,
@@ -38,7 +61,7 @@ export function SuggestTaxonomyDialog({
   const [description, setDescription] = useState("");
   const { toast } = useToast();
 
-  const label = kind === "task" ? "task" : "method";
+  const label = kind;
 
   useEffect(() => {
     if (!open) {
@@ -51,7 +74,7 @@ export function SuggestTaxonomyDialog({
     mutationFn: async () =>
       submitPendingPaperEdit({
         paper_id: parseInt(paperId),
-        edit_type: kind === "task" ? "new_task" : "new_method",
+        edit_type: KIND_EDIT_TYPE[kind],
         proposed_payload: {
           name: name.trim(),
           description: description.trim(),
@@ -106,11 +129,7 @@ export function SuggestTaxonomyDialog({
               id="suggest-name"
               value={name}
               maxLength={NAME_MAX}
-              placeholder={
-                kind === "task"
-                  ? "e.g. Long-context Retrieval"
-                  : "e.g. Rotary Position Embedding"
-              }
+              placeholder={KIND_NAME_PLACEHOLDER[kind]}
               onChange={(e) => setName(e.target.value)}
             />
           </div>
@@ -120,7 +139,7 @@ export function SuggestTaxonomyDialog({
               id="suggest-description"
               value={description}
               maxLength={DESCRIPTION_MAX}
-              placeholder={`Briefly describe this ${label} and what it covers.`}
+              placeholder={KIND_DESCRIPTION_PLACEHOLDER[kind]}
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>

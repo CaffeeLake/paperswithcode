@@ -285,6 +285,46 @@ def test_separate_ranking_by_additional_data(db_session):
     service.delete_evaluation(int(eval2_extra.id))
 
 
+def test_fps_rank_includes_secondary_metric_rows(db_session):
+    """
+    FPS rank should include mAP-primary rows that also report FPS, not only
+    rows whose best_metric is FPS.
+    """
+    service = EvaluationService(db_session)
+
+    test_task_id = 2
+    test_dataset_id = 6
+    test_paper_id = 7563
+
+    slow_fps = service.create_evaluation(
+        paper_id=test_paper_id,
+        task_id=test_task_id,
+        dataset_id=test_dataset_id,
+        model_name="__rank_test_slow_fps__",
+        metrics={"FPS": "1.0"},
+        best_metric="FPS",
+    )
+    slow_rank_before = service.get_evaluation(int(slow_fps.id)).best_rank
+
+    faster_map = service.create_evaluation(
+        paper_id=test_paper_id,
+        task_id=test_task_id,
+        dataset_id=test_dataset_id,
+        model_name="__rank_test_fast_map_fps__",
+        metrics={"mAP": "1.0", "FPS": "99999"},
+        best_metric="mAP",
+    )
+
+    slow_rank_after = service.get_evaluation(int(slow_fps.id)).best_rank
+    assert slow_rank_after == slow_rank_before + 1, (
+        f"Adding a faster mAP-primary row should push the FPS-primary row down by 1 "
+        f"(before={slow_rank_before}, after={slow_rank_after})"
+    )
+
+    service.delete_evaluation(int(faster_map.id))
+    service.delete_evaluation(int(slow_fps.id))
+
+
 if __name__ == "__main__":
     # Run tests manually
     from backend.database.connection import get_database_session
@@ -297,6 +337,7 @@ if __name__ == "__main__":
         test_rank_recalculation_on_update(db)
         test_rank_recalculation_on_delete(db)
         test_separate_ranking_by_additional_data(db)
+        test_fps_rank_includes_secondary_metric_rows(db)
         print("\n✓ All tests passed!")
     except Exception as e:
         print(f"\n✗ Test failed: {e}")

@@ -41,6 +41,11 @@ ALPHA = 0.75
 # Minimum hours between snapshots to calculate velocity (avoid division by very small numbers)
 MIN_HOURS_BETWEEN_SNAPSHOTS = 0.5
 
+# ``repositories.trending_score`` is NUMERIC(10, 4). Values below this are just
+# old EMA decay residue and can trigger PostgreSQL numeric underflow in batch math.
+MIN_PREVIOUS_SCORE = 0.000001
+MAX_TRENDING_SCORE = 999999.9999
+
 
 def get_repositories_needing_trending_update(
     session, batch_size: int = 100, update_threshold_hours: int = 1, logger=None
@@ -65,10 +70,18 @@ def get_repositories_needing_trending_update(
     try:
         threshold_date = datetime.now() - timedelta(hours=update_threshold_hours)
 
-        # Query to find repositories that need trending score updates
+        # Query to find repositories that need trending score updates. Recent
+        # official paper repos go first so hot launches do not sit behind a
+        # large stale backlog.
         query = text("""
             SELECT r.id
             FROM repositories r
+            LEFT JOIN paper_repositories pr
+                ON pr.repository_id = r.id
+                AND pr.is_official = TRUE
+            LEFT JOIN papers p
+                ON p.id = pr.paper_id
+                AND p.is_latest_version
             WHERE EXISTS (
                 SELECT 1
                 FROM repository_star_history rsh
@@ -79,7 +92,13 @@ def get_repositories_needing_trending_update(
                 OR r.trending_score_updated_at IS NULL
                 OR r.trending_score_updated_at <= :threshold_date
             )
+            GROUP BY r.id, r.trending_score_updated_at, r.num_stars
             ORDER BY
+                CASE
+                    WHEN MAX(p.date_published) >= NOW() - INTERVAL '30 days'
+                    THEN 0
+                    ELSE 1
+                END,
                 r.trending_score_updated_at NULLS FIRST,
                 r.num_stars DESC
             LIMIT :batch_size
@@ -128,7 +147,16 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
 
     query = text("""
         WITH candidates AS (
-            SELECT id, trending_score AS prev_score
+            SELECT
+                id,
+                CASE
+                    WHEN trending_score IS NULL THEN NULL
+                    WHEN trending_score::text = 'NaN' THEN NULL
+                    WHEN trending_score < 0 THEN 0.0
+                    WHEN trending_score < :min_prev_score THEN 0.0
+                    WHEN trending_score > :max_score THEN :max_score
+                    ELSE trending_score::float8
+                END AS prev_score
             FROM repositories
             WHERE id = ANY(:repo_ids)
         ),
@@ -157,7 +185,7 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             FROM snap2
             GROUP BY repository_id
         ),
-        computed AS (
+        raw_scores AS (
             SELECT
                 repository_id,
                 snap_count,
@@ -169,9 +197,12 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
                     THEN
                         CASE
                             WHEN prev_score IS NULL
-                            THEN (current_stars - previous_stars)
-                                 / (EXTRACT(EPOCH FROM (current_at - previous_at))
-                                    / 3600.0)
+                            THEN GREATEST(
+                                (current_stars - previous_stars)
+                                / (EXTRACT(EPOCH FROM (current_at - previous_at))
+                                   / 3600.0),
+                                0.0
+                            )
                             ELSE :alpha * ((current_stars - previous_stars)
                                  / (EXTRACT(EPOCH FROM (current_at - previous_at))
                                     / 3600.0))
@@ -180,6 +211,15 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
                     ELSE NULL
                 END AS new_score
             FROM pivoted
+        ),
+        computed AS (
+            SELECT
+                repository_id,
+                snap_count,
+                LEAST(GREATEST(new_score, 0.0), :max_score)::numeric(10, 4)
+                    AS new_score
+            FROM raw_scores
+            WHERE new_score IS NOT NULL
         ),
         updated AS (
             UPDATE repositories r
@@ -203,6 +243,8 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             {
                 "repo_ids": repository_ids,
                 "min_hours": MIN_HOURS_BETWEEN_SNAPSHOTS,
+                "min_prev_score": MIN_PREVIOUS_SCORE,
+                "max_score": MAX_TRENDING_SCORE,
                 "alpha": ALPHA,
             },
         ).fetchone()
@@ -215,7 +257,7 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
         session.rollback()
         if logger:
             logger.error(f"Error processing trending batch: {e}")
-        return {"updated": 0, "insufficient": 0}
+        raise
     finally:
         gc.collect()
 
@@ -306,6 +348,12 @@ class TrendingScoresCalculationJob(DatabaseCronJob):
                 )
                 batch_updated = batch_result["updated"]
                 batch_insufficient = batch_result["insufficient"]
+
+                if batch_updated == 0 and batch_insufficient == 0:
+                    raise RuntimeError(
+                        "Trending batch made no progress for "
+                        f"{len(repository_ids)} queued repositories"
+                    )
 
                 total_updated += batch_updated
                 total_insufficient_history += batch_insufficient

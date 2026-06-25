@@ -299,3 +299,29 @@ def test_submit_tasks_empty_against_empty_paper_rejects(db_session):
             proposed_payload={"task_ids": []},
         )
     _no_rows_created(db_session)
+
+
+def test_submit_evaluations_create_succeeds(db_session, paper_fixture):
+    row = PendingEditService(db_session).submit(
+        paper_id=1,
+        hf_username="alice",
+        edit_type="evaluations",
+        proposed_payload={
+            "operations": [
+                {
+                    "op": "create",
+                    "data": {
+                        "task_id": 1,
+                        "dataset_id": 99,
+                        "model_name": "TestModel",
+                        "metrics": {"Accuracy": "91.2"},
+                        "best_metric": "Accuracy",
+                        "is_open": True,
+                    },
+                }
+            ]
+        },
+    )
+    assert row.id is not None
+    assert row.status == "pending"
+    assert row.proposed_payload["operations"][0]["op"] == "create"

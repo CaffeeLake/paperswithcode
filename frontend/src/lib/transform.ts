@@ -59,6 +59,9 @@ export interface PaperCardProps {
   hfCount: number;
   /** link to the most popular HF artifact category; null when none */
   hfUrl: string | null;
+  /** Top-3 leaderboard placements, deduped by benchmark and sorted by rank.
+   *  Powers the SOTA/#2/#3 badges between the abstract and the tags. */
+  sotaRanks: { name: string; slug: string | null; rank: number }[];
 }
 
 const HF_KIND_LABELS: Record<string, "models" | "datasets" | "spaces"> = {
@@ -137,6 +140,13 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     name: m.name,
     slug: m.slug,
   }));
+  const sotaRanks = (paper.leaderboard_ranks || [])
+    .filter((r) => r.best_rank >= 1 && r.best_rank <= 3)
+    .map((r) => ({
+      name: r.dataset_name,
+      slug: r.dataset_slug || null,
+      rank: r.best_rank,
+    }));
   return {
     id: paper.arxiv_id || paper.id,
     dbId: paper.id,
@@ -159,6 +169,7 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     hfKind,
     hfCount,
     hfUrl,
+    sotaRanks,
   };
 }
 
@@ -189,6 +200,7 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     hfKind: null,
     hfCount: 0,
     hfUrl: null,
+    sotaRanks: [],
   };
 }
 
@@ -218,6 +230,7 @@ const TASK_DISPLAY_NAMES = new Map([
   ["3d-semantic-segmentation", "3D semantic segmentation"],
   ["3d-instance-segmentation", "3D instance segmentation"],
   ["3d-object-detection", "3D object detection"],
+  ["text-to-sql", "Text-to-SQL"],
 ]);
 
 export function displayTaskName(name?: string, slug?: string): string {

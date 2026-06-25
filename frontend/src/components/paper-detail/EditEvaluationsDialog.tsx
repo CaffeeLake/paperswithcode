@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 const SEARCH_PAGE_SIZE = 100;
 
@@ -50,6 +51,8 @@ interface EditEvaluationsDialogProps {
   paperId: string;
   arxivId?: string;
   initialEvaluations: APIEvaluation[];
+  /** Paper task tags. Used to decide whether the Harness column is shown. */
+  paperTasks?: Array<Pick<APITask, "id" | "name" | "slug">>;
   onSuccess?: () => void;
   /** `direct` applies immediately (admin path). `pending` submits an edit for
    *  admin review without touching live data. */
@@ -57,6 +60,24 @@ interface EditEvaluationsDialogProps {
   /** When `submitMode === "pending"` and the signed-in user is a linked
    *  author of the paper, the notice copy acknowledges that. */
   isAuthor?: boolean;
+}
+
+function paperHasCodingAgentsTask(
+  paperTasks: Array<Pick<APITask, "id" | "name" | "slug">> | undefined,
+): boolean {
+  return (paperTasks ?? []).some(
+    (task) =>
+      task.slug === "coding-agents" ||
+      task.name.trim().toLowerCase() === "coding agents",
+  );
+}
+
+function isCompleteCreateEvaluation(evalItem: EditableEvaluation): boolean {
+  const taskId = parseInt(evalItem.task_id, 10);
+  const datasetId = parseInt(evalItem.dataset_id, 10);
+  if (!Number.isFinite(taskId) || !Number.isFinite(datasetId)) return false;
+  if (!evalItem.metric_name.trim() || !evalItem.metric_value.trim()) return false;
+  return true;
 }
 
 function mapApiEvaluationsToEditable(evaluations: APIEvaluation[]): EditableEvaluation[] {
@@ -139,11 +160,14 @@ export function EditEvaluationsDialog({
   paperId,
   arxivId,
   initialEvaluations,
+  paperTasks,
   onSuccess,
   submitMode = "direct",
   isAuthor = false,
 }: EditEvaluationsDialogProps) {
+  const showHarnessColumn = paperHasCodingAgentsTask(paperTasks);
   const [editedEvaluations, setEditedEvaluations] = useState<EditableEvaluation[]>([]);
+  const [suggestionKind, setSuggestionKind] = useState<"benchmark" | "metric" | null>(null);
   const [knownTasks, setKnownTasks] = useState<Map<string, APITask>>(new Map());
   const [knownDatasets, setKnownDatasets] = useState<Map<string, Dataset>>(new Map());
   const queryClient = useQueryClient();
@@ -331,6 +355,7 @@ export function EditEvaluationsDialog({
             evalItem.dataset_id,
           );
           if (evalItem.operation === "create") {
+            if (!isCompleteCreateEvaluation(evalItem)) continue;
             const numParameters = parseNumParametersInput(evalItem.num_parameters);
             const data: Record<string, unknown> = {
               task_id: parseInt(evalItem.task_id),
@@ -395,6 +420,7 @@ export function EditEvaluationsDialog({
             console.log(`Evaluation ${evalItem.id} already deleted or not found`);
           }
         } else if (evalItem.operation === 'create') {
+          if (!isCompleteCreateEvaluation(evalItem)) continue;
           anyDirectChange = true;
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           const numParameters = parseNumParametersInput(evalItem.num_parameters);
@@ -592,8 +618,16 @@ export function EditEvaluationsDialog({
                   <tr className="border-b border-border">
                     <th className="text-left py-2 px-2 font-medium text-sm min-w-[180px]">Task</th>
                     <th className="text-left py-2 px-2 font-medium text-sm min-w-[180px]">Dataset</th>
-                    <th className="text-left py-2 px-2 font-medium text-sm">Model</th>
-                    <th className="text-left py-2 px-2 font-medium text-sm">Harness</th>
+                    <th
+                      className={`text-left py-2 px-2 font-medium text-sm ${
+                        showHarnessColumn ? "min-w-[140px]" : "min-w-[240px]"
+                      }`}
+                    >
+                      Model
+                    </th>
+                    {showHarnessColumn && (
+                      <th className="text-left py-2 px-2 font-medium text-sm min-w-[140px]">Harness</th>
+                    )}
                     <th className="text-left py-2 px-2 font-medium text-sm min-w-[140px]">Metric</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Value</th>
                     <th className="text-left py-2 px-2 font-medium text-sm">Parameters</th>
@@ -667,21 +701,23 @@ export function EditEvaluationsDialog({
                             onChange={(e) => handleUpdateEvaluationField(index, 'model_name', e.target.value)}
                           />
                         </td>
-                        <td className="py-2 px-2">
-                          {selectedDatasetSupportsHarness(evaluation.task_id, evaluation.dataset_id) ? (
-                            <Input
-                              type="text"
-                              className="w-full text-sm"
-                              placeholder="Claude Code, Terminus, ..."
-                              value={evaluation.harness}
-                              onChange={(e) => handleUpdateEvaluationField(index, 'harness', e.target.value)}
-                            />
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              Not supported
-                            </span>
-                          )}
-                        </td>
+                        {showHarnessColumn && (
+                          <td className="py-2 px-2">
+                            {selectedDatasetSupportsHarness(evaluation.task_id, evaluation.dataset_id) ? (
+                              <Input
+                                type="text"
+                                className="w-full text-sm"
+                                placeholder="Claude Code, Terminus, ..."
+                                value={evaluation.harness}
+                                onChange={(e) => handleUpdateEvaluationField(index, 'harness', e.target.value)}
+                              />
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                Not supported
+                              </span>
+                            )}
+                          </td>
+                        )}
                         <td className="py-2 px-2">
                           {!evaluation.task_id || !evaluation.dataset_id ? (
                             <span className="text-xs text-muted-foreground">
@@ -792,6 +828,14 @@ export function EditEvaluationsDialog({
         </div>
 
         <DialogFooter>
+          <div className="flex flex-wrap gap-2 sm:mr-auto">
+            <Button variant="ghost" onClick={() => setSuggestionKind("benchmark")}>
+              Suggest a new benchmark
+            </Button>
+            <Button variant="ghost" onClick={() => setSuggestionKind("metric")}>
+              Suggest a new metric
+            </Button>
+          </div>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -813,6 +857,14 @@ export function EditEvaluationsDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <SuggestTaxonomyDialog
+        open={suggestionKind !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setSuggestionKind(null);
+        }}
+        paperId={paperId}
+        kind={suggestionKind ?? "benchmark"}
+      />
     </Dialog>
   );
 }

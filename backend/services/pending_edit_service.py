@@ -44,6 +44,8 @@ EDIT_TYPES = frozenset(
         "hf_artifacts",
         "new_task",
         "new_method",
+        "new_benchmark",
+        "new_metric",
     }
 )
 STATUSES = frozenset({"pending", "approved", "rejected"})
@@ -240,7 +242,7 @@ class PendingEditService:
             return self._snapshot_source_url(paper_id)
         if edit_type == "hf_artifacts":
             return self._snapshot_hf_artifacts(paper_id)
-        if edit_type in ("new_task", "new_method"):
+        if edit_type in ("new_task", "new_method", "new_benchmark", "new_metric"):
             # Suggestions for brand-new taxonomy entries have no existing live
             # state to diff against.
             return {}
@@ -249,6 +251,31 @@ class PendingEditService:
     # ----------------------------------------------------------------
     # Payload validation
     # ----------------------------------------------------------------
+
+    @staticmethod
+    def _is_valid_evaluation_create_data(data: Dict[str, Any]) -> bool:
+        task_id = data.get("task_id")
+        dataset_id = data.get("dataset_id")
+        if not isinstance(task_id, int) or task_id <= 0:
+            return False
+        if not isinstance(dataset_id, int) or dataset_id <= 0:
+            return False
+
+        best_metric = data.get("best_metric")
+        if not isinstance(best_metric, str) or not best_metric.strip():
+            return False
+
+        metrics = data.get("metrics")
+        if not isinstance(metrics, dict) or not metrics:
+            return False
+        for name, value in metrics.items():
+            if not isinstance(name, str) or not name.strip():
+                return False
+            if value is None:
+                return False
+            if isinstance(value, str) and not value.strip():
+                return False
+        return True
 
     @staticmethod
     def _validate_payload(edit_type: str, payload: Any) -> Dict[str, Any]:
@@ -363,7 +390,7 @@ class PendingEditService:
                 "hf_spaces": spaces,
             }
 
-        if edit_type in ("new_task", "new_method"):
+        if edit_type in ("new_task", "new_method", "new_benchmark", "new_metric"):
             name = payload.get("name")
             description = payload.get("description")
             if not isinstance(name, str):
@@ -412,6 +439,8 @@ class PendingEditService:
                         raise PendingEditError(
                             "Evaluation create op needs a 'data' object"
                         )
+                    if not PendingEditService._is_valid_evaluation_create_data(data):
+                        continue
                     out_ops.append({"op": "create", "data": data})
                 elif kind == "update":
                     evaluation_id = op.get("evaluation_id")
@@ -430,6 +459,10 @@ class PendingEditService:
                             "Evaluation delete op needs int 'evaluation_id'"
                         )
                     out_ops.append({"op": "delete", "evaluation_id": evaluation_id})
+            if not out_ops:
+                raise PendingEditError(
+                    "Evaluations payload must include at least one valid operation"
+                )
             return {"operations": out_ops}
 
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
@@ -499,7 +532,7 @@ class PendingEditService:
                     return False
             return True
 
-        if edit_type in ("new_task", "new_method"):
+        if edit_type in ("new_task", "new_method", "new_benchmark", "new_metric"):
             # Suggestions for new taxonomy entries are never a no-op; there is
             # no existing entry to compare against.
             return False
@@ -694,9 +727,10 @@ class PendingEditService:
         if edit_type == "evaluations":
             self._apply_evaluations(paper_id, payload)
             return
-        if edit_type in ("new_task", "new_method"):
+        if edit_type in ("new_task", "new_method", "new_benchmark", "new_metric"):
             # Taxonomy suggestions are informational. Approving simply marks the
-            # row reviewed; an admin creates the actual task/method by hand.
+            # row reviewed; an admin creates the actual entry (task, method,
+            # benchmark, or metric) by hand.
             return
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
 
@@ -749,6 +783,8 @@ class PendingEditService:
 
             if kind == "create":
                 data = dict(op["data"])
+                if not PendingEditService._is_valid_evaluation_create_data(data):
+                    continue
                 # Force the create to target the paper this edit was submitted
                 # against; submitters cannot reroute the row to another paper
                 # at approval time.

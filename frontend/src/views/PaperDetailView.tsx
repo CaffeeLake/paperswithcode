@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { Icon, MethodChip, PaperPreview, TagChip } from "@/components";
+import { Icon, MethodChip, PaperPreview, SotaBadges, TagChip } from "@/components";
 import ClosedSourceEvalBadge from "@/components/ClosedSourceEvalBadge";
 import ExternalSourceEvalBadge from "@/components/ExternalSourceEvalBadge";
 import LatexTitle, { LatexText } from "@/components/LatexTitle";
@@ -59,6 +59,57 @@ const EDIT_SECTION_LABEL: Record<EditSection, string> = {
 const ABSTRACT_PREVIEW_LEN = 360;
 const REPO_PREVIEW_LIMIT = 3;
 const HF_LINK_PREVIEW_LIMIT = 3;
+
+const PAPER_SECTION_IDS = ["tldr", "abstract", "tasks", "methods", "results"] as const;
+type PaperSectionId = (typeof PAPER_SECTION_IDS)[number];
+
+function parsePaperSectionHash(rawHash: string): {
+  section: PaperSectionId | null;
+  resultsTaskSlug: string | null;
+} {
+  if (!rawHash) return { section: null, resultsTaskSlug: null };
+
+  const [sectionPart, queryPart] = rawHash.split("?", 2);
+  if (!PAPER_SECTION_IDS.includes(sectionPart as PaperSectionId)) {
+    return { section: null, resultsTaskSlug: null };
+  }
+
+  const section = sectionPart as PaperSectionId;
+  if (section !== "results" || !queryPart) {
+    return { section, resultsTaskSlug: null };
+  }
+
+  return { section, resultsTaskSlug: new URLSearchParams(queryPart).get("task") };
+}
+
+function resultsTaskAnchorId(taskSlug: string): string {
+  return `results-task-${taskSlug}`;
+}
+
+function resultsTaskHash(taskSlug: string): string {
+  return `#results?task=${encodeURIComponent(taskSlug)}`;
+}
+
+function PaperSectionRule({
+  id,
+  label,
+  accent,
+}: {
+  id: PaperSectionId;
+  label: string;
+  accent?: React.ReactNode;
+}) {
+  return (
+    <div className="section-rule paper-section-anchor" id={id}>
+      <span>
+        <a href={`#${id}`} className="section-anchor-link">
+          {label}
+        </a>
+      </span>
+      {accent}
+    </div>
+  );
+}
 
 function formatLongDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -212,6 +263,11 @@ const PaperDetailView: React.FC = () => {
     return Array.from(groups.values());
   }, [visibleEvaluations]);
 
+  const resultsTaskSlugsKey = useMemo(
+    () => evaluationsByTask.map((g) => g.taskSlug ?? "").join("|"),
+    [evaluationsByTask],
+  );
+
   // Paper version dropdown (PLAN.md §7.5)
   const versionsQ = useQuery({
     queryKey: ["paper-versions", paper?.arxiv_id],
@@ -245,6 +301,76 @@ const PaperDetailView: React.FC = () => {
   const [abstractExpanded, setAbstractExpanded] = useState(false);
   const [showAllAuthors, setShowAllAuthors] = useState(false);
   const [reposExpanded, setReposExpanded] = useState(false);
+  const didScrollToHash = useRef(false);
+
+  useEffect(() => {
+    didScrollToHash.current = false;
+  }, [arxivId]);
+
+  useEffect(() => {
+    let rafId = 0;
+
+    const scrollToHash = (force = false, smooth = false): void => {
+      const { section, resultsTaskSlug } = parsePaperSectionHash(window.location.hash.slice(1));
+      if (!section) return;
+      if (!paper) return;
+      if (section === "tldr" && !paper.tldr) return;
+      // The Results section renders its tables only after the secondary
+      // evaluation query has both started and finished. Wait for that so the
+      // section has reached its final height before we scroll to it; otherwise
+      // the first load lands on a stale offset (the skeleton) and only a second
+      // hashchange click corrects it.
+      if (section === "results") {
+        if (!secondaryQueriesEnabled) return;
+        if (evaluationsLoading) return;
+      }
+      if (!force && didScrollToHash.current) return;
+
+      let node: HTMLElement | null = null;
+      if (section === "results" && resultsTaskSlug) {
+        node = document.getElementById(resultsTaskAnchorId(resultsTaskSlug));
+        if (!node) {
+          const matchingGroup = evaluationsByTask.find((g) => g.taskSlug === resultsTaskSlug);
+          if (matchingGroup) {
+            // Evaluations loaded but the anchor is not painted yet; retry on next run.
+            return;
+          }
+          node = document.getElementById("results");
+        }
+      } else {
+        node = document.getElementById(section);
+      }
+      if (!node) return;
+
+      const target = node;
+      // Defer one frame so any final layout commit (skeleton -> tables, LaTeX,
+      // lazy content above the anchor) has settled before we measure the
+      // target's position. Mark the scroll done only once it actually runs.
+      rafId = window.requestAnimationFrame(() => {
+        didScrollToHash.current = true;
+        target.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
+      });
+    };
+
+    scrollToHash();
+
+    const onHashChange = (): void => {
+      didScrollToHash.current = false;
+      scrollToHash(true, true);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [
+    paper,
+    paper?.tldr,
+    secondaryQueriesEnabled,
+    evaluationsLoading,
+    resultsTaskSlugsKey,
+    evaluationsByTask,
+  ]);
 
   const {
     isEditingTasks,
@@ -807,6 +933,20 @@ const PaperDetailView: React.FC = () => {
             ))}
             <SavePaperButton paperId={paper.id} />
           </div>
+
+          {paper.leaderboard_ranks && paper.leaderboard_ranks.length > 0 && (
+            <SotaBadges
+              wrap
+              paperHref={`/paper/${paper.arxiv_id || paper.id}`}
+              ranks={paper.leaderboard_ranks
+                .filter((r) => r.best_rank >= 1 && r.best_rank <= 3)
+                .map((r) => ({
+                  name: r.dataset_name,
+                  slug: r.dataset_slug || null,
+                  rank: r.best_rank,
+                }))}
+            />
+          )}
             </div>
 
             <div className="detail-hero-thumb detail-thumb-wrap">
@@ -899,16 +1039,12 @@ const PaperDetailView: React.FC = () => {
 
           {tldr && (
             <>
-              <div className="section-rule">
-                <span>TL;DR · AI-generated</span>
-              </div>
+              <PaperSectionRule id="tldr" label="TL;DR · AI-generated" />
               <div className="tldr-box">{tldr}</div>
             </>
           )}
 
-          <div className="section-rule">
-            <span>Abstract</span>
-          </div>
+          <PaperSectionRule id="abstract" label="Abstract" />
           <p className="abstract-text" style={{ marginBottom: 8 }}>
             <LatexText text={abstractView} />
           </p>
@@ -918,72 +1054,95 @@ const PaperDetailView: React.FC = () => {
             </div>
           )}
 
-          <div className="section-rule">
-            <span>Tasks</span>
-            <span className="accent">
-              {paper.tasks?.length || 0} tagged
-              {canEditPaper && (
-                <button
-                  type="button"
-                  onClick={() => openEdit("tasks")}
-                  className="edit-link"
-                >
-                  edit
-                </button>
-              )}
-            </span>
-          </div>
+          <PaperSectionRule
+            id="tasks"
+            label="Tasks"
+            accent={
+              <span className="accent">
+                {paper.tasks?.length || 0} tagged
+                {canEditPaper && (
+                  <button
+                    type="button"
+                    onClick={() => openEdit("tasks")}
+                    className="edit-link"
+                  >
+                    edit
+                  </button>
+                )}
+              </span>
+            }
+          />
           <div className="paper-tags" style={{ marginBottom: 8 }}>
             {(paper.tasks || []).map((t) => (
               <TagChip key={t.id} slug={t.slug || ""} label={t.name} />
             ))}
           </div>
 
-          <div className="section-rule">
-            <span>Methods</span>
-            <span className="accent">
-              {paper.methods?.length || 0} used
-              {canEditPaper && (
-                <button
-                  type="button"
-                  onClick={() => openEdit("methods")}
-                  className="edit-link"
-                >
-                  edit
-                </button>
-              )}
-            </span>
-          </div>
+          <PaperSectionRule
+            id="methods"
+            label="Methods"
+            accent={
+              <span className="accent">
+                {paper.methods?.length || 0} used
+                {canEditPaper && (
+                  <button
+                    type="button"
+                    onClick={() => openEdit("methods")}
+                    className="edit-link"
+                  >
+                    edit
+                  </button>
+                )}
+              </span>
+            }
+          />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
             {(paper.methods || []).map((m) => (
               <MethodChip key={m.id} method={m} />
             ))}
           </div>
 
-          <div className="section-rule">
-            <span>Results</span>
-            <span className="accent">
-              {visibleEvaluations?.length || 0} benchmarks
-              {canEditPaper && (
-                <button
-                  type="button"
-                  onClick={() => openEdit("results")}
-                  className="edit-link"
-                >
-                  edit
-                </button>
-              )}
-            </span>
-          </div>
+          <PaperSectionRule
+            id="results"
+            label="Results"
+            accent={
+              <span className="accent">
+                {visibleEvaluations?.length || 0} benchmarks
+                {canEditPaper && (
+                  <button
+                    type="button"
+                    onClick={() => openEdit("results")}
+                    className="edit-link"
+                  >
+                    edit
+                  </button>
+                )}
+              </span>
+            }
+          />
           {evaluationsLoading ? (
             <Skeleton className="h-32 w-full" />
           ) : evaluationsByTask.length > 0 ? (
             evaluationsByTask.map((group) => (
-              <div key={group.taskId}>
+              <div
+                key={group.taskId}
+                className={group.taskSlug ? "paper-section-anchor" : undefined}
+                id={group.taskSlug ? resultsTaskAnchorId(group.taskSlug) : undefined}
+              >
                 <div className="section-rule">
                   <span>
                     {group.taskSlug ? (
-                      <Link to={`/tasks/${group.taskSlug}`}>{group.taskName}</Link>
+                      <>
+                        <Link to={`/tasks/${group.taskSlug}`}>{group.taskName}</Link>
+                        <a
+                          href={resultsTaskHash(group.taskSlug)}
+                          className="section-anchor-link results-task-permalink"
+                          aria-label={`Permalink to ${group.taskName} results on this paper`}
+                          title="Link to this task's results"
+                        >
+                          #
+                        </a>
+                      </>
                     ) : (
                       group.taskName
                     )}
@@ -1243,6 +1402,7 @@ const PaperDetailView: React.FC = () => {
         paperId={paper.id}
         arxivId={arxivId}
         initialEvaluations={evaluations || []}
+        paperTasks={paper.tasks || []}
         submitMode={editSubmitMode}
         isAuthor={isLinkedAuthor}
       />

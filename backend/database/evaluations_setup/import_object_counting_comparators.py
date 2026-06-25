@@ -10,13 +10,14 @@ from backend.services.evaluation_service import EvaluationService
 
 TASK_ID = 340
 DATASET = {
-    "FSCD-147": 769,
-    "ShanghaiTech Part A": 770,
-    "ShanghaiTech Part B": 771,
-    "OmniCount (Fruits)": 772,
-    "Blood Cell Detection": 773,
-    "VideoCount (Crystals)": 774,
-    "PairTally": 775,
+    "FSC-147": "fsc-147",
+    "FSCD-147": "fscd-147",
+    "ShanghaiTech Part A": "shanghaitech-part-a",
+    "ShanghaiTech Part B": "shanghaitech-part-b",
+    "OmniCount (Fruits)": "omnicount-fruits",
+    "Blood Cell Detection": "blood-cell-detection",
+    "VideoCount (Crystals)": "videocount-crystals",
+    "PairTally": "pairtally",
 }
 
 # paper_id -> list of eval dicts
@@ -24,11 +25,11 @@ DATASET = {
 SOURCE = "CountGD++ Table comparison; arXiv:2512.23351"
 
 ROWS = [
-    # Table 1 — FSCD-147 text only
+    # Table 1 — FSC-147 / FSCD-147 text only
     (
         98350,
         "DAVE (density)",
-        "FSCD-147",
+        "FSC-147",
         "MAE",
         14.90,
         "Text-only positive prompt; density branch (DAVE_prm), Table 1",
@@ -36,7 +37,7 @@ ROWS = [
     (
         98350,
         "DAVE (density)",
-        "FSCD-147",
+        "FSC-147",
         "RMSE",
         103.42,
         "Text-only positive prompt; density branch (DAVE_prm), Table 1",
@@ -73,8 +74,8 @@ ROWS = [
         50.24,
         "Text-only positive prompt; detection branch, Table 1",
     ),
-    (34211, "CountGD", "FSCD-147", "MAE", 12.98, "Text-only positive prompt, Table 1"),
-    (34211, "CountGD", "FSCD-147", "RMSE", 98.35, "Text-only positive prompt, Table 1"),
+    (34211, "CountGD", "FSC-147", "MAE", 12.98, "Text-only positive prompt, Table 1"),
+    (34211, "CountGD", "FSC-147", "RMSE", 98.35, "Text-only positive prompt, Table 1"),
     (
         90523,
         "CAD-GD",
@@ -420,17 +421,21 @@ ROWS = [
         59.36,
         "Text-only positive prompt, Table A.1",
     ),
-    (
-        35393,
-        "LLaMA 3.2",
-        "PairTally",
-        "MAE",
-        54.67,
-        "Text-only positive prompt, Table A.1",
-    ),
 ]
 
-CLOSED_SOURCE_PAPER_IDS = {35393, 44599}
+CLOSED_SOURCE_PAPER_IDS = {44599}
+
+
+def resolve_dataset_ids(db) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for label, slug in DATASET.items():
+        row = db.execute(
+            text("SELECT id FROM datasets WHERE slug = :s"), {"s": slug}
+        ).first()
+        if not row:
+            raise RuntimeError(f"Missing dataset slug={slug!r}")
+        out[label] = int(row[0])
+    return out
 
 
 def main() -> None:
@@ -439,9 +444,10 @@ def main() -> None:
     created = 0
     skipped = 0
     try:
+        dataset_ids = resolve_dataset_ids(db)
         svc = EvaluationService(db)
         for paper_id, model_name, dataset_name, metric, score, note in ROWS:
-            dataset_id = DATASET[dataset_name]
+            dataset_id = dataset_ids[dataset_name]
             params = {
                 "paper_id": paper_id,
                 "task_id": TASK_ID,

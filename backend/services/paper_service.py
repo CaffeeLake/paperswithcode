@@ -35,6 +35,7 @@ from backend.models.database import (
     PaperOrganization as DBPaperOrganization,
     HfArtifact as DBHfArtifact,
     PaperHfArtifact as DBPaperHfArtifact,
+    Evaluation as DBEvaluation,
 )
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -54,6 +55,7 @@ from backend.models.api import (
     TaskSummary,
     MethodSummary,
     BenchmarkSummary,
+    LeaderboardRankSummary,
     RelatedPaperSummary,
     VersionComparison,
     AuthorLink,
@@ -171,6 +173,7 @@ class PaperService:
             "conferences": {},
             "organizations": defaultdict(list),
             "hf_artifact_counts": defaultdict(dict),
+            "leaderboard_ranks": defaultdict(list),
         }
 
         if not unique_ids:
@@ -249,6 +252,48 @@ class PaperService:
         )
         for paper_id, kind, cnt in hf_count_rows:
             relation_data["hf_artifact_counts"][paper_id][kind] = int(cnt)
+
+        # Top-3 leaderboard placements per paper, powering the SOTA/#2/#3 badges
+        # on feed cards. `best_rank` is precomputed per (task, dataset, metric),
+        # so this is one batched indexed query. A paper can rank on the same
+        # dataset under multiple tasks/metrics; we dedupe by dataset keeping the
+        # best (lowest) rank. Loaded for card views too since cards render it.
+        rank_rows = (
+            self.db.query(
+                DBEvaluation.paper_id,
+                DBEvaluation.dataset_id,
+                DBEvaluation.best_rank,
+                DBEvaluation.best_metric,
+                DBDataset.name,
+                DBDataset.slug,
+            )
+            .join(DBDataset, DBEvaluation.dataset_id == DBDataset.id)
+            .filter(
+                DBEvaluation.paper_id.in_(unique_ids),
+                DBEvaluation.best_rank.isnot(None),
+                DBEvaluation.best_rank <= 3,
+            )
+            .order_by(
+                DBEvaluation.paper_id,
+                DBEvaluation.best_rank.asc(),
+                DBDataset.name,
+            )
+            .all()
+        )
+        seen_paper_datasets: set = set()
+        for paper_id, dataset_id, best_rank, best_metric, name, slug in rank_rows:
+            key = (paper_id, dataset_id)
+            if key in seen_paper_datasets:
+                continue
+            seen_paper_datasets.add(key)
+            relation_data["leaderboard_ranks"][paper_id].append(
+                LeaderboardRankSummary(
+                    dataset_name=name,
+                    dataset_slug=slug,
+                    best_rank=int(best_rank),
+                    best_metric=best_metric,
+                )
+            )
 
         # Detail-only relations. Paper cards never render introduced
         # benchmarks, lineage banners, the conference badge, or organizations,
@@ -545,6 +590,7 @@ class PaperService:
         )
         successor_papers = relation_data["successor_papers"].get(db_paper.id) or None
         organizations = relation_data["organizations"].get(db_paper.id) or None
+        leaderboard_ranks = relation_data["leaderboard_ranks"].get(db_paper.id) or None
         linked_conference = relation_data["conferences"].get(db_paper.id)
         hf_artifact_summary = self._build_hf_artifact_summary(
             db_paper,
@@ -603,6 +649,7 @@ class PaperService:
             "predecessor_papers": predecessor_papers,
             "successor_papers": successor_papers,
             "organizations": organizations,
+            "leaderboard_ranks": leaderboard_ranks,
         }
 
         return Paper(**paper_data)

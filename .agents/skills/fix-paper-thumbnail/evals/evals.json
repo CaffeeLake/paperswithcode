@@ -1,0 +1,23 @@
+{
+  "skill_name": "fix-paper-thumbnail",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "The Nemotron paper at https://paperswithcode.co/paper/2512.20856 has a broken thumbnail with huge white borders on the homepage. Can you fix it?",
+      "expected_output": "Regenerates 2512_20856_v1.jpg at 400x550, valid JPEG, serves via /api/thumbnails/ with fit cache-bust param; reports dimensions and verification curl results.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "this paper card thumbnail looks squashed / letterboxed: arXiv 2606.13392 — can you regenerate an appropriately sized preview?",
+      "expected_output": "Diagnoses local thumbnail validity, force-regenerates from arXiv PDF, confirms 400x550 portrait JPEG uploaded to cache/bucket.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "We added external paper id 12345 last week but the paper page has no thumbnail. source_url is a PDF. Please generate the card preview.",
+      "expected_output": "Uses generate_external_thumbnail, sets papers.thumbnail_url, verifies /api/thumbnails/custom/external_12345.jpg returns 200 (or reports blocker if paper id does not exist).",
+      "files": []
+    }
+  ]
+}
