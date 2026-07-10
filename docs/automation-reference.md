@@ -21,13 +21,14 @@ Recommended for production; more efficient than legacy daily batches.
 - **Features**: Semantic Scholar rate limiting; updates counts and `citation_updated_at`
 - **Command**: `PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.hourly.update_citations`
 
-### 3. Extract URLs (`extract_urls.py`)
+### 3. Extract URLs (`url_extraction_agent`)
 
 - **Typical schedule**: hourly
-- **Scope**: recent papers missing extracted URLs
-- **Features**: Gemini on PDFs; sets `urls_extracted`; `source='ai_extraction'`; tuned for low RAM
-- **Requires**: `PWC_GEMINI_API_KEY` in `backend/keys.env`
-- **Command**: `PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.hourly.extract_urls`
+- **Scope**: newest HF imports, first-page home/task/method/conference papers, then the older backlog; all must be missing at least one official URL
+- **Features**: one sandboxed Claude Agent SDK run per paper on Modal; native structured output; trusted VPS validation/persistence; `source='ai_extraction'`
+- **Scale**: up to 100 papers/hour with at most 20 Modal containers
+- **Requires**: GitHub Modal credentials and the existing Modal `anthropic` secret
+- **Deploy**: `uv run modal deploy url_extraction_agent/modal_app.py`
 
 ### 4. Trending scores (`calculate_trending_scores.py`)
 
@@ -65,9 +66,9 @@ Workflows live under `.github/workflows/cron-*.yml`. Each run SSHs to the Hetzne
 | `cron-update-github-stars.yml` | `0 * * * *` | `.github/workflows/scripts/run_github_stars.sh` |
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` |
-| `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` |
+| `cron-extract-urls.yml` | `45 * * * *` | VPS select → Modal map → VPS persist |
 
-**Repository secrets**: `VPS_HOST`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY` (ed25519 private key whose public key is in `~/.ssh/authorized_keys` on the VPS).
+**Repository secrets**: `VPS_HOST`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY` (ed25519 private key whose public key is in `~/.ssh/authorized_keys` on the VPS), plus `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` for URL extraction.
 
 Manual runs: Actions tab → workflow → **Run workflow**.
 

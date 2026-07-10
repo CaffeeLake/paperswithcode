@@ -150,10 +150,10 @@ class HuggingFacePaperImporterMixin:
         date_published: Optional[datetime],
         tldr: Optional[str] = None,
     ) -> Optional[int]:
-        """Insert a new paper. Sets urls_extracted=TRUE because HF provides URLs."""
+        """Insert a paper as pending until both HF URL types are linked."""
         query = """
         INSERT INTO papers (arxiv_id, title, abstract, date_published, tldr, urls_extracted, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
         """
         try:
@@ -182,12 +182,20 @@ class HuggingFacePaperImporterMixin:
             self.logger.error(f"Failed to update tldr for paper {paper_id}: {e}")
 
     def paper_has_complete_urls(self, paper_id: int) -> bool:
-        """True if paper has both a linked github repo AND a linked project page."""
+        """True if paper has both official URL associations."""
         rows = self.execute_query(
             """
             SELECT
-                EXISTS(SELECT 1 FROM paper_repositories WHERE paper_id = %s) AS has_repo,
-                EXISTS(SELECT 1 FROM paper_project_pages WHERE paper_id = %s) AS has_page
+                EXISTS(
+                    SELECT 1 FROM paper_repositories
+                    WHERE paper_id = %s AND is_official = TRUE
+                ) AS has_repo,
+                EXISTS(
+                    SELECT 1
+                    FROM paper_project_pages ppp
+                    JOIN project_pages pp ON pp.id = ppp.project_page_id
+                    WHERE ppp.paper_id = %s AND pp.is_official = TRUE
+                ) AS has_page
             """,
             (paper_id, paper_id),
         )
@@ -195,6 +203,18 @@ class HuggingFacePaperImporterMixin:
             return False
         row = rows[0]
         return bool(row.get("has_repo")) and bool(row.get("has_page"))
+
+    def refresh_urls_extracted(self, paper_id: int) -> None:
+        """Mark extraction complete only when both official URL types exist."""
+        complete = self.paper_has_complete_urls(paper_id)
+        self.execute_query(
+            """
+            UPDATE papers
+            SET urls_extracted = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (complete, paper_id),
+        )
 
     @staticmethod
     def parse_published_at(published_at: Optional[str]):

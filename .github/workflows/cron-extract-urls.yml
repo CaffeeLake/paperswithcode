@@ -3,16 +3,24 @@ name: Cron - Extract URLs
 on:
   schedule:
     - cron: "45 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Maximum papers to process
+        required: false
+        default: "100"
 
 concurrency:
   group: cron-extract-urls
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
-  run:
+  select:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 10
     steps:
       - name: Load SSH key into agent
         uses: webfactory/ssh-agent@v0.10.0
@@ -39,11 +47,103 @@ jobs:
           fi
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Run extract_urls on VPS
+      - name: Select priority candidates on VPS
+        env:
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          REQUESTED_LIMIT: ${{ inputs.limit || '100' }}
+        run: |
+          if ! [[ "$REQUESTED_LIMIT" =~ ^[0-9]+$ ]] || (( REQUESTED_LIMIT < 1 || REQUESTED_LIMIT > 100 )); then
+            echo "limit must be an integer between 1 and 100"
+            exit 1
+          fi
+          ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
+            "cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env python -m url_extraction_agent.database select --limit $REQUESTED_LIMIT" \
+            > candidates.json
+          python -m json.tool candidates.json > /dev/null
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-candidates
+          path: candidates.json
+          retention-days: 1
+
+  discover:
+    needs: select
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Download candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: url-candidates
+
+      - name: Deploy current Modal agent
+        run: uv run modal deploy url_extraction_agent/modal_app.py
+
+      - name: Run one Modal agent per paper
+        run: |
+          uv run python -m url_extraction_agent.runner \
+            --input candidates.json \
+            --output results.json
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-results
+          path: results.json
+          if-no-files-found: error
+          retention-days: 1
+
+  persist:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download result artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: url-results
+
+      - name: Load SSH key into agent
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -z "$VPS_HOST" ] || [[ "$VPS_HOST" == *"://"* || "$VPS_HOST" == *"@"* || "$VPS_HOST" == *"/"* || "$VPS_HOST" =~ [[:space:]] ]]; then
+            echo "VPS_HOST must be a bare hostname or IP address."
+            exit 1
+          fi
+          ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Persist validated results on VPS
         env:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=yes \
-              "${VPS_USER}@${VPS_HOST}" \
-              '/root/python_projects/paperswithcode/.github/workflows/scripts/run_extract_urls_hourly.sh'
+          python -m json.tool results.json > /dev/null
+          ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
+            'cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input -' \
+            < results.json > persist-results.json
+          python -m json.tool persist-results.json

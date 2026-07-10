@@ -217,6 +217,7 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             self.insert_repository(paper_id, github_repo)
         if project_page:
             self.insert_project_page(paper_id, project_page)
+        self.refresh_urls_extracted(paper_id)
 
 
 if __name__ == "__main__":

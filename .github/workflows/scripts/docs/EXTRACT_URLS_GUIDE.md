@@ -1,78 +1,76 @@
 # URL Extraction Cron Guide
 
-`.github/workflows/scripts/hourly/extract_urls.py` finds official GitHub repositories and project
-pages for papers that still have `urls_extracted = false`.
+The URL extraction workflow finds official GitHub repositories and project
+pages with one Claude Agent SDK researcher per paper.
 
 ## Production Schedule
 
 Production runs through GitHub Actions:
 
-```text
-cron-extract-urls.yml -> 45 * * * * -> .github/workflows/scripts/run_extract_urls_hourly.sh
-```
+At `45 * * * *`, `cron-extract-urls.yml` runs three isolated jobs:
 
-The wrapper runs on the VPS from `/root/python_projects/paperswithcode` and uses
-`backend/keys.env`.
+1. Select up to 100 candidates from the VPS database over SSH.
+2. Dispatch one paper per Modal container, capped at 20 containers.
+3. Return structured findings and persist validated URLs over SSH.
 
 ## Requirements
 
-`backend/keys.env` must include:
+- GitHub repository secrets: `VPS_HOST`, `VPS_USER`,
+  `VPS_SSH_PRIVATE_KEY`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET`.
+- Existing Modal secret `anthropic`, containing the HF Inference Providers
+  endpoint/token/model environment used by `paper_parsing_agent_v2`.
+- Modal deployment access. The discovery job deploys the current app before
+  dispatch; it can also be deployed manually:
 
 ```bash
-PWC_GEMINI_API_KEY=your-gemini-key-here
+uv run modal deploy url_extraction_agent/modal_app.py
 ```
-
-The job validates the Gemini key before processing papers.
 
 ## Manual Runs
 
 ```bash
 cd /root/python_projects/paperswithcode
-PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.hourly.extract_urls
-./.github/workflows/scripts/run_extract_urls_hourly.sh
+uv run --env-file backend/keys.env python -m url_extraction_agent.database select --limit 1 > /tmp/candidates.json
+uv run python -m url_extraction_agent.runner --input /tmp/candidates.json --output /tmp/results.json
+uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input /tmp/results.json
 ```
 
 Logs are written to:
 
 ```text
 .github/workflows/scripts/logs/extract_urls_hourly_YYYYMMDD.log
-.github/workflows/scripts/logs/extract_urls_wrapper_YYYYMMDD.log
 ```
 
 ## Current Runtime Settings
 
-The job is tuned for the Gemini free tier and the 4 GB VPS:
-
-```python
-self.papers_per_hour = 14
-self.batch_size = 10
-self.start_year = 2014
-self.use_paid_tier = False
-```
-
-Increase `papers_per_hour` only after confirming the Gemini quota and the VPS
-memory headroom.
+The hourly batch is capped at 100 papers and 20 concurrent Modal containers.
+Each container processes exactly one paper. HF/provider 429 and transient
+gateway failures receive bounded exponential-backoff retries.
 
 ## Processing Rules
 
-The job selects recent-enough ArXiv papers with abstracts where
-`urls_extracted = false`. It downloads/analyzes the paper, saves official
-GitHub/project URLs, and marks successfully processed papers as extracted.
+Candidates are latest ArXiv papers with abstracts, at least one missing
+official URL, and `urls_extracted = false`. New HF imports and page-one papers
+from home/task/method/conference feeds rank first; remaining capacity drains
+the backlog newest-first.
 
-Rate limits, invalid API keys, and PDF failures are treated as retryable; those
-papers remain eligible for a later run.
+The model returns only reasoning and URL findings. Trusted orchestration derives
+attempt health from SDK status and successful research tool events. URL
+validation and database writes happen on the VPS. `urls_extracted` becomes true
+only after a conclusive attempt and committed persistence; partial or failed
+runs remain retryable.
 
 ## Troubleshooting
 
 ```bash
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py status extract_urls_hourly
 tail -f .github/workflows/scripts/logs/extract_urls_hourly_$(date +%Y%m%d).log
-tail -f .github/workflows/scripts/logs/extract_urls_wrapper_$(date +%Y%m%d).log
 ```
 
 Common checks:
 
-- Confirm `PWC_GEMINI_API_KEY` is present on the VPS, not just locally.
-- Run the wrapper manually to verify `backend/keys.env` is found.
-- Check GitHub Actions for SSH or wrapper failures.
-- Check Gemini quota if logs show rate-limit failures.
+- Check the three GitHub Actions jobs to distinguish selection, Modal, and
+  persistence failures.
+- Confirm the Modal app is deployed and the `anthropic` secret is attached.
+- Check HF Inference Providers quota when containers return 429s.
+- Confirm the VPS checkout contains the same database CLI as the workflow.

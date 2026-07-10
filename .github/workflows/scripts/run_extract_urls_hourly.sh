@@ -1,54 +1,6 @@
 #!/bin/bash
-#
-# Wrapper script for URL Extraction Hourly CRON Job
-# This ensures proper environment loading and error handling for CRON execution
-#
 
-# Set PATH for cron environment
-export PATH="/root/.local/bin:$PATH"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-export PYTHONPATH="$PROJECT_DIR/.github/workflows:${PYTHONPATH:-}"
-
-# Set working directory
-cd "$PROJECT_DIR" || exit 1
-
-# Prevent overlapping runs piling up (each is hourly and can hang on slow
-# upstream APIs). Without this, stalled runs accumulate and starve the box.
-LOCKFILE="/tmp/extract_urls.lock"
-exec 200>"$LOCKFILE"
-if ! flock -n 200; then
-    echo "$(date) - Another extract_urls instance is running, exiting"
-    exit 0
-fi
-
-# Create log file for wrapper script errors
-WRAPPER_LOG="$SCRIPT_DIR/logs/extract_urls_wrapper_$(date +%Y%m%d).log"
-mkdir -p "$SCRIPT_DIR/logs"
-
-# Function to log messages
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$WRAPPER_LOG"
-}
-
-log_message "Starting URL Extraction Hourly CRON job wrapper"
-
-# Check if environment file exists
-if [ ! -f "backend/keys.env" ]; then
-    log_message "ERROR: Environment file backend/keys.env not found"
-    exit 1
-fi
-
-log_message "Environment file found, starting job"
-
-# Run the job with proper error handling
-# Job writes to its own log via DatabaseCronJob class, we just capture stderr to wrapper log
-if timeout -k 60s 50m nice -n 19 ionice -c3 uv run --env-file backend/keys.env python -m scripts.hourly.extract_urls 2>> "$WRAPPER_LOG"; then
-    log_message "URL extraction job completed successfully"
-    exit 0
-else
-    EXIT_CODE=$?
-    log_message "URL extraction job failed with exit code: $EXIT_CODE"
-    exit $EXIT_CODE
-fi
+# Retained temporarily so an older checkout of cron-extract-urls.yml cannot
+# launch the retired Gemini pipeline while the Modal workflow rolls out.
+echo "The VPS Gemini URL extraction wrapper is retired; use cron-extract-urls.yml."
+exit 0

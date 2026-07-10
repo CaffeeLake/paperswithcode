@@ -342,6 +342,7 @@ class HuggingFaceBackfillJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         project_page = detail.get("projectPage")
         if project_page:
             await self._insert_project_page_async(paper_id, project_page)
+        self.refresh_urls_extracted(paper_id)
 
     async def _insert_project_page_async(self, paper_id: int, project_url: str) -> None:
         """Verify a project page URL asynchronously, then insert it."""
@@ -371,6 +372,7 @@ class HuggingFaceBackfillJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         project_page = detail.get("projectPage")
         if project_page:
             await self._insert_project_page_async(paper_id, project_page)
+        self.refresh_urls_extracted(paper_id)
 
         tldr = detail.get("ai_summary")
         if tldr:
