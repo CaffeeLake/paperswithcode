@@ -58,7 +58,7 @@ jobs:
             exit 1
           fi
           ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
-            "cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env python -m url_extraction_agent.database select --limit $REQUESTED_LIMIT" \
+            "cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env python -m url_extraction_agent.database select --limit $REQUESTED_LIMIT" \
             > candidates.json
           python -m json.tool candidates.json > /dev/null
 
@@ -144,6 +144,6 @@ jobs:
         run: |
           python -m json.tool results.json > /dev/null
           ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
-            'cd /root/python_projects/paperswithcode && uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input -' \
+            'cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input -' \
             < results.json > persist-results.json
           python -m json.tool persist-results.json
