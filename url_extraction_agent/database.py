@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import sys
+from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -328,6 +329,12 @@ def canonicalize_project_page_url(url: str) -> str | None:
     )
 
 
+async def verify_url_for_persist(url: str) -> bool:
+    """Keep validator diagnostics off stdout so CLI output remains JSON."""
+    with redirect_stdout(sys.stderr):
+        return await verify_url(url)
+
+
 def _has_official_urls(db: Session, paper_id: int) -> tuple[bool, bool]:
     row = (
         db.execute(
@@ -372,7 +379,7 @@ async def persist_attempt(db: Session, attempt: AgentAttempt) -> PersistResult:
 
     if attempt.findings and attempt.findings.github_url and not has_github:
         github_url = canonicalize_github_url(str(attempt.findings.github_url))
-        if github_url and await verify_url(github_url):
+        if github_url and await verify_url_for_persist(github_url):
             owner, name = parse_github_url(github_url)
             RepositoryService(db).create_repository_for_paper(
                 paper_id=str(attempt.paper_id),
@@ -391,7 +398,7 @@ async def persist_attempt(db: Session, attempt: AgentAttempt) -> PersistResult:
 
     if attempt.findings and attempt.findings.project_page_url and not has_project:
         page_url = canonicalize_project_page_url(str(attempt.findings.project_page_url))
-        if page_url and await verify_url(page_url):
+        if page_url and await verify_url_for_persist(page_url):
             ProjectPageService(db).create_project_page_for_paper(
                 paper_id=str(attempt.paper_id),
                 url=page_url,

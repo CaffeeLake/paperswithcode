@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from url_extraction_agent.database import (
     _selection_sql,
     canonicalize_github_url,
     canonicalize_project_page_url,
+    verify_url_for_persist,
 )
 from url_extraction_agent.modal_app import MAX_CONTAINERS
 from url_extraction_agent.runner import MAX_PAPERS, load_candidates, run_batch
@@ -296,3 +298,17 @@ def test_persist_cli_writes_json_stdout_on_success(monkeypatch, tmp_path, capsys
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["status"] == "persisted"
     assert payload[0]["urls_extracted"] is True
+
+
+def test_persist_url_verification_keeps_diagnostics_off_stdout(monkeypatch, capsys):
+    async def noisy_verify_url(_url):
+        print("human-readable validator warning")
+        return False
+
+    monkeypatch.setattr(database_module, "verify_url", noisy_verify_url)
+
+    assert asyncio.run(verify_url_for_persist("https://example.com/missing")) is False
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "human-readable validator warning" in captured.err
