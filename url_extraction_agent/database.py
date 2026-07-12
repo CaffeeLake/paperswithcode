@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -455,7 +456,7 @@ async def persist_many(attempts: list[AgentAttempt]) -> list[PersistResult]:
 
 def _read_json(path: str) -> object:
     if path == "-":
-        return json.load(__import__("sys").stdin)
+        return json.load(sys.stdin)
     return json.loads(Path(path).read_text())
 
 
@@ -474,9 +475,11 @@ def main() -> None:
         with db_manager.session_local() as db:
             candidates = select_candidates(db, args.limit)
         logger.info("Papers found: %s", len(candidates))
-        print(
+        sys.stdout.write(
             json.dumps([candidate.model_dump(mode="json") for candidate in candidates])
+            + "\n"
         )
+        sys.stdout.flush()
         return
 
     attempts = [AgentAttempt.model_validate(item) for item in _read_json(args.input)]
@@ -504,7 +507,9 @@ def main() -> None:
             len(attempts),
             retries,
         )
-    print(json.dumps([result.model_dump(mode="json") for result in results]))
+    sys.stdout.write(json.dumps([result.model_dump(mode="json") for result in results]))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
     if attempts and processed == 0 and retries:
         raise SystemExit(1)
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import url_extraction_agent.database as database_module
 from url_extraction_agent.agent import _masks_hf_exit_status, derive_attempt_complete
 from url_extraction_agent.database import (
     _selection_sql,
@@ -15,6 +16,7 @@ from url_extraction_agent.runner import MAX_PAPERS, load_candidates, run_batch
 from url_extraction_agent.schema import (
     AgentAttempt,
     PaperCandidate,
+    PersistResult,
     ToolEvent,
     URLFindings,
 )
@@ -213,3 +215,84 @@ def test_workflow_isolates_modal_discovery_from_vps_persistence():
     discover_env = jobs["discover"]["env"]
     assert set(discover_env) == {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"}
     assert "VPS_SSH_PRIVATE_KEY" not in str(jobs["discover"])
+
+
+def test_persist_cli_writes_json_stdout_before_nonzero_exit(
+    monkeypatch, tmp_path, capsys
+):
+    input_path = tmp_path / "attempts.json"
+    input_path.write_text(
+        json.dumps([AgentAttempt(paper_id=1, arxiv_id="2601.00001").model_dump()])
+    )
+
+    async def fake_persist_many(_attempts):
+        return [
+            PersistResult(
+                paper_id=1,
+                status="retry",
+                message="temporary failure",
+            )
+        ]
+
+    monkeypatch.setattr(database_module, "persist_many", fake_persist_many)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "database.py",
+            "persist",
+            "--input",
+            str(input_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        database_module.main()
+
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [
+        {
+            "paper_id": 1,
+            "status": "retry",
+            "github_saved": False,
+            "project_page_saved": False,
+            "urls_extracted": False,
+            "message": "temporary failure",
+        }
+    ]
+
+
+def test_persist_cli_writes_json_stdout_on_success(monkeypatch, tmp_path, capsys):
+    input_path = tmp_path / "attempts.json"
+    input_path.write_text(
+        json.dumps([AgentAttempt(paper_id=1, arxiv_id="2601.00001").model_dump()])
+    )
+
+    async def fake_persist_many(_attempts):
+        return [
+            PersistResult(
+                paper_id=1,
+                status="persisted",
+                github_saved=True,
+                project_page_saved=True,
+                urls_extracted=True,
+                message="conclusive attempt committed",
+            )
+        ]
+
+    monkeypatch.setattr(database_module, "persist_many", fake_persist_many)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "database.py",
+            "persist",
+            "--input",
+            str(input_path),
+        ],
+    )
+
+    database_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["status"] == "persisted"
+    assert payload[0]["urls_extracted"] is True

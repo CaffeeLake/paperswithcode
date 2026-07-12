@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +17,8 @@ from backend.services.cron_registry import CronJobDefinition, list_cron_jobs
 
 WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
+WORKFLOW_STATUS_CACHE_SECONDS = 60
+_WORKFLOW_STATUS_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
 
 def _utcnow() -> datetime:
@@ -141,6 +145,132 @@ def fetch_thumbnail_cache_freshness() -> Dict[str, Any]:
     }
 
 
+def _gh_json(args: list[str], timeout: int = 10) -> tuple[Any, Optional[str]]:
+    try:
+        result = subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "gh command failed").strip()
+        return None, message
+
+    try:
+        return json.loads(result.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"failed to parse gh JSON: {exc}"
+
+
+def fetch_workflow_status(
+    workflow_file: str,
+    expected_jobs: tuple[str, ...] = (),
+) -> Dict[str, Any]:
+    """Fetch the latest GitHub Actions run for a workflow.
+
+    This is best-effort: authentication or network failures should not hide fresh
+    database writes, but when available the signal catches broken orchestration
+    around jobs such as URL extraction's select/discover/persist pipeline.
+    """
+
+    cached = _WORKFLOW_STATUS_CACHE.get(workflow_file)
+    now = time.monotonic()
+    if cached and now - cached[0] < WORKFLOW_STATUS_CACHE_SECONDS:
+        return dict(cached[1])
+
+    list_payload, error = _gh_json(
+        [
+            "run",
+            "list",
+            "--workflow",
+            workflow_file,
+            "--limit",
+            "1",
+            "--json",
+            "databaseId,status,conclusion,createdAt,updatedAt,event,headBranch",
+        ],
+        timeout=8,
+    )
+    if error:
+        status = {
+            "available": False,
+            "workflow_file": workflow_file,
+            "error": error,
+        }
+        _WORKFLOW_STATUS_CACHE[workflow_file] = (now, status)
+        return status
+
+    if not list_payload:
+        status = {
+            "available": True,
+            "workflow_file": workflow_file,
+            "status": "unknown",
+            "conclusion": None,
+            "error": "no workflow runs found",
+        }
+        _WORKFLOW_STATUS_CACHE[workflow_file] = (now, status)
+        return status
+
+    latest = list_payload[0]
+    run_id = latest.get("databaseId")
+    view_payload = latest
+    if run_id:
+        fetched_view, view_error = _gh_json(
+            [
+                "run",
+                "view",
+                str(run_id),
+                "--json",
+                "status,conclusion,createdAt,updatedAt,event,headBranch,jobs",
+            ],
+            timeout=10,
+        )
+        if view_error:
+            view_payload = {**latest, "view_error": view_error}
+        elif isinstance(fetched_view, dict):
+            view_payload = {**latest, **fetched_view}
+
+    jobs = view_payload.get("jobs") or []
+    expected = set(expected_jobs)
+    relevant_jobs = [job for job in jobs if not expected or job.get("name") in expected]
+    failed_jobs = [
+        job.get("name")
+        for job in relevant_jobs
+        if job.get("conclusion") not in {None, "", "success", "skipped"}
+    ]
+    running_jobs = [
+        job.get("name")
+        for job in relevant_jobs
+        if job.get("status") not in {None, "", "completed"}
+    ]
+
+    status = {
+        "available": True,
+        "workflow_file": workflow_file,
+        "run_id": run_id,
+        "status": view_payload.get("status"),
+        "conclusion": view_payload.get("conclusion"),
+        "created_at": view_payload.get("createdAt"),
+        "updated_at": view_payload.get("updatedAt"),
+        "event": view_payload.get("event"),
+        "head_branch": view_payload.get("headBranch"),
+        "failed_jobs": [name for name in failed_jobs if name],
+        "running_jobs": [name for name in running_jobs if name],
+        "job_conclusions": {
+            job.get("name"): job.get("conclusion")
+            for job in relevant_jobs
+            if job.get("name")
+        },
+        "view_error": view_payload.get("view_error"),
+    }
+    _WORKFLOW_STATUS_CACHE[workflow_file] = (now, status)
+    return status
+
+
 def _minutes_since(value: Optional[datetime | str]) -> Optional[float]:
     dt = value if isinstance(value, datetime) else _parse_log_timestamp(value)
     if dt is None:
@@ -174,12 +304,26 @@ def _db_is_stale(
     return False, None
 
 
+def _recent_log_success(
+    job: CronJobDefinition, log_status: Dict[str, Any]
+) -> tuple[bool, Optional[str]]:
+    if log_status.get("status") not in {"success", "success_no_work"}:
+        return False, None
+    age = _minutes_since(log_status.get("last_run"))
+    if age is None:
+        return False, None
+    if age > job.stale_after_minutes:
+        return False, None
+    return True, f"latest successful log run is {age:.0f}m old"
+
+
 def evaluate_job_health(
     job: CronJobDefinition,
     log_status: Dict[str, Any],
     db_metrics: Optional[Dict[str, Any]] = None,
     lock_state: Optional[Dict[str, Any]] = None,
     dependency_status: Optional[str] = None,
+    workflow_status: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Combine log, process, lock, and DB signals into a dashboard status."""
 
@@ -201,7 +345,34 @@ def evaluate_job_health(
     reasons: List[str] = []
     diagnostics: List[str] = []
 
-    if lock_state.get("exists") and lock_state.get("stale") and not running:
+    db_stale = False
+    db_reason: Optional[str] = None
+    if job.db_freshness_query:
+        if db_metrics.get("freshness_error"):
+            db_stale = True
+            db_reason = (
+                f"database freshness query failed: {db_metrics['freshness_error']}"
+            )
+        else:
+            db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
+
+    recent_log_success, recent_log_reason = _recent_log_success(job, log_status)
+
+    # Lock files persist after `flock` releases; only treat as blocking when DB
+    # freshness also looks bad (otherwise it is a harmless leftover file).
+    lock_blocks_job = (
+        lock_state.get("exists")
+        and lock_state.get("stale")
+        and not running
+        and (
+            not job.db_freshness_query
+            or db_stale
+            or db_metrics.get("freshness_error")
+            or not db_metrics.get("last_write")
+        )
+    )
+
+    if lock_blocks_job:
         reasons.append(
             f"stale lock file ({lock_state.get('age_minutes')}m old, no active process)"
         )
@@ -229,28 +400,31 @@ def evaluate_job_health(
         diagnostics.append(
             f"Tail `.github/workflows/scripts/logs/{job.log_name}_*.log`"
         )
-    elif lock_state.get("exists") and lock_state.get("stale") and not running:
+    elif lock_blocks_job:
         status = "broken"
     elif log_no_work and job.healthy_no_work_allowed:
         status = "healthy"
         reasons.append("completed with no work (allowed for this job)")
     else:
-        db_stale = False
-        db_reason = None
-        if job.db_freshness_query:
-            if db_metrics.get("freshness_error"):
-                db_stale = True
-                db_reason = (
-                    f"database freshness query failed: {db_metrics['freshness_error']}"
-                )
-            else:
-                db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
-            if db_stale and db_reason:
-                reasons.append(db_reason)
-        elif job.id == "mirror_thumbnails_to_disk":
+        if job.id == "mirror_thumbnails_to_disk":
             db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
             if db_stale and db_reason:
                 reasons.append(db_reason or "thumbnail cache looks stale")
+
+        import_recent_no_work = (
+            job.id == "import_hf_daily_papers"
+            and db_stale
+            and recent_log_success
+            and job.healthy_no_work_allowed
+        )
+
+        if (
+            db_stale
+            and db_reason
+            and db_reason not in reasons
+            and not import_recent_no_work
+        ):
+            reasons.append(db_reason)
 
         log_success = log_result in {"success", "success_no_work"}
 
@@ -263,6 +437,10 @@ def evaluate_job_health(
                 status = "degraded"
             else:
                 status = "degraded"
+        elif import_recent_no_work:
+            status = "healthy"
+            reasons.append(recent_log_reason or "recent import completed successfully")
+            reasons.append("no new papers imported in the freshness window")
         elif db_stale and job.db_freshness_query and job.critical:
             status = "broken"
             diagnostics.append(
@@ -289,6 +467,52 @@ def evaluate_job_health(
         diagnostics.append(
             "Fix repo trending scores before trusting paper trending output"
         )
+
+    workflow_status = workflow_status or {}
+    workflow_running = workflow_status.get("status") in {
+        "queued",
+        "in_progress",
+        "waiting",
+        "requested",
+        "pending",
+    }
+    workflow_failed = (
+        workflow_status.get("available")
+        and workflow_status.get("status") == "completed"
+        and workflow_status.get("conclusion") not in {None, "", "success", "skipped"}
+    )
+
+    if workflow_running and status == "healthy":
+        status = "running"
+        running_jobs = workflow_status.get("running_jobs") or []
+        if running_jobs:
+            reasons.append(
+                f"GitHub Actions workflow running ({', '.join(running_jobs)})"
+            )
+        else:
+            reasons.append("GitHub Actions workflow running")
+
+    if workflow_failed:
+        failed_jobs = workflow_status.get("failed_jobs") or []
+        if failed_jobs:
+            reasons.append(f"GitHub Actions workflow failed ({', '.join(failed_jobs)})")
+        else:
+            reasons.append("GitHub Actions workflow failed")
+
+        if status == "healthy":
+            status = "degraded"
+        elif status == "unknown" and db_metrics.get("last_write") and not db_stale:
+            status = "degraded"
+
+        run_id = workflow_status.get("run_id")
+        if run_id:
+            diagnostics.append(
+                f"Inspect GitHub Actions: `gh run view {run_id} --log-failed`"
+            )
+        else:
+            diagnostics.append(
+                f"Inspect GitHub Actions workflow `{workflow_status.get('workflow_file')}`"
+            )
 
     if job.critical and status in {"broken", "stuck"} and not diagnostics:
         diagnostics.append("Critical writer — investigate immediately")
@@ -329,6 +553,7 @@ def evaluate_job_health(
             for key, value in db_metrics.items()
             if key not in {"last_write", "last_write_iso"}
         },
+        "workflow_status": workflow_status or None,
         "lock_stale": bool(lock_state.get("stale")),
         "diagnostics": diagnostics[0] if diagnostics else None,
     }
@@ -345,8 +570,21 @@ def build_cron_dashboard() -> Dict[str, Any]:
     jobs: List[Dict[str, Any]] = []
     status_by_id: Dict[str, str] = {}
 
+    def get_recent_log_status(job: CronJobDefinition) -> Dict[str, Any]:
+        max_days = max(0, min(14, job.stale_after_minutes // (24 * 60) + 1))
+        latest_status = get_cron_job_status(job.log_name, today)
+        if latest_status.get("exists") or max_days == 0:
+            return latest_status
+
+        for days_back in range(1, max_days + 1):
+            date = (_utcnow() - timedelta(days=days_back)).strftime("%Y%m%d")
+            candidate = get_cron_job_status(job.log_name, date)
+            if candidate.get("exists"):
+                return candidate
+        return latest_status
+
     for job in list_cron_jobs():
-        log_status = get_cron_job_status(job.log_name, today)
+        log_status = get_recent_log_status(job)
         if job.process_patterns:
             log_status["is_running"] = log_status.get(
                 "is_running"
@@ -365,6 +603,12 @@ def build_cron_dashboard() -> Dict[str, Any]:
         dependency_status = None
         if job.id == "calculate_paper_trending_scores":
             dependency_status = status_by_id.get("calculate_trending_scores")
+        workflow_status = None
+        if job.workflow_file:
+            workflow_status = fetch_workflow_status(
+                job.workflow_file,
+                expected_jobs=job.workflow_jobs,
+            )
 
         evaluated = evaluate_job_health(
             job,
@@ -372,6 +616,7 @@ def build_cron_dashboard() -> Dict[str, Any]:
             db_metrics=db_metrics,
             lock_state=lock_state,
             dependency_status=dependency_status,
+            workflow_status=workflow_status,
         )
         status_by_id[job.id] = evaluated["status"]
         jobs.append(evaluated)

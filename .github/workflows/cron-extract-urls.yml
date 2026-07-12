@@ -143,7 +143,40 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           python -m json.tool results.json > /dev/null
+          set +e
           ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
             'cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input -' \
-            < results.json > persist-results.json
+            < results.json > persist-results.json 2> persist-stderr.log
+          persist_exit=$?
+
+          if [ ! -s persist-results.json ]; then
+            echo "Persist command produced no JSON stdout. stderr follows:"
+            cat persist-stderr.log
+            exit 1
+          fi
+
           python -m json.tool persist-results.json
+          json_exit=$?
+          if [ "$json_exit" -ne 0 ]; then
+            echo "Persist command produced invalid JSON stdout. stderr follows:"
+            cat persist-stderr.log
+            exit "$json_exit"
+          fi
+
+          if [ "$persist_exit" -ne 0 ]; then
+            echo "Persist command exited with status $persist_exit after writing parseable JSON. stderr follows:"
+            cat persist-stderr.log
+            exit "$persist_exit"
+          fi
+
+      - name: Upload persist debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-persist-debug
+          path: |
+            results.json
+            persist-results.json
+            persist-stderr.log
+          if-no-files-found: ignore
+          retention-days: 3

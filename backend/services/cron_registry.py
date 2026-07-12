@@ -21,6 +21,8 @@ class CronJobDefinition:
     critical: bool
     healthy_no_work_allowed: bool
     db_freshness_query: Optional[str] = None
+    workflow_file: Optional[str] = None
+    workflow_jobs: Tuple[str, ...] = ()
 
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
@@ -72,10 +74,10 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         display_name="Extract URLs",
         category="hourly",
         schedule="45 * * * * (hourly)",
-        script_path="hourly/extract_urls.py",
+        script_path="cron-extract-urls.yml",
         log_name="extract_urls_hourly",
-        process_patterns=("extract_urls",),
-        lock_file="/tmp/extract_urls.lock",
+        process_patterns=("url_extraction_agent.database",),
+        lock_file=None,
         expected_runtime_minutes=110,
         stale_after_minutes=120,
         critical=True,
@@ -88,6 +90,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS recent_writes
             FROM papers
         """,
+        workflow_file="cron-extract-urls.yml",
+        workflow_jobs=("select", "discover", "persist"),
     ),
     CronJobDefinition(
         id="calculate_trending_scores",
@@ -137,6 +141,42 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                        AND trending_score_updated_at > now() - interval '24 hours'
                    ) AS fresh_github_component_scores
             FROM papers
+        """,
+    ),
+    CronJobDefinition(
+        id="update_hf_artifacts",
+        display_name="Update Hugging Face Artifacts",
+        category="hourly",
+        schedule="30 * * * * (hourly)",
+        script_path="hourly/update_hf_artifacts.py",
+        log_name="update_hf_artifacts",
+        process_patterns=("update_hf_artifacts",),
+        lock_file="/tmp/hf_artifacts.lock",
+        expected_runtime_minutes=50,
+        stale_after_minutes=120,
+        critical=True,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            SELECT GREATEST(
+                     COALESCE((SELECT max(fetched_at) FROM hf_artifacts), '-infinity'::timestamp),
+                     COALESCE((SELECT max(hf_artifacts_scanned_at) FROM papers), '-infinity'::timestamp),
+                     COALESCE((SELECT max(created_at) FROM paper_hf_artifacts), '-infinity'::timestamp)
+                   ) AS last_write,
+                   (
+                     SELECT count(*)
+                     FROM hf_artifacts
+                     WHERE fetched_at > now() - interval '6 hours'
+                   ) AS recent_writes,
+                   (
+                     SELECT count(*)
+                     FROM papers
+                     WHERE hf_artifacts_scanned_at > now() - interval '6 hours'
+                   ) AS papers_scanned,
+                   (
+                     SELECT count(*)
+                     FROM paper_hf_artifacts
+                     WHERE created_at > now() - interval '24 hours'
+                   ) AS links_created
         """,
     ),
     CronJobDefinition(
@@ -224,14 +264,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         stale_after_minutes=11520,
         critical=False,
         healthy_no_work_allowed=True,
-        db_freshness_query="""
-            SELECT max(pt.created_at) AS last_write,
-                   count(*) FILTER (
-                     WHERE pt.created_at > now() - interval '8 days'
-                   ) AS recent_writes
-            FROM paper_tasks pt
-            WHERE pt.source = 'auto'
-        """,
+        db_freshness_query=None,
     ),
 )
 
