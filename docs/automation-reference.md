@@ -23,7 +23,7 @@ Recommended for production; more efficient than legacy daily batches.
 
 ### 3. Extract URLs (`url_extraction_agent`)
 
-- **Typical schedule**: hourly
+- **Typical schedule**: paused as of 2026-07-13 to avoid Modal cost spikes; run manually with `workflow_dispatch` when needed
 - **Scope**: newest HF imports, first-page home/task/method/conference papers, then the older backlog; all must be missing at least one official URL
 - **Features**: one sandboxed Claude Agent SDK run per paper on Modal; native structured output; trusted VPS validation/persistence; `source='ai_extraction'`
 - **Scale**: up to 100 papers/hour with at most 20 Modal containers
@@ -66,7 +66,7 @@ Workflows live under `.github/workflows/cron-*.yml`. Each run SSHs to the Hetzne
 | `cron-update-github-stars.yml` | `0 * * * *` | `.github/workflows/scripts/run_github_stars.sh` |
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` |
-| `cron-extract-urls.yml` | `45 * * * *` | VPS select → Modal map → VPS persist |
+| `cron-extract-urls.yml` | Paused; manual `workflow_dispatch` only | VPS select → Modal map → VPS persist |
 
 **Repository secrets**: `VPS_HOST`, `VPS_USER`, `VPS_SSH_PRIVATE_KEY` (ed25519 private key whose public key is in `~/.ssh/authorized_keys` on the VPS), plus `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` for URL extraction.
 

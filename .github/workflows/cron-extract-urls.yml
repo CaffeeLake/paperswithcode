@@ -1,8 +1,11 @@
 name: Cron - Extract URLs
 
 on:
-  schedule:
-    - cron: "45 * * * *"
+  # Hourly schedule paused on 2026-07-13 to avoid Modal cost spikes.
+  # Restore this block when URL extraction should run automatically again:
+  #
+  # schedule:
+  #   - cron: "45 * * * *"
   workflow_dispatch:
     inputs:
       limit:

@@ -72,15 +72,15 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     CronJobDefinition(
         id="extract_urls",
         display_name="Extract URLs",
-        category="hourly",
-        schedule="45 * * * * (hourly)",
+        category="manual",
+        schedule="paused (manual dispatch only; hourly schedule disabled)",
         script_path="cron-extract-urls.yml",
         log_name="extract_urls_hourly",
         process_patterns=("url_extraction_agent.database",),
         lock_file=None,
         expected_runtime_minutes=110,
         stale_after_minutes=120,
-        critical=True,
+        critical=False,
         healthy_no_work_allowed=True,
         db_freshness_query="""
             SELECT max(updated_at) AS last_write,
