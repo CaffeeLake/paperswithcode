@@ -1,0 +1,45 @@
+{
+  "skill_name": "complete-task",
+  "evals": [
+    {
+      "id": 0,
+      "name": "buildout-incomplete-task",
+      "prompt": "The /tasks/video-matting page on paperswithcode feels empty. Can you complete it — find the major benchmarks and top papers from the legacy PwC data, add the benchmarks, index/enrich the papers, import their evals, and verify the leaderboards?",
+      "expected_output": "Mines legacy evaluation-tables.json with the streaming miner (no full-file load), picks at most the top 5 benchmarks (by entries) and at most top 10 papers each, then orchestrates add-benchmark / enrich-paper / add-evals / verify-evals via one Composer-2.5 subagent per unit. Ends with a per-benchmark + per-paper completion report and the task URL.",
+      "files": [],
+      "assertions": [
+        {"text": "Used the bundled mine_legacy_task.py streaming miner (or ijson streaming) and did NOT load evaluation-tables.json / papers-with-abstracts.json whole into memory"},
+        {"text": "Limited scope to at most 5 benchmarks and at most 10 papers per benchmark"},
+        {"text": "Delegated work to subagents with model composer-2.5-fast, one per benchmark/paper unit"},
+        {"text": "Subagents were pointed at the correct sub-skills (add-benchmark, enrich-paper, add-evals, verify-evals)"},
+        {"text": "Benchmark creation (add-benchmark) was sequenced before eval import (add-evals), and verify-evals ran last"},
+        {"text": "Final report covers benchmarks created/existing, papers indexed/enriched, evals added, and per-benchmark verification, ending with the task URL"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "already-populated-verify-path",
+      "prompt": "Make the motion-generation task on paperswithcode complete — its benchmarks and evals were recently added, so mostly just make sure everything is correct.",
+      "expected_output": "Recognizes via a state-check that the major benchmarks (HumanML3D, KIT Motion-Language) already exist with evals and the top papers are indexed/enriched, so it degrades gracefully into verification — running verify-evals subagents (Composer 2.5) per benchmark rather than re-creating benchmarks or re-importing evals. Reports what already existed vs. what was fixed.",
+      "files": [],
+      "assertions": [
+        {"text": "Checked existing DB state (benchmarks, task links, metrics, eval counts, indexed papers) before launching any write subagents"},
+        {"text": "Did NOT re-create benchmarks or re-import evals that already exist; degraded into the verify-evals path for existing data"},
+        {"text": "verify-evals subagents were launched on composer-2.5-fast, one per benchmark"},
+        {"text": "Report distinguishes already-complete data from anything it changed"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "casual-trigger-and-scope",
+      "prompt": "can you flesh out the object-tracking task page? want the real top benchmarks + papers in there with leaderboard numbers, sourced from the old pwc data",
+      "expected_output": "Triggers the complete-task orchestration: discovers the legacy task name(s) that map to object tracking, mines top benchmarks/papers (capped 5/10), and runs the four sub-skills via Composer-2.5 subagents, sequencing benchmarks before evals before verification.",
+      "files": [],
+      "assertions": [
+        {"text": "First discovered the legacy task name(s) mapping to the site slug (list-tasks discovery) rather than assuming the slug equals the legacy task name"},
+        {"text": "Capped at top 5 benchmarks / top 10 papers and used streaming, not a full-file load"},
+        {"text": "Used composer-2.5-fast subagents pointed at add-benchmark / enrich-paper / add-evals / verify-evals in the correct order"}
+      ]
+    }
+  ]
+}

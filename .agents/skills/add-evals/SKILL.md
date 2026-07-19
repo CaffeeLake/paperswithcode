@@ -130,7 +130,17 @@ Different starting points should converge on the same triple — a model identit
    gh api repos/<owner>/<repo>/readme -H "Accept: application/vnd.github.raw" > /tmp/<repo_slug>/README.md
    ```
 
-   Repo READMEs often contain the most complete benchmark tables for new releases (especially for OCR/VLM models). Treat README tables exactly like card tables for the rest of the workflow.
+   Repo READMEs often contain the most complete benchmark tables for new releases (especially for OCR/VLM/robotics models). Treat README tables exactly like card tables for the rest of the workflow.
+
+   GitHub repositories are also an important source-availability signal. Do not mark a row closed merely because the paper page has no direct HF model link. Inspect the official repo for:
+
+   - direct checkpoint links, release assets, Git LFS pointers, or download scripts;
+   - training/evaluation scripts and configs that reproduce the reported checkpoint from public data or listed public artifacts;
+   - linked Hugging Face model or dataset repos in the README, docs, shell scripts, config files, or release notes.
+
+   If the official repo clearly releases weights, or clearly provides reproducible scripts for the evaluated model/checkpoint, treat the evaluated row as open (`is_open = true`) even when `hf_model_url` stays unset. Example: a paper whose official GitHub repo contains scripts to reproduce the reported policy checkpoint should not be marked closed just because Hugging Face has no linked model card.
+
+   When the README or repo files mention HF repos that are not linked from the HF paper page, inspect them directly. HF repos without model cards, without `arxiv:` tags, or without README metadata can still be official if the source GitHub repo links them. Use these links for `papers.hf_models` and `evaluations.hf_model_url` only when the source ties them to the evaluated variant.
 
 You can combine sources when each one carries part of the picture (e.g. the card has the "main" table, the paper has an ablation, the README has the final leaderboard). Track per-row context — which source the score came from, model variant / mode / shot count / metric label / backbone head or task framework / harness notes — so model names and methodology lines you write later are accurate and traceable.
 
@@ -142,6 +152,7 @@ While reading each source, also try to pin down the **official Hugging Face mode
 - **Prefer the official organization.** Use the repo under the model's official HF organization (e.g. `MiniMaxAI/MiniMax-M3`, `Qwen/...`, `deepseek-ai/...`), not community re-uploads, mirrors, finetunes, or third-party conversions, even when those rank higher in search. If only a community mirror exists and no official repo, leave the field unset rather than linking the mirror.
 - **Prefer the non-quantized weights.** When the official org publishes several variants of the same checkpoint that differ only by precision/quantization (e.g. a base repo plus `-FP8`, `-float16`, `-INT4`, `-GGUF`, `-AWQ`, `-GPTQ` repos), link the full-precision / non-quantized base repo. Only link a quantized repo when the evaluated row is specifically that quantized variant.
 - **Distinct model variants get their own URL.** Different evaluated variants (size, mode, backbone) that have their own official repos should each point at their own repo; do not reuse one repo across rows that are genuinely different models.
+- **HF paper linkage is not required.** A repo can be official even when it is not returned by `hf papers info`, has no model card, lacks an `arxiv:` tag, or is absent from the HF paper page. If the paper's official GitHub/project page links the repo and the repo contains the evaluated checkpoint/files, it is eligible for `hf_model_url`.
 
 Closed-source API models (Claude/GPT/Gemini and similar) usually have no downloadable weights repo — leave `hf_model_url` unset for those rows. This field is independent of the paper-level `papers.hf_models` array; keep appending official model URLs there for traceability regardless.
 
@@ -327,7 +338,7 @@ Set `is_open: false` when there is **no evidence of an open-weight release** for
 Treat a release as closed-source when any of these hold and none of the open-source signals below apply:
 
 - The source is a blog post, system card, vendor report, or API announcement with pricing/access details but no public weights.
-- Weights are unavailable, restricted (trusted-access / allowlist / enterprise-only), or inference-only through a vendor API.
+- Weights are unavailable, restricted (trusted-access / allowlist / enterprise-only), unreproducible from public artifacts, or inference-only through a vendor API.
 - The only linked Hugging Face artifact is a demo Space, dataset, or unrelated base model — not downloadable weights for the evaluated checkpoint.
 - The evaluated product is clearly a proprietary model name (`Claude …`, `GPT-…`, `Gemini …`, etc.) with no accompanying open-weight release in the same source chain.
 
@@ -335,11 +346,15 @@ Recent examples: Claude Opus/Fable/Mythos, GPT-5.x, Gemini 3.x — all `is_open:
 
 #### Open-source (`is_open = true`)
 
-Keep `is_open: true` (the API default) only when the evaluated variant has clear open-weight evidence:
+Keep `is_open: true` (the API default) when the evaluated variant has clear open evidence. Direct HF linkage is sufficient but not required:
 
 - An official Hugging Face **model** repo with downloadable weights for that checkpoint (not just a paper link or `arxiv:` tag).
 - An official GitHub release that distributes weights or states they are publicly released under an open license.
 - The paper/card/README explicitly open-sources the exact evaluated model and links the artifact.
+- The official GitHub/project repository provides scripts, configs, and documented commands to reproduce the evaluated checkpoint from public code/data/artifacts. This counts as open even if no pretrained HF model card exists.
+- The official GitHub/project repository links HF checkpoint or dataset repos that are not linked from the HF paper page because they lack cards, README metadata, or `arxiv:` tags.
+
+Separate `is_open` from `hf_model_url`: a row may be `is_open = true` with no `hf_model_url` when the only evidence is reproducible GitHub code or a non-HF weight release. Conversely, only fill `hf_model_url` when the exact HF repo is known.
 
 When evidence is mixed (API product plus a separate open research checkpoint), set `is_open` from the **evaluated row's model variant**, not the lab's general policy. If the leaderboard row is for an API-only flagship and a smaller open checkpoint also exists, the flagship row stays closed.
 
@@ -363,11 +378,14 @@ def normalize_score_for_leaderboard(dataset_name, metric, score):
     return f"{score}".rstrip("%")
 
 def determine_is_open(source_urls, hf_model_repo_ids=None):
-    """Return False for proprietary API releases unless open weights are evidenced."""
+    """Return False for proprietary API releases unless open/reproducible artifacts are evidenced."""
     hf_model_repo_ids = hf_model_repo_ids or []
     open_weight_markers = (
         "apache", "mit license", "open weights", "open-weight", "open source weights",
         "model weights are available", "weights available on hugging face",
+        "public checkpoint", "checkpoint release", "pretrained weights",
+        "reproduce our checkpoint", "training scripts", "evaluation scripts",
+        "download weights",
     )
     blob = " ".join(source_urls).lower()
     if any(marker in blob for marker in open_weight_markers):
@@ -514,7 +532,7 @@ End by giving the user a concise report:
 - For each imported model variant, the `num_parameters` value used (or "not reported" when the source did not state it confidently). If a count was set, briefly note where it came from (HF `safetensors.total`, model card body, paper, README) and whether it represents total or active parameters for MoE models.
 - The `is_open` value used for each imported variant (`true` = open-weight release evidenced; `false` = closed/proprietary API model). If you marked a row closed, note briefly why (e.g. "Anthropic API release, no public weights").
 - Whether `hf_model_url` was set for each imported variant and which official repo it points at, or "not set" with the reason (closed-source, no confident official repo, or only community/quantized repos available). Confirm any linked repo is the official org's non-quantized checkpoint.
-- Whether the source is part of a model-family chain and should be linked with predecessor/successor papers. If yes, run `link-paper-lineage` as a follow-up rather than doing ad hoc SQL in this skill.
+- Whether the source is part of a model-family chain and should be linked with predecessor/successor papers. If yes, run `uv run --env-file backend/keys.env pwc paper lineage add <predecessor> <successor>` as a follow-up rather than doing ad hoc SQL in this skill.
 
 ## When NOT to use this skill
 
@@ -539,6 +557,6 @@ End by giving the user a concise report:
 - Harness column: optional `evaluations.harness` (VARCHAR(255)) — populate it only when the selected `(task_id, dataset_id)` row has `task_datasets.supports_harness = TRUE`; use the named runtime verbatim (for example `Terminus-2`, `OpenHands`, or `Claude Code`), or `Not reported` when the source omits it after checking primary and official linked sources. Leave null for non-supporting leaderboards and report any downgraded harness-like details.
 - Parameter count column: optional `evaluations.num_parameters` (BIGINT, non-negative) — raw integer total parameter count for the model row (e.g. `7000000000` for a 7B model). Populate only when the source confidently states the count for that exact variant; never guess from siblings, headlines, or organization conventions. Use total parameters for MoE models by default and note active counts in `methodology`. Omit the field entirely when the count is unknown.
 - HF model link column: optional `evaluations.hf_model_url` (TEXT, must start with `https://huggingface.co/`) — link to the evaluated model's Hugging Face model page (e.g. `https://huggingface.co/MiniMaxAI/MiniMax-M3`). Populate per row only with 100% certainty (no false positives), preferring the official organization repo and the non-quantized base weights over precision/quantization variants (`-FP8`, `-float16`, `-INT4`, `-GGUF`, `-AWQ`, `-GPTQ`). Independent of `papers.hf_models` (paper-level traceability): keep appending the URL there too. Omit when the variant has no confident official HF repo (closed-source API models, or scores from a paper/README with no matching repo).
-- Open-source flag: optional `evaluations.is_open` (BOOLEAN, default `true`) — set `is_open: false` on POST for proprietary API models (typical Claude/GPT/Gemini releases) when no open-weight artifact is evidenced; keep `true` when official HF/GitHub weights exist for the evaluated checkpoint.
+- Open-source flag: optional `evaluations.is_open` (BOOLEAN, default `true`) — set `is_open: false` on POST for proprietary API models (typical Claude/GPT/Gemini releases) when no open or reproducible artifact is evidenced; keep `true` when official HF/GitHub weights exist, or when the official GitHub/project repo provides public scripts/configs to reproduce the evaluated checkpoint. This does not require `hf_model_url`; papers can have open evals without a direct HF model link.
 - FPS rows: when a source reports both baseline and optimized inference speed, import the optimized figure (TensorRT, ONNX, compiled inference, language cache, etc.) and document the stack plus baseline FPS in `methodology`.
 - Native benchmark source URL form: `https://paperswithcode.co/paper/{arxiv_id}`.

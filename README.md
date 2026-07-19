@@ -54,6 +54,88 @@ uv add paperswithcode
 
 After that, you can use `uv run --env-file backend/keys.env` to run everything.
 
+### PwC CLI
+
+Repository maintenance workflows are exposed through the `pwc` command. For
+example, generate a rule-based GitHub issue body from a paper's current
+paper-native evaluations:
+
+```bash
+uv run --env-file backend/keys.env pwc github-issue body 2601.21998
+```
+
+Use `--verified` only after a human verification pass, and `--json` when the
+caller also needs the issue title, official repository candidates, computed
+rankings, and other structured metadata:
+
+```bash
+uv run --env-file backend/keys.env pwc github-issue body 2601.21998 --verified --json
+```
+
+Creating the issue is a separate, duplicate-safe command. It resolves only
+official repositories and requires an explicit publication confirmation:
+
+```bash
+uv run --env-file backend/keys.env pwc github-issue create 2601.21998 \
+  --verified --confirm PUBLISH
+```
+
+Regenerate and validate a paper thumbnail using an arXiv ID, Papers with Code
+URL, or numeric external-paper ID:
+
+```bash
+uv run --env-file backend/keys.env pwc thumbnail 2512.20856
+```
+
+The command forces regeneration by default, reports old and new dimensions,
+and exits non-zero when the JPEG is not a 400px-wide portrait render. PDF
+thumbnails preserve the source page aspect ratio, so their height is variable
+(for example, a Letter page is about 400×518). Use `--no-force` to reuse a
+valid cached thumbnail or `--json` for structured output.
+
+Download, self-host, and attribute a hero image for an existing task, method,
+or conference. The command keeps a seed copy in `data/entity_image_seeds/` and
+stores the image bytes and source credit on the database row:
+
+```bash
+uv run --env-file backend/keys.env pwc image add task object-detection \
+  https://example.org/object-detection.png \
+  --source https://example.org/object-detection
+```
+
+Manage directed paper lineage using unambiguous paper references. Supplying
+more than two papers creates each adjacent predecessor-to-successor edge:
+
+```bash
+uv run --env-file backend/keys.env pwc paper lineage add \
+  1810.04805 2005.14165 2303.08774
+uv run --env-file backend/keys.env pwc paper lineage list 2005.14165
+uv run --env-file backend/keys.env pwc paper lineage remove \
+  1810.04805 2005.14165 --confirm DELETE
+```
+
+Inspect scheduled jobs by triangulating parsed logs, active processes, lock
+files, database freshness, and available GitHub Actions state. The command
+returns non-zero for broken or stuck jobs; add `--strict` to include degraded
+and unknown jobs:
+
+```bash
+uv run --env-file backend/keys.env pwc cron health
+uv run --env-file backend/keys.env pwc cron health update_github_stars --json
+uv run --env-file backend/keys.env pwc cron health --strict
+```
+
+After rotating a CRON credential, probe it with the exact authentication style
+used by the corresponding job without printing the secret:
+
+```bash
+uv run --env-file backend/keys.env pwc cron token-check PWC_GITHUB_TOKEN
+```
+
+Supported probes cover `PWC_GITHUB_TOKEN`, `PWC_HF_TOKEN`,
+`PWC_OPENROUTER_API_KEY`, `PWC_SEMANTIC_SCHOLAR_API_KEY`, and the legacy
+`PWC_GEMINI_API_KEY`.
+
 [Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`. The hooks can then be installed using `pre-commit install`.
 
 ## How to run
@@ -82,11 +164,9 @@ uv run
 
 ### Documentation
 - **[docs/deployment.md](docs/deployment.md)** – DNS, HTTPS, and runtime verification
-- **[docs/backend-api.md](docs/backend-api.md)** – FastAPI routers and service conventions
 - **[docs/data-workflows.md](docs/data-workflows.md)** – Dataset/evaluation ingestion
 - **[docs/database.md](docs/database.md)** – PostgreSQL access and security
 - **[docs/operations.md](docs/operations.md)** – Cron jobs, trending pipeline, monitoring
-- **[docs/frontend.md](docs/frontend.md)** – UI feature notes (task leaderboards, admin editing)
 - **[docs/keyword-matching.md](docs/keyword-matching.md)** – Keyword tagging strategy and APIs
 - **[docs/DATABASE_SCHEMA_UML.md](docs/DATABASE_SCHEMA_UML.md)** – Schema reference
 - **[AGENTS.md](AGENTS.md)** – Concise agent quickstart and links to `docs/`

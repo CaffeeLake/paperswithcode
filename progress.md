@@ -315,7 +315,7 @@ Add backend schema for new fields (papers.tldr, papers.num_pages columns) via ad
   - `frontend_v2/src/components/paper-detail/` contains direct copies of `EditTasksDialog`, `EditMethodsDialog`, `EditRepositoriesDialog`, `EditEvaluationsDialog`, `EvaluationResultsCard` from `frontend/`. No surgery needed — they consume the same `apiClient` types and shadcn `Dialog` primitives. They live behind `data-shadcn` containers when wrapping their content (the dialogs themselves use Radix Portals so the parent v2 styles don't bleed in).
   - `PaperDetailView` opens the four dialogs via `usePaperEditState`. Inline "edit" links sit next to the section headings ("Tasks · 3 tagged · edit") so the affordance reads naturally.
   - `indexPaperFromArxiv` is wired into the 404 fallback pane (when a paper isn't in our DB, the user gets an "Index from arXiv" button + toast on success).
-  - No auth gate — matches v1 behavior. Real auth tracked separately in [AUTH.md](AUTH.md).
+  - No auth gate — matches v1 behavior. Authentication can be added when the product requires it.
   - `EvaluationResultsCard` itself isn't reused in v2 — `PaperDetailView` renders the evaluations table directly using the v2 `.results-table` styling for visual consistency. The shadcn card is kept available for any future surfaces that want the v1 layout.
 
 **Sub-tasks:**

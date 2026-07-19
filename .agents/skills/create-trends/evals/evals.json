@@ -1,0 +1,49 @@
+{
+  "skill_name": "create-trends",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Research and draft exactly three field-direction bullets for https://paperswithcode.co/tasks/image-super-resolution. Ground them in the page's indexed trending papers, compare classic super-resolution work with 2025-2026 papers, and explain the techniques driving current quality and efficiency. Save the proposed bullets and a compact evidence table to the requested output directory. Do not update the database.",
+      "expected_output": "Three distinct, evidence-grounded Image Super-Resolution trend bullets with working relative PwC paper links, plus a compact evidence table covering classic and recent indexed work; no production mutation.",
+      "files": [],
+      "expectations": [
+        "The report contains exactly three proposed field-direction bullets.",
+        "The evidence table includes at least two classic papers published before 2023 and at least three recent papers from 2025-2026.",
+        "Every paper cited in a proposed bullet uses a relative /paper/<identifier> PwC link that resolves successfully.",
+        "The proposed bullets are grounded in the task page's current indexed trending cohort, not only a generic external literature search.",
+        "The report ranks meaningful task benchmarks by reporting depth and analyzes recurring techniques among leading rows instead of elevating a sparse leaderboard.",
+        "The three bullets express distinct field-level trends and cover both quality and efficiency or deployment trade-offs.",
+        "The run does not change the task's research_trends or create a production migration."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "The Speech Enhancement task page needs a concise 'where the field is headed' summary. Draft exactly three bullets after checking its current trending cohort, major older papers, and recent 2025-2026 work. Prioritize techniques that recur across impactful papers, include efficiency or robustness where the evidence supports it, and only cite papers already indexed on PwC. Save a reviewable markdown report; do not change live data.",
+      "expected_output": "Three distinct Speech Enhancement trend bullets driven by indexed trending and recent papers, historically calibrated with classic work, with only working PwC links and no database changes.",
+      "files": [],
+      "expectations": [
+        "The report contains exactly three proposed field-direction bullets.",
+        "The evidence includes classic Speech Enhancement work and multiple recent papers from 2025-2026.",
+        "Every paper cited in a proposed bullet uses a relative /paper/<identifier> PwC link that resolves successfully.",
+        "The synthesis filters out papers whose relationship to Speech Enhancement is only incidental or due to noisy tagging.",
+        "The report checks benchmark adoption and leading methods where meaningful leaderboards exist, and explicitly notes when benchmark evidence is too sparse to drive a trend.",
+        "The three bullets identify recurring techniques across multiple papers rather than summarizing three individual releases.",
+        "The run does not change the task's research_trends or create a production migration."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Reassess the three field-direction bullets for https://paperswithcode.co/tasks/agents in draft mode. Use current trending papers, classic work, and the task's most widely reported benchmarks. Explain why the major benchmarks are popular and identify techniques shared by their leading systems. Do not treat a benchmark with only a handful of evaluations as a major anchor, and do not change the database. Save a compact evidence report and exactly three proposed bullets.",
+      "expected_output": "Three concise Agents trend bullets that preserve the ReAct-to-real-environments transition while using benchmark reporting depth and leading-system techniques to identify current long-horizon and personalization trends; no production mutation.",
+      "files": [],
+      "expectations": [
+        "The report contains exactly three proposed field-direction bullets.",
+        "The report ranks Agents benchmarks by reporting depth and examines techniques used by multiple leading rows on major benchmarks.",
+        "The proposed bullets cover terminal-based agents, long-horizon reasoning, and persistent personalized agents as three distinct trends.",
+        "ReAct is used as a foundational transition paper, while sparse WebArena evaluation coverage is not presented as evidence of current benchmark adoption.",
+        "Any cited internal PwC paper or benchmark link resolves successfully, and official non-paper projects are clearly distinguished from research papers.",
+        "The run does not change the task's research_trends or create a production migration."
+      ]
+    }
+  ]
+}

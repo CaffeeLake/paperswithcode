@@ -1,0 +1,51 @@
+{
+  "skill_name": "enrich-paper",
+  "evals": [
+    {
+      "id": 0,
+      "name": "github-in-hf-metadata-merge-tags",
+      "paper_id": 98826,
+      "arxiv_id": "2606.25605",
+      "prompt": "Enrich the paper arxiv 2606.25605 (\"Constraint Tax in Open-Weight LLMs\") in the paperswithcode database \u2014 it's missing its code repository and could use better task/method tags.",
+      "expected_output": "Saves official GitHub repo https://github.com/Fzsama/Constrain-Tax-26-06 (found via HF API). No project page (none exists). Adds sensible tags (e.g. tool-use / function-calling / agents) while PRESERVING existing tasks (language-modeling) and methods (function-calling, large-language-model-llm). Reports the paper URL.",
+      "files": [],
+      "assertions": [
+        {"text": "Official GitHub repo github.com/Fzsama/Constrain-Tax-26-06 is linked to the paper as is_official=true"},
+        {"text": "No false/incorrect GitHub repo (e.g. an unrelated cited repo) was linked"},
+        {"text": "Pre-existing tags are preserved: language-modeling task and methods function-calling + large-language-model-llm still present"},
+        {"text": "Final tag set is sensible for a tool-calling/structured-output LLM paper (no obviously irrelevant tags added)"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "project-page-only-no-github-authentic-negative",
+      "paper_id": 98846,
+      "arxiv_id": "2606.27377",
+      "prompt": "Can you find the GitHub repo and project page for arxiv 2606.27377 and make sure it's tagged correctly on paperswithcode?",
+      "expected_output": "Saves the project page https://danceopd.github.io/ (from HF API) as official. Correctly finds NO GitHub repo (project page HTML has none) and does NOT hallucinate one. Preserves/curates tags (existing: image-generation; methods classifier-free-guidance, online-rl, on-policy-distillation). Reports project page saved, no github found.",
+      "files": [],
+      "assertions": [
+        {"text": "Project page https://danceopd.github.io/ is linked to the paper as official"},
+        {"text": "No GitHub repository was invented/linked (authentic negative \u2014 none exists)"},
+        {"text": "Existing tags are preserved (not clobbered to empty)"},
+        {"text": "Report mentions that no GitHub repo was found and that the project-page HTML was checked"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "no-tasks-and-false-positive-method",
+      "paper_id": 98814,
+      "arxiv_id": "2606.26092",
+      "prompt": "This paper https://paperswithcode.co/paper/2606.26092 (TryOnCrafter) has no task tags and looks mis-tagged. Please enrich it.",
+      "expected_output": "Adds appropriate task tag(s) for video virtual try-on / video generation (the paper currently has zero tasks). Saves project page https://sunhao242.github.io/TryOnCrafter_web.github.io/. Recognizes that the existing method tag 'hallucination' is a false positive for a video try-on paper and removes it (with justification) while keeping diffusion-transformer-dit. Reports actions.",
+      "files": [],
+      "assertions": [
+        {"text": "At least one relevant task tag was added (paper had zero tasks; should now have a video/try-on/generation task)"},
+        {"text": "Project page https://sunhao242.github.io/TryOnCrafter_web.github.io/ is linked as official"},
+        {"text": "The false-positive method tag 'hallucination' is removed OR explicitly flagged as wrong in the report"},
+        {"text": "The legitimate existing method diffusion-transformer-dit is preserved"},
+        {"text": "No invented GitHub repo (none exists for this paper)"}
+      ]
+    }
+  ]
+}

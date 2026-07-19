@@ -45,7 +45,7 @@ Host: 167.235.148.241
 Port: 5432
 DB:   paperswithcode_hf
 User: paperswithcode_user
-Pass: paperswithcode123
+Pass: use the value from `backend/keys.env`
 SSL:  Optional (both host and hostssl rules exist)
 ```
 
@@ -74,7 +74,7 @@ sudo -u postgres psql -c "SELECT pid, usename, client_addr, query FROM pg_stat_a
 uv run --env-file backend/keys.env python backend/database/papers_setup/add_hf_papers.py
 
 # One-off update (example: set method image URL)
-PGPASSWORD=paperswithcode123 psql -h localhost -U paperswithcode_user -d paperswithcode_hf \
+PGPASSWORD="$PWC_DB_PASSWORD" psql -h localhost -U paperswithcode_user -d paperswithcode_hf \
   -c "UPDATE methods SET image_url = 'https://example.com/image.png' WHERE name ILIKE 'function calling';"
 
 # Grant permissions after creating tables as postgres
@@ -96,5 +96,3 @@ sudo -u postgres psql -d paperswithcode_hf -c "GRANT ALL PRIVILEGES ON ALL SEQUE
 - Schema reference: `docs/DATABASE_SCHEMA_UML.md`
 - Keyword automation scripts: `backend/database/{tasks_setup,methods_setup}/`
 - Remote access helper: `scripts/manage_postgres_access.sh`
-
-_Last updated: 7 November 2025_

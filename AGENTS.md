@@ -6,22 +6,46 @@ Guidance for AI agents working in this repository.
 
 - Do NOT care about backwards compatibility since we have 0 users for now.
 - Avoid heavy `try`/`except`; keep logic simple and readable.
-- Whenever you make a change that requires a restart/redeploy of the backend or frontend, do so without asking confirmation. See **Deploying changes** below for the exact commands.
+- **Do not restart, rebuild, reload, or deploy production while developing.** This
+  checkout currently backs `paperswithcode.co`, so `./start_services.sh`,
+  `./stop_services.sh`, `npm run build` in `frontend/`, process-kill commands,
+  and nginx reloads can interrupt the live site. Use tests and isolated dev
+  processes instead. Only deploy production when the user explicitly asks for
+  a production deployment.
 - Use background tasks in Cursor for long-running work unless you are actively debugging.
 - **Run Python and CLIs with** `uv run --env-file backend/keys.env …` (venv + env vars).
+- Prefer the rule-based `pwc` CLI over ad hoc SQL/scripts for GitHub outreach,
+  thumbnails, paper lineage, and CRON health/token checks. Run `pwc --help` for
+  available commands; see `README.md` for examples.
 - Prefer `DBPaper.is_latest_version` over `== True`; use `~DBPaper.urls_extracted` instead of `== False` as Ruff penalizes this.
 - Database access: **`docs/database.md`**.
 - **Hardware**: Hetzner VPS, ~4GB RAM / 80GB disk — many scripts assume low RAM.
-- Start/stop app stack: `./start_services.sh` / `./stop_services.sh`.
+- Production start/stop scripts: `./start_services.sh` / `./stop_services.sh`
+  (**deployment/operations only; never use for routine development**).
 - API base path: **`http://localhost:8000/api/v1/`** (interactive docs: `/docs`).
 
-## Deploying changes (production: paperswithcode.co)
+## Development and production deployment
 
-Production runs from this very VPS, so any frontend/backend edit must be redeployed before the user sees it. Always do this yourself, without asking.
+Production currently runs from this VPS and nginx serves
+`frontend/dist` from this checkout. Treat all production operations as a
+separate, explicit release step.
 
-- **Frontend changes** (anything under `frontend/`): the prod site is static, served by nginx from `frontend/dist`. The Vite dev server is NOT what users hit. After editing, run:
+For routine development:
+
+- Run targeted tests and linters.
+- For frontend testing, use the Vite dev server; do **not** run
+  `npm run build`, because its output directory is currently the live nginx
+  document root.
+- For backend testing, use tests or an isolated process on a non-production
+  port (for example `8001`); never kill or replace the process on port `8000`.
+- Do not reload nginx.
+
+Only when the user explicitly requests a **production deployment**:
+
+- **Frontend changes** (anything under `frontend/`): the prod site is static, served by nginx from `frontend/dist`. Build, ensure nginx can read every generated file, validate, then reload:
   ```bash
-  cd frontend && npm run build && cd .. && nginx -t && nginx -s reload
+  cd frontend && npm run build && chmod -R a+rX dist && cd ..
+  nginx -t && nginx -s reload
   ```
 - **Backend changes** (anything under `backend/`): restart the FastAPI process. Easiest is to re-run the full stack script (it also rebuilds the frontend, which is fine):
   ```bash
@@ -29,6 +53,10 @@ Production runs from this very VPS, so any frontend/backend edit must be redeplo
   ```
   Or kill+restart just the backend (`pkill -f 'uvicorn.*backend.main:app'` then re-launch `nohup uv run --env-file backend/keys.env backend/run_server.py > logs/backend.log 2>&1 &`).
 - **Both** changed: just run `./start_services.sh`.
+
+After any production deployment, smoke-test `/health`, `/`, one SPA route, and
+one API route. If a smoke test fails, restore the previous release rather than
+debugging against the live release.
 
 Skip redeploy only if the change is purely docs, tests, scripts, or `.github/workflows/`.
 
@@ -79,7 +107,8 @@ uv run --env-file backend/keys.env python backend/tests/test_authors_api.py
 Various CRON jobs are deployed on Github Actions at https://github.com/huggingface/paperswithcode/actions. This includes updating citation counts of papers, updating Github stars of repositories linked to papers, importing papers from Hugging Face's daily papers and more.
 
 ```bash
-uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
+uv run --env-file backend/keys.env pwc cron health
+uv run --env-file backend/keys.env pwc cron token-check PWC_GITHUB_TOKEN
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test update_citations
 ```
 
@@ -87,17 +116,11 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 
 | Topic | Document |
 |--------|-----------|
-| Repo tree, `frontend/` layout | `docs/repository-layout.md` |
-| Endpoint tables & curl samples | `docs/rest-api-catalog.md` |
-| Router summary, adding endpoints | `docs/backend-api.md` |
 | Datasets & evaluations via API | `docs/data-workflows.md` |
-| CRON detail, GitHub Actions, GenAI URLs | `docs/automation-reference.md` |
 | Dashboard, trending, PDF checks | `docs/operations.md` |
-| Tables & legacy JSON dumps | `docs/schema-and-data-files.md` |
 | Dev patterns, testing, limits | `docs/development-guide.md` |
 | DB connection & security | `docs/database.md` |
 | Deploy, DNS, HTTPS | `docs/deployment.md` |
-| UI features | `docs/frontend.md` |
 | Keyword APIs | `docs/keyword-matching.md` |
 | Schema diagram | `docs/DATABASE_SCHEMA_UML.md` |
 | Cron implementation notes | `.github/workflows/scripts/README.md`, `backend/database/README.md` |
@@ -113,7 +136,7 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 uv run --env-file backend/keys.env backend/run_server.py
 cd frontend && npm run dev
 
-uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
+uv run --env-file backend/keys.env pwc cron health
 ```
 
 **`backend/keys.env` (names only)** — `PWC_DB_*`, `PWC_GITHUB_TOKEN`, `PWC_SEMANTIC_SCHOLAR_API_KEY`, `PWC_HF_TOKEN`, `PWC_OPENROUTER_API_KEY`

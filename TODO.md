@@ -29,3 +29,7 @@
 - Add Artificial Analysis evals using an API key
 - Build agents which post trending stuff on Reddit, X, LinkedIn etc.
 - Add papers for Gemini 3 Deep Think, Qwen3.7 Max, Gemini 3.5 Flash, Muse Spark, Grok 4.3 and add the missing external CritPt evals from Artificial Analysis
+- Add video restoration benchmarks and evals, starting from https://paperswithcode.co/paper/2606.09516
+- Add all evals of https://kaldir.vc.in.tum.de/scannet_benchmark/, see Github thread: https://github.com/YilmazKadir/Volt/issues/6
+- Add all evals for papers of Face Verification and Face Recognition, based on these papers: 1503.03832, 1801.07698, 2109.09416, 2203.11593, 2203.15565, 2204.00964, 2205.12010, 2307.01838, 2308.04995, 2409.11816
+- List top trends on each task page, e.g. what are new papers doing

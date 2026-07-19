@@ -1,8 +1,8 @@
-# PapersWithCode - Database Schema & UML (Live, May 2026)
+# PapersWithCode - Database Schema & UML (Live, July 2026)
 
 ## Overview
 
-This document reflects the live PostgreSQL schema of the PapersWithCode backend as of May 2026. It is derived directly from the database (schema-only dump and table descriptions) and should be treated as the source of truth for development.
+This document reflects the current PostgreSQL schema of the PapersWithCode backend as of July 2026. It is kept aligned with the SQLAlchemy models and migrations; verify against the database before making production schema changes.
 
 Key capabilities:
 - Leaderboards defined by triples: (task, dataset, metric)
@@ -216,20 +216,49 @@ Key capabilities:
 └──────────────────────────────┘
 ```
 
+## Additional current tables
+
+The main diagram above predates a few tables added for Hugging Face trending,
+conference scheduling, and account preferences:
+
+```text
+HF_ARTIFACTS
+  id (PK), kind (model|dataset|space), repo_id, url
+  trending_score, likes, downloads, fetched_at, created_at, updated_at
+  UNIQUE(kind, repo_id)
+
+PAPER_HF_ARTIFACTS
+  paper_id (FK papers), hf_artifact_id (FK hf_artifacts), created_at
+  PK(paper_id, hf_artifact_id)
+
+CONFERENCE_DEADLINES
+  id (PK), conference_id (FK conferences), deadline_type, label
+  deadline_at, timezone, created_at, updated_at
+
+USER_PREFERENCES
+  hf_username (PK), hide_closed_source_evals, created_at, updated_at
+```
+
 ## Core Tables (DDL highlights)
 
 The following summarizes the live structure. See the database for full DDL.
 
 ### PAPERS
 - id (PK), title, abstract
+- source (arxiv|external), source_url (required for external rows)
 - arxiv_id, version, is_latest_version
 - date_published, proceeding, conference, conference_url_abs, conference_url_pdf
 - citation_count, semantic_scholar_id, citation_updated_at
 - primary_category, all_categories[], urls_extracted
+- methods_scanned_at, thumbnail_url
+- hf_models[], hf_datasets[], hf_spaces[]
+- trending_score, trending_score_updated_at, github_trending_component
+- hf_trending_component, hf_artifacts_scanned_at
 - tldr (TEXT, NULL — frontend v2 TL;DR panel; no generation pipeline yet)
 - num_pages (INTEGER, NULL — source PDF page count; not surfaced in UI yet)
 - created_at, updated_at
 - Indexes: title/abstract full-text, arxiv_id, date, conference, latest flag, version, citation count, categories, urls_extracted (incl. partial cs.% index)
+- **Submission provenance:** original paper creation does not currently store a submitter. External papers can be created through the public submit flow or the external-resource ingestion endpoints, but `papers` has no `submitted_by_hf_username`/`submitted_via` fields and there is no paper-submission audit table. `pending_paper_edits.hf_username` only tracks later metadata edit submissions, not who originally indexed a paper.
 
 ### AUTHORS
 - id (PK), name (CHECK name not empty)
@@ -242,6 +271,7 @@ The following summarizes the live structure. See the database for full DDL.
 ### TASKS
 - id (PK), name, description, slug (UNIQUE)
 - parent_id (FK self), area_id (FK), level (default 0)
+- research_trends (JSONB), is_visible (bool)
 - keywords, image_url, image_credit, useful_leaderboards
 - image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed hero image bytes; ORM defers `image_data` so list queries never load the blob; `image_mime_type` doubles as the "has DB image" flag
 - created_at, updated_at
@@ -261,7 +291,7 @@ The following summarizes the live structure. See the database for full DDL.
 
 ### METHODS
 - id (PK), name, full_name, description, introduced_year
-- source_url, source_title, code_snippet_url
+- source_paper_id (FK papers), source_url, source_title, code_snippet_url
 - collection_name, collection_description, collection_parent
 - area_id (FK), image_url, image_credit, slug (UNIQUE), keywords
 - image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed figure bytes (deferred in ORM); served at `/api/v1/methods/{slug}/image` when populated
@@ -287,7 +317,8 @@ The following summarizes the live structure. See the database for full DDL.
 - id (PK)
 - paper_id (FK), task_id (FK), dataset_id (FK)
 - model_name, harness (optional), methodology, metrics (JSONB)
-- uses_additional_data (bool), best_rank, best_metric (string), evaluated_on, external_source_url
+- uses_additional_data (bool), is_open (bool), best_rank, best_metric (string)
+- evaluated_on, external_source_url
 - num_parameters (BIGINT, NULL — raw model parameter count, e.g. 7000000000 for a 7B model; non-negative CHECK)
 - hf_model_url (TEXT, NULL — Hugging Face model page for the evaluated model, e.g. https://huggingface.co/MiniMaxAI/MiniMax-M3; CHECK must start with https://huggingface.co/)
 - created_at, updated_at
@@ -333,13 +364,20 @@ The following summarizes the live structure. See the database for full DDL.
 - url, start_date, end_date, venue, location, description
 - image_url, image_credit — external fallback URLs / attribution
 - image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed hero bytes (deferred in ORM); served at `/api/v1/conferences/{slug}/image` when populated
+- hf_url, tier, tags[], country, city
 - created_at, updated_at
 - Indexes: slug, year DESC
 
 ### PAPER_CONFERENCES
-- paper_id (FK papers ON DELETE CASCADE), conference_id (FK conferences ON DELETE CASCADE), source VARCHAR(16) DEFAULT 'manual'
+- paper_id (FK papers ON DELETE CASCADE), conference_id (FK conferences ON DELETE CASCADE), source VARCHAR(16) DEFAULT 'manual', award
 - PK (paper_id, conference_id)
 - Indexes: conference_id, paper_id
+
+### CONFERENCE_DEADLINES
+- id (PK), conference_id (FK conferences ON DELETE CASCADE)
+- deadline_type, label, deadline_at, timezone
+- created_at, updated_at
+- Indexes: conference_id, deadline_at
 
 ### ORGANIZATIONS
 - id (PK), name, slug (UNIQUE NOT NULL)
@@ -358,7 +396,7 @@ The following summarizes the live structure. See the database for full DDL.
 - paper_id BIGINT (FK papers, ON DELETE CASCADE)
 - hf_username VARCHAR(255) — lowercased HF username from `pwc_session`
 - is_author BOOLEAN DEFAULT FALSE — true when submitter is a linked author of `paper_id` at submit time
-- edit_type VARCHAR(32) CHECK in [tasks, methods, evaluations, repositories, project_pages]
+- edit_type VARCHAR(32) CHECK in [tasks, methods, evaluations, repositories, project_pages, source_url, hf_artifacts, new_task, new_method, new_benchmark, new_metric]
 - proposed_payload JSONB — shape matches the matching admin mutation endpoint
 - current_payload JSONB NULL — snapshot of live data at submit time for review diffing
 - status VARCHAR(16) DEFAULT 'pending' CHECK in [pending, approved, rejected]
@@ -373,14 +411,16 @@ The following summarizes the live structure. See the database for full DDL.
 - PAPER_METHODS(paper_id, method_id) PK(paper_id, method_id)
 - PAPER_DATASETS(paper_id, dataset_id) PK(paper_id, dataset_id)
 - PAPER_REPOSITORIES(paper_id, repository_id, is_official) PK(paper_id, repository_id)
+- PAPER_HF_ARTIFACTS(paper_id, hf_artifact_id, created_at) PK(paper_id, hf_artifact_id)
 - PAPER_PROJECT_PAGES(paper_id, project_page_id) PK(paper_id, project_page_id)
 - PAPER_RELATIONS(source_paper_id, target_paper_id, created_at) PK(source_paper_id, target_paper_id) — directed lineage edges between papers. `source_paper_id` is the predecessor (earlier) paper and `target_paper_id` is the successor (follow-up) paper, e.g. DINOv2 -> DINOv3. CHECK constraint prevents self-edges; both FKs cascade on paper delete. Many-to-many in both directions: a paper can have multiple successors and multiple predecessors.
 - TASK_SISTER_TASKS(task_id, sister_task_id, display_order, created_at) PK(task_id, sister_task_id) — explicit, ordered sister-task relationships rendered on a task page's sidebar. `task_id` is the page; `sister_task_id` is a task shown in that page's "Sister Tasks" list, sorted by `display_order` (ascending, 0 first). Directed and NOT automatically symmetric (configuring B on A's page does not add A to B's page). CHECK prevents self-edges; both FKs cascade on task delete. This replaces the previous behavior of deriving sisters from every visible task sharing the same `area_id`.
-- PAPER_CONFERENCES(paper_id, conference_id, source) PK(paper_id, conference_id) — links papers to normalized conference rows. `source` is `manual` (import scripts / admin) or `auto`. Display tags such as "CVPR 2026" on paper pages still use the denormalized `papers.proceeding` column alongside this junction.
+- PAPER_CONFERENCES(paper_id, conference_id, source, award) PK(paper_id, conference_id) — links papers to normalized conference rows. `source` is `manual` (import scripts / admin) or `auto`; `award` stores an optional conference award label. Display tags such as "CVPR 2026" on paper pages still use the denormalized `papers.proceeding` column alongside this junction.
 - PAPER_ORGANIZATIONS(paper_id, organization_id, source) PK(paper_id, organization_id) — links papers to normalized organization rows (e.g. NVIDIA). `source` is `manual` (admin) or an importer tag such as `hf_org_papers`. Powers org logo tags on paper pages and organization pages like `/nvidia`.
 - TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 - USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
+- USER_PREFERENCES(hf_username, hide_closed_source_evals, created_at, updated_at) PK(hf_username) — per-account display preferences.
 - PENDING_PAPER_EDITS(id, paper_id, hf_username, is_author, edit_type, proposed_payload, current_payload, status, admin_note, reviewed_by, created_at, updated_at, reviewed_at) PK(id) — non-admin edit submissions awaiting admin approval. Approval applies `proposed_payload` through the same backend mutation services that admin direct edits use; rejected/pending rows never affect live data.
 
 **Note:** TASK_DATASETS owns task-specific *display metadata* (featured ordering, harness support) for a (task, dataset) pair. TASK_DATASET_METRICS defines the actual leaderboards by adding the metric dimension. Together they replace the legacy single-table design: TASK_DATASETS is what task pages render benchmark cards from, and TASK_DATASET_METRICS is what evaluation create/update validates against. Both tables key on `task_id`, which means subtasks (child tasks under `tasks.parent_id`) own benchmarks and leaderboards independently from their parent.
@@ -399,7 +439,7 @@ The following summarizes the live structure. See the database for full DDL.
 
 ## Functions & Triggers
 
-- update_updated_at_column() — BEFORE UPDATE sets updated_at on: areas, authors, conferences, datasets, methods, papers, tasks, evaluations
+- update_updated_at_column() — BEFORE UPDATE sets updated_at on: areas, authors, conferences, conference_deadlines, datasets, methods, papers, tasks, evaluations
 - project_pages_api_{insert,update,delete}() — maintain project_pages_normalized via view triggers
 - calculate_star_velocity(repository_id, hours_lookback=24)
 - calculate_trending_score(repository_id, hours_lookback=24, recency_weight=2.0)
@@ -411,9 +451,12 @@ The following summarizes the live structure. See the database for full DDL.
 - **Subtasks (task hierarchy):** subtasks are first-class child rows in TASKS connected via `parent_id`. Each subtask owns its own task pages, benchmarks (TASK_DATASETS rows), leaderboards (TASK_DATASET_METRICS rows), and EVALUATIONS. To roll up subtasks for a parent task page, the API exposes `?include_descendants=true` on `/api/v1/datasets/?task=...` and `/api/v1/evaluations/?task_id=...`. Writes always target the most-specific child task so rank semantics stay clean.
 - **Project pages:** is_official is stored on PROJECT_PAGES (not in the junction); associate via PAPER_PROJECT_PAGES.
 - **Repositories:** single row per URL (normalized), paper association via PAPER_REPOSITORIES with per-paper is_official; trending fields support hourly trending calculations backed by REPOSITORY_STAR_HISTORY.
-- **User bookmarks:** persisted per HF account in USER_BOOKMARKS; written exclusively through `/api/v1/me/bookmarks` endpoints which require the `pwc_session` cookie.
+- **User preferences and bookmarks:** persisted per HF account in USER_PREFERENCES and USER_BOOKMARKS; written through `/api/v1/me/preferences` and `/api/v1/me/bookmarks`, which require the `pwc_session` cookie.
 - **Pending paper edits:** non-admin edit submissions for paper-page surfaces (tasks, methods, evaluations, repositories, project pages) are written to PENDING_PAPER_EDITS through `/api/v1/me/paper-edits`. Admin direct edits bypass this table and continue mutating live data through the existing `/api/v1/papers/{id}/...` and `/api/v1/evaluations/...` admin endpoints. Approval of a pending row replays `proposed_payload` through the shared mutation services so live data only changes after admin confirmation.
+- **Original paper submissions:** unlike pending edits, original paper creation is not attributed to a user today. `/api/v1/papers/submit` and `/api/v1/papers/external/from-url` create or reuse `papers` rows without persisting the authenticated Hugging Face username, request source, or raw submission payload. Add a dedicated submission audit table or nullable provenance columns before relying on submitter identity for moderation, attribution, or abuse analysis.
 - **Paper lineage:** directed predecessor/successor edges between papers live in PAPER_RELATIONS (`source_paper_id` -> `target_paper_id`, predecessor -> successor). Surfaced on the paper detail API via `predecessor_papers` and `successor_papers`, and rendered as the lineage banner on the paper detail view (e.g. DINOv2 shows DINOv3 as the follow-up; DINOv3 shows DINOv2 as the predecessor).
 - **Entity images (tasks, methods, conferences):** curated hero/figure images live in SQL (`image_data` + `image_mime_type`), not in `frontend/public`. Seed PNGs for import live under `data/entity_image_seeds/{tasks,methods,conferences}/` and are loaded with `backend/database/import_entity_image.py` or bulk backfill via `run_add_entity_image_data.py`. Browser-only assets (favicons, `og-image.png`, logos) remain static under `frontend/public`. Datasets and papers still use URL columns (`image_url`, `thumbnail_url`, etc.) — they are not DB-blob backed today.
 
-This document is synchronized with the live schema via schema dump and table descriptions.
+Keep this document aligned with `backend/models/database.py` and the migrations in
+`backend/database/migrations/`. The live database remains authoritative when
+models and migrations disagree.

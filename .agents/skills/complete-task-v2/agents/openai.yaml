@@ -1,0 +1,4 @@
+interface:
+  display_name: "Complete Task v2"
+  short_description: "Research-first task completion"
+  default_prompt: "Use $complete-task-v2 to complete this Papers With Code task with research-backed benchmarks, add-evals workers, and verify-evals audits."

@@ -51,7 +51,7 @@ Be careful about provenance. The source paper is the paper that introduced, name
 - Query `papers` by arXiv id or PapersWithCode paper URL.
 - If no local paper row exists for a non-ArXiv resource, use the `add-external-paper` skill first, then return here.
 - If the user says there is no source paper, set `source_url`/`source_title` and keep `source_paper_id = NULL`.
-- For model-family follow-ups (GPT-2 → GPT-3, Conformer → Fast Conformer), use `link-paper-lineage` when the user also wants predecessor/successor paper links.
+- For model-family follow-ups (GPT-2 → GPT-3, Conformer → Fast Conformer), use `pwc paper lineage add` when the user also wants predecessor/successor paper links.
 
 ### 3. Choose metadata
 

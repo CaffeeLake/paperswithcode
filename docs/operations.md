@@ -6,7 +6,7 @@ All jobs live in `.github/workflows/scripts/` and are executed with `uv run --en
 
 | Schedule | Script | Purpose |
 | --- | --- | --- |
-| `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh star counts for official repositories (batch size tuned for rate limits). |
+| `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh fresh and weekly official repositories concurrently using separate GitHub accounts. |
 | `15 * * * *` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
 | `30 * * * *` | `.github/workflows/scripts/hourly/update_citations.py` | Pull citation counts from Semantic Scholar for ArXiv papers. |
 | `45 * * * *` | `.github/workflows/scripts/hourly/extract_urls.py` | AI-assisted GitHub/project URL extraction for papers lacking resources. |

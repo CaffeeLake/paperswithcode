@@ -1,36 +1,31 @@
-# PapersWithCode Documentation
+# PapersWithCode documentation
 
-This folder contains the working documentation for the recreated PapersWithCode stack.  The goal of the refresh is to keep a small set of living documents that match the codebase as it exists today (November 2025).
+Keep documentation short and tied to a workflow. The code, FastAPI `/docs`, and
+the database schema are the source of truth for implementation details.
 
-## How To Navigate
+## Living guides
 
-- `backend-api.md` – current FastAPI surface area, routers, and service conventions.
-- `rest-api-catalog.md` – per-router endpoint tables and example `curl` calls.
-- `data-workflows.md` – dataset + evaluation ingestion, metric rules, and validation tooling.
-- `database.md` – connection details, security posture, and day‑to‑day SQL operations.
-- `schema-and-data-files.md` – high-level table list, legacy dumps, initial import commands.
-- `deployment.md` – server topology, DNS/HTTPS setup, and runtime verification.
-- `frontend.md` – major UI features (task leaderboards, admin editing, LaTeX titles, trending view).
-- `keyword-matching.md` – shared keyword matching module and keyword management API.
-- `operations.md` – CRON jobs, monitoring dashboard, trending pipeline, and PDF validation.
-- `automation-reference.md` – CRON detail, GitHub Actions triggers, GenAI URL extraction.
-- `repository-layout.md` – full repo tree and frontend entrypoints.
-- `development-guide.md` – backend/frontend patterns, testing, rate limits, RAM notes.
-- `DATABASE_SCHEMA_UML.md` – authoritative schema dump for quick reference.
+- `development-guide.md` — conventions and local checks.
+- `data-workflows.md` — datasets, evaluations, metrics, and task hierarchy.
+- `database.md` — database access and security.
+- `deployment.md` — production networking and release checks.
+- `operations.md` — cron, monitoring, and admin review.
+- `keyword-matching.md` — keyword behavior and bulk relinking.
+- `DATABASE_SCHEMA_UML.md` — current schema reference.
 
-Repository root **`AGENTS.md`** is a short index; deeper material lives in the files above.
+The root `README.md` covers setup. `AGENTS.md` contains the short contributor
+quickstart. Cron-specific implementation details live beside the cron scripts in
+`.github/workflows/scripts/README.md`.
 
 ## Writing Guidelines
 
-- Prefer updating an existing topic doc (or `AGENTS.md`’s table of links) over adding unrelated new files.
-- Keep examples executable (`uv run --env-file backend/keys.env …`, `npm run …`, etc.).
-- Cross-link code paths using backticks (e.g., `backend/services/evaluation_service.py`).
-- Record dates when process-sensitive instructions change.
+- Prefer code and tests over explanatory prose.
+- Keep only instructions that are not obvious from the code or command help.
+- Keep examples executable (`uv run --env-file backend/keys.env …`, `npm run …`).
+- Link to the owning code path instead of duplicating its implementation.
 
 ## Quick Links
 
-- API docs (live): `http://localhost:8000/docs`
-- Frontend dev server: `http://localhost:8080`
-- Production domain (after DNS/SSL): `https://paperswithcode.co`
-
-For an at-a-glance view of the platform, read `deployment.md` first, then `operations.md`.
+- API docs (local): `http://localhost:8000/docs`
+- Frontend dev server: `http://localhost:5173`
+- Production: `https://paperswithcode.co`
