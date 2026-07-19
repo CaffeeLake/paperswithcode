@@ -358,7 +358,9 @@ def get_task_papers(
         "date_published",
         description="Field to order by: date_published, title, citation_count, trending",
     ),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_dir: str = Query(
+        "desc", pattern="^(asc|desc)$", description="Order direction"
+    ),
     include_resources: bool = Query(
         False, description="Include repositories and tasks"
     ),

@@ -34,7 +34,7 @@ def get_areas(
     name: Optional[str] = Query(None, description="Filter areas by part of the name"),
     ordering: Optional[str] = Query(
         None,
-        regex="^-?(name|created_at)$",
+        pattern="^-?(name|created_at)$",
         description="Which field to use when ordering the results (prefix with - for descending)",
     ),
     db: Session = Depends(get_database_session),

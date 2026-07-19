@@ -14,10 +14,8 @@ from backend.models.api import (
     Datasets,
     DatasetCreateRequest,
     DatasetUpdateRequest,
-    DatasetMetrics,
     DatasetMetricAddRequest,
     DatasetMetricSetRequest,
-    DatasetMetricLink,
 )
 from backend.services.dataset_service import DatasetService
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
@@ -681,110 +679,6 @@ def remove_metric_from_leaderboard(
         service.remove_metric_from_leaderboard(task_id_int, dataset_id_int, metric_name)
         return None
 
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-# DEPRECATED: Old dataset-level metric endpoints (backward compatibility)
-# These endpoints apply operations to all tasks linked to the dataset
-# Use the new /datasets/{id}/tasks/{task_id}/metrics endpoints instead
-
-
-@router.get("/{dataset_id}/metrics", response_model=DatasetMetrics, deprecated=True)
-def get_dataset_metrics_deprecated(
-    dataset_id: str,
-    db: Session = Depends(get_database_session),
-):
-    """
-    DEPRECATED: Get all allowed metrics for a dataset (across all tasks).
-
-    **This endpoint is deprecated.** Use `/datasets/{dataset_id}/tasks/{task_id}/metrics` instead.
-
-    Leaderboards are now defined by (task, dataset, metric) triples in the `task_dataset_metrics` table.
-    This endpoint aggregates metrics from all task-dataset pairs for backward compatibility.
-
-    **Migration:** Update your code to use task-specific endpoints:
-    - `/api/v1/datasets/6/tasks/12/metrics` for Object Detection on COCO
-
-    **Note:** This aggregation may not reflect the actual leaderboard configuration for specific tasks.
-    """
-    logger.warning(
-        f"DEPRECATED endpoint called: GET /datasets/{dataset_id}/metrics. "
-        "Use /datasets/{dataset_id}/tasks/{{task_id}}/metrics instead."
-    )
-
-    try:
-        # Parse dataset_id
-        try:
-            dataset_id_int = int(dataset_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid dataset ID. Must be an integer."
-            )
-
-        # Get all tasks linked to this dataset
-        from backend.models.database import TaskDataset
-
-        task_ids = (
-            db.query(TaskDataset.task_id)
-            .filter(TaskDataset.dataset_id == dataset_id_int)
-            .distinct()
-            .all()
-        )
-
-        if not task_ids:
-            # No tasks linked, return empty metrics
-            from backend.models.database import Dataset as DBDataset
-
-            dataset = db.query(DBDataset).filter(DBDataset.id == dataset_id_int).first()
-            if not dataset:
-                raise HTTPException(status_code=404, detail="Dataset not found")
-
-            return DatasetMetrics(
-                dataset_id=str(dataset_id_int),
-                dataset_name=dataset.name,
-                metrics=[],
-            )
-
-        # Get metrics from all task-dataset pairs
-        service = LeaderboardMetricService(db)
-        all_metrics = {}
-
-        for (task_id,) in task_ids:
-            leaderboard_metrics = service.get_leaderboard_metrics(
-                task_id, dataset_id_int
-            )
-            for metric in leaderboard_metrics["metrics"]:
-                metric_name = metric["metric_name"]
-                if metric_name not in all_metrics:
-                    all_metrics[metric_name] = metric
-
-        # Convert to old format
-        from backend.models.database import Dataset as DBDataset
-
-        dataset = db.query(DBDataset).filter(DBDataset.id == dataset_id_int).first()
-
-        return DatasetMetrics(
-            dataset_id=str(dataset_id_int),
-            dataset_name=dataset.name if dataset else "Unknown",
-            metrics=[
-                DatasetMetricLink(
-                    dataset_id=str(dataset_id_int),
-                    metric_id=m["metric_id"],
-                    metric_name=m["metric_name"],
-                    metric_direction=m["metric_direction"],
-                    created_at=m["created_at"],
-                )
-                for m in all_metrics.values()
-            ],
-        )
-
-    except HTTPException:
-        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

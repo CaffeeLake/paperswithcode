@@ -35,10 +35,12 @@ def get_authors(
     ),
     order_by: str = Query(
         "paper_count",
-        regex="^(name|paper_count|created_at)$",
+        pattern="^(name|paper_count|created_at)$",
         description="Field to order by",
     ),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_dir: str = Query(
+        "desc", pattern="^(asc|desc)$", description="Order direction"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -151,10 +153,12 @@ def get_author_papers(
     ),
     order_by: str = Query(
         "date_published",
-        regex="^(date_published|title|citation_count)$",
+        pattern="^(date_published|title|citation_count)$",
         description="Field to order by",
     ),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_dir: str = Query(
+        "desc", pattern="^(asc|desc)$", description="Order direction"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -203,72 +207,6 @@ def get_author_papers(
 
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except DatabaseError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-# Additional endpoint for author search (alternative to using search parameter)
-@router.get(
-    "/authors/search",
-    response_model=Authors,
-    summary="Search authors by name or username",
-)
-def search_authors(
-    q: str = Query(
-        ..., min_length=2, description="Search query (minimum 2 characters)"
-    ),
-    page: int = Query(1, ge=1, description="Page number (1-based)"),
-    page_size: Optional[int] = Query(
-        50, ge=1, le=500, description="Number of authors per page"
-    ),
-    hf_users_only: bool = Query(
-        False, description="Filter to only authors with Hugging Face accounts"
-    ),
-    db: Session = Depends(get_database_session),
-):
-    """
-    Search for authors by name or Hugging Face username.
-
-    This endpoint provides advanced search functionality for finding authors
-    based on partial name matches or username searches.
-
-    **Query Parameters:**
-    - `q`: Search query (minimum 2 characters)
-    - `hf_users_only`: Limit results to authors with Hugging Face accounts
-
-    **Search Features:**
-    - Case-insensitive partial matching
-    - Searches both author names and Hugging Face usernames
-    - Results ranked by relevance and paper count
-    - Supports pagination for large result sets
-
-    **Response Format:**
-    Returns a paginated response with matching author objects, sorted by:
-    1. Exact name matches (highest priority)
-    2. Paper count (descending)
-    3. Alphabetical order
-
-    **Use Cases:**
-    - Author lookup and discovery
-    - Autocomplete functionality
-    - Research collaboration finding
-    - Academic network analysis
-
-    **Error Responses:**
-    - `400 Bad Request`: Query too short or invalid parameters
-    - `500 Internal Server Error`: Database or server error
-    """
-    try:
-        author_service = AuthorService(db)
-        return author_service.search_authors(
-            query=q,
-            page=page,
-            page_size=page_size,
-            hf_users_only=hf_users_only,
-        )
-
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:

@@ -85,7 +85,7 @@ class AuthorsAPIClient:
     ):
         """Search authors by name or username."""
         params = {
-            "q": query,
+            "search": query,
             "page": page,
             "page_size": page_size,
             "hf_users_only": hf_users_only,
@@ -93,7 +93,7 @@ class AuthorsAPIClient:
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{self.base_url}/api/v1/authors/search", params=params
+                f"{self.base_url}/api/v1/authors/", params=params
             )
             response.raise_for_status()
             return response.json()

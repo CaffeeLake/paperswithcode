@@ -24,8 +24,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
 Base = declarative_base()

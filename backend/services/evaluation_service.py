@@ -341,19 +341,6 @@ class EvaluationService:
         except Exception:
             return None, None, None, None, None, None
 
-    def _get_task_name(self, task_id: int) -> Optional[str]:
-        """
-        Get task name for a given task ID.
-
-        Returns:
-            Task name or None if not found
-        """
-        try:
-            task = self.db.query(DBTask).filter(DBTask.id == task_id).first()
-            return task.name if task else None
-        except Exception:
-            return None
-
     def _get_task_name_and_slug(
         self, task_id: int
     ) -> tuple[Optional[str], Optional[str]]:

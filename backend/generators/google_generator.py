@@ -83,13 +83,6 @@ class GoogleGenerator(RateLimitingMixin, Generator):
                     print(
                         f"Warning: Image URLs provided but media_utils not available: {message.image_urls}"
                     )
-                    pass
-                elif message.image_url:  # Backward compatibility
-                    # TODO: Implement image handling when media_utils is available
-                    print(
-                        f"Warning: Image URL provided but media_utils not available: {message.image_url}"
-                    )
-                    pass
 
                 # Handle image paths (new multiple images support)
                 if message.image_paths:
@@ -97,13 +90,6 @@ class GoogleGenerator(RateLimitingMixin, Generator):
                     print(
                         f"Warning: Image paths provided but media_utils not available: {message.image_paths}"
                     )
-                    pass
-                elif message.image_path:  # Backward compatibility
-                    # TODO: Implement image handling when media_utils is available
-                    print(
-                        f"Warning: Image path provided but media_utils not available: {message.image_path}"
-                    )
-                    pass
 
                 if message.pdf_path is not None:
                     # Read and upload the PDF using the File API
@@ -258,15 +244,6 @@ class GoogleGenerator(RateLimitingMixin, Generator):
             response = json.loads(response) if isinstance(response, str) else response
 
         return response, model_name
-
-    async def count_tokens(self, messages: list[Message]) -> int:
-        formatted_messages, _ = await self.format_messages(messages)
-
-        model_for_counting = self.client.GenerativeModel("gemini-1.5-flash-latest")
-        count_response = await model_for_counting.count_tokens_async(
-            contents=formatted_messages
-        )
-        return count_response.total_tokens
 
 
 if __name__ == "__main__":

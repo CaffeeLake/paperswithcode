@@ -16,17 +16,6 @@ class Message(BaseModel):
     image_urls: Optional[List[str]] = None  # Optional list of image URLs
     pdf_path: Optional[str] = None  # Optional PDF file path
 
-    # Backward compatibility properties
-    @property
-    def image_path(self) -> Optional[str]:
-        """Backward compatibility: return first image path if available."""
-        return self.image_paths[0] if self.image_paths else None
-
-    @property
-    def image_url(self) -> Optional[str]:
-        """Backward compatibility: return first image URL if available."""
-        return self.image_urls[0] if self.image_urls else None
-
 
 class Generator(ABC):
     """Abstract base class for AI generators."""

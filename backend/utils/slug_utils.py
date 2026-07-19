@@ -48,19 +48,3 @@ def slugify(text: str) -> str:
     text = text.strip("-")
 
     return text
-
-
-def generate_method_slug(method_name: str) -> str:
-    """
-    Generate a URL slug specifically for method names.
-
-    This is a specialized version of slugify for method names,
-    ensuring consistency across the application.
-
-    Args:
-        method_name: The method name to slugify
-
-    Returns:
-        URL-friendly slug for the method
-    """
-    return slugify(method_name)

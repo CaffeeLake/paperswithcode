@@ -6,11 +6,13 @@ from functools import lru_cache
 from typing import List, Literal
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings."""
+
+    model_config = SettingsConfigDict(env_file=["keys.env"], env_prefix="PWC_")
 
     # Server configuration
     host: str = Field(default="0.0.0.0", description="Host to bind the server")
@@ -192,10 +194,6 @@ class Settings(BaseSettings):
         default="",
         description="AWS secret key for bioRxiv/medRxiv requester-pays S3 PDF downloads",
     )
-
-    class Config:
-        env_file = ["keys.env"]
-        env_prefix = "PWC_"
 
     @property
     def database_url(self) -> str:

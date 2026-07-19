@@ -12,7 +12,6 @@ from sqlalchemy import func, desc, asc, or_, case, cast, String
 from backend.models.database import (
     Dataset as DBDataset,
     Evaluation as DBEvaluation,
-    PaperDataset,
     TaskDataset,
     Task as DBTask,
     Paper as DBPaper,
@@ -647,39 +646,6 @@ class DatasetService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve dataset by slug: {str(e)}")
-
-    def get_dataset_papers(
-        self, dataset_id: int, page: int = 1, page_size: int = 50
-    ) -> List[int]:
-        """
-        Get papers that use a specific dataset.
-
-        Args:
-            dataset_id: Dataset ID
-            page: Page number (1-based)
-            page_size: Number of papers per page
-
-        Returns:
-            List of paper IDs
-
-        Raises:
-            DatabaseError: If database query fails
-        """
-        try:
-            offset = (page - 1) * page_size
-
-            paper_ids = (
-                self.db.query(PaperDataset.paper_id)
-                .filter(PaperDataset.dataset_id == dataset_id)
-                .offset(offset)
-                .limit(page_size)
-                .all()
-            )
-
-            return [pid[0] for pid in paper_ids]
-
-        except Exception as e:
-            raise DatabaseError(f"Failed to retrieve papers for dataset: {str(e)}")
 
     def get_dataset_tasks(self, dataset_id: int) -> List[int]:
         """

@@ -258,21 +258,3 @@ class RateLimitingMixin(ABC):
             "minute_remaining": max(0, self.requests_per_minute - recent_requests),
             "last_reset": self.last_reset.isoformat(),
         }
-
-    def configure_rate_limits(
-        self, requests_per_minute: int = None, requests_per_day: int = None
-    ):
-        """
-        Update rate limiting configuration.
-
-        Args:
-            requests_per_minute: New per-minute limit (optional)
-            requests_per_day: New daily limit (optional)
-        """
-        if requests_per_minute is not None:
-            self.requests_per_minute = requests_per_minute
-            logger.info(f"Updated rate limit: {requests_per_minute} requests/minute")
-
-        if requests_per_day is not None:
-            self.requests_per_day = requests_per_day
-            logger.info(f"Updated rate limit: {requests_per_day} requests/day")

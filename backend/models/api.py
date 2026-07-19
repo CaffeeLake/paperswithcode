@@ -421,7 +421,7 @@ class Author(BaseModel):
 
     # Core author identification
     id: str = Field(..., description="Author ID")
-    full_name: str = Field(..., description="Author full name", alias="name")
+    full_name: str = Field(..., description="Author full name")
 
     # Hugging Face integration (our extension)
     hf_username: Optional[str] = Field(None, description="Hugging Face username")
@@ -467,7 +467,7 @@ class AuthorSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str = Field(..., description="Author ID")
-    full_name: str = Field(..., description="Author full name", alias="name")
+    full_name: str = Field(..., description="Author full name")
     hf_username: Optional[str] = Field(None, description="Hugging Face username")
     paper_count: int = Field(default=0, description="Number of papers by this author")
 
@@ -2069,57 +2069,6 @@ class KeywordUpdate(BaseModel):
     keywords: List[str] = Field(
         ..., description="List of keywords to add, remove, or replace"
     )
-
-
-# Dataset-Metric relationship models
-
-
-class DatasetMetricLink(BaseModel):
-    """
-    Response model for dataset-metric relationship.
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    dataset_id: str = Field(..., description="Dataset ID")
-    metric_id: str = Field(..., description="Metric ID")
-    metric_name: str = Field(..., description="Metric name")
-    metric_direction: str = Field(
-        ..., description="Metric direction (higher_is_better or lower_is_better)"
-    )
-    created_at: datetime = Field(
-        ..., description="When this relationship was established"
-    )
-
-    @field_validator("dataset_id", "metric_id", mode="before")
-    @classmethod
-    def ensure_string_id(cls, v):
-        """Ensure IDs are strings."""
-        if v is None:
-            return v
-        return str(v)
-
-
-class DatasetMetrics(BaseModel):
-    """
-    List of metrics allowed for a dataset.
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    dataset_id: str = Field(..., description="Dataset ID")
-    dataset_name: str = Field(..., description="Dataset name")
-    metrics: List[DatasetMetricLink] = Field(
-        ..., description="List of allowed metrics for this dataset"
-    )
-
-    @field_validator("dataset_id", mode="before")
-    @classmethod
-    def ensure_string_id(cls, v):
-        """Ensure dataset_id is a string."""
-        if v is None:
-            return v
-        return str(v)
 
 
 class DatasetMetricAddRequest(BaseModel):

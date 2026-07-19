@@ -21,18 +21,6 @@ class DatabaseError(PapersWithCodeAPIError):
     pass
 
 
-class ValidationError(PapersWithCodeAPIError):
-    """Raised when input validation fails."""
-
-    pass
-
-
-class ArXivError(PapersWithCodeAPIError):
-    """Raised when ArXiv-related operations fail."""
-
-    pass
-
-
 class ThumbnailGenerationError(PapersWithCodeAPIError):
     """Raised when thumbnail generation fails."""
 

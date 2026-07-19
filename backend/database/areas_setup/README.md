@@ -72,7 +72,6 @@ Implements business logic for area operations:
 - **`get_areas()`**: List areas with pagination, filtering, and sorting
 - **`get_area_by_id()`**: Retrieve a specific area by ID
 - **`search_areas()`**: Full-text search in area names and descriptions
-- **`get_area_task_count()`**: Get the number of tasks for an area
 
 ### 4. API Router (`backend/routers/areas.py`)
 

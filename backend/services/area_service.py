@@ -286,26 +286,3 @@ class AreaService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve areas with tasks: {str(e)}")
-
-    def get_area_task_count(self, area_id: int) -> int:
-        """
-        Get the number of tasks associated with an area.
-
-        Args:
-            area_id: The area ID
-
-        Returns:
-            Task count
-
-        Raises:
-            DatabaseError: If database query fails
-        """
-        try:
-            return (
-                self.db.query(func.count(DBTask.id))
-                .filter(DBTask.area_id == area_id)
-                .scalar()
-                or 0
-            )
-        except Exception as e:
-            raise DatabaseError(f"Failed to get task count for area: {str(e)}")

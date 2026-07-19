@@ -7,7 +7,9 @@ to ensure they work correctly with the database and return proper responses.
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import BigInteger, create_engine
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -19,6 +21,18 @@ from backend.models.database import (
     PaperAuthor,
 )
 from backend.database.connection import get_database_session
+
+
+@compiles(BigInteger, "sqlite")
+def _compile_bigint_sqlite(_element, _compiler, **_kw):
+    """SQLite needs INTEGER primary keys for autoincrement behavior."""
+    return "INTEGER"
+
+
+@compiles(ARRAY, "sqlite")
+@compiles(JSONB, "sqlite")
+def _compile_postgres_container_sqlite(_element, _compiler, **_kw):
+    return "TEXT"
 
 
 # Test database setup
@@ -191,7 +205,7 @@ def test_get_author_papers(client, sample_authors):
 
 def test_search_authors(client, sample_authors):
     """Test searching authors."""
-    response = client.get("/api/v1/authors/search?q=John")
+    response = client.get("/api/v1/authors/?search=John")
 
     assert response.status_code == 200
     data = response.json()
@@ -204,7 +218,7 @@ def test_search_authors(client, sample_authors):
 
 def test_search_authors_by_username(client, sample_authors):
     """Test searching authors by Hugging Face username."""
-    response = client.get("/api/v1/authors/search?q=alicej")
+    response = client.get("/api/v1/authors/?search=alicej")
 
     assert response.status_code == 200
     data = response.json()
@@ -215,11 +229,11 @@ def test_search_authors_by_username(client, sample_authors):
     assert found_alice
 
 
-def test_search_authors_min_length(client, sample_authors):
-    """Test search query minimum length validation."""
-    response = client.get("/api/v1/authors/search?q=a")
+def test_search_authors_single_character(client, sample_authors):
+    """Test that the canonical author filter accepts a single character."""
+    response = client.get("/api/v1/authors/?search=a")
 
-    assert response.status_code == 422  # Validation error
+    assert response.status_code == 200
 
 
 def test_authors_ordering(client, sample_authors):

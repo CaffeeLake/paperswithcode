@@ -51,7 +51,9 @@ def get_repositories(
         description="Filter by data source (pwc_archive, ai_extraction, manual, etc.)",
     ),
     order_by: str = Query("num_stars", description="Field to order by"),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_dir: str = Query(
+        "desc", pattern="^(asc|desc)$", description="Order direction"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -233,7 +235,9 @@ def get_project_pages(
         description="Filter by data source (pwc_archive, ai_extraction, manual, etc.)",
     ),
     order_by: str = Query("created_at", description="Field to order by"),
-    order_dir: str = Query("desc", regex="^(asc|desc)$", description="Order direction"),
+    order_dir: str = Query(
+        "desc", pattern="^(asc|desc)$", description="Order direction"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """

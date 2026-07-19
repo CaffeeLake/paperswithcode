@@ -84,17 +84,3 @@ def normalize_github_url(url: str) -> Optional[str]:
         return f"https://github.com/{owner.lower()}/{name.lower()}"
 
     return None
-
-
-def is_valid_github_url(url: str) -> bool:
-    """
-    Check if URL is a valid GitHub repository URL.
-
-    Args:
-        url: URL to validate
-
-    Returns:
-        True if valid GitHub repository URL, False otherwise
-    """
-    owner, name = parse_github_url(url)
-    return owner is not None and name is not None

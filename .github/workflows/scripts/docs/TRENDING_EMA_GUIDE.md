@@ -174,18 +174,10 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m script
 
 ### Service Methods
 
-The `RepositoryService` provides methods for working with trending scores:
+`RepositoryService` exposes repository star history for operational inspection:
 
 ```python
 from backend.services.repository_service import RepositoryService
-
-# Get trending repositories
-trending_repos = repo_service.get_trending_repositories(
-    page=1,
-    page_size=50,
-    min_score=0.1,  # Minimum 0.1 stars/hour
-    max_age_days=180  # Only papers from last 6 months
-)
 
 # Get star history for a repository
 history = repo_service.get_repository_star_history(

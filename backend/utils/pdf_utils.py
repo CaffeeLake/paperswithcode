@@ -1,5 +1,5 @@
-from typing import List, Generator, Callable, Any, TypeVar
-from contextlib import contextmanager, asynccontextmanager
+from typing import List, Callable, Any, TypeVar
+from contextlib import asynccontextmanager
 import asyncio
 import aiohttp
 import tempfile
@@ -45,33 +45,6 @@ def extract_text_from_pdf(pdf_path: str, num_pages: int = 2) -> str:
         text += page.extract_text()
 
     return text
-
-
-@contextmanager
-def pdf_to_images(
-    pdf_path: str, pages: List[int] = [1, 2]
-) -> Generator[List[str], None, None]:
-    """
-    Convert PDF pages to images.
-    """
-    temp_files = []
-    try:
-        # Convert PDF pages to images
-        images = convert_from_path(pdf_path, first_page=pages[0], last_page=pages[-1])
-
-        # Create temporary files for each image
-        for i, image in enumerate(images):
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                image.save(temp_file.name, "PNG")
-                temp_files.append(temp_file.name)
-                print(f"Page {pages[i]} saved temporarily at: {temp_file.name}")
-
-        yield temp_files
-    finally:
-        # Clean up temporary files
-        for temp_file in temp_files:
-            os.unlink(temp_file)
-            print(f"Temporary file {temp_file} has been deleted.")
 
 
 def extract_hyperlinks_from_pdf(pdf_path):

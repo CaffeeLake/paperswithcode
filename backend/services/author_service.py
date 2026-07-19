@@ -5,7 +5,7 @@ This service provides methods for retrieving and managing author data,
 including pagination, filtering, and paper relationships.
 """
 
-from typing import Optional, List
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
@@ -158,6 +158,8 @@ class AuthorService:
 
             return Author(**author_dict)
 
+        except PaperNotFoundError:
+            raise
         except ValueError:
             raise PaperNotFoundError(f"Invalid author ID: {author_id}")
         except Exception as e:
@@ -253,6 +255,8 @@ class AuthorService:
                 results=papers,
             )
 
+        except PaperNotFoundError:
+            raise
         except ValueError:
             raise PaperNotFoundError(f"Invalid author ID: {author_id}")
         except Exception as e:
@@ -337,170 +341,3 @@ class AuthorService:
 
         except Exception as e:
             raise DatabaseError(f"Failed to search authors: {str(e)}")
-
-    def get_authors_for_paper(self, paper_id: int) -> List[dict]:
-        """
-        Get authors for a specific paper with their ordering.
-
-        Args:
-            paper_id: The paper ID
-
-        Returns:
-            List of author dictionaries with ordering information
-
-        Raises:
-            DatabaseError: If database query fails
-        """
-        try:
-            results = (
-                self.db.query(DBAuthor, PaperAuthor.author_order)
-                .join(PaperAuthor, DBAuthor.id == PaperAuthor.author_id)
-                .filter(PaperAuthor.paper_id == paper_id)
-                .order_by(PaperAuthor.author_order)
-                .all()
-            )
-
-            authors = []
-            for db_author, author_order in results:
-                author_dict = {
-                    "id": str(db_author.id),
-                    "full_name": db_author.name,
-                    "hf_username": db_author.hf_username,
-                    "hf_id": db_author.hf_id,
-                    "hf_avatar_url": db_author.hf_avatar_url,
-                    "hf_status": db_author.hf_status,
-                    "hf_is_pro": db_author.hf_is_pro or False,
-                    "author_order": author_order,
-                }
-                authors.append(author_dict)
-
-            return authors
-
-        except Exception as e:
-            raise DatabaseError(f"Failed to get authors for paper: {str(e)}")
-
-    def add_author(self, author_data: dict) -> Optional[int]:
-        """
-        Add a new author to the database.
-
-        Args:
-            author_data: Dictionary containing author information with keys:
-                - name: Author full name (required)
-                - hf_username: Hugging Face username (optional)
-                - hf_id: Hugging Face ID (optional)
-                - hf_avatar_url: Hugging Face avatar URL (optional)
-                - hf_status: Hugging Face status (optional)
-                - hf_is_pro: Whether user has HF Pro (optional)
-
-        Returns:
-            Author ID if successful, None if author already exists or on error
-        """
-        try:
-            # Check if author already exists by name
-            existing = (
-                self.db.query(DBAuthor)
-                .filter(DBAuthor.name == author_data["name"])
-                .first()
-            )
-
-            if existing:
-                return None  # Author already exists
-
-            # Create new author
-            db_author = DBAuthor(
-                name=author_data["name"],
-                hf_username=author_data.get("hf_username"),
-                hf_id=author_data.get("hf_id"),
-                hf_avatar_url=author_data.get("hf_avatar_url"),
-                hf_status=author_data.get("hf_status"),
-                hf_is_pro=author_data.get("hf_is_pro", False),
-            )
-
-            self.db.add(db_author)
-            self.db.commit()
-            self.db.refresh(db_author)
-
-            return db_author.id
-
-        except Exception as e:
-            self.db.rollback()
-            print(f"Error adding author {author_data.get('name', 'unknown')}: {e}")
-            return None
-
-    def update_author_hf_data(self, author_id: int, hf_data: dict) -> bool:
-        """
-        Update author's Hugging Face integration data.
-
-        Args:
-            author_id: Database author ID
-            hf_data: Dictionary of HF fields to update
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            db_author = self.db.query(DBAuthor).filter(DBAuthor.id == author_id).first()
-            if not db_author:
-                return False
-
-            # Update allowed HF fields
-            allowed_fields = {
-                "hf_username",
-                "hf_id",
-                "hf_avatar_url",
-                "hf_status",
-                "hf_is_pro",
-            }
-
-            for field, value in hf_data.items():
-                if field in allowed_fields and hasattr(db_author, field):
-                    setattr(db_author, field, value)
-
-            self.db.commit()
-            return True
-
-        except Exception as e:
-            self.db.rollback()
-            print(f"Error updating author HF data {author_id}: {e}")
-            return False
-
-    def get_author_stats(self) -> dict:
-        """
-        Get statistics about authors in the database.
-
-        Returns:
-            Dictionary with author statistics
-        """
-        try:
-            total_authors = self.db.query(DBAuthor).count()
-            hf_authors = (
-                self.db.query(DBAuthor).filter(DBAuthor.hf_username.isnot(None)).count()
-            )
-            hf_pro_authors = self.db.query(DBAuthor).filter(DBAuthor.hf_is_pro).count()
-
-            # Get top authors by paper count
-            top_authors = (
-                self.db.query(
-                    DBAuthor.name, func.count(PaperAuthor.paper_id).label("paper_count")
-                )
-                .join(PaperAuthor, DBAuthor.id == PaperAuthor.author_id)
-                .group_by(DBAuthor.id, DBAuthor.name)
-                .order_by(desc(func.count(PaperAuthor.paper_id)))
-                .limit(10)
-                .all()
-            )
-
-            return {
-                "total_authors": total_authors,
-                "hf_integrated_authors": hf_authors,
-                "hf_pro_authors": hf_pro_authors,
-                "hf_integration_rate": round((hf_authors / total_authors) * 100, 2)
-                if total_authors > 0
-                else 0,
-                "top_authors": [
-                    {"name": name, "paper_count": count} for name, count in top_authors
-                ],
-            }
-
-        except Exception as e:
-            raise DatabaseError(f"Error fetching author statistics: {str(e)}")
