@@ -4,7 +4,7 @@ Generated 2026-07-19 for task `image-restoration` (task ID 321).
 
 ## Completion scope and starting state
 
-- Live task page: 485 papers; the top-100 slice is persisted in `image-restoration-top100-ledger.csv`.
+- Live task page: 485 papers; the top-100 slice is persisted in `top100-ledger.csv`.
 - Direct task benchmarks, configured metrics, and task evaluation rows before this pass: 0 / 0 / 0.
 - Top-100 direct coverage before this pass: 0/100. Nine papers already have 121 paper-native rows on semantically specific peer tasks, chiefly image/video super-resolution and video restoration; these should not be duplicated onto the umbrella task.
 - The exact legacy `Image Restoration` table is only UHDM (2 rows). Historical restoration coverage is distributed across adjacent legacy tasks: super-resolution (732 rows/67 datasets), deblurring (263 rows across two task labels), dehazing (109/14), denoising (116 across two labels), inpainting (51/12), blind face restoration (40/4), and rain removal (6/2).
@@ -61,7 +61,7 @@ Wave 1 prioritizes broadly reused, paper-native, comparable leaderboards: SIDD, 
 ## Completion result
 
 - The task now has 15 configured benchmark leaderboards, 227 verified evaluation rows, and 39 distinct source papers. It started with no direct benchmarks or evaluations.
-- The live top-100 slice is fully adjudicated in `image-restoration-top100-ledger.csv`: 36 papers have 205 paper-native task rows; the remaining 64 have concrete source-backed decisions (42 missing a configured benchmark, 8 not paper-native, 7 protocol-incomparable, 5 not restoration-results papers, and 2 missing a configured metric).
+- The live top-100 slice is fully adjudicated in `top100-ledger.csv`: 36 papers have 205 paper-native task rows; the remaining 64 have concrete source-backed decisions (42 missing a configured benchmark, 8 not paper-native, 7 protocol-incomparable, 5 not restoration-results papers, and 2 missing a configured metric).
 - Final protocol splits include Rain100L Y versus RGB, RealBlur in-domain versus GoPro-only transfer, SOTS Indoor versus Outdoor, and CBSD68 color fixed-noise levels sigma 15/25/50. Rows that mixed these contracts were moved, corrected, or removed.
 - Every populated leaderboard received a final source-first `verify-evals` audit. There are no duplicate paper/dataset/model/metric keys, no non-null harness values, and no image-restoration metric-wiring mismatches.
 - The global metric validator still reports four unrelated pre-existing mismatches on ETH3D (relative), FLORES-101, FLORES-200 devtest, and LiveBench; none belongs to task 321.

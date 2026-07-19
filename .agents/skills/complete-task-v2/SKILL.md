@@ -46,6 +46,25 @@ Use this default scope unless the user narrows it:
 
 If the user asks for only a benchmark/paper plan, stop after the research plan. If the user asks to complete/populate/import, continue through add-evals and verify-evals.
 
+## Artifact Layout
+
+Keep durable curation evidence out of the repository root. Store every persisted
+artifact for a task under `docs/task-completion/<task-slug>/` using these canonical
+names:
+
+- `field-map.md` for the seven-surface research map;
+- `top100-ledger.csv` for the required live-page reconciliation ledger;
+- `paper-worklist.csv` or `paper-worklist.md` when a separate source-paper queue is useful;
+- `import-ledger.csv` for surviving evaluation IDs and worker outcomes;
+- `verification-ledger.md` for benchmark audit decisions;
+- `completion-report.md` for the final compact report.
+
+Use `/tmp/<task-slug>/` for disposable API responses, downloaded cards, extracted
+paper text, and other research scratch data. Do not write task-specific field maps,
+ledgers, reports, or worklists at the repository root. Keep relative links between
+artifacts inside the task directory so the directory can be moved or archived as a
+unit.
+
 ## Pre-flight
 
 Run from the repo root:

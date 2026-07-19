@@ -84,7 +84,7 @@ metric-bearing top-100 papers recorded in the ledger.
 ## Top-100 and recent-paper observations
 
 - The live top 100 are all 2025/2026 releases. Every row is tracked in
-  `image-generation-top100-ledger.csv`.
+  `top100-ledger.csv`.
 - Papers already covered include Boogu-Image, HiDream-O1-Image, GLM-Image,
   Qwen-Image, Z-Image, Lens, i1, Emu3.5, PixNerd, DeCo, X-Omni, RAE,
   MiniT2I, AsymFlow, and several multimodal releases.

@@ -71,7 +71,7 @@ Repeated comparator lineages found across legacy and major paper tables include 
 
 ## Candidate paper worklist
 
-The authoritative worklist is `optical-flow-top100-ledger.csv`: a fresh live trending-order snapshot of exactly 100 papers. Every row has a terminal reconciliation decision. The distribution is 33 imported-and-verified papers, 35 adjacent-task papers with no Optical Flow leaderboard row, 24 papers whose distinct/custom protocol was not forced onto an incompatible board, and 8 benchmark/dataset source papers. `optical-flow-import-ledger.csv` records every imported paper, evaluation ID, model variant, and configured benchmark.
+The authoritative worklist is `top100-ledger.csv`: a fresh live trending-order snapshot of exactly 100 papers. Every row has a terminal reconciliation decision. The distribution is 33 imported-and-verified papers, 35 adjacent-task papers with no Optical Flow leaderboard row, 24 papers whose distinct/custom protocol was not forced onto an incompatible board, and 8 benchmark/dataset source papers. `import-ledger.csv` records every imported paper, evaluation ID, model variant, and configured benchmark.
 
 ## Field-map gate status
 

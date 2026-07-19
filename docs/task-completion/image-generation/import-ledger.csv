@@ -1,0 +1,106 @@
+action,evaluation_id,paper_id,source_id,title,benchmark,model_name,metrics,is_open,num_parameters,hf_model_url
+created,16682,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,longtext-bench,JoyAI-Image,"{""Accuracy"":""96.3""}",False,,
+created,16683,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,cvtg-2k,JoyAI-Image,"{""NED"":""0.9369""}",False,,
+created,16684,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,cvtg-2k,JoyAI-Image,"{""Word Accuracy"":""0.8739""}",False,,
+created,16685,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,oneig-en,JoyAI-Image,"{""OneIG Overall Score"":""0.542""}",False,,
+created,16686,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,oneig-zh,JoyAI-Image,"{""OneIG Overall Score"":""0.521""}",False,,
+created,16687,82850,2605.04128,Awaking Spatial Intelligence in Unified Multimodal Understanding and Generation,dpg-bench,JoyAI-Image,"{""DPG-Bench Score"":""88.05""}",False,,
+created,16690,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,dpg-bench,ELLA SDXL,"{""DPG-Bench Score"":""80.23""}",False,,
+created,16691,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,t2i-compbench,ELLA SDXL,"{""Color"":""0.7260""}",False,,
+created,16692,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,t2i-compbench,ELLA SDXL,"{""Shape"":""0.5634""}",False,,
+created,16693,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,t2i-compbench,ELLA SDXL,"{""Texture"":""0.6686""}",False,,
+created,16694,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,t2i-compbench,ELLA SDXL,"{""Spatial"":""0.2214""}",False,,
+created,16695,28569,2403.05135,ELLA: Equip Diffusion Models with LLM for Enhanced Semantic Alignment,t2i-compbench,ELLA SDXL,"{""Non-Spatial"":""0.3069""}",False,,
+created,16696,58231,2604.12163,Nucleus-Image: Sparse MoE for Image Generation,geneval,Nucleus-Image,"{""GenEval Score"":""0.87""}",True,16922679296,https://huggingface.co/NucleusAI/Nucleus-Image
+created,16697,58231,2604.12163,Nucleus-Image: Sparse MoE for Image Generation,dpg-bench,Nucleus-Image,"{""DPG-Bench Score"":""88.79""}",True,16922679296,https://huggingface.co/NucleusAI/Nucleus-Image
+created,16698,58231,2604.12163,Nucleus-Image: Sparse MoE for Image Generation,oneig-en,Nucleus-Image,"{""OneIG Overall Score"":""0.522""}",True,16922679296,https://huggingface.co/NucleusAI/Nucleus-Image
+created,16699,54635,2512.07584,LongCat-Image Technical Report,geneval,LongCat-Image,"{""GenEval Score"":0.87}",True,6000000000,https://huggingface.co/meituan-longcat/LongCat-Image
+created,16700,54635,2512.07584,LongCat-Image Technical Report,dpg-bench,LongCat-Image,"{""DPG-Bench Score"":86.8}",True,6000000000,https://huggingface.co/meituan-longcat/LongCat-Image
+created,16701,54635,2512.07584,LongCat-Image Technical Report,cvtg-2k,LongCat-Image,"{""Word Accuracy"":0.8658}",True,6000000000,https://huggingface.co/meituan-longcat/LongCat-Image
+created,16702,54635,2512.07584,LongCat-Image Technical Report,cvtg-2k,LongCat-Image,"{""NED"":0.9361}",True,6000000000,https://huggingface.co/meituan-longcat/LongCat-Image
+created,16703,99076,2607.01642,Multi-Resolution Flow Matching: Training-Free Diffusion Acceleration via Staged Sampling,geneval,MrFlow + Qwen-Image (20+1 steps),"{""GenEval Score"":""0.87""}",True,20000000000,https://huggingface.co/Qwen/Qwen-Image
+created,16704,99076,2607.01642,Multi-Resolution Flow Matching: Training-Free Diffusion Acceleration via Staged Sampling,dpg-bench,MrFlow + Qwen-Image (20+1 steps),"{""DPG-Bench Score"":""88.00""}",True,20000000000,https://huggingface.co/Qwen/Qwen-Image
+created,16705,99076,2607.01642,Multi-Resolution Flow Matching: Training-Free Diffusion Acceleration via Staged Sampling,oneig-zh,MrFlow + Qwen-Image (20+1 steps),"{""OneIG Overall Score"":""0.52""}",True,20000000000,https://huggingface.co/Qwen/Qwen-Image
+created,16706,99076,2607.01642,Multi-Resolution Flow Matching: Training-Free Diffusion Acceleration via Staged Sampling,oneig-en,MrFlow + Z-Image (20+1 steps),"{""OneIG Overall Score"":""0.55""}",True,,
+created,16707,52369,2508.10711,NextStep-1: Toward Autoregressive Image Generation with Continuous   Tokens at Scale,geneval,NextStep-1,"{""GenEval Score"":""0.63""}",True,14959056960,https://huggingface.co/stepfun-ai/NextStep-1-Large
+created,16708,52369,2508.10711,NextStep-1: Toward Autoregressive Image Generation with Continuous   Tokens at Scale,dpg-bench,NextStep-1,"{""DPG-Bench Score"":""85.28""}",True,14959056960,https://huggingface.co/stepfun-ai/NextStep-1-Large
+created,16713,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,geneval,FLUX.1-dev + Pref-GRPO,"{""GenEval Score"":""0.7053""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16714,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,t2i-compbench,FLUX.1-dev + Pref-GRPO,"{""Color"":""0.8027""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16715,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,t2i-compbench,FLUX.1-dev + Pref-GRPO,"{""Shape"":""0.5601""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16716,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,t2i-compbench,FLUX.1-dev + Pref-GRPO,"{""Texture"":""0.6912""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16717,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,t2i-compbench,FLUX.1-dev + Pref-GRPO,"{""Non-Spatial"":""0.3105""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16718,52564,2508.20751,Pref-GRPO: Pairwise Preference Reward-based GRPO for Stable   Text-to-Image Reinforcement Learning,t2i-compbench,FLUX.1-dev + Pref-GRPO,"{""Complex"":""0.3958""}",True,11901408320,https://huggingface.co/CodeGoat24/FLUX.1-dev-PrefGRPO
+created,16719,52706,2509.07295,Reconstruction Alignment Improves Unified Multimodal Models,geneval,Harmon-1.5B-RecA-plus,"{""GenEval Score"":""0.90""}",True,1500000000,https://huggingface.co/sanaka87/Harmon-1.5B-RecA-plus
+created,16720,52706,2509.07295,Reconstruction Alignment Improves Unified Multimodal Models,dpg-bench,Harmon-1.5B-RecA-plus,"{""DPG-Bench Score"":""88.15""}",True,1500000000,https://huggingface.co/sanaka87/Harmon-1.5B-RecA-plus
+created,16721,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,geneval,"PPCL (Qwen-Image, 14B)","{""GenEval Score"":""0.847""}",True,14000000000,
+created,16722,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,dpg-bench,"PPCL (Qwen-Image, 14B)","{""DPG-Bench Score"":""87.9""}",True,14000000000,
+created,16723,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,longtext-bench,"PPCL (Qwen-Image, 14B)","{""Accuracy"":""92.9""}",True,14000000000,
+created,16724,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,longtext-bench-zh,"PPCL (Qwen-Image, 14B)","{""Accuracy"":""94.6""}",True,14000000000,
+created,16725,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,oneig-en,"PPCL (Qwen-Image, 14B)","{""OneIG Overall Score"":""0.536""}",True,14000000000,
+created,16726,64791,2511.16156,Pluggable Pruning with Contiguous Layer Distillation for Diffusion Transformers,oneig-zh,"PPCL (Qwen-Image, 14B)","{""OneIG Overall Score"":""0.538""}",True,14000000000,
+created,16727,57466,2604.13030,Generative Refinement Networks for Visual Synthesis,imagenet-256x256,GRN-G,"{""FID"":""1.81""}",False,2000000000,
+created,16728,57466,2604.13030,Generative Refinement Networks for Visual Synthesis,imagenet-256x256,GRN-H,"{""IS"":""316.1""}",False,952000000,
+created,16729,53041,2509.24335,"Hyperspherical Latents Improve Continuous-Token Autoregressive
+  Generation",imagenet-256x256,SphereAR-H,"{""FID"":""1.34""}",True,943000000,https://huggingface.co/guolinke/SphereAR
+created,16730,53041,2509.24335,"Hyperspherical Latents Improve Continuous-Token Autoregressive
+  Generation",imagenet-256x256,SphereAR-H,"{""IS"":""300.0""}",True,943000000,https://huggingface.co/guolinke/SphereAR
+created,16731,53041,2509.24335,"Hyperspherical Latents Improve Continuous-Token Autoregressive
+  Generation",imagenet-512x512,SphereAR-L,"{""FID"":""1.67""}",True,481000000,
+created,16732,53041,2509.24335,"Hyperspherical Latents Improve Continuous-Token Autoregressive
+  Generation",imagenet-512x512,SphereAR-L,"{""IS"":""292.5""}",True,481000000,
+created,16733,64935,2511.13019,MeanFlow Transformers with Representation Autoencoders,imagenet-256x256,MF-RAE (2 NFE),"{""FID"":""1.89""}",True,841000000,
+created,16734,64935,2511.13019,MeanFlow Transformers with Representation Autoencoders,imagenet-512x512,MF-RAE (1 NFE),"{""FID"":""3.23""}",True,841000000,
+created,16735,54917,2512.16483,StageVAR: Stage-Aware Acceleration for Visual Autoregressive Models,geneval,Infinity-8B + StageVAR,"{""GenEval Score"":""0.78""}",True,8000000000,
+created,16736,54917,2512.16483,StageVAR: Stage-Aware Acceleration for Visual Autoregressive Models,dpg-bench,Infinity-8B + StageVAR,"{""DPG-Bench Score"":""86.05""}",True,8000000000,
+created,16737,54332,2511.20256,The Image as Its Own Reward: Reinforcement Learning with Adversarial Reward for Image Generation,geneval,Adv-GRPO (DINO),"{""GenEval Score"":""0.69""}",True,,https://huggingface.co/benzweijia/Adv-GRPO
+created,16738,53876,2510.24717,Uniform Discrete Diffusion with Metric Path for Video Generation,dpg-bench,URSA-1.7B (1024x1024),"{""DPG-Bench Score"":""86.0""}",True,2256899072,https://huggingface.co/BAAI/URSA-1.7B-IBQ1024
+created,16739,53876,2510.24717,Uniform Discrete Diffusion with Metric Path for Video Generation,geneval,"URSA-1.7B (1024x1024, original prompts)","{""GenEval Score"":""0.68""}",True,2256899072,https://huggingface.co/BAAI/URSA-1.7B-IBQ1024
+created,16740,52207,2508.03320,Skywork UniPic: Unified Autoregressive Modeling for Visual Understanding   and Generation,geneval,Skywork UniPic,"{""GenEval Score"":""0.86""}",True,1500000000,https://huggingface.co/Skywork/Skywork-UniPic-1.5B
+created,16741,52207,2508.03320,Skywork UniPic: Unified Autoregressive Modeling for Visual Understanding   and Generation,dpg-bench,Skywork UniPic,"{""DPG-Bench Score"":""85.50""}",True,1500000000,https://huggingface.co/Skywork/Skywork-UniPic-1.5B
+created,16742,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,imagenet-256x256,BitDance-H-1x,"{""FID"":1.24}",True,1000000000,https://huggingface.co/shallowdream204/BitDance-ImageNet
+created,16743,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,imagenet-256x256,BitDance-H-1x,"{""IS"":304.4}",True,1000000000,https://huggingface.co/shallowdream204/BitDance-ImageNet
+created,16744,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,dpg-bench,BitDance-14B-64x,"{""DPG-Bench Score"":88.3}",True,14768839680,https://huggingface.co/shallowdream204/BitDance-14B-64x
+created,16745,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,geneval,BitDance-14B-16x,"{""GenEval Score"":0.86}",True,14768348160,https://huggingface.co/shallowdream204/BitDance-14B-16x
+created,16746,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,oneig-en,BitDance-14B-16x,"{""OneIG Overall Score"":0.532}",True,14768348160,https://huggingface.co/shallowdream204/BitDance-14B-16x
+created,16747,56119,2602.14041,BitDance: Scaling Autoregressive Generative Models with Binary Tokens,oneig-zh,BitDance-14B-16x,"{""OneIG Overall Score"":0.512}",True,14768348160,https://huggingface.co/shallowdream204/BitDance-14B-16x
+created,16748,54191,2511.11434,WEAVE: Unleashing and Benchmarking the In-context Interleaved Comprehension and Generation,geneval,Bagel + WEAVE-100k,"{""GenEval Score"":""0.84""}",True,14000000000,https://huggingface.co/WeiChow/Bagel-weave
+created,16749,54420,2511.22677,"Decoupled DMD: CFG Augmentation as the Spear, Distribution Matching as the Shield",dpg-bench,Lumina-Image-2.0 + Decoupled DMD (Decoupled-Hybrid),"{""DPG-Bench Score"":""85.85""}",False,,
+created,16750,54420,2511.22677,"Decoupled DMD: CFG Augmentation as the Spear, Distribution Matching as the Shield",hpsv3,Lumina-Image-2.0 + Decoupled DMD (Decoupled-Hybrid),"{""HPSv3 Score"":""11.59""}",False,,
+created,16751,83920,2605.30248,GenClaw: Code-Driven Agentic Image Generation,longtext-bench,GenClaw,"{""Accuracy"":""98.9""}",False,,
+created,16752,83920,2605.30248,GenClaw: Code-Driven Agentic Image Generation,longtext-bench-zh,GenClaw,"{""Accuracy"":""98.8""}",False,,
+created,16754,52356,2508.09987,Echo-4o: Harnessing the Power of GPT-4o Synthetic Images for Improved   Image Generation,geneval,Echo-4o,"{""GenEval Score"":""0.895""}",True,,https://huggingface.co/Yejy53/Echo-4o
+created,16755,52356,2508.09987,Echo-4o: Harnessing the Power of GPT-4o Synthetic Images for Improved   Image Generation,dpg-bench,Echo-4o,"{""DPG-Bench Score"":""86.07""}",True,,https://huggingface.co/Yejy53/Echo-4o
+created,16757,54774,2512.13006,Few-Step Distillation for Text-to-Image Generation: A Practical Guide,geneval,sCM (2 NFE),"{""GenEval Score"":""0.5281""}",True,8000000000,https://huggingface.co/Alibaba-DAMO-Academy/T2I-Distill
+created,16758,54774,2512.13006,Few-Step Distillation for Text-to-Image Generation: A Practical Guide,dpg-bench,MeanFlow (4 NFE),"{""DPG-Bench Score"":""80.03""}",True,8000000000,https://huggingface.co/Alibaba-DAMO-Academy/T2I-Distill
+created,16759,52700,2509.06945,Interleaving Reasoning for Better Text-to-Image Generation,geneval,IRG,"{""GenEval Score"":""0.85""}",False,,
+created,16760,52700,2509.06945,Interleaving Reasoning for Better Text-to-Image Generation,oneig-en,IRG,"{""OneIG Overall Score"":""0.415""}",False,,
+created,16761,52700,2509.06945,Interleaving Reasoning for Better Text-to-Image Generation,tiif-bench-mini,IRG,"{""Accuracy"":""76.00""}",False,,
+created,16762,54135,2511.06876,"Generating an Image From 1,000 Words: Enhancing Text-to-Image With
+  Structured Captions",geneval,FIBO,"{""GenEval Score"":0.85}",True,8285836848,https://huggingface.co/briaai/FIBO
+created,16763,84306,2512.01643,ViT$^3$: Unlocking Test-Time Training in Vision,imagenet-256x256,DiT³-B/2,"{""FID"":""39.31""}",True,134000000,
+created,16764,84306,2512.01643,ViT$^3$: Unlocking Test-Time Training in Vision,imagenet-256x256,DiT³-B/2,"{""IS"":""36.99""}",True,134000000,
+created,16765,104014,2607.13125,Boogu-Image-0.1: Boosting Open-Source Unified Multimodal Understanding and Generation,longtext-bench-zh,Boogu-Image-0.1-Turbo-Thinking,"{""Accuracy"":""98.5""}",True,10000000000,
+created,16766,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,hpsv3,HiDream-O1-Image,"{""HPSv3 Score"":""10.37""}",True,8804887792,https://huggingface.co/HiDream-ai/HiDream-O1-Image
+created,16767,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,cvtg-2k,HiDream-O1-Image,"{""NED"":""0.9561""}",True,8804887792,https://huggingface.co/HiDream-ai/HiDream-O1-Image
+created,16768,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,longtext-bench-zh,HiDream-O1-Image,"{""Accuracy"":""97.8""}",True,8804887792,https://huggingface.co/HiDream-ai/HiDream-O1-Image
+created,16769,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,geneval,HiDream-O1-Image-Pro,"{""GenEval Score"":""0.92""}",False,,
+created,16770,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,dpg-bench,HiDream-O1-Image-Pro,"{""DPG-Bench Score"":""90.30""}",False,,
+created,16771,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,hpsv3,HiDream-O1-Image-Pro,"{""HPSv3 Score"":""10.47""}",False,,
+created,16772,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,cvtg-2k,HiDream-O1-Image-Pro,"{""Word Accuracy"":""0.9222""}",False,,
+created,16773,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,cvtg-2k,HiDream-O1-Image-Pro,"{""NED"":""0.9628""}",False,,
+created,16774,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,longtext-bench,HiDream-O1-Image-Pro,"{""Accuracy"":""98.2""}",False,,
+created,16775,98580,2605.11061,HiDream-O1-Image: A Natively Unified Image Generative Foundation Model with Pixel-level Unified Transformer,longtext-bench-zh,HiDream-O1-Image-Pro,"{""Accuracy"":""98.0""}",False,,
+created,16776,52192,2508.02324,Qwen-Image Technical Report,geneval,Qwen-Image-RL,"{""GenEval Score"":""0.91""}",False,27127000000,
+created,16777,52192,2508.02324,Qwen-Image Technical Report,oneig-zh,Qwen-Image,"{""OneIG Overall Score"":""0.548""}",True,27127000000,https://huggingface.co/Qwen/Qwen-Image
+created,16778,52192,2508.02324,Qwen-Image Technical Report,cvtg-2k,Qwen-Image,"{""NED"":""0.9116""}",True,27127000000,https://huggingface.co/Qwen/Qwen-Image
+created,16779,52192,2508.02324,Qwen-Image Technical Report,longtext-bench-zh,Qwen-Image,"{""Accuracy"":""94.6""}",True,27127000000,https://huggingface.co/Qwen/Qwen-Image
+created,16780,52192,2508.02324,Qwen-Image Technical Report,tiif-bench-mini,Qwen-Image,"{""Accuracy"":""86.14""}",True,27127000000,https://huggingface.co/Qwen/Qwen-Image
+created,16781,54409,2511.22699,Z-Image: An Efficient Image Generation Foundation Model with Single-Stream Diffusion Transformer,cvtg-2k,Z-Image,"{""NED"":""0.9367""}",True,6154908736,https://huggingface.co/Tongyi-MAI/Z-Image
+created,16782,54409,2511.22699,Z-Image: An Efficient Image Generation Foundation Model with Single-Stream Diffusion Transformer,longtext-bench-zh,Z-Image,"{""Accuracy"":""93.6""}",True,6154908736,https://huggingface.co/Tongyi-MAI/Z-Image
+created,16783,54409,2511.22699,Z-Image: An Efficient Image Generation Foundation Model with Single-Stream Diffusion Transformer,oneig-zh,Z-Image,"{""OneIG Overall Score"":""0.535""}",True,6154908736,https://huggingface.co/Tongyi-MAI/Z-Image
+created,16784,54409,2511.22699,Z-Image: An Efficient Image Generation Foundation Model with Single-Stream Diffusion Transformer,tiif-bench-mini,Z-Image,"{""Accuracy"":""80.20""}",True,6154908736,https://huggingface.co/Tongyi-MAI/Z-Image
+created,16785,83684,2605.21573,Lens: Rethinking Training Efficiency for Foundational Text-to-Image Models,oneig-zh,Lens,"{""OneIG Overall Score"":""0.525""}",True,3800000000,https://huggingface.co/microsoft/Lens
+created,16786,54212,2511.13720,Back to Basics: Let Denoising Generative Models Denoise,imagenet-256x256,JiT-G/16,"{""IS"":""292.6""}",True,,
+created,16787,32640,2406.06525,Autoregressive Model Beats Diffusion: Llama for Scalable Image Generation,imagenet-256x256,LlamaGen-3B,"{""IS"":""263.33""}",True,,
+created,16788,7577,2112.10752,High-Resolution Image Synthesis with Latent Diffusion Models,imagenet-256x256,LDM-4-G,"{""IS"":""247.67""}",True,400000000,
+created,16789,54212,2511.13720,Back to Basics: Let Denoising Generative Models Denoise,imagenet-512x512,JiT-G/32,"{""IS"":""306.8""}",True,2000000000,

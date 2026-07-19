@@ -2,7 +2,7 @@
 
 Research date: 2026-07-17. Binding paper scope: the first 100 papers returned by
 `/api/v1/tasks/computer-use-agents/papers?order_by=trending&page_size=100&page=1`.
-The reconciliation ledger is `computer-use-agents-top100-ledger.csv`.
+The reconciliation ledger is `top100-ledger.csv`.
 
 ## Scope and evidence
 

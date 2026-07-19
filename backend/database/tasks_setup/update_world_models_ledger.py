@@ -9,7 +9,7 @@ from sqlalchemy import text
 from backend.database.connection import get_engine
 
 
-LEDGER = Path("world-models-top100-ledger.csv")
+LEDGER = Path("docs/task-completion/world-models/top100-ledger.csv")
 
 # rank: (paper-native benchmark terms, important comparator-paper/model leads)
 PAPER_EVIDENCE = {

@@ -12,6 +12,8 @@ the database schema are the source of truth for implementation details.
 - `operations.md` — cron, monitoring, and admin review.
 - `keyword-matching.md` — keyword behavior and bulk relinking.
 - `DATABASE_SCHEMA_UML.md` — current schema reference.
+- `task-completion/` — durable field maps, top-100 ledgers, and verification reports
+  produced by whole-task curation runs.
 
 The root `README.md` covers setup. `AGENTS.md` contains the short contributor
 quickstart. Cron-specific implementation details live beside the cron scripts in
