@@ -20,10 +20,13 @@ interface SearchOverlayProps {
   onClose: () => void;
 }
 
+const PAPER_PAGE_SIZE = 10;
+
 const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const [query, setQuery] = React.useState("");
+  const [paperPage, setPaperPage] = React.useState(1);
   const debouncedQuery = useDebounce(query, 200);
 
   useEffect(() => {
@@ -37,8 +40,8 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   }, [open, onClose]);
 
   const papersQ = useQuery({
-    queryKey: ["search-papers", debouncedQuery],
-    queryFn: () => apiClient.searchPapers(debouncedQuery, 6),
+    queryKey: ["search-papers", debouncedQuery, paperPage],
+    queryFn: () => apiClient.searchPapers(debouncedQuery, paperPage, PAPER_PAGE_SIZE),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
   });
@@ -64,6 +67,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
         q: debouncedQuery,
         page_size: 6,
         ordering: "-paper_count",
+        min_eval_count: 2,
       }),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,
@@ -74,7 +78,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   const matchedTasks = tasksQ.data?.results || [];
   const matchedMethods = methodsQ.data?.results || [];
   const matchedBenchmarks = benchmarksQ.data?.results || [];
-  const matchedPapers = papersQ.data || [];
+  const matchedPapers = papersQ.data?.results || [];
   const isLoading =
     papersQ.isFetching ||
     tasksQ.isFetching ||
@@ -99,7 +103,10 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
           className="search-modal-input"
           placeholder="Search papers, tasks, methods, or benchmarks…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setPaperPage(1);
+          }}
         />
         <div className="search-results">
           {!debouncedQuery && (
@@ -164,7 +171,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
           )}
           {matchedPapers.length > 0 && (
             <>
-              <div className="search-section-label">Papers · {matchedPapers.length}</div>
+              <div className="search-section-label">Papers · page {paperPage}</div>
               {matchedPapers.map((p) => (
                 <div key={p.id} className="search-result" onClick={() => go(`/paper/${p.arxiv_id || p.id}`)}>
                   <div className="search-result-title">
@@ -187,6 +194,27 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
                   </div>
                 </div>
               ))}
+              {(papersQ.data?.previous_page || papersQ.data?.next_page) && (
+                <div className="search-paper-pagination">
+                  <button
+                    type="button"
+                    disabled={!papersQ.data.previous_page || papersQ.isFetching}
+                    onClick={() => setPaperPage(papersQ.data?.previous_page || 1)}
+                  >
+                    Previous
+                  </button>
+                  <span>Page {paperPage}</span>
+                  <button
+                    type="button"
+                    disabled={!papersQ.data.next_page || papersQ.isFetching}
+                    onClick={() => {
+                      if (papersQ.data?.next_page) setPaperPage(papersQ.data.next_page);
+                    }}
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>

@@ -1,0 +1,41 @@
+.cron-dashboard {
+  min-height: 100vh;
+  color: var(--ink);
+  background: linear-gradient(to bottom, var(--bg-subtle), var(--bg));
+}
+
+.cron-muted,
+.cron-label { color: var(--ink-soft); }
+.cron-label { font-size: 0.75rem; }
+
+.cron-job-card,
+.cron-metric-card {
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  background: var(--bg-elevated);
+  border-radius: 0.5rem;
+}
+.cron-job-card { overflow: hidden; }
+.cron-job-summary { width: 100%; padding: 1rem; }
+.cron-job-summary:hover { background: var(--bg-subtle); }
+.cron-job-details { padding: 1rem; border-top: 1px solid var(--hairline); background: var(--bg-subtle); }
+.cron-metric-card { padding: 0.75rem; }
+
+.cron-section-heading { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; color: var(--ink-soft); }
+.cron-section-heading h4 { color: var(--ink); font-weight: 600; }
+.cron-fact { display: flex; align-items: center; gap: 0.25rem; }
+.cron-fact > svg { width: 1rem; height: 1rem; flex-shrink: 0; }
+.cron-status-icon { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
+
+.cron-message { margin-top: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.25rem; color: var(--ink-soft); background: var(--bg-subtle); font-size: 0.875rem; }
+.cron-message--error { color: var(--negative-text); background: var(--negative-bg); }
+.cron-message--warning { color: var(--highlight-text); background: var(--highlight-bg); }
+
+.cron-status--healthy { color: var(--positive-text); border-color: var(--positive-border); background: var(--positive-bg); }
+.cron-status--degraded { color: var(--highlight-text); border-color: var(--highlight-border); background: var(--highlight-bg); }
+.cron-status--broken,
+.cron-status--stuck { color: var(--negative-text); border-color: var(--negative-border); background: var(--negative-bg); }
+.cron-status--running { color: var(--info-text); border-color: var(--info-border); background: var(--info-bg); }
+.cron-status--unknown { color: var(--ink-soft); border-color: var(--hairline); background: var(--bg-subtle); }
+.cron-status-icon { border: 0; background: transparent; }
+.cron-info-text { color: var(--info-text); }

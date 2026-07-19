@@ -57,10 +57,12 @@ export interface BenchmarkSummary {
  *  badges on feed cards. One entry per benchmark (dataset), deduped to the
  *  paper's best rank on that benchmark. */
 export interface LeaderboardRankSummary {
+  evaluation_id: string;
   dataset_name: string;
   dataset_slug?: string | null;
   best_rank: number;
   best_metric?: string | null;
+  task_slug?: string | null;
 }
 
 /** Lightweight summary of a related paper (predecessor or successor)
@@ -76,6 +78,20 @@ export interface RelatedPaperSummary {
   /** Identifier the frontend should use when building the paper detail URL:
    *  ArXiv ID for ArXiv rows, internal numeric ID otherwise. */
   route_identifier: string;
+}
+
+export interface RelatedPaperRecommendation {
+  id: string;
+  title: string;
+  arxiv_id: string | null;
+  source?: 'arxiv' | 'external';
+  source_url?: string | null;
+  published?: string | null;
+  citation_count: number;
+  provenance: 'dense' | 'hybrid' | 'lexical' | 'task_fallback';
+  similarity?: number | null;
+  generation_id?: number | null;
+  used_stale_source_vector: boolean;
 }
 
 export interface Paper {
@@ -279,6 +295,7 @@ export interface Task {
   id: string;
   name: string;
   description?: string;
+  research_trends?: string[];
   slug?: string;
   parent_id?: string;
   area_id?: string;
@@ -471,8 +488,67 @@ export interface PaginatedResponse<T> {
   results: T[];
 }
 
+export interface SearchPage<T> {
+  next_page: number | null;
+  previous_page: number | null;
+  results: T[];
+}
+
+export type CronJobHealth = 'healthy' | 'degraded' | 'broken' | 'running' | 'stuck' | 'unknown';
+
+export interface CronWorkflowStatus {
+  available: boolean;
+  workflow_file: string;
+  run_id?: number | null;
+  status?: string | null;
+  conclusion?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  event?: string | null;
+  failed_jobs?: string[];
+  running_jobs?: string[];
+  job_conclusions?: Record<string, string | null>;
+  error?: string | null;
+  view_error?: string | null;
+}
+
+export interface CronJobStatus {
+  job_name: string;
+  display_name: string;
+  category: string;
+  status: CronJobHealth;
+  log_status?: string | null;
+  status_reason: string;
+  last_run: string | null;
+  last_db_write: string | null;
+  recent_write_count: number | null;
+  duration: number | null;
+  is_running: boolean;
+  error: string | null;
+  schedule: string | null;
+  critical: boolean;
+  work_metrics?: Record<string, string | number>;
+  work_summary?: string | null;
+  db_metrics?: Record<string, string | number>;
+  workflow_status?: CronWorkflowStatus | null;
+  lock_stale?: boolean;
+  diagnostics?: string | null;
+}
+
+export interface CronJobsResponse {
+  timestamp: string;
+  jobs: CronJobStatus[];
+  summary: Record<CronJobHealth, number> & {
+    total_jobs: number;
+    health_score: number;
+    critical_issues: string[];
+    what_to_check_next: string;
+  };
+}
+
 export type PaperOrderBy = 'trending' | 'date_published' | 'citation_count';
 export type PaperTimeWindow = 'today' | 'week' | 'month' | 'all_time';
+export type PaperSearchMode = 'keyword' | 'semantic' | 'hybrid';
 
 export interface TrendingMetrics {
   velocity_24h: number;
@@ -542,6 +618,10 @@ export interface PaperSubmitResponse {
   route_identifier: string;
   /** False when an existing paper was returned instead of creating a new row. */
   created: boolean;
+  /** True when an existing arXiv paper was refreshed from arXiv metadata. */
+  refreshed?: boolean;
+  previous_version?: string | null;
+  latest_version?: string | null;
 }
 
 /** Which paper-page surface a pending edit targets. */
@@ -685,14 +765,25 @@ class ApiClient {
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
 
     const endpoint = `/papers/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-    return this.request<PaginatedResponse<Paper>>(endpoint);
+    // Paper rows can gain or lose a thumbnail URL independently of the paper
+    // metadata. Always revalidate the browser's HTTP cache so a long-lived
+    // Chrome profile cannot keep serving a stale thumbnail URL; React Query
+    // and the shared nginx cache still avoid redundant backend work.
+    return this.request<PaginatedResponse<Paper>>(endpoint, { cache: 'no-cache' });
   }
 
-  async searchPapers(query: string, limit: number = 10): Promise<Paper[]> {
+  async searchPapers(
+    query: string,
+    page: number = 1,
+    pageSize: number = 10,
+    mode?: PaperSearchMode,
+  ): Promise<SearchPage<Paper>> {
     const searchParams = new URLSearchParams();
     searchParams.append('q', query);
-    searchParams.append('limit', limit.toString());
-    return this.request<Paper[]>(`/papers/search?${searchParams.toString()}`);
+    searchParams.append('page', page.toString());
+    searchParams.append('page_size', pageSize.toString());
+    if (mode) searchParams.append('mode', mode);
+    return this.request<SearchPage<Paper>>(`/papers/search?${searchParams.toString()}`);
   }
 
   async getPaper(id: string, includeResources: boolean = true): Promise<Paper> {
@@ -703,6 +794,13 @@ class ApiClient {
   async getPaperByArxivId(arxivId: string, includeResources: boolean = true): Promise<Paper> {
     const endpoint = `/papers/arxiv/${arxivId}${includeResources ? '?include_resources=true' : ''}`;
     return this.request<Paper>(endpoint);
+  }
+
+  async getRelatedPapers(id: string, limit: number = 4): Promise<RelatedPaperRecommendation[]> {
+    const searchParams = new URLSearchParams({ limit: limit.toString() });
+    return this.request<RelatedPaperRecommendation[]>(
+      `/papers/${encodeURIComponent(id)}/related?${searchParams.toString()}`,
+    );
   }
 
   async indexPaperFromArxiv(arxivId: string): Promise<Paper> {
@@ -1079,8 +1177,11 @@ class ApiClient {
 
   /** Fetch the bundled task-page payload (task + parents + sisters + children
    *  + benchmarks + per-child benchmark previews) in a single request. */
-  async getTaskPage(taskId: string): Promise<TaskPage> {
-    return this.request<TaskPage>(`/tasks/${taskId}/page`);
+  async getTaskPage(taskId: string, params?: { is_open?: boolean }): Promise<TaskPage> {
+    const searchParams = new URLSearchParams();
+    if (params?.is_open !== undefined) searchParams.append('is_open', params.is_open.toString());
+    const endpoint = `/tasks/${taskId}/page${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return this.request<TaskPage>(endpoint);
   }
 
   async getTaskPapers(taskId: string, params?: {
@@ -1180,11 +1281,14 @@ class ApiClient {
     include_descendants?: boolean;
     /**
      * Hide benchmarks whose evaluation row count (`paper_count`) is below
-     * this threshold. Task pages pass `2` to suppress sparse benchmarks
-     * (single-evaluation leaderboards) from default listings while leaving
-     * the benchmark detail page reachable via direct URL.
+     * this threshold. Omit it to keep every configured benchmark visible.
      */
     min_eval_count?: number;
+    /**
+     * When set on task-scoped requests, choose `best_model_name` from only
+     * open-source or only closed-source evaluation rows.
+     */
+    is_open?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Dataset>> {
     const searchParams = new URLSearchParams();
@@ -1198,6 +1302,7 @@ class ApiClient {
     if (params?.task_id) searchParams.append('task', params.task_id.toString());
     if (params?.include_descendants) searchParams.append('include_descendants', 'true');
     if (params?.min_eval_count !== undefined) searchParams.append('min_eval_count', params.min_eval_count.toString());
+    if (params?.is_open !== undefined) searchParams.append('is_open', params.is_open.toString());
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/datasets/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -1527,6 +1632,10 @@ class ApiClient {
       method: 'PUT',
       body: JSON.stringify(prefs),
     });
+  }
+
+  async getCronStatus(): Promise<CronJobsResponse> {
+    return this.request<CronJobsResponse>('/cron/status', { cache: 'no-store' });
   }
 }
 

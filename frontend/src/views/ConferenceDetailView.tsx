@@ -178,7 +178,7 @@ const ConferenceDetailView: React.FC = () => {
                   color: "var(--ink-soft)",
                 }}
               >
-                All accepted papers, plus oral, spotlight, and best paper finalists.
+                All accepted papers, plus oral, spotlight, outstanding, and best paper finalists.
               </div>
             </div>
             <div

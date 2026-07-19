@@ -110,11 +110,18 @@ const SubmitView: React.FC = () => {
         queryKey: ["trending-papers"],
         refetchType: "none",
       });
+      const importedNewVersion = data.refreshed && data.created && data.latest_version;
       toast({
-        title: data.created ? "Paper submitted" : "Paper already indexed",
-        description: data.created
-          ? "Opening the paper page…"
-          : "Opening the existing paper page…",
+        title: importedNewVersion
+          ? `Paper updated to ${data.latest_version}`
+          : data.created
+            ? "Paper submitted"
+            : "Paper already indexed",
+        description: importedNewVersion
+          ? "Opening the updated paper page…"
+          : data.created
+            ? "Opening the paper page…"
+            : "Opening the existing paper page…",
       });
       navigate(`/paper/${data.route_identifier}`);
     },

@@ -78,7 +78,7 @@ const FeedView: React.FC = () => {
   // so neither list misrepresents its own signal.
   const trendingTasks = useQuery({
     queryKey: ["trending-tasks-sidebar"],
-    queryFn: () => apiClient.getTrendingTasks({ limit: 8 }),
+    queryFn: () => apiClient.getTrendingTasks({ limit: 8, level: 0 }),
     staleTime: 10 * 60 * 1000,
   });
 

@@ -11,11 +11,21 @@ import { toBlob } from "html-to-image";
 
 const DEFAULT_BACKGROUND = "#ffffff";
 
+function readThemeBackground(): string {
+  if (typeof window === "undefined") return DEFAULT_BACKGROUND;
+  return (
+    window
+      .getComputedStyle(document.documentElement)
+      .getPropertyValue("--bg-elevated")
+      .trim() || DEFAULT_BACKGROUND
+  );
+}
+
 function readBackgroundColor(node: HTMLElement): string {
   if (typeof window === "undefined") return DEFAULT_BACKGROUND;
   const computed = window.getComputedStyle(node).backgroundColor;
   if (!computed || computed === "rgba(0, 0, 0, 0)" || computed === "transparent") {
-    return DEFAULT_BACKGROUND;
+    return readThemeBackground();
   }
   return computed;
 }

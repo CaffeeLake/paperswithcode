@@ -7,6 +7,7 @@ import type { Evaluation, LeaderboardMetric, MetricDirections, Task } from "@/li
 import { usePreferences } from "@/lib/preferencesContext";
 import { formatMetricValue } from "@/lib/utils";
 import { copyNodeAsPng } from "@/lib/copyScreenshot";
+import { selectLeaderboardEvaluations } from "@/lib/leaderboardEvaluations";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -719,16 +720,17 @@ const BenchmarkDetailView: React.FC = () => {
   // Filter to evaluations on the current (task, dataset) leaderboard so
   // unrelated rows from other tasks don't pollute ranking / chart / column
   // population. Falls back to all evals when no task is resolved.
-  const taskEvals = useMemo(() => {
-    let evals = evalsQ.data || [];
-    // Hide closed-source model rows when the user opted in. Applied before
-    // merge/rank/chart so the leaderboard, SOTA chart, and counts all agree.
-    if (preferences.hide_closed_source_evals) {
-      evals = evals.filter((e) => e.is_open !== false);
-    }
-    if (!currentTaskId) return evals;
-    return evals.filter((e) => e.task_id === currentTaskId);
-  }, [evalsQ.data, currentTaskId, preferences.hide_closed_source_evals]);
+  const evaluationVisibility = useMemo(
+    () => selectLeaderboardEvaluations(
+      evalsQ.data,
+      currentTaskId,
+      preferences.hide_closed_source_evals,
+    ),
+    [evalsQ.data, currentTaskId, preferences.hide_closed_source_evals],
+  );
+  const taskEvals = evaluationVisibility.visible;
+  const hiddenClosedEvals = evaluationVisibility.hiddenClosed;
+  const hiddenClosedTopEval = evaluationVisibility.topHiddenClosed;
 
   const mergedTaskEvals = useMemo(
     () => mergeLeaderboardEvaluations(taskEvals),
@@ -940,6 +942,29 @@ const BenchmarkDetailView: React.FC = () => {
           <p style={{ fontFamily: "var(--serif)", color: "var(--ink-soft)", maxWidth: 760, marginBottom: 16 }}>
             {dataset.description}
           </p>
+        )}
+
+        {preferences.hide_closed_source_evals && hiddenClosedEvals.length > 0 && (
+          <div className="bm-hidden-closed-notice">
+            <span>
+              {hiddenClosedEvals.length} closed-source {hiddenClosedEvals.length === 1 ? "row is" : "rows are"} hidden
+              {hiddenClosedTopEval?.model_name ? (
+                <>
+                  , including <strong>{hiddenClosedTopEval.model_name}</strong>
+                </>
+              ) : null}
+              .
+            </span>
+            <button
+              type="button"
+              className="bm-hidden-closed-action"
+              onClick={() => {
+                void setHideClosedSourceEvals(false);
+              }}
+            >
+              Show closed-source
+            </button>
+          </div>
         )}
 
         {hasSource && (

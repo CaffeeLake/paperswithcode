@@ -9,6 +9,8 @@
  */
 
 import React from "react";
+import { Monitor, Moon, Sun } from "lucide-react";
+import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
@@ -19,6 +21,8 @@ import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
 const SettingsView: React.FC = () => {
   const { user } = useAuth();
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
+  const { theme, setTheme } = useTheme();
+  const selectedTheme = theme ?? "system";
 
   React.useEffect(() => {
     document.title = formatPageTitle("Settings");
@@ -39,6 +43,50 @@ const SettingsView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <section className="settings-section">
+        <h2 className="settings-section-title">Appearance</h2>
+        <div className="theme-options" aria-label="Color theme">
+          {[
+            {
+              value: "system",
+              label: "System",
+              description: "Match your device",
+              icon: Monitor,
+            },
+            {
+              value: "light",
+              label: "Light",
+              description: "Always use light mode",
+              icon: Sun,
+            },
+            {
+              value: "dark",
+              label: "Dark",
+              description: "Always use dark mode",
+              icon: Moon,
+            },
+          ].map((option) => {
+            const Icon = option.icon;
+            const isSelected = selectedTheme === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`theme-option ${isSelected ? "is-selected" : ""}`}
+                aria-pressed={isSelected}
+                onClick={() => setTheme(option.value)}
+              >
+                <Icon aria-hidden="true" />
+                <span className="theme-option-copy">
+                  <span className="theme-option-label">{option.label}</span>
+                  <span className="theme-option-desc">{option.description}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       <section className="settings-section">
         <h2 className="settings-section-title">Evaluations</h2>

@@ -8,6 +8,7 @@ import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Dataset, Task } from "@/lib/api";
 import { assetUrl } from "@/lib/apiUrl";
+import { usePreferences } from "@/lib/preferencesContext";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -30,11 +31,6 @@ const parseOrderBy = (value: string | null): OrderBy => {
 
 const SUBTASK_BENCH_PREVIEW = 3;
 
-// Hide single-evaluation benchmarks from default task-page lists. The
-// benchmark detail page still loads by slug and ignores this filter, so a
-// sparse benchmark linked directly from a paper remains reachable.
-const MIN_BENCH_EVAL_COUNT = 2;
-
 const sortSubtasksForDisplay = (subtasks: Task[]) =>
   [...subtasks].sort((a, b) => {
     const aIsClassic = a.slug === "classic-language-modeling";
@@ -56,6 +52,7 @@ const TagBrowseView: React.FC = () => {
   };
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set());
+  const { preferences } = usePreferences();
 
   const benchmarkPath = (datasetSlug: string, taskContext?: string) => {
     const slug = datasetSlug || "";
@@ -65,13 +62,15 @@ const TagBrowseView: React.FC = () => {
     return `/benchmark/${slug}`;
   };
 
+  const bestModelIsOpen = preferences.hide_closed_source_evals ? true : undefined;
+
   // One bundled request for the whole task-page shell: task detail, parent
   // chain, sister tasks, visible children, this task's benchmarks, and a short
   // benchmark preview per child. This replaces the previous fan-out of six+
   // independent task/dataset queries on initial load (see Speed plan §1).
   const pageQ = useQuery({
-    queryKey: ["task-page", taskSlug],
-    queryFn: () => apiClient.getTaskPage(taskSlug!),
+    queryKey: ["task-page", taskSlug, bestModelIsOpen],
+    queryFn: () => apiClient.getTaskPage(taskSlug!, { is_open: bestModelIsOpen }),
     enabled: !!taskSlug,
     staleTime: 10 * 60 * 1000,
   });
@@ -157,6 +156,7 @@ const TagBrowseView: React.FC = () => {
   const hasVisibleSubtaskBenchmarks = visibleSubtasks.some(
     (s) => (subtaskBenchmarksById.get(s.id) || []).length > 0,
   );
+  const shouldShowSubtaskList = visibleSubtasks.length > 0;
   const shouldShowBenchmarkList = datasets.length > 0;
 
   // Total unique benchmarks for the BENCHMARKS quickstat: direct task
@@ -207,6 +207,20 @@ const TagBrowseView: React.FC = () => {
           {task.description && (
             <MarkdownText className="task-explainer" text={task.description} />
           )}
+          {task.research_trends && task.research_trends.length > 0 && (
+            <section className="task-research-trends" aria-labelledby="task-research-trends-title">
+              <div id="task-research-trends-title" className="task-research-trends-title">
+                Key trends
+              </div>
+              <ul>
+                {task.research_trends.map((trend, index) => (
+                  <li key={index}>
+                    <MarkdownText text={trend} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <div className="task-quickstats">
             <span>
               <span className="num">{(task.paper_count ?? 0).toLocaleString()}</span>PAPERS
@@ -218,6 +232,19 @@ const TagBrowseView: React.FC = () => {
               <span className="num">{commonMethods.length}+</span>METHODS USED
             </span>
           </div>
+          {sisters.length > 0 && (
+            <div className="task-sister-links">
+              <span className="task-sister-links-label">Sister tasks</span>
+              {sisters.slice(0, 8).map((s) => (
+                <Link key={s.id} to={`/tasks/${s.slug || s.id}`} className="task-sister-link">
+                  {displayTaskName(s.name, s.slug)}
+                  {s.paper_count != null && (
+                    <span className="task-sister-link-count">{s.paper_count.toLocaleString()}</span>
+                  )}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
         {task.image_url && (
           <figure
@@ -299,13 +326,15 @@ const TagBrowseView: React.FC = () => {
             </>
           )}
 
-          {hasVisibleSubtaskBenchmarks && (
+          {shouldShowSubtaskList && (
             <>
               <div
                 className="task-section-head"
                 style={shouldShowBenchmarkList ? { marginTop: 36 } : undefined}
               >
-                <div className="task-section-eyebrow">Benchmarks by capability</div>
+                <div className="task-section-eyebrow">
+                  {hasVisibleSubtaskBenchmarks ? "Benchmarks by capability" : "Task hierarchy"}
+                </div>
                 <div className="task-section-title">
                   Subtasks <span className="meta">[{visibleSubtasks.length}]</span>
                 </div>
@@ -313,7 +342,6 @@ const TagBrowseView: React.FC = () => {
               <div className="subtask-grid">
                 {visibleSubtasks.map((s) => {
                   const subDatasets = subtaskBenchmarksById.get(s.id) || [];
-                  if (subDatasets.length === 0) return null;
                   const isExpanded = expandedSubtasks.has(s.id);
                   const visibleDatasets = isExpanded
                     ? subDatasets
@@ -326,34 +354,45 @@ const TagBrowseView: React.FC = () => {
                           {displayTaskName(s.name, s.slug)}
                         </Link>
                         <span className="subtask-head-meta">
-                          [{subDatasets.length} benchmark{subDatasets.length === 1 ? "" : "s"}]
+                          {subDatasets.length > 0
+                            ? `[${subDatasets.length} benchmark${subDatasets.length === 1 ? "" : "s"}]`
+                            : `[${(s.paper_count ?? 0).toLocaleString()} papers]`}
                         </span>
                       </div>
-                      {visibleDatasets.map((d, i) => (
-                        <div
-                          key={d.id}
-                          className="bench-row"
-                          onClick={() => navigate(benchmarkPath(d.slug || d.id, s.slug || s.id))}
-                        >
-                          <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
-                          <div className="bench-row-main">
-                            <div className="bench-row-name">{d.name}</div>
-                            <div className="bench-row-sub">
-                              {d.featured_rank != null && (
-                                <span className="bench-pin">
-                                  <Pin size={11} className="bench-pin-icon" /> pinned
-                                </span>
-                              )}
-                              {d.paper_count != null && (
-                                <span>
-                                  <strong>{d.paper_count}</strong> ENTRIES
-                                </span>
-                              )}
+                      {visibleDatasets.length > 0 ? (
+                        visibleDatasets.map((d, i) => (
+                          <div
+                            key={d.id}
+                            className="bench-row"
+                            onClick={() => navigate(benchmarkPath(d.slug || d.id, s.slug || s.id))}
+                          >
+                            <div className="bench-row-num">{String(i + 1).padStart(2, "0")}</div>
+                            <div className="bench-row-main">
+                              <div className="bench-row-name">{d.name}</div>
+                              <div className="bench-row-sub">
+                                {d.featured_rank != null && (
+                                  <span className="bench-pin">
+                                    <Pin size={11} className="bench-pin-icon" /> pinned
+                                  </span>
+                                )}
+                                {d.paper_count != null && (
+                                  <span>
+                                    <strong>{d.paper_count}</strong> ENTRIES
+                                  </span>
+                                )}
+                              </div>
                             </div>
+                            <div className="bench-row-arrow">→</div>
                           </div>
-                          <div className="bench-row-arrow">→</div>
-                        </div>
-                      ))}
+                        ))
+                      ) : (
+                        <Link to={`/tasks/${s.slug || s.id}`} className="subtask-summary">
+                          <span>{(s.paper_count ?? 0).toLocaleString()} papers</span>
+                          {s.description && (
+                            <span className="subtask-summary-desc">{s.description}</span>
+                          )}
+                        </Link>
+                      )}
                       {remaining > 0 && (
                         <button
                           type="button"
@@ -425,7 +464,7 @@ const TagBrowseView: React.FC = () => {
               <div className="side-block-num">01/</div>
               <div className="side-block-label">Sister Tasks</div>
               {sisters.slice(0, 8).map((s) => (
-                <Link key={s.id} to={`/tasks/${s.slug}`} className="side-link-row">
+                <Link key={s.id} to={`/tasks/${s.slug || s.id}`} className="side-link-row">
                   <span>{displayTaskName(s.name, s.slug)}</span>
                   {s.paper_count != null && <span className="count">{s.paper_count.toLocaleString()}</span>}
                 </Link>

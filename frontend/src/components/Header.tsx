@@ -80,11 +80,11 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <NavLink to="/methods" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
               Methods
             </NavLink>
+            <NavLink to="/frameworks" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
+              Frameworks
+            </NavLink>
             <NavLink to="/conferences" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
               Conferences
-            </NavLink>
-            <NavLink to="/ai-deadlines" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
-              Deadlines
             </NavLink>
             <NavLink to="/submit" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
               Submit
@@ -158,11 +158,11 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
             <NavLink to="/methods" className="mobile-nav-link" onClick={closeMobile}>
               Methods
             </NavLink>
+            <NavLink to="/frameworks" className="mobile-nav-link" onClick={closeMobile}>
+              Frameworks
+            </NavLink>
             <NavLink to="/conferences" className="mobile-nav-link" onClick={closeMobile}>
               Conferences
-            </NavLink>
-            <NavLink to="/ai-deadlines" className="mobile-nav-link" onClick={closeMobile}>
-              Deadlines
             </NavLink>
             <NavLink to="/submit" className="mobile-nav-link" onClick={closeMobile}>
               Submit

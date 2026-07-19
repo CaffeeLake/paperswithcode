@@ -123,7 +123,11 @@ const MethodDetailView: React.FC = () => {
         <span style={{ color: "var(--ink)" }}>{m.name}</span>
       </div>
 
-      <div className="tag-hero method-hero-grid">
+      <div
+        className={`tag-hero method-hero-grid${
+          m.slug === "grokking" ? " method-hero-grid--wide-figure" : ""
+        }`}
+      >
         <div>
           <div className="tag-hero-eyebrow">METHOD</div>
           <h1 className="tag-hero-title method-hero-title">{m.name}</h1>

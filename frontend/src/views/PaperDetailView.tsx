@@ -13,6 +13,7 @@ import { useAuth } from "@/lib/authContext";
 import { summarizeRepos } from "@/lib/transform";
 import { formatPageTitle, DEFAULT_SITE_SUFFIX } from "@/lib/latexPlainText";
 import { formatMetricValue, normalizePaperRouteId } from "@/lib/utils";
+import { copyableLeaderboardRanks, leaderboardBadgeMarkdown } from "@/lib/leaderboardBadges";
 import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import { usePreferences } from "@/lib/preferencesContext";
@@ -282,20 +283,12 @@ const PaperDetailView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  // Related papers: same first task slug.
+  // Related papers: generation-aware embedding endpoint with server-side task fallback.
   const relatedQ = useQuery({
-    queryKey: ["related-papers", paper?.tasks?.[0]?.id],
-    queryFn: () =>
-      apiClient.getTaskPapers(paper!.tasks![0]!.id, {
-        page: 1,
-        page_size: 5,
-        order_by: "citation_count",
-        order_dir: "desc",
-        include_resources: false,
-      }),
-    enabled: secondaryQueriesEnabled && !!paper?.tasks?.[0]?.id,
+    queryKey: ["related-papers", paper?.id],
+    queryFn: () => apiClient.getRelatedPapers(paper!.arxiv_id || paper!.id, 4),
+    enabled: secondaryQueriesEnabled && !!paper?.id,
     staleTime: 10 * 60 * 1000,
-    select: (res) => res.results.filter((p) => p.id !== paper?.id).slice(0, 4),
   });
 
   const [abstractExpanded, setAbstractExpanded] = useState(false);
@@ -493,6 +486,11 @@ const PaperDetailView: React.FC = () => {
     };
   }, [paper]);
 
+  const copyableRanks = useMemo(
+    () => copyableLeaderboardRanks(paper?.leaderboard_ranks),
+    [paper?.leaderboard_ranks],
+  );
+
   const [citationCopied, setCitationCopied] = useState(false);
 
   const handleCopyCitation = async () => {
@@ -506,6 +504,26 @@ const PaperDetailView: React.FC = () => {
       toast({
         title: "Copy failed",
         description: "Could not access the clipboard. Please copy manually.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleCopyLeaderboardBadge = async () => {
+    if (!paper) return;
+    const paperId = paper.arxiv_id || paper.id;
+    const markdown = leaderboardBadgeMarkdown(paperId, copyableRanks);
+    if (!markdown) return;
+    try {
+      await navigator.clipboard.writeText(markdown);
+      toast({
+        title: "PwC badges copied",
+        description: "Each badge links to its highlighted leaderboard row.",
+      });
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Could not access the clipboard. Please try again.",
         variant: "destructive",
       });
     }
@@ -575,22 +593,31 @@ const PaperDetailView: React.FC = () => {
         rows: [
           {
             label: "Models",
-            href: `https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`,
-            count: hfRepos?.models,
+            href: hfArtifactRowHref(
+              `https://huggingface.co/models?other=arxiv:${paper.arxiv_id}`,
+              explicitHfArtifacts.models,
+            ),
+            count: hfArtifactCount(explicitHfArtifacts.models, hfRepos?.modelUrls, hfRepos?.models),
             isLimited: hfRepos?.isLimited,
             links: hfArtifactLinks.models,
           },
           {
             label: "Datasets",
-            href: `https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`,
-            count: hfRepos?.datasets,
+            href: hfArtifactRowHref(
+              `https://huggingface.co/datasets?other=arxiv:${paper.arxiv_id}`,
+              explicitHfArtifacts.datasets,
+            ),
+            count: hfArtifactCount(explicitHfArtifacts.datasets, hfRepos?.datasetUrls, hfRepos?.datasets),
             isLimited: hfRepos?.isLimited,
             links: hfArtifactLinks.datasets,
           },
           {
             label: "Spaces",
-            href: `https://huggingface.co/spaces?arxivIds=${canonicalArxivId}`,
-            count: hfRepos?.spaces,
+            href: hfArtifactRowHref(
+              `https://huggingface.co/spaces?arxivIds=${canonicalArxivId}`,
+              explicitHfArtifacts.spaces,
+            ),
+            count: hfArtifactCount(explicitHfArtifacts.spaces, hfRepos?.spaceUrls, hfRepos?.spaces),
             isLimited: hfRepos?.isLimited,
             links: hfArtifactLinks.spaces,
           },
@@ -1108,6 +1135,16 @@ const PaperDetailView: React.FC = () => {
             accent={
               <span className="accent">
                 {visibleEvaluations?.length || 0} benchmarks
+                {copyableRanks.length > 0 && (
+                  <button
+                    type="button"
+                    className="edit-link results-badge-copy"
+                    onClick={handleCopyLeaderboardBadge}
+                    title="Copy live leaderboard badges for your repository README"
+                  >
+                    <Icon name="copy" size={10} /> Copy PwC badge
+                  </button>
+                )}
                 {canEditPaper && (
                   <button
                     type="button"
@@ -1325,7 +1362,13 @@ const PaperDetailView: React.FC = () => {
             </pre>
           </div>
 
-          {(relatedQ.data?.length ?? 0) > 0 && (
+          {relatedQ.isLoading && (
+            <div className="sidebar-card" aria-busy="true">
+              <div className="sidebar-card-title">Related papers</div>
+              <div className="related-meta">Finding related work…</div>
+            </div>
+          )}
+          {!relatedQ.isLoading && (relatedQ.data?.length ?? 0) > 0 && (
             <div className="sidebar-card">
               <div className="sidebar-card-title">Related papers</div>
               {relatedQ.data!.map((p) => (
@@ -1482,9 +1525,9 @@ const HuggingFaceArtifactsCard: React.FC<{
 const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) => {
   const hasLinks = (links?.length ?? 0) > 0;
   const countLabel = count != null ? `${count}${isLimited ? "+" : ""}` : "—";
-  // The count itself links to the aggregate listing on Hugging Face (e.g.
-  // huggingface.co/models?other=arxiv:<id>) so the full set stays reachable
-  // even when only the top few direct links are shown.
+  // Prefer an explicit repo URL when we have one. Otherwise the count links to
+  // the aggregate listing on Hugging Face (e.g. models?other=arxiv:<id>) so the
+  // full set stays reachable even when only the top few direct links are shown.
   const countNode =
     count ? (
       <a
@@ -1520,6 +1563,20 @@ const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) =
 
 function hfArtifactGroupHref(urls: string[]): string {
   return urls[0] ?? "https://huggingface.co";
+}
+
+function hfArtifactRowHref(fallbackHref: string, explicitUrls: string[]): string {
+  return explicitUrls[0] ?? fallbackHref;
+}
+
+function hfArtifactCount(
+  explicitUrls: string[],
+  discoveredUrls: string[] | undefined,
+  discoveredCount: number | undefined,
+): number | undefined {
+  if (discoveredCount == null && explicitUrls.length === 0 && !discoveredUrls?.length) return undefined;
+  const uniqueUrls = new Set([...explicitUrls, ...(discoveredUrls ?? [])]);
+  return Math.max(discoveredCount ?? 0, uniqueUrls.size);
 }
 
 export default PaperDetailView;

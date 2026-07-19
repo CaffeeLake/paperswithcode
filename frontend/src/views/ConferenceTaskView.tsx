@@ -148,12 +148,21 @@ const ConferenceTaskView: React.FC = () => {
             {isBrowseListing ? "BROWSE PAPERS" : "TASK"}
           </div>
           <h1 className="domain-mega-title">{taskName}</h1>
-          {isOutstandingPapers && (
+          {isOutstandingPapers && confSlug === "iclr-2026" && (
             <MarkdownText
               className="task-explainer"
               text={
                 "ICLR 2026 recognized two Outstanding Papers and one Honorable Mention. " +
                 "[Read the announcement](https://blog.iclr.cc/2026/04/23/announcing-the-iclr-2026-outstanding-papers/)."
+              }
+            />
+          )}
+          {isOutstandingPapers && confSlug === "icml-2026" && (
+            <MarkdownText
+              className="task-explainer"
+              text={
+                "ICML 2026 recognized two Outstanding Papers and five Honorable Mentions. " +
+                "[Read the announcement](https://blog.icml.cc/2026/07/05/announcing-the-icml-2026-awards/)."
               }
             />
           )}

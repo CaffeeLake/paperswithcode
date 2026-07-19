@@ -755,7 +755,7 @@ export const PaperPreview: React.FC<{ paperId: string; title: string; thumbnailU
           position: "relative",
         }}
       >
-        {shouldLoad && resolvedThumbnailUrl && (
+        {(priority || shouldLoad) && resolvedThumbnailUrl && (
           <img
             key={resolvedThumbnailUrl}
             src={resolvedThumbnailUrl}

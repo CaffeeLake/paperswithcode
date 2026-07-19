@@ -44,6 +44,36 @@
 
     --radius: 0.5rem;
   }
+
+  .dark {
+    --background: 36 13% 7%;
+    --foreground: 40 27% 93%;
+
+    --card: 36 12% 10%;
+    --card-foreground: 40 27% 93%;
+
+    --popover: 36 12% 10%;
+    --popover-foreground: 40 27% 93%;
+
+    --primary: 40 27% 93%;
+    --primary-foreground: 36 13% 7%;
+
+    --secondary: 34 11% 15%;
+    --secondary-foreground: 40 27% 93%;
+
+    --muted: 34 11% 15%;
+    --muted-foreground: 36 10% 64%;
+
+    --accent-tw: 216 22% 20%;
+    --accent-foreground: 213 38% 79%;
+
+    --destructive: 0 63% 42%;
+    --destructive-foreground: 40 27% 93%;
+
+    --border: 35 11% 20%;
+    --input: 35 11% 20%;
+    --ring: 213 38% 67%;
+  }
 }
 
 /* Scope tailwind border on shadcn surfaces only — applying it to * conflicts with

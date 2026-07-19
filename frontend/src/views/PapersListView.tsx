@@ -54,7 +54,7 @@ const PapersListView: React.FC = () => {
 
   const topTasks = useQuery({
     queryKey: ["top-tasks-sidebar"],
-    queryFn: () => apiClient.getTasks({ ordering: "-paper_count", page_size: 8 }),
+    queryFn: () => apiClient.getTopTasks({ limit: 8 }),
     staleTime: 10 * 60 * 1000,
   });
 
@@ -115,7 +115,7 @@ const PapersListView: React.FC = () => {
                 ))}
               </div>
             )}
-            {topTasks.data?.results?.map((task) => (
+            {topTasks.data?.map((task) => (
               <Link key={task.id} to={`/tasks/${task.slug}`} className="sidebar-link">
                 {displayTaskName(task.name, task.slug)}
                 {task.paper_count != null && <span className="count">{task.paper_count}</span>}
