@@ -1,6 +1,6 @@
-"""Recompute evaluations.external from paper-linked sources.
+"""Recompute evaluations.external from paper-native sources.
 
-Run after linking new project pages, repos, or HF artifacts:
+Run after linking conference pages, project pages, repos, or HF artifacts:
 
     uv run --env-file backend/keys.env \
         python backend/database/evaluations_setup/recompute_evaluations_external.py

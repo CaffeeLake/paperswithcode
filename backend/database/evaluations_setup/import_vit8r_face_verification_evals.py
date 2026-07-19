@@ -337,7 +337,7 @@ def ensure_task(session) -> int:
                 "Determine whether two face images belong to the same identity under "
                 "unconstrained in-the-wild settings."
             ),
-            keywords="face verification,face recognition,lfw,ijb,tar,far",
+            keywords="face verification,face recognition,lfw,ijb",
             area_id=VISION_AREA_ID,
         )
     )

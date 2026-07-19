@@ -37,6 +37,10 @@ class DatabaseManager:
                 # smaller per-worker pool avoids exhausting `max_connections`.
                 pool_size=5,
                 max_overflow=10,
+                # Under burst traffic, fail DB checkout quickly so requests
+                # release worker threads instead of sitting behind Cloudflare's
+                # timeout window.
+                pool_timeout=5,
                 pool_pre_ping=True,
                 pool_recycle=300,
                 echo=self.settings.is_development,  # Log SQL queries in development

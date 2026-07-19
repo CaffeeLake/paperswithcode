@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Dense foundation features are replacing task-specific encoders.** Recent leaders increasingly freeze or lightly adapt large pretrained ViTs: [DINOv3](/paper/2508.10104) leads the [ADE20K](/benchmark/ade20k?task=image-segmentation), [Pascal VOC](/benchmark/pascal-voc-2012?task=image-segmentation), and [Cityscapes](/benchmark/cityscapes?task=image-segmentation) tables, while [ViT-Up](/paper/2606.14024) and [Sapiens2](/paper/2604.21681) preserve spatial detail through learned upsampling and native high-resolution pretraining. Key themes are self-supervision, frozen transfer, scaling, and dense-feature recovery.',
+    '**Segmentation is becoming promptable and language-native.** The shift started with [SAM](/paper/2304.02643) and its point-and-box prompts and now extends to concept prompting and tracking in [SAM 3](/paper/2511.16719), two-token mask generation in [SAMTok](/paper/2601.16093), and training-free visual examples in [INSID3](/paper/2603.28480). Key themes are open-vocabulary concepts, text and image prompts, compact mask tokens, zero-shot transfer, and interactive use.',
+    '**The systems frontier is simpler, unified, and real-time.** [EoMT](/paper/2503.19108) removes adapters, pixel decoders, and transformer mask decoders by turning the ViT itself into an encoder-only segmenter, while [YOLO26](/paper/2606.03748) integrates instance segmentation into an NMS-free real-time vision family; [Deformba](/paper/2605.21308) explores linear-complexity state-space fusion. The recurring goal is less task-specific machinery, lower latency, and one deployable backbone across tasks.'
+),
+updated_at = NOW()
+WHERE slug = 'image-segmentation';

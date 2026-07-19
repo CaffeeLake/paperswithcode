@@ -303,11 +303,42 @@ def _format_score(value: float) -> str:
     return f"{rounded:.2f}"
 
 
+def _best_entry_per_paper(
+    entries: list[LeaderboardEntry],
+) -> tuple[list[LeaderboardEntry], list[str]]:
+    """Keep only the highest-scoring variant when multiple agent keys map to one paper."""
+    best_by_paper: dict[int, LeaderboardEntry] = {}
+    skipped: list[str] = []
+
+    for entry in entries:
+        paper_id = AGENT_SPECS[entry.agent_key]["paper_id"]
+        existing = best_by_paper.get(paper_id)
+        if existing is None:
+            best_by_paper[paper_id] = entry
+            continue
+        if entry.average_score > existing.average_score:
+            skipped.append(
+                f"{AGENT_SPECS[existing.agent_key]['model_name']}: "
+                f"superseded by {AGENT_SPECS[entry.agent_key]['model_name']} "
+                f"({existing.average_score:g}% -> {entry.average_score:g}%)"
+            )
+            best_by_paper[paper_id] = entry
+        else:
+            skipped.append(
+                f"{AGENT_SPECS[entry.agent_key]['model_name']}: "
+                f"lower score ({entry.average_score:g}%) than "
+                f"{AGENT_SPECS[existing.agent_key]['model_name']} "
+                f"({existing.average_score:g}%)"
+            )
+
+    return list(best_by_paper.values()), skipped
+
+
 def import_rows(
     session: Session, task_id: int, dataset_id: int, payload: dict
 ) -> tuple[int, list[str]]:
-    entries = fetch_leaderboard_entries(payload)
-    skipped: list[str] = []
+    entries, variant_skipped = _best_entry_per_paper(fetch_leaderboard_entries(payload))
+    skipped: list[str] = list(variant_skipped)
     created = 0
 
     for entry in entries:

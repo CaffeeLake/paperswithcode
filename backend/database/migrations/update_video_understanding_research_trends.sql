@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Generalist video MLLMs replace task-specific stacks.** The frontier is consolidating motion, long-context, streaming, and grounded outputs in one model rather than adapting image encoders to isolated tasks. [VideoChat3](/paper/2607.14935) pairs spatiotemporal tokenization with adaptive frame resolution, [Molmo2](/paper/2601.10611) adds point-and-track grounding and fully open video data, and [InternVL3](/paper/2504.10479) brings native multimodal pretraining and extended-context encoding to the broadly reported [MVBench](/benchmark/mvbench?task=video-understanding).',
+    '**Long videos become search-and-memory problems.** Instead of uniformly sampling or stuffing every frame into context, recent systems retrieve evidence at the right temporal granularity and preserve bounded summaries. [CARVE](/paper/2606.13141) routes each chunk by modality and granularity, [VideoBrain](/paper/2602.04094) learns when to retrieve or sample densely, and [ProtoKV](/paper/2606.26762) compresses distant history into constant-footprint prototype memory for delayed streaming queries.',
+    '**Reasoning moves into the video loop.** Models increasingly localize, crop, inspect, and revise evidence during inference, while post-training teaches when those interactions justify their cost. [VideoTemp-o3](/paper/2602.07801) unifies grounding and QA with SFT and RL, [PyVision-RL](/paper/2602.20739) sustains multi-turn tool use through accumulative rewards, and [VideoCuRL](/paper/2601.00887) separates perceptual load from cognitive depth in its curriculum.'
+),
+updated_at = NOW()
+WHERE slug = 'video-understanding';

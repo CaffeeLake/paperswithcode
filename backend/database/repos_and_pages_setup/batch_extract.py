@@ -2,7 +2,7 @@
 AI-powered batch processor for extracting GitHub URLs and project pages from papers.
 
 This script processes papers to find GitHub repositories and project pages using:
-1. AI extraction via GoogleGenerator (Gemini - 350 requests/day free tier)
+1. AI extraction via GoogleGenerator (Gemini 3.5 Flash, with 2.5 Flash fallback)
 2. Memory monitoring for 4GB RAM systems
 3. Database-driven deduplication (no caching needed)
 4. Coordination with HF API CRON job via urls_extracted flag
@@ -70,12 +70,12 @@ class BatchURLExtractor:
         self.start_year = start_year
 
         # Initialize Google Gemini generator with free tier limits
-        # Gemini 2.5 Flash: 250 RPD + Gemini 2.5 Pro: 100 RPD = 350 total
-        # Conservative: use 10 RPM to avoid hitting per-minute limits
+        # URL extraction uses Gemini 3.5 Flash (fallback: 2.5 Flash)
         requests_per_minute = 10
         requests_per_day = 350 if not use_paid_tier else 10000  # Free tier or Tier 1
         self.generator = GoogleGenerator(
-            requests_per_minute=requests_per_minute, requests_per_day=requests_per_day
+            requests_per_minute=requests_per_minute,
+            requests_per_day=requests_per_day,
         )
 
         self.stats = {
