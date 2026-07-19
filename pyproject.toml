@@ -36,6 +36,9 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
 ]
 
+[project.scripts]
+pwc = "backend.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -36,30 +36,38 @@ from backend.utils.biorxiv import (
 
 logger = logging.getLogger(__name__)
 
-THUMBNAIL_RENDERER_CACHE_BUST = "fit5"
+THUMBNAIL_RENDERER_CACHE_BUST = "fit9"
 EXPECTED_THUMBNAIL_WIDTH = 400
 EXPECTED_THUMBNAIL_FORMAT = "JPEG"
-# Paper cards render thumbnails in a 160×220 box; match that aspect so
-# object-fit: contain fills the frame without letterboxing.
+# Paper cards render thumbnails in a 160×220 box, but PDF pages have their own
+# MediaBox/CropBox aspect ratio. Keep the page ratio in the JPEG and let the
+# frontend containment frame handle the small per-page difference.
 CARD_THUMB_ASPECT = 160 / 220
-# A correctly-rendered first-page thumbnail is portrait (PDF page is ~A4 /
-# US Letter, H/W ~= 1.2-1.4 after trimming). Older renders produced squat
-# thumbnails around H/W = 0.65 because the height was clipped, so we treat
-# anything noticeably non-portrait as invalid and regenerate it.
+# Kept for card-sized non-PDF fallbacks and compatibility with callers that
+# need the nominal card dimensions. PDF thumbnails use a native, variable
+# height instead (e.g. US Letter at width 400 is about 518px tall).
+EXPECTED_THUMBNAIL_HEIGHT = int(EXPECTED_THUMBNAIL_WIDTH / CARD_THUMB_ASPECT)
+# Older renders produced squat thumbnails around H/W = 0.65 because the
+# height was clipped. Keep validation deliberately permissive above the
+# portrait threshold because PDF pages may use custom dimensions.
 MIN_THUMBNAIL_HEIGHT_TO_WIDTH_RATIO = 1.0
+# Only strip sparse footer rows from the bottom band of the page; without this
+# limit, low-density body text (e.g. abstract paragraphs) can be mistaken for
+# copyright/page-number footers and cropped away.
+MAX_SPARSE_FOOTER_HEIGHT_FRACTION = 0.05
 
 
 def is_thumbnail_valid(
     path: Path,
     expected_width: int = EXPECTED_THUMBNAIL_WIDTH,
+    expected_height: int | None = None,
     min_height_to_width_ratio: float = MIN_THUMBNAIL_HEIGHT_TO_WIDTH_RATIO,
 ) -> bool:
     """
     Check whether a cached thumbnail file is a readable JPEG with the expected
-    generated width and a portrait-ish aspect ratio. Used by the preload cron
-    to detect stale, truncated, or wrong-aspect thumbnails so they get
-    regenerated instead of being silently skipped just because the filename
-    happens to exist on disk.
+    generated dimensions. PDF pages retain their native aspect ratio, so the
+    height is variable; callers may pass ``expected_height`` for fixed-size
+    non-PDF thumbnails.
     """
     try:
         if not path.exists() or path.stat().st_size == 0:
@@ -68,6 +76,8 @@ def is_thumbnail_valid(
             if img.format != EXPECTED_THUMBNAIL_FORMAT:
                 return False
             if img.width != expected_width:
+                return False
+            if expected_height is not None and img.height != expected_height:
                 return False
             return img.height / img.width >= min_height_to_width_ratio
     except Exception:
@@ -155,15 +165,22 @@ def _trim_trailing_blank_rows(
 
 
 def _trim_sparse_footer_rows(
-    image: Image.Image, max_footer_ink_fraction: float = 0.25
+    image: Image.Image,
+    max_footer_ink_fraction: float = 0.25,
+    max_footer_height_fraction: float = MAX_SPARSE_FOOTER_HEIGHT_FRACTION,
 ) -> Image.Image:
     """
     Drop thin copyright / page-number rows at the bottom so trailing whitespace
     above them can be removed by :func:`_trim_trailing_blank_rows`.
+
+    Only rows in the bottom ``max_footer_height_fraction`` of the image are
+    candidates; this prevents low-density body text higher on the page from
+    being treated as footer content.
     """
     width, height = image.size
+    min_bottom = int(height * (1 - max_footer_height_fraction))
     bottom = height
-    while bottom > 0:
+    while bottom > min_bottom:
         ink = _row_ink_fraction(image, bottom - 1)
         if ink <= 0:
             bottom -= 1
@@ -203,31 +220,33 @@ def _resize_to_card_fill(
     image: Image.Image, target_width: int = EXPECTED_THUMBNAIL_WIDTH
 ) -> Image.Image:
     """
-    Scale and crop so the card frame is filled without letterboxing.
+    Scale the trimmed first page to fit inside the card frame (160×220 aspect).
 
-    The card uses ``object-fit: contain``, so thumbnails must already match the
-    160×220 aspect. Cover-style scaling removes the large PDF margins that would
-    otherwise appear as empty white bands in the card.
+    Uses contain-style fitting so titles, figures, and abstract text stay visible.
+    Any remaining slack is filled with white inside the JPEG so card
+    ``object-fit: contain`` still fills the frame without clipping content.
     """
     target_height = int(target_width / CARD_THUMB_ASPECT)
     width, height = image.size
-    scale = max(target_width / width, target_height / height)
+    scale = min(target_width / width, target_height / height)
     resized_width = max(1, int(width * scale + 0.5))
     resized_height = max(1, int(height * scale + 0.5))
     resized = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
 
-    left = max(0, (resized_width - target_width) // 2)
-    top = 0
-    return resized.crop((left, top, left + target_width, top + target_height))
+    canvas = Image.new("RGB", (target_width, target_height), "white")
+    left = (target_width - resized_width) // 2
+    canvas.paste(resized, (left, 0))
+    return canvas
 
 
 def _prepare_first_page_for_card(image: Image.Image) -> Image.Image:
-    """Trim PDF margins/footers and fit the card frame."""
-    image = _trim_blank_page_margins(image)
-    image = _trim_leading_blank_rows(image)
-    image = _trim_sparse_footer_rows(image)
-    image = _trim_trailing_blank_rows(image)
-    return _resize_to_card_fill(image)
+    """Render the complete PDF page at a fixed width, preserving page ratio."""
+    if image.width == EXPECTED_THUMBNAIL_WIDTH:
+        return image.convert("RGB")
+    height = max(1, round(image.height * EXPECTED_THUMBNAIL_WIDTH / image.width))
+    return image.convert("RGB").resize(
+        (EXPECTED_THUMBNAIL_WIDTH, height), Image.Resampling.LANCZOS
+    )
 
 
 def build_thumbnail_filename(arxiv_id: str, version: str = "v1") -> str:
@@ -245,18 +264,24 @@ def build_external_thumbnail_filename(paper_id: int | str) -> str:
     return f"external_{paper_id}.jpg"
 
 
-def build_thumbnail_url(filename: str) -> str:
+def build_thumbnail_url(filename: str, cache_bust: str | None = None) -> str:
     """
     Build the public thumbnail URL with a renderer cache-bust marker.
     """
-    return f"/api/thumbnails/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
+    url = f"/api/thumbnails/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
+    if cache_bust:
+        url += f"&v={cache_bust}"
+    return url
 
 
-def build_custom_thumbnail_url(filename: str) -> str:
+def build_custom_thumbnail_url(filename: str, cache_bust: str | None = None) -> str:
     """
     Build the public URL for an explicitly stored non-ArXiv thumbnail.
     """
-    return f"/api/thumbnails/custom/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
+    url = f"/api/thumbnails/custom/{filename}?fit={THUMBNAIL_RENDERER_CACHE_BUST}"
+    if cache_bust:
+        url += f"&v={cache_bust}"
+    return url
 
 
 class ThumbnailService:

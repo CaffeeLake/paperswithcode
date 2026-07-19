@@ -314,9 +314,10 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         found_completion = False
         found_failure = False
         last_start_time = None
+        last_start_index = None
 
         # Look for the most recent start and completion/failure messages
-        for line in lines:
+        for index, line in enumerate(lines):
             if "Starting" in line and (
                 "cron job:" in line
                 or "optimized" in line
@@ -330,9 +331,17 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                 )
                 if timestamp_match:
                     last_start_time = timestamp_match.group(1)
+                    last_start_index = index
 
-        # Check for completion/failure messages after the last start
-        for line in reversed(lines):  # Start from the end
+        # Slice at the run boundary instead of comparing timestamps line by line.
+        # Tracebacks and wrapped log messages are often untimestamped; accepting all
+        # such lines accidentally lets an old failure override a newer run.
+        current_run_lines = (
+            lines[last_start_index:] if last_start_index is not None else lines
+        )
+
+        # Check for completion/failure messages from the current run only
+        for line in reversed(current_run_lines):  # Start from the end
             if (
                 "completed successfully" in line
                 or "Job completed successfully" in line
@@ -368,19 +377,18 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                     status["error"] = line.split(":")[-1].strip()
                 break
 
+        current_run_incomplete = (
+            last_start_time is not None and not found_completion and not found_failure
+        )
+
         # If we found a recent start but no completion/failure, and process is running, it's running
-        if (
-            last_start_time
-            and not found_completion
-            and not found_failure
-            and status["is_running"]
-        ):
+        if current_run_incomplete and status["is_running"]:
             status["status"] = "running"
             status["last_run"] = last_start_time
         elif not found_completion and not found_failure and status["is_running"]:
             status["status"] = "running"
 
-        # If we found completion or failure, the job is not running regardless of process detection
+        # Only clear running state when the current run finished
         if found_completion or found_failure:
             status["is_running"] = False
 
@@ -389,7 +397,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         end_time = None
         completion_time = None
 
-        for line in lines:
+        for line in current_run_lines:
             if "Start time:" in line:
                 start_time = line.split("Start time:")[-1].strip()
             elif "End time:" in line:
@@ -419,7 +427,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
 
         # For jobs that completed, extract the completion timestamp
         if found_completion:
-            for line in reversed(lines):
+            for line in reversed(current_run_lines):
                 if (
                     "Update Completed" in line
                     or "Calculation Completed" in line
@@ -432,8 +440,9 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
                         completion_time = timestamp_match.group(1)
                         break
 
-        # Set last_run if not already set
-        if not status["last_run"]:
+        if current_run_incomplete and status["is_running"] and last_start_time:
+            status["last_run"] = last_start_time
+        elif not status["last_run"]:
             if completion_time:
                 status["last_run"] = completion_time
             elif end_time:
@@ -445,7 +454,7 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
 
         # Extract work metrics from logs (papers processed, repos updated, etc)
         work_metrics = {}
-        for line in lines:
+        for line in current_run_lines:
             # Papers processed
             if re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)

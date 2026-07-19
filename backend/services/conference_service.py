@@ -86,6 +86,7 @@ class ConferenceService:
                 db_conference.slug,
                 db_conference.image_mime_type is not None,
                 db_conference.image_url,
+                db_conference.updated_at,
             ),
             image_credit=db_conference.image_credit,
             hf_url=db_conference.hf_url,

@@ -6,9 +6,8 @@ Google Gemini AI models. This job processes papers that haven't been analyzed ye
 (urls_extracted = FALSE) to find official GitHub repos and project pages.
 
 Rate Limits (Google Gemini Free Tier):
-- Gemini 2.5 Flash: 250 requests per day (10 RPM)
-- Gemini 2.5 Pro: 100 requests per day (5 RPM)
-- Combined: 350 requests per day
+- Gemini 3.5 Flash: primary model for URL extraction
+- Gemini 2.5 Flash: fallback if 3.5 Flash is unavailable
 
 Optimized Strategy:
 - Process 14 papers per hour (conservative for free tier = 336/day with buffer)
@@ -86,7 +85,8 @@ class URLExtractionHourlyJob(DatabaseCronJob):
         try:
             # Create a test generator with minimal rate limits
             test_generator = GoogleGenerator(
-                requests_per_minute=10, requests_per_day=350
+                requests_per_minute=10,
+                requests_per_day=350,
             )
 
             # Make a minimal test request

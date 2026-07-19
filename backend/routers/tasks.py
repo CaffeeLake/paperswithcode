@@ -254,6 +254,13 @@ def get_task_image(
 @router.get("/{task_id}/page", response_model=TaskPage)
 def get_task_page(
     task_id: str,
+    is_open: Optional[bool] = Query(
+        None,
+        description=(
+            "When set, choose benchmark `best_model_name` values from only "
+            "open-source or only closed-source evaluation rows."
+        ),
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -271,7 +278,7 @@ def get_task_page(
     """
     try:
         service = TaskService(db)
-        return service.get_task_page(task_id)
+        return service.get_task_page(task_id, is_open=is_open)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

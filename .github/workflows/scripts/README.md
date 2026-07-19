@@ -106,5 +106,4 @@ Python jobs. It does not schedule jobs itself.
 
 - GitHub Actions workflow overview: `.github/workflows/README.md`
 - Operational overview: `docs/operations.md`
-- Detailed automation notes: `docs/automation-reference.md`
 - Trending implementation notes: `.github/workflows/scripts/hourly/README.md` and `.github/workflows/scripts/docs/TRENDING_EMA_GUIDE.md`

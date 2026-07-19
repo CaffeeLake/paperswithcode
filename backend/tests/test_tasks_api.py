@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 from backend.main import create_app
 from backend.models.database import (
     Base,
+    Area as DBArea,
     Paper as DBPaper,
     Task as DBTask,
     PaperTask,
@@ -183,6 +184,94 @@ def test_tasks_default_ordering_unaffected(client, tasks_with_uneven_paper_count
     assert counts_by_name["Robotics"] == 3
     assert counts_by_name["Object Detection"] == 1
     assert counts_by_name["Speech Recognition"] == 0
+
+
+def test_task_page_returns_research_trends(client):
+    """The bundled task page exposes the structured editorial bullets."""
+    db = TestingSessionLocal()
+    db.add(
+        DBTask(
+            id=1,
+            name="OCR",
+            slug="ocr",
+            level=0,
+            research_trends=["Trend one", "Trend two", "Trend three"],
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/v1/tasks/ocr/page")
+
+    assert response.status_code == 200
+    assert response.json()["task"]["research_trends"] == [
+        "Trend one",
+        "Trend two",
+        "Trend three",
+    ]
+
+
+@pytest.fixture
+def parent_task_with_popular_subtask():
+    """Create a top-level task and a more popular child subtask."""
+    db = TestingSessionLocal()
+
+    db.add(DBArea(id=1, name="Other"))
+    db.add_all(
+        [
+            DBTask(
+                id=10,
+                name="Graph Machine Learning",
+                slug="graph-machine-learning",
+                area_id=1,
+                level=0,
+                is_visible=True,
+            ),
+            DBTask(
+                id=11,
+                name="Node Classification",
+                slug="node-classification",
+                area_id=1,
+                parent_id=10,
+                level=1,
+                is_visible=True,
+            ),
+        ]
+    )
+    db.add_all(
+        DBPaper(
+            id=i,
+            title=f"Graph paper {i}",
+            abstract=f"Abstract {i}",
+            arxiv_id=f"2025.1{i:04d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for i in range(1, 7)
+    )
+    db.commit()
+
+    db.add(PaperTask(paper_id=1, task_id=10))
+    db.add_all(PaperTask(paper_id=i, task_id=11) for i in range(2, 7))
+    db.commit()
+    db.close()
+
+
+def test_public_domain_lists_hide_child_subtasks(
+    client, parent_task_with_popular_subtask
+):
+    """Top-level domain surfaces must not flatten child subtasks."""
+    top_response = client.get("/api/v1/tasks/top?limit=8")
+    assert top_response.status_code == 200
+    top_slugs = [task["slug"] for task in top_response.json()]
+    assert "graph-machine-learning" in top_slugs
+    assert "node-classification" not in top_slugs
+
+    taxonomy_response = client.get("/api/v1/areas/with-tasks/")
+    assert taxonomy_response.status_code == 200
+    area = taxonomy_response.json()["results"][0]
+    taxonomy_slugs = [task["slug"] for task in area["tasks"]]
+    assert taxonomy_slugs == ["graph-machine-learning"]
 
 
 @pytest.fixture
@@ -595,6 +684,35 @@ def test_trending_tasks_endpoint_returns_metadata(client, trending_dataset):
         ):
             assert key in first
         assert first["share_lift"] > 1.0
+
+
+def test_trending_tasks_level_filter_excludes_subtasks(client, trending_dataset):
+    """`level=0` must be applied before LIMIT and hide child subtasks."""
+    today = trending_dataset
+    db = TestingSessionLocal()
+    try:
+        db.add(
+            DBTask(
+                id=7,
+                name="Rising Subtask",
+                slug="rising-subtask",
+                parent_id=1,
+                level=1,
+                is_visible=True,
+            )
+        )
+        db.add_all(PaperTask(paper_id=i, task_id=7) for i in range(1, 21))
+        db.commit()
+
+        service = TaskService(db)
+        response = service.get_trending_tasks(today=today, limit=8, level=0)
+    finally:
+        db.close()
+
+    results = response.results
+    assert results
+    assert all(task.level == 0 for task in results)
+    assert "rising-subtask" not in {task.slug for task in results}
 
 
 def test_trending_tasks_path_not_treated_as_slug(client, trending_dataset):

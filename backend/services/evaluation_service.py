@@ -7,7 +7,7 @@ including pagination, filtering by paper, task, and dataset.
 
 import re
 from typing import Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, or_, func
 
@@ -70,6 +70,16 @@ def _normalize_url_for_match(url: Optional[str]) -> Optional[str]:
     if netloc.startswith("www."):
         netloc = netloc[4:]
     path = parsed.path.rstrip("/")
+
+    # OpenReview exposes the same submission through /forum?id=... and
+    # /pdf?id=.... Preserve the submission id while treating those surfaces as
+    # equivalent; dropping the query would collapse every OpenReview paper to
+    # the same host/path key.
+    if netloc == "openreview.net" and path.lower() in {"/forum", "/pdf"}:
+        submission_id = parse_qs(parsed.query).get("id", [None])[0]
+        if submission_id:
+            return f"openreview:{submission_id.lower()}"
+
     return urlunparse((scheme, netloc, path, "", "", "")).lower()
 
 
@@ -228,6 +238,8 @@ def _related_source_keys(
     if paper:
         for url in [
             paper.source_url,
+            paper.conference_url_abs,
+            paper.conference_url_pdf,
             *(paper.hf_models or []),
             *(paper.hf_datasets or []),
             *(paper.hf_spaces or []),
@@ -673,7 +685,18 @@ class EvaluationService:
                 else:
                     order_field = DBEvaluation.created_at
 
-                if order_dir == "desc":
+                if order_by == "best_rank":
+                    primary = (
+                        desc(order_field).nulls_last()
+                        if order_dir == "desc"
+                        else asc(order_field).nulls_last()
+                    )
+                    query = query.order_by(
+                        primary,
+                        asc(DBEvaluation.best_metric).nulls_last(),
+                        asc(DBEvaluation.id),
+                    )
+                elif order_dir == "desc":
                     query = query.order_by(desc(order_field))
                 else:
                     query = query.order_by(asc(order_field))

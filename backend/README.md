@@ -99,7 +99,7 @@ curl "http://localhost:8000/api/v1/papers/recent?limit=5"
 curl "http://localhost:8000/api/v1/papers/arxiv/1805.10616"
 
 # Search papers
-curl "http://localhost:8000/api/v1/papers/search?q=transformer&limit=10"
+curl "http://localhost:8000/api/v1/papers/search?q=transformer&page=1&page_size=10"
 
 # Get papers with pagination
 curl "http://localhost:8000/api/v1/papers/?page=1&page_size=10"
@@ -329,9 +329,8 @@ The application provides structured logging and can be integrated with monitorin
 
 ## Documentation
 
-- **[API Guide: Adding Data](../docs/API_GUIDE_ADDING_DATA.md)** - Quick reference for adding datasets and evaluations
-- **[Adding Evaluations Guide](../docs/ADDING_EVALUATIONS_GUIDE.md)** - Detailed evaluation management guide
-- **[API Expansion Plan](../docs/API_EXPANSION_PLAN.md)** - Complete API roadmap and implementation status
+- **[Data workflows](../docs/data-workflows.md)** - Adding datasets and evaluations
+- **Interactive API docs** - Run the server and open `http://localhost:8000/docs`
 
 ## Contributing
 

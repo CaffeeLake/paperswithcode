@@ -31,6 +31,7 @@ NC='\033[0m' # No Color
 # Configuration
 PROJECT_ROOT="/root/python_projects/paperswithcode"
 BACKEND_PORT=8000
+BACKEND_WORKERS="${PWC_BACKEND_WORKERS:-2}"
 FRONTEND_PORT=8080
 LOG_DIR="$PROJECT_ROOT/logs"
 BACKEND_LOG="$LOG_DIR/backend.log"
@@ -195,10 +196,16 @@ cd "$PROJECT_ROOT"
 echo -e "${PURPLE}🔧 Starting Backend (FastAPI)...${NC}"
 echo -e "   Environment: ${CYAN}backend/keys.env${NC}"
 echo -e "   Port: ${CYAN}$BACKEND_PORT${NC}"
+echo -e "   Workers: ${CYAN}$BACKEND_WORKERS${NC}"
 echo -e "   Log: ${CYAN}$BACKEND_LOG${NC}"
 
-# Start backend in background with logging
-nohup uv run --env-file backend/keys.env backend/run_server.py > "$BACKEND_LOG" 2>&1 &
+# Start backend in background with logging. Launch uvicorn directly from the
+# project venv after loading keys.env; this avoids an extra uv/run_server parent
+# process that can exit while leaving nginx pointed at a dead :8000.
+set -a
+source backend/keys.env
+set +a
+setsid .venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --workers "$BACKEND_WORKERS" --log-level info > "$BACKEND_LOG" 2>&1 < /dev/null &
 BACKEND_PID=$!
 
 echo -e "${YELLOW}   Backend PID: $BACKEND_PID${NC}"
@@ -242,6 +249,7 @@ if ! npm run build > "$FRONTEND_LOG" 2>&1; then
     tail -40 "$FRONTEND_LOG" || echo "No build logs available"
     exit 1
 fi
+chmod -R a+rX "$PROJECT_ROOT/frontend/dist"
 echo -e "${GREEN}✅ Frontend build completed${NC}"
 FRONTEND_PID="(static, nginx-served)"
 

@@ -430,7 +430,7 @@ class GeminiBatchExtractor:
             # Create batch job with uploaded file
             batch_job = await asyncio.to_thread(
                 self.client.batches.create,
-                model="models/gemini-2.5-flash",
+                model="models/gemini-3.5-flash",
                 src=input_file_name,  # File name, not URI
                 config={"display_name": f"url_extraction_{self.timestamp}"},
             )

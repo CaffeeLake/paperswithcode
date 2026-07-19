@@ -16,6 +16,9 @@ from abc import ABC
 logger = logging.getLogger(__name__)
 
 
+MAX_RETRY_DELAY_SECONDS = 300
+
+
 class RateLimitingMixin(ABC):
     """
     Mixin class providing rate limiting and retry functionality for AI generators.
@@ -86,25 +89,21 @@ class RateLimitingMixin(ABC):
         - Generic: "wait 30 seconds"
         """
         try:
-            # Look for retry delay patterns
             patterns = [
-                # OpenRouter patterns
+                r"'retryDelay':\s*'(\d+)s'",
+                r'"retryDelay":\s*"(\d+)s"',
                 r"retry.*?in\s+(\d+)\s*seconds?",
                 r"try again in\s+(\d+)\s*seconds?",
                 r"wait\s+(\d+)\s*seconds?",
-                r"retry.*?(\d+)s",
-                # Gemini patterns
-                r"'retryDelay':\s*'(\d+)s'",
-                r'"retryDelay":\s*"(\d+)s"',
-                # Generic patterns
-                r"retry.*?(\d+)",
-                r"delay.*?(\d+)",
             ]
 
             for pattern in patterns:
                 match = re.search(pattern, error_str, re.IGNORECASE)
                 if match:
-                    return int(match.group(1))
+                    delay = int(match.group(1))
+                    if delay <= MAX_RETRY_DELAY_SECONDS:
+                        return delay
+                    return None
         except (ValueError, AttributeError):
             pass
         return None

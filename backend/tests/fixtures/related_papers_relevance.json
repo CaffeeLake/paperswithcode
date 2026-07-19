@@ -1,0 +1,13 @@
+{
+  "schema_version": "related-papers-relevance-v1",
+  "corpus_snapshot": "ci-sanitized-2026-07-18",
+  "rubric": "2=strongly useful next paper for the central contribution; 1=shared central problem or important technique; 0=unrelated",
+  "judgments": [
+    {"source_paper_id": 755, "related_paper_id": 1538, "source_arxiv_id": "1706.03762", "related_arxiv_id": "1810.04805", "grade": 1, "split": "test"},
+    {"source_paper_id": 1538, "related_paper_id": 3634, "source_arxiv_id": "1810.04805", "related_arxiv_id": "2005.14165", "grade": 1, "split": "test"},
+    {"source_paper_id": 14709, "related_paper_id": 5606, "source_arxiv_id": "2304.07193", "related_arxiv_id": "2104.14294", "grade": 2, "split": "test"},
+    {"source_paper_id": 14487, "related_paper_id": 35444, "source_arxiv_id": "2304.02643", "related_arxiv_id": "2408.00714", "grade": 2, "split": "test"},
+    {"source_paper_id": 3234, "related_paper_id": 19030, "source_arxiv_id": "2003.08934", "related_arxiv_id": "2308.04079", "grade": 1, "split": "test"},
+    {"source_paper_id": 62049, "related_paper_id": 54972, "source_arxiv_id": "2601.18089", "related_arxiv_id": "2512.20856", "grade": 2, "split": "test"}
+  ]
+}

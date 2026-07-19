@@ -68,10 +68,14 @@ class _FakePaper:
         paper_id: int,
         *,
         source_url: str | None = None,
+        conference_url_abs: str | None = None,
+        conference_url_pdf: str | None = None,
         hf_models: list[str] | None = None,
     ):
         self.id = paper_id
         self.source_url = source_url
+        self.conference_url_abs = conference_url_abs
+        self.conference_url_pdf = conference_url_pdf
         self.hf_models = hf_models or []
         self.hf_datasets = []
         self.hf_spaces = []
@@ -130,6 +134,47 @@ def test_evaluation_is_external_false_when_source_matches_same_paper():
         source_url,
         None,
         40193,
+        db,
+    )
+
+
+def test_evaluation_is_external_false_for_linked_conference_page():
+    conference_url = "https://openreview.net/forum?id=kPC83HK4br"
+    db = _FakeDB(_FakePaper(paper_id=91859, conference_url_abs=conference_url))
+    assert not evaluation_is_external(
+        conference_url,
+        "2407.06141",
+        91859,
+        db,
+    )
+
+
+def test_evaluation_is_external_false_for_openreview_forum_pdf_variants():
+    db = _FakeDB(
+        _FakePaper(
+            paper_id=91859,
+            conference_url_abs="https://openreview.net/forum?id=kPC83HK4br",
+        )
+    )
+    assert not evaluation_is_external(
+        "https://openreview.net/pdf?id=kPC83HK4br",
+        "2407.06141",
+        91859,
+        db,
+    )
+
+
+def test_evaluation_is_external_true_for_unrelated_openreview_submission():
+    db = _FakeDB(
+        _FakePaper(
+            paper_id=91859,
+            conference_url_abs="https://openreview.net/forum?id=kPC83HK4br",
+        )
+    )
+    assert evaluation_is_external(
+        "https://openreview.net/forum?id=someOtherSubmission",
+        "2407.06141",
+        91859,
         db,
     )
 

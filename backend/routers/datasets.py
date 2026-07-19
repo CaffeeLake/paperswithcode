@@ -63,6 +63,14 @@ def list_datasets(
             "benchmarks (e.g. < 2 evaluations) by default."
         ),
     ),
+    is_open: Optional[bool] = Query(
+        None,
+        description=(
+            "When task-scoped, choose `best_model_name` from only open-source "
+            "or only closed-source evaluation rows. Does not filter benchmark "
+            "membership or paper_count."
+        ),
+    ),
     ordering: Optional[str] = Query(
         "name",
         description="Order by field: name, full_name, created_at, paper_count (prefix with '-' for descending)",
@@ -119,6 +127,7 @@ def list_datasets(
                 task_id=task_id,
                 include_descendants=include_descendants,
                 min_eval_count=min_eval_count,
+                is_open=is_open,
             )
 
         return service.get_datasets(
@@ -131,6 +140,7 @@ def list_datasets(
             order_by=order_by,
             order_dir=order_dir,
             min_eval_count=min_eval_count,
+            is_open=is_open,
         )
 
     except DatabaseError as e:

@@ -3,7 +3,7 @@ Configuration management for the FastAPI backend.
 """
 
 from functools import lru_cache
-from typing import List
+from typing import List, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -75,6 +75,36 @@ class Settings(BaseSettings):
         default="github",
         description="Papers trending ranking mode: 'github' or 'composite'",
     )
+
+    paper_search_mode: Literal["keyword", "semantic", "hybrid"] = Field(
+        default="keyword",
+        description="Default paper search mode: keyword, semantic, or hybrid",
+    )
+    related_papers_mode: Literal["task", "embedding"] = Field(
+        default="task",
+        description="Related-paper mode: 'task' or 'embedding'",
+    )
+    embedding_generation_id: int | None = Field(
+        default=None,
+        description="Optional ready/active embedding generation override",
+    )
+    related_papers_min_similarity: float | None = Field(
+        default=None,
+        description="Judgment-calibrated dense similarity floor; unset means no floor",
+    )
+    query_embedder: Literal["disabled", "hf_endpoint"] = Field(
+        default="disabled",
+        description="Query encoder: 'disabled' or 'hf_endpoint'",
+    )
+    hf_query_embedding_endpoint_url: str = Field(
+        default="",
+        description="Protected HF Inference Endpoint URL for encode_query",
+    )
+    query_embedding_timeout_ms: int = Field(default=500, ge=50, le=5000)
+    query_embedding_max_concurrency: int = Field(default=4, ge=1, le=32)
+    hybrid_rrf_k: int = Field(default=60, ge=1, le=1000)
+    hybrid_lexical_weight: float = Field(default=1.0, gt=0)
+    hybrid_semantic_weight: float = Field(default=1.0, gt=0)
 
     # ArXiv configuration
     arxiv_base_url: str = Field(

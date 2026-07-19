@@ -103,13 +103,19 @@ class DatasetService:
         return result
 
     def _best_models_for_datasets(
-        self, dataset_ids: List[int], scoped_task_ids: List[int]
+        self,
+        dataset_ids: List[int],
+        scoped_task_ids: List[int],
+        is_open: Optional[bool] = None,
     ) -> dict:
-        """Map dataset_id -> best (rank 1) model name for the scoped task(s).
+        """Map dataset_id -> best visible model name for the scoped task(s).
 
         Mirrors the benchmark page's primary-metric logic: a (task, dataset)
         can host multiple metric leaderboards, so we first pick the metric the
-        most evaluation rows rank on, then take that metric's rank-1 model.
+        most evaluation rows rank on, then take that metric's top-ranked model.
+        When `is_open` is set, only rows matching that source-availability
+        state participate so task-page benchmark summaries match filtered
+        benchmark leaderboards.
         Done in two batched queries (no N+1) since the task page renders up to
         ~100 benchmark rows.
         """
@@ -117,20 +123,20 @@ class DatasetService:
             return {}
 
         # Step 1: per dataset, find the metric carried by the most ranked rows.
-        metric_counts = (
-            self.db.query(
-                DBEvaluation.dataset_id,
-                DBEvaluation.best_metric,
-                func.count(DBEvaluation.id).label("n"),
-            )
-            .filter(
-                DBEvaluation.dataset_id.in_(dataset_ids),
-                DBEvaluation.task_id.in_(scoped_task_ids),
-                DBEvaluation.best_metric.isnot(None),
-            )
-            .group_by(DBEvaluation.dataset_id, DBEvaluation.best_metric)
-            .all()
+        metric_counts = self.db.query(
+            DBEvaluation.dataset_id,
+            DBEvaluation.best_metric,
+            func.count(DBEvaluation.id).label("n"),
+        ).filter(
+            DBEvaluation.dataset_id.in_(dataset_ids),
+            DBEvaluation.task_id.in_(scoped_task_ids),
+            DBEvaluation.best_metric.isnot(None),
         )
+        if is_open is not None:
+            metric_counts = metric_counts.filter(DBEvaluation.is_open == is_open)
+        metric_counts = metric_counts.group_by(
+            DBEvaluation.dataset_id, DBEvaluation.best_metric
+        ).all()
         primary_metric: dict = {}
         best_n: dict = {}
         for dataset_id, metric, n in metric_counts:
@@ -141,22 +147,25 @@ class DatasetService:
         if not primary_metric:
             return {}
 
-        # Step 2: fetch the rank-1 model for each dataset's primary metric.
-        rank_one = (
-            self.db.query(
-                DBEvaluation.dataset_id,
-                DBEvaluation.best_metric,
-                DBEvaluation.model_name,
-            )
-            .filter(
-                DBEvaluation.dataset_id.in_(list(primary_metric.keys())),
-                DBEvaluation.task_id.in_(scoped_task_ids),
-                DBEvaluation.best_rank == 1,
-            )
-            .all()
+        # Step 2: fetch each dataset's best visible model for its primary metric.
+        ranked_rows = self.db.query(
+            DBEvaluation.dataset_id,
+            DBEvaluation.best_metric,
+            DBEvaluation.model_name,
+            DBEvaluation.best_rank,
+            DBEvaluation.id,
+        ).filter(
+            DBEvaluation.dataset_id.in_(list(primary_metric.keys())),
+            DBEvaluation.task_id.in_(scoped_task_ids),
         )
+        if is_open is not None:
+            ranked_rows = ranked_rows.filter(DBEvaluation.is_open == is_open)
+        ranked_rows = ranked_rows.order_by(
+            asc(DBEvaluation.best_rank).nulls_last(),
+            asc(DBEvaluation.id),
+        ).all()
         best_models: dict = {}
-        for dataset_id, metric, model_name in rank_one:
+        for dataset_id, metric, model_name, _rank, _evaluation_id in ranked_rows:
             if metric == primary_metric.get(dataset_id) and model_name:
                 best_models.setdefault(dataset_id, model_name)
         return best_models
@@ -173,6 +182,7 @@ class DatasetService:
         order_by: str = "name",
         order_dir: str = "asc",
         min_eval_count: Optional[int] = None,
+        is_open: Optional[bool] = None,
     ) -> Datasets:
         """
         Get a paginated list of benchmark datasets with optional filtering.
@@ -189,6 +199,9 @@ class DatasetService:
             min_eval_count: When set, hide benchmarks whose evaluation row
                 count (i.e. `paper_count`) is below this threshold. Used by
                 the task page to suppress low-signal benchmarks by default.
+            is_open: When set, choose `best_model_name` from only open-source
+                or closed-source evaluation rows. Benchmark inclusion/counts
+                remain based on all rows.
 
         Returns:
             Datasets object with pagination info and results
@@ -278,17 +291,9 @@ class DatasetService:
                 # default task-page lists without touching the underlying
                 # data or the dataset detail page (which loads benchmarks
                 # by slug directly, bypassing this filter).
-                # Pinned benchmarks (`featured_rank` set on this task) always
-                # stay visible so curation is not defeated by low entry count.
-                if task_id is not None:
-                    query = query.having(
-                        or_(
-                            _leaderboard_row_count() >= min_eval_count,
-                            task_dataset_filter.featured_rank.isnot(None),
-                        )
-                    )
-                else:
-                    query = query.having(_leaderboard_row_count() >= min_eval_count)
+                # Apply the threshold uniformly, including to featured
+                # benchmarks: pinning controls order, not visibility.
+                query = query.having(_leaderboard_row_count() >= min_eval_count)
 
             # Get total count before pagination
             total_count = query.count()
@@ -336,7 +341,7 @@ class DatasetService:
             best_models: dict = {}
             if scoped_task_ids is not None:
                 best_models = self._best_models_for_datasets(
-                    page_dataset_ids, scoped_task_ids
+                    page_dataset_ids, scoped_task_ids, is_open=is_open
                 )
 
             # Batched harness-support lookup for the whole page in one query.
@@ -711,6 +716,7 @@ class DatasetService:
         task_id: Optional[int] = None,
         include_descendants: bool = False,
         min_eval_count: Optional[int] = None,
+        is_open: Optional[bool] = None,
     ) -> Datasets:
         """
         Search datasets by name, full_name, or description.
@@ -722,6 +728,8 @@ class DatasetService:
             task_id: When set, restrict results to benchmarks linked to this task
             include_descendants: Expand ``task_id`` to subtasks when filtering
             min_eval_count: Hide benchmarks below this evaluation row count
+            is_open: When set, choose `best_model_name` from only matching
+                evaluation rows.
 
         Returns:
             Datasets object with pagination info and results
@@ -736,6 +744,7 @@ class DatasetService:
             task_id=task_id,
             include_descendants=include_descendants,
             min_eval_count=min_eval_count,
+            is_open=is_open,
             order_by="name",
             order_dir="asc",
         )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Type
 
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
 from backend.models.database import Conference as DBConference
@@ -54,4 +56,5 @@ def store_entity_image(
 
     row.image_data = image_path.read_bytes()
     row.image_mime_type = mime
+    row.updated_at = datetime.now(timezone.utc)
     return True

@@ -14,6 +14,7 @@ two columns per row:
 `load_entity_image` fetches the bytes for the serving endpoints.
 """
 
+from datetime import datetime
 from typing import Optional, Tuple, Type
 
 from sqlalchemy.orm import Session, undefer
@@ -33,6 +34,7 @@ def entity_image_url(
     slug: Optional[str],
     has_db_image: bool,
     fallback_url: Optional[str],
+    updated_at: Optional[datetime] = None,
 ) -> Optional[str]:
     """Resolve the `image_url` returned to API clients.
 
@@ -48,7 +50,10 @@ def entity_image_url(
         fallback_url: Existing `image_url` to return when no DB image exists.
     """
     if has_db_image and slug:
-        return f"/api/v1/{entity_path}/{slug}/image"
+        url = f"/api/v1/{entity_path}/{slug}/image"
+        if updated_at is not None:
+            url = f"{url}?v={int(updated_at.timestamp())}"
+        return url
     return fallback_url
 
 

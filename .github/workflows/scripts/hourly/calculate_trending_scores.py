@@ -73,6 +73,7 @@ def get_repositories_needing_trending_update(
         # Query to find repositories that need trending score updates. Recent
         # official paper repos go first so hot launches do not sit behind a
         # large stale backlog.
+
         query = text("""
             SELECT r.id
             FROM repositories r
@@ -135,15 +136,16 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
         new_score    = alpha * raw_velocity + (1 - alpha) * previous_score
                        (or raw_velocity when there is no previous score)
 
-    A repository with a single snapshot is seeded to 0.0; a repository whose two
-    latest snapshots are < MIN_HOURS_BETWEEN_SNAPSHOTS apart is left untouched
-    (matching the original behaviour).
+    A repository with a single snapshot is seeded to 0.0. When the two most recent
+    snapshots are too close, the batch scans up to 10 recent snapshots for the
+    first pair with a gap >= MIN_HOURS_BETWEEN_SNAPSHOTS. Repos with no valid pair
+    only bump ``trending_score_updated_at`` so they do not block the cron.
 
-    Returns a dict with ``updated`` (EMA scores written) and ``insufficient``
-    (single-snapshot repos seeded to 0.0) counts.
+    Returns a dict with ``updated`` (EMA scores written), ``insufficient``
+    (single-snapshot repos seeded to 0.0), and ``skipped`` (no valid snapshot pair).
     """
     if not repository_ids:
-        return {"updated": 0, "insufficient": 0}
+        return {"updated": 0, "insufficient": 0, "skipped": 0}
 
     query = text("""
         WITH candidates AS (
@@ -160,57 +162,75 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             FROM repositories
             WHERE id = ANY(:repo_ids)
         ),
-        snap2 AS (
-            SELECT c.id AS repository_id, c.prev_score, s.num_stars,
-                   s.snapshot_at, s.rn
+        snapshots AS (
+            SELECT
+                c.id AS repository_id,
+                c.prev_score,
+                s.num_stars,
+                s.snapshot_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.id ORDER BY s.snapshot_at DESC
+                ) AS rn
             FROM candidates c
             CROSS JOIN LATERAL (
-                SELECT num_stars, snapshot_at,
-                       ROW_NUMBER() OVER (ORDER BY snapshot_at DESC) AS rn
+                SELECT num_stars, snapshot_at
                 FROM repository_star_history rsh
                 WHERE rsh.repository_id = c.id
                 ORDER BY snapshot_at DESC
-                LIMIT 2
+                LIMIT 10
             ) s
         ),
-        pivoted AS (
+        snap_counts AS (
             SELECT
                 repository_id,
                 MAX(prev_score) AS prev_score,
-                COUNT(*) AS snap_count,
-                MAX(num_stars) FILTER (WHERE rn = 1) AS current_stars,
-                MAX(snapshot_at) FILTER (WHERE rn = 1) AS current_at,
-                MAX(num_stars) FILTER (WHERE rn = 2) AS previous_stars,
-                MAX(snapshot_at) FILTER (WHERE rn = 2) AS previous_at
-            FROM snap2
+                COUNT(*) AS snap_count
+            FROM snapshots
             GROUP BY repository_id
+        ),
+        valid_pairs AS (
+            SELECT DISTINCT ON (l.repository_id)
+                l.repository_id,
+                sc.prev_score,
+                sc.snap_count,
+                l.num_stars AS current_stars,
+                l.snapshot_at AS current_at,
+                s.num_stars AS previous_stars,
+                s.snapshot_at AS previous_at
+            FROM snapshots l
+            JOIN snap_counts sc ON sc.repository_id = l.repository_id
+            JOIN snapshots s
+                ON s.repository_id = l.repository_id
+                AND s.rn > l.rn
+            WHERE l.rn = 1
+              AND EXTRACT(EPOCH FROM (l.snapshot_at - s.snapshot_at))
+                      / 3600.0 >= :min_hours
+            ORDER BY l.repository_id, s.rn
         ),
         raw_scores AS (
             SELECT
-                repository_id,
-                snap_count,
+                sc.repository_id,
+                sc.snap_count,
                 CASE
-                    WHEN snap_count = 1 THEN 0.0
-                    WHEN snap_count >= 2
-                         AND EXTRACT(EPOCH FROM (current_at - previous_at))
-                             / 3600.0 >= :min_hours
-                    THEN
+                    WHEN sc.snap_count = 1 THEN 0.0
+                    WHEN vp.repository_id IS NOT NULL THEN
                         CASE
-                            WHEN prev_score IS NULL
+                            WHEN vp.prev_score IS NULL
                             THEN GREATEST(
-                                (current_stars - previous_stars)
-                                / (EXTRACT(EPOCH FROM (current_at - previous_at))
+                                (vp.current_stars - vp.previous_stars)
+                                / (EXTRACT(EPOCH FROM (vp.current_at - vp.previous_at))
                                    / 3600.0),
                                 0.0
                             )
-                            ELSE :alpha * ((current_stars - previous_stars)
-                                 / (EXTRACT(EPOCH FROM (current_at - previous_at))
+                            ELSE :alpha * ((vp.current_stars - vp.previous_stars)
+                                 / (EXTRACT(EPOCH FROM (vp.current_at - vp.previous_at))
                                     / 3600.0))
-                                 + (1 - :alpha) * prev_score
+                                 + (1 - :alpha) * vp.prev_score
                         END
                     ELSE NULL
                 END AS new_score
-            FROM pivoted
+            FROM snap_counts sc
+            LEFT JOIN valid_pairs vp ON vp.repository_id = sc.repository_id
         ),
         computed AS (
             SELECT
@@ -230,11 +250,22 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             WHERE r.id = c.repository_id
               AND c.new_score IS NOT NULL
             RETURNING r.id, c.snap_count
+        ),
+        skipped AS (
+            UPDATE repositories r
+            SET trending_score_updated_at = NOW(),
+                updated_at = NOW()
+            FROM snap_counts sc
+            LEFT JOIN valid_pairs vp ON vp.repository_id = sc.repository_id
+            WHERE r.id = sc.repository_id
+              AND sc.snap_count >= 2
+              AND vp.repository_id IS NULL
+            RETURNING r.id
         )
         SELECT
-            COUNT(*) FILTER (WHERE snap_count >= 2) AS updated_count,
-            COUNT(*) FILTER (WHERE snap_count = 1) AS insufficient_count
-        FROM updated
+            (SELECT COUNT(*) FROM updated WHERE snap_count >= 2) AS updated_count,
+            (SELECT COUNT(*) FROM updated WHERE snap_count = 1) AS insufficient_count,
+            (SELECT COUNT(*) FROM skipped) AS skipped_count
     """)
 
     try:
@@ -252,6 +283,7 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
         return {
             "updated": int(row[0] or 0),
             "insufficient": int(row[1] or 0),
+            "skipped": int(row[2] or 0),
         }
     except Exception as e:
         session.rollback()
@@ -348,8 +380,13 @@ class TrendingScoresCalculationJob(DatabaseCronJob):
                 )
                 batch_updated = batch_result["updated"]
                 batch_insufficient = batch_result["insufficient"]
+                batch_skipped = batch_result.get("skipped", 0)
 
-                if batch_updated == 0 and batch_insufficient == 0:
+                if (
+                    batch_updated == 0
+                    and batch_insufficient == 0
+                    and batch_skipped == 0
+                ):
                     raise RuntimeError(
                         "Trending batch made no progress for "
                         f"{len(repository_ids)} queued repositories"
@@ -357,10 +394,12 @@ class TrendingScoresCalculationJob(DatabaseCronJob):
 
                 total_updated += batch_updated
                 total_insufficient_history += batch_insufficient
-                total_processed += batch_updated + batch_insufficient
+                total_processed += batch_updated + batch_insufficient + batch_skipped
 
                 self.logger.info(
-                    f"Batch {batch_num + 1} complete: {batch_updated} updated, {batch_insufficient} insufficient history"
+                    f"Batch {batch_num + 1} complete: {batch_updated} updated, "
+                    f"{batch_insufficient} insufficient history, "
+                    f"{batch_skipped} skipped (no valid snapshot pair)"
                 )
 
                 # If batch was not full, we've processed all available repositories

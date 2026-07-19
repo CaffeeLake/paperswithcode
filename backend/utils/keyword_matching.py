@@ -117,6 +117,7 @@ def create_keyword_patterns_with_metadata(
 # When the superseding task matches, drop the generic/subsuming task tag.
 TASK_SUPERSESSION_RULES: tuple[tuple[str, str], ...] = (
     ("3d-object-detection", "object-detection"),
+    ("video-frame-interpolation", "optical-flow"),
     ("video-matting", "image-matting"),
 )
 

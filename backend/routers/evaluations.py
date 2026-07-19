@@ -58,10 +58,12 @@ def list_evaluations(
         description="Filter by external source attribution status.",
     ),
     ordering: Optional[str] = Query(
-        "-created_at",
+        None,
         description=(
             "Order by field: created_at, best_rank, evaluated_on, "
             "benchmark_popularity (prefix with '-' for descending). "
+            "When omitted for a dataset-scoped query, defaults to best_rank "
+            "so benchmark leaderboards surface the rank-1 row first. "
             "benchmark_popularity sorts each row by the total number of "
             "evaluations on its dataset across all papers, which keeps rows "
             "for the most popular benchmarks together at the top."
@@ -86,11 +88,15 @@ def list_evaluations(
     """
     try:
         # Parse ordering
+        ordering_value = ordering
+        if ordering_value is None:
+            ordering_value = "best_rank" if dataset_id is not None else "-created_at"
+
         order_dir = "asc"
-        order_by = ordering
-        if ordering and ordering.startswith("-"):
+        order_by = ordering_value
+        if ordering_value.startswith("-"):
             order_dir = "desc"
-            order_by = ordering[1:]
+            order_by = ordering_value[1:]
 
         # Validate order_by field
         valid_fields = [

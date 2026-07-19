@@ -35,6 +35,7 @@ class CronJobStatus(BaseModel):
     work_metrics: Dict[str, Any] = Field(default_factory=dict)
     work_summary: Optional[str] = None
     db_metrics: Dict[str, Any] = Field(default_factory=dict)
+    workflow_status: Optional[Dict[str, Any]] = None
     lock_stale: bool = False
     diagnostics: Optional[str] = None
 

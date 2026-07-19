@@ -22,6 +22,8 @@ from backend.utils.exceptions import PaperNotFoundError
 
 router = APIRouter(prefix="/thumbnails", tags=["thumbnails"])
 
+MISSING_THUMBNAIL_HEADERS = {"Cache-Control": "no-store"}
+
 
 def get_thumbnail_service() -> ThumbnailService:
     """Dependency to get thumbnail service instance."""
@@ -41,7 +43,7 @@ def serve_custom_thumbnail(
             raise HTTPException(
                 status_code=404,
                 detail="Thumbnail not available",
-                headers={"Cache-Control": "public, max-age=3600"},
+                headers=MISSING_THUMBNAIL_HEADERS,
             )
         return FileResponse(
             path=thumbnail_path,
@@ -54,7 +56,7 @@ def serve_custom_thumbnail(
         raise HTTPException(
             status_code=404,
             detail="Thumbnail not available",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers=MISSING_THUMBNAIL_HEADERS,
         )
 
 
@@ -79,7 +81,7 @@ def serve_thumbnail(
         raise HTTPException(
             status_code=404,
             detail="Thumbnail not available",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers=MISSING_THUMBNAIL_HEADERS,
         )
 
     return FileResponse(

@@ -2,8 +2,12 @@
 Unified GitHub Stars Update CRON Job
 
 This script fetches GitHub star counts and stores historical snapshots for trending analysis.
-It replaces the previous separate scripts (update_github_stars_optimized.py and
-update_github_stars_trending.py) with a unified approach.
+It runs two independent queues concurrently so frequent updates cannot starve
+the weekly backlog:
+
+- Fresh queue: hot/recent papers, using PWC_GITHUB_TOKEN
+- Weekly queue: older and never-updated repositories, using the token from the
+  separate aiconsultancynielsrogge GitHub account
 
 Key Features:
 - Fetches GitHub star counts via GitHub API
@@ -22,15 +26,15 @@ Update Strategy:
 - Each update stores a historical snapshot for trending calculations
 
 Schedule: Hourly (every hour)
-Dependencies: PostgreSQL, GitHub API token (PWC_GITHUB_TOKEN)
+Dependencies: PostgreSQL and one GitHub API token per queue
 """
 
-import sys
 import time
 import gc
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import requests
 
 from backend.database.connection import db_manager
@@ -54,21 +58,22 @@ def get_repository_service():
     return session, RepositoryService(session)
 
 
-def get_next_repository_group(
-    session, threshold_hours_recent: int = 2, threshold_days_regular: int = 7
-) -> Optional[Dict]:
+def get_repository_groups(
+    session,
+    queue: str,
+    limit: int,
+    threshold_hours_recent: int = 2,
+    threshold_days_regular: int = 7,
+) -> List[Dict]:
     """
-    Get the next unique repository (by owner/name) that needs updating.
-    Returns all repository IDs that share the same owner/name.
+    Get an ordered batch of unique repositories that need updating.
+    Each result contains all repository IDs that share the same owner/name.
 
-    Priority system (uses MAX linked paper date, not MIN):
-    1. Hot: any linked paper published within HOT_PAPER_WINDOW_DAYS
-    2. Recent: any linked paper published within 6 months
-    3. Never-updated repositories (old papers only — backfill tier)
-    4. Regular: older papers, 7-day cadence
+    The fresh queue contains hot/recent repositories. The weekly queue contains
+    older repositories, including never-updated backfill. Keeping these queues
+    separate guarantees progress through both classes of work.
 
-    Within each tier, newest linked paper is processed first so fresh releases
-    are not stuck behind stale backfill work.
+    Within each tier, the repository with the oldest update is processed first.
 
     Args:
         session: Database session
@@ -76,74 +81,107 @@ def get_next_repository_group(
         threshold_days_regular: Update threshold for regular papers (days)
 
     Returns:
-        Dictionary with repository group information
+        Ordered repository groups
     """
+    if queue not in {"fresh", "weekly"}:
+        raise ValueError(f"Unknown GitHub stars queue: {queue}")
+
     try:
         threshold_recent = datetime.now() - timedelta(hours=threshold_hours_recent)
         threshold_regular = datetime.now() - timedelta(days=threshold_days_regular)
         six_months_ago = datetime.now() - timedelta(days=180)
         thirty_days_ago = datetime.now() - timedelta(days=HOT_PAPER_WINDOW_DAYS)
 
-        # Query to find repositories that need updating, grouped by owner/name.
-        # Eligibility and priority use MAX(p.date_published): a brand-new paper
-        # linked to a repo that also backs older work must not inherit the old
-        # paper's refresh cadence.
-        query = text("""
-            SELECT
-                r.owner,
-                r.name,
-                array_agg(DISTINCT r.id) as repository_ids,
-                COUNT(DISTINCT r.id) as url_count,
-                MIN(r.num_stars_updated_at) as oldest_update,
-                MAX(r.num_stars) as current_stars,
-                MAX(p.date_published) as newest_paper_date,
-                CASE
-                    WHEN MAX(p.date_published) >= :thirty_days_ago THEN 1
-                    WHEN MAX(p.date_published) >= :six_months_ago THEN 2
-                    WHEN MIN(r.num_stars_updated_at) IS NULL THEN 3
-                    ELSE 4
-                END as priority
-            FROM repositories r
-            JOIN paper_repositories pr ON r.id = pr.repository_id
-            JOIN papers p ON pr.paper_id = p.id
-            WHERE r.owner IS NOT NULL
-            AND r.name IS NOT NULL
-            AND r.owner != ''
-            AND r.name != ''
-            AND pr.is_official = TRUE
-            AND p.is_latest_version = TRUE
-            GROUP BY r.owner, r.name
-            HAVING (
-                MIN(r.num_stars_updated_at) IS NULL
-                OR (
-                    MAX(p.date_published) >= :six_months_ago
-                    AND MIN(r.num_stars_updated_at) < :threshold_recent
+        if queue == "fresh":
+            eligibility_clause = """
+                linked.newest_paper_date >= :six_months_ago
+                AND (
+                    repo_groups.oldest_update IS NULL
+                    OR repo_groups.oldest_update < :threshold_recent
                 )
-                OR (
-                    MAX(p.date_published) < :six_months_ago
-                    AND MIN(r.num_stars_updated_at) < :threshold_regular
+            """
+        else:
+            eligibility_clause = """
+                linked.newest_paper_date < :six_months_ago
+                AND (
+                    repo_groups.oldest_update IS NULL
+                    OR repo_groups.oldest_update < :threshold_regular
                 )
+            """
+
+        # Oldest-update-first ordering prevents a busy tier from repeatedly
+        # selecting the same newest repositories while older rows wait forever.
+        # Group every duplicate owner/name row first, then use official paper
+        # links only to determine eligibility. One API call therefore keeps all
+        # duplicate repository rows consistent.
+        query = text(f"""
+            WITH repo_groups AS (
+                SELECT
+                    LOWER(r.owner) AS owner_key,
+                    LOWER(r.name) AS name_key,
+                    MIN(r.owner) AS owner,
+                    MIN(r.name) AS name,
+                    array_agg(r.id ORDER BY r.id) AS repository_ids,
+                    COUNT(*) AS url_count,
+                    MIN(r.num_stars_updated_at) AS oldest_update,
+                    MAX(r.num_stars) AS current_stars
+                FROM repositories r
+                WHERE COALESCE(r.owner, '') != ''
+                  AND COALESCE(r.name, '') != ''
+                GROUP BY LOWER(r.owner), LOWER(r.name)
+            ),
+            linked AS (
+                SELECT
+                    LOWER(r.owner) AS owner_key,
+                    LOWER(r.name) AS name_key,
+                    MAX(p.date_published) AS newest_paper_date
+                FROM repositories r
+                JOIN paper_repositories pr ON r.id = pr.repository_id
+                JOIN papers p ON pr.paper_id = p.id
+                WHERE COALESCE(r.owner, '') != ''
+                  AND COALESCE(r.name, '') != ''
+                  AND pr.is_official = TRUE
+                  AND p.is_latest_version = TRUE
+                GROUP BY LOWER(r.owner), LOWER(r.name)
             )
+            SELECT
+                repo_groups.owner,
+                repo_groups.name,
+                repo_groups.repository_ids,
+                repo_groups.url_count,
+                repo_groups.oldest_update,
+                repo_groups.current_stars,
+                linked.newest_paper_date,
+                CASE
+                    WHEN linked.newest_paper_date >= :thirty_days_ago THEN 1
+                    WHEN linked.newest_paper_date >= :six_months_ago THEN 2
+                    WHEN repo_groups.oldest_update IS NULL THEN 3
+                    ELSE 4
+                END AS priority
+            FROM repo_groups
+            JOIN linked USING (owner_key, name_key)
+            WHERE {eligibility_clause}
             ORDER BY
                 priority ASC,
-                MAX(p.date_published) DESC,
-                MIN(r.num_stars_updated_at) ASC NULLS FIRST,
-                COUNT(DISTINCT r.id) DESC
-            LIMIT 1
+                repo_groups.oldest_update ASC NULLS FIRST,
+                linked.newest_paper_date DESC,
+                repo_groups.url_count DESC
+            LIMIT :group_limit
         """)
 
-        result = session.execute(
+        results = session.execute(
             query,
             {
+                "group_limit": limit,
                 "threshold_recent": threshold_recent,
                 "threshold_regular": threshold_regular,
                 "six_months_ago": six_months_ago,
                 "thirty_days_ago": thirty_days_ago,
             },
-        ).fetchone()
+        ).fetchall()
 
-        if result:
-            return {
+        return [
+            {
                 "owner": result[0],
                 "name": result[1],
                 "repository_ids": result[2],
@@ -153,14 +191,31 @@ def get_next_repository_group(
                 "newest_paper_date": result[6],
                 "priority": result[7],
             }
-
-        return None
+            for result in results
+        ]
 
     except Exception as e:
         log(f"Database error: {e}")
-        return None
+        raise
     finally:
         gc.collect()
+
+
+def get_next_repository_group(
+    session,
+    queue: str,
+    threshold_hours_recent: int = 2,
+    threshold_days_regular: int = 7,
+) -> Optional[Dict]:
+    """Return the first eligible group; retained for focused diagnostics."""
+    groups = get_repository_groups(
+        session,
+        queue,
+        1,
+        threshold_hours_recent,
+        threshold_days_regular,
+    )
+    return groups[0] if groups else None
 
 
 def fetch_github_stars(owner: str, name: str, github_token: str) -> Optional[int]:
@@ -331,17 +386,16 @@ def check_memory_usage() -> int:
         return 1000  # Default fallback
 
 
-def main():
-    """Main execution function for unified GitHub stars update."""
+def run_queue(
+    queue: str,
+    github_token: str,
+    max_updates: int,
+    max_runtime_seconds: int,
+) -> Dict[str, int]:
+    """Process one star-update queue with its own token and DB session."""
     log("=" * 80)
-    log("Starting Unified GitHub Stars Update")
+    log(f"Starting GitHub Stars Update [{queue.upper()}]")
     log("=" * 80)
-
-    # Check GitHub token
-    github_token = os.getenv("PWC_GITHUB_TOKEN")
-    if not github_token:
-        log("ERROR: PWC_GITHUB_TOKEN not set")
-        sys.exit(1)
 
     # Initialize database session and service
     session = None
@@ -353,7 +407,6 @@ def main():
 
         # Configuration
         delay = 1.0  # 1 second between API calls (3600 calls/hour max)
-        max_updates = 3000  # Process up to 3000 repositories per hour (safe margin for 5K GitHub rate limit)
         threshold_hours_recent = (
             1  # Update recent papers every 1 hour (for accurate velocity tracking)
         )
@@ -365,32 +418,32 @@ def main():
         snapshots_stored = 0
         api_calls = 0
         start_time = time.time()
-        max_runtime = 55 * 60  # 55 minutes max (leave 5 min buffer)
-
-        log("Configuration:")
+        log(f"Configuration [{queue.upper()}]:")
         log(f"  - Max updates per hour: {max_updates}")
         log(f"  - Recent papers update threshold: {threshold_hours_recent} hours")
         log(f"  - Regular papers update threshold: {threshold_days_regular} days")
         log(f"  - API call delay: {delay}s")
 
-        while processed_groups < max_updates:
+        repository_groups = get_repository_groups(
+            session,
+            queue,
+            max_updates,
+            threshold_hours_recent,
+            threshold_days_regular,
+        )
+        if not repository_groups:
+            log(f"[{queue.upper()}] No repositories eligible at run start")
+
+        for repo_group in repository_groups:
             # Check runtime limit
-            if time.time() - start_time > max_runtime:
-                log("Runtime limit reached - stopping")
+            if time.time() - start_time > max_runtime_seconds:
+                log(f"[{queue.upper()}] Runtime limit reached - stopping")
                 break
 
             # Check memory availability
             available_memory = check_memory_usage()
             if available_memory < min_memory_mb:
                 log(f"Low memory ({available_memory}MB) - stopping to prevent OOM")
-                break
-
-            # Get next repository group
-            repo_group = get_next_repository_group(
-                session, threshold_hours_recent, threshold_days_regular
-            )
-            if not repo_group:
-                log("No more repositories to process")
                 break
 
             owner = repo_group["owner"]
@@ -475,7 +528,7 @@ def main():
         efficiency = updated_repositories / api_calls if api_calls > 0 else 0
 
         log("=" * 80)
-        log("GitHub Stars Update Completed")
+        log(f"GitHub Stars Update Completed [{queue.upper()}]")
         log("=" * 80)
         log(f"Repositories processed: {processed_groups}")
         log(f"Repository URLs updated: {updated_repositories}")
@@ -486,11 +539,40 @@ def main():
         log(f"Final memory available: {final_memory}MB")
         log("=" * 80)
 
+        return {
+            "processed_groups": processed_groups,
+            "updated_repositories": updated_repositories,
+            "api_calls": api_calls,
+        }
+
     finally:
         # Clean up database session
         if session:
             session.close()
-            log("Database session closed")
+            log(f"Database session closed [{queue.upper()}]")
+
+
+def main():
+    """Run fresh and weekly queues concurrently with independent rate limits."""
+    token_config = {
+        "fresh": os.getenv("PWC_GITHUB_TOKEN"),
+        "weekly": os.getenv("GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE"),
+    }
+    missing = [queue for queue, token in token_config.items() if not token]
+    if missing:
+        missing_names = ", ".join(missing)
+        raise RuntimeError(f"Missing GitHub token for queue(s): {missing_names}")
+
+    # The fresh queue retains the existing 3,000-call budget. One thousand
+    # weekly calls/hour clears the initial backlog quickly and comfortably
+    # exceeds the ~213/hour needed to cover 35k repositories every seven days.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(run_queue, "fresh", token_config["fresh"], 3000, 48 * 60),
+            executor.submit(run_queue, "weekly", token_config["weekly"], 1000, 40 * 60),
+        ]
+        for future in futures:
+            future.result()
 
 
 if __name__ == "__main__":

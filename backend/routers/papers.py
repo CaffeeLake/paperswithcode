@@ -10,7 +10,7 @@ import re
 import time
 from datetime import date
 from typing import Optional, List, Dict, Any, Literal
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -20,10 +20,18 @@ from backend.models.api import (
     Paper,
     Papers,
     PaperSummary,
+    PaperSearchResults,
+    RelatedPaperRecommendation,
     PaperVersions,
     VersionComparison,
 )
-from backend.models.database import Paper as DBPaper, Author, PaperAuthor
+from backend.models.database import (
+    Paper as DBPaper,
+    Author,
+    PaperAuthor,
+    Evaluation as DBEvaluation,
+    Dataset as DBDataset,
+)
 from backend.services.external_resource_service import (
     ExternalResourceError,
     ExternalResourceInput,
@@ -31,6 +39,10 @@ from backend.services.external_resource_service import (
 )
 from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
+from backend.services.badge_service import (
+    LeaderboardBadgePlacement,
+    render_leaderboard_badge,
+)
 from backend.services.arxiv_service import ArxivService
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -51,6 +63,71 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get(
+    "/papers/{paper_id}/badge.svg",
+    response_class=Response,
+    summary="Get a paper's leaderboard ranking badge",
+)
+@router.get(
+    "/papers/{paper_id}/leaderboard-badge.svg",
+    response_class=Response,
+    include_in_schema=False,
+)
+def get_paper_leaderboard_badge(
+    paper_id: str = Path(..., description="ArXiv ID or internal database ID"),
+    evaluation_id: Optional[int] = Query(
+        None,
+        alias="eval",
+        description="Render only the badge for this evaluation row",
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """Return an embeddable SVG summarizing this paper's top-three rankings."""
+    try:
+        paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    ranks = paper.leaderboard_ranks or []
+    if evaluation_id is not None:
+        live_placement = (
+            db.query(DBEvaluation.best_rank, DBDataset.name)
+            .join(DBDataset, DBEvaluation.dataset_id == DBDataset.id)
+            .filter(
+                DBEvaluation.id == evaluation_id,
+                DBEvaluation.paper_id == int(paper.id),
+            )
+            .first()
+        )
+        if not live_placement:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Evaluation {evaluation_id} not found for this paper",
+            )
+        best_rank, dataset_name = live_placement
+        ranks = [
+            LeaderboardBadgePlacement(
+                dataset_name=dataset_name,
+                best_rank=best_rank,
+            )
+        ]
+
+    return Response(
+        content=render_leaderboard_badge(ranks),
+        media_type="image/svg+xml",
+        headers={
+            # This is a live view of a mutable leaderboard row. Require image
+            # proxies such as GitHub Camo to revalidate rather than treating it
+            # as a versioned static SVG.
+            "Cache-Control": "no-store, max-age=0",
+            "Cloudflare-CDN-Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/papers", response_model=Papers, include_in_schema=False)
 @router.get(
     "/papers/",
@@ -58,7 +135,7 @@ router = APIRouter()
     summary="Get papers with pagination and filtering",
 )
 def get_papers(
-    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page: int = Query(1, ge=1, le=100, description="Page number (1-based)"),
     page_size: Optional[int] = Query(
         None, ge=1, le=500, description="Number of papers per page"
     ),
@@ -117,29 +194,30 @@ def get_papers(
 
 @router.get(
     "/papers/search",
-    response_model=List[PaperSummary],
-    summary="Search papers with citation-based ranking",
+    response_model=PaperSearchResults,
+    summary="Search latest papers by title, abstract, or ArXiv ID",
 )
 def search_papers(
-    q: str = Query(..., description="Search query"),
-    limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
+    q: str = Query(..., min_length=1, max_length=300, description="Search query"),
+    page: int = Query(1, ge=1, le=100, description="Page number (1-based)"),
+    page_size: int = Query(10, ge=1, le=100, description="Papers per page"),
+    mode: Optional[Literal["keyword", "semantic", "hybrid"]] = Query(
+        None, description="Override the configured search mode for this request"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
-    Full-text search for papers in titles and abstracts with citation-based ranking.
+    Search latest paper versions and return one relevance-ranked page.
 
-    Uses PostgreSQL's full-text search capabilities combined with citation counts
-    to rank papers by both relevance and importance. Also queries Semantic Scholar
-    API for highly cited papers to provide enhanced search results.
-
-    Returns paper summaries ordered by:
-    1. Exact title matches (sorted by citation count)
-    2. Title contains query (sorted by citation count)
-    3. Full-text matches (sorted by relevance + citation importance)
+    ``PWC_PAPER_SEARCH_MODE`` sets the default to keyword, semantic, or hybrid.
+    The optional ``mode`` parameter provides an explicit per-request override.
+    Keyword search uses weighted PostgreSQL FTS; semantic search uses pgvector;
+    hybrid search fuses both rankings with RRF. Endpoint cold starts, timeouts,
+    and malformed vectors fall back immediately to keyword search.
     """
     try:
         service = PaperService(db)
-        return service.search_papers(q, limit)
+        return service.search_papers_page(q, page, page_size, mode=mode)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -162,6 +240,25 @@ def get_recent_papers(
         return service.get_recent_papers(limit)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/papers/{paper_id}/related",
+    response_model=List[RelatedPaperRecommendation],
+    summary="Get embedding-ranked related papers with a task fallback",
+)
+def get_related_papers(
+    paper_id: str = Path(..., description="ArXiv ID or internal paper ID"),
+    limit: int = Query(4, ge=1, le=20),
+    db: Session = Depends(get_database_session),
+):
+    """Return latest-version recommendations without synchronous model inference."""
+    try:
+        return PaperService(db).get_related_papers(paper_id, limit)
+    except PaperNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except DatabaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @router.get("/papers/stats", summary="Get paper statistics")
@@ -781,6 +878,18 @@ class PaperSubmitResponse(BaseModel):
             "an existing row was returned (idempotent re-submission)."
         ),
     )
+    refreshed: bool = Field(
+        default=False,
+        description="True when an existing ArXiv paper was refreshed from arXiv.",
+    )
+    previous_version: Optional[str] = Field(
+        default=None,
+        description="Previously indexed latest ArXiv version, if any.",
+    )
+    latest_version: Optional[str] = Field(
+        default=None,
+        description="Current latest ArXiv version after submission.",
+    )
 
 
 _ARXIV_ID_WITH_VERSION_RE = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
@@ -852,10 +961,22 @@ async def submit_paper(
             existing = None
 
         if existing is not None:
+            try:
+                result = await paper_service.refresh_arxiv_paper(arxiv_id)
+            except DatabaseError as exc:
+                message = str(exc)
+                if message.startswith("arxiv_metadata_error:"):
+                    error_type = message.split(":", 1)[1]
+                    raise _arxiv_metadata_error(arxiv_id, error_type)
+                raise HTTPException(status_code=500, detail=message)
+
             return PaperSubmitResponse(
-                paper=existing,
-                route_identifier=existing.arxiv_id or str(existing.id),
-                created=False,
+                paper=result.paper,
+                route_identifier=result.paper.arxiv_id or str(result.paper.id),
+                created=result.created,
+                refreshed=result.refreshed,
+                previous_version=result.previous_version,
+                latest_version=result.latest_version,
             )
 
         try:
@@ -871,6 +992,8 @@ async def submit_paper(
             paper=paper,
             route_identifier=paper.arxiv_id or str(paper.id),
             created=True,
+            refreshed=False,
+            latest_version=paper.version,
         )
 
     existing_external = (
@@ -956,6 +1079,7 @@ async def submit_paper(
         paper=paper,
         route_identifier=route_identifier,
         created=existing_external is None,
+        refreshed=False,
     )
 
 

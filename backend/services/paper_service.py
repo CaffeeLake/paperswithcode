@@ -48,6 +48,8 @@ from backend.models.api import (
     Paper,
     Papers,
     PaperSummary,
+    PaperSearchResults,
+    RelatedPaperRecommendation,
     PaperVersion,
     PaperVersions,
     Repository,
@@ -73,6 +75,11 @@ from backend.utils.urls import (
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
 from backend.services.semantic_scholar_service import SemanticScholarService
+from backend.services.paper_retrieval_service import PaperRetrievalService
+from backend.services.paper_version_refresh_service import (
+    ArxivPaperRefreshResult,
+    PaperVersionRefreshService,
+)
 
 
 class PaperService:
@@ -262,12 +269,15 @@ class PaperService:
             self.db.query(
                 DBEvaluation.paper_id,
                 DBEvaluation.dataset_id,
+                DBEvaluation.id,
                 DBEvaluation.best_rank,
                 DBEvaluation.best_metric,
                 DBDataset.name,
                 DBDataset.slug,
+                DBTask.slug,
             )
             .join(DBDataset, DBEvaluation.dataset_id == DBDataset.id)
+            .join(DBTask, DBEvaluation.task_id == DBTask.id)
             .filter(
                 DBEvaluation.paper_id.in_(unique_ids),
                 DBEvaluation.best_rank.isnot(None),
@@ -277,21 +287,33 @@ class PaperService:
                 DBEvaluation.paper_id,
                 DBEvaluation.best_rank.asc(),
                 DBDataset.name,
+                DBEvaluation.id,
             )
             .all()
         )
         seen_paper_datasets: set = set()
-        for paper_id, dataset_id, best_rank, best_metric, name, slug in rank_rows:
+        for (
+            paper_id,
+            dataset_id,
+            evaluation_id,
+            best_rank,
+            best_metric,
+            name,
+            slug,
+            task_slug,
+        ) in rank_rows:
             key = (paper_id, dataset_id)
             if key in seen_paper_datasets:
                 continue
             seen_paper_datasets.add(key)
             relation_data["leaderboard_ranks"][paper_id].append(
                 LeaderboardRankSummary(
+                    evaluation_id=str(evaluation_id),
                     dataset_name=name,
                     dataset_slug=slug,
                     best_rank=int(best_rank),
                     best_metric=best_metric,
+                    task_slug=task_slug,
                 )
             )
 
@@ -778,6 +800,14 @@ class PaperService:
             )
 
         return self.get_paper_by_id(paper_id, include_resources=include_resources)
+
+    def _resolve_db_paper_by_id_or_arxiv(self, identifier: str) -> DBPaper:
+        """Resolve the route identifier to its canonical database row."""
+        resolved = self.get_paper_by_id_or_arxiv(identifier, include_resources=False)
+        paper = self.db.query(DBPaper).filter(DBPaper.id == int(resolved.id)).first()
+        if paper is None:
+            raise PaperNotFoundError(f"No paper found for identifier '{identifier}'")
+        return paper
 
     def get_paper_by_arxiv_id(
         self,
@@ -1384,63 +1414,34 @@ class PaperService:
                 raise
             raise DatabaseError(f"Error comparing paper versions: {str(e)}")
 
-    def search_papers(self, query: str, limit: int = 10) -> List[PaperSummary]:
-        """
-        Fast search for papers ordered primarily by citation count.
+    def _retrieval_service(self) -> PaperRetrievalService:
+        return PaperRetrievalService(
+            self.db,
+            settings=self.settings,
+            summary_factory=self._convert_db_paper_to_summary,
+            paper_resolver=self._resolve_db_paper_by_id_or_arxiv,
+        )
 
-        Uses ILIKE queries with citation-based ranking:
-        1. All papers matching query (title or abstract)
-        2. Sorted by citation count (highest first)
-        3. Small relevance boost for title matches
+    def search_papers(
+        self, query: str, limit: int = 10, mode: str | None = None
+    ) -> List[PaperSummary]:
+        return self._retrieval_service().search_papers(query, limit, mode=mode)
 
-        Args:
-            query: Search query
-            limit: Maximum number of results
+    def search_papers_page(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 10,
+        mode: str | None = None,
+    ) -> PaperSearchResults:
+        return self._retrieval_service().search_papers_page(
+            query, page, page_size, mode=mode
+        )
 
-        Returns:
-            List of paper summaries ordered by citation count and relevance
-        """
-        try:
-            from sqlalchemy import case
-
-            # Create a small relevance boost that doesn't override citation ordering
-            # Title matches get a tiny boost (equivalent to ~100 citations)
-            relevance_boost = case(
-                (
-                    DBPaper.title.ilike(query),
-                    100,
-                ),  # Exact title match - small boost
-                (
-                    DBPaper.title.ilike(f"%{query}%"),
-                    50,
-                ),  # Title contains - smaller boost
-                else_=0,
-            )
-
-            results = (
-                self.db.query(DBPaper)
-                .filter(
-                    or_(
-                        DBPaper.title.ilike(query),  # Exact match
-                        DBPaper.title.ilike(f"%{query}%"),  # Title contains
-                        DBPaper.abstract.ilike(f"%{query}%"),  # Abstract contains
-                    )
-                )
-                .filter(DBPaper.is_latest_version)
-                .order_by(
-                    desc(
-                        DBPaper.citation_count + relevance_boost
-                    ),  # Citations first, small boost for title relevance
-                    desc(DBPaper.date_published),  # Date as tiebreaker
-                )
-                .limit(limit)
-                .all()
-            )
-
-            return [self._convert_db_paper_to_summary(db_paper) for db_paper in results]
-
-        except Exception as e:
-            raise DatabaseError(f"Error searching papers: {str(e)}")
+    def get_related_papers(
+        self, paper_identifier: str, limit: int = 4
+    ) -> list[RelatedPaperRecommendation]:
+        return self._retrieval_service().get_related_papers(paper_identifier, limit)
 
     def get_recent_papers(self, limit: int = 10) -> List[PaperSummary]:
         """
@@ -1672,6 +1673,15 @@ class PaperService:
             self.db.rollback()
             print(f"Error adding paper {paper_data.get('arxiv_id', 'unknown')}: {e}")
             return None
+
+    async def refresh_arxiv_paper(self, arxiv_id: str) -> ArxivPaperRefreshResult:
+        service = PaperVersionRefreshService(
+            self.db,
+            paper_factory=lambda paper_id: self.get_paper_by_id(
+                paper_id, include_resources=True
+            ),
+        )
+        return await service.refresh_arxiv_paper(arxiv_id)
 
     def add_papers_batch(
         self, papers_data: List[Dict[str, Any]], batch_size: int = 100

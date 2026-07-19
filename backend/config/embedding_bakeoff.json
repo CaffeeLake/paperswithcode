@@ -1,0 +1,36 @@
+{
+  "schema_version": "embedding-bakeoff-v1",
+  "input_format_version": "title-abstract-v1",
+  "candidates": [
+    {
+      "model": "codefuse-ai/F2LLM-0.6B",
+      "revision": "eb2778d335980b42b986c75d7fe3a78be19ef3a6",
+      "dimensions": [1024],
+      "license": "Apache-2.0"
+    },
+    {
+      "model": "codefuse-ai/F2LLM-v2-0.6B",
+      "revision": "2b4159091278275a3b00d2c39095754d59d7d7de",
+      "dimensions": [1024],
+      "license": "Apache-2.0"
+    },
+    {
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+      "dimensions": [256, 512, 1024],
+      "license": "Apache-2.0",
+      "matryoshka": true
+    },
+    {
+      "model": "codefuse-ai/F2LLM-v2-80M",
+      "revision": "f4a16a11c9f5c8c7e22694653de6ce75430f4538",
+      "dimensions": [320],
+      "license": "Apache-2.0"
+    }
+  ],
+  "offline_challenger": {
+    "model": "jinaai/jina-embeddings-v5-text-small-clustering",
+    "production_eligible": false,
+    "blocker": "CC-BY-NC-4.0 requires explicit legal/product approval"
+  }
+}

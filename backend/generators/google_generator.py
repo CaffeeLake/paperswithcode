@@ -1,3 +1,9 @@
+"""
+Google Generator which wraps the Gemini API.
+
+Docs: https://ai.google.dev/gemini-api/docs.
+"""
+
 from typing import Optional
 import io
 import tempfile
@@ -28,7 +34,19 @@ api_semaphore = asyncio.Semaphore(API_CONCURRENCY_LIMIT)
 
 
 class GoogleGenerator(RateLimitingMixin, Generator):
-    def __init__(self, requests_per_minute=60, requests_per_day=1500, **kwargs):
+    # Primary model for URL extraction and other Gemini call sites.
+    DEFAULT_MODEL_NAMES = (
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+    )
+
+    def __init__(
+        self,
+        requests_per_minute=60,
+        requests_per_day=1500,
+        model_names: tuple[str, ...] | list[str] | None = None,
+        **kwargs,
+    ):
         # Initialize rate limiting with Gemini's typical limits
         super().__init__(
             requests_per_minute=requests_per_minute,
@@ -36,6 +54,7 @@ class GoogleGenerator(RateLimitingMixin, Generator):
             **kwargs,
         )
         self.client = genai.Client(api_key=GEMINI_API_KEY)
+        self.model_names = tuple(model_names or self.DEFAULT_MODEL_NAMES)
 
     async def format_messages(
         self, messages: list[Message]
@@ -177,11 +196,8 @@ class GoogleGenerator(RateLimitingMixin, Generator):
         Given a list of messages, this function generates a response using the Gemini API
         along with the model name used.
         """
-        # Use only free tier models with best rate limits
-        models = [
-            "gemini-2.5-flash",  # 250 RPD free tier
-            "gemini-2.5-pro",  # 100 RPD free tier
-        ]
+        # Use configured models in priority order (first success wins).
+        models = list(self.model_names)
         last_exception = None
         for model_name in models:
             try:

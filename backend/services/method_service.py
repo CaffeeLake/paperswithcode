@@ -51,6 +51,7 @@ class MethodService:
                 db_method.slug,
                 db_method.image_mime_type is not None,
                 db_method.image_url,
+                db_method.updated_at,
             ),
             image_credit=db_method.image_credit,
             collection_name=db_method.collection_name,

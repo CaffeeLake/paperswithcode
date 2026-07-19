@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import func, text
@@ -46,6 +46,11 @@ class Paper(Base):
     # Core paper information
     title: Mapped[str] = mapped_column(Text, nullable=False)
     abstract: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Maintained by papers_search_vector_update() in PostgreSQL. Application
+    # code reads this column for ranking but never constructs it in Python.
+    search_vector: Mapped[Optional[str]] = mapped_column(
+        TSVECTOR().with_variant(Text(), "sqlite"), nullable=True
+    )
 
     # Source split: `arxiv` for ArXiv papers, `external` for blog posts,
     # technical reports, model release pages, etc. Existing rows default to
@@ -309,6 +314,7 @@ class Task(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    research_trends: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
     slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
     keywords: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

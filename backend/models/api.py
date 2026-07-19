@@ -299,6 +299,29 @@ class PaperSummary(BaseModel):
         return str(v)
 
 
+class PaperSearchResults(BaseModel):
+    """One page of relevance-ranked paper search results."""
+
+    next_page: Optional[int] = Field(None, description="Number of the next page")
+    previous_page: Optional[int] = Field(
+        None, description="Number of the previous page"
+    )
+    results: List[PaperSummary] = Field(
+        ..., description="Relevance-ranked papers on this page"
+    )
+
+
+class RelatedPaperRecommendation(PaperSummary):
+    """Paper summary plus non-presentational retrieval diagnostics."""
+
+    provenance: str = Field(..., description="dense, hybrid, lexical, or task_fallback")
+    similarity: Optional[float] = Field(None, description="Dense cosine similarity")
+    generation_id: Optional[int] = Field(None, description="Embedding generation used")
+    used_stale_source_vector: bool = Field(
+        False, description="A prior version supplied the source query vector"
+    )
+
+
 class PaperVersion(BaseModel):
     """
     Information about a specific paper version.
@@ -886,6 +909,9 @@ class LeaderboardRankSummary(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    evaluation_id: str = Field(
+        ..., description="Evaluation row used to highlight this placement"
+    )
     dataset_name: str = Field(..., description="Benchmark (dataset) name")
     dataset_slug: Optional[str] = Field(
         None, description="URL-friendly dataset slug for the benchmark page link"
@@ -893,6 +919,9 @@ class LeaderboardRankSummary(BaseModel):
     best_rank: int = Field(..., description="Best rank on this benchmark (1, 2, or 3)")
     best_metric: Optional[str] = Field(
         None, description="Metric the rank was computed on"
+    )
+    task_slug: Optional[str] = Field(
+        None, description="Task slug used to select the matching leaderboard"
     )
 
 
@@ -1038,6 +1067,10 @@ class Task(BaseModel):
     id: str = Field(..., description="Task ID")
     name: str = Field(..., description="Task name (e.g., 'Image Classification')")
     description: Optional[str] = Field(None, description="Task description")
+    research_trends: List[str] = Field(
+        default_factory=list,
+        description="Three editorial bullets summarizing the task's research direction",
+    )
     slug: Optional[str] = Field(None, description="URL-friendly task slug")
     keywords: Optional[str] = Field(
         None, description="Comma-separated keywords for matching papers to this task"

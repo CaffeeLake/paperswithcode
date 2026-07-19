@@ -259,6 +259,33 @@ def test_get_datasets_for_child_task_only_returns_its_benchmarks(db_session):
     assert sorted(d.slug for d in result.results) == ["gpqa-diamond", "mmlu"]
 
 
+def test_task_benchmark_best_model_can_be_scoped_to_open_rows(client):
+    """Task-page benchmark cards should match open-only leaderboard views.
+
+    If the absolute rank-1 model is closed-source, an `is_open=true` task-page
+    request should display the best open row instead of the hidden model.
+    """
+    db = TestingSessionLocal()
+    _seed_lm_with_subtasks(db)
+    db.query(DBEvaluation).filter(DBEvaluation.id == 11).update(
+        {"best_rank": 1, "is_open": False}
+    )
+    db.query(DBEvaluation).filter(DBEvaluation.id == 10).update(
+        {"best_rank": 2, "is_open": True}
+    )
+    db.commit()
+    db.close()
+
+    unfiltered = client.get("/api/v1/tasks/2/page").json()
+    open_only = client.get("/api/v1/tasks/2/page?is_open=true").json()
+
+    unfiltered_mmlu = next(d for d in unfiltered["benchmarks"] if d["slug"] == "mmlu")
+    open_mmlu = next(d for d in open_only["benchmarks"] if d["slug"] == "mmlu")
+
+    assert unfiltered_mmlu["best_model_name"] == "GPT-y"
+    assert open_mmlu["best_model_name"] == "GPT-x"
+
+
 def test_get_evaluations_with_include_descendants_rolls_up_subtask_evals(client):
     """The /evaluations API supports include_descendants for parent tasks."""
     db = TestingSessionLocal()
@@ -276,6 +303,53 @@ def test_get_evaluations_with_include_descendants_rolls_up_subtask_evals(client)
     child_only = client.get("/api/v1/evaluations/?task_id=2&page_size=50").json()
     assert child_only["count"] == 3
     assert all(row["task_id"] == "2" for row in child_only["results"])
+
+
+def test_dataset_evaluations_default_to_best_rank_order(client):
+    """Dataset-scoped leaderboard calls should surface the rank-1 row first.
+
+    Benchmark pages sometimes omit an explicit ordering parameter. Those calls
+    must not fall back to creation order, where a newly inserted rank-3 row can
+    appear above the actual best model.
+    """
+    db = TestingSessionLocal()
+    _seed_lm_with_subtasks(db)
+    db.query(DBEvaluation).filter(DBEvaluation.id == 11).update({"best_rank": 1})
+    db.query(DBEvaluation).filter(DBEvaluation.id == 10).update({"best_rank": 2})
+
+    # Make insertion/id order adversarial: rank 3 has the largest id and would
+    # sort first under the old default `-created_at`/newest-first behavior.
+    db.add(
+        DBPaper(
+            id=20,
+            title="Late Paper",
+            abstract="Abstract 20",
+            arxiv_id="2026.00020",
+            version="v1",
+            is_latest_version=True,
+        )
+    )
+    db.add(
+        DBEvaluation(
+            id=20,
+            paper_id=20,
+            task_id=2,
+            dataset_id=1,
+            model_name="Late rank-three model",
+            metrics={"Accuracy": "87.0"},
+            best_metric="Accuracy",
+            best_rank=3,
+        )
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/v1/evaluations/?dataset_id=1&task_id=2&page_size=50")
+    assert response.status_code == 200
+    rows = response.json()["results"]
+
+    assert [row["best_rank"] for row in rows] == [1, 2, 3]
+    assert rows[0]["model_name"] == "GPT-y"
 
 
 def test_recalculate_ranks_is_scoped_to_child_task(db_session):
@@ -632,8 +706,7 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     """`min_eval_count=2` hides single-evaluation benchmarks from the default
     task-page listing so sparse leaderboards don't clutter the UI. The
     benchmark fixture seeds MCP-Atlas (5 evals), BrowseComp (2), Niche (1);
-    unranked sparse rows are filtered out, but pinned Niche (featured_rank=1)
-    must still appear."""
+    featured rank affects ordering only, so pinned Niche is still hidden."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -644,16 +717,14 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     assert response.status_code == 200
     payload = response.json()
 
-    # Niche (1 eval) stays visible because it is pinned; unranked benchmarks
-    # below the min_eval_count threshold are dropped.
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
-    assert payload["count"] == 3
+    assert slugs == ["browsecomp", "mcp-atlas"]
+    assert payload["count"] == 2
 
 
-def test_task_page_keeps_pinned_sparse_benchmark(client):
-    """The bundled task-page payload applies min_eval_count=2 by default but
-    must not hide a pinned benchmark that only has one evaluation row."""
+def test_task_page_hides_single_entry_benchmarks_by_default(client):
+    """The bundled task-page payload omits benchmarks with only one entry,
+    even when they have a featured rank."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -661,7 +732,7 @@ def test_task_page_keeps_pinned_sparse_benchmark(client):
     response = client.get("/api/v1/tasks/10/page")
     assert response.status_code == 200
     slugs = [d["slug"] for d in response.json()["benchmarks"]]
-    assert slugs[0] == "niche"
+    assert slugs == ["browsecomp", "mcp-atlas"]
 
 
 def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):

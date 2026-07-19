@@ -15,14 +15,15 @@ This directory contains CRON jobs that run hourly to keep the PapersWithCode dat
 - Stores historical snapshots in `repository_star_history` table
 - Prioritizes recent papers (< 6 months old) for more frequent updates
 - Groups repositories by owner/name to avoid duplicate API calls
+- Runs fresh and weekly queues concurrently with separate GitHub accounts
 
-**Priority System**:
-- **NEW**: Never-updated repositories (highest priority)
-- **RECENT**: Papers < 6 months old → update every 2 hours
-- **REGULAR**: Papers > 6 months old → update every 7 days
+**Queue System**:
+- **FRESH** (`PWC_GITHUB_TOKEN`): papers < 6 months old, oldest update first
+- **WEEKLY** (`GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE`): older and
+  never-updated repositories, oldest update first, refreshed every 7 days
 
 **Configuration**:
-- Max updates: ~3,000 repositories/hour
+- Max updates: up to 3,000 fresh and 1,000 weekly repositories/hour
 - API delay: 1 second between calls
 - Memory threshold: 200MB minimum
 
@@ -33,6 +34,8 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m script
 
 **Required environment variables**:
 - `PWC_GITHUB_TOKEN`: GitHub API token for authentication
+- `GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE`: token from a separate GitHub
+  account, used only for the weekly/backfill queue
 
 ---
 

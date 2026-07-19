@@ -24,7 +24,7 @@ def _load_cron_module():
 
 
 class _Result:
-    def __init__(self, row=(0, 0), rows=None):
+    def __init__(self, row=(0, 0, 0), rows=None):
         self.row = row
         self.rows = rows or []
 
@@ -60,12 +60,14 @@ class _Session:
 
 def test_process_repository_batch_sanitizes_and_clamps_scores():
     cron = _load_cron_module()
-    session = _Session(result=_Result(row=(2, 0)))
+    session = _Session(result=_Result(row=(2, 0, 0)))
 
     result = cron.process_repository_batch(session, [101, 102])
 
-    assert result == {"updated": 2, "insufficient": 0}
+    assert result == {"updated": 2, "insufficient": 0, "skipped": 0}
     assert session.committed is True
+    assert "LIMIT 10" in session.statement
+    assert "valid_pairs AS" in session.statement
     assert "trending_score::text = 'NaN'" in session.statement
     assert "WHEN trending_score < :min_prev_score THEN 0.0" in session.statement
     assert "WHEN trending_score > :max_score THEN :max_score" in session.statement

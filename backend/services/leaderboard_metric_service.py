@@ -382,6 +382,13 @@ class LeaderboardMetricService:
                     DBTaskDatasetMetric.task_id == task_id,
                     DBTaskDatasetMetric.dataset_id == dataset_id,
                 )
+                .order_by(
+                    # Keep the headline "Overall" metric first in the UI so
+                    # multi-metric leaderboards default to the benchmark's
+                    # primary score instead of a side metric.
+                    DBMetric.name.ilike("%overall%").desc(),
+                    DBMetric.name.asc(),
+                )
                 .all()
             )
 

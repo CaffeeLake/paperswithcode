@@ -1,0 +1,201 @@
+"""Deterministic, duplicate-safe publication of evaluation outreach issues."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
+
+from backend.services.github_issue_body_service import (
+    GithubIssueDraft,
+    normalize_repository_url,
+)
+
+
+@dataclass(frozen=True)
+class GithubIssuePublishResult:
+    status: str
+    repository: str
+    issue_url: str
+    issue_number: int
+    state: str
+    title_verified: bool
+    body_verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+GithubApi = Callable[[list[str], dict[str, str]], Any]
+
+
+def select_official_repository(
+    candidates: tuple[str, ...], requested_repository: str | None
+) -> str:
+    if not candidates:
+        raise ValueError("Paper has no official GitHub repository")
+    if requested_repository:
+        requested = normalize_repository_url(
+            requested_repository
+            if "://" in requested_repository
+            else f"https://github.com/{requested_repository}"
+        )
+        match = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.lower() == requested.lower()
+            ),
+            None,
+        )
+        if not match:
+            raise ValueError(
+                "Requested repository is not marked official for the paper"
+            )
+        return match
+    if len(candidates) > 1:
+        joined = ", ".join(candidates)
+        raise ValueError(
+            f"Paper has multiple official repositories; use --repository: {joined}"
+        )
+    return candidates[0]
+
+
+def github_environment(token_environment_variable: str) -> dict[str, str]:
+    env = os.environ.copy()
+    token = env.get(token_environment_variable)
+    if not token:
+        raise ValueError(
+            f"GitHub token environment variable is unset: {token_environment_variable}"
+        )
+    env["GH_TOKEN"] = token
+    return env
+
+
+def gh_json(arguments: list[str], env: dict[str, str]) -> Any:
+    process = subprocess.run(
+        ["gh", "api", *arguments],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode:
+        message = process.stderr.strip().splitlines()
+        raise ValueError(message[-1] if message else "GitHub API request failed")
+    return json.loads(process.stdout)
+
+
+def _matching_issue(
+    draft: GithubIssueDraft,
+    repository: str,
+    env: dict[str, str],
+    api: GithubApi,
+) -> dict[str, Any] | None:
+    paper_url = f"https://paperswithcode.co/paper/{draft.paper_id}"
+    recent = api(
+        [
+            f"repos/{repository}/issues",
+            "-f",
+            "state=all",
+            "-f",
+            "per_page=100",
+            "-f",
+            "sort=created",
+            "-f",
+            "direction=desc",
+            "--method",
+            "GET",
+        ],
+        env,
+    )
+    direct_match = next(
+        (
+            issue
+            for issue in recent
+            if "pull_request" not in issue and paper_url in (issue.get("body") or "")
+        ),
+        None,
+    )
+    if direct_match:
+        return direct_match
+
+    search = api(
+        [
+            "search/issues",
+            "-f",
+            f"q=repo:{repository} is:issue in:body {draft.paper_id}",
+            "-f",
+            "per_page=10",
+            "--method",
+            "GET",
+        ],
+        env,
+    )
+    return next(
+        (
+            issue
+            for issue in search.get("items", [])
+            if paper_url in (issue.get("body") or "")
+        ),
+        None,
+    )
+
+
+def publish_github_issue(
+    draft: GithubIssueDraft,
+    *,
+    token_environment_variable: str,
+    requested_repository: str | None = None,
+    api: GithubApi = gh_json,
+) -> GithubIssuePublishResult:
+    repository = select_official_repository(
+        draft.official_repositories,
+        requested_repository,
+    )
+    env = github_environment(token_environment_variable)
+    metadata = api([f"repos/{repository}"], env)
+    if metadata["archived"]:
+        raise ValueError("Official repository is archived")
+    if not metadata["has_issues"]:
+        raise ValueError("Official repository has issues disabled")
+    repository = metadata["full_name"]
+
+    existing = _matching_issue(draft, repository, env, api)
+    status = "existing"
+    issue = existing
+    if not issue:
+        status = "created"
+        issue = api(
+            [
+                f"repos/{repository}/issues",
+                "--method",
+                "POST",
+                "--raw-field",
+                f"title={draft.issue_title}",
+                "--raw-field",
+                f"body={draft.body}",
+            ],
+            env,
+        )
+
+    verified = api(
+        [f"repos/{repository}/issues/{issue['number']}"],
+        env,
+    )
+    return GithubIssuePublishResult(
+        status=status,
+        repository=repository,
+        issue_url=verified["html_url"],
+        issue_number=verified["number"],
+        state=verified["state"],
+        title_verified=verified["title"] == draft.issue_title,
+        body_verified=(
+            draft.body == verified.get("body")
+            if status == "created"
+            else f"https://paperswithcode.co/paper/{draft.paper_id}"
+            in (verified.get("body") or "")
+        ),
+    )

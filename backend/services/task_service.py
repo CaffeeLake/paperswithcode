@@ -44,6 +44,7 @@ class TaskService:
             id=str(db_task.id),
             name=db_task.name,
             description=db_task.description,
+            research_trends=db_task.research_trends or [],
             slug=db_task.slug,
             keywords=db_task.keywords,
             parent_id=str(db_task.parent_id) if db_task.parent_id else None,
@@ -55,6 +56,7 @@ class TaskService:
                 db_task.slug,
                 db_task.image_mime_type is not None,
                 db_task.image_url,
+                db_task.updated_at,
             ),
             image_credit=db_task.image_credit,
             is_visible=db_task.is_visible,
@@ -74,6 +76,8 @@ class TaskService:
             results = (
                 self.db.query(DBTask, paper_count_col)
                 .join(PaperTask, DBTask.id == PaperTask.task_id)
+                .filter(DBTask.parent_id.is_(None))
+                .filter(DBTask.level == 0)
                 .group_by(DBTask.id)
                 .order_by(desc(paper_count_col), asc(DBTask.name))
                 .limit(limit)
@@ -327,18 +331,21 @@ class TaskService:
                 .having(recent_count_expr >= min_recent_papers)
                 .having(baseline_count_expr >= min_baseline_papers)
                 .having(share_lift_expr > min_share_lift)
-                .order_by(desc("share_lift"), desc("trend_score"))
-                .limit(limit)
             )
 
             if level is not None:
                 per_task_query = per_task_query.filter(DBTask.level == level)
+
+            per_task_query = per_task_query.order_by(
+                desc("share_lift"), desc("trend_score")
+            ).limit(limit)
 
             results = [
                 TrendingTask(
                     id=str(db_task.id),
                     name=db_task.name,
                     description=db_task.description,
+                    research_trends=db_task.research_trends or [],
                     slug=db_task.slug,
                     keywords=db_task.keywords,
                     parent_id=str(db_task.parent_id) if db_task.parent_id else None,
@@ -350,6 +357,7 @@ class TaskService:
                         db_task.slug,
                         db_task.image_mime_type is not None,
                         db_task.image_url,
+                        db_task.updated_at,
                     ),
                     image_credit=db_task.image_credit,
                     created_at=db_task.created_at,
@@ -573,6 +581,7 @@ class TaskService:
         direct_benchmark_limit: int = 100,
         subtask_benchmark_limit: int = 20,
         min_eval_count: int = 2,
+        is_open: Optional[bool] = None,
     ) -> TaskPage:
         """
         Build the bundled task-page payload in a single call.
@@ -605,6 +614,7 @@ class TaskService:
             order_by="paper_count",
             order_dir="desc",
             min_eval_count=min_eval_count,
+            is_open=is_open,
         ).results
 
         subtask_benchmarks: List[TaskSubtaskBenchmarks] = []
@@ -615,6 +625,7 @@ class TaskService:
                 order_by="paper_count",
                 order_dir="desc",
                 min_eval_count=min_eval_count,
+                is_open=is_open,
             ).results
             subtask_benchmarks.append(
                 TaskSubtaskBenchmarks(subtask_id=child.id, benchmarks=child_benchmarks)
