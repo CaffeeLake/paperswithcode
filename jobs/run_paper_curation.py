@@ -82,7 +82,7 @@ def main() -> int:
                 "--ephemeral",
                 "--json",
                 "--sandbox",
-                "workspace-write",
+                "danger-full-access",
                 "--cd",
                 str(WORKTREE),
                 "--output-last-message",
