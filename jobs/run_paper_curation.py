@@ -61,6 +61,12 @@ def main() -> int:
             env=clone_env,
         )
         subprocess.run(["git", "checkout", REVISION], cwd=WORKTREE, check=True)
+        subprocess.run(
+            ["codex", "login", "--with-api-key"],
+            input=f"{os.environ['OPENAI_API_KEY']}\n",
+            text=True,
+            check=True,
+        )
         final_path = Path("/tmp/codex-final.txt")
         skill = ".agents/skills/remote-paper-curation/SKILL.md"
         prompt = (
