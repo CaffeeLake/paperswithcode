@@ -17,6 +17,7 @@ TOKEN = os.environ["PWC_CURATION_JOB_TOKEN"]
 KIND = os.environ["PWC_CURATION_KIND"]
 REVISION = os.environ["PWC_GIT_SHA"]
 WORKTREE = Path("/tmp/paperswithcode")
+ASKPASS = Path("/tmp/pwc-git-askpass.sh")
 
 
 def callback(path: str, payload: dict) -> None:
@@ -35,11 +36,19 @@ def callback(path: str, payload: dict) -> None:
 
 def main() -> int:
     try:
+        ASKPASS.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            "  *Password*) printf '%s\\n' \"$GITHUB_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        ASKPASS.chmod(0o700)
         clone_env = {
             **os.environ,
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "http.extraHeader",
-            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {os.environ['GITHUB_TOKEN']}",
+            "GIT_ASKPASS": str(ASKPASS),
+            "GIT_TERMINAL_PROMPT": "0",
         }
         subprocess.run(
             [
