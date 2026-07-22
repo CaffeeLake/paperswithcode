@@ -35,6 +35,12 @@ def callback(path: str, payload: dict) -> None:
 
 def main() -> int:
     try:
+        clone_env = {
+            **os.environ,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {os.environ['GITHUB_TOKEN']}",
+        }
         subprocess.run(
             [
                 "git",
@@ -43,6 +49,7 @@ def main() -> int:
                 str(WORKTREE),
             ],
             check=True,
+            env=clone_env,
         )
         subprocess.run(["git", "checkout", REVISION], cwd=WORKTREE, check=True)
         final_path = Path("/tmp/codex-final.txt")

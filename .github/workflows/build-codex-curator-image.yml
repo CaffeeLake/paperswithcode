@@ -2,12 +2,6 @@ name: Build Codex curator image
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - jobs/Dockerfile.codex-curator
-      - jobs/run_paper_curation.py
-      - .github/workflows/build-codex-curator-image.yml
 
 permissions:
   contents: read
