@@ -28,6 +28,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
 | `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
+| `add_paper_curation_jobs.sql` | durable admin-triggered Hugging Face paper-curation Jobs |
 | `add_external_resources_schema.sql` + `run_add_external_resources_schema.py` | external resources |
 | `add_trending_score.sql` + `run_add_trending_score.py` + `update_trending_view_for_ema.sql` | repository (GitHub) trending scores |
 | `add_paper_hf_trending.sql` + `run_add_paper_hf_trending.py` | composite paper trending: `hf_artifacts`, `paper_hf_artifacts`, and `papers.trending_score`/components (rollback: `rollback_paper_hf_trending.sql`) |

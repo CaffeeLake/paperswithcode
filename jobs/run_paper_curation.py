@@ -18,6 +18,7 @@ KIND = os.environ["PWC_CURATION_KIND"]
 REVISION = os.environ["PWC_GIT_SHA"]
 WORKTREE = Path("/tmp/paperswithcode")
 ASKPASS = Path("/tmp/pwc-git-askpass.sh")
+USER_AGENT = "PapersWithCode-Curation/1.0 (+https://paperswithcode.co)"
 
 
 def callback(path: str, payload: dict) -> None:
@@ -27,7 +28,7 @@ def callback(path: str, payload: dict) -> None:
         headers={
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "application/json",
-            "User-Agent": "PapersWithCode-HF-Curator/1.0",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

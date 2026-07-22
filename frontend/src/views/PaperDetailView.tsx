@@ -39,6 +39,9 @@ import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluations
 import { SignInToEditDialog } from "@/components/paper-detail/SignInToEditDialog";
 import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
+import { CodexAddEvalsDialog } from "@/components/paper-detail/CodexAddEvalsDialog";
+import { CodexEnrichPaperDialog } from "@/components/paper-detail/CodexEnrichPaperDialog";
+import { isCodexAddEvalsEnabled, isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
 
 type EditSection =
   | "tasks"
@@ -180,7 +183,11 @@ const PaperDetailView: React.FC = () => {
   const { data: hfRepos, isLoading: hfLoading } = useHuggingFaceRepos(
     secondaryQueriesEnabled ? paper?.arxiv_id : undefined,
   );
-  const { data: evaluations, isLoading: evaluationsLoading } = useEvaluationsByPaper(
+  const {
+    data: evaluations,
+    isLoading: evaluationsLoading,
+    refetch: refetchEvaluations,
+  } = useEvaluationsByPaper(
     paper?.id,
     secondaryQueriesEnabled && !!paper?.id,
   );
@@ -958,6 +965,13 @@ const PaperDetailView: React.FC = () => {
                 {o.name}
               </Link>
             ))}
+            {isAdmin && isCodexEnrichPaperEnabled() && (
+              <CodexEnrichPaperDialog
+                paperId={paper.id}
+                paperTitle={paper.title}
+                onComplete={() => void refetch()}
+              />
+            )}
             <SavePaperButton paperId={paper.id} />
           </div>
 
@@ -1144,6 +1158,13 @@ const PaperDetailView: React.FC = () => {
                   >
                     <Icon name="copy" size={10} /> Copy PwC badge
                   </button>
+                )}
+                {isAdmin && isCodexAddEvalsEnabled() && (
+                  <CodexAddEvalsDialog
+                    paperId={paper.id}
+                    paperTitle={paper.title}
+                    onComplete={() => void refetchEvaluations()}
+                  />
                 )}
                 {canEditPaper && (
                   <button

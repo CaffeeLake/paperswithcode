@@ -6,6 +6,7 @@ for interacting with the PostgreSQL database.
 """
 
 from datetime import date, datetime
+import uuid
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -23,7 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR, UUID
 from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
@@ -799,6 +800,58 @@ class PaperProjectPage(Base):
 
     def __repr__(self) -> str:
         return f"<PaperProjectPage(paper_id={self.paper_id}, project_page_id={self.project_page_id})>"
+
+
+class PaperCurationJob(Base):
+    """Durable request for a remote Codex paper-curation Job."""
+
+    __tablename__ = "paper_curation_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    paper_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    paper_title: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    hf_job_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
+    callback_token_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    paper: Mapped[Paper] = relationship("Paper")
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('add-evals', 'enrich-paper')",
+            name="paper_curation_jobs_kind_check",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'dispatching', 'running', 'completed', 'failed', 'canceled')",
+            name="paper_curation_jobs_status_check",
+        ),
+        Index("idx_paper_curation_jobs_queue", "status", "created_at"),
+        Index("idx_paper_curation_jobs_paper", "paper_id", "created_at"),
+    )
 
 
 class Evaluation(Base):

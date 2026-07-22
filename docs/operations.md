@@ -23,11 +23,12 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup
 ```
 
-## Cron Dashboard
+## Admin Dashboard
 
-- Route: `/cron-dashboard` on the frontend (linked from the site header).
+- Route: `/admin-dashboard` on the frontend (linked from the admin user menu). The old `/cron-dashboard` URL redirects here.
 - Backend endpoints: `/api/v1/cron/status`, `/api/v1/cron/job/{name}`, `/api/v1/cron/health`.
-- Auto-refresh every 30 seconds (toggleable), color-coded job states, next-run predictions, duration parsing for both “Runtime: … minutes” and “Duration: … seconds” logs.
+- Paper curation queue endpoint: `/api/v1/admin/codex-curation/jobs`, with paper links, requester, action, HF Job link, mutation status, report/error, and full-history status counts.
+- Auto-refreshes CRON health every 30 seconds and active paper curation state every 10 seconds (toggleable).
 - Pulls data from log files in `.github/workflows/scripts/logs/` and merges with crontab discovery.
 
 Use the dashboard to ensure health score stays ≥80%.  For command-line visibility, rely on `.github/workflows/scripts/manage_cron.py`.

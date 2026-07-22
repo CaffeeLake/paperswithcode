@@ -125,7 +125,7 @@ const OrganizationAliasRedirect: React.FC = () => {
 
 // On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
 // cookie can't follow visitors across origins, so any view that requires
-// sign-in (bookmarks, CRON dashboard) is a dead-end. Redirect those routes
+// sign-in (bookmarks, admin dashboard) is a dead-end. Redirect those routes
 // home so visitors don't land on empty pages.
 const AuthGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) => {
   if (isAuthDisabled()) {
@@ -157,8 +157,8 @@ const AdminGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) =>
       <div className="page">
         <div className="submission-empty submission-empty-warn">
           <h1>Sign in required</h1>
-          <p>Sign in with an allowlisted Hugging Face admin account to view CRON job health.</p>
-          <HfSignInButton returnTo="/cron-dashboard" />
+          <p>Sign in with an allowlisted Hugging Face admin account to view admin operations.</p>
+          <HfSignInButton returnTo="/admin-dashboard" />
         </div>
       </div>
     );
@@ -221,7 +221,8 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
-            <Route path="/cron-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
+            <Route path="/admin-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
+            <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
             {/* Top-level organization aliases (e.g. /nvidia). Placed last so
                 static routes always win; unknown slugs render NotFound from

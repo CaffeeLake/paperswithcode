@@ -73,7 +73,7 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
         {user.is_admin && (
           <>
             <DropdownMenuItem asChild>
-              <Link to="/cron-dashboard">CRON dashboard</Link>
+              <Link to="/admin-dashboard">Admin dashboard</Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link to="/submissions">Review submissions</Link>

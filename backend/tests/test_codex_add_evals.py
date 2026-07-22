@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+from huggingface_hub.errors import HfHubHTTPError
+from httpx import Request, Response
+
+from backend.codex_add_evals_app import create_codex_add_evals_app
+from backend.config import get_settings
+from backend.database.connection import get_database_session
+from backend.main import create_app
+from backend.services.codex_add_evals_service import (
+    CodexPaperJob,
+    CodexPaperJobCounts,
+    CodexPaperJobsResponse,
+    CodexPaperJobService,
+    CURATOR_BOOTSTRAP_COMMAND,
+    _git_revision,
+    _launch_error,
+)
+from backend.utils.auth import require_hf_admin
+from jobs.curation_api import USER_AGENT as HELPER_USER_AGENT
+
+
+def _job(kind: str = "add-evals") -> CodexPaperJob:
+    return CodexPaperJob(
+        id=uuid.UUID("00000000-0000-0000-0000-000000000042"),
+        paper_id=42,
+        paper_route="2601.00001",
+        paper_title="A useful model",
+        requested_by="niels",
+        kind=kind,
+        status="queued",
+        created_at=datetime.now(UTC),
+        attempt_count=0,
+    )
+
+
+def test_serializer_exposes_hf_job_url():
+    row = SimpleNamespace(
+        id=_job().id,
+        paper_id=42,
+        paper_route="2601.00001",
+        paper_title="A useful model",
+        requested_by="niels",
+        kind="add-evals",
+        status="running",
+        hf_job_id="hf-job",
+        created_at=datetime.now(UTC),
+        started_at=None,
+        finished_at=None,
+        applied_at=None,
+        report=None,
+        error=None,
+        attempt_count=1,
+    )
+    settings = get_settings().model_copy(update={"codex_jobs_namespace": "huggingface"})
+    serialized = CodexPaperJobService._serialize(row, settings)
+    assert serialized.hf_job_url == "https://huggingface.co/jobs/huggingface/hf-job"
+
+
+def test_git_revision_can_be_pinned_for_remote_jobs(monkeypatch):
+    monkeypatch.setenv("PWC_CODEX_JOBS_GIT_SHA", "published-curation-revision")
+    assert _git_revision() == "published-curation-revision"
+
+
+def test_remote_job_bootstrap_uses_public_image_and_pinned_runner():
+    settings = get_settings()
+    assert settings.codex_jobs_image == "node:22-bookworm"
+    assert settings.codex_jobs_namespace == ""
+    assert "${PWC_GIT_SHA}/jobs/run_paper_curation.py" in CURATOR_BOOTSTRAP_COMMAND
+    assert "Authorization: Bearer ${GITHUB_TOKEN}" in CURATOR_BOOTSTRAP_COMMAND
+
+
+def test_launch_error_keeps_hub_validation_message():
+    response = Response(
+        403,
+        request=Request("POST", "https://huggingface.co/api/jobs/huggingface"),
+        json={
+            "error": "User does not have permission to create a Job in this namespace"
+        },
+    )
+    error = HfHubHTTPError(
+        "forbidden",
+        response=response,
+        server_message="User does not have permission to create a Job in this namespace",
+    )
+
+    message = _launch_error(error)
+
+    assert "does not have permission" in message
+    assert "HfHubHTTPError" not in message
+
+
+def test_remote_callbacks_identify_the_service_to_cloudflare():
+    assert HELPER_USER_AGENT.startswith("PapersWithCode-Curation/")
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+    assert '"User-Agent": USER_AGENT' in runner
+
+
+def test_codex_endpoint_enqueues_exact_paper(monkeypatch):
+    from backend.routers import codex_add_evals
+
+    settings = get_settings().model_copy(update={"codex_jobs_enabled": True})
+    paper = SimpleNamespace(
+        id=42, source="arxiv", arxiv_id="2601.00001", title="A useful model"
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            return paper
+
+    class Database:
+        def query(self, _model):
+            return Query()
+
+    def fake_enqueue(db, **kwargs):
+        assert db is not None
+        assert kwargs["kind"] == "add-evals"
+        assert kwargs["paper_id"] == 42
+        assert kwargs["paper_route"] == "2601.00001"
+        assert kwargs["requested_by"] == "niels"
+        return _job()
+
+    monkeypatch.setattr(
+        codex_add_evals.codex_paper_job_service, "enqueue", fake_enqueue
+    )
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[require_hf_admin] = lambda: {"username": "niels"}
+    app.dependency_overrides[get_database_session] = lambda: Database()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/admin/codex-add-evals/jobs", json={"paper_id": 42}
+        )
+    assert response.status_code == 202
+    assert response.json()["kind"] == "add-evals"
+
+
+def test_codex_endpoint_is_hidden_when_jobs_disabled():
+    settings = get_settings().model_copy(update={"codex_jobs_enabled": False})
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[require_hf_admin] = lambda: {"username": "niels"}
+    app.dependency_overrides[get_database_session] = lambda: SimpleNamespace()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/admin/codex-add-evals/jobs", json={"paper_id": 42}
+        )
+    assert response.status_code == 404
+
+
+def test_dedicated_app_exposes_remote_callback_routes():
+    paths = {route.path for route in create_codex_add_evals_app().routes}
+    assert "/api/v1/admin/codex-add-evals/jobs" in paths
+    assert "/api/v1/admin/codex-enrich-paper/jobs" in paths
+    assert "/api/v1/admin/codex-curation/jobs" in paths
+    assert "/api/v1/admin/codex-curation/jobs/{job_id}/context" in paths
+    assert "/api/v1/chat/models" not in paths
+
+
+def test_admin_can_list_curation_queue(monkeypatch):
+    from backend.routers import codex_curation_callbacks
+
+    settings = get_settings().model_copy(update={"codex_jobs_enabled": True})
+    expected = CodexPaperJobsResponse(
+        timestamp=datetime.now(UTC),
+        jobs=[_job()],
+        summary=CodexPaperJobCounts(total=1, queued=1),
+    )
+
+    def fake_list_jobs(db, supplied_settings, *, limit):
+        assert db is not None
+        assert supplied_settings is settings
+        assert limit == 25
+        return expected
+
+    monkeypatch.setattr(
+        codex_curation_callbacks.codex_paper_job_service, "list_jobs", fake_list_jobs
+    )
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[require_hf_admin] = lambda: {"username": "niels"}
+    app.dependency_overrides[get_database_session] = lambda: SimpleNamespace()
+    with TestClient(app) as client:
+        response = client.get("/api/v1/admin/codex-curation/jobs?limit=25")
+
+    assert response.status_code == 200
+    assert response.json()["jobs"][0]["paper_id"] == 42
+    assert response.json()["summary"]["queued"] == 1

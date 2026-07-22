@@ -187,6 +187,9 @@ def create_app() -> FastAPI:
         pending_edits,
         conferences,
         organizations,
+        codex_add_evals,
+        codex_enrich_paper,
+        codex_curation_callbacks,
     )
 
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
@@ -209,6 +212,11 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(conferences.router, prefix="/api/v1", tags=["conferences"])
     app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
+    app.include_router(codex_add_evals.router, prefix="/api/v1", tags=["admin"])
+    app.include_router(codex_enrich_paper.router, prefix="/api/v1", tags=["admin"])
+    app.include_router(
+        codex_curation_callbacks.router, prefix="/api/v1", tags=["admin"]
+    )
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
     # Server-rendered paper-page HTML for social previews. Mounted at the
     # app root because the public URL shape is `/paper/{id}` (not under

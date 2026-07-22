@@ -135,6 +135,27 @@ class Settings(BaseSettings):
         description="API token required for administrative endpoints",
     )
 
+    # Codex curation jobs. Disabled on the main API; isolated staging and
+    # production sidecars opt in through their systemd environments.
+    codex_add_evals_enabled: bool = Field(default=False)
+    codex_enrich_paper_enabled: bool = Field(default=False)
+    codex_add_evals_timeout_seconds: int = Field(default=3600, ge=60, le=7200)
+    codex_add_evals_work_dir: str = Field(
+        default="/root/python_projects/paperswithcode"
+    )
+    codex_add_evals_spool_dir: str = Field(default="/tmp/pwc-codex-add-evals")
+    # Remote paper-curation workers run on Hugging Face Jobs. Keep these
+    # credentials separate from the general Hub token and database credentials.
+    codex_jobs_enabled: bool = Field(default=False)
+    # Deliberately has no default: launching into the wrong organization can
+    # fail with a generic Hub 403 and leaves no remote Job to inspect.
+    codex_jobs_namespace: str = Field(default="")
+    codex_jobs_token: str = Field(default="")
+    codex_jobs_openai_api_key: str = Field(default="")
+    codex_jobs_image: str = Field(default="node:22-bookworm")
+    codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
+    codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)
+
     # Hugging Face OAuth configuration (for "Sign in with Hugging Face")
     hf_oauth_client_id: str = Field(
         default="",

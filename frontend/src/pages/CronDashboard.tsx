@@ -12,6 +12,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { CronJobCard } from "@/components/cron/CronJobCard";
+import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
 import { apiClient } from "@/lib/api";
 import type { CronJobHealth, CronJobStatus } from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
@@ -26,6 +27,7 @@ const categoryColors: Record<string, string> = {
 
 const CronDashboard = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshToken, setRefreshToken] = useState(0);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const { user } = useAuth();
 
@@ -74,6 +76,11 @@ const CronDashboard = () => {
     />
   );
 
+  const refreshAll = () => {
+    setRefreshToken((value) => value + 1);
+    void refetch();
+  };
+
   return (
     <div className="cron-dashboard" data-shadcn>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -82,10 +89,10 @@ const CronDashboard = () => {
             <div>
               <h1 className="text-3xl font-bold flex items-center gap-3">
                 <Activity className="h-8 w-8 cron-info-text" />
-                CRON Health Dashboard
+                Admin Dashboard
               </h1>
               <p className="mt-2 cron-muted">
-                Operational view for scheduled VPS jobs — log status plus database freshness
+                Paper curation queue and operational health for scheduled jobs
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -98,7 +105,7 @@ const CronDashboard = () => {
                 <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? "animate-spin" : ""}`} />
                 Auto-refresh {autoRefresh ? "ON" : "OFF"}
               </Button>
-              <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              <Button variant="outline" size="sm" onClick={refreshAll} disabled={isFetching}>
                 <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
@@ -114,6 +121,8 @@ const CronDashboard = () => {
             </p>
           </CardContent>
         </Card>
+
+        <CodexJobQueue autoRefresh={autoRefresh} refreshToken={refreshToken} />
 
         {isLoading && (
           <div className="flex items-center justify-center py-12">
