@@ -1,0 +1,103 @@
+"""Entrypoint for a remote, scoped Papers With Code Codex Job."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+API_URL = os.environ["PWC_CURATION_API_URL"].rstrip("/")
+JOB_ID = os.environ["PWC_CURATION_JOB_ID"]
+TOKEN = os.environ["PWC_CURATION_JOB_TOKEN"]
+KIND = os.environ["PWC_CURATION_KIND"]
+REVISION = os.environ["PWC_GIT_SHA"]
+WORKTREE = Path("/tmp/paperswithcode")
+
+
+def callback(path: str, payload: dict) -> None:
+    request = urllib.request.Request(
+        f"{API_URL}/admin/codex-curation/jobs/{JOB_ID}/{path}",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30):
+        pass
+
+
+def main() -> int:
+    try:
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "https://github.com/huggingface/paperswithcode.git",
+                str(WORKTREE),
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "checkout", REVISION], cwd=WORKTREE, check=True)
+        final_path = Path("/tmp/codex-final.txt")
+        skill = ".agents/skills/remote-paper-curation/SKILL.md"
+        prompt = (
+            f"Run the remote paper-curation skill at {skill}. Job kind: {KIND}. "
+            f"Use the job-scoped helper in jobs/curation_api.py for every VPS read and write; "
+            "do not access PostgreSQL, backend/keys.env, or modify repository files. "
+            "Apply the scoped mutation before finishing, then give a concise audit report."
+        )
+        completed = subprocess.run(
+            [
+                "codex",
+                "exec",
+                "--ephemeral",
+                "--json",
+                "--sandbox",
+                "workspace-write",
+                "--cd",
+                str(WORKTREE),
+                "--output-last-message",
+                str(final_path),
+                prompt,
+            ],
+            check=False,
+        )
+        report = (
+            final_path.read_text(encoding="utf-8").strip()
+            if final_path.exists()
+            else ""
+        )
+        if completed.returncode:
+            callback(
+                "complete",
+                {
+                    "report": report,
+                    "error": f"Codex exited with status {completed.returncode}.",
+                },
+            )
+            return completed.returncode
+        callback("complete", {"report": report})
+        return 0
+    except Exception as exc:
+        try:
+            callback(
+                "complete",
+                {
+                    "report": "",
+                    "error": f"Remote runner failed ({type(exc).__name__}).",
+                },
+            )
+        except urllib.error.URLError:
+            pass
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
