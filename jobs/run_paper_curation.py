@@ -27,6 +27,7 @@ def callback(path: str, payload: dict) -> None:
         headers={
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "application/json",
+            "User-Agent": "PapersWithCode-HF-Curator/1.0",
         },
         method="POST",
     )

@@ -21,6 +21,7 @@ def request(path: str, method: str = "GET", payload: dict | None = None) -> None
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
+                "User-Agent": "PapersWithCode-HF-Curator/1.0",
             },
             method=method,
         ),
