@@ -2281,10 +2281,15 @@ a.paper-resource.is-link:focus-visible {
 }
 .edit-link:hover { opacity: 0.85; }
 .results-badge-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  position: relative;
+  padding-left: 16px;
   white-space: nowrap;
+}
+.results-badge-copy svg {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
 }
 
 .read-full {
