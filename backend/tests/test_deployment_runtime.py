@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import deploy.cli as deploy_cli
 from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
 from deploy.cli import parser_for
@@ -145,3 +146,20 @@ def test_atomic_symlink_replaces_pointer(tmp_path: Path):
 def test_installed_deployment_command_dispatch(program, arguments, handler):
     args = parser_for(program).parse_args(arguments)
     assert args.handler.__name__ == handler
+
+
+def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / ".venv"
+    package = runtime / "lib" / "package.py"
+    package.parent.mkdir(parents=True)
+    package.write_text("value = 1\n")
+    runtime.chmod(0o700)
+    package.parent.chmod(0o700)
+    package.chmod(0o600)
+    monkeypatch.setattr(deploy_cli, "VENV", runtime)
+
+    deploy_cli.make_runtime_readable()
+
+    assert runtime.stat().st_mode & 0o055 == 0o055
+    assert package.parent.stat().st_mode & 0o055 == 0o055
+    assert package.stat().st_mode & 0o044 == 0o044

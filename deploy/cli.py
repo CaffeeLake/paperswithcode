@@ -214,12 +214,27 @@ def sync_runtime(release: Path) -> bool:
     wanted = sha256_file(release / "uv.lock")
     current = RUNTIME_LOCK.read_text().strip() if RUNTIME_LOCK.is_file() else ""
     if current == wanted and (VENV / "bin" / "python").is_file():
+        make_runtime_readable()
         return False
     env = os.environ.copy()
     env["UV_PROJECT_ENVIRONMENT"] = str(VENV)
-    run(["uv", "sync", "--frozen", "--project", str(release)], env=env)
+    previous_umask = os.umask(0o022)
+    try:
+        run(["uv", "sync", "--frozen", "--project", str(release)], env=env)
+    finally:
+        os.umask(previous_umask)
+    make_runtime_readable()
     RUNTIME_LOCK.write_text(wanted + "\n", encoding="utf-8")
     return True
+
+
+def make_runtime_readable() -> None:
+    for path in VENV.rglob("*"):
+        if path.is_symlink():
+            continue
+        mode = path.stat().st_mode
+        path.chmod(mode | (0o555 if path.is_dir() else 0o444))
+    VENV.chmod(VENV.stat().st_mode | 0o555)
 
 
 def restore_runtime(lock_hash: str) -> None:
@@ -229,6 +244,7 @@ def restore_runtime(lock_hash: str) -> None:
             env = os.environ.copy()
             env["UV_PROJECT_ENVIRONMENT"] = str(VENV)
             run(["uv", "sync", "--frozen", "--project", str(current)], env=env)
+            make_runtime_readable()
             RUNTIME_LOCK.write_text(lock_hash + "\n", encoding="utf-8")
             return
     raise DeployError("cannot find an active release for the previous runtime lock")
