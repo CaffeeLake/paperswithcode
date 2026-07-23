@@ -86,8 +86,6 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     _resolved_absolute("FRONTEND_DIST_DIR", settings.frontend_dist_dir)
     writable = {
         "RUNTIME_DATA_DIR": settings.runtime_data_dir,
-        "CRON_LOG_DIR": settings.cron_log_dir,
-        "CRON_LOCK_DIR": settings.cron_lock_dir,
         "CODEX_ADD_EVALS_SPOOL_DIR": settings.codex_add_evals_spool_dir,
         "CHAT_AGENT_CWD": settings.chat_agent_cwd,
         "CHAT_RECOVERY_SPOOL_DIR": settings.chat_recovery_spool_dir,
@@ -96,6 +94,14 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         path = _resolved_absolute(name, value)
         if not path.is_dir() or not os.access(path, os.W_OK | os.X_OK):
             raise RuntimeError(f"PWC_{name} must be an existing writable directory")
+
+    for name, value in {
+        "CRON_LOG_DIR": settings.cron_log_dir,
+        "CRON_LOCK_DIR": settings.cron_lock_dir,
+    }.items():
+        path = _resolved_absolute(name, value)
+        if not path.is_dir() or not os.access(path, os.R_OK | os.X_OK):
+            raise RuntimeError(f"PWC_{name} must be an existing readable directory")
 
     thumbnail_store = _resolved_absolute(
         "THUMBNAIL_TEMP_CACHE_DIR", settings.thumbnail_temp_cache_dir

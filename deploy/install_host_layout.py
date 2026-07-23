@@ -76,12 +76,19 @@ def main() -> int:
     for path in (
         STATE_ROOT / "production" / "cron-logs",
         STATE_ROOT / "production" / "cron-locks",
-        STATE_ROOT / "production" / "backups",
     ):
-        ensure_dir(path, "pwc-cron", "pwc-cron", 0o750)
+        ensure_dir(path, "pwc-cron", "pwc-production", 0o750)
+    ensure_dir(
+        STATE_ROOT / "production" / "backups",
+        "pwc-cron",
+        "pwc-cron",
+        0o750,
+    )
     for path in (
         STATE_ROOT / "staging" / "chat-agent",
         STATE_ROOT / "staging" / "chat-recovery-spool",
+        STATE_ROOT / "staging" / "cron-locks",
+        STATE_ROOT / "staging" / "cron-logs",
         STATE_ROOT / "staging" / "recovery-spool",
         STATE_ROOT / "staging" / "codex-work",
     ):
