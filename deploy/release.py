@@ -23,7 +23,13 @@ def sha256_file(path: Path) -> str:
 def profile_features(environment: str) -> dict[str, bool]:
     if environment not in ENVIRONMENTS:
         raise ValueError(f"unsupported environment: {environment}")
-    return {"chat": environment == "staging"}
+    return {
+        "chat": environment == "staging",
+        # Catalog curation stays hidden until it has a production-owned,
+        # safely mediated mutation path. Staging itself is catalog read-only.
+        "codex_add_evals": False,
+        "codex_enrich_paper": False,
+    }
 
 
 def release_id(git_sha: str, environment: str) -> str:

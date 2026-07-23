@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urljoin
 
+from deploy.release import profile_features
+
 ASSET_RE = re.compile(
     r"""(?:src|href)=["'](?P<url>/assets/[^"'?#]+\.(?P<kind>js|css))(?:[?#][^"']*)?["']"""
 )
@@ -38,12 +40,14 @@ def request(url: str, *, allow_redirects: bool = True) -> tuple[int, dict, bytes
         return exc.code, dict(exc.headers), exc.read()
 
 
-def validate_local_bundle(release_dir: Path, expected_chat: bool) -> list[str]:
+def validate_local_bundle(
+    release_dir: Path, expected_features: dict[str, bool]
+) -> list[str]:
     failures: list[str] = []
     dist = release_dir / "frontend-dist"
     try:
         features = json.loads((dist / "features.json").read_text())
-        if features != {"chat": expected_chat}:
+        if features != expected_features:
             failures.append(f"unexpected frontend features: {features!r}")
         html = (dist / "index.html").read_text()
     except (OSError, json.JSONDecodeError) as exc:
@@ -169,7 +173,7 @@ def main() -> int:
     failures = []
     if args.release_dir:
         failures.extend(
-            validate_local_bundle(args.release_dir, args.environment == "staging")
+            validate_local_bundle(args.release_dir, profile_features(args.environment))
         )
     failures.extend(
         run_http_smoke(

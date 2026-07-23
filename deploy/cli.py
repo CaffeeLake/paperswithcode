@@ -177,13 +177,18 @@ def prepare_release(sha: str, environment: str) -> Path:
     try:
         _extract_commit(sha, source)
         frontend = source / "frontend"
+        features = profile_features(environment)
         build_env = os.environ.copy()
         build_env.update(
             {
-                "VITE_CHAT_ENABLED": "1" if environment == "staging" else "0",
-                "VITE_CHAT_LIVE": "1" if environment == "staging" else "0",
-                "VITE_CODEX_ADD_EVALS_ENABLED": "0",
-                "VITE_CODEX_ENRICH_PAPER_ENABLED": "0",
+                "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
+                "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
+                "VITE_CODEX_ADD_EVALS_ENABLED": (
+                    "1" if features["codex_add_evals"] else "0"
+                ),
+                "VITE_CODEX_ENRICH_PAPER_ENABLED": (
+                    "1" if features["codex_enrich_paper"] else "0"
+                ),
             }
         )
         run(["npm", "ci"], cwd=frontend, env=build_env)
@@ -191,10 +196,6 @@ def prepare_release(sha: str, environment: str) -> Path:
             ["npm", "run", "build", "--", "--mode", environment],
             cwd=frontend,
             env=build_env,
-        )
-        features = profile_features(environment)
-        (frontend / "dist" / "features.json").write_text(
-            json.dumps(features, sort_keys=True) + "\n", encoding="utf-8"
         )
         shutil.move(str(frontend / "dist"), str(source / "frontend-dist"))
         shutil.rmtree(frontend / "node_modules")

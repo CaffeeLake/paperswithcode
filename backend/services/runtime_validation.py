@@ -52,10 +52,19 @@ def validate_frontend_dist(settings: Settings) -> dict[str, bool]:
     if not features_path.is_file():
         raise RuntimeError("frontend features.json is missing")
     features = json.loads(features_path.read_text(encoding="utf-8"))
-    if features != {"chat": settings.chat_enabled}:
+    expected_features = {
+        "chat": settings.chat_enabled,
+        "codex_add_evals": (
+            settings.codex_jobs_enabled and settings.codex_add_evals_enabled
+        ),
+        "codex_enrich_paper": (
+            settings.codex_jobs_enabled and settings.codex_enrich_paper_enabled
+        ),
+    }
+    if features != expected_features:
         raise RuntimeError(
             "frontend/backend feature mismatch: "
-            f"frontend={features!r} backend={{'chat': {settings.chat_enabled!r}}}"
+            f"frontend={features!r} backend={expected_features!r}"
         )
     return features
 

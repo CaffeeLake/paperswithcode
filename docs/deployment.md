@@ -109,6 +109,15 @@ Production and staging use host-only `pwc_session` and
 `pwc_staging_session` cookies, distinct JWT secrets, and the shared OAuth
 client with host-validated callback state.
 
+Codex add-evals and enrich-paper buttons remain hidden in both profiles during
+the environment migration. Staging has read-only catalog access, its remote-job
+credentials are absent, and exposing frontend-only controls would create
+broken or unsafe direct-apply paths. `features.json` records both controls as
+`false`; release validation and backend startup reject a frontend/backend
+feature mismatch. Re-enable them only with an explicitly approved
+production-owned mediated mutation design and matching credentials and smoke
+tests.
+
 ## Scheduled work and backup
 
 GitHub Actions calls `sudo /usr/local/sbin/pwc-cron <registered-job>`. The

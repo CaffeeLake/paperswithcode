@@ -30,8 +30,10 @@ journalctl -u 'run-u*.service' --since today
 
 - Route: `/admin-dashboard` on the frontend (linked from the admin user menu). The old `/cron-dashboard` URL redirects here.
 - Backend endpoints: `/api/v1/cron/status`, `/api/v1/cron/job/{name}`, `/api/v1/cron/health`.
-- Paper curation queue endpoint: `/api/v1/admin/codex-curation/jobs`, with paper links, requester, action, HF Job link, mutation status, report/error, and full-history status counts.
-- Auto-refreshes CRON health every 30 seconds and active paper curation state every 10 seconds (toggleable).
+- Codex add-evals/enrich controls and their remote-job queue are intentionally
+  disabled during the environment migration. Staging cannot mutate the shared
+  catalog and production does not expose the retired write-capable sidecar.
+- Auto-refreshes CRON health every 30 seconds (toggleable).
 - Pulls production CRON health from
   `/var/lib/paperswithcode/production/cron-logs`.
 

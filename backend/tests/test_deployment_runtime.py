@@ -11,7 +11,12 @@ from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
 from deploy.cli import parser_for
 from deploy.nginx_validate import validate as validate_nginx
-from deploy.release import atomic_symlink, build_manifest, validate_manifest
+from deploy.release import (
+    atomic_symlink,
+    build_manifest,
+    profile_features,
+    validate_manifest,
+)
 from deploy.smoke_test import validate_local_bundle
 
 
@@ -26,7 +31,9 @@ def make_bundle(root: Path, *, chat: bool) -> Path:
         '<script type="module" src="/assets/app-abc123.js"></script>'
         '<link rel="stylesheet" href="/assets/app-abc123.css">'
     )
-    (dist / "features.json").write_text(json.dumps({"chat": chat}))
+    (dist / "features.json").write_text(
+        json.dumps(profile_features("staging" if chat else "production"))
+    )
     (release / "backend").mkdir()
     (release / "backend" / "main.py").write_text("")
     sha = "a" * 40
@@ -79,7 +86,7 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
 def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     release = make_bundle(tmp_path, chat=environment == "staging")
     settings = deployed_settings(tmp_path, release, environment)
-    assert validate_runtime(settings) == {"chat": environment == "staging"}
+    assert validate_runtime(settings) == profile_features(environment)
 
 
 def test_deployed_runtime_rejects_relative_path(tmp_path: Path):
@@ -101,16 +108,27 @@ def test_deployed_runtime_rejects_source_shell(tmp_path: Path):
 
 def test_release_manifest_rejects_feature_mismatch(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
-    (release / "frontend-dist" / "features.json").write_text('{"chat": true}')
+    features = profile_features("production")
+    features["codex_add_evals"] = True
+    (release / "frontend-dist" / "features.json").write_text(json.dumps(features))
     with pytest.raises(ValueError, match="features.json"):
         validate_manifest(release, "production")
+
+
+def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
+    assert profile_features("staging") == {
+        "chat": True,
+        "codex_add_evals": False,
+        "codex_enrich_paper": False,
+    }
 
 
 def test_smoke_bundle_parser_catches_missing_asset(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     (release / "frontend-dist" / "assets" / "app-abc123.js").unlink()
     assert any(
-        "missing asset" in item for item in validate_local_bundle(release, False)
+        "missing asset" in item
+        for item in validate_local_bundle(release, profile_features("production"))
     )
 
 
