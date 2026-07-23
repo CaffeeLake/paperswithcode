@@ -51,6 +51,17 @@ candidate on `8100-8199`, runs smoke checks, moves only the selected pointer,
 restarts only that backend, and rolls back automatically on a failed live
 check.
 
+For the one-time migration from a legacy service, qualify without moving the
+pointer, then stop the legacy owner and activate the already-qualified release:
+
+```bash
+sudo pwc-deploy production <main-sha> \
+  --qualify-only --confirm DEPLOY_PRODUCTION
+```
+
+`--defer-public-smoke` exists only for the initial bootstrap before nginx points
+at the immutable root. It is not a normal release option.
+
 Rollback:
 
 ```bash
@@ -74,6 +85,16 @@ Install deployment tooling only from committed source:
 sudo python deploy/install_deploy_tools.py <commit>
 ```
 
+Remove releases not referenced by either environment's `current` or `previous`
+pointer:
+
+```bash
+sudo pwc-cleanup --confirm CLEAN_RELEASES
+```
+
+The union of those four pointers is the complete retention set. Never remove a
+release directory by hand.
+
 ## Invariants
 
 `release.json` stores the full SHA, build profile, build time, frontend
@@ -95,8 +116,20 @@ launcher runs as `pwc-cron`, loads production plus CRON-only configuration,
 resolves `production/current`, records its release ID, and uses absolute
 lock/log directories.
 
+```bash
+sudo pwc-cron status
+pwc cron health refresh_paper_embeddings --strict --json
+```
+
 `pwc-postgres-backup.timer` remains at 03:15 UTC. It runs the backup script from
-`production/current` as `pwc-cron` and includes both `public` and `staging`.
+`production/current` as `pwc-cron`, dumps both `public` and `staging` with the
+read-only `pwc_backup` role, verifies the local checksum and remote object
+listing, keeps three local dumps, and keeps thirty remote dumps.
+
+The hourly GitHub Actions monitor uses the same
+`deploy/smoke_test.py --monitor-subset` implementation as releases. It checks
+the production SPA and hashed asset MIME types plus the staging health/auth
+boundary without creating an authenticated session.
 
 ## Development
 
