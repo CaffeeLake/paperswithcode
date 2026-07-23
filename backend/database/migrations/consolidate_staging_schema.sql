@@ -17,6 +17,7 @@ END $$;
 CREATE SCHEMA IF NOT EXISTS staging AUTHORIZATION pwc_staging_owner;
 ALTER SCHEMA staging OWNER TO pwc_staging_owner;
 GRANT USAGE ON SCHEMA public, staging TO pwc_staging;
+REVOKE CREATE ON SCHEMA public FROM pwc_staging;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO pwc_staging;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO pwc_staging;
 
@@ -81,6 +82,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE pwc_staging_owner IN SCHEMA staging
 REVOKE ALL ON public.user_bookmarks, public.user_preferences,
     public.pending_paper_edits, public.paper_curation_jobs FROM pwc_staging;
 ALTER ROLE pwc_staging SET search_path = staging, public;
+ALTER ROLE pwc_staging SET default_transaction_read_only = on;
 ALTER ROLE pwc_staging SET statement_timeout = '30s';
 ALTER ROLE pwc_staging CONNECTION LIMIT 10;
 
