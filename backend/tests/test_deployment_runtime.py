@@ -115,6 +115,21 @@ def test_release_manifest_rejects_feature_mismatch(tmp_path: Path):
         validate_manifest(release, "production")
 
 
+def test_legacy_release_manifest_remains_a_valid_rollback_target(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("feature_contract_version")
+    manifest["backend_features"] = {"chat": False}
+    manifest["frontend_features"] = {"chat": False}
+    manifest_path.write_text(json.dumps(manifest))
+    (release / "frontend-dist" / "features.json").write_text(
+        json.dumps({"chat": False})
+    )
+
+    assert validate_manifest(release, "production")["git_sha"] == "a" * 40
+
+
 def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
     assert profile_features("staging") == {
         "chat": True,

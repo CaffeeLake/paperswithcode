@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENTS = ("production", "staging")
+FEATURE_CONTRACT_VERSION = 2
 
 
 def sha256_file(path: Path) -> str:
@@ -47,6 +48,7 @@ def build_manifest(git_sha: str, environment: str) -> dict[str, object]:
         "git_sha": git_sha,
         "built_at": datetime.now(timezone.utc).isoformat(),
         "build_profile": environment,
+        "feature_contract_version": FEATURE_CONTRACT_VERSION,
         "backend_features": features,
         "frontend_features": features,
         "frontend_entrypoint": "frontend-dist/index.html",
@@ -56,7 +58,7 @@ def build_manifest(git_sha: str, environment: str) -> dict[str, object]:
 def validate_manifest(release_dir: Path, environment: str | None = None) -> dict:
     manifest_path = release_dir / "release.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    required = {
+    legacy_required = {
         "release_id",
         "git_sha",
         "built_at",
@@ -65,12 +67,18 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "frontend_features",
         "frontend_entrypoint",
     }
-    if set(manifest) != required:
+    current_required = legacy_required | {"feature_contract_version"}
+    if set(manifest) == legacy_required:
+        expected = {"chat": manifest["build_profile"] == "staging"}
+    elif set(manifest) == current_required:
+        if manifest["feature_contract_version"] != FEATURE_CONTRACT_VERSION:
+            raise ValueError("unsupported release feature contract version")
+        expected = profile_features(manifest["build_profile"])
+    else:
         raise ValueError("release.json has an unexpected schema")
     profile = manifest["build_profile"]
     if environment is not None and profile != environment:
         raise ValueError("release profile does not match target environment")
-    expected = profile_features(profile)
     if (
         manifest["backend_features"] != expected
         or manifest["frontend_features"] != expected
