@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import deploy.cli as deploy_cli
+import deploy.cron_launcher as cron_launcher
 from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
 from deploy.cli import parser_for
@@ -146,6 +147,40 @@ def test_atomic_symlink_replaces_pointer(tmp_path: Path):
 def test_installed_deployment_command_dispatch(program, arguments, handler):
     args = parser_for(program).parse_args(arguments)
     assert args.handler.__name__ == handler
+
+
+def test_cron_jobs_declare_bounded_execution_contracts():
+    assert cron_launcher.COMMANDS
+    for spec in cron_launcher.COMMANDS.values():
+        assert spec.command
+        assert spec.timeout in {"30m", "50m", "2h", "6h"}
+        assert spec.mutates_shared_data is True
+        assert spec.idempotency
+        assert spec.health_job
+
+
+def test_cron_status_reports_exact_production_release(
+    tmp_path: Path, monkeypatch, capsys
+):
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "release.json").write_text(
+        json.dumps(
+            {
+                "release_id": "a" * 12 + "-production",
+                "git_sha": "a" * 40,
+            }
+        )
+    )
+    monkeypatch.setattr(cron_launcher, "CURRENT", current)
+    monkeypatch.setattr(cron_launcher.sys, "argv", ["pwc-cron", "status"])
+
+    assert cron_launcher.main() == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["environment"] == "production"
+    assert status["release_id"] == "a" * 12 + "-production"
+    assert status["git_sha"] == "a" * 40
+    assert status["jobs"]["refresh_paper_embeddings"]["timeout"] == "6h"
 
 
 def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):
