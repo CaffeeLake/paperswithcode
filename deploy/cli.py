@@ -147,6 +147,7 @@ def _extract_commit(sha: str, destination: Path) -> None:
 def prepare_release(sha: str, environment: str) -> Path:
     target = RELEASES / release_id(sha, environment)
     if target.exists():
+        make_release_readable(target)
         validate_manifest(target, environment)
         return target
     check_capacity()
@@ -202,12 +203,22 @@ def prepare_release(sha: str, environment: str) -> Path:
         )
         validate_manifest(source, environment)
         os.replace(source, target)
-        for path in sorted(target.rglob("*"), reverse=True):
-            path.chmod(path.stat().st_mode & ~0o222)
-        target.chmod(0o555)
+        make_release_readable(target)
         return target
     finally:
         shutil.rmtree(build_root, ignore_errors=True)
+
+
+def make_release_readable(release: Path) -> None:
+    for path in sorted(release.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o555)
+            continue
+        executable = bool(path.stat().st_mode & 0o111)
+        path.chmod(0o555 if executable else 0o444)
+    release.chmod(0o555)
 
 
 def sync_runtime(release: Path) -> bool:

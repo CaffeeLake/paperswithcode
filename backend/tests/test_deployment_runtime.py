@@ -163,3 +163,25 @@ def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):
     assert runtime.stat().st_mode & 0o055 == 0o055
     assert package.parent.stat().st_mode & 0o055 == 0o055
     assert package.stat().st_mode & 0o044 == 0o044
+
+
+def test_immutable_release_is_world_readable(tmp_path: Path):
+    release = tmp_path / "release"
+    package = release / "backend"
+    module = package / "main.py"
+    script = release / "scripts" / "job.sh"
+    package.mkdir(parents=True)
+    script.parent.mkdir()
+    module.write_text("app = object()\n")
+    script.write_text("#!/bin/sh\n")
+    package.chmod(0o700)
+    module.chmod(0o600)
+    script.chmod(0o700)
+
+    deploy_cli.make_release_readable(release)
+
+    assert release.stat().st_mode & 0o555 == 0o555
+    assert package.stat().st_mode & 0o555 == 0o555
+    assert module.stat().st_mode & 0o444 == 0o444
+    assert script.stat().st_mode & 0o555 == 0o555
+    assert module.stat().st_mode & 0o222 == 0
