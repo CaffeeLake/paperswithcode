@@ -22,6 +22,7 @@ def main() -> int:
     connection.autocommit = False
     try:
         with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ WRITE")
             cursor.execute(
                 "SELECT current_user, current_setting('default_transaction_read_only')"
             )
@@ -29,7 +30,6 @@ def main() -> int:
             if role != "pwc_staging" or read_only_default != "on":
                 raise RuntimeError("staging role defaults are not enforced")
 
-            cursor.execute("SET TRANSACTION READ WRITE")
             cursor.execute("SELECT id FROM papers LIMIT 1")
             if cursor.fetchone() is None:
                 raise RuntimeError("staging cannot read the live paper catalog")
