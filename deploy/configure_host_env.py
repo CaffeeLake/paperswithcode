@@ -91,6 +91,7 @@ def main() -> int:
         "PWC_DB_USER",
         "PWC_HF_OAUTH_CLIENT_ID",
         "PWC_HF_OAUTH_CLIENT_SECRET",
+        "PWC_HF_TOKEN",
         "PWC_JWT_SECRET",
     }
     missing = sorted(required - legacy.keys())
@@ -208,6 +209,9 @@ def main() -> int:
         cron,
         {
             "HF_HOME": "/var/lib/paperswithcode/production/hf-cache",
+            # Bucket uploads use Xet for database-sized objects. The
+            # organization-authorized Hub token is required for that path.
+            "PWC_POSTGRES_BACKUP_HF_TOKEN": decoded_value(legacy["PWC_HF_TOKEN"]),
             "PWC_POSTGRES_BACKUP_DB_PASSWORD": backup_db_password,
             "PWC_POSTGRES_BACKUP_DB_USER": "pwc_backup",
             "PWC_POSTGRES_BACKUP_LOCAL_KEEP_COUNT": "3",
