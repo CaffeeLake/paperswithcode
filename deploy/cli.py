@@ -402,10 +402,20 @@ def smoke_public(release: Path, environment: str, expected_release: str) -> None
     )
 
 
-def activate(release: Path, environment: str) -> None:
+def activate(
+    release: Path,
+    environment: str,
+    *,
+    defer_public_smoke: bool = False,
+) -> None:
     root = ENVIRONMENTS_ROOT / environment
     pointers = read_pointers(root)
     if pointers.current == release:
+        manifest = validate_manifest(release, environment)
+        if not wait_for_release(environment, manifest["release_id"]):
+            raise DeployError("active release failed readiness")
+        if not defer_public_smoke:
+            smoke_public(release, environment, manifest["release_id"])
         return
     if pointers.current:
         atomic_symlink(pointers.current, root / "previous")
@@ -415,6 +425,8 @@ def activate(release: Path, environment: str) -> None:
     if not wait_for_release(environment, manifest["release_id"]):
         rollback_after_failed_activation(environment, release)
         raise DeployError("live readiness failed; activation was rolled back")
+    if defer_public_smoke:
+        return
     try:
         smoke_public(release, environment, manifest["release_id"])
     except subprocess.CalledProcessError as exc:
@@ -492,6 +504,12 @@ def deploy(args: argparse.Namespace) -> int:
     )
     dependency_change = sync_runtime(release)
     current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
+    if args.defer_public_smoke and (
+        args.environment != "staging" or current is not None
+    ):
+        raise DeployError(
+            "--defer-public-smoke is only valid for initial staging bootstrap"
+        )
     print(
         json.dumps(
             {
@@ -520,7 +538,21 @@ def deploy(args: argparse.Namespace) -> int:
         if dependency_change and old_runtime_lock:
             restore_runtime(old_runtime_lock)
         raise
-    activate(release, args.environment)
+    activate(
+        release,
+        args.environment,
+        defer_public_smoke=args.defer_public_smoke,
+    )
+    if args.defer_public_smoke:
+        log_event(
+            "deploy-bootstrap",
+            args.environment,
+            "awaiting-public-smoke",
+            git_sha=sha,
+            source=args.source,
+        )
+        print("staging activated locally; apply nginx, then re-run this deploy")
+        return 0
     cleanup_releases()
     log_event("deploy", args.environment, "success", git_sha=sha, source=args.source)
     print(f"deployed {args.source} ({sha}) to {args.environment}")
@@ -627,6 +659,7 @@ def parser_for(program: str) -> argparse.ArgumentParser:
         parser.add_argument("environment", choices=ENVIRONMENTS)
         parser.add_argument("source")
         parser.add_argument("--confirm")
+        parser.add_argument("--defer-public-smoke", action="store_true")
         parser.set_defaults(handler=deploy)
     elif program.endswith("pwc-rollback"):
         parser.add_argument("environment", choices=ENVIRONMENTS)
