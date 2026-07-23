@@ -13,7 +13,10 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urljoin
 
-from deploy.release import profile_features
+try:
+    from deploy.release import profile_features
+except ModuleNotFoundError:
+    from release import profile_features  # type: ignore[no-redef]
 
 ASSET_RE = re.compile(
     r"""(?:src|href)=["'](?P<url>/assets/[^"'?#]+\.(?P<kind>js|css))(?:[?#][^"']*)?["']"""

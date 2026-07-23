@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -145,6 +147,18 @@ def test_smoke_bundle_parser_catches_missing_asset(tmp_path: Path):
         "missing asset" in item
         for item in validate_local_bundle(release, profile_features("production"))
     )
+
+
+def test_smoke_script_runs_from_outside_repository(tmp_path: Path):
+    script = Path(__file__).parents[2] / "deploy" / "smoke_test.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_nginx_cross_environment_references_are_rejected():
