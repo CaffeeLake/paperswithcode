@@ -146,6 +146,25 @@ def test_legacy_release_manifest_remains_a_valid_rollback_target(tmp_path: Path)
     assert validate_manifest(release, "production")["git_sha"] == "a" * 40
 
 
+def test_v2_release_manifest_remains_a_valid_rollback_target(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["feature_contract_version"] = 2
+    manifest["backend_features"] = {
+        "chat": False,
+        "codex_add_evals": False,
+        "codex_enrich_paper": False,
+    }
+    manifest["frontend_features"] = manifest["backend_features"]
+    manifest_path.write_text(json.dumps(manifest))
+    (release / "frontend-dist" / "features.json").write_text(
+        json.dumps(manifest["backend_features"])
+    )
+
+    assert validate_manifest(release, "production")["git_sha"] == "a" * 40
+
+
 def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
     assert profile_features("staging") == {
         "chat": True,

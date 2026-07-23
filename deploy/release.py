@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENTS = ("production", "staging")
-FEATURE_CONTRACT_VERSION = 2
+FEATURE_CONTRACT_VERSION = 3
 
 
 def sha256_file(path: Path) -> str:
@@ -30,6 +30,16 @@ def profile_features(environment: str) -> dict[str, bool]:
         # writable catalog and the controls remain protected by HF admin auth.
         "codex_add_evals": environment == "production",
         "codex_enrich_paper": environment == "production",
+    }
+
+
+def _profile_features_v2(environment: str) -> dict[str, bool]:
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"unsupported environment: {environment}")
+    return {
+        "chat": environment == "staging",
+        "codex_add_evals": False,
+        "codex_enrich_paper": False,
     }
 
 
@@ -71,9 +81,13 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
     if set(manifest) == legacy_required:
         expected = {"chat": manifest["build_profile"] == "staging"}
     elif set(manifest) == current_required:
-        if manifest["feature_contract_version"] != FEATURE_CONTRACT_VERSION:
+        version = manifest["feature_contract_version"]
+        if version == 2:
+            expected = _profile_features_v2(manifest["build_profile"])
+        elif version == FEATURE_CONTRACT_VERSION:
+            expected = profile_features(manifest["build_profile"])
+        else:
             raise ValueError("unsupported release feature contract version")
-        expected = profile_features(manifest["build_profile"])
     else:
         raise ValueError("release.json has an unexpected schema")
     profile = manifest["build_profile"]
