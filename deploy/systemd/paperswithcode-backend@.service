@@ -1,0 +1,29 @@
+[Unit]
+Description=Papers With Code backend (%i)
+After=network-online.target postgresql.service postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pwc-%i
+Group=pwc-%i
+WorkingDirectory=/srv/paperswithcode/environments/%i/current
+EnvironmentFile=/etc/paperswithcode/%i.env
+ExecStart=/srv/paperswithcode/.venv/bin/python deploy/run_backend.py
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGTERM
+SyslogIdentifier=paperswithcode-%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/paperswithcode
+ReadWritePaths=/var/lib/paperswithcode/%i /var/log/paperswithcode/%i
+
+[Install]
+WantedBy=multi-user.target

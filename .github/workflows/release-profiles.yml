@@ -1,0 +1,43 @@
+name: Release profiles
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "deploy/**"
+      - ".github/workflows/release-profiles.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-profile:
+    strategy:
+      matrix:
+        profile: [production, staging]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build -- --mode ${{ matrix.profile }}
+        working-directory: frontend
+      - name: Validate generated feature manifest
+        working-directory: frontend
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          node -e '
+            const f=require("./dist/features.json");
+            const expected=process.env.PROFILE==="staging";
+            if (f.chat !== expected) process.exit(1);
+          '
+          ! grep -q '/src/main.tsx' dist/index.html

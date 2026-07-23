@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import fs from "fs";
 
 // PLAN.md §1, §13.1: prod runs on :8080; staging runs on :8081.
 // For DNS-backed staging, set VITE_HMR_HOST / VITE_HMR_PROTOCOL / VITE_HMR_CLIENT_PORT.
@@ -9,6 +10,11 @@ import path from "path";
 export default defineConfig(({ mode }) => {
   const isStaging = mode === "staging";
   const env = loadEnv(mode, process.cwd(), "");
+  const chatEnabled = ["1", "true", "yes"].includes(
+    String(process.env.VITE_CHAT_ENABLED ?? env.VITE_CHAT_ENABLED ?? "")
+      .trim()
+      .toLowerCase(),
+  );
   const hmrHost = env.VITE_HMR_HOST;
   const hmrProtocol = env.VITE_HMR_PROTOCOL as "ws" | "wss" | undefined;
   const hmrClientPort = env.VITE_HMR_CLIENT_PORT
@@ -24,7 +30,7 @@ export default defineConfig(({ mode }) => {
 
   const proxy = {
     "/api": {
-      target: "http://127.0.0.1:8000",
+      target: isStaging ? "http://127.0.0.1:8001" : "http://127.0.0.1:8000",
       changeOrigin: true,
       secure: false,
     },
@@ -36,7 +42,13 @@ export default defineConfig(({ mode }) => {
       port: isStaging ? 8081 : 8080,
       strictPort: true,
       allowedHosts: isStaging
-        ? ["staging.paperswithcode.co", "167.235.148.241"]
+        ? [
+            "staging.paperswithcode.co",
+            "167.235.148.241",
+            // Tailnet-only preview (ufw opens 8081 on tailscale0 only)
+            "100.107.126.51",
+            "paperswithcode-vps.taildb5d.ts.net",
+          ]
         : ["paperswithcode.co", "www.paperswithcode.co"],
       ...(hmr ? { hmr } : {}),
       proxy,
@@ -50,7 +62,18 @@ export default defineConfig(({ mode }) => {
         : ["paperswithcode.co", "www.paperswithcode.co", "167.235.148.241"],
       proxy,
     },
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: "pwc-feature-manifest",
+        writeBundle() {
+          fs.writeFileSync(
+            path.resolve(__dirname, "dist/features.json"),
+            `${JSON.stringify({ chat: chatEnabled }, null, 2)}\n`,
+          );
+        },
+      },
+    ],
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),

@@ -1,0 +1,20 @@
+[Unit]
+Description=Papers With Code shared PostgreSQL backup
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pwc-cron
+Group=pwc-cron
+WorkingDirectory=/srv/paperswithcode/environments/production/current
+EnvironmentFile=/etc/paperswithcode/production.env
+EnvironmentFile=/etc/paperswithcode/production-cron.env
+ExecStart=/srv/paperswithcode/environments/production/current/scripts/backup_postgres_to_hf_bucket.sh
+SyslogIdentifier=paperswithcode-backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/paperswithcode
+ReadWritePaths=/var/lib/paperswithcode/production/backups /var/lib/paperswithcode/production/cron-logs

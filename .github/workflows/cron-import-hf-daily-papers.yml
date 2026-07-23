@@ -55,7 +55,7 @@ jobs:
             echo "date must be in YYYY-MM-DD format"
             exit 1
           fi
-          REMOTE_COMMAND='cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.import_hf_daily_papers'
+          REMOTE_COMMAND='sudo /usr/local/sbin/pwc-cron import_hf_daily_papers'
           if [ -n "$TARGET_DATE" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --date $TARGET_DATE"
           fi

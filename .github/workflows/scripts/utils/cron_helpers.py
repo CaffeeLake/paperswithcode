@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pathlib import Path
+import os
 
 from backend.config import get_settings
 
@@ -51,8 +52,10 @@ class CronJobBase(ABC):
     def _setup_logging(self) -> logging.Logger:
         """Set up logging for the cron job."""
         # Create logs directory if it doesn't exist
-        logs_dir = Path(__file__).parent.parent / "logs"
-        logs_dir.mkdir(exist_ok=True)
+        logs_dir = Path(
+            os.environ.get("PWC_CRON_LOG_DIR", Path(__file__).parent.parent / "logs")
+        )
+        logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Create log file with date
         today = datetime.now().strftime("%Y%m%d")
@@ -111,6 +114,9 @@ class CronJobBase(ABC):
         self.start_time = datetime.now(timezone.utc)
 
         self.logger.info(f"Starting cron job: {self.job_name}")
+        self.logger.info(
+            "Release ID: %s", os.environ.get("PWC_RELEASE_ID", "development")
+        )
         self.logger.info(f"Start time: {self.start_time.isoformat()}")
 
         try:
@@ -256,7 +262,9 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
     if not date:
         date = datetime.now().strftime("%Y%m%d")
 
-    logs_dir = Path(__file__).parent.parent / "logs"
+    logs_dir = Path(
+        os.environ.get("PWC_CRON_LOG_DIR", Path(__file__).parent.parent / "logs")
+    )
     log_file = logs_dir / f"{job_name}_{date}.log"
 
     status = {

@@ -46,4 +46,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              '/root/python_projects/paperswithcode/.github/workflows/scripts/run_github_stars.sh'
+              'sudo /usr/local/sbin/pwc-cron update_github_stars'

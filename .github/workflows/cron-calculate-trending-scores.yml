@@ -46,4 +46,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              '/root/python_projects/paperswithcode/.github/workflows/scripts/run_trending_scores.sh'
+              'sudo /usr/local/sbin/pwc-cron calculate_trending_scores'

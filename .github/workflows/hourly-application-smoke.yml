@@ -1,0 +1,30 @@
+name: Hourly application smoke
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hourly-application-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Production public responses and staging health
+        run: |
+          python deploy/smoke_test.py \
+            --environment production \
+            --base-url https://paperswithcode.co \
+            --monitor-subset
+          python deploy/smoke_test.py \
+            --environment staging \
+            --base-url https://staging.paperswithcode.co \
+            --monitor-subset

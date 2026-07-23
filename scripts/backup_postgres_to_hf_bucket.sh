@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="/root/python_projects/paperswithcode"
-ENV_FILE="$REPO_ROOT/backend/keys.env"
-BACKUP_DIR="$REPO_ROOT/backups/postgres"
-REMOTE_BUCKET="nielsr/paperswithcode-backups"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${PWC_BACKUP_ENV_FILE:-}"
+BACKUP_DIR="${PWC_POSTGRES_BACKUP_DIR:-/var/lib/paperswithcode/production/backups}"
+REMOTE_BUCKET=""
 REMOTE_PREFIX="postgres"
-REMOTE_URI="hf://buckets/$REMOTE_BUCKET/$REMOTE_PREFIX/"
-UV_BIN="${UV_BIN:-}"
+REMOTE_URI=""
+HF_BIN="${HF_BIN:-/srv/paperswithcode/.venv/bin/hf}"
 
 log() {
     printf '[backup] %s\n' "$*"
@@ -22,26 +22,25 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
-resolve_uv() {
-    if [[ -n "$UV_BIN" ]]; then
-        [[ -x "$UV_BIN" ]] || die "UV_BIN is not executable: $UV_BIN"
+resolve_hf() {
+    if [[ -x "$HF_BIN" ]]; then
         return
     fi
 
-    if UV_BIN="$(command -v uv 2>/dev/null)"; then
+    if HF_BIN="$(command -v hf 2>/dev/null)"; then
         return
     fi
 
-    if [[ -x "/root/.local/bin/uv" ]]; then
-        UV_BIN="/root/.local/bin/uv"
-        return
-    fi
-
-    die "Required command not found: uv"
+    die "Required command not found: hf"
 }
 
 run_hf() {
-    "$UV_BIN" run --env-file "$ENV_FILE" hf "$@"
+    if [[ -n "${PWC_POSTGRES_BACKUP_HF_TOKEN:-}" ]]; then
+        env HF_TOKEN="$PWC_POSTGRES_BACKUP_HF_TOKEN" \
+            "$HF_BIN" "$@"
+        return
+    fi
+    "$HF_BIN" "$@"
 }
 
 validate_keep_count() {
@@ -122,29 +121,35 @@ prune_remote_backups() {
 }
 
 main() {
-    [[ -f "$ENV_FILE" ]] || die "Missing env file: $ENV_FILE"
+    if [[ -n "$ENV_FILE" ]]; then
+        [[ -f "$ENV_FILE" ]] || die "Missing env file: $ENV_FILE"
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
 
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
-
-    [[ -n "${PWC_DB_NAME:-}" ]] || die "PWC_DB_NAME is required in $ENV_FILE"
-    local local_keep_count="${PWC_POSTGRES_BACKUP_LOCAL_KEEP_COUNT:-14}"
+    REMOTE_BUCKET="${PWC_POSTGRES_BACKUP_BUCKET:-huggingface/paperswithcode-backups}"
+    REMOTE_URI="hf://buckets/$REMOTE_BUCKET/$REMOTE_PREFIX/"
+    [[ -n "${PWC_DB_NAME:-}" ]] || die "PWC_DB_NAME is required"
+    # The Hub bucket is the durable 30-day store. Keep only a few recent dumps
+    # on the VPS so database growth does not consume the production filesystem.
+    local local_keep_count="${PWC_POSTGRES_BACKUP_LOCAL_KEEP_COUNT:-3}"
     local remote_keep_count="${PWC_POSTGRES_BACKUP_REMOTE_KEEP_COUNT:-30}"
     LOCAL_KEEP_COUNT="$local_keep_count"
     REMOTE_KEEP_COUNT="$remote_keep_count"
     validate_keep_count "PWC_POSTGRES_BACKUP_LOCAL_KEEP_COUNT" "$LOCAL_KEEP_COUNT"
     validate_keep_count "PWC_POSTGRES_BACKUP_REMOTE_KEEP_COUNT" "$REMOTE_KEEP_COUNT"
-    require_command sudo
     require_command pg_dump
     require_command sha256sum
-    resolve_uv
+    resolve_hf
 
-    if [[ -n "${PWC_HF_TOKEN:-}" && -z "${HF_TOKEN:-}" ]]; then
+    if [[ -n "${PWC_POSTGRES_BACKUP_HF_TOKEN:-}" ]]; then
+        export HF_TOKEN="$PWC_POSTGRES_BACKUP_HF_TOKEN"
+    elif [[ -n "${PWC_HF_TOKEN:-}" && -z "${HF_TOKEN:-}" ]]; then
         export HF_TOKEN="$PWC_HF_TOKEN"
     fi
-    [[ -n "${HF_TOKEN:-}" ]] || die "HF_TOKEN or PWC_HF_TOKEN is required for Hugging Face bucket uploads"
+    [[ -n "${HF_TOKEN:-}" ]] || die "PWC_POSTGRES_BACKUP_HF_TOKEN, HF_TOKEN, or PWC_HF_TOKEN is required for Hugging Face bucket uploads"
 
     mkdir -p "$BACKUP_DIR"
 
@@ -158,7 +163,18 @@ main() {
     rm -f -- "$tmp_dump"
 
     log "Dumping database: $PWC_DB_NAME"
-    sudo -u postgres pg_dump -d "$PWC_DB_NAME" -Fc -Z 9 -f "$tmp_dump"
+    local backup_user="${PWC_POSTGRES_BACKUP_DB_USER:-${PWC_DB_USER:-}}"
+    local backup_password="${PWC_POSTGRES_BACKUP_DB_PASSWORD:-${PWC_DB_PASSWORD:-}}"
+    [[ -n "$backup_user" && -n "$backup_password" ]] \
+        || die "dedicated PostgreSQL backup credentials are required"
+    PGPASSWORD="$backup_password" pg_dump \
+        -h "${PWC_DB_HOST:-localhost}" \
+        -p "${PWC_DB_PORT:-5432}" \
+        -U "$backup_user" \
+        -d "$PWC_DB_NAME" \
+        --schema=public \
+        --schema=staging \
+        -Fc -Z 9 -f "$tmp_dump"
 
     [[ -s "$tmp_dump" ]] || die "Dump file is missing or empty: $tmp_dump"
     mv "$tmp_dump" "$dump_path"

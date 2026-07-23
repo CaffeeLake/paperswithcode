@@ -47,4 +47,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              '/root/python_projects/paperswithcode/.github/workflows/scripts/run_refresh_paper_embeddings.sh'
+              'sudo /usr/local/sbin/pwc-cron refresh_paper_embeddings'

@@ -235,4 +235,4 @@ jobs:
           fi
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.preload_thumbnails${ARGS}"
+              "sudo /usr/local/sbin/pwc-cron preload_thumbnails${ARGS}"

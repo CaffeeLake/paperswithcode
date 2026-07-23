@@ -61,7 +61,7 @@ jobs:
             exit 1
           fi
           ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
-            "cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env python -m url_extraction_agent.database select --limit $REQUESTED_LIMIT" \
+            "sudo /usr/local/sbin/pwc-cron extract_urls_select --limit $REQUESTED_LIMIT" \
             > candidates.json
           python -m json.tool candidates.json > /dev/null
 
@@ -148,7 +148,7 @@ jobs:
           python -m json.tool results.json > /dev/null
           set +e
           ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${VPS_HOST}" \
-            'cd /root/python_projects/paperswithcode && /root/.local/bin/uv run --env-file backend/keys.env python -m url_extraction_agent.database persist --input -' \
+            'sudo /usr/local/sbin/pwc-cron extract_urls_persist --input -' \
             < results.json > persist-results.json 2> persist-stderr.log
           persist_exit=$?
 

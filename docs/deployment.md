@@ -1,102 +1,106 @@
-# Deployment & Networking
+# Deployment
 
-## Overview
+Production and staging use the same immutable-release mechanism. Each
+environment selects one complete backend-plus-frontend release through
+`current`; `previous` is its only rollback target.
 
-The application runs on a Hetzner VPS (4 GB RAM / 80 GB disk).  Services are started with `./start_services.sh`, which launches:
+## Topology
 
-- FastAPI backend on port `8000`
-- Vite frontend on port `8080`
-- Nginx reverse proxy (systemd service) exposing the public site
+```text
+/srv/paperswithcode/
+  repository.git
+  .venv
+  runtime-lock.sha256
+  releases/<sha12>-<environment>/
+  environments/{production,staging}/{current,previous}
 
-All production URLs live under `https://paperswithcode.co` once DNS and HTTPS are configured.
-
-## Network Topology
-
+/etc/paperswithcode/{production,staging}.env
+/etc/paperswithcode/production-cron.env
+/var/lib/paperswithcode/{shared,production,staging}
 ```
-Internet → Nginx (80/443)
-   ↳ FastAPI backend (localhost:8000)
-   ↳ Frontend static assets or dev server (localhost:8080)
-   ↳ PostgreSQL (localhost:5432, firewalled except for approved IPs)
-```
 
-Start and stop both app services with:
+`paperswithcode-backend@production` runs as `pwc-production` on `127.0.0.1:8000`.
+`paperswithcode-backend@staging` runs as `pwc-staging` on `127.0.0.1:8001`.
+Nginx serves each environment's `current/frontend-dist` and may fall back only
+to its `previous` hashed assets. Public staging is static and admin-gated; it
+never runs Vite or HMR.
+
+Both environments read the live `public` catalog and shared thumbnail mirror.
+Staging connects as `pwc_staging`, can select catalog rows, and can write only
+environment-owned user, workflow, and chat rows in the `staging` schema.
+
+## Commands
+
+Read-only status:
 
 ```bash
-./start_services.sh
-./stop_services.sh
+pwc-status
+python deploy/topology_audit.py --json
 ```
 
-Logs are written to `logs/backend.log` and `logs/frontend.log`.
-
-## DNS Checklist
-
-1. Point both `paperswithcode.co` and `www.paperswithcode.co` A records to the server IP (`167.235.148.241`).
-2. Verify propagation:
-   ```bash
-   dig +short paperswithcode.co A
-   ```
-3. Confirm the resolver returns the server IP before requesting TLS certificates.
-
-## HTTPS Setup
-
-Run the helper script after DNS propagates:
+Deploy:
 
 ```bash
-cd /root/python_projects/paperswithcode
-./setup_ssl.sh
+sudo pwc-deploy staging <commit-or-ref>
+sudo pwc-deploy production <commit-or-ref> --confirm DEPLOY_PRODUCTION
 ```
 
-The script:
-- Validates DNS
-- Requests Let’s Encrypt certificates via Certbot
-- Writes `/etc/nginx/sites-available/paperswithcode.co`
-- Enables HTTP→HTTPS redirects
-- Registers `certbot.timer` for automatic renewal
+Production accepts only commits reachable from `origin/main`. Every deploy
+builds the selected frontend profile, validates manifests and paths, starts a
+candidate on `8100-8199`, runs smoke checks, moves only the selected pointer,
+restarts only that backend, and rolls back automatically on a failed live
+check.
 
-Validate certificates:
+Rollback:
 
 ```bash
-sudo certbot certificates
-sudo certbot renew --dry-run
+sudo pwc-rollback staging
+sudo pwc-rollback production --confirm ROLLBACK_PRODUCTION
 ```
 
-## Access & Smoke Tests
-
-- Frontend: `https://paperswithcode.co`
-- API base: `https://paperswithcode.co/api/v1/`
-- Health probe: `https://paperswithcode.co/health`
-- Docs: `https://paperswithcode.co/docs`
-
-Local environment (without SSL):
+Nginx has a separate lifecycle:
 
 ```bash
-curl http://localhost:8000/health
-open http://localhost:8080
+sudo pwc-nginx staging --confirm APPLY_NGINX_STAGING
+sudo pwc-nginx production --confirm APPLY_NGINX_PRODUCTION
 ```
 
-## Troubleshooting
+It displays the effective diff, runs `nginx -t`, reloads, and smokes the
+selected host. Ordinary deploys never edit or reload nginx.
 
-| Symptom | Actions |
-| --- | --- |
-| DNS still points to old IP | Re-run `dig`, wait for TTL, or use DNSChecker. |
-| `setup_ssl.sh` fails ACME challenge | Ensure port 80 is open (`sudo ufw status`), Nginx is running, and DNS is correct. |
-| Browser shows mixed content | Ensure frontend uses `https://paperswithcode.co/api/v1/` and not hard-coded HTTP URLs. |
-| Certificate not renewing | `sudo systemctl status certbot.timer`; re-run `certbot renew --dry-run`. |
-| Need to reload Nginx | `sudo nginx -t && sudo systemctl reload nginx`. |
-
-## Useful Commands
+Install deployment tooling only from committed source:
 
 ```bash
-# Service status
-sudo systemctl status nginx
-sudo systemctl status certbot.timer
-
-# Follow logs
-sudo tail -f /var/log/nginx/paperswithcode_error.log
-sudo tail -f /var/log/nginx/paperswithcode_access.log
-
-# Check open ports
-sudo lsof -nP -iTCP -sTCP:LISTEN | grep -E '8000|8080|80|443'
+sudo python deploy/install_deploy_tools.py <commit>
 ```
 
-_Last updated: 7 November 2025_
+## Invariants
+
+`release.json` stores the full SHA, build profile, build time, frontend
+entrypoint, and backend/frontend feature manifests. `features.json` lives
+beside built `index.html`. Startup fails if a deployed shell references
+`/src/main.tsx`, assets are missing, paths are relative or inside a release,
+or feature manifests disagree.
+
+While chat remains staging-only, production build and runtime configuration
+disable it; its backend router is absent and `/chat` redirects home.
+Production and staging use host-only `pwc_session` and
+`pwc_staging_session` cookies, distinct JWT secrets, and the shared OAuth
+client with host-validated callback state.
+
+## Scheduled work and backup
+
+GitHub Actions calls `sudo /usr/local/sbin/pwc-cron <registered-job>`. The
+launcher runs as `pwc-cron`, loads production plus CRON-only configuration,
+resolves `production/current`, records its release ID, and uses absolute
+lock/log directories.
+
+`pwc-postgres-backup.timer` remains at 03:15 UTC. It runs the backup script from
+`production/current` as `pwc-cron` and includes both `public` and `staging`.
+
+## Development
+
+Use `uv run --env-file backend/keys.env ...` for local backend commands and
+`npm run dev` for a localhost frontend. `start_services.sh` and
+`stop_services.sh` are non-mutating retirement notices; `check_services.sh`
+delegates to `pwc-status`.

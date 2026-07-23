@@ -66,4 +66,4 @@ jobs:
           fi
           ssh -o StrictHostKeyChecking=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              "cd /root/python_projects/paperswithcode && PYTHONPATH=.github/workflows /root/.local/bin/uv run --env-file backend/keys.env python -m scripts.daily.mirror_thumbnails_to_disk${ARGS} >/dev/null"
+              "sudo /usr/local/sbin/pwc-cron mirror_thumbnails_to_disk${ARGS} >/dev/null"

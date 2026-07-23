@@ -397,9 +397,7 @@ def evaluate_job_health(
             reasons.append(log_status["error"])
         else:
             reasons.append("latest log run failed")
-        diagnostics.append(
-            f"Tail `.github/workflows/scripts/logs/{job.log_name}_*.log`"
-        )
+        diagnostics.append(f"Tail `{get_settings().cron_log_dir}/{job.log_name}_*.log`")
     elif lock_blocks_job:
         status = "broken"
     elif log_no_work and job.healthy_no_work_allowed:
@@ -524,7 +522,7 @@ def evaluate_job_health(
             )
         else:
             diagnostics.append(
-                f"Tail `.github/workflows/scripts/logs/{job.log_name}_*.log`"
+                f"Tail `{get_settings().cron_log_dir}/{job.log_name}_*.log`"
             )
 
     status_reason = (
