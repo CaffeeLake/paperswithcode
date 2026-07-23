@@ -107,6 +107,24 @@ def resolve_sha(source: str, environment: str) -> str:
     if len(sha) != 40:
         raise DeployError(f"could not resolve an exact commit from {source!r}")
     if environment == "production":
+        main_ref = "refs/remotes/origin/main"
+        if (
+            subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(REPOSITORY),
+                    "rev-parse",
+                    "--verify",
+                    main_ref,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            != 0
+        ):
+            main_ref = "refs/heads/main"
         ancestry = subprocess.run(
             [
                 "git",
@@ -115,7 +133,7 @@ def resolve_sha(source: str, environment: str) -> str:
                 "merge-base",
                 "--is-ancestor",
                 sha,
-                "refs/remotes/origin/main",
+                main_ref,
             ],
             check=False,
         )
@@ -504,11 +522,9 @@ def deploy(args: argparse.Namespace) -> int:
     )
     dependency_change = sync_runtime(release)
     current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
-    if args.defer_public_smoke and (
-        args.environment != "staging" or current is not None
-    ):
+    if args.defer_public_smoke and current is not None:
         raise DeployError(
-            "--defer-public-smoke is only valid for initial staging bootstrap"
+            "--defer-public-smoke is only valid for initial environment bootstrap"
         )
     print(
         json.dumps(
@@ -538,6 +554,16 @@ def deploy(args: argparse.Namespace) -> int:
         if dependency_change and old_runtime_lock:
             restore_runtime(old_runtime_lock)
         raise
+    if args.qualify_only:
+        log_event(
+            "qualify",
+            args.environment,
+            "success",
+            git_sha=sha,
+            source=args.source,
+        )
+        print(f"qualified {args.source} ({sha}) for {args.environment}")
+        return 0
     activate(
         release,
         args.environment,
@@ -551,7 +577,10 @@ def deploy(args: argparse.Namespace) -> int:
             git_sha=sha,
             source=args.source,
         )
-        print("staging activated locally; apply nginx, then re-run this deploy")
+        print(
+            f"{args.environment} activated locally; "
+            "apply nginx, then re-run this deploy"
+        )
         return 0
     cleanup_releases()
     log_event("deploy", args.environment, "success", git_sha=sha, source=args.source)
@@ -660,6 +689,7 @@ def parser_for(program: str) -> argparse.ArgumentParser:
         parser.add_argument("source")
         parser.add_argument("--confirm")
         parser.add_argument("--defer-public-smoke", action="store_true")
+        parser.add_argument("--qualify-only", action="store_true")
         parser.set_defaults(handler=deploy)
     elif program.endswith("pwc-rollback"):
         parser.add_argument("environment", choices=ENVIRONMENTS)
