@@ -56,6 +56,7 @@ def main() -> int:
         type=Path,
         default=Path("/etc/paperswithcode/production-cron.env"),
     )
+    parser.add_argument("--roles-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
@@ -80,8 +81,11 @@ ALTER ROLE pwc_backup PASSWORD
     {sql_literal(cron["PWC_POSTGRES_BACKUP_DB_PASSWORD"])};
 GRANT CONNECT ON DATABASE {database} TO pwc_staging, pwc_backup;
 GRANT pg_read_all_data TO pwc_backup;
-"""
+    """
     psql(database, role_sql)
+    if args.roles_only:
+        print("configured staging and backup PostgreSQL roles")
+        return 0
     migration = (
         Path(__file__).resolve().parents[1]
         / "backend/database/migrations/consolidate_staging_schema.sql"
