@@ -207,6 +207,7 @@ def main() -> int:
     cron = assign(
         cron,
         {
+            "HF_HOME": "/var/lib/paperswithcode/production/hf-cache",
             "PWC_POSTGRES_BACKUP_DB_PASSWORD": backup_db_password,
             "PWC_POSTGRES_BACKUP_DB_USER": "pwc_backup",
             "PWC_POSTGRES_BACKUP_LOCAL_KEEP_COUNT": "3",

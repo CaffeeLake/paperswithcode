@@ -91,6 +91,12 @@ def main() -> int:
         "pwc-cron",
         0o750,
     )
+    ensure_dir(
+        STATE_ROOT / "production" / "hf-cache",
+        "pwc-cron",
+        "pwc-cron",
+        0o750,
+    )
     for path in (
         STATE_ROOT / "staging" / "chat-agent",
         STATE_ROOT / "staging" / "chat-recovery-spool",
