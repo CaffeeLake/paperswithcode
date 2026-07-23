@@ -49,7 +49,7 @@ VENV = APP_ROOT / ".venv"
 RUNTIME_LOCK = APP_ROOT / "runtime-lock.sha256"
 CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode"))
 LOG_ROOT = Path(os.environ.get("PWC_DEPLOY_LOG_ROOT", "/var/log/paperswithcode/deploy"))
-MIN_FREE_BYTES = int(os.environ.get("PWC_DEPLOY_MIN_FREE_BYTES", str(1536**3)))
+MIN_FREE_BYTES = int(os.environ.get("PWC_DEPLOY_MIN_FREE_BYTES", str(1536 * 1024**2)))
 PORTS = {"production": 8000, "staging": 8001}
 PUBLIC_URLS = {
     "production": "https://paperswithcode.co",
