@@ -13,6 +13,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
 | `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` | `.github/workflows/scripts/hourly/extract_urls.py` |
 | `cron-import-hf-daily-papers.yml` | `0 * * * *` | direct `uv run` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-refresh-paper-embeddings.yml` | `15 * * * *` | `.github/workflows/scripts/run_refresh_paper_embeddings.sh` | `.github/workflows/scripts/hourly/refresh_paper_embeddings.py` |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
 | `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` | `.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh` | `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` |
 
@@ -27,6 +28,7 @@ The `test-database.yml` workflow is unrelated to cron scheduling.
 ├── hourly/
 │   ├── calculate_trending_scores.py
 │   ├── extract_urls.py
+│   ├── refresh_paper_embeddings.py
 │   ├── update_citations.py
 │   └── update_github_stars.py
 ├── backfill/
@@ -65,6 +67,11 @@ pages for papers that still have `urls_extracted = false`.
 `import_hf_daily_papers.py` runs hourly, imports the current day's Hugging Face
 papers that are not yet in the database, and auto-tags tasks/methods using
 keyword matching.
+
+`refresh_paper_embeddings.py` runs 15 minutes later and sends only missing or
+content-changed latest papers to the protected TEI endpoint. It validates and
+upserts normalized vectors into the active generation in bounded batches. The
+VPS supplies the endpoint URL and `PWC_HF_TOKEN` from `backend/keys.env`.
 
 ## Manual Utilities
 

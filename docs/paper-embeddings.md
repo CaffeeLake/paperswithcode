@@ -117,12 +117,29 @@ uv run --env-file backend/keys.env pwc embeddings activate GENERATION_ID --confi
 
 ## Incremental refresh and retention
 
-After daily paper ingestion, export with `--generation-id ACTIVE_ID`. Only
-missing or content-hash-changed latest papers are emitted. Sync the immutable
-run prefix, run the worker with scheduled-job concurrency protection, and import
-the completed manifest. Imports are idempotent; content-changed rows are counted
-as stale and never loaded. Search continues through FTS and related papers use
-the task fallback while a delta is unavailable. The freshness SLO is 24 hours.
+The hourly `cron-refresh-paper-embeddings.yml` workflow runs at minute 15, after
+the HF daily-paper import at minute 0. It SSHes to the VPS and invokes
+`run_refresh_paper_embeddings.sh`, whose `flock` and 20-minute timeout prevent
+overlapping runs. The job sends at most 500 missing or content-changed latest
+papers to the protected TEI endpoint in batches of 16 and upserts validated,
+normalized 256-dimensional vectors into the active generation.
+
+The document call uses `prompt_name=document`, matching the full-corpus
+`SentenceTransformer.encode_document` contract. Before each upsert the source
+paper rows are locked and their content hashes rechecked; a paper edited during
+inference is skipped for the next run. Endpoint 408/429/502/503/504 responses
+receive bounded retries for scale-from-zero and transient throttling. The
+endpoint defaults to `PWC_HF_QUERY_EMBEDDING_ENDPOINT_URL`, with
+`PWC_PAPER_EMBEDDING_ENDPOINT_URL` available as a job-specific override.
+
+Each attempt is recorded in `embedding_pipeline_runs`, including no-work and
+failed runs, and the job is registered in the admin CRON dashboard. Search
+continues through FTS and related papers use the task fallback while a delta is
+unavailable. The freshness SLO remains 24 hours.
+
+For a large rebuild or a new generation, continue to use the immutable
+export/Bucket/HF Job/import pipeline. The endpoint CRON is intentionally bounded
+incremental maintenance, not a full-corpus replacement.
 
 `pwc embeddings status` reports active generation, embedded/missing/title-only
 coverage, oldest missing paper, the 24-hour breach state, and recent
