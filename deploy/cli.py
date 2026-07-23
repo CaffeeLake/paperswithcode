@@ -46,6 +46,7 @@ REPOSITORY = Path(os.environ.get("PWC_DEPLOY_REPOSITORY", APP_ROOT / "repository
 RELEASES = APP_ROOT / "releases"
 ENVIRONMENTS_ROOT = APP_ROOT / "environments"
 VENV = APP_ROOT / ".venv"
+PYTHON_RUNTIME = APP_ROOT / "python-runtime"
 RUNTIME_LOCK = APP_ROOT / "runtime-lock.sha256"
 CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode"))
 LOG_ROOT = Path(os.environ.get("PWC_DEPLOY_LOG_ROOT", "/var/log/paperswithcode/deploy"))
@@ -240,18 +241,27 @@ def sync_runtime(release: Path) -> bool:
 
 
 def make_runtime_readable() -> None:
-    for name in (
-        "python",
-        "python3",
-        f"python{sys.version_info.major}.{sys.version_info.minor}",
-    ):
+    config = VENV / "pyvenv.cfg"
+    lines = config.read_text(encoding="utf-8").splitlines()
+    home_line = next(line for line in lines if line.startswith("home = "))
+    source_root = Path(home_line.split("=", 1)[1].strip()).parent
+    if source_root != PYTHON_RUNTIME:
+        if not PYTHON_RUNTIME.exists():
+            temporary = PYTHON_RUNTIME.with_name(
+                f".{PYTHON_RUNTIME.name}.new-{os.getpid()}"
+            )
+            shutil.copytree(source_root, temporary, symlinks=True)
+            os.replace(temporary, PYTHON_RUNTIME)
+        updated = [
+            line.replace(str(source_root), str(PYTHON_RUNTIME)) for line in lines
+        ]
+        config.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    versioned = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    base_launcher = PYTHON_RUNTIME / "bin" / versioned
+    for name in ("python", "python3", versioned):
         launcher = VENV / "bin" / name
-        if launcher.is_symlink():
-            target = launcher.resolve(strict=True)
-            temporary = launcher.with_name(f".{launcher.name}.copy-{os.getpid()}")
-            shutil.copy2(target, temporary)
-            temporary.chmod(0o755)
-            os.replace(temporary, launcher)
+        launcher.unlink(missing_ok=True)
+        launcher.symlink_to(base_launcher)
     for path in VENV.rglob("*"):
         if path.is_symlink():
             continue
