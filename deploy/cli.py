@@ -342,6 +342,19 @@ def qualify(release: Path, environment: str) -> None:
         f"PWC_PORT={port}",
         f"PWC_RELEASE_ID={manifest['release_id']}",
         f"PWC_FRONTEND_DIST_DIR={release / 'frontend-dist'}",
+        f"PWC_CHAT_ENABLED={'true' if manifest['backend_features']['chat'] else 'false'}",
+        (
+            "PWC_CODEX_ADD_EVALS_ENABLED="
+            f"{'true' if manifest['backend_features'].get('codex_add_evals', False) else 'false'}"
+        ),
+        (
+            "PWC_CODEX_ENRICH_PAPER_ENABLED="
+            f"{'true' if manifest['backend_features'].get('codex_enrich_paper', False) else 'false'}"
+        ),
+        (
+            "PWC_CODEX_JOBS_ENABLED="
+            f"{'true' if manifest['backend_features'].get('codex_add_evals', False) or manifest['backend_features'].get('codex_enrich_paper', False) else 'false'}"
+        ),
         str(VENV / "bin" / "python"),
         "-m",
         "uvicorn",

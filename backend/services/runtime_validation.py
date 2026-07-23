@@ -130,6 +130,15 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError(
                 "production catalog mutations and CRON must remain enabled"
             )
+        if settings.codex_jobs_enabled and (
+            not settings.codex_jobs_namespace
+            or not settings.codex_jobs_token
+            or not settings.codex_jobs_openai_api_key
+            or not settings.github_token
+        ):
+            raise RuntimeError(
+                "production Codex jobs require namespace, HF, OpenAI, and GitHub credentials"
+            )
     else:
         if settings.catalog_mutations_enabled:
             raise RuntimeError("staging catalog mutations must be disabled")

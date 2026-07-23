@@ -79,9 +79,24 @@ def write_env(path: Path, lines: dict[str, str], group: str) -> None:
     os.replace(temporary, path)
 
 
+def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
+    return {
+        # The immutable release launcher overrides these non-secret capability
+        # flags from release.json, preserving rollback compatibility.
+        "PWC_CODEX_ADD_EVALS_ENABLED": "false",
+        "PWC_CODEX_ENRICH_PAPER_ENABLED": "false",
+        "PWC_CODEX_JOBS_ENABLED": "false",
+        "PWC_CODEX_JOBS_NAMESPACE": namespace,
+        "PWC_CODEX_JOBS_OPENAI_API_KEY": decoded_value(legacy["OPENAI_API_KEY"]),
+        "PWC_CODEX_JOBS_TOKEN": decoded_value(legacy["PWC_HF_TOKEN"]),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--legacy-env", type=Path, required=True)
+    parser.add_argument("--codex-jobs-namespace", required=True)
+    parser.add_argument("--production-codex-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
@@ -96,10 +111,21 @@ def main() -> int:
         "PWC_HF_OAUTH_CLIENT_SECRET",
         "PWC_HF_TOKEN",
         "PWC_JWT_SECRET",
+        "PWC_GITHUB_TOKEN",
+        "OPENAI_API_KEY",
     }
     missing = sorted(required - legacy.keys())
     if missing:
         parser.error("legacy environment is missing: " + ", ".join(missing))
+
+    if args.production_codex_only:
+        production = assign(
+            read_lines(CONFIG_ROOT / "production.env"),
+            production_codex_values(legacy, args.codex_jobs_namespace),
+        )
+        write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
+        print("installed production Codex credentials")
+        return 0
 
     current_staging = read_lines(CONFIG_ROOT / "staging.env")
     current_cron = read_lines(CONFIG_ROOT / "production-cron.env")
@@ -120,12 +146,10 @@ def main() -> int:
                 "/var/lib/paperswithcode/production/chat-recovery-spool"
             ),
             "PWC_CHAT_REQUIRE_AUTH": "true",
-            "PWC_CODEX_ADD_EVALS_ENABLED": "false",
             "PWC_CODEX_ADD_EVALS_SPOOL_DIR": (
                 "/var/lib/paperswithcode/production/recovery-spool"
             ),
-            "PWC_CODEX_ENRICH_PAPER_ENABLED": "false",
-            "PWC_CODEX_JOBS_ENABLED": "false",
+            **production_codex_values(legacy, args.codex_jobs_namespace),
             "PWC_CRON_ENABLED": "true",
             "PWC_CRON_LOCK_DIR": "/var/lib/paperswithcode/production/cron-locks",
             "PWC_CRON_LOG_DIR": "/var/lib/paperswithcode/production/cron-logs",

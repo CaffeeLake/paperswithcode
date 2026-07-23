@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 import deploy.cli as deploy_cli
 import deploy.configure_host_env as configure_host_env
 import deploy.cron_launcher as cron_launcher
+import deploy.run_backend as run_backend
 from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
 from deploy.cli import parser_for
@@ -59,6 +61,7 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         state / "recovery",
     ):
         path.mkdir(parents=True, exist_ok=True)
+    features = profile_features(environment)
     return Settings(
         environment=environment,
         release_id=json.loads((release / "release.json").read_text())["release_id"],
@@ -78,6 +81,16 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
             "pwc_staging_session" if environment == "staging" else "pwc_session"
         ),
         chat_enabled=environment == "staging",
+        codex_jobs_enabled=features["codex_add_evals"]
+        or features["codex_enrich_paper"],
+        codex_add_evals_enabled=features["codex_add_evals"],
+        codex_enrich_paper_enabled=features["codex_enrich_paper"],
+        codex_jobs_namespace="nielsr" if environment == "production" else "",
+        codex_jobs_token="hf-token" if environment == "production" else "",
+        codex_jobs_openai_api_key=(
+            "openai-token" if environment == "production" else ""
+        ),
+        github_token="github-token" if environment == "production" else "",
         catalog_mutations_enabled=environment == "production",
         thumbnail_mutations_enabled=False,
         cron_enabled=environment == "production",
@@ -112,7 +125,7 @@ def test_deployed_runtime_rejects_source_shell(tmp_path: Path):
 def test_release_manifest_rejects_feature_mismatch(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     features = profile_features("production")
-    features["codex_add_evals"] = True
+    features["codex_add_evals"] = False
     (release / "frontend-dist" / "features.json").write_text(json.dumps(features))
     with pytest.raises(ValueError, match="features.json"):
         validate_manifest(release, "production")
@@ -139,6 +152,48 @@ def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
         "codex_add_evals": False,
         "codex_enrich_paper": False,
     }
+
+
+def test_production_profile_enables_admin_catalog_actions():
+    assert profile_features("production") == {
+        "chat": False,
+        "codex_add_evals": True,
+        "codex_enrich_paper": True,
+    }
+
+
+def test_production_codex_jobs_require_all_credentials(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.codex_jobs_token = ""
+    with pytest.raises(RuntimeError, match="production Codex jobs require"):
+        validate_runtime(settings)
+
+
+def test_backend_launcher_uses_release_specific_feature_flags(
+    tmp_path: Path, monkeypatch
+):
+    release = make_bundle(tmp_path, chat=False)
+    monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    run_backend.configure_release_environment(release)
+    assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "true"
+    assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "true"
+    assert os.environ["PWC_CODEX_ENRICH_PAPER_ENABLED"] == "true"
+
+
+def test_backend_launcher_disables_features_for_legacy_rollback(
+    tmp_path: Path, monkeypatch
+):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["backend_features"] = {"chat": False}
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    run_backend.configure_release_environment(release)
+    assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "false"
+    assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "false"
+    assert os.environ["PWC_CODEX_ENRICH_PAPER_ENABLED"] == "false"
 
 
 def test_smoke_bundle_parser_catches_missing_asset(tmp_path: Path):
@@ -210,6 +265,24 @@ def test_environment_config_directory_is_search_only(tmp_path: Path, monkeypatch
 
     assert config.parent.stat().st_mode & 0o777 == 0o711
     assert config.stat().st_mode & 0o777 == 0o640
+
+
+def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
+    values = configure_host_env.production_codex_values(
+        {
+            "OPENAI_API_KEY": "OPENAI_API_KEY=openai-secret",
+            "PWC_HF_TOKEN": "PWC_HF_TOKEN=hf-secret",
+        },
+        "nielsr",
+    )
+    assert values == {
+        "PWC_CODEX_ADD_EVALS_ENABLED": "false",
+        "PWC_CODEX_ENRICH_PAPER_ENABLED": "false",
+        "PWC_CODEX_JOBS_ENABLED": "false",
+        "PWC_CODEX_JOBS_NAMESPACE": "nielsr",
+        "PWC_CODEX_JOBS_OPENAI_API_KEY": "openai-secret",
+        "PWC_CODEX_JOBS_TOKEN": "hf-secret",
+    }
 
 
 def test_cron_jobs_declare_bounded_execution_contracts():

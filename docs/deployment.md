@@ -109,14 +109,14 @@ Production and staging use host-only `pwc_session` and
 `pwc_staging_session` cookies, distinct JWT secrets, and the shared OAuth
 client with host-validated callback state.
 
-Codex add-evals and enrich-paper buttons remain hidden in both profiles during
-the environment migration. Staging has read-only catalog access, its remote-job
-credentials are absent, and exposing frontend-only controls would create
-broken or unsafe direct-apply paths. `features.json` records both controls as
-`false`; release validation and backend startup reject a frontend/backend
-feature mismatch. Re-enable them only with an explicitly approved
-production-owned mediated mutation design and matching credentials and smoke
-tests.
+Codex add-evals and enrich-paper buttons are enabled only in production and
+remain protected by Hugging Face admin authentication in both the frontend and
+API. Production owns the writable catalog and receives the remote-job
+credentials through its protected environment. Staging keeps both controls
+disabled because its catalog role is read-only and it has no job credentials.
+Each release launcher derives the non-secret capability flags from that
+release's validated manifest, so rolling back also restores the matching
+frontend/backend feature state.
 
 ## Scheduled work and backup
 

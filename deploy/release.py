@@ -26,10 +26,10 @@ def profile_features(environment: str) -> dict[str, bool]:
         raise ValueError(f"unsupported environment: {environment}")
     return {
         "chat": environment == "staging",
-        # Catalog curation stays hidden until it has a production-owned,
-        # safely mediated mutation path. Staging itself is catalog read-only.
-        "codex_add_evals": False,
-        "codex_enrich_paper": False,
+        # Catalog curation runs only in production, where the API owns the
+        # writable catalog and the controls remain protected by HF admin auth.
+        "codex_add_evals": environment == "production",
+        "codex_enrich_paper": environment == "production",
     }
 
 

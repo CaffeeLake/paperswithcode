@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 import sys
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from backend.services.codex_add_evals_service import (
     CURATOR_BOOTSTRAP_COMMAND,
     _git_revision,
     _launch_error,
+    _release_git_revision,
 )
 from backend.utils.auth import require_hf_admin
 from jobs.curation_api import USER_AGENT as HELPER_USER_AGENT
@@ -68,6 +70,12 @@ def test_serializer_exposes_hf_job_url():
 def test_git_revision_can_be_pinned_for_remote_jobs(monkeypatch):
     monkeypatch.setenv("PWC_CODEX_JOBS_GIT_SHA", "published-curation-revision")
     assert _git_revision() == "published-curation-revision"
+
+
+def test_release_manifest_pins_remote_worker_revision(tmp_path):
+    revision = "a" * 40
+    (tmp_path / "release.json").write_text(json.dumps({"git_sha": revision}))
+    assert _release_git_revision(tmp_path) == revision
 
 
 def test_remote_job_bootstrap_uses_public_image_and_pinned_runner():

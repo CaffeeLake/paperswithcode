@@ -59,11 +59,8 @@ smoke checks. Report the resulting `current` and `previous` releases from
 
 Staging is static, admin-gated, and owns only staging user/workflow state. A
 staging deployment must not start Vite, use production port 8000, mutate the
-production catalog, or enable production CRON. The current release contract
-also keeps `codex_add_evals` and `codex_enrich_paper` false in both
-environments. Do not override their frontend build flags: re-enabling those
-controls requires a separately approved, safely mediated production-owned
-mutation path, runtime credentials, and endpoint smoke tests.
+production catalog, or enable production CRON. The release contract keeps
+`codex_add_evals` and `codex_enrich_paper` false in staging.
 
 ## Deploy production
 
@@ -77,6 +74,8 @@ sudo pwc-deploy production <exact-main-sha> --confirm DEPLOY_PRODUCTION
 Do not infer production authorization from approval to deploy staging, test a
 branch, merge code, or prepare a release. Preserve all staging-only feature
 boundaries; currently production chat and Sandbox features remain disabled.
+Production Codex curation controls are admin-only and require the protected
+HF/OpenAI/GitHub job credentials plus the writable production catalog.
 
 After success, use `pwc-status` and the release smoke checks. Verify at least
 health/release identity, the SPA shell and hashed asset MIME types, a paper
