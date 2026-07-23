@@ -83,7 +83,8 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             f"{settings.environment}"
         )
 
-    _resolved_absolute("FRONTEND_DIST_DIR", settings.frontend_dist_dir)
+    if not Path(settings.frontend_dist_dir).is_absolute():
+        raise RuntimeError("PWC_FRONTEND_DIST_DIR must be absolute")
     writable = {
         "RUNTIME_DATA_DIR": settings.runtime_data_dir,
         "CODEX_ADD_EVALS_SPOOL_DIR": settings.codex_add_evals_spool_dir,
