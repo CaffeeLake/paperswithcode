@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Pin, Trophy } from "lucide-react";
+import { Github, Pin, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
@@ -30,6 +30,12 @@ const parseOrderBy = (value: string | null): OrderBy => {
 };
 
 const SUBTASK_BENCH_PREVIEW = 3;
+
+const formatStarCount = (stars: number) =>
+  new Intl.NumberFormat("en", {
+    notation: stars >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(stars);
 
 const sortSubtasksForDisplay = (subtasks: Task[]) =>
   [...subtasks].sort((a, b) => {
@@ -152,6 +158,7 @@ const TagBrowseView: React.FC = () => {
   const parents = pageQ.data.parents || [];
   const taskName = displayTaskName(task.name, task.slug);
   const sisters = (pageQ.data.sisters || []).filter((s) => s.id !== task.id);
+  const recommendedFrameworks = pageQ.data.recommended_frameworks || [];
   const datasets = pageQ.data.benchmarks || [];
   const hasVisibleSubtaskBenchmarks = visibleSubtasks.some(
     (s) => (subtaskBenchmarksById.get(s.id) || []).length > 0,
@@ -232,17 +239,29 @@ const TagBrowseView: React.FC = () => {
               <span className="num">{commonMethods.length}+</span>METHODS USED
             </span>
           </div>
-          {sisters.length > 0 && (
-            <div className="task-sister-links">
-              <span className="task-sister-links-label">Sister tasks</span>
-              {sisters.slice(0, 8).map((s) => (
-                <Link key={s.id} to={`/tasks/${s.slug || s.id}`} className="task-sister-link">
-                  {displayTaskName(s.name, s.slug)}
-                  {s.paper_count != null && (
-                    <span className="task-sister-link-count">{s.paper_count.toLocaleString()}</span>
-                  )}
-                </Link>
-              ))}
+          {recommendedFrameworks.length > 0 && (
+            <div className="task-framework-links">
+              <span className="task-framework-links-label">Recommended frameworks</span>
+              {recommendedFrameworks.map((framework) => {
+                const label = framework.owner && framework.name
+                  ? `${framework.owner}/${framework.name}`
+                  : framework.name || framework.url.replace(/^https?:\/\/github\.com\//, "");
+                return (
+                  <a
+                    key={framework.id}
+                    href={framework.url}
+                    className="task-framework-link"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Github size={13} strokeWidth={1.8} aria-hidden="true" />
+                    <span>{label}</span>
+                    <span className="task-framework-link-stars">
+                      ★ {formatStarCount(framework.num_stars)}
+                    </span>
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>

@@ -99,6 +99,19 @@ export function isAuthDisabled(): boolean {
 }
 
 /**
+ * `true` only for builds that explicitly opt into the research chat UI.
+ * Production intentionally leaves this unset; staging sets it in
+ * `.env.staging`. Keep this separate from `VITE_CHAT_LIVE`, which selects the
+ * transport implementation and must not make the interface public by itself.
+ */
+export function isChatEnabled(): boolean {
+  const raw = import.meta.env.VITE_CHAT_ENABLED;
+  if (!raw) return false;
+  const lowered = String(raw).trim().toLowerCase();
+  return lowered === "1" || lowered === "true" || lowered === "yes";
+}
+
+/**
  * `true` when the bundle should route under the URL fragment.
  * Hugging Face Static Spaces:
  *  - boot the iframe at `/index.html` (no route for that in BrowserRouter →

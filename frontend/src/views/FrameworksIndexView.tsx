@@ -1,4 +1,5 @@
 import React from "react";
+import { Link } from "react-router-dom";
 
 import { Icon } from "@/components";
 import { chipColors, hueFromSlug } from "@/lib/colors";
@@ -84,8 +85,13 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
         </div>
       )}
 
-      {(framework.github || framework.url) && (
+      {(framework.github || framework.url || framework.paperId) && (
         <div className="framework-card-links">
+          {framework.paperId && (
+            <Link to={`/paper/${framework.paperId}`} className="framework-link">
+              Paper
+            </Link>
+          )}
           {framework.github && (
             <a
               href={framework.github}
@@ -197,8 +203,7 @@ const FrameworksIndexView: React.FC = () => {
         }}
       >
         {totalFrameworks} frameworks across {FRAMEWORK_DOMAINS.length}{" "}
-        {FRAMEWORK_DOMAINS.length === 1 ? "domain" : "domains"}. More areas (vision, audio) coming
-        soon.
+        {FRAMEWORK_DOMAINS.length === 1 ? "domain" : "domains"}. More areas coming soon.
       </div>
     </div>
   );

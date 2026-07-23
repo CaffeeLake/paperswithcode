@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import get_settings
+from backend.services.runtime_validation import validate_runtime
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 
 # Requests slower than this (in milliseconds) are logged so production slow
@@ -81,6 +82,13 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting PapersWithCode API server")
     print(f"📊 Database: {settings.database_log_identifier}")
     print(f"🌍 Environment: {settings.environment}")
+    print(f"📦 Release: {settings.release_id}")
+    validate_runtime(settings)
+    if settings.chat_enabled:
+        if not settings.chat_require_auth:
+            raise RuntimeError("PWC_CHAT_REQUIRE_AUTH must remain enabled")
+        if not settings.hf_token:
+            raise RuntimeError("PWC_HF_TOKEN is required when chat is enabled")
 
     yield
 
@@ -114,6 +122,40 @@ def create_app() -> FastAPI:
     if settings.extra_allowed_origin_regex:
         cors_kwargs["allow_origin_regex"] = settings.extra_allowed_origin_regex
     app.add_middleware(CORSMiddleware, **cors_kwargs)
+
+    @app.middleware("http")
+    async def enforce_staging_write_boundary(request, call_next):
+        if settings.is_deployed and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            catalog_prefixes = (
+                "/api/v1/papers",
+                "/api/v1/tasks",
+                "/api/v1/methods",
+                "/api/v1/datasets",
+                "/api/v1/evaluations",
+                "/api/v1/metrics",
+                "/api/v1/conferences",
+                "/api/v1/organizations",
+                "/api/v1/repositories",
+                "/api/v1/external-resources",
+                "/api/thumbnails",
+            )
+            is_thumbnail_mutation = request.url.path.startswith("/api/thumbnails")
+            is_staging_catalog_mutation = settings.environment == "staging" and any(
+                request.url.path.startswith(prefix) for prefix in catalog_prefixes[:-1]
+            )
+            if is_staging_catalog_mutation or (
+                is_thumbnail_mutation and not settings.thumbnail_mutations_enabled
+            ):
+                return JSONResponse(
+                    {
+                        "detail": (
+                            "Staging is preview-only for catalog and thumbnail "
+                            "mutations"
+                        )
+                    },
+                    status_code=403,
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def log_slow_requests(request, call_next):
@@ -187,6 +229,10 @@ def create_app() -> FastAPI:
         pending_edits,
         conferences,
         organizations,
+        chat,
+        codex_add_evals,
+        codex_enrich_paper,
+        codex_curation_callbacks,
     )
 
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
@@ -209,18 +255,49 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(conferences.router, prefix="/api/v1", tags=["conferences"])
     app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
+    if settings.chat_enabled:
+        app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+    app.include_router(codex_add_evals.router, prefix="/api/v1", tags=["admin"])
+    app.include_router(codex_enrich_paper.router, prefix="/api/v1", tags=["admin"])
+    app.include_router(
+        codex_curation_callbacks.router, prefix="/api/v1", tags=["admin"]
+    )
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
     # Server-rendered paper-page HTML for social previews. Mounted at the
     # app root because the public URL shape is `/paper/{id}` (not under
     # `/api/v1/...`).
     app.include_router(paper_pages.router, tags=["paper_pages"])
-    app.include_router(cron.router, prefix="/api/v1", tags=["cron"])
+    if settings.cron_enabled:
+        app.include_router(cron.router, prefix="/api/v1", tags=["cron"])
 
     # Health check endpoint
     @app.get("/health")
     async def health_check():
         """Health check endpoint."""
-        return {"status": "healthy", "service": "paperswithcode-api"}
+        return {
+            "status": "healthy",
+            "service": "paperswithcode-api",
+            "release_id": settings.release_id,
+        }
+
+    @app.get("/internal/ready", include_in_schema=False)
+    async def internal_ready():
+        features = validate_runtime(settings)
+        route_paths = {route.path for route in app.routes}
+        has_chat_routes = any(path.startswith("/api/v1/chat") for path in route_paths)
+        if has_chat_routes != settings.chat_enabled:
+            return JSONResponse(
+                {"status": "not_ready", "reason": "chat route manifest mismatch"},
+                status_code=503,
+            )
+        return {
+            "status": "ready",
+            "environment": settings.environment,
+            "release_id": settings.release_id,
+            "features": features,
+            "frontend_assets_valid": True,
+            "thumbnail_store_valid": True,
+        }
 
     # Root endpoint
     @app.get("/")

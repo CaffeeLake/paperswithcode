@@ -323,13 +323,22 @@ export interface TaskSubtaskBenchmarks {
   benchmarks: Dataset[];
 }
 
+export interface RecommendedFramework {
+  id: string;
+  url: string;
+  owner?: string;
+  name?: string;
+  num_stars: number;
+}
+
 /** Bundled task-page payload returned by `GET /tasks/{id}/page`. Collapses the
- *  task-detail page's initial fan-out (detail, parents, sisters, children,
- *  direct benchmarks, per-child benchmark previews) into one round trip. */
+ *  task-detail page's initial fan-out (detail, parents, sisters, recommended
+ *  frameworks, children, direct benchmarks, and previews) into one request. */
 export interface TaskPage {
   task: Task;
   parents: Task[];
   sisters: Task[];
+  recommended_frameworks: RecommendedFramework[];
   children: Task[];
   benchmarks: Dataset[];
   subtask_benchmarks: TaskSubtaskBenchmarks[];

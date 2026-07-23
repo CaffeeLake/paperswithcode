@@ -3,6 +3,7 @@ Configuration management for the FastAPI backend.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Literal
 
 from pydantic import Field
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
         description="Environment (development, staging, production)",
     )
     log_level: str = Field(default="INFO", description="Log level")
+    release_id: str = Field(default="development")
+    frontend_dist_dir: str = Field(default="")
+    runtime_data_dir: str = Field(default="./runtime")
+    cron_log_dir: str = Field(default="./.github/workflows/scripts/logs")
+    cron_lock_dir: str = Field(default="./.github/workflows/scripts/locks")
 
     # Database configuration
     db_host: str = Field(default="localhost", description="Database host")
@@ -29,6 +35,7 @@ class Settings(BaseSettings):
     db_name: str = Field(default="paperswithcode_hf", description="Database name")
     db_user: str = Field(default="nielsrogge", description="Database user")
     db_password: str = Field(default="", description="Database password")
+    db_search_path: str = Field(default="public")
 
     # CORS configuration
     allowed_origins: List[str] = Field(
@@ -135,6 +142,27 @@ class Settings(BaseSettings):
         description="API token required for administrative endpoints",
     )
 
+    # Codex curation jobs. Disabled on the main API; isolated staging and
+    # production sidecars opt in through their systemd environments.
+    codex_add_evals_enabled: bool = Field(default=False)
+    codex_enrich_paper_enabled: bool = Field(default=False)
+    codex_add_evals_timeout_seconds: int = Field(default=3600, ge=60, le=7200)
+    codex_add_evals_work_dir: str = Field(
+        default="/root/python_projects/paperswithcode"
+    )
+    codex_add_evals_spool_dir: str = Field(default="/tmp/pwc-codex-add-evals")
+    # Remote paper-curation workers run on Hugging Face Jobs. Keep these
+    # credentials separate from the general Hub token and database credentials.
+    codex_jobs_enabled: bool = Field(default=False)
+    # Deliberately has no default: launching into the wrong organization can
+    # fail with a generic Hub 403 and leaves no remote Job to inspect.
+    codex_jobs_namespace: str = Field(default="")
+    codex_jobs_token: str = Field(default="")
+    codex_jobs_openai_api_key: str = Field(default="")
+    codex_jobs_image: str = Field(default="node:22-bookworm")
+    codex_jobs_api_url: str = Field(default="https://paperswithcode.co/api/v1")
+    codex_jobs_timeout_seconds: int = Field(default=5400, ge=300, le=14400)
+
     # Hugging Face OAuth configuration (for "Sign in with Hugging Face")
     hf_oauth_client_id: str = Field(
         default="",
@@ -148,15 +176,80 @@ class Settings(BaseSettings):
         default="",
         description="HS256 secret used to sign the session and OAuth state JWTs",
     )
+    production_jwt_fingerprint: str = Field(
+        default="",
+        description="SHA-256 fingerprint used by staging to reject the production secret",
+    )
     admin_hf_usernames: str = Field(
         default="",
         description="Comma-separated list of HF usernames allowed to perform admin actions",
     )
+    session_cookie_domain: str = Field(
+        default="",
+        description=(
+            "Optional Domain attribute for the session cookie. Empty keeps the "
+            "cookie host-only (current behaviour). Set to '.paperswithcode.co' "
+            "so one production sign-in is also valid on subdomains such as "
+            "staging.paperswithcode.co (whose OAuth redirect URL is not "
+            "registered with the HF app)."
+        ),
+    )
+    session_cookie_name: str = Field(default="pwc_session")
 
     # Hugging Face API configuration
     hf_token: str = Field(
         default="", description="Hugging Face API token for higher rate limits"
     )
+
+    # Research chat (disabled until the isolated live qualification passes).
+    chat_enabled: bool = Field(default=False)
+    chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
+    chat_deepseek_route: str = Field(default="deepseek-ai/DeepSeek-V4-Flash:fastest")
+    chat_title_model: str = Field(default="deepseek-ai/DeepSeek-V4-Flash")
+    chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    chat_title_max_tokens: int = Field(default=32, ge=8, le=64)
+    chat_session_limit: int = Field(default=100, ge=1, le=1000)
+    chat_session_message_limit: int = Field(default=200, ge=2, le=2000)
+    chat_session_byte_limit: int = Field(default=25 * 1024 * 1024, ge=1024)
+    chat_user_byte_limit: int = Field(default=100 * 1024 * 1024, ge=1024)
+    chat_agent_cwd: str = Field(default="/tmp/pwc-chat-agent")
+    chat_recovery_spool_dir: str = Field(default="/tmp/pwc-chat-recovery")
+    chat_recovery_spool_max_sessions: int = Field(default=20, ge=1, le=100)
+    chat_max_turns: int = Field(default=6, ge=1, le=12)
+    chat_max_search_calls: int = Field(default=2, ge=1, le=5)
+    chat_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    chat_max_concurrency: int = Field(default=1, ge=1, le=8)
+    chat_require_auth: bool = Field(default=True)
+    chat_show_reasoning: bool = Field(default=True)
+    chat_hf_bill_to: str = Field(
+        default="",
+        pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$",
+        description="Optional Hugging Face organization slug billed for chat inference",
+    )
+    chat_requests_per_minute: int = Field(default=5, ge=1, le=1000)
+    chat_requests_per_day: int = Field(default=50, ge=1, le=10000)
+    catalog_mutations_enabled: bool = Field(default=True)
+    thumbnail_mutations_enabled: bool = Field(default=True)
+    cron_enabled: bool = Field(default=True)
+
+    @property
+    def chat_model_choices(self) -> tuple[dict[str, str], ...]:
+        return (
+            {
+                "id": "deepseek-ai/DeepSeek-V4-Flash",
+                "label": "DeepSeek V4 Flash",
+                "route": self.chat_deepseek_route,
+            },
+            {
+                "id": "zai-org/GLM-5.2",
+                "label": "GLM 5.2",
+                "route": self.chat_glm_route,
+            },
+        )
+
+    @property
+    def chat_model_routes(self) -> dict[str, str]:
+        return {choice["id"]: choice["route"] for choice in self.chat_model_choices}
 
     # GitHub API configuration
     github_token: str = Field(
@@ -182,6 +275,10 @@ class Settings(BaseSettings):
     thumbnail_temp_cache_dir: str = Field(
         default="./thumbnail_cache",
         description="Small local cache for bucket-backed thumbnail responses",
+    )
+    paper_markdown_hf_bucket_id: str = Field(
+        default="huggingface/pwc-papers-content",
+        description="Private Hugging Face bucket containing paper Markdown files",
     )
 
     # bioRxiv / medRxiv TDM (requester-pays S3 bucket). Optional: when unset,
@@ -216,6 +313,16 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.environment.lower() == "production"
+
+    @property
+    def is_deployed(self) -> bool:
+        return self.environment.lower() in {"production", "staging"}
+
+    @property
+    def frontend_dist_path(self) -> Path:
+        if self.frontend_dist_dir:
+            return Path(self.frontend_dist_dir)
+        return Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
     @property
     def admin_hf_username_set(self) -> set[str]:

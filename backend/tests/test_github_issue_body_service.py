@@ -6,6 +6,7 @@ from backend.services.github_issue_body_service import (
     RankingPlacement,
     TaskLink,
     compute_placement,
+    render_badge_markdown,
     render_issue_body,
     render_ranking_paragraphs,
 )
@@ -111,6 +112,29 @@ def test_ranking_paragraphs_group_metrics_and_cap_links():
     assert "E" not in text
 
 
+def test_badge_markdown_matches_readme_copy_format_and_deduplicates_datasets():
+    badges = render_badge_markdown(
+        "2601.21998",
+        [
+            placement(7, 2, dataset_name="Benchmark A", dataset_slug="benchmark-a"),
+            placement(
+                8,
+                3,
+                dataset_name="Benchmark A",
+                dataset_slug="benchmark-a",
+                metric="F1",
+            ),
+            placement(9, 4, dataset_name="Benchmark B", dataset_slug="benchmark-b"),
+        ],
+    )
+
+    assert badges == [
+        "[![Papers with Code: #2 on Benchmark A]"
+        "(https://paperswithcode.co/api/v1/papers/2601.21998/leaderboard-badge.svg?eval=7&live=1)]"
+        "(https://paperswithcode.co/benchmark/benchmark-a?task=task&eval=7)"
+    ]
+
+
 def test_render_issue_body_is_compact_and_verification_is_explicit():
     tasks = (TaskLink(name="Robotics", slug="robotics", evaluation_count=6),)
     rankings = (
@@ -132,9 +156,11 @@ def test_render_issue_body_is_compact_and_verification_is_explicit():
     assert "6 verified paper-native evaluations" in verified
     assert "ranks second" in verified
     assert "Copy PwC badge" in verified
+    assert "/leaderboard-badge.svg?eval=9926&live=1" in verified
+    assert "[![Papers with Code: #2 on LIBERO-Long]" in verified
     assert "**" not in verified
     assert "rank #" not in verified
-    assert verified.count("https://paperswithcode.co/benchmark/") == 1
+    assert verified.count("https://paperswithcode.co/benchmark/") == 2
 
 
 def test_normalize_paper_reference_accepts_url_arxiv_and_external_id():
@@ -157,6 +183,34 @@ def test_render_multiple_tasks_caps_task_links_without_broken_grammar():
 
     assert body.count("https://paperswithcode.co/tasks/") == 3
     assert "and 1 additional task page" in body
+    assert "Copy PwC badge" not in body
+    assert "View and copy the live badges" not in body
+
+
+def test_render_issue_body_omits_badge_messaging_below_top_three():
+    tasks = (TaskLink(name="Task", slug="task", evaluation_count=1),)
+    rankings = (placement(1, 4),)
+
+    body = render_issue_body("2606.03748", 1, tasks, rankings, True)
+
+    assert "ranks fourth" in body
+    assert "/leaderboard-badge.svg" not in body
+    assert "Copy PwC badge" not in body
+    assert "View and copy the live badges" not in body
+
+
+def test_render_issue_body_places_badges_on_consecutive_lines():
+    tasks = (TaskLink(name="Task", slug="task", evaluation_count=2),)
+    rankings = (
+        placement(1, 1, dataset_name="Benchmark A", dataset_slug="benchmark-a"),
+        placement(2, 2, dataset_name="Benchmark B", dataset_slug="benchmark-b"),
+    )
+    badges = render_badge_markdown("2606.03748", rankings)
+
+    body = render_issue_body("2606.03748", 2, tasks, rankings, True)
+
+    assert f"{badges[0]}\n{badges[1]}" in body
+    assert f"{badges[0]}\n\n{badges[1]}" not in body
 
 
 def test_pwc_cli_parses_github_issue_body_command():

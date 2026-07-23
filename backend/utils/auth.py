@@ -32,9 +32,9 @@ def require_admin(
     settings = get_settings()
 
     # 1) Session cookie set by the HF OAuth callback.
-    from backend.routers.auth import SESSION_COOKIE_NAME, decode_session_cookie
+    from backend.routers.auth import decode_session_cookie, session_cookie_name
 
-    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    cookie = request.cookies.get(session_cookie_name())
     if cookie:
         payload = decode_session_cookie(cookie)
         if payload and payload.get("is_admin"):
@@ -60,10 +60,10 @@ def require_admin(
 def require_hf_admin(request: Request) -> dict:
     """Allow the request only for an allowlisted Hugging Face session."""
 
-    from backend.routers.auth import SESSION_COOKIE_NAME, decode_session_cookie
+    from backend.routers.auth import decode_session_cookie, session_cookie_name
 
     settings = get_settings()
-    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    cookie = request.cookies.get(session_cookie_name())
     payload = decode_session_cookie(cookie or "")
     username = (payload or {}).get("username")
     if username and username.lower() in settings.admin_hf_username_set:
@@ -86,12 +86,13 @@ def require_user(request: Request) -> dict:
     the canonical HF ``username`` (lowercased) pulled from the session JWT.
     """
 
-    from backend.routers.auth import SESSION_COOKIE_NAME, decode_session_cookie
+    from backend.routers.auth import decode_session_cookie, session_cookie_name
 
-    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    cookie = request.cookies.get(session_cookie_name())
     payload = decode_session_cookie(cookie or "")
     username = (payload or {}).get("username")
-    if not username:
+    hf_user_id = (payload or {}).get("sub")
+    if not username or not isinstance(hf_user_id, str) or not hf_user_id.strip():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sign in with Hugging Face to use this feature",
@@ -99,4 +100,5 @@ def require_user(request: Request) -> dict:
     return {
         "source": "cookie",
         "username": username.lower(),
+        "hf_user_id": hf_user_id,
     }

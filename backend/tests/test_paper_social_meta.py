@@ -102,14 +102,31 @@ def _reset_default_og_cache():
 def _reset_index_cache():
     paper_pages_module._cached_index_html = None
     paper_pages_module._cached_index_mtime = None
+    paper_pages_module._cached_index_path = None
     yield
     paper_pages_module._cached_index_html = None
     paper_pages_module._cached_index_mtime = None
+    paper_pages_module._cached_index_path = None
 
 
 # ---------------------------------------------------------------------------
 # Unit tests
 # ---------------------------------------------------------------------------
+
+
+def test_load_index_html_prefers_active_release(tmp_path, monkeypatch):
+    release_index = tmp_path / "release-index.html"
+    dist_index = tmp_path / "dist-index.html"
+    source_index = tmp_path / "source-index.html"
+    release_index.write_text("active release", encoding="utf-8")
+    dist_index.write_text("stale checkout build", encoding="utf-8")
+    source_index.write_text("vite source", encoding="utf-8")
+
+    monkeypatch.setattr(paper_pages_module, "_RELEASE_INDEX_PATH", release_index)
+    monkeypatch.setattr(paper_pages_module, "_DIST_INDEX_PATH", dist_index)
+    monkeypatch.setattr(paper_pages_module, "_SRC_INDEX_PATH", source_index)
+
+    assert paper_pages_module._load_index_html() == "active release"
 
 
 def test_build_request_origin_uses_forwarded_headers():

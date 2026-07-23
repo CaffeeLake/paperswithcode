@@ -454,8 +454,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               </NavLink>
             )}
             {!authDisabled && user?.is_admin && (
-              <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
-                CRON dashboard
+              <NavLink to="/admin-dashboard" className="mobile-nav-link" onClick={closeMobile}>
+                Admin dashboard
               </NavLink>
             )}
           </div>

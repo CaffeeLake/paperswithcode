@@ -9,6 +9,7 @@ export interface Framework {
   platforms?: FrameworkPlatform[];
   github?: string;
   url?: string;
+  paperId?: string;
 }
 
 export interface FrameworkCategory {
@@ -57,6 +58,7 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
             platforms: ["gpu"],
             github: "https://github.com/vllm-project/vllm",
             url: "https://docs.vllm.ai/",
+            paperId: "2309.06180",
           },
           {
             slug: "sglang",
@@ -67,6 +69,7 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
             platforms: ["gpu"],
             github: "https://github.com/sgl-project/sglang",
             url: "https://sgl-project.github.io/",
+            paperId: "2312.07104",
           },
           {
             slug: "llama-cpp",
@@ -152,6 +155,91 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
             platforms: ["gpu"],
             github: "https://github.com/verl-project/verl",
             url: "https://verl.readthedocs.io/",
+            paperId: "2409.19256",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "image-video-generation",
+    name: "Image and video generation",
+    blurb:
+      "Frameworks for building, running, and accelerating image and video generation workflows.",
+    categories: [
+      {
+        id: "generation-inference",
+        name: "Generation & Inference",
+        blurb:
+          "Libraries, interfaces, and inference engines for diffusion and diffusion-transformer models.",
+        frameworks: [
+          {
+            slug: "diffusers",
+            name: "Diffusers",
+            org: "Hugging Face",
+            description:
+              "A modular PyTorch library for pretrained diffusion models across image, video, and audio generation.",
+            whenToUse:
+              "Build or train customizable generation pipelines with a broad model ecosystem.",
+            platforms: ["gpu"],
+            github: "https://github.com/huggingface/diffusers",
+            url: "https://huggingface.co/docs/diffusers/",
+          },
+          {
+            slug: "comfyui",
+            name: "ComfyUI",
+            org: "Comfy Org",
+            description:
+              "A node-based interface, API, and backend for composing diffusion generation workflows.",
+            whenToUse:
+              "Design and share visual generation pipelines without wiring every step in code.",
+            platforms: ["gpu"],
+            github: "https://github.com/comfy-org/comfyui",
+          },
+          {
+            slug: "sglang-diffusion",
+            name: "SGLang Diffusion",
+            org: "SGLang Project",
+            description:
+              "A high-performance serving framework for image and video generation models.",
+            whenToUse:
+              "Serve diffusion models with production-oriented throughput and distributed execution.",
+            platforms: ["gpu"],
+            github: "https://github.com/sgl-project/sglang",
+            url: "https://docs.sglang.io/docs/sglang-diffusion/index",
+          },
+          {
+            slug: "cache-dit",
+            name: "Cache-DiT",
+            org: "Vipshop",
+            description:
+              "A PyTorch-native inference engine with caching, parallelism, quantization, and CPU offload for DiTs.",
+            whenToUse:
+              "Speed up diffusion-transformer inference with composable acceleration techniques.",
+            platforms: ["gpu"],
+            github: "https://github.com/vipshop/cache-dit",
+          },
+          {
+            slug: "fastvideo",
+            name: "FastVideo",
+            org: "Hao AI Lab",
+            description:
+              "A unified inference and post-training framework for accelerated video generation.",
+            whenToUse:
+              "Train, fine-tune, or serve video generation models in one optimized framework.",
+            platforms: ["gpu"],
+            github: "https://github.com/hao-ai-lab/FastVideo",
+          },
+          {
+            slug: "xdit",
+            name: "xDiT",
+            org: "xDiT Project",
+            description:
+              "A scalable inference engine for diffusion transformers using multiple parallelism strategies.",
+            whenToUse:
+              "Scale large image and video diffusion transformers across multiple GPUs.",
+            platforms: ["gpu"],
+            github: "https://github.com/xdit-project/xDiT",
           },
         ],
       },

@@ -25,6 +25,7 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
+from backend.config import get_settings
 from backend.services.default_og_image import get_default_og_image_bytes
 from backend.services.paper_service import PaperService
 from backend.services.social_meta_service import (
@@ -41,41 +42,54 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_DIST_INDEX_PATH = (
-    Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_RELEASE_INDEX_PATH = (
+    _PROJECT_ROOT.parent / "pwc-releases" / "current" / "frontend-dist" / "index.html"
 )
-_SRC_INDEX_PATH = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+_DIST_INDEX_PATH = _PROJECT_ROOT / "frontend" / "dist" / "index.html"
+_SRC_INDEX_PATH = _PROJECT_ROOT / "frontend" / "index.html"
 
 _cached_index_html: Optional[str] = None
 _cached_index_mtime: Optional[float] = None
+_cached_index_path: Optional[Path] = None
 
 
 def _load_index_html() -> Optional[str]:
     """
-    Load the SPA shell HTML, preferring the built ``dist/index.html``.
+    Load the SPA shell HTML, preferring the active production release.
 
-    In production the ``start_services.sh`` flow always rebuilds the
-    frontend before reloading nginx, so the dist file is the source of
-    truth. In dev or tests, where ``dist/`` may be stale or missing, we
-    fall back to ``frontend/index.html`` so the route still works (the
-    served HTML will reference ``/src/main.tsx`` instead of hashed
-    bundles, but the meta tags are still correct, which is the only
-    thing crawlers care about).
+    Production nginx serves an immutable snapshot through the sibling
+    ``pwc-releases/current`` symlink. Paper routes must use that same shell;
+    the checkout's ``frontend/dist`` can contain an unrelated development
+    build whose hashed chunks are not publicly available. In dev and tests,
+    where the release link is absent, fall back to the checkout build and
+    then the Vite source shell.
     """
-    global _cached_index_html, _cached_index_mtime
+    global _cached_index_html, _cached_index_mtime, _cached_index_path
 
-    for path in (_DIST_INDEX_PATH, _SRC_INDEX_PATH):
+    settings = get_settings()
+    if settings.is_deployed:
+        paths = (settings.frontend_dist_path / "index.html",)
+    else:
+        paths = (_RELEASE_INDEX_PATH, _DIST_INDEX_PATH, _SRC_INDEX_PATH)
+
+    for path in paths:
         if not path.exists():
             continue
         try:
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        if _cached_index_html is not None and _cached_index_mtime == mtime:
+        if (
+            _cached_index_html is not None
+            and _cached_index_mtime == mtime
+            and _cached_index_path == path
+        ):
             return _cached_index_html
         try:
             _cached_index_html = path.read_text(encoding="utf-8")
             _cached_index_mtime = mtime
+            _cached_index_path = path
             return _cached_index_html
         except OSError as exc:
             logger.warning("Failed to read SPA index from %s: %s", path, exc)

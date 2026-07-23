@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Clock,
   XCircle,
@@ -12,6 +13,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { CronJobCard } from "@/components/cron/CronJobCard";
+import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
 import { apiClient } from "@/lib/api";
 import type { CronJobHealth, CronJobStatus } from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
@@ -26,6 +28,7 @@ const categoryColors: Record<string, string> = {
 
 const CronDashboard = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshToken, setRefreshToken] = useState(0);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const { user } = useAuth();
 
@@ -74,6 +77,11 @@ const CronDashboard = () => {
     />
   );
 
+  const refreshAll = () => {
+    setRefreshToken((value) => value + 1);
+    void refetch();
+  };
+
   return (
     <div className="cron-dashboard" data-shadcn>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -82,10 +90,10 @@ const CronDashboard = () => {
             <div>
               <h1 className="text-3xl font-bold flex items-center gap-3">
                 <Activity className="h-8 w-8 cron-info-text" />
-                CRON Health Dashboard
+                Admin Dashboard
               </h1>
               <p className="mt-2 cron-muted">
-                Operational view for scheduled VPS jobs — log status plus database freshness
+                Paper curation queue and operational health for scheduled jobs
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -98,7 +106,7 @@ const CronDashboard = () => {
                 <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? "animate-spin" : ""}`} />
                 Auto-refresh {autoRefresh ? "ON" : "OFF"}
               </Button>
-              <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              <Button variant="outline" size="sm" onClick={refreshAll} disabled={isFetching}>
                 <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
@@ -115,26 +123,33 @@ const CronDashboard = () => {
           </CardContent>
         </Card>
 
-        {isLoading && (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-8 w-8 animate-spin cron-info-text" />
-            <span className="ml-3 cron-muted">Loading CRON jobs status...</span>
-          </div>
-        )}
+        <Tabs defaultValue="critical-jobs">
+          <TabsList className="grid w-full grid-cols-2 sm:w-auto">
+            <TabsTrigger value="critical-jobs">Critical Jobs</TabsTrigger>
+            <TabsTrigger value="codex-paper-jobs">Codex Paper Jobs</TabsTrigger>
+          </TabsList>
 
-        {error && (
-          <Card className="cron-status--broken">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <XCircle className="h-5 w-5" />
-                <p>{errorMessage ?? "Failed to load CRON jobs status. Please try again."}</p>
+          <TabsContent value="critical-jobs" className="mt-6">
+            {isLoading && (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin cron-info-text" />
+                <span className="ml-3 cron-muted">Loading CRON jobs status...</span>
               </div>
-            </CardContent>
-          </Card>
-        )}
+            )}
 
-        {data && (
-          <>
+            {error && (
+              <Card className="cron-status--broken">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <XCircle className="h-5 w-5" />
+                    <p>{errorMessage ?? "Failed to load CRON jobs status. Please try again."}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {data && (
+              <>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
               {(["healthy", "degraded", "broken", "running", "stuck", "unknown"] as CronJobHealth[]).map(
                 (status) => (
@@ -217,8 +232,14 @@ const CronDashboard = () => {
                 </Card>
               ))}
             </div>
-          </>
-        )}
+              </>
+            )}
+          </TabsContent>
+
+          <TabsContent value="codex-paper-jobs" className="mt-6">
+            <CodexJobQueue autoRefresh={autoRefresh} refreshToken={refreshToken} />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

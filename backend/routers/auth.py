@@ -10,6 +10,8 @@ https://huggingface.co/docs/hub/oauth :
                                 cookie and redirects back to `return_to`.
   * `POST /auth/logout`       — clears the session cookie.
   * `GET  /auth/me`           — returns the signed-in user (or 401).
+  * `GET  /auth/admin-check`  — 204/401/403 gate for nginx `auth_request`
+                                (used to admin-lock staging.paperswithcode.co).
 
 The session cookie is a JWT (HS256) signed with `PWC_JWT_SECRET`.  It is the
 sole source of truth for "is this request from an admin?" — see
@@ -39,7 +41,11 @@ HF_AUTHORIZE_URL = "https://huggingface.co/oauth/authorize"
 HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_USERINFO_URL = "https://huggingface.co/oauth/userinfo"
 
-SESSION_COOKIE_NAME = "pwc_session"
+
+def session_cookie_name() -> str:
+    return get_settings().session_cookie_name
+
+
 SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
 STATE_TTL_SECONDS = 5 * 60  # 5 minutes
 
@@ -129,26 +135,51 @@ def decode_session_cookie(token: str) -> Optional[dict]:
         return None
 
 
+def _cookie_domain() -> Optional[str]:
+    """Domain attribute for the session cookie (None = host-only).
+
+    `PWC_SESSION_COOKIE_DOMAIN=.paperswithcode.co` widens the session to
+    subdomains so an ordinary production sign-in also authenticates
+    staging.paperswithcode.co — needed because only the production callback
+    URL is registered with the HF OAuth app.
+    """
+
+    return get_settings().session_cookie_domain.strip() or None
+
+
 def _set_session_cookie(response: Response, token: str, secure: bool) -> None:
     response.set_cookie(
-        SESSION_COOKIE_NAME,
+        session_cookie_name(),
         token,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         secure=secure,
         samesite="lax",
         path="/",
+        domain=_cookie_domain(),
     )
 
 
 def _clear_session_cookie(response: Response, secure: bool) -> None:
+    # Clear both scopes: pre-change sessions were host-only, post-change ones
+    # carry the configured domain — logout must invalidate either kind.
     response.delete_cookie(
-        SESSION_COOKIE_NAME,
+        session_cookie_name(),
         path="/",
         httponly=True,
         secure=secure,
         samesite="lax",
     )
+    domain = _cookie_domain()
+    if domain:
+        response.delete_cookie(
+            session_cookie_name(),
+            path="/",
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            domain=domain,
+        )
 
 
 def _is_secure_origin(request: Request) -> bool:
@@ -265,15 +296,21 @@ async def hf_callback(
         userinfo = userinfo_response.json()
 
     username = userinfo.get("preferred_username") or userinfo.get("name")
+    hf_user_id = userinfo.get("sub")
     if not username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="HF userinfo did not include a username",
         )
+    if not isinstance(hf_user_id, str) or not hf_user_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HF userinfo did not include an immutable account subject",
+        )
 
     session_token = _encode_session(
         {
-            "sub": userinfo.get("sub", username),
+            "sub": hf_user_id,
             "username": username,
             "name": userinfo.get("name"),
             "avatar_url": userinfo.get("picture"),
@@ -292,9 +329,34 @@ def logout(request: Request):
     return response
 
 
+@router.get("/auth/admin-check", status_code=status.HTTP_204_NO_CONTENT)
+def admin_check(request: Request) -> Response:
+    """Cheap server-side gate for nginx ``auth_request`` (staging admin lock).
+
+    Returns 204 for an allowlisted HF admin session, 401 when there is no
+    valid session, and 403 for a signed-in non-admin. nginx maps 401 to the
+    HF sign-in redirect and 403 to a plain refusal page — distinguishing the
+    two prevents a redirect loop for signed-in non-admins.
+    """
+
+    token = request.cookies.get(session_cookie_name())
+    payload = decode_session_cookie(token or "")
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    if not _is_admin(payload["username"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/auth/me", response_model=AuthMe)
 def me(request: Request):
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = request.cookies.get(session_cookie_name())
     payload = decode_session_cookie(token or "")
     if not payload:
         raise HTTPException(

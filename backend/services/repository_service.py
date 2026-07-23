@@ -403,8 +403,16 @@ class RepositoryService:
 
             if existing_association:
                 # Update existing association instead of raising error
+                is_only_repository = (
+                    self.db.query(DBPaperRepository)
+                    .filter(DBPaperRepository.paper_id == int(paper_id))
+                    .count()
+                    == 1
+                )
                 existing_association.is_official = (
-                    is_official or existing_association.is_official
+                    is_official
+                    or existing_association.is_official
+                    or is_only_repository
                 )
                 self.db.commit()
 
@@ -416,11 +424,18 @@ class RepositoryService:
                     repository=api_repo,
                 )
 
-            # Create new association
+            # The first and only repository on a paper page is treated as its
+            # official repository by default. Explicit flags still govern
+            # additional repositories.
+            is_first_repository = not (
+                self.db.query(DBPaperRepository)
+                .filter(DBPaperRepository.paper_id == int(paper_id))
+                .first()
+            )
             new_association = DBPaperRepository(
                 paper_id=int(paper_id),
                 repository_id=int(repository_id),
-                is_official=is_official,
+                is_official=is_official or is_first_repository,
             )
 
             self.db.add(new_association)

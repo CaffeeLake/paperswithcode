@@ -31,6 +31,9 @@ class DatabaseManager:
         if self._engine is None:
             self._engine = create_engine(
                 self.settings.database_url,
+                connect_args={
+                    "options": f"-c search_path={self.settings.db_search_path}"
+                },
                 poolclass=QueuePool,
                 # Kept small per-process: the API runs multiple uvicorn workers
                 # in production and shares Postgres with the CRON scripts, so a

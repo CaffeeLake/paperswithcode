@@ -24,7 +24,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
-import { isAuthDisabled, shouldUseHashRouter } from "@/lib/apiUrl";
+import { isAuthDisabled, isChatEnabled, shouldUseHashRouter } from "@/lib/apiUrl";
 import { AuthProvider, useAuth } from "@/lib/authContext";
 import { PreferencesProvider } from "@/lib/preferencesContext";
 
@@ -45,6 +45,7 @@ if (!useHashRouter && typeof window !== "undefined") {
 // pages they actually navigate to. Saves ~150-200 KB gzipped on first paint
 // for visitors landing on a single route. See PLAN.md §4.
 const FeedView = React.lazy(() => import("@/views/FeedView"));
+const ChatView = React.lazy(() => import("@/views/ChatView"));
 const PapersListView = React.lazy(() => import("@/views/PapersListView"));
 const PaperDetailView = React.lazy(() => import("@/views/PaperDetailView"));
 const TagsIndexView = React.lazy(() => import("@/views/TagsIndexView"));
@@ -125,7 +126,7 @@ const OrganizationAliasRedirect: React.FC = () => {
 
 // On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
 // cookie can't follow visitors across origins, so any view that requires
-// sign-in (bookmarks, CRON dashboard) is a dead-end. Redirect those routes
+// sign-in (bookmarks, admin dashboard) is a dead-end. Redirect those routes
 // home so visitors don't land on empty pages.
 const AuthGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) => {
   if (isAuthDisabled()) {
@@ -157,8 +158,8 @@ const AdminGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) =>
       <div className="page">
         <div className="submission-empty submission-empty-warn">
           <h1>Sign in required</h1>
-          <p>Sign in with an allowlisted Hugging Face admin account to view CRON job health.</p>
-          <HfSignInButton returnTo="/cron-dashboard" />
+          <p>Sign in with an allowlisted Hugging Face admin account to view admin operations.</p>
+          <HfSignInButton returnTo="/admin-dashboard" />
         </div>
       </div>
     );
@@ -201,6 +202,14 @@ const Shell: React.FC = () => {
         <React.Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<FeedView />} />
+            {/* Keep new and persisted chats on the same route instance. A new
+                turn replaces /chat with /chat/:sessionId as soon as the server
+                allocates it; sibling routes would unmount ChatView and abort
+                that turn's active SSE request. */}
+            <Route
+              path="/chat/:sessionId?"
+              element={isChatEnabled() ? <ChatView /> : <Navigate to="/" replace />}
+            />
             <Route path="/papers" element={<PapersListView />} />
             <Route path="/papers/:arxivId" element={<LegacyPaperRedirect />} />
             <Route path="/paper/:arxivId" element={<PaperDetailView />} />
@@ -221,7 +230,8 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
-            <Route path="/cron-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
+            <Route path="/admin-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
+            <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
             {/* Top-level organization aliases (e.g. /nvidia). Placed last so
                 static routes always win; unknown slugs render NotFound from

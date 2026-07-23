@@ -15,6 +15,8 @@ from backend.models.database import (
     Area as DBArea,
     Paper as DBPaper,
     PaperTask,
+    Repository as DBRepository,
+    TaskRecommendedFramework as DBTaskRecommendedFramework,
     TaskSisterTask as DBTaskSisterTask,
 )
 from backend.models.api import (
@@ -22,6 +24,7 @@ from backend.models.api import (
     Tasks,
     TaskCreateRequest,
     TaskPage,
+    RecommendedFramework,
     TaskSubtaskBenchmarks,
     TrendingTask,
     TrendingTasks,
@@ -575,6 +578,29 @@ class TaskService:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve sister tasks: {str(e)}")
 
+    def get_task_recommended_frameworks(
+        self, task_id: str
+    ) -> List[RecommendedFramework]:
+        """Return a task's curated GitHub repositories in display order."""
+        try:
+            rows = (
+                self.db.query(DBRepository)
+                .join(
+                    DBTaskRecommendedFramework,
+                    DBTaskRecommendedFramework.repository_id == DBRepository.id,
+                )
+                .filter(DBTaskRecommendedFramework.task_id == int(task_id))
+                .order_by(
+                    asc(DBTaskRecommendedFramework.display_order),
+                    asc(DBRepository.owner),
+                    asc(DBRepository.name),
+                )
+                .all()
+            )
+            return [RecommendedFramework.model_validate(row) for row in rows]
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve recommended frameworks: {str(e)}")
+
     def get_task_page(
         self,
         task_id: str,
@@ -587,8 +613,8 @@ class TaskService:
         Build the bundled task-page payload in a single call.
 
         Collapses the task-detail page's initial fan-out (detail, parents,
-        sister tasks, children, direct benchmarks, per-child benchmark
-        previews) so the frontend makes one request instead of many.
+        sister tasks, recommended frameworks, children, direct benchmarks,
+        per-child benchmark previews) so the frontend makes one request.
         """
         # Import here to avoid a circular import at module load time.
         from backend.services.dataset_service import DatasetService
@@ -602,6 +628,7 @@ class TaskService:
         parents = self.get_task_parents(task.id)
 
         sisters = self.get_task_sisters(task.id)
+        recommended_frameworks = self.get_task_recommended_frameworks(task.id)
 
         children = self.get_task_children(
             task.id, page_size=50, visible_only=True
@@ -635,6 +662,7 @@ class TaskService:
             task=task,
             parents=parents,
             sisters=sisters,
+            recommended_frameworks=recommended_frameworks,
             children=children,
             benchmarks=benchmarks,
             subtask_benchmarks=subtask_benchmarks,

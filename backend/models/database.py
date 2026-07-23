@@ -6,6 +6,7 @@ for interacting with the PostgreSQL database.
 """
 
 from datetime import date, datetime
+import uuid
 from typing import List, Optional
 
 from sqlalchemy import (
@@ -23,7 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR, UUID
 from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
@@ -801,6 +802,58 @@ class PaperProjectPage(Base):
         return f"<PaperProjectPage(paper_id={self.paper_id}, project_page_id={self.project_page_id})>"
 
 
+class PaperCurationJob(Base):
+    """Durable request for a remote Codex paper-curation Job."""
+
+    __tablename__ = "paper_curation_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    paper_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    paper_title: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    hf_job_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
+    callback_token_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    paper: Mapped[Paper] = relationship("Paper")
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('add-evals', 'enrich-paper')",
+            name="paper_curation_jobs_kind_check",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'dispatching', 'running', 'completed', 'failed', 'canceled')",
+            name="paper_curation_jobs_status_check",
+        ),
+        Index("idx_paper_curation_jobs_queue", "status", "created_at"),
+        Index("idx_paper_curation_jobs_paper", "paper_id", "created_at"),
+    )
+
+
 class Evaluation(Base):
     """
     Benchmark evaluation results.
@@ -1273,6 +1326,42 @@ class TaskSisterTask(Base):
         )
 
 
+class TaskRecommendedFramework(Base):
+    """Ordered repositories recommended as starting points for a task."""
+
+    __tablename__ = "task_recommended_frameworks"
+
+    task_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    repository_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    display_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_task_recommended_frameworks_task_id", "task_id"),
+        Index(
+            "idx_task_recommended_frameworks_repository_id",
+            "repository_id",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<TaskRecommendedFramework(task_id={self.task_id}, "
+            f"repository_id={self.repository_id}, "
+            f"display_order={self.display_order})>"
+        )
+
+
 class TaskDataset(Base):
     """
     Task-specific dataset membership and display metadata.
@@ -1368,6 +1457,187 @@ class UserBookmark(Base):
 
     def __repr__(self) -> str:
         return f"<UserBookmark(hf_username='{self.hf_username}', paper_id={self.paper_id})>"
+
+
+class ChatSession(Base):
+    """Durable user-owned research chat metadata and generation lease."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    hf_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    hf_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(
+        String(80), nullable=False, server_default="New chat"
+    )
+    title_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    title_source: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    title_generation_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    title_prompt_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    title_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    title_generated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    selected_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    active_turn_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    active_turn_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sdk_session_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, unique=True
+    )
+    sdk_project_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    transcript_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    transcript_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    projection_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+
+    messages: Mapped[list["ChatMessageRecord"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
+    __table_args__ = (
+        Index(
+            "idx_chat_sessions_owner_updated",
+            "hf_user_id",
+            text("updated_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+class ChatMessageRecord(Base):
+    """Sanitized UI projection for one durable user or assistant message."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    supersedes_message_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    sdk_resume_boundary_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    citations: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    followups: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    display_blocks: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    model_route: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    last_attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[ChatSession] = relationship(back_populates="messages")
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant')", name="chat_messages_role_check"
+        ),
+        UniqueConstraint(
+            "session_id", "sequence", name="uq_chat_messages_session_sequence"
+        ),
+        Index("idx_chat_messages_session_turn", "session_id", "turn_id"),
+        Index(
+            "idx_chat_messages_client_id",
+            "session_id",
+            "client_message_id",
+            unique=True,
+            postgresql_where=text("client_message_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_chat_messages_current_revision",
+            "session_id",
+            "turn_id",
+            unique=True,
+            postgresql_where=text("role = 'user' AND status <> 'superseded'"),
+        ),
+    )
+
+
+class ChatSDKTranscriptEntry(Base):
+    __tablename__ = "chat_sdk_transcript_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sdk_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    subpath: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    entry_uuid: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    entry: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        Index(
+            "idx_chat_sdk_entries_load",
+            "project_key",
+            "sdk_session_id",
+            "subpath",
+            "id",
+        ),
+        Index(
+            "idx_chat_sdk_entries_uuid",
+            "project_key",
+            "sdk_session_id",
+            "subpath",
+            "entry_uuid",
+            unique=True,
+            postgresql_where=text("entry_uuid IS NOT NULL"),
+        ),
+    )
+
+
+class ChatSDKSessionSummary(Base):
+    __tablename__ = "chat_sdk_session_summaries"
+
+    project_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    sdk_session_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    mtime: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class UserPreference(Base):

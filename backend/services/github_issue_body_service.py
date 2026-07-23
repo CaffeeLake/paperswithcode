@@ -25,6 +25,7 @@ SITE_ORIGIN = "https://paperswithcode.co"
 ISSUE_TITLE = "Verify evals on Papers with Code"
 ORDINALS = {1: "first", 2: "second", 3: "third", 4: "fourth"}
 MAX_RANKING_LINKS = 4
+MAX_BADGES = 6
 COUNT_WORDS = {
     2: "two",
     3: "three",
@@ -247,6 +248,43 @@ def render_ranking_paragraphs(
     return paragraphs
 
 
+def render_badge_markdown(
+    paper_id: str,
+    placements: Iterable[RankingPlacement],
+    max_badges: int = MAX_BADGES,
+) -> list[str]:
+    """Render the same live, clickable top-three badges copied by the frontend."""
+    eligible = sorted(
+        (placement for placement in placements if placement.rank <= 3),
+        key=lambda item: (
+            item.rank,
+            item.dataset_name,
+            item.metric_name,
+            item.evaluation_id,
+        ),
+    )
+    badges = []
+    seen_datasets = set()
+    for placement in eligible:
+        if placement.dataset_slug in seen_datasets:
+            continue
+        seen_datasets.add(placement.dataset_slug)
+        placement_label = "SOTA" if placement.rank == 1 else f"#{placement.rank}"
+        badge_url = (
+            f"{SITE_ORIGIN}/api/v1/papers/{paper_id}/leaderboard-badge.svg"
+            f"?eval={placement.evaluation_id}&live=1"
+        )
+        leaderboard_url = (
+            f"{SITE_ORIGIN}/benchmark/{placement.dataset_slug}"
+            f"?task={placement.task_slug}&eval={placement.evaluation_id}"
+        )
+        alt = f"Papers with Code: {placement_label} on {placement.dataset_name}"
+        badges.append(f"[![{alt}]({badge_url})]({leaderboard_url})")
+        if len(badges) == max_badges:
+            break
+    return badges
+
+
 def render_issue_body(
     paper_id: str,
     native_evaluation_count: int,
@@ -262,6 +300,17 @@ def render_issue_body(
     paper_url = f"{SITE_ORIGIN}/paper/{paper_id}"
     evaluation_noun = "evaluation" if native_evaluation_count == 1 else "evaluations"
     provenance = "verified paper-native" if verified else "paper-native"
+    badges = render_badge_markdown(paper_id, ranking_placements)
+    badge_paragraphs = []
+    if badges:
+        badge_paragraphs = [
+            (
+                "If you'd like to showcase the results in your repository README, "
+                "you can copy these live leaderboard badges (or use the “Copy PwC "
+                "badge” button in the Results section):"
+            ),
+            "\n".join(badges),
+        ]
     paragraphs = [
         "Hi,",
         "Niels here from the open-source team at Hugging Face. Congratulations on your work!",
@@ -282,11 +331,7 @@ def render_issue_body(
             "You can also edit the task, methods, project page, and GitHub URL "
             "directly from the paper page using your Hugging Face account."
         ),
-        (
-            "If you'd like to showcase the results in your repository README, use "
-            "the “Copy PwC badge” button in the Results section to copy live "
-            "leaderboard badges."
-        ),
+        *badge_paragraphs,
         "Kind regards,",
         "Niels",
     ]
@@ -306,9 +351,16 @@ def validate_issue_body(body: str, paper_id: str) -> None:
         errors.append("single-entry ranking claims are not allowed")
     if paper_url not in body or f"{paper_url}#results" not in body:
         errors.append("paper and results links are required")
-    if "Copy PwC badge" not in body:
-        errors.append("Copy PwC badge nudge is required")
-    if body.count(f"{SITE_ORIGIN}/benchmark/") > MAX_RANKING_LINKS:
+    badge_count = body.count("/leaderboard-badge.svg")
+    if badge_count > MAX_BADGES:
+        errors.append("too many badges")
+    if badge_count and "Copy PwC badge" not in body:
+        errors.append("Copy PwC badge nudge is required when badges are present")
+    if not badge_count and (
+        "Copy PwC badge" in body or "View and copy the live badges" in body
+    ):
+        errors.append("badge messaging is not allowed without a live badge")
+    if body.count(f"{SITE_ORIGIN}/benchmark/") > MAX_RANKING_LINKS + badge_count:
         errors.append("too many ranking links")
     if errors:
         raise ValueError("; ".join(errors))

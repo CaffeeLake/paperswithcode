@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import LatexTitle from "@/components/LatexTitle";
 import { apiClient } from "@/lib/api";
+import { isChatEnabled } from "@/lib/apiUrl";
 import { useDebounce } from "@/hooks/useDebounce";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import { displayTaskName } from "@/lib/transform";
@@ -28,6 +29,7 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
   const [query, setQuery] = React.useState("");
   const [paperPage, setPaperPage] = React.useState(1);
   const debouncedQuery = useDebounce(query, 200);
+  const chatEnabled = isChatEnabled();
 
   useEffect(() => {
     if (!open) return;
@@ -95,6 +97,13 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
     navigate(path);
   };
 
+  // Enter hands the query to the AI assistant on /chat; browsing the live
+  // results below remains click/tab-driven as before.
+  const askAssistant = () => {
+    const q = query.trim();
+    if (q) go(`/chat?q=${encodeURIComponent(q)}`);
+  };
+
   return (
     <div className="search-overlay" onClick={onClose}>
       <div className="search-modal" onClick={(e) => e.stopPropagation()}>
@@ -107,10 +116,28 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
             setQuery(e.target.value);
             setPaperPage(1);
           }}
+          onKeyDown={(e) => {
+            if (chatEnabled && e.key === "Enter") {
+              e.preventDefault();
+              askAssistant();
+            }
+          }}
         />
         <div className="search-results">
+          {chatEnabled && query.trim() && (
+            <button type="button" className="search-ask-row" onClick={askAssistant}>
+              <span className="search-ask-chip">assistant</span>
+              <span className="search-ask-text">Ask: “{query.trim()}”</span>
+              <kbd>↵</kbd>
+            </button>
+          )}
           {!debouncedQuery && (
-            <div className="search-empty">Try “diffusion”, “object detection”, or an arXiv id.</div>
+            <div className="search-empty">
+              Try “diffusion”, “object detection”, or an arXiv id.
+              {chatEnabled && (
+                <span className="search-empty-sub">Press Enter to ask the assistant</span>
+              )}
+            </div>
           )}
           {debouncedQuery && !isLoading && !hasResults && (
             <div className="search-empty">No matches for "{query}"</div>

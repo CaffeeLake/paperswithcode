@@ -3,7 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import UserMenu from "@/components/UserMenu";
-import { isAuthDisabled } from "@/lib/apiUrl";
+import { isAuthDisabled, isChatEnabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 
 type HeaderIconName = "search" | "bookmark" | "menu" | "close";
@@ -57,12 +57,14 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const closeMobile = () => setMobileOpen(false);
   const { user, logout } = useAuth();
   const location = useLocation();
+  const isChatPage = isChatEnabled()
+    && (location.pathname === "/chat" || location.pathname.startsWith("/chat/"));
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
 
   return (
     <>
-      <header className="app-header">
+      <header className={`app-header${isChatPage ? " app-header-chat" : ""}`}>
         <div className="app-header-inner">
           <NavLink to="/" className="brand" onClick={closeMobile}>
             <span className="brand-mark"></span>
@@ -182,8 +184,8 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               </NavLink>
             )}
             {!authDisabled && user?.is_admin && (
-              <NavLink to="/cron-dashboard" className="mobile-nav-link" onClick={closeMobile}>
-                CRON dashboard
+              <NavLink to="/admin-dashboard" className="mobile-nav-link" onClick={closeMobile}>
+                Admin dashboard
               </NavLink>
             )}
           </div>

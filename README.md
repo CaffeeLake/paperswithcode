@@ -20,17 +20,16 @@ The site is deployed at **https://paperswithcode.co** with Nginx reverse proxy a
 
 ### Development
 
-Start both backend and frontend:
+Run the backend and frontend locally on developer-selected ports:
 
 ```bash
-./start_services.sh
+uv run --env-file backend/keys.env backend/run_server.py
+cd frontend && npm run dev
 ```
 
-Stop services:
-
-```bash
-./stop_services.sh
-```
+Production and staging lifecycle commands are documented in
+[`docs/deployment.md`](docs/deployment.md); the legacy start/stop scripts are
+non-mutating retirement notices.
 
 ## Project structure
 
@@ -114,6 +113,54 @@ uv run --env-file backend/keys.env pwc paper lineage remove \
   1810.04805 2005.14165 --confirm DELETE
 ```
 
+Index or refresh an ArXiv paper, and replace one category of its curated
+metadata using a PwC URL, ArXiv ID, or numeric external-paper ID:
+
+```bash
+uv run --env-file backend/keys.env pwc paper index 2501.12345
+uv run --env-file backend/keys.env pwc paper read 1706.03762
+uv run --env-file backend/keys.env pwc paper update 2501.12345 tasks 12 34
+uv run --env-file backend/keys.env pwc paper update 2501.12345 repositories \
+  https://github.com/example/official \
+  --unofficial https://github.com/example/community
+```
+
+`pwc paper read` prints the paper Markdown stored in the private Hugging Face
+bucket configured by `PWC_PAPER_MARKDOWN_HF_BUCKET_ID` (default:
+`huggingface/pwc-papers-content`). It accepts a modern ArXiv ID or a full
+`paperswithcode.co/paper/...` URL.
+
+Inspect and browse the paper catalog directly through the same services as the
+API. Search uses hybrid lexical and semantic retrieval by default:
+
+```bash
+uv run --env-file backend/keys.env pwc search "vision-language models"
+uv run --env-file backend/keys.env pwc paper info 2412.08443
+uv run --env-file backend/keys.env pwc paper list --conference ICLR --page-size 20
+uv run --env-file backend/keys.env pwc paper recent --limit 10
+uv run --env-file backend/keys.env pwc paper trending --limit 10
+uv run --env-file backend/keys.env pwc paper related 2412.08443
+```
+
+External research pages can be extracted and ingested with optional metadata
+overrides. Benchmarks support the same task and text filters as the list API:
+
+```bash
+uv run --env-file backend/keys.env pwc paper add-external https://example.org/research
+uv run --env-file backend/keys.env pwc benchmark list --task object-detection
+```
+
+Create or reuse a benchmark, link it to existing tasks and metrics, and attach
+its introducing paper using a native Papers with Code paper URL:
+
+```bash
+uv run --env-file backend/keys.env pwc benchmark add "ExampleBench" \
+  --description "A reproducible benchmark." \
+  --task question-answering \
+  --metric Accuracy \
+  --source-paper 2501.12345
+```
+
 Inspect scheduled jobs by triangulating parsed logs, active processes, lock
 files, database freshness, and available GitHub Actions state. The command
 returns non-zero for broken or stuck jobs; add `--strict` to include degraded
@@ -135,6 +182,24 @@ uv run --env-file backend/keys.env pwc cron token-check PWC_GITHUB_TOKEN
 Supported probes cover `PWC_GITHUB_TOKEN`, `PWC_HF_TOKEN`,
 `PWC_OPENROUTER_API_KEY`, `PWC_SEMANTIC_SCHOLAR_API_KEY`, and the legacy
 `PWC_GEMINI_API_KEY`.
+
+### Hugging Face storage buckets
+
+Durable project artifacts are stored in private Hugging Face buckets owned by
+the `huggingface` organization. Keep project buckets in this organization
+rather than creating them in a personal namespace.
+
+| Bucket | Purpose | Configuration |
+|---|---|---|
+| [`huggingface/pwc-papers-content`](https://huggingface.co/buckets/huggingface/pwc-papers-content) | Markdown paper corpus used by `pwc paper read` | `PWC_PAPER_MARKDOWN_HF_BUCKET_ID` |
+| [`huggingface/pwc-thumbnail`](https://huggingface.co/buckets/huggingface/pwc-thumbnail) | Generated paper thumbnails | `PWC_THUMBNAIL_HF_BUCKET_ID` |
+| [`huggingface/pwc-paper-embeddings`](https://huggingface.co/buckets/huggingface/pwc-paper-embeddings) | Embedding exports, experiments, and summary-generation artifacts | Referenced through `hf://buckets/huggingface/pwc-paper-embeddings/...` URIs |
+| [`huggingface/paperswithcode-backups`](https://huggingface.co/buckets/huggingface/paperswithcode-backups) | Encrypted/controlled production database backups | `PWC_POSTGRES_BACKUP_BUCKET` |
+
+Access requires `PWC_HF_TOKEN` with permission to read the relevant private
+organization bucket. Commands and jobs should use the fully qualified
+`huggingface/<bucket>` ID so artifacts do not accidentally land under the
+operator's personal account.
 
 [Pre-commit](https://pre-commit.com/) is used to automatically run Ruff on the code base each time you contribute to the repository. See the `.pre-commit-config.yaml` file. On Ubuntu, it can be installed with `apt install pre-commit`. The hooks can then be installed using `pre-commit install`.
 
@@ -175,8 +240,8 @@ uv run
 
 ### Key Scripts
 - **[setup_ssl.sh](setup_ssl.sh)** - Automated SSL certificate setup
-- **[start_services.sh](start_services.sh)** - Start backend and frontend
-- **[stop_services.sh](stop_services.sh)** - Stop all services
+- **[check_services.sh](check_services.sh)** - Delegate to read-only `pwc-status`
+- **[deploy/](deploy/)** - Immutable release, rollback, nginx, and smoke tooling
 
 ## 🛠️ Tech Stack
 

@@ -2,7 +2,10 @@
 
 ## Cron Job Overview
 
-All jobs live in `.github/workflows/scripts/` and are executed with `uv run --env-file backend/keys.env …`.
+All jobs live in `.github/workflows/scripts/`. GitHub Actions invokes the
+installed `pwc-cron` launcher, which executes them from `production/current`.
+The `uv run --env-file backend/keys.env …` form below is for explicit local
+diagnostics only.
 
 | Schedule | Script | Purpose |
 | --- | --- | --- |
@@ -23,14 +26,24 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup
 ```
 
-## Cron Dashboard
+## Admin Dashboard
 
-- Route: `/cron-dashboard` on the frontend (linked from the site header).
+- Route: `/admin-dashboard` on the frontend (linked from the admin user menu). The old `/cron-dashboard` URL redirects here.
 - Backend endpoints: `/api/v1/cron/status`, `/api/v1/cron/job/{name}`, `/api/v1/cron/health`.
-- Auto-refresh every 30 seconds (toggleable), color-coded job states, next-run predictions, duration parsing for both “Runtime: … minutes” and “Duration: … seconds” logs.
+- Paper curation queue endpoint: `/api/v1/admin/codex-curation/jobs`, with paper links, requester, action, HF Job link, mutation status, report/error, and full-history status counts.
+- Auto-refreshes CRON health every 30 seconds and active paper curation state every 10 seconds (toggleable).
 - Pulls data from log files in `.github/workflows/scripts/logs/` and merges with crontab discovery.
 
 Use the dashboard to ensure health score stays ≥80%.  For command-line visibility, rely on `.github/workflows/scripts/manage_cron.py`.
+
+Deployed scheduled jobs run through `sudo /usr/local/sbin/pwc-cron <job>` from
+the immutable `production/current` release. Use `pwc cron health`, `pwc-status`,
+and journald for diagnostics; do not execute scheduled scripts from the
+developer checkout. CRON logs live in
+`/var/lib/paperswithcode/production/cron-logs` and are retained for 30 days.
+
+Environment deployment, rollback, nginx, backup, and release layout are
+documented in [deployment.md](deployment.md).
 
 ## Trending Pipeline
 
@@ -82,7 +95,7 @@ setting:
 
 ```bash
 PWC_THUMBNAIL_STORAGE_BACKEND=hf_bucket
-PWC_THUMBNAIL_HF_BUCKET_ID=<owner>/<bucket>
+PWC_THUMBNAIL_HF_BUCKET_ID=huggingface/pwc-thumbnail
 PWC_THUMBNAIL_HF_BUCKET_PREFIX=thumbnails
 PWC_HF_TOKEN=<token with bucket access>
 ```
@@ -212,3 +225,39 @@ Each `proposed_payload` matches the underlying admin mutation endpoint:
 | Cron logs filling disk | Run `uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup`; default policy keeps 30 days. |
 
 _Last updated: 7 November 2025_
+## Durable chat sessions (staging)
+
+Chat content is private user data. PostgreSQL is the live source of truth;
+opaque Agent SDK transcripts are stored separately from the sanitized UI
+projection. Never print message content or transcript JSON in operational
+checks. User-confirmed deletion removes live rows immediately; verified
+disaster-recovery backups expire under the normal 30-day remote rotation and
+are not a product undo mechanism.
+
+Before enabling durable chat, confirm the backup target reports
+`"private": true` and is organization-owned. The daily backup service must use
+the dedicated `PWC_POSTGRES_BACKUP_HF_TOKEN`, not the inference token. The
+target is selected with `PWC_POSTGRES_BACKUP_BUCKET`.
+
+Content-free storage checks:
+
+```bash
+df -h /
+sudo -u postgres psql -d paperswithcode_hf -c "
+SELECT relname,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total_size
+FROM pg_catalog.pg_statio_user_tables
+WHERE relname LIKE 'chat_%'
+ORDER BY pg_total_relation_size(relid) DESC;"
+sudo -u postgres psql -d paperswithcode_hf -c "
+SELECT count(*) AS sessions,
+       sum(message_count) AS messages,
+       pg_size_pretty(avg(transcript_bytes + projection_bytes)::bigint)
+         AS average_logical_bytes
+FROM chat_sessions;"
+```
+
+Treat filesystem use at or above 85%, any `transcript_status='degraded'`, or a
+recovery-spool entry as an alert. The recovery spool is private, bounded by
+`PWC_CHAT_RECOVERY_SPOOL_MAX_SESSIONS`, and exists only to reconcile SDK mirror
+failures; it is not a second session store.

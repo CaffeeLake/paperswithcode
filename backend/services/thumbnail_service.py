@@ -308,9 +308,11 @@ class ThumbnailService:
                 raise ThumbnailGenerationError(
                     "PWC_THUMBNAIL_HF_BUCKET_ID is required for hf_bucket storage"
                 )
-            self.temp_cache_dir.mkdir(parents=True, exist_ok=True)
+            if self.settings.thumbnail_mutations_enabled:
+                self.temp_cache_dir.mkdir(parents=True, exist_ok=True)
         else:
-            self.legacy_cache_dir.mkdir(parents=True, exist_ok=True)
+            if self.settings.thumbnail_mutations_enabled:
+                self.legacy_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Thumbnail settings
         self.thumbnail_width = EXPECTED_THUMBNAIL_WIDTH  # Target width in pixels
@@ -395,6 +397,8 @@ class ThumbnailService:
         cache_path = self._get_active_cache_path(filename)
         if cache_path.exists():
             return cache_path
+        if not self.settings.thumbnail_mutations_enabled:
+            return None
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         download_bucket_files(
@@ -409,6 +413,8 @@ class ThumbnailService:
     def _upload_to_bucket(self, thumbnail_path: Path, filename: str) -> None:
         if self.storage_backend != "hf_bucket":
             return
+        if not self.settings.thumbnail_mutations_enabled:
+            raise ThumbnailGenerationError("thumbnail mutations are disabled")
 
         batch_bucket_files(
             self.bucket_id,

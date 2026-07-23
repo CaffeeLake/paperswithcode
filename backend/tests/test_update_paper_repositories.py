@@ -14,6 +14,7 @@ from backend.models.database import (
     Repository as DBRepository,
 )
 from backend.services.paper_service import PaperService
+from backend.services.repository_service import RepositoryService
 
 
 @compiles(BigInteger, "sqlite")
@@ -41,13 +42,18 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 @pytest.fixture
 def db_session():
-    Base.metadata.create_all(bind=engine)
+    tables = [
+        DBPaper.__table__,
+        DBRepository.__table__,
+        PaperRepository.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=tables)
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-        Base.metadata.drop_all(bind=engine)
+        Base.metadata.drop_all(bind=engine, tables=reversed(tables))
 
 
 @pytest.fixture
@@ -92,8 +98,9 @@ def paper_with_duplicate_repo_urls(db_session):
 
 
 def test_update_paper_repositories_dedupes_same_github_repo(
-    db_session, paper_with_duplicate_repo_urls
+    db_session, paper_with_duplicate_repo_urls, monkeypatch
 ):
+    monkeypatch.setattr(PaperService, "get_paper_by_id", lambda *_args, **_kw: None)
     service = PaperService(db_session)
     service.update_paper_repositories(
         1,
@@ -121,3 +128,48 @@ def test_update_paper_repositories_dedupes_same_github_repo(
     assert links[0].is_official is True
     assert links[1].repository_id == 12
     assert links[1].is_official is False
+
+
+def test_update_paper_repositories_marks_lone_repository_official(
+    db_session, paper_with_duplicate_repo_urls, monkeypatch
+):
+    monkeypatch.setattr(PaperService, "get_paper_by_id", lambda *_args, **_kw: None)
+    PaperService(db_session).update_paper_repositories(
+        1,
+        [
+            {
+                "url": "https://github.com/huggingface/transformers",
+                "is_official": False,
+            }
+        ],
+    )
+
+    link = db_session.query(PaperRepository).filter(PaperRepository.paper_id == 1).one()
+    assert link.repository_id == 12
+    assert link.is_official is True
+
+
+def test_first_repository_association_is_official_by_default(db_session):
+    paper = DBPaper(
+        id=2,
+        title="Single Repository Paper",
+        abstract="Abstract",
+        arxiv_id="2601.00001",
+    )
+    repository = DBRepository(
+        id=20,
+        url="https://github.com/example/single-repository",
+        owner="example",
+        name="single-repository",
+    )
+    db_session.add_all([paper, repository])
+    db_session.commit()
+
+    RepositoryService(db_session).associate_repository_with_paper(
+        paper_id="2",
+        repository_id="20",
+        is_official=False,
+    )
+
+    link = db_session.query(PaperRepository).filter(PaperRepository.paper_id == 2).one()
+    assert link.is_official is True

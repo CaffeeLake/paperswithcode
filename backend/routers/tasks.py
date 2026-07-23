@@ -266,11 +266,11 @@ def get_task_page(
     """
     Get the bundled task-page payload in a single request.
 
-    Returns the task plus its parents, explicitly configured sister tasks
-    (from `task_sister_tasks`, ordered by display_order), visible children,
-    directly-associated benchmarks, and a short benchmark preview for each
-    child. This collapses the task-detail page's initial request fan-out into
-    one round trip.
+    Returns the task plus its parents, explicitly configured sister tasks,
+    recommended GitHub frameworks (with current star counts), visible
+    children, directly-associated benchmarks, and a short benchmark preview
+    for each child. This collapses the task-detail page's initial request
+    fan-out into one round trip.
 
     **Examples:**
     - `/api/v1/tasks/language-modeling/page`

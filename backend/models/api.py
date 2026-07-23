@@ -1654,14 +1654,31 @@ class TaskSubtaskBenchmarks(BaseModel):
         return str(v) if v is not None else v
 
 
+class RecommendedFramework(BaseModel):
+    """GitHub repository recommended as a starting point for a task."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(..., description="Repository ID")
+    url: str = Field(..., description="GitHub repository URL")
+    owner: Optional[str] = Field(None, description="GitHub repository owner")
+    name: Optional[str] = Field(None, description="GitHub repository name")
+    num_stars: int = Field(default=0, description="Current GitHub star count")
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v) if v is not None else v
+
+
 class TaskPage(BaseModel):
     """
     Bundled task-page payload.
 
     Collapses the task-detail page's initial request fan-out (detail, parents,
-    sister tasks, children, direct benchmarks, and per-child benchmark
-    previews) into a single response so the frontend issues one round trip
-    instead of many.
+    sister tasks, recommended frameworks, children, direct benchmarks, and
+    per-child benchmark previews) into a single response so the frontend
+    issues one round trip instead of many.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -1675,6 +1692,13 @@ class TaskPage(BaseModel):
         description=(
             "Explicitly configured sister tasks for this task, ordered by "
             "display_order (from `task_sister_tasks`). Independent of area."
+        ),
+    )
+    recommended_frameworks: List[RecommendedFramework] = Field(
+        default_factory=list,
+        description=(
+            "Ordered GitHub repositories recommended for this task, from "
+            "`task_recommended_frameworks`, with current star counts"
         ),
     )
     children: List[Task] = Field(

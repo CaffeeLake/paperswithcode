@@ -2136,6 +2136,13 @@ class PaperService:
                 else:
                     associations[repository_id] = is_official
 
+            # A lone repository is the paper page's canonical code link by
+            # default. This intentionally favors outreach coverage over strict
+            # provenance when no competing repository is present.
+            if len(associations) == 1:
+                only_repository_id = next(iter(associations))
+                associations[only_repository_id] = True
+
             for repository_id, is_official in associations.items():
                 paper_repository = PaperRepository(
                     paper_id=paper_id,

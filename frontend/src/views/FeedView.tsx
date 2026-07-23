@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
+import { ArrowUpIcon } from "@/components/chat/icons";
+import ModelPicker from "@/components/chat/ModelPicker";
 import { apiClient } from "@/lib/api";
+import { isChatEnabled } from "@/lib/apiUrl";
+import { queueChatLaunch } from "@/lib/chatLaunch";
+import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -46,6 +51,76 @@ const parseTime = (value: string | null): TimeWindow => {
     return value;
   }
   return "all_time";
+};
+
+// Inline "ask the assistant" box between the feed title and the paper list.
+// Submitting hands the question off to the dedicated chat page.
+const AskAssistant: React.FC = () => {
+  const navigate = useNavigate();
+  const [question, setQuestion] = useState("");
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    }
+  }, [question]);
+
+  const submit = () => {
+    const q = question.trim();
+    if (!q) return;
+    queueChatLaunch(q, selectedModel);
+    navigate("/chat");
+  };
+
+  return (
+    <div className="ask-home">
+      <textarea
+        ref={ref}
+        rows={1}
+        value={question}
+        placeholder="Ask the assistant about papers, tasks, methods, or benchmarks…"
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="ask-home-foot">
+        <div className="ask-home-provider-tools">
+          <ModelPicker
+            models={FALLBACK_CHAT_MODELS}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+          />
+          <span className="ask-home-hint">
+            Via 🤗{" "}
+            <a
+              href="https://huggingface.co/docs/inference-providers/en/index"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Inference Providers
+            </a>
+          </span>
+        </div>
+        <button
+          type="button"
+          className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+          onClick={submit}
+          disabled={!question.trim()}
+          aria-label="Ask the assistant"
+        >
+          <ArrowUpIcon />
+        </button>
+      </div>
+    </div>
+  );
 };
 
 const FeedView: React.FC = () => {
@@ -114,19 +189,6 @@ const FeedView: React.FC = () => {
           </h1>
           <div className="feed-subtitle">Curated daily from arXiv and Hugging Face</div>
         </div>
-        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-          <div className="period-switch">
-            {PERIODS.map((p) => (
-              <button
-                key={p}
-                className={`period-btn ${period === p ? "active" : ""}`}
-                onClick={() => setTimeWindow(p)}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
       <div className="layout-with-sidebar">
@@ -175,6 +237,8 @@ const FeedView: React.FC = () => {
         </aside>
 
         <div>
+          {isChatEnabled() && <AskAssistant />}
+
           <div className="sort-bar">
             <div className="sort-options">
               {SORT_OPTIONS.map(([k, l]) => (
@@ -187,7 +251,17 @@ const FeedView: React.FC = () => {
                 </button>
               ))}
             </div>
-            <div className="results-count">{cards.length} papers</div>
+            <div className="sort-options sort-options-time">
+              {PERIODS.map((p) => (
+                <button
+                  key={p}
+                  className={`sort-btn sort-btn-time ${period === p ? "active" : ""}`}
+                  onClick={() => setTimeWindow(p)}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
 
           {error && (
