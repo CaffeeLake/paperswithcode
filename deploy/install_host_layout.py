@@ -66,6 +66,12 @@ def main() -> int:
             0o750,
         )
     ensure_dir(STATE_ROOT / "shared", "root", "root", 0o755)
+    ensure_dir(
+        STATE_ROOT / "shared" / "thumbnails",
+        "pwc-cron",
+        "pwc-cron",
+        0o755,
+    )
     ensure_dir(LOG_ROOT / "deploy", "root", "root", 0o750)
     for path in (
         STATE_ROOT / "production" / "cron-logs",

@@ -162,12 +162,8 @@ def prepare_release(sha: str, environment: str) -> Path:
             {
                 "VITE_CHAT_ENABLED": "1" if environment == "staging" else "0",
                 "VITE_CHAT_LIVE": "1" if environment == "staging" else "0",
-                "VITE_CODEX_ADD_EVALS_ENABLED": (
-                    "1" if environment == "staging" else "0"
-                ),
-                "VITE_CODEX_ENRICH_PAPER_ENABLED": (
-                    "1" if environment == "staging" else "0"
-                ),
+                "VITE_CODEX_ADD_EVALS_ENABLED": "0",
+                "VITE_CODEX_ENRICH_PAPER_ENABLED": "0",
             }
         )
         run(["npm", "ci"], cwd=frontend, env=build_env)
@@ -332,6 +328,33 @@ def _unit(environment: str) -> str:
     return f"paperswithcode-backend@{environment}.service"
 
 
+def wait_for_release(environment: str, expected_release: str) -> bool:
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        ready = _read_json(f"http://127.0.0.1:{PORTS[environment]}/internal/ready")
+        if ready and ready.get("release_id") == expected_release:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def smoke_public(release: Path, environment: str, expected_release: str) -> None:
+    run(
+        [
+            str(VENV / "bin" / "python"),
+            str(release / "deploy" / "smoke_test.py"),
+            "--environment",
+            environment,
+            "--base-url",
+            PUBLIC_URLS[environment],
+            "--expected-release",
+            expected_release,
+            "--release-dir",
+            str(release),
+        ]
+    )
+
+
 def activate(release: Path, environment: str) -> None:
     root = ENVIRONMENTS_ROOT / environment
     pointers = read_pointers(root)
@@ -342,42 +365,35 @@ def activate(release: Path, environment: str) -> None:
     atomic_symlink(release, root / "current")
     run(["systemctl", "restart", _unit(environment)])
     manifest = validate_manifest(release, environment)
-    deadline = time.monotonic() + 45
-    while time.monotonic() < deadline:
-        ready = _read_json(f"http://127.0.0.1:{PORTS[environment]}/internal/ready")
-        if ready and ready.get("release_id") == manifest["release_id"]:
-            break
-        time.sleep(0.5)
-    else:
+    if not wait_for_release(environment, manifest["release_id"]):
         rollback_after_failed_activation(environment, release)
-        raise DeployError("live readiness failed; automatic rollback completed")
+        raise DeployError("live readiness failed; activation was rolled back")
     try:
-        run(
-            [
-                str(VENV / "bin" / "python"),
-                str(release / "deploy" / "smoke_test.py"),
-                "--environment",
-                environment,
-                "--base-url",
-                PUBLIC_URLS[environment],
-                "--expected-release",
-                manifest["release_id"],
-                "--release-dir",
-                str(release),
-            ]
-        )
+        smoke_public(release, environment, manifest["release_id"])
     except subprocess.CalledProcessError as exc:
         rollback_after_failed_activation(environment, release)
-        raise DeployError("public smoke failed; automatic rollback completed") from exc
+        raise DeployError("public smoke failed; activation was rolled back") from exc
 
 
 def rollback_after_failed_activation(environment: str, failed: Path) -> None:
     root = ENVIRONMENTS_ROOT / environment
     pointers = read_pointers(root)
     if not pointers.previous:
-        raise DeployError("activation failed and no previous release exists")
+        (root / "current").unlink(missing_ok=True)
+        subprocess.run(["systemctl", "stop", _unit(environment)], check=False)
+        log_event(
+            "automatic-rollback",
+            environment,
+            "initial-activation-removed",
+            failed_release=failed.name,
+        )
+        return
     atomic_symlink(pointers.previous, root / "current")
     run(["systemctl", "restart", _unit(environment)])
+    restored = validate_manifest(pointers.previous, environment)
+    if not wait_for_release(environment, restored["release_id"]):
+        raise DeployError("automatic rollback target failed readiness")
+    smoke_public(pointers.previous, environment, restored["release_id"])
     log_event(
         "automatic-rollback",
         environment,
@@ -478,17 +494,19 @@ def rollback(args: argparse.Namespace) -> int:
     atomic_symlink(old_current, root / "previous")
     run(["systemctl", "restart", _unit(args.environment)])
     expected = validate_manifest(pointers.previous)["release_id"]
-    deadline = time.monotonic() + 45
-    while time.monotonic() < deadline:
-        ready = _read_json(f"http://127.0.0.1:{PORTS[args.environment]}/internal/ready")
-        if ready and ready.get("release_id") == expected:
-            break
-        time.sleep(0.5)
-    else:
+    try:
+        if not wait_for_release(args.environment, expected):
+            raise DeployError("rollback target failed readiness")
+        smoke_public(pointers.previous, args.environment, expected)
+    except (DeployError, subprocess.CalledProcessError):
         atomic_symlink(old_current, root / "current")
         atomic_symlink(pointers.previous, root / "previous")
         run(["systemctl", "restart", _unit(args.environment)])
-        raise DeployError("rollback target failed readiness; restored original release")
+        original = validate_manifest(old_current, args.environment)
+        if not wait_for_release(args.environment, original["release_id"]):
+            raise DeployError("rollback failed and original release did not recover")
+        smoke_public(old_current, args.environment, original["release_id"])
+        raise DeployError("rollback target failed smoke; restored original release")
     log_event(
         "rollback",
         args.environment,
