@@ -47,6 +47,13 @@ def main() -> int:
     for user in ("pwc-production", "pwc-staging", "pwc-cron"):
         ensure_user(user)
     for path in (
+        APP_ROOT,
+        APP_ROOT / "environments",
+        STATE_ROOT,
+        LOG_ROOT,
+    ):
+        ensure_dir(path, "root", "root", 0o755)
+    for path in (
         APP_ROOT / "releases",
         APP_ROOT / "environments" / "production",
         APP_ROOT / "environments" / "staging",
