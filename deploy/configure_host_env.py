@@ -66,6 +66,9 @@ def assign(lines: dict[str, str], values: dict[str, str]) -> dict[str, str]:
 
 def write_env(path: Path, lines: dict[str, str], group: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Identities need search permission to reach their own group-readable file,
+    # but must not be able to list the other environment filenames.
+    path.parent.chmod(0o711)
     temporary = path.with_name(f".{path.name}.new-{os.getpid()}")
     temporary.write_text(
         "\n".join(lines[key] for key in sorted(lines)) + "\n",

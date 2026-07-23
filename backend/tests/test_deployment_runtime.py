@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import deploy.cli as deploy_cli
+import deploy.configure_host_env as configure_host_env
 import deploy.cron_launcher as cron_launcher
 from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
@@ -194,6 +195,21 @@ def test_atomic_symlink_replaces_pointer(tmp_path: Path):
 def test_installed_deployment_command_dispatch(program, arguments, handler):
     args = parser_for(program).parse_args(arguments)
     assert args.handler.__name__ == handler
+
+
+def test_environment_config_directory_is_search_only(tmp_path: Path, monkeypatch):
+    config = tmp_path / "paperswithcode" / "staging.env"
+    monkeypatch.setattr(configure_host_env.os, "chown", lambda *_: None)
+    monkeypatch.setattr(
+        configure_host_env.grp,
+        "getgrnam",
+        lambda _group: type("Group", (), {"gr_gid": 123})(),
+    )
+
+    configure_host_env.write_env(config, {"KEY": "KEY=value"}, "pwc-staging")
+
+    assert config.parent.stat().st_mode & 0o777 == 0o711
+    assert config.stat().st_mode & 0o777 == 0o640
 
 
 def test_cron_jobs_declare_bounded_execution_contracts():

@@ -13,6 +13,7 @@ from pathlib import Path
 APP_ROOT = Path("/srv/paperswithcode")
 STATE_ROOT = Path("/var/lib/paperswithcode")
 LOG_ROOT = Path("/var/log/paperswithcode")
+CONFIG_ROOT = Path("/etc/paperswithcode")
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -53,6 +54,7 @@ def main() -> int:
         LOG_ROOT,
     ):
         ensure_dir(path, "root", "root", 0o755)
+    ensure_dir(CONFIG_ROOT, "root", "root", 0o711)
     for path in (
         APP_ROOT / "releases",
         APP_ROOT / "environments" / "production",
