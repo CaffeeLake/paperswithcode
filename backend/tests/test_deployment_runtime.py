@@ -151,8 +151,13 @@ def test_installed_deployment_command_dispatch(program, arguments, handler):
 def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):
     runtime = tmp_path / ".venv"
     package = runtime / "lib" / "package.py"
+    interpreter = tmp_path / "base-python"
     package.parent.mkdir(parents=True)
+    (runtime / "bin").mkdir()
     package.write_text("value = 1\n")
+    interpreter.write_text("python")
+    interpreter.chmod(0o755)
+    (runtime / "bin" / "python").symlink_to(interpreter)
     runtime.chmod(0o700)
     package.parent.chmod(0o700)
     package.chmod(0o600)
@@ -163,6 +168,7 @@ def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):
     assert runtime.stat().st_mode & 0o055 == 0o055
     assert package.parent.stat().st_mode & 0o055 == 0o055
     assert package.stat().st_mode & 0o044 == 0o044
+    assert not (runtime / "bin" / "python").is_symlink()
 
 
 def test_immutable_release_is_world_readable(tmp_path: Path):

@@ -240,6 +240,18 @@ def sync_runtime(release: Path) -> bool:
 
 
 def make_runtime_readable() -> None:
+    for name in (
+        "python",
+        "python3",
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+    ):
+        launcher = VENV / "bin" / name
+        if launcher.is_symlink():
+            target = launcher.resolve(strict=True)
+            temporary = launcher.with_name(f".{launcher.name}.copy-{os.getpid()}")
+            shutil.copy2(target, temporary)
+            temporary.chmod(0o755)
+            os.replace(temporary, launcher)
     for path in VENV.rglob("*"):
         if path.is_symlink():
             continue
