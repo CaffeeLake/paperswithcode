@@ -30,10 +30,11 @@ def _job(job_id: str):
     return job
 
 
-def test_registry_includes_hf_artifacts_cron():
+def test_registry_includes_hf_artifacts_and_embedding_crons():
     job_ids = {job.id for job in list_cron_jobs()}
     assert "update_hf_artifacts" in job_ids
-    assert len(job_ids) == 11
+    assert "refresh_paper_embeddings" in job_ids
+    assert len(job_ids) == 12
 
 
 def test_cron_status_requires_admin(client):

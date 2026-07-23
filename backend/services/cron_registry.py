@@ -201,6 +201,45 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
     ),
     CronJobDefinition(
+        id="refresh_paper_embeddings",
+        display_name="Refresh Paper Embeddings",
+        category="hourly",
+        schedule="15 * * * * (hourly)",
+        script_path="hourly/refresh_paper_embeddings.py",
+        log_name="refresh_paper_embeddings",
+        process_patterns=("refresh_paper_embeddings",),
+        lock_file="/tmp/refresh_paper_embeddings.lock",
+        expected_runtime_minutes=20,
+        stale_after_minutes=120,
+        critical=True,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            WITH active_generation AS (
+                SELECT id
+                FROM paper_embedding_generations
+                WHERE status = 'active'
+            )
+            SELECT max(e.created_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.created_at > now() - interval '6 hours'
+                   ) AS recent_writes,
+                   (
+                     SELECT count(*)
+                     FROM papers p
+                     CROSS JOIN active_generation g
+                     LEFT JOIN paper_embeddings missing
+                       ON missing.paper_id = p.id
+                      AND missing.generation_id = g.id
+                     WHERE p.is_latest_version
+                       AND missing.paper_id IS NULL
+                   ) AS missing_embeddings
+            FROM paper_embeddings e
+            JOIN active_generation g ON g.id = e.generation_id
+        """,
+        workflow_file="cron-refresh-paper-embeddings.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="preload_thumbnails",
         display_name="Preload Thumbnails",
         category="daily",
