@@ -7,6 +7,7 @@ import pytest
 
 from backend.config import Settings
 from backend.services.runtime_validation import validate_runtime
+from deploy.cli import parser_for
 from deploy.nginx_validate import validate as validate_nginx
 from deploy.release import atomic_symlink, build_manifest, validate_manifest
 from deploy.smoke_test import validate_local_bundle
@@ -130,3 +131,17 @@ def test_atomic_symlink_replaces_pointer(tmp_path: Path):
     atomic_symlink(first, link)
     atomic_symlink(second, link)
     assert link.resolve() == second
+
+
+@pytest.mark.parametrize(
+    ("program", "arguments", "handler"),
+    [
+        ("pwc-deploy", ["staging", "abc123"], "deploy"),
+        ("pwc-rollback", ["staging"], "rollback"),
+        ("pwc-cleanup", ["--confirm", "CLEAN_RELEASES"], "cleanup_command"),
+        ("pwc-status", [], "status"),
+    ],
+)
+def test_installed_deployment_command_dispatch(program, arguments, handler):
+    args = parser_for(program).parse_args(arguments)
+    assert args.handler.__name__ == handler

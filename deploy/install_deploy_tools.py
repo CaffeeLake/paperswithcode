@@ -65,6 +65,7 @@ def main() -> int:
             wrapper.write_text(
                 "#!/bin/sh\n"
                 "export PYTHONPATH=/usr/local/lib/paperswithcode-deploy\n"
+                f"export PWC_DEPLOY_COMMAND={command}\n"
                 'exec /usr/bin/python3 /usr/local/lib/paperswithcode-deploy/cli.py "$@"\n'
             )
             wrapper.chmod(0o755)
