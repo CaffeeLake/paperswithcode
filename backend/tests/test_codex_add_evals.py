@@ -112,6 +112,20 @@ def test_remote_callbacks_identify_the_service_to_cloudflare():
     assert '"User-Agent": USER_AGENT' in runner
 
 
+def test_remote_add_evals_requires_configured_leaderboard_search():
+    skill = Path(".agents/skills/remote-paper-curation/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    runner = Path("jobs/run_paper_curation.py").read_text(encoding="utf-8")
+    normalized_skill = " ".join(skill.split())
+    normalized_runner = " ".join(runner.split())
+
+    assert "only after running the `leaderboards` command for every" in normalized_skill
+    assert "Never use an empty taxonomy result" in normalized_skill
+    assert "for every benchmark found in the source" in normalized_runner
+    assert "taxonomy command returns only tasks and methods" in normalized_runner
+
+
 def test_codex_endpoint_enqueues_exact_paper(monkeypatch):
     from backend.routers import codex_add_evals
 

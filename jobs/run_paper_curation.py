@@ -71,9 +71,18 @@ def main() -> int:
         )
         final_path = Path("/tmp/codex-final.txt")
         skill = ".agents/skills/remote-paper-curation/SKILL.md"
+        kind_requirement = (
+            "For add-evals, call `python jobs/curation_api.py leaderboards "
+            '"<benchmark>"` for every benchmark found in the source before '
+            "submitting the payload. The taxonomy command returns only tasks and methods. "
+            "Never use it to decide whether a benchmark or leaderboard exists. "
+            if KIND == "add-evals"
+            else ""
+        )
         prompt = (
             f"Run the remote paper-curation skill at {skill}. Job kind: {KIND}. "
-            f"Use the job-scoped helper in jobs/curation_api.py for every VPS read and write; "
+            f"{kind_requirement}"
+            "Use the job-scoped helper in jobs/curation_api.py for every VPS read and write; "
             "do not access PostgreSQL, backend/keys.env, or modify repository files. "
             "Apply the scoped mutation before finishing, then give a concise audit report."
         )
