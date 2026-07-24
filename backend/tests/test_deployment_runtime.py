@@ -165,6 +165,24 @@ def test_v2_release_manifest_remains_a_valid_rollback_target(tmp_path: Path):
     assert validate_manifest(release, "production")["git_sha"] == "a" * 40
 
 
+def test_modal_bridge_manifest_remains_a_valid_rollback_target(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["chat_runtime"] = {
+        "enabled": False,
+        "new_chat_modal_percentage": 0,
+        "default_backend": "local_mcp",
+        "modal_image_version": "",
+        "pwc_cli_version": "",
+        "worker_contract_version": "",
+        "system_prompt_sha256": "",
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert validate_manifest(release, "production")["git_sha"] == "a" * 40
+
+
 def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
     assert profile_features("staging") == {
         "chat": True,

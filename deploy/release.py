@@ -78,9 +78,10 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "frontend_entrypoint",
     }
     current_required = legacy_required | {"feature_contract_version"}
+    bridge_required = current_required | {"chat_runtime"}
     if set(manifest) == legacy_required:
         expected = {"chat": manifest["build_profile"] == "staging"}
-    elif set(manifest) == current_required:
+    elif set(manifest) in {frozenset(current_required), frozenset(bridge_required)}:
         version = manifest["feature_contract_version"]
         if version == 2:
             expected = _profile_features_v2(manifest["build_profile"])
@@ -88,6 +89,10 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             expected = profile_features(manifest["build_profile"])
         else:
             raise ValueError("unsupported release feature contract version")
+        if "chat_runtime" in manifest and not isinstance(
+            manifest["chat_runtime"], dict
+        ):
+            raise ValueError("release chat_runtime must be an object")
     else:
         raise ValueError("release.json has an unexpected schema")
     profile = manifest["build_profile"]
