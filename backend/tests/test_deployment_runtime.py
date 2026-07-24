@@ -181,6 +181,33 @@ def test_production_profile_enables_admin_catalog_actions():
     }
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        (
+            "production",
+            {
+                "VITE_CHAT_ENABLED": "0",
+                "VITE_CHAT_LIVE": "0",
+                "VITE_CODEX_ADD_EVALS_ENABLED": "1",
+                "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
+            },
+        ),
+        (
+            "staging",
+            {
+                "VITE_CHAT_ENABLED": "1",
+                "VITE_CHAT_LIVE": "1",
+                "VITE_CODEX_ADD_EVALS_ENABLED": "0",
+                "VITE_CODEX_ENRICH_PAPER_ENABLED": "0",
+            },
+        ),
+    ],
+)
+def test_frontend_build_flags_follow_release_profile(environment: str, expected: dict):
+    assert deploy_cli.frontend_feature_environment(environment) == expected
+
+
 def test_production_codex_jobs_require_all_credentials(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     settings = deployed_settings(tmp_path, release, "production")

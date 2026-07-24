@@ -163,6 +163,18 @@ def _extract_commit(sha: str, destination: Path) -> None:
         tar.extractall(destination, filter="data")
 
 
+def frontend_feature_environment(environment: str) -> dict[str, str]:
+    features = profile_features(environment)
+    return {
+        "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
+        "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
+        "VITE_CODEX_ADD_EVALS_ENABLED": ("1" if features["codex_add_evals"] else "0"),
+        "VITE_CODEX_ENRICH_PAPER_ENABLED": (
+            "1" if features["codex_enrich_paper"] else "0"
+        ),
+    }
+
+
 def prepare_release(sha: str, environment: str) -> Path:
     target = RELEASES / release_id(sha, environment)
     if target.exists():
@@ -177,20 +189,8 @@ def prepare_release(sha: str, environment: str) -> Path:
     try:
         _extract_commit(sha, source)
         frontend = source / "frontend"
-        features = profile_features(environment)
         build_env = os.environ.copy()
-        build_env.update(
-            {
-                "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
-                "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
-                "VITE_CODEX_ADD_EVALS_ENABLED": (
-                    "1" if features["codex_add_evals"] else "0"
-                ),
-                "VITE_CODEX_ENRICH_PAPER_ENABLED": (
-                    "1" if features["codex_enrich_paper"] else "0"
-                ),
-            }
-        )
+        build_env.update(frontend_feature_environment(environment))
         run(["npm", "ci"], cwd=frontend, env=build_env)
         run(
             ["npm", "run", "build", "--", "--mode", environment],
