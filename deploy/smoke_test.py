@@ -44,12 +44,17 @@ def request(url: str, *, allow_redirects: bool = True) -> tuple[int, dict, bytes
 
 
 def validate_local_bundle(
-    release_dir: Path, expected_features: dict[str, bool]
+    release_dir: Path, expected_features: dict[str, bool] | bool
 ) -> list[str]:
     failures: list[str] = []
     dist = release_dir / "frontend-dist"
     try:
         features = json.loads((dist / "features.json").read_text())
+        if isinstance(expected_features, bool):
+            manifest = json.loads((release_dir / "release.json").read_text())
+            expected_features = manifest.get(
+                "frontend_features", {"chat": expected_features}
+            )
         if features != expected_features:
             failures.append(f"unexpected frontend features: {features!r}")
         html = (dist / "index.html").read_text()
