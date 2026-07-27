@@ -441,7 +441,7 @@ Task: Add or repair benchmark <benchmark name> for task <task-slug>.
 Evidence and source:
 <benchmark source paper/homepage, candidate source paper id/arxiv/external URL, expected split/protocol, metrics>
 
-Rules: use the benchmark's introducing/descriptive source paper, not a later result paper. Ensure datasets.paper_url is a native paperswithcode.co/paper/... URL. Link the benchmark to task <task-slug> and wire only the requested comparable metrics. Leave featured_rank NULL unless explicitly told otherwise.
+Rules: use the benchmark's introducing/descriptive source paper, not a later result paper. Ensure datasets.paper_url is a native paperswithcode.co/paper/... URL. Link the benchmark to task <task-slug> and wire only the requested comparable metrics.
 
 Final report: dataset id/slug, task id, metrics linked, source paper id/url, any blockers.
 ```

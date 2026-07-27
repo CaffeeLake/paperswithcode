@@ -1419,7 +1419,6 @@ class TaskDataset(Base):
     dataset_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True
     )
-    featured_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     supports_harness: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )

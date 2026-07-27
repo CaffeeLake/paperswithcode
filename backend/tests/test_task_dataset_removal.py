@@ -1,6 +1,4 @@
-"""
-Regression tests for task-dataset membership and featured benchmark ordering.
-"""
+"""Regression tests for task-dataset membership and benchmark ordering."""
 
 import pytest
 from sqlalchemy import create_engine
@@ -83,8 +81,8 @@ def task_dataset_fixture(db_session):
     db_session.add_all(
         [
             TaskDataset(task_id=1, dataset_id=1),
-            TaskDataset(task_id=1, dataset_id=2, featured_rank=1),
-            TaskDataset(task_id=1, dataset_id=3, featured_rank=2),
+            TaskDataset(task_id=1, dataset_id=2),
+            TaskDataset(task_id=1, dataset_id=3),
             TaskDataset(task_id=1, dataset_id=4),
         ]
     )
@@ -122,7 +120,7 @@ def task_dataset_fixture(db_session):
     db_session.commit()
 
 
-def test_task_datasets_without_featured_ranks_use_requested_fallback(db_session):
+def test_task_datasets_use_requested_ordering(db_session):
     task = DBTask(id=1, name="Image Classification", slug="image-classification")
     db_session.add(task)
     db_session.add_all(
@@ -154,10 +152,9 @@ def test_task_datasets_without_featured_ranks_use_requested_fallback(db_session)
     )
 
     assert [dataset.slug for dataset in result.results] == ["large", "small"]
-    assert [dataset.featured_rank for dataset in result.results] == [None, None]
 
 
-def test_featured_ranks_order_before_fallback_and_return_once(
+def test_task_dataset_ordering_returns_each_dataset_once(
     db_session, task_dataset_fixture
 ):
     result = DatasetService(db_session).get_datasets(
@@ -165,19 +162,18 @@ def test_featured_ranks_order_before_fallback_and_return_once(
     )
 
     assert [dataset.slug for dataset in result.results] == [
-        "swe-bench-verified",
-        "livecodebench",
         "alpha",
         "beta",
+        "livecodebench",
+        "swe-bench-verified",
     ]
-    assert [dataset.featured_rank for dataset in result.results] == [1, 2, None, None]
     assert (
         len([dataset for dataset in result.results if dataset.slug == "livecodebench"])
         == 1
     )
 
 
-def test_unfiltered_dataset_queries_do_not_populate_featured_rank(
+def test_unfiltered_dataset_queries_use_requested_ordering(
     db_session, task_dataset_fixture
 ):
     result = DatasetService(db_session).get_datasets(order_by="name", order_dir="asc")
@@ -188,7 +184,6 @@ def test_unfiltered_dataset_queries_do_not_populate_featured_rank(
         "LiveCodeBench",
         "SWE-Bench Verified",
     ]
-    assert all(dataset.featured_rank is None for dataset in result.results)
 
 
 def test_paper_count_merges_per_metric_evaluation_rows(db_session):

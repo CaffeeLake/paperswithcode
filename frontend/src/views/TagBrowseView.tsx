@@ -204,7 +204,6 @@ const TagBrowseView: React.FC = () => {
           name: dataset.name,
           slug: dataset.slug,
           full_name: dataset.full_name,
-          featured_rank: dataset.featured_rank,
           recent_paper_count: 0,
           baseline_paper_count: 0,
           all_time_paper_count: dataset.paper_count || 0,

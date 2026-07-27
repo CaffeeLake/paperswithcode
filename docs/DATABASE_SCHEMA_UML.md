@@ -86,7 +86,6 @@ Key capabilities:
        ├──────────────────────────────┤    ├───────────────────────────────┤
        │ task_id (FK)                 │    │ task_id (FK)                  │
        │ dataset_id (FK)              │    │ dataset_id (FK)               │
-       │ featured_rank (NULL or > 0)  │    │ metric_id (FK)                │
        │ supports_harness (bool)      │    │ PK (task,dataset,metric)      │
        │ PK (task, dataset)           │    │ (Defines leaderboards)        │
        │ (Display + harness metadata) │    └───────────────────────────────┘
@@ -417,7 +416,7 @@ The following summarizes the live structure. See the database for full DDL.
 - TASK_SISTER_TASKS(task_id, sister_task_id, display_order, created_at) PK(task_id, sister_task_id) — explicit, ordered sister-task relationships rendered on a task page's sidebar. `task_id` is the page; `sister_task_id` is a task shown in that page's "Sister Tasks" list, sorted by `display_order` (ascending, 0 first). Directed and NOT automatically symmetric (configuring B on A's page does not add A to B's page). CHECK prevents self-edges; both FKs cascade on task delete. This replaces the previous behavior of deriving sisters from every visible task sharing the same `area_id`.
 - PAPER_CONFERENCES(paper_id, conference_id, source, award) PK(paper_id, conference_id) — links papers to normalized conference rows. `source` is `manual` (import scripts / admin) or `auto`; `award` stores an optional conference award label. Display tags such as "CVPR 2026" on paper pages still use the denormalized `papers.proceeding` column alongside this junction.
 - PAPER_ORGANIZATIONS(paper_id, organization_id, source) PK(paper_id, organization_id) — links papers to normalized organization rows (e.g. NVIDIA). `source` is `manual` (admin) or an importer tag such as `hf_org_papers`. Powers org logo tags on paper pages and organization pages like `/nvidia`.
-- TASK_DATASETS(task_id, dataset_id, featured_rank, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
+- TASK_DATASETS(task_id, dataset_id, supports_harness, created_at, updated_at) PK(task_id, dataset_id)
 - TASK_DATASET_METRICS(task_id, dataset_id, metric_id, created_at) PK(task_id, dataset_id, metric_id)
 - USER_BOOKMARKS(hf_username, paper_id, created_at) PK(hf_username, paper_id) — user-scoped state, not a cross-entity junction. Keyed on the lowercased HF username carried in the `pwc_session` JWT; rows are removed via `ON DELETE CASCADE` when the underlying paper is deleted.
 - USER_PREFERENCES(hf_username, hide_closed_source_evals, created_at, updated_at) PK(hf_username) — per-account display preferences.

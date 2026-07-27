@@ -20,9 +20,7 @@ Pipeline:
    parent (Open ASR Leaderboard) row plus one row per matched
    sub-benchmark (WER only). RTFx is consolidated into the parent row.
 5. Recalculate ranks for every affected (task, dataset) leaderboard.
-6. Set `featured_rank` on `task_datasets` so the ASR task page shows the
-   parent leaderboard first followed by the canonical sub-benchmarks.
-7. Garbage-collect orphan `source='external'` HF-model papers that are no
+6. Garbage-collect orphan `source='external'` HF-model papers that are no
    longer referenced anywhere.
 
 Run with:
@@ -84,21 +82,9 @@ SUB_BENCHMARK_SLUG_BY_YAML_TASK = {
     "voxpopuli_wer": "voxpopuli",
 }
 
-# Featured-rank order on the ASR task page. The parent leaderboard always
-# comes first, then the HF leaderboard's canonical English subsets in
-# alphabetical order. Common Voice is intentionally omitted because no
-# model on the current leaderboard reports `common_voice_wer`, so featuring
-# it would surface an empty benchmark on the task page.
-FEATURED_RANK_ORDER = [
+ASR_DATASET_SLUGS = [
     "open-asr-leaderboard",
-    "ami-ihm",
-    "earnings-22",
-    "gigaspeech",
-    "librispeech-clean",
-    "librispeech-other",
-    "spgispeech",
-    "tedlium",
-    "voxpopuli",
+    *sorted(set(SUB_BENCHMARK_SLUG_BY_YAML_TASK.values())),
 ]
 
 # Curated mapping from a HF model_id prefix to the canonical paper's arxiv id.
@@ -505,7 +491,7 @@ def cleanup_orphan_external_hf_papers(db: Session) -> int:
 def lookup_dataset_ids(db: Session) -> dict[str, int]:
     rows = db.execute(
         text("SELECT slug, id FROM datasets WHERE slug = ANY(:slugs)"),
-        {"slugs": list(set(FEATURED_RANK_ORDER))},
+        {"slugs": ASR_DATASET_SLUGS},
     ).fetchall()
     return {slug: id_ for slug, id_ in rows}
 
@@ -748,36 +734,7 @@ def main() -> None:
             summary.sub_rows_created,
         )
 
-        # 3. Set featured_rank on task_datasets.
-        # The partial unique index on (task_id, featured_rank) requires
-        # a clean-slate before reassigning, so we null all ASR ranks first.
-        logger.info("Resetting featured_rank for ASR task...")
-        session.execute(
-            text(
-                "UPDATE task_datasets SET featured_rank = NULL, "
-                "updated_at = CURRENT_TIMESTAMP WHERE task_id = :tid"
-            ),
-            {"tid": asr_task.id},
-        )
-        session.flush()
-        for rank, slug in enumerate(FEATURED_RANK_ORDER, start=1):
-            ds_id = dataset_ids.get(slug)
-            if ds_id is None:
-                logger.warning("Skipping featured_rank for missing slug %s", slug)
-                continue
-            session.execute(
-                text(
-                    "INSERT INTO task_datasets (task_id, dataset_id, featured_rank) "
-                    "VALUES (:tid, :did, :rank) "
-                    "ON CONFLICT (task_id, dataset_id) DO UPDATE SET "
-                    "featured_rank = EXCLUDED.featured_rank, "
-                    "updated_at = CURRENT_TIMESTAMP"
-                ),
-                {"tid": asr_task.id, "did": ds_id, "rank": rank},
-            )
-        session.commit()
-
-        # 4. Recalculate ranks for every affected leaderboard.
+        # 3. Recalculate ranks for every affected leaderboard.
         eval_service = EvaluationService(session)
         for tid, did in sorted(affected_leaderboards):
             updated = eval_service.recalculate_ranks(tid, did)
@@ -785,7 +742,7 @@ def main() -> None:
                 "Recalculated %d ranks for task=%s, dataset=%s", updated, tid, did
             )
 
-        # 5. Garbage-collect any external HF-model paper rows that the new
+        # 4. Garbage-collect any external HF-model paper rows that the new
         #    arxiv-aware resolution made obsolete. Safe because the cleanup
         #    only touches rows with no remaining references anywhere.
         deleted = cleanup_orphan_external_hf_papers(session)

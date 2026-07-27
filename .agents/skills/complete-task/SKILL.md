@@ -193,7 +193,7 @@ Candidate source paper (introduced the benchmark): <paper_title> <paper_url>.
 Goals: ensure a datasets row exists; resolve and attach the benchmark's *introducing* source paper
 (native paperswithcode.co paper URL, indexing/creating it if needed per the skill); ensure the
 (task_id, dataset_id) link exists; ensure the leaderboard metric(s) the legacy table uses are linked.
-Do NOT set featured_rank. Report the dataset id, slug, source paper URL, and metrics linked.
+Report the dataset id, slug, source paper URL, and metrics linked.
 ```
 
 Be careful (the skill stresses this): the benchmark's source paper is the paper that *introduced* the

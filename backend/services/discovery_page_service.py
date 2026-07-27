@@ -164,7 +164,7 @@ class DiscoveryPageService:
             self.db.query(Dataset.slug, Dataset.name)
             .join(TaskDataset, TaskDataset.dataset_id == Dataset.id)
             .filter(TaskDataset.task_id == entity.id, Dataset.slug.is_not(None))
-            .order_by(TaskDataset.featured_rank.asc().nullslast(), Dataset.name.asc())
+            .order_by(Dataset.name.asc())
             .limit(10)
             .all()
         )

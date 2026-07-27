@@ -360,7 +360,6 @@ export interface TrendingBenchmark {
   name: string;
   slug?: string | null;
   full_name?: string | null;
-  featured_rank?: number | null;
   recent_paper_count: number;
   baseline_paper_count: number;
   all_time_paper_count: number;
@@ -424,7 +423,6 @@ export interface Dataset {
   hf_url?: string;
   slug?: string;
   paper_count?: number;
-  featured_rank?: number | null;
   supports_harness?: boolean;
   best_model_name?: string | null;
   best_paper_route?: string | null;

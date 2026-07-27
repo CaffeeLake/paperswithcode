@@ -88,13 +88,12 @@ INSERT INTO paper_tasks (paper_id, task_id, source)
 VALUES (34943, 424, 'manual')
 ON CONFLICT (paper_id, task_id) DO UPDATE SET source = 'manual';
 
--- Leave the benchmark unfeatured and without a harness.
-INSERT INTO task_datasets (task_id, dataset_id, featured_rank, supports_harness)
-SELECT 424, d.id, NULL, FALSE
+-- Link the benchmark without enabling harness values.
+INSERT INTO task_datasets (task_id, dataset_id, supports_harness)
+SELECT 424, d.id, FALSE
 FROM datasets d
 WHERE d.slug = 'rt-pose-official-test-4d-radar-tensor'
 ON CONFLICT (task_id, dataset_id) DO UPDATE SET
-    featured_rank = NULL,
     supports_harness = FALSE,
     updated_at = CURRENT_TIMESTAMP;
 

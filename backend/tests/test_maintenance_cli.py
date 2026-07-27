@@ -513,7 +513,6 @@ def test_add_benchmark_is_idempotent_and_builds_native_source_links():
     assert benchmark.full_name == inputs["full_name"]
     assert benchmark.homepage == inputs["homepage"]
     assert paper_task.source == "manual"
-    assert task_dataset.featured_rank is None
     assert task_dataset.supports_harness
     assert metric_link is not None
 

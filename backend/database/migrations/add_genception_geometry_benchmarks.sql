@@ -129,7 +129,6 @@ WHERE p.arxiv_id = '2303.15380'
   AND t.slug = 'surface-normal-estimation'
 ON CONFLICT (paper_id, task_id) DO UPDATE SET source = 'manual';
 
--- Leave featured_rank NULL: these are ordinary, unpinned task benchmarks.
 INSERT INTO task_datasets (task_id, dataset_id, supports_harness)
 SELECT t.id, d.id, FALSE
 FROM tasks t

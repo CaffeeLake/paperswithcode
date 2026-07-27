@@ -82,7 +82,6 @@ class BenchmarkTrendService:
         rows = (
             self.db.query(
                 DBDataset,
-                func.min(TaskDataset.featured_rank).label("featured_rank"),
                 recent_count.label("recent_count"),
                 baseline_count.label("baseline_count"),
                 func.count(func.distinct(DBPaper.id)).label("all_time_count"),
@@ -125,7 +124,6 @@ class BenchmarkTrendService:
         results = []
         for (
             dataset,
-            featured_rank,
             recent,
             baseline,
             all_time,
@@ -142,7 +140,6 @@ class BenchmarkTrendService:
                     name=dataset.name,
                     slug=dataset.slug,
                     full_name=dataset.full_name,
-                    featured_rank=featured_rank,
                     recent_paper_count=recent,
                     baseline_paper_count=baseline,
                     all_time_paper_count=int(all_time or 0),

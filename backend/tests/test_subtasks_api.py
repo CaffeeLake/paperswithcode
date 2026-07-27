@@ -201,7 +201,7 @@ def _seed_benchmark_trends(db, today):
     db.add_all(
         [
             TaskDataset(task_id=50, dataset_id=500),
-            TaskDataset(task_id=50, dataset_id=501, featured_rank=1),
+            TaskDataset(task_id=50, dataset_id=501),
         ]
     )
 
@@ -278,7 +278,6 @@ def test_trending_benchmarks_default_to_ninety_days(db_session):
     assert rising.best_model_name == "Model 500"
     assert established.recent_paper_count == 2
     assert established.baseline_paper_count == 5
-    assert established.featured_rank == 1
 
 
 def test_trending_benchmarks_resolve_exact_task_name(db_session):
@@ -315,6 +314,7 @@ def test_trending_benchmarks_endpoint_exposes_default_window(client):
     assert body["results"][0]["best_paper_title"] == "Paper 500"
     assert body["results"][0]["best_paper_route"] == "2607.00500"
     assert body["results"][0]["best_code_url"] is None
+    assert "featured_rank" not in body["results"][0]
     assert len(body["results"][0]["history"]) == 6
 
 
@@ -632,15 +632,12 @@ def _seed_paper_with_three_benchmarks(db):
     db.add(DBMetric(id=10, name="Accuracy", direction="higher_is_better"))
 
     # One TaskDataset entry per (task, dataset) so the dataset listing endpoint
-    # surfaces all three benchmarks under task 10. featured_rank is set
-    # adversarially: the *least* popular benchmark gets the smallest
-    # featured_rank, so pinned ordering (featured_rank first) must surface the
-    # least-popular ranked benchmark ahead of the most-popular unranked one.
+    # surfaces all three benchmarks under task 10.
     db.add_all(
         [
-            TaskDataset(task_id=10, dataset_id=100, featured_rank=None),
-            TaskDataset(task_id=10, dataset_id=200, featured_rank=2),
-            TaskDataset(task_id=10, dataset_id=300, featured_rank=1),
+            TaskDataset(task_id=10, dataset_id=100),
+            TaskDataset(task_id=10, dataset_id=200),
+            TaskDataset(task_id=10, dataset_id=300),
             TaskDatasetMetric(task_id=10, dataset_id=100, metric_id=10),
             TaskDatasetMetric(task_id=10, dataset_id=200, metric_id=10),
             TaskDatasetMetric(task_id=10, dataset_id=300, metric_id=10),
@@ -890,14 +887,8 @@ def test_paper_evaluations_within_benchmark_sorted_by_best_rank(client):
     assert benchpop_ranks == [1, 3, None]
 
 
-def test_task_benchmarks_pinned_by_featured_rank_over_paper_count(client):
-    """The task page benchmark list must pin benchmarks that carry a
-    `featured_rank` ahead of unranked ones, ordered by ascending rank, even
-    when an unranked benchmark has far more evaluations. The seed sets
-    featured_rank=1 on Niche (1 eval) and featured_rank=2 on BrowseComp (2
-    evals), leaving MCP-Atlas (5 evals) unranked; the pinned order must be
-    Niche, BrowseComp, then MCP-Atlas, so popularity only orders the unranked
-    tail."""
+def test_task_benchmarks_order_by_paper_count(client):
+    """The dataset endpoint orders task benchmarks by the requested metric."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -909,9 +900,8 @@ def test_task_benchmarks_pinned_by_featured_rank_over_paper_count(client):
     payload = response.json()
 
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
-    # paper_count is the per-dataset evaluation row count; sanity check it
-    # matches the seeded counts so we know the pin beat the popularity sort.
+    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
+    assert all("featured_rank" not in dataset for dataset in payload["results"])
     counts = {d["slug"]: d["paper_count"] for d in payload["results"]}
     assert counts == {"mcp-atlas": 5, "browsecomp": 2, "niche": 1}
 
@@ -919,8 +909,7 @@ def test_task_benchmarks_pinned_by_featured_rank_over_paper_count(client):
 def test_task_benchmarks_filtered_by_min_eval_count(client):
     """`min_eval_count=2` hides single-evaluation benchmarks from the default
     task-page listing so sparse leaderboards don't clutter the UI. The
-    benchmark fixture seeds MCP-Atlas (5 evals), BrowseComp (2), Niche (1);
-    featured rank affects ordering only, so pinned Niche is still hidden."""
+    benchmark fixture seeds MCP-Atlas (5 evals), BrowseComp (2), Niche (1)."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -932,13 +921,12 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     payload = response.json()
 
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["browsecomp", "mcp-atlas"]
+    assert slugs == ["mcp-atlas", "browsecomp"]
     assert payload["count"] == 2
 
 
 def test_task_page_hides_single_entry_benchmarks_by_default(client):
-    """The bundled task-page payload omits benchmarks with only one entry,
-    even when they have a featured rank."""
+    """The bundled task-page payload omits benchmarks with only one entry."""
     db = TestingSessionLocal()
     _seed_paper_with_three_benchmarks(db)
     db.close()
@@ -946,7 +934,7 @@ def test_task_page_hides_single_entry_benchmarks_by_default(client):
     response = client.get("/api/v1/tasks/10/page")
     assert response.status_code == 200
     slugs = [d["slug"] for d in response.json()["benchmarks"]]
-    assert slugs == ["browsecomp", "mcp-atlas"]
+    assert slugs == ["mcp-atlas", "browsecomp"]
 
 
 def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):
@@ -964,7 +952,7 @@ def test_task_benchmarks_unfiltered_when_min_eval_count_absent(client):
     payload = response.json()
 
     slugs = [d["slug"] for d in payload["results"]]
-    assert slugs == ["niche", "browsecomp", "mcp-atlas"]
+    assert slugs == ["mcp-atlas", "browsecomp", "niche"]
     assert payload["count"] == 3
 
 

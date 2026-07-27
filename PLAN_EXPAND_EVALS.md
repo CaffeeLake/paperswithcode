@@ -259,7 +259,7 @@ CSV `status=benchmark_missing`: dataset row exists, `task_datasets` link missing
 For each benchmark:
 
 1. Resolve **introducing paper** (not a later model that merely evaluates on it)
-2. `INSERT task_datasets` — leave `featured_rank` NULL unless pinning requested
+2. `INSERT task_datasets`
 3. Link metrics in `task_dataset_metrics`
 4. Set `datasets.paper_url` to native PwC paper URL
 5. Tag introducing paper on task via `paper_tasks`

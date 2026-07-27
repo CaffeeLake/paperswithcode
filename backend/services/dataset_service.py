@@ -442,17 +442,10 @@ class DatasetService:
                 # When `include_descendants` is true, expand the filter to all
                 # subtasks under `task_id` so a parent task page can roll up
                 # benchmarks from its child tasks (subtasks).
-                query = (
-                    query.add_columns(
-                        task_dataset_filter.featured_rank.label("featured_rank")
-                    )
-                    .join(
-                        task_dataset_filter,
-                        DBDataset.id == task_dataset_filter.dataset_id,
-                    )
-                    .filter(task_dataset_filter.task_id.in_(scoped_task_ids))
-                    .group_by(task_dataset_filter.featured_rank)
-                )
+                query = query.join(
+                    task_dataset_filter,
+                    DBDataset.id == task_dataset_filter.dataset_id,
+                ).filter(task_dataset_filter.task_id.in_(scoped_task_ids))
 
             if min_eval_count is not None and min_eval_count > 0:
                 # Hide sparse benchmarks. `paper_count` is the count of
@@ -461,8 +454,6 @@ class DatasetService:
                 # default task-page lists without touching the underlying
                 # data or the dataset detail page (which loads benchmarks
                 # by slug directly, bypassing this filter).
-                # Apply the threshold uniformly, including to featured
-                # benchmarks: pinning controls order, not visibility.
                 query = query.having(_leaderboard_row_count() >= min_eval_count)
 
             # Get total count before pagination
@@ -485,15 +476,7 @@ class DatasetService:
                 desc(order_field) if order_dir == "desc" else asc(order_field)
             )
             if task_id is not None:
-                # Task pages pin curated benchmarks first: any row with a
-                # non-null `featured_rank` is ordered ahead of the rest by
-                # ascending rank, so an admin can force e.g. SWE-Bench Pro to
-                # the top regardless of evaluation count. Unranked benchmarks
-                # (`featured_rank IS NULL`) fall back to the requested ordering
-                # (typically -paper_count popularity), with name as the final
-                # tie-breaker.
                 query = query.order_by(
-                    asc(task_dataset_filter.featured_rank).nulls_last(),
                     order_clause,
                     asc(DBDataset.name),
                 )
@@ -528,7 +511,6 @@ class DatasetService:
             dataset_list = []
             for row in results:
                 db_dataset, paper_count, task_count = row[:3]
-                featured_rank = row[3] if task_id is not None else None
                 supports_harness = supports_harness_map.get(db_dataset.id, False)
                 best_result = best_results.get(db_dataset.id, {})
                 dataset_dict = {
@@ -574,7 +556,6 @@ class DatasetService:
                     # Legacy counts
                     "paper_count": paper_count,
                     "task_count": task_count,
-                    "featured_rank": featured_rank,
                     "supports_harness": supports_harness,
                     "best_model_name": best_result.get("model_name"),
                     "best_paper_route": best_result.get("paper_route"),
@@ -718,7 +699,6 @@ class DatasetService:
                 # Legacy counts
                 "paper_count": paper_count,
                 "task_count": task_count,
-                "featured_rank": None,
                 "supports_harness": supports_harness,
             }
 
@@ -830,7 +810,6 @@ class DatasetService:
                 # Legacy counts
                 "paper_count": paper_count,
                 "task_count": task_count,
-                "featured_rank": None,
                 "supports_harness": supports_harness,
             }
 

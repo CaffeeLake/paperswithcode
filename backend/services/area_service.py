@@ -307,8 +307,7 @@ class AreaService:
         """Return visible top-level tasks grouped by area with top benchmarks.
 
         Benchmark popularity is computed in one aggregate query, scoped to each
-        task's own leaderboard. Curated ``featured_rank`` values sort first;
-        remaining benchmarks fall back to logical evaluation-row count.
+        task's own leaderboard, and sorted by logical evaluation-row count.
         """
         try:
             taxonomy = self.get_areas_with_tasks()
@@ -330,7 +329,6 @@ class AreaService:
                     DBDataset.name,
                     DBDataset.slug,
                     DBDataset.full_name,
-                    TaskDataset.featured_rank,
                     evaluation_count.label("evaluation_count"),
                 )
                 .join(DBDataset, DBDataset.id == TaskDataset.dataset_id)
@@ -342,11 +340,7 @@ class AreaService:
                     ),
                 )
                 .filter(TaskDataset.task_id.in_(task_ids))
-                .group_by(
-                    TaskDataset.task_id,
-                    DBDataset.id,
-                    TaskDataset.featured_rank,
-                )
+                .group_by(TaskDataset.task_id, DBDataset.id)
                 .all()
             )
 
@@ -357,7 +351,6 @@ class AreaService:
                 name,
                 slug,
                 full_name,
-                featured_rank,
                 count,
             ) in benchmark_rows:
                 count = int(count or 0)
@@ -370,17 +363,12 @@ class AreaService:
                         slug=slug,
                         full_name=full_name,
                         evaluation_count=count,
-                        featured_rank=featured_rank,
                     )
                 )
 
             for benchmarks in benchmarks_by_task.values():
                 benchmarks.sort(
                     key=lambda benchmark: (
-                        benchmark.featured_rank is None,
-                        benchmark.featured_rank
-                        if benchmark.featured_rank is not None
-                        else 0,
                         -benchmark.evaluation_count,
                         benchmark.name.casefold(),
                     )

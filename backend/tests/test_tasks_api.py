@@ -277,7 +277,7 @@ def test_public_domain_lists_hide_child_subtasks(
     assert taxonomy_slugs == ["graph-machine-learning"]
 
 
-def test_grouped_task_benchmarks_are_bounded_and_featured_first(client):
+def test_grouped_task_benchmarks_are_bounded_and_popular_first(client):
     db = TestingSessionLocal()
     db.add(DBArea(id=1, name="Vision"))
     db.add(
@@ -299,7 +299,7 @@ def test_grouped_task_benchmarks_are_bounded_and_featured_first(client):
     db.add_all(
         [
             TaskDataset(task_id=1, dataset_id=1),
-            TaskDataset(task_id=1, dataset_id=2, featured_rank=1),
+            TaskDataset(task_id=1, dataset_id=2),
         ]
     )
     db.add_all(
@@ -362,7 +362,7 @@ def test_grouped_task_benchmarks_are_bounded_and_featured_first(client):
     assert [
         (benchmark["slug"], benchmark["evaluation_count"])
         for benchmark in task["benchmarks"]
-    ] == [("featured-set", 1), ("popular-set", 3)]
+    ] == [("popular-set", 3), ("featured-set", 1)]
 
 
 @pytest.fixture

@@ -81,12 +81,10 @@ BEGIN
     INSERT INTO task_datasets (
         task_id,
         dataset_id,
-        featured_rank,
         supports_harness
     )
-    VALUES (v_task_id, v_dataset_id, NULL, FALSE)
+    VALUES (v_task_id, v_dataset_id, FALSE)
     ON CONFLICT (task_id, dataset_id) DO UPDATE SET
-        featured_rank = NULL,
         supports_harness = FALSE;
 
     DELETE FROM task_dataset_metrics

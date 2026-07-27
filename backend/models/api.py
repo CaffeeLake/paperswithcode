@@ -1194,9 +1194,6 @@ class TrendingBenchmark(BaseModel):
     name: str = Field(..., description="Benchmark name")
     slug: Optional[str] = Field(None, description="Benchmark URL slug")
     full_name: Optional[str] = Field(None, description="Expanded benchmark name")
-    featured_rank: Optional[int] = Field(
-        None, description="Existing manually curated task-page rank, if any"
-    )
     recent_paper_count: int = Field(
         ..., description="Distinct reporting papers in the recent window"
     )
@@ -1312,9 +1309,6 @@ class TaskBenchmarkListItem(BaseModel):
     full_name: Optional[str] = Field(None, description="Expanded benchmark name")
     evaluation_count: int = Field(
         ..., description="Logical leaderboard rows for this task and benchmark"
-    )
-    featured_rank: Optional[int] = Field(
-        None, description="Task-specific curated benchmark rank"
     )
 
     @field_validator("id", mode="before")
@@ -1717,10 +1711,6 @@ class Dataset(BaseModel):
     )
     task_count: Optional[int] = Field(
         None, description="Number of tasks associated with this dataset"
-    )
-    featured_rank: Optional[int] = Field(
-        None,
-        description="Task-specific featured ordering rank when returned for a task",
     )
     supports_harness: bool = Field(
         False,
