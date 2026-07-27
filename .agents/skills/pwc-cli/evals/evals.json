@@ -1,0 +1,17 @@
+{
+  "skill_name": "pwc-cli",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Find the five most relevant local Papers With Code papers about vision-language models and return structured output. Do not query the public API or write SQL.",
+      "expected_output": "Uses the repository-local pwc hybrid search command with --limit 5 and --json, including the required uv/environment prefix.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Check whether the update_citations cron is healthy and whether its Semantic Scholar credential works. Keep this read-only and machine-readable.",
+      "expected_output": "Uses pwc cron health update_citations --json and pwc cron token-check PWC_SEMANTIC_SCHOLAR_API_KEY --json without revealing the credential.",
+      "files": []
+    }
+  ]
+}
