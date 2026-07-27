@@ -1,0 +1,48 @@
+arxiv_id,year,title,evidence_sources,candidate_benchmarks,introduced_variants,comparison_lineage,source_availability,priority,status
+2607.02770,2026,Gemma 4 Technical Report,live;HF,MMAU;MMAR;MMSU,Gemma 4 audio variants,Qwen Omni;Gemini;frontier omni models,Official HF weights; exact audio variant must be matched,wave1,defer-not-comparable-asr-translation
+2607.10387,2026,GigaChat Audio,live;recent,long-audio temporal QA,GigaChat Audio,LongAudioBench;long-context audio models,No exact artifact established,wave2,defer-missing-temporal-benchmark
+2507.16632,2025,Step-Audio 2 Technical Report,live;GitHub;HF;comparison,MMAU;AIR-Bench;OpenAudioBench,Step-Audio 2/mini,AF3;Gemini 2.5 Pro;GPT-4o Audio;Kimi;Qwen2.5-Omni,Official GitHub and Apache-2.0 mini checkpoints,wave1,defer-mmautest-mini
+2604.10708,2026,Audio-Omni,live;recent,MMAU;MMAR;MMSU;generation-adjacent,Audio-Omni,unified audio models,Official repo; exact evaluated weights must be matched,wave2,imported-verified:MMAU; MMSU
+2512.20156,2025,Fun-Audio-Chat Technical Report,live;recent,MMAU;VoiceBench;spoken QA,Fun-Audio-Chat,Qwen Omni;Kimi;Step-Audio,Official repo signal; exact checkpoint unknown,wave1,imported-verified:MMSU; OpenAudioBench - LlamaQuestions
+2604.12506,2026,Beyond Transcription / UAS-Audio,live;recent,MMAU;MMAR;MMSU,UAS-Audio,Qwen Omni;AF3;Kimi,Paper claims open code/model,wave1,imported-verified:MMAR; MMSU
+2602.09823,2026,Covo-Audio Technical Report,live;recent,MMAU;MMSU;MMAR,Covo-Audio,unified audio models,HF model linked on live page,wave2,imported-verified:MMAR; MMAU; MMSU
+2504.18425,2025,Kimi-Audio Technical Report,live;GitHub;HF;comparison,MMAU;Clotho-AQA;CochlScene;NonSpeech7k;OpenAudioBench;VoiceBench,Kimi-Audio-7B-Instruct,Qwen Audio;SALMONN;AF;Pengi,Official open repo and exact HF checkpoint,wave1,imported-verified:CochlScene; MMAU; NonSpeech7k; OpenAudioBench - LlamaQuestions
+2408.05211,2024,VITA,live;citations,AIR-Bench;AudioCaps;speech/audio suites,VITA,omni-modal baselines,Official open repo signal,wave2,defer-no-exact-paper-native-configured-result
+2407.10759,2024,Qwen2-Audio Technical Report,live;citations;GitHub;HF;comparison,AIR-Bench foundation;AIR-Bench chat;audio QA,Qwen2-Audio-Instruct,Qwen-Audio;SALMONN;BLSP;PandaGPT,Official Apache repo and exact HF checkpoint,wave1,imported-verified:AIR-Bench Chat
+2311.07919,2023,Qwen-Audio,live;citations;comparison,AIR-Bench;AudioCaps;Clotho-AQA;classification,Qwen-Audio-Chat/Turbo,SALMONN;Pengi;LTU,Official repo/checkpoints,wave1,imported-verified:Clotho-v2; CochlScene; MusicAVQA
+2503.03983,2025,Audio Flamingo 2,live;comparison;GitHub,MMAU;LongAudioBench;Clotho-AQA;AudioCaps;Clotho;FSD50K;ESC-50;MuChoMusic;CompA-R,Audio Flamingo 2,Qwen2-Audio;AF1;GAMA;Pengi;MusiLingo;Gemini,Official NVIDIA repo; license/variant must be recorded,wave1,imported-verified:AudioCaps; Clotho-AQA; Clotho-v2; CompA-R-test; LongAudioBench; MuChoMusic; MusicAVQA; NonSpeech7k
+2402.01831,2024,Audio Flamingo,live;citations;comparison,AudioCaps;Clotho;Clotho-AQA;audio QA,Audio Flamingo,Pengi;LTU;SALMONN,Official NVIDIA repo; exact release evidence required,wave1,imported-verified:AudioCaps; Clotho-AQA; Clotho-v2; CochlScene; MusicAVQA; NonSpeech7k; NSynth
+2506.12935,2025,SoundMind,live;recent,MMAU;MMAR;audio reasoning,SoundMind,Audio-Reasoner;Qwen2-Audio;AF2,Official repo signal,wave2,defer-missing-soundmind-benchmark
+2410.09503,2024,SLAM-AAC,live;captioning,AudioCaps caption;Clotho-v2 caption,SLAM-AAC,captioning baselines;CLAP,Official code signal; checkpoint evidence unknown,wave1,imported-verified:AudioCaps; Clotho-v2
+2604.25719,2026,Step-Audio-R1.5,live;recent,MMAU;MMAR;MMSU,Step-Audio-R1.5,Step-Audio-R1;audio reasoning models,Official Step family release signal,wave1,imported-verified:MMAU; MMSU
+2511.15848,2025,Step-Audio-R1,live;recent,MMAU;MMAR;MMSU,Step-Audio-R1,Audio-Reasoner;AF3;Qwen Omni,Official Step family release signal,wave1,imported-verified:MMSU
+2309.05767,2023,Natural Language Supervision for General-Purpose Audio Representations,live;citations;legacy,AudioSet;ESC-50;FSD50K;VGGSound,CLAP-like representation model,CLAP;AudioCLIP;PANNs,Inspect official repo and weights,wave2,defer-no-exact-paper-native-configured-result
+2503.11197,2025,RL Outperforms SFT for Audio QA,live;recent,MMAU test-mini;audio QA,R1-AQA variants,Qwen2-Audio;Audio-Reasoner,Official repo signal; test-mini must not enter full MMAU,wave1,defer-mmautest-mini
+2305.11834,2023,Pengi,live;citations;comparison,AudioCaps;Clotho;Clotho-AQA;classification,Pengi,CLAP;AudioCLIP;LTU,Official Microsoft repo; weights availability must be checked,wave1,imported-verified:AudioCaps; Clotho-v2
+2406.16020,2024,AudioBench,live;benchmark-source;GitHub,26 constituent datasets,benchmark only,SALMONN;Qwen-Audio;WavLLM;Qwen2-Audio,Official benchmark repo,wave1,benchmark-source-linked
+2503.02318,2025,Audio-Reasoner,live;recent;comparison,MMAU;AIR-Bench foundation/chat;MELD,Audio-Reasoner,Qwen2-Audio;AF2;SALMONN,Official repo signal,wave1,imported-verified:AIR-Bench Chat
+2502.17239,2025,Baichuan-Audio,live;recent;comparison,OpenAudioBench;MMAU;VoiceBench,Baichuan-Audio,Qwen2-Audio;Kimi;Step-Audio,Official OpenAudioBench dataset and model release,wave1,imported-verified:OpenAudioBench - LlamaQuestions
+2505.13032,2025,MMAR,live;benchmark-source;comparison,MMAR,benchmark only,AF/AF2;LTU;GAMA;Audio-Reasoner;Qwen Omni;Gemini,Official benchmark source,wave1,benchmark-source-linked
+2410.19168,2024,MMAU,live;benchmark-source;comparison,MMAU,benchmark only,Qwen Audio;SALMONN;LTU;AF;GAMA;Pengi,Official benchmark source,wave1,benchmark-source-linked
+2506.04779,2025,MMSU,benchmark-source;recent,MMSU,benchmark only,spoken-language audio models,Official benchmark source,wave1,benchmark-source-linked
+2508.13992,2025,MMAU-Pro,recent;HF;comparison,MMAU-Pro MCQ;MMAU-Pro open response,benchmark only,AF Next;MiMo;MOSS;TAC,Official HF dataset,wave1,benchmark-source-linked
+2507.02768,2025,DeSTA2.5-Audio,live;recent,MMAU;Dynamic-SUPERB;VoiceBench;SAKURA;Speech-IFEval,DeSTA2.5-Audio,Qwen2-Audio;SALMONN;AF2,Official repo signal,wave2,defer-test-mini-voicebench
+2503.08540,2025,Mellow,live;recent,MMAU,Mellow,Qwen2-Audio;AF2;Audio-Reasoner,Inspect official weights,wave1,imported-verified:MMAU
+2507.18452,2025,DIFFA,live;recent,MMAU;MMSU,DIFFA,Qwen2.5-Omni;AF3;Kimi,Official repo signal,wave1,imported-verified:MMSU
+2502.18186,2025,C2SER,live;recent,IEMOCAP;MELD;RAVDESS,C2SER,Qwen2-Audio;SER baselines,Inspect official repo/weights,wave1,defer-iemocap-training-only
+2510.02995,2025,AudioToolAgent,live;recent,MMAU;MMAR;MMAU-Pro,AudioToolAgent,Audio-Reasoner;tool-augmented ALMs,Official repo signal; agent/tool setup may be incomparable,wave1,imported-verified:MMAR; MMAU-Pro; MMAU-Pro (Instruction Following); MMAU-Pro (Open-Ended QA)
+2409.09213,2024,ReCLAP,live;classification;retrieval,AudioSet;ESC-50;FSD50K;VGGSound,ReCLAP,CLAP;AudioCLIP,Official code signal,wave2,imported-verified:AudioCaps; Clotho-v2
+2505.13237,2025,SAKURA,live;benchmark-source;recent,SAKURA multi-hop reasoning,benchmark/analysis paper,Qwen Audio;SALMONN;AF;LTU,Official benchmark source,wave2,benchmark-source-only
+2604.13023,2026,SpotSound,live;recent,SpotSound-Bench temporal grounding,SpotSound,AF/Qwen/Kimi audio models,HF model linked; one-paper protocol,wave2,defer-missing-spotsound-benchmark
+2505.14142,2025,AudSemThinker,live;recent,MMAU;MMAR;audio semantic reasoning,AudSemThinker,Audio-Reasoner;AF2;Qwen2-Audio,Official repo signal,wave2,imported-verified:MMAU
+2502.13433,2025,MATS,live;recent,MMAU;AIR-Bench;audio QA,MATS,Qwen2-Audio;SALMONN;LTU,Inspect official repo/weights,wave2,imported-verified:AudioCaps; Clotho-v2; MMAU
+2412.20619,2024,Audiopedia,live;AQA,Audiopedia audio QA,proposed model,Qwen-Audio;SALMONN;LTU,Official dataset/model evidence unknown,wave2,defer-missing-audiopedia-benchmark
+2512.24052,2025,AHA,live;recent,MMAU;MMAR;CMM hallucination,Qwen-Audio-AHA,Qwen Audio;AF3;Kimi,Official repo signal,wave1,imported-verified:MMAR; MMAU; MMAU-Pro
+2604.10905,2026,Audio Flamingo Next,GitHub;HF;comparison;recent,MMAU;MMAR;MMSU;MMAU-Pro;AudioCaps;Clotho;LongAudioBench;NonSpeech7k,AF-Next variants,AF1/2/3;Qwen Omni;Kimi;Pengi;LTU;SALMONN,Official HF weights; NVIDIA noncommercial license,wave1,imported-verified:AudioCaps; Clotho-v2; CompA-R-test; LongAudioBench; MMAR; MMAU; MMAU-Pro; MMSU; NonSpeech7k
+2512.23808,2025,MiMo-Audio,GitHub;HF;recent,MMAU;MMAR;MMSU;MMAU-Pro,MiMo-Audio-7B-Instruct,Qwen Omni;AF3;Kimi;Step,Official Apache repo and exact HF checkpoint,wave1,imported-verified:MMAR; MMAU-Pro; MMSU
+2606.01802,2026,MOSS-Audio,GitHub;HF;recent,MMAU;MMAR;MMSU;MMAU-Pro,MOSS-Audio 4B/8B variants,AF Next;MiMo;Qwen Omni,Official Apache HF weights; paper missing locally,wave1,defer-paper-not-indexed
+2310.13289,2023,SALMONN,citations;comparison,AIR-Bench;AudioCaps;Clotho-AQA;classification,SALMONN,Qwen-Audio;Pengi;LTU,Official code/model evidence,wave1,defer-no-exact-paper-native-configured-result
+2305.10790,2023,Listen Think and Understand,citations;comparison,MMAU;AudioCaps;Clotho;classification,LTU/LTU-AS,Pengi;CLAP;SALMONN,Official code/pretrained release,wave1,defer-missing-configured-metric
+2406.11768,2024,GAMA,citations;comparison,MMAU;MMAR;AudioCaps;Clotho;classification,GAMA/GAMA-IT,LTU;SALMONN;Qwen Audio,Official repo/model evidence,wave1,imported-verified:NSynth
+1912.10211,2019,PANNs,citations;legacy,AudioSet;ESC-50;FSD50K;other classification,CNN14 and PANN variants,AST;AudioMAE;CLAP,Official code/pretrained models,wave2,defer-no-exact-paper-native-configured-result
+2104.01778,2021,AST,citations;legacy,AudioSet;ESC-50;other classification,AST,PSLA;PANNs;SSAST,Official code/pretrained models,wave2,defer-no-exact-paper-native-configured-result

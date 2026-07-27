@@ -1,0 +1,112 @@
+paper_rank,paper_id,arxiv_or_source,benchmark,dataset_id,evaluation_ids,status,notes
+comparison,104425,1912.03590,CharadesSTA,57,17457,imported,2D-TAN (Conv) / R@1 IoU=0.5
+comparison,104425,1912.03590,ActivityNet Captions Temporal Localization (val_2),1580,17458,imported,2D-TAN (Pool) / R1@0.5
+42,81007,2011.10132,TACoS Temporal Localization (Test),1569,17469,imported,VLG-Net / R@1 IoU=0.5
+42,81007,2011.10132,ActivityNet Captions Temporal Localization (val_2),1580,17468,imported,VLG-Net / R1@0.5
+10,6279,2107.09609,CharadesSTA,57,17427,imported,Moment-DETR w/ PT (10K HowTo100M) / R@1 IoU=0.5
+10,6279,2107.09609,QVHighlights Moment Retrieval (Test),1566,17426,imported,Moment-DETR w/ PT / mAP Avg IoU=0.5:0.95
+57,6890,2110.06058,CharadesSTA,57,17478,imported,MIGCN (I3D) / R@1 IoU=0.5
+38,7767,2201.10168,CharadesSTA,57,17462,imported,LVTR-CLIP / mIoU
+38,7767,2201.10168,ActivityNet Captions Temporal Localization (val_2),1580,17463,imported,LVTR-CLIP / mIoU
+14,8405,2203.12745,CharadesSTA,57,17442,imported,UMT (video + optical flow) / R@1 IoU=0.5
+14,8405,2203.12745,QVHighlights Moment Retrieval (Test),1566,17441,imported,UMT w/ PT / mAP Avg IoU=0.5:0.95
+49,13326,2302.13372,MAD v1 Corpus Test,1570,17475,imported,VLG-Net + Guidance Model (query-dependent A+V+T) / R@1 IoU=0.5
+59,13589,2303.04995,CharadesSTA,57,17485,imported,TVP / R@1 IoU=0.5
+59,13589,2303.04995,ActivityNet Captions,700,17486,imported,TVP / R1@0.5
+44,13778,2303.08345,MAD v1 Corpus Test,1570,17471,imported,SOONet / R@1 IoU=0.5
+54,15346,2305.04961,CharadesSTA,57,17479,imported,VisionaryVid (video + audio) / R@1 IoU=0.5
+56,16954,2306.02728,CharadesSTA,57,17480,imported,BM-DETR (SF+C) / R@1 IoU=0.5
+56,16954,2306.02728,TACoS Temporal Localization (Test),1569,17482,imported,BM-DETR (C3D + BERT) / R@1 IoU=0.5
+56,16954,2306.02728,ActivityNet Captions Temporal Localization (val_2),1580,17481,imported,BM-DETR (C3D + BERT) / R1@0.5
+9,18800,2307.16715,CharadesSTA,57,17406,imported,UniVTG w/ PT / mIoU
+9,18800,2307.16715,QVHighlights Moment Retrieval (Test),1566,17405,imported,UniVTG w/ PT / mAP Avg IoU=0.5:0.95
+9,18800,2307.16715,TACoS Temporal Localization (Test),1569,17407,imported,UniVTG w/ PT / mIoU
+58,19038,2308.04197,CharadesSTA,57,17483,imported,D3G (glance-supervised) / R@1 IoU=0.5
+58,19038,2308.04197,ActivityNet Captions Temporal Localization (val_2),1580,17484,imported,D3G (glance-supervised) / R1@0.5
+33,19217,2308.06947,CharadesSTA,57,17459,imported,EaTR / R@1 IoU=0.5
+33,19217,2308.06947,ActivityNet Captions Temporal Localization (val_2),1580,17460,imported,EaTR / R1@0.5
+7,19586,2308.11062,CharadesSTA,57,17428,imported,UnLoc-L / R@1 IoU=0.5
+40,24074,2312.00083,CharadesSTA,57,17466,imported,BAM-DETR / mIoU
+40,24074,2312.00083,QVHighlights Moment Retrieval (Test),1566,17465,imported,BAM-DETR (audio) / mAP Avg IoU=0.5:0.95
+40,24074,2312.00083,TACoS Temporal Localization (Test),1569,17467,imported,BAM-DETR / mIoU
+23,28357,2403.02076,CharadesSTA,57,17451,imported,VTG-GPT (zero-shot) / mIoU
+23,28357,2403.02076,QVHighlights Moment Retrieval (Test),1566,17450,imported,VTG-GPT (zero-shot) / mAP Avg IoU=0.5:0.95
+36,28911,2403.10228,CharadesSTA,57,17461,imported,HawkEye 7B (fine-tuned) / mIoU
+26,29742,2404.00801,CharadesSTA,57,17454,imported,R2-Tuning / mIoU
+26,29742,2404.00801,QVHighlights Moment Retrieval (Test),1566,17453,imported,R2-Tuning / mAP Avg IoU=0.5:0.95
+31,30046,2404.04933,CharadesSTA,57,17456,imported,UniMD + Alt. (I3D) / R@1 IoU=0.5
+22,31508,2405.13382,CharadesSTA,57,17449,imported,VTG-LLM (τ=0.1) / R@1 IoU=0.5
+62,36361,2408.16272,CharadesSTA,57,17492,imported,SRAM-Base / mIoU
+62,36361,2408.16272,QVHighlights Moment Retrieval (Test),1566,17490,imported,SRAM-Large / mAP Avg IoU=0.5:0.95
+62,36361,2408.16272,TACoS Temporal Localization (Test),1569,17491,imported,SRAM-Base / mIoU
+20,37862,2410.03290,CharadesSTA,57,17447,imported,Grounded-VideoLLM Phi-3.5 (task-tuned) / mIoU
+18,38058,2410.05643,CharadesSTA,57,17448,imported,TRACE / R@1 IoU=0.5
+19,40044,2411.10332,CharadesSTA,57,17446,imported,LongVA-7B-DPO + NumPro-FT / mIoU
+83,90390,2411.16932,CharadesSTA,57,17514,imported,TimeChat + Seq2Time / R@1 IoU=0.7
+37,40566,2411.17991,CharadesSTA,57,17464,imported,MMDuet (zero-shot) / R@1 IoU=0.5
+53,40844,2412.01558,CharadesSTA,57,17477,imported,VideoLights-B-pt / mIoU
+53,40844,2412.01558,QVHighlights Moment Retrieval (Test),1566,17476,imported,VideoLights-B-pt / mAP Avg IoU=0.5:0.95
+46,42761,2501.06761,ActivityNet Captions Temporal Localization (val_2),1580,17470,imported,VideoLLaMA2 + VidChain / mIoU
+84,88145,2501.07305,CharadesSTA,57,17516,imported,TD-DETR (InternVideo2) / R@1 IoU=0.5
+84,88145,2501.07305,QVHighlights Moment Retrieval (Test),1566,17515,imported,TD-DETR / mAP Avg IoU=0.5:0.95
+27,42837,2501.08282,CharadesSTA,57,17455,imported,LLaVA-ST / mIoU
+68,45930,2503.09027,CharadesSTA,57,17495,imported,MeCo (QWen2VL 7B) / R@1 IoU=0.5
+21,46261,2503.13377,CharadesSTA,57,17452,imported,Time-R1-7B (fine-tuned) / mIoU
+11,46272,2503.13444,CharadesSTA,57,17443,imported,VideoMind 7B (zero-shot) / mIoU
+11,46272,2503.13444,Ego4D NLQ v2 Validation,1567,17445,imported,VideoMind-Ego 2B (zero-shot) / R@1 IoU=0.3
+11,46272,2503.13444,TACoS Temporal Localization (Test),1569,17444,imported,VideoMind 7B / mIoU
+52,74005,2503.13983,CharadesSTA,57,17474,imported,SpaceVLLM 7B / R@1 IoU=0.5
+85,87725,2504.02286,CharadesSTA,57,17521,imported,MQVTG / mIoU
+85,87725,2504.02286,QVHighlights Moment Retrieval (Test),1566,17520,imported,MQVTG / mAP Avg IoU=0.5:0.95
+82,90430,2505.04270,Ego4D NLQ v2 Validation,1567,17513,imported,"OSGNet (NaQ, EgoVLP + InternVideo) / R@1 Mean(0.3 and 0.5)"
+81,90728,2505.16376,CharadesSTA,57,17511,imported,DeCaf-Grounder / R@1 IoU=0.5
+81,90728,2505.16376,TACoS Temporal Localization (Test),1569,17512,imported,DeCaf-Grounder / R@1 IoU=0.5
+81,90728,2505.16376,MAD v1 Corpus Test,1570,17510,imported,DeCafNet / R@1 IoU=0.5
+29,50412,2506.01908,CharadesSTA,57,17554,imported,Temporal-RLT (4096 video tokens) / mIoU
+29,50412,2506.01908,ActivityNet Captions Temporal Localization (val_2),1580,17555,imported,Temporal-RLT (4096 video tokens) / mIoU
+87,104429,2506.18883,CharadesSTA,57,17525,imported,UniTime-Full / R@1 IoU=0.7
+87,104429,2506.18883,ActivityNet Captions Temporal Localization (val_2),1580,17526,imported,UniTime-SP / R1@0.7
+67,87599,2507.07744,CharadesSTA,57,17494,imported,SDST (InternVideo2) / mIoU
+67,87599,2507.07744,QVHighlights Moment Retrieval (Test),1566,17493,imported,SDST (InternVideo2) / mAP Avg IoU=0.5:0.95
+4,52085,2507.20939,CharadesSTA,57,17436,imported,ARC-Hunyuan-Video-7B / mIoU
+78,104428,2508.07388,CharadesSTA,57,17508,imported,Invert4TVG 7B / R@1 IoU=0.7
+78,104428,2508.07388,ActivityNet Captions Temporal Localization (val_2),1580,17509,imported,Invert4TVG 7B (zero-shot) / R1@0.7
+3,52893,2509.18056,CharadesSTA,57,17408,imported,TempSamp-R1 (CoT) / mIoU
+47,66642,2510.09274,CharadesSTA,57,17472,imported,MomentSeg-3B (θ=0.3) / mIoU
+47,66642,2510.09274,ActivityNet Captions Temporal Localization (val_2),1580,17473,imported,MomentSeg-3B ([FIND] matching) / mIoU
+94,104430,2510.23043,TACoS Temporal Localization (Test),1569,17528,imported,HieraMamba / R@1 IoU=0.5
+94,104430,2510.23043,MAD v1 Corpus Test,1570,17527,imported,HieraMamba / R@1 IoU=0.5
+63,65800,2510.23397,CharadesSTA,57,17504,imported,VideoTG-R1 / mIoU
+63,65800,2510.23397,ActivityNet Captions Temporal Localization (val_2),1580,17505,imported,VideoTG-R1 / mIoU
+2,54813,2512.14698,Charades-TimeLens,1571,17391,imported,TimeLens-8B / mIoU
+2,54813,2512.14698,QVHighlights-TimeLens Validation,1572,17393,imported,TimeLens-8B / mIoU
+2,54813,2512.14698,ActivityNet-TimeLens,1574,17392,imported,TimeLens-8B / mIoU
+100,62509,2601.09350,CharadesSTA,57,17530,imported,SMORE / mIoU
+100,62509,2601.09350,QVHighlights Moment Retrieval (Test),1566,17529,imported,SMORE / mAP Avg IoU=0.5:0.95
+75,104427,2602.02994,Charades-TimeLens,1571,17501,imported,Video-OPD 8B (Round 3) / mIoU
+75,104427,2602.02994,QVHighlights-TimeLens Validation,1572,17502,imported,Video-OPD 8B (Round 3) / mIoU
+75,104427,2602.02994,ActivityNet-TimeLens,1574,17503,imported,Video-OPD 8B (Round 3) / mIoU
+76,99339,2602.07801,CharadesSTA,57,17506,imported,VideoTemp-o3-7B-RL / mIoU
+90,84783,2603.06732,CharadesSTA,57,17534,imported,HERO / R@1 IoU=0.5
+89,84787,2603.06973,CharadesSTA,57,17523,imported,Qwen2-VL-7B + T2SGrid-FT / mIoU
+89,84787,2603.06973,ActivityNet Captions Temporal Localization (val_2),1580,17524,imported,Qwen2-VL-7B + T2SGrid-FT / mIoU
+88,85098,2603.24934,CharadesSTA,57,17518,imported,CVA / mIoU
+88,85098,2603.24934,QVHighlights Moment Retrieval (Test),1566,17517,imported,CVA / mAP Avg IoU=0.5:0.95
+88,85098,2603.24934,TACoS Temporal Localization (Test),1569,17519,imported,CVA / mIoU
+97,58864,2603.25733,CharadesSTA,57,17535,imported,SlotVTG 7B / mIoU
+60,85244,2604.02093,CharadesSTA,57,17487,imported,GroundVTS-Q / mIoU
+60,85244,2604.02093,ActivityNet Captions Temporal Localization (val_2),1580,17488,imported,GroundVTS-Q / mIoU
+61,85461,2604.25276,CharadesSTA,57,17489,imported,OmniVTG-7B (zero-shot) / R@1 IoU=0.5
+73,101669,2605.21973,CharadesSTA,57,17496,imported,"F2G (Qwen3-VL-8B, zero-shot) / mIoU"
+73,101669,2605.21973,Charades-TimeLens,1571,17498,imported,"F2G (Qwen3-VL-8B, TimeLens-100K) / mIoU"
+73,101669,2605.21973,QVHighlights-TimeLens Validation,1572,17500,imported,"F2G (Qwen3-VL-8B, TimeLens-100K) / mIoU"
+73,101669,2605.21973,ActivityNet-TimeLens,1574,17499,imported,"F2G (Qwen3-VL-8B, TimeLens-100K) / mIoU"
+73,101669,2605.21973,ActivityNet Captions Temporal Localization (val_2),1580,17497,imported,F2G (Qwen3-VL-8B) / mIoU
+77,99257,2606.09248,CharadesSTA,57,17507,imported,TaRO 8B / R@1 IoU=0.5
+1,104404,2607.17423,Ego4D NLQ v2 Validation,1567,17415,imported,TimeLens2-8B / R@1 Mean(0.3 and 0.5)
+1,104404,2607.17423,Charades-TimeLens,1571,17409,imported,TimeLens2-8B / mIoU
+1,104404,2607.17423,QVHighlights-TimeLens Validation,1572,17411,imported,TimeLens2-8B / mIoU
+1,104404,2607.17423,MomentSeeker Text-Only (TimeLens2 Protocol),1573,17414,imported,TimeLens2-8B / mIoU
+1,104404,2607.17423,ActivityNet-TimeLens,1574,17410,imported,TimeLens2-4B / mIoU
+1,104404,2607.17423,VUE-TR Vision-Only TimeLens2 Protocol,1575,17412,imported,TimeLens2-8B / mIoU
+1,104404,2607.17423,VUE-TR-V2 Vision-Only (TimeLens2 Protocol),1576,17413,imported,TimeLens2-4B / mIoU

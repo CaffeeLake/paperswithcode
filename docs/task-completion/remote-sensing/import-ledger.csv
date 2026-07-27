@@ -1,0 +1,76 @@
+paper_rank,paper_id,arxiv_id,worker_status,dataset_id,dataset_slug,task_id,metric,model_name,evaluation_id,action,source_surface,source_location,is_open,hf_model_url,num_parameters,notes
+3,52358,2508.10104,imported,876,geo-bench,318,Accuracy,DINOv3 Web ViT-7B + Linear Classifier,16928,added,paper,Table 18a,true,https://huggingface.co/facebook/dinov3-vit7b16-pretrain-lvd1689m,6716000000,Score 81.6; suite-defined protocol
+3,52358,2508.10104,imported,876,geo-bench,318,mIoU,DINOv3 Web ViT-7B + DPT,16929,added,paper,Table 18b,true,https://huggingface.co/facebook/dinov3-vit7b16-pretrain-lvd1689m,6716000000,Score 75.9; suite-defined protocol
+3,52358,2508.10104,imported,272,loveda,318,mIoU,DINOv3 Web ViT-7B + UPerNet,16930,added,paper,Table 19,true,https://huggingface.co/facebook/dinov3-vit7b16-pretrain-lvd1689m,6716000000,Official-test score 56.2
+3,52358,2508.10104,imported,1486,isaid-semantic-segmentation-validation,318,mIoU,DINOv3 Web ViT-7B + UPerNet,16931,added,paper,Table 19,true,https://huggingface.co/facebook/dinov3-vit7b16-pretrain-lvd1689m,6716000000,Official-validation score 71.4
+3,52358,2508.10104,imported,264,dior,318,mAP,DINOv3 Web ViT-7B + Faster R-CNN,16932,added,paper,Table 19,true,https://huggingface.co/facebook/dinov3-vit7b16-pretrain-lvd1689m,6716000000,Official horizontal-detection score 80.5
+35,29934,2404.03425,imported,1544,whu-cd-geographic-full-resolution,318,F1,MambaBCD-Base,16933,moved,paper,Table V,true,,84700000,Score 94.19; geographic train/test areas; full-resolution test inference
+35,29934,2404.03425,imported,1508,sysu-cd,318,F1,MambaBCD-Base,16934,added,paper,Table III,true,,84700000,Score 83.11; official code/checkpoints
+7,64100,2512.05025,imported,877,pangea-bench,318,mIoU,RAMEN ViT-Base + UPerNet,16935,added,paper,Table 1,true,https://huggingface.co/nicolashoudre/RAMEN,98500000,Score 60.03; eight-task PANGAEA average test mIoU
+33,13806,2303.09030,imported,1475,dota-v1-0,318,mAP,LSKNet-S* + Oriented R-CNN (multi-scale),16936,added,paper,Table 9,true,,31000000,Score 81.85; ImageNet-1K pretraining
+33,13806,2303.09030,imported,1476,fair1m-v1-0,318,mAP,LSKNet-S + Oriented R-CNN (multi-scale),16937,added,paper,Table 10,true,,31000000,Score 47.87; ImageNet-1K pretraining
+33,13806,2303.09030,imported,1477,hrsc2016,318,mAP-07,LSKNet-S + Oriented R-CNN (single-scale),16938,added,paper,Table 8,true,,31000000,Score 90.65; VOC2007 protocol
+33,13806,2303.09030,imported,1477,hrsc2016,318,mAP-12,LSKNet-S + Oriented R-CNN (single-scale),16939,added,paper,Table 8,true,,31000000,Score 98.46; VOC2012 protocol
+16,52872,2509.06482,imported,1482,cdd-dataset-season-varying,318,F1,FSG-Net,16940,added,paper,Table I,true,,13760000,Score 94.16; official code/configs
+16,52872,2509.06482,imported,1480,levir-cd,318,F1,FSG-Net,16941,added,paper,Table I,true,,13760000,Score 91.27; official split represented as non-overlapping patches
+41,9589,2206.11892,imported,1480,levir-cd,318,F1,DDPM-CD,16952,added,paper,Table I,true,,437360000,Score 90.91; default three-timestep config; additional pretraining
+41,9589,2206.11892,imported,1545,whu-cd-ddpm-prepared-256,318,F1,DDPM-CD,16953,moved,paper,Table I,true,,437360000,Score 92.65; exact released prepared train/validation/test lists; additional pretraining
+41,9589,2206.11892,imported,1510,dsifn-cd,318,F1,DDPM-CD,16954,added,paper,Table I,true,,437360000,Score 96.65; city-held-out test; additional pretraining
+41,9589,2206.11892,imported,1482,cdd-dataset-season-varying,318,F1,DDPM-CD,16955,added,paper,Table I,true,,437360000,Score 95.62; official test; additional pretraining
+38,9997,2208.03987,imported,1475,dota-v1-0,318,mAP,ViTAE-B + RVSA + Oriented R-CNN (multi-scale),16957,added,paper,Table VI,true,,,Score 81.24; MillionAID pretraining
+38,9997,2208.03987,imported,1478,dior-r,318,mAP,ViTAE-B + RVSA Diamond + Oriented R-CNN,16958,added,paper,Table VII,true,,,Score 71.05; MillionAID pretraining
+38,9997,2208.03987,imported,1486,isaid-semantic-segmentation-validation,318,mIoU,ViTAE-B + RVSA Diamond + UPerNet,16959,added,paper,Table XI,true,,,Score 64.49; MillionAID pretraining
+38,9997,2208.03987,imported,272,loveda,318,mIoU,ViTAE-B + RVSA Diamond + UPerNet,16960,added,paper,Table XI,true,,,Score 52.44; MillionAID pretraining
+36,17595,2306.11029,imported,1500,rsicd-image-to-text-retrieval,318,R@1,RemoteCLIP ViT-L/14,16961,added,paper,Table II,true,https://huggingface.co/chendelong/RemoteCLIP,428000000,Score 18.39; image-to-text
+36,17595,2306.11029,imported,1501,rsicd-text-to-image-retrieval,318,R@1,RemoteCLIP ViT-L/14,16962,added,paper,Table II,true,https://huggingface.co/chendelong/RemoteCLIP,428000000,Score 14.73; text-to-image
+36,17595,2306.11029,imported,1505,rsitmd-image-to-text-retrieval,318,R@1,RemoteCLIP ViT-L/14,16963,added,paper,Table II,true,https://huggingface.co/chendelong/RemoteCLIP,428000000,Score 28.76; image-to-text
+36,17595,2306.11029,imported,1506,rsitmd-text-to-image-retrieval,318,R@1,RemoteCLIP ViT-L/14,16964,added,paper,Table II,true,https://huggingface.co/chendelong/RemoteCLIP,428000000,Score 23.76; text-to-image
+27,5576,2104.12137,imported,1484,isprs-potsdam,318,mIoU,DC-Swin,16990,added,paper,Table II,true,,,Score 87.56; organizer no-boundary test; ImageNet pretraining
+27,5576,2104.12137,imported,1493,isprs-vaihingen,318,mIoU,DC-Swin,16991,added,paper,Table I,true,,,Score 83.22; organizer no-boundary test; ImageNet pretraining
+43,17613,2306.11300,imported,1539,eurosat-zero-shot-complete,318,Accuracy,GeoRSCLIP ViT-H/14 (zero-shot),16993,moved,paper,Table I,true,https://huggingface.co/Zilun/GeoRSCLIP,,Score 67.47; zero-shot complete-dataset protocol
+43,17613,2306.11300,imported,1500,rsicd-image-to-text-retrieval,318,R@1,GeoRSCLIP-FT ViT-B/32 (RSICD),16994,added,paper,Table II,true,https://huggingface.co/Zilun/GeoRSCLIP,,Score 22.14; image-to-text
+43,17613,2306.11300,imported,1501,rsicd-text-to-image-retrieval,318,R@1,GeoRSCLIP-FT ViT-B/32 (RET-2),16995,added,paper,Table II,true,https://huggingface.co/Zilun/GeoRSCLIP,,Score 15.59; text-to-image
+43,17613,2306.11300,imported,1505,rsitmd-image-to-text-retrieval,318,R@1,GeoRSCLIP-FT ViT-B/32 (RET-2),16996,added,paper,Table II,true,https://huggingface.co/Zilun/GeoRSCLIP,,Score 32.30; image-to-text
+43,17613,2306.11300,imported,1506,rsitmd-text-to-image-retrieval,318,R@1,GeoRSCLIP-FT ViT-B/32 (RET-2),16997,added,paper,Table II,true,https://huggingface.co/Zilun/GeoRSCLIP,,Score 25.04; text-to-image
+69,46304,2503.14012,imported,1475,dota-v1-0,318,mAP,LEGNet-S + Oriented R-CNN (single-scale),17002,added,paper,Table 1,true,,29800000,Score 80.03; exact checkpoint/config
+69,46304,2503.14012,imported,1476,fair1m-v1-0,318,mAP,LEGNet-S + Oriented R-CNN (multi-scale),17003,added,paper,Table 5,true,,,Score 48.35; released backbone and exact config
+69,46304,2503.14012,imported,1478,dior-r,318,mAP,LEGNet-S + Oriented R-CNN (single-scale),17004,added,paper,Table 6,false,,29900000,Score 68.40; no exact released DIOR-R checkpoint/config
+71,29823,2404.01705,defer-not-comparable,,,,,,,skipped,paper,Tables II-IV,,,,LoveDA validation and custom public-tile ISPRS splits do not match configured contracts
+44,29632,2403.19654,defer-missing-metric,,,,,,,skipped,paper,Table II,true,https://huggingface.co/KyanChen/RSMamba,33100000,Reports Precision/Recall/F1 on fixed incompatible splits; configured leaderboards require repeated-run Accuracy
+53,33506,2406.15694,imported,1480,levir-cd,318,F1,ChangeStar2 Swin-L (bitemporal supervised),17044,added,paper,Table 11,true,,,Score 91.1; official train/test protocol
+53,33506,2406.15694,imported,1482,cdd,318,F1,ChangeStar2 (d512) Swin-T (bitemporal supervised),17045,added,paper,Table 3,true,,62100000,Score 98.0; standard test split
+53,33506,2406.15694,imported,1483,s2looking,318,F1,ChangeStar2 (d512) Swin-T (bitemporal supervised),17046,added,paper,Table 4,true,,62100000,Score 68.8; official test split
+59,44147,2502.09356,defer-not-comparable,,,,,,,skipped,paper,Tables and official release,true,https://huggingface.co/nasaharvest/galileo,,GeoBench component protocols and modified BigEarthNet/EuroSAT splits do not match configured aggregates/contracts
+88,44554,2502.13407,imported,1512,jl1-cd,318,F1,"MTKD (TTP, 3 teachers)",17064,added,paper,Table III,true,https://huggingface.co/circleLZY/MTKD/tree/main/TTP/distill,361472000,Score 82.56; full official 1000-pair test; mean change/no-change F1
+52,33701,2406.17998,imported,1480,levir-cd,318,F1,ChangeStar (1x256) ViT-B + Changen2-S1-15k,17078,added,paper,Table III,true,,99400000,Score 92.5; standard test; synthetic pretraining data
+52,33701,2406.17998,imported,1483,s2looking,318,F1,ChangeStar (1x256) ViT-B + Changen2-S0-1.2M,17079,added,paper,Table VI,true,,99400000,Score 69.1; standard test; synthetic pretraining data
+56,33484,2406.15320,imported,1480,levir-cd,318,F1,CDMaskFormer,17080,added,paper,Table 1,true,,24490000,Score 90.66; exact official/default test protocol
+56,33484,2406.15320,imported,1543,whu-cd-bit-6096-762-762,318,F1,CDMaskFormer,17081,moved,paper,Table 1,true,,24490000,Score 91.56; BIT-style 6096/762/762 patch split
+56,33484,2406.15320,imported,1508,sysu-cd,318,F1,CDMaskFormer,17082,added,paper,Table 2,true,,33520000,Score 82.84; exact official/default test protocol
+56,33484,2406.15320,imported,1510,dsifn-cd,318,F1,CDMaskFormer,17083,added,paper,Table 2,true,,33520000,Score 74.75; exact official/default test protocol
+45,11324,2211.07044,imported,1538,eurosat-multispectral-13band-80-20,318,Accuracy,SSL4EO-S12 MoCo ResNet50,17094,moved,paper,Table IV,true,,,Score 99.1; 13-band stratified 80/20 seed42; additional unlabeled pretraining
+22,2820,1911.06721,imported,1537,eurosat-rgb-fixed-60-20-20,318,Accuracy,InDomain ResNet50 V2 (RESISC-45),17095,moved,paper,Tables 3/4,true,,,Score 99.20; standardized RGB 60/20/20 split; ImageNet and RESISC-45 upstream data
+51,40927,2412.02732,defer-not-comparable,,,,,,,skipped,paper,Figures 5/6,true,https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL,600000000,No exact printed GEO-Bench aggregate; mini-GeoBench splits mismatch standalone contracts
+74,40363,2411.15497,imported,264,dior,318,mAP,AeroGen augmentation (50k synthetic images),17124,added,paper,Table 3,true,,,Score 77.10; mAP50 mapped to canonical DIOR mAP; additional synthetic data
+74,40363,2411.15497,defer-not-comparable,1478,dior-r,318,mAP,AeroGen augmentation (50k synthetic images),17125,deleted,paper,Table 3,true,,,Verifier found YOLO-style mAP50 not canonical VOC07 11-point mAP and downstream detector ambiguity
+93,48557,2505.05741,defer-not-comparable,,,,,,,skipped,paper,arXiv v2 Table 1 and section 4.2,true,https://huggingface.co/RicePasteM/Dome-DETR,36000000,AI-TOD-v2 maxDets1500 does not match configured official maxDets3000 contract
+18,62956,2601.02747,defer-not-comparable,,,,,,,skipped,paper,Table I and official evaluator/config,true,,,AI-TOD-v2 maxDets1500 does not match configured official maxDets3000 contract; provisional eval17145 deleted
+99,25226,2312.16202,imported,1480,levir-cd,318,F1,TTP,17150,added,paper,Table 1,true,,,Score 92.1; official 445/64/128 split; SA-1B pretrained SAM ViT-L
+85,28585,2403.05419,imported,1537,eurosat-rgb-fixed-60-20-20,318,Accuracy,SatMAE++ ViT-Large,17162,moved,paper,Table 5,true,,,Score 99.04; deterministic RGB Neumann 60/20/20 split; fMoW-RGB pretraining
+30,23806,2311.15826,defer-not-comparable,,,,,,,skipped,paper,Tables and official evaluation protocol,true,https://huggingface.co/MBZUAI/geochat-7B,,RSVQA excludes question types; AID/UCM zero-shot subsets mismatch supervised contracts; GeoChat grounding is not VRSBench
+34,17848,2306.16269,defer-missing-benchmark,,,,,,,skipped,paper,Tables I-III,true,,,WHU Building; NWPU VHR-10; SSDD instance-segmentation contracts are not configured; iSAID is absent
+86,46045,2503.10392,imported,1547,aid-50-percent-roma-fixed-tag-0,318,Accuracy,RoMA-B (linear probe),17167,moved,paper,Table 2,true,https://huggingface.co/initiacms/RoMA,85000000,Score 87.36; fixed 50/50 tag0 single run; OpticalRS-4M pretraining
+86,46045,2503.10392,imported,1548,uc-merced-50-percent-roma-fixed,318,Accuracy,RoMA-B (linear probe),17168,moved,paper,Table 2,true,https://huggingface.co/initiacms/RoMA,85000000,Score 59.45; fixed or unspecified 50/50 manifest; OpticalRS-4M pretraining
+86,46045,2503.10392,imported,1486,isaid-semantic-segmentation-validation,318,mIoU,RoMA-B + UperNet,17169,added,paper,Table 6,true,https://huggingface.co/initiacms/RoMA,85000000,Score 67.4; semantic validation; OpticalRS-4M pretraining
+80,42956,2501.10040,imported,1475,dota-v1-0,318,mAP,LWGANet-L2 + Oriented R-CNN,17183,added,paper,Table 4,true,,29200000,Score 79.02; ImageNet-1K pretraining
+80,42956,2501.10040,imported,1478,dior-r,318,mAP,LWGANet-L2 + Oriented R-CNN,17184,added,paper,Table 4,true,,29200000,Score 68.53; ImageNet-1K pretraining
+80,42956,2501.10040,imported,272,loveda,318,mIoU,LWGANet-L2 + UnetFormer,17185,added,paper,Table 5,true,,12580000,Score 53.6; ImageNet-1K pretraining
+80,42956,2501.10040,imported,1480,levir-cd,318,F1,LWGANet-L2 + CLAFA,17186,added,paper,Table 10,true,,16100000,Score 92.42; ImageNet-1K pretraining
+80,42956,2501.10040,imported,1546,whu-cd-lwganet-7432-patches,318,F1,LWGANet-L2 + CLAFA,17187,moved,paper,Table 10,true,,16100000,Score 95.24; paper-specific 7432-patch split; ImageNet-1K pretraining
+80,42956,2501.10040,imported,1482,cdd,318,F1,LWGANet-L2 + CLAFA,17188,added,paper,Table 10,true,,16100000,Score 93.77; ImageNet-1K pretraining
+80,42956,2501.10040,imported,1508,sysu-cd,318,F1,LWGANet-L0 + A2Net,17189,added,paper,Table 13,true,,2910000,Score 83.41; ImageNet-1K pretraining
+49,35925,2408.09110,imported,264,dior,318,mAP,LAE-DINO-FT (Swin-T),17203,added,paper,arXiv v3 Table 3,true,https://huggingface.co/jaychempan/LAE-DINO,,Score 92.2; AP50 mapped to canonical DIOR mAP; LAE-1M pretraining
+57,25032,2312.12856,imported,1500,rsicd-image-to-text-retrieval,318,R@1,SkyCLIP-30 ViT-L/14 (zero-shot),17204,added,paper,Appendix Table A3,true,,,Score 8.97; official test; SkyScript pretraining
+57,25032,2312.12856,imported,1501,rsicd-text-to-image-retrieval,318,R@1,SkyCLIP-30 ViT-L/14 (zero-shot),17205,added,paper,Appendix Table A3,true,,,Score 5.85; official test; SkyScript pretraining
+57,25032,2312.12856,imported,1505,rsitmd-image-to-text-retrieval,318,R@1,SkyCLIP-30 ViT-L/14 (zero-shot),17206,added,paper,Appendix Table A3,true,,,Score 11.73; official test; SkyScript pretraining
+57,25032,2312.12856,imported,1506,rsitmd-text-to-image-retrieval,318,R@1,SkyCLIP-30 ViT-L/14 (zero-shot),17207,added,paper,Appendix Table A3,true,,,Score 10.19; official test; SkyScript pretraining
