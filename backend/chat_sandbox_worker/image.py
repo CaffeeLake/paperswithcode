@@ -41,8 +41,9 @@ image = (
         WORKER,
         "/opt/pwc/backend/chat_sandbox_worker",
         copy=True,
-        ignore=lambda path: path.name
-        in {"image.py", "publish_image.py", "__pycache__"},
+        ignore=lambda path: (
+            path.name in {"image.py", "publish_image.py", "__pycache__"}
+        ),
     )
     .add_local_file(WORKER / "CLI_GUIDE.md", "/opt/pwc/CLI_GUIDE.md", copy=True)
     .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
@@ -53,6 +54,8 @@ image = (
         "pwc version",
         "pwc --help >/dev/null",
         "pwc paper --help >/dev/null",
+        "pwc benchmark --help >/dev/null",
+        "pwc benchmark list --help >/dev/null",
     )
     .env(
         {
