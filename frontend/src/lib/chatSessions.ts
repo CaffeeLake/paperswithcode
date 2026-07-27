@@ -1,5 +1,5 @@
 import { apiUrl } from "@/lib/apiUrl";
-import type { ChatBlock, ChatMessage } from "@/lib/chat";
+import type { ChatBlock, ChatCitation, ChatMessage } from "@/lib/chat";
 
 export interface ChatSession {
   id: string;
@@ -22,7 +22,7 @@ export interface ChatSessionDetail extends ChatSession {
     revision: number;
     status: string;
     display_blocks: ChatBlock[];
-    citations: Array<{ route_id: string; title: string; source_url: string | null }>;
+    citations: ChatCitation[];
     followups: string[];
     error_code: string | null;
   }>;

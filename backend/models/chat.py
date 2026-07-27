@@ -73,9 +73,12 @@ class CitationSnapshot(BaseModel):
     route_id: str = Field(max_length=200)
     title: str = Field(max_length=500)
     source_url: str | None = Field(default=None, max_length=2000)
+    thumbnail_url: str | None = Field(default=None, max_length=1000)
+    arxiv_id: str | None = Field(default=None, max_length=50)
     authors: list[AuthorName] = Field(default_factory=list, max_length=50)
     published: str | None = Field(default=None, max_length=32)
     conference: str | None = Field(default=None, max_length=200)
+    citation_count: int | None = None
 
 
 class ReasoningDisplayBlock(BaseModel):

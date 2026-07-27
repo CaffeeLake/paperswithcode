@@ -12,6 +12,7 @@ import { authorsLine, excerpt, venueLine } from "@/components/chat/paperDisplay"
 import type {
   AnswerBlock,
   ChatMessage as ChatMessageType,
+  ChatCitation,
   ChatPaperHit,
   ReasoningBlock,
   ToolBlock,
@@ -22,8 +23,8 @@ const Caret: React.FC = () => <span className="chat-caret" />;
 const RestrictedReasoning: React.FC<{
   text: string;
   papers: Record<string, ChatPaperHit>;
-  validCitationIds: Set<string>;
-}> = ({ text, papers, validCitationIds }) => {
+  citations: Record<string, ChatCitation>;
+}> = ({ text, papers, citations }) => {
   const parts: React.ReactNode[] = [];
   const pattern = /\[([^\]\n]+)\]\(paper:([^) \t\n]+)\)/g;
   let cursor = 0;
@@ -32,8 +33,17 @@ const RestrictedReasoning: React.FC<{
     parts.push(text.slice(cursor, index));
     const [, label, routeId] = match;
     parts.push(
-      validCitationIds.has(routeId) || papers[routeId]
-        ? <PaperCitation key={`${index}-${routeId}`} routeId={routeId} paper={papers[routeId]}>{label}</PaperCitation>
+      citations[routeId] || papers[routeId]
+        ? (
+            <PaperCitation
+              key={`${index}-${routeId}`}
+              routeId={routeId}
+              paper={papers[routeId]}
+              citation={citations[routeId]}
+            >
+              {label}
+            </PaperCitation>
+          )
         : <span key={`${index}-${routeId}`}>{label}</span>,
     );
     cursor = index + match[0].length;
@@ -45,9 +55,9 @@ const RestrictedReasoning: React.FC<{
 const ReasoningBlockView: React.FC<{
   block: ReasoningBlock;
   papers: Record<string, ChatPaperHit>;
-  validCitationIds: Set<string>;
+  citations: Record<string, ChatCitation>;
   onToggle: () => void;
-}> = ({ block, papers, validCitationIds, onToggle }) => {
+}> = ({ block, papers, citations, onToggle }) => {
   if (block.active) {
     return (
       <div className="chat-reason-live">
@@ -70,7 +80,7 @@ const ReasoningBlockView: React.FC<{
       </button>
       {block.open && (
         <div className="chat-reason-done-body">
-          <RestrictedReasoning text={block.text} papers={papers} validCitationIds={validCitationIds} />
+          <RestrictedReasoning text={block.text} papers={papers} citations={citations} />
         </div>
       )}
     </div>
@@ -179,10 +189,10 @@ const ToolBlockView: React.FC<{
 const AnswerBlockView: React.FC<{
   block: AnswerBlock;
   papers: Record<string, ChatPaperHit>;
-  validCitationIds: Set<string>;
-}> = ({ block, papers, validCitationIds }) => (
+  citations: Record<string, ChatCitation>;
+}> = ({ block, papers, citations }) => (
   <div className="chat-answer">
-    <ChatMarkdown text={block.text} streaming={!block.done} papers={papers} validCitationIds={validCitationIds} />
+    <ChatMarkdown text={block.text} streaming={!block.done} papers={papers} citations={citations} />
     {!block.done && Boolean(block.text.trim()) && <Caret />}
   </div>
 );
@@ -211,18 +221,26 @@ export const AssistantMessage: React.FC<{
           "citations" in b && b.citations !== undefined
             ? b.citations
             : msg.citations ?? [];
-        const validCitationIds = new Set(
-          citationSnapshot.map((citation) => citation.route_id),
+        const citations = Object.fromEntries(
+          citationSnapshot.map((citation) => [citation.route_id, citation]),
         );
         if (b.kind === "reasoning") {
-          return <ReasoningBlockView key={key} block={b} papers={papers} validCitationIds={validCitationIds} onToggle={() => onToggleBlock(msg.id, i)} />;
+          return (
+            <ReasoningBlockView
+              key={key}
+              block={b}
+              papers={papers}
+              citations={citations}
+              onToggle={() => onToggleBlock(msg.id, i)}
+            />
+          );
         }
         if (b.kind === "tool") {
           return (
             <ToolBlockView key={key} block={b} papers={papers} onToggle={() => onToggleBlock(msg.id, i)} />
           );
         }
-        return <AnswerBlockView key={key} block={b} papers={papers} validCitationIds={validCitationIds} />;
+        return <AnswerBlockView key={key} block={b} papers={papers} citations={citations} />;
       })}
       {msg.error && <div className="chat-error">The assistant hit an error: {msg.error}</div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (

@@ -62,6 +62,12 @@ export interface ChatCitation {
   route_id: string;
   title: string;
   source_url: string | null;
+  thumbnail_url?: string | null;
+  arxiv_id?: string | null;
+  authors?: string[];
+  published?: string | null;
+  conference?: string | null;
+  citation_count?: number | null;
 }
 
 export type ChatEvent =

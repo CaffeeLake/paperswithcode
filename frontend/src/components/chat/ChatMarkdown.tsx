@@ -21,7 +21,13 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import type { ChatPaperHit } from "@/lib/chat";
+import { useQuery } from "@tanstack/react-query";
+import { getPaper, type Paper } from "@/lib/api";
+import type {
+  ChatCitation,
+  ChatPaperHit,
+  ChatPaperMetadata,
+} from "@/lib/chat";
 import { authorsLine, venueLine } from "@/components/chat/paperDisplay";
 import { assetUrl } from "@/lib/apiUrl";
 
@@ -41,17 +47,20 @@ export const FauxPaperThumb: React.FC<{ seed?: number }> = ({ seed = 0 }) => (
   </div>
 );
 
-const PaperThumb: React.FC<{ paper: ChatPaperHit; seed: number }> = ({ paper, seed }) => {
+const PaperThumb: React.FC<{ thumbnailUrl: string | null; seed: number }> = ({
+  thumbnailUrl,
+  seed,
+}) => {
   const [errored, setErrored] = React.useState(false);
-  const thumbnailUrl = assetUrl(paper.metadata.thumbnail_url);
+  const resolvedUrl = assetUrl(thumbnailUrl);
 
-  React.useEffect(() => setErrored(false), [thumbnailUrl]);
+  React.useEffect(() => setErrored(false), [resolvedUrl]);
 
-  if (!thumbnailUrl || errored) return <FauxPaperThumb seed={seed} />;
+  if (!resolvedUrl || errored) return <FauxPaperThumb seed={seed} />;
   return (
     <div className="chat-thumb chat-thumb-real">
       <img
-        src={thumbnailUrl}
+        src={resolvedUrl}
         alt=""
         loading="lazy"
         decoding="async"
@@ -61,12 +70,58 @@ const PaperThumb: React.FC<{ paper: ChatPaperHit; seed: number }> = ({ paper, se
   );
 };
 
+function fetchedPaperMetadata(paper: Paper): ChatPaperMetadata {
+  return {
+    arxiv_id: paper.arxiv_id,
+    source: paper.source ?? (paper.arxiv_id ? "arxiv" : "external"),
+    source_url: paper.source_url ?? paper.url_abs,
+    thumbnail_url: paper.thumbnail_url ?? null,
+    authors: paper.authors.map((name) => ({ name })),
+    published: paper.published,
+    conference: paper.conference_name ?? paper.conference ?? null,
+    citation_count: paper.citation_count,
+    tasks: (paper.tasks ?? []).map((task) => ({
+      name: task.name,
+      slug: task.slug ?? "",
+    })),
+    methods: [],
+    repositories: [],
+    project_pages: [],
+  };
+}
+
+function citationMetadata(citation: ChatCitation): ChatPaperMetadata {
+  return {
+    arxiv_id: citation.arxiv_id ?? null,
+    source: citation.arxiv_id ? "arxiv" : "external",
+    source_url: citation.source_url,
+    thumbnail_url: citation.thumbnail_url ?? null,
+    authors: (citation.authors ?? []).map((name) => ({ name })),
+    published: citation.published ?? null,
+    conference: citation.conference ?? null,
+    citation_count: citation.citation_count ?? null,
+    tasks: [],
+    methods: [],
+    repositories: [],
+    project_pages: [],
+  };
+}
+
 export const PaperCitation: React.FC<{
   routeId: string;
   paper?: ChatPaperHit;
+  citation?: ChatCitation;
   className?: string;
   children: React.ReactNode;
-}> = ({ routeId, paper, className = "chat-paper-link", children }) => {
+}> = ({ routeId, paper, citation, className = "chat-paper-link", children }) => {
+  const [open, setOpen] = React.useState(false);
+  const { data: fetchedPaper } = useQuery({
+    queryKey: ["chat-paper-preview", routeId],
+    queryFn: () => getPaper(routeId, false),
+    enabled: open && !paper && !citation?.thumbnail_url,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
   const link = (
     <Link
       className={className}
@@ -77,18 +132,28 @@ export const PaperCitation: React.FC<{
       {children}
     </Link>
   );
-  if (!paper) return link;
+  if (!paper && !citation) return link;
 
-  const m = paper.metadata;
+  const m =
+    paper?.metadata ??
+    (fetchedPaper
+      ? fetchedPaperMetadata(fetchedPaper)
+      : citationMetadata(citation!));
+  const title = paper?.title ?? fetchedPaper?.title ?? citation!.title;
   const seed = routeId.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
   return (
-    <HoverCard openDelay={150} closeDelay={100}>
+    <HoverCard
+      open={open}
+      onOpenChange={setOpen}
+      openDelay={150}
+      closeDelay={100}
+    >
       <HoverCardTrigger asChild>{link}</HoverCardTrigger>
       <HoverCardContent className="chat-paper-pop" side="bottom" align="start">
         <div className="chat-paper-pop-inner">
-          <PaperThumb paper={paper} seed={seed} />
+          <PaperThumb thumbnailUrl={m.thumbnail_url} seed={seed} />
           <div className="chat-paper-pop-meta">
-            <div className="chat-paper-pop-title">{paper.title}</div>
+            <div className="chat-paper-pop-title">{title}</div>
             {authorsLine(m) && <div className="chat-paper-pop-auth">{authorsLine(m)}</div>}
             <div className="chat-paper-pop-venue">
               {venueLine(m)}
@@ -130,8 +195,8 @@ export const ChatMarkdown: React.FC<{
   text: string;
   streaming?: boolean;
   papers: Record<string, ChatPaperHit>;
-  validCitationIds?: Set<string>;
-}> = ({ text, streaming, papers, validCitationIds }) => {
+  citations?: Record<string, ChatCitation>;
+}> = ({ text, streaming, papers, citations }) => {
   const source = streaming ? withholdPartialCitation(text) : text;
 
   return (
@@ -143,11 +208,15 @@ export const ChatMarkdown: React.FC<{
         a: ({ href, children }) => {
           if (href?.startsWith("paper:")) {
             const routeId = href.slice("paper:".length);
-            if (!papers[routeId] && !validCitationIds?.has(routeId)) {
+            if (!papers[routeId] && !citations?.[routeId]) {
               return <span className="chat-invalid-citation">{children}</span>;
             }
             return (
-              <PaperCitation routeId={routeId} paper={papers[routeId]}>
+              <PaperCitation
+                routeId={routeId}
+                paper={papers[routeId]}
+                citation={citations?.[routeId]}
+              >
                 {children}
               </PaperCitation>
             );

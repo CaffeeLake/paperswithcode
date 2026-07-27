@@ -38,9 +38,12 @@ def resolve_citations(db: Session, text: str, maximum: int = 20) -> list[dict]:
                 "route_id": paper.arxiv_id or str(paper.id),
                 "title": paper.title,
                 "source_url": paper.source_url or paper.url_abs,
+                "thumbnail_url": paper.thumbnail_url,
+                "arxiv_id": paper.arxiv_id,
                 "authors": paper.authors[:50],
                 "published": paper.published.isoformat() if paper.published else None,
                 "conference": paper.conference_name or paper.conference,
+                "citation_count": paper.citation_count,
             }
         )
     return resolved
