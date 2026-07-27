@@ -25,7 +25,10 @@ from deploy.install_deploy_tools import (
     bundle_runtime_contract,
     deployment_wrapper,
 )
-from deploy.nginx_validate import validate as validate_nginx
+from deploy.nginx_validate import (
+    CURATION_CALLBACK_LOCATION,
+    validate as validate_nginx,
+)
 from deploy.release import (
     atomic_symlink,
     build_manifest,
@@ -697,6 +700,20 @@ def test_nginx_cross_environment_references_are_rejected():
         " location = /api/internal/chat-gateway/v1/messages { }",
     )
     assert "production references staging backend" in failures
+
+
+def test_staging_nginx_requires_bearer_authenticated_curation_callback_route():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+
+    failures = validate_nginx(
+        production,
+        staging.replace(CURATION_CALLBACK_LOCATION, "location /missing-callback"),
+    )
+    assert "staging job-token callback route is missing" in failures
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):

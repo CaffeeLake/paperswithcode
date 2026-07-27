@@ -7,6 +7,13 @@ import argparse
 from pathlib import Path
 
 
+CURATION_CALLBACK_LOCATION = (
+    'location ~ "^/api/v1/admin/codex-curation/jobs/'
+    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
+    '(context|taxonomy|leaderboards|apply|complete)$"'
+)
+
+
 def validate(production: str, staging: str) -> list[str]:
     failures: list[str] = []
     if "pwc_staging_backend" in production or "127.0.0.1:8001" in production:
@@ -21,6 +28,16 @@ def validate(production: str, staging: str) -> list[str]:
         failures.append("staging exposes Vite/HMR")
     if "location = /_admin_check" not in staging or "internal;" not in staging:
         failures.append("staging admin-check is not internal")
+    if CURATION_CALLBACK_LOCATION not in staging:
+        failures.append("staging job-token callback route is missing")
+    else:
+        callback_block = staging.split(CURATION_CALLBACK_LOCATION, 1)[1].split("}", 1)[
+            0
+        ]
+        if "auth_request" in callback_block:
+            failures.append("staging job-token callback route uses browser auth")
+        if "proxy_pass http://pwc_staging_backend;" not in callback_block:
+            failures.append("staging job-token callback route misses staging backend")
     gateway_host = "server_name chat-gateway-staging.paperswithcode.co;"
     if gateway_host not in staging:
         failures.append("staging chat gateway hostname is missing")
