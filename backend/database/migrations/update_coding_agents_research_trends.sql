@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Agents move from snippets to long-horizon repository work.** The frontier is shifting from one-shot function synthesis to agents that inspect codebases, edit multiple files, run tools, and recover from failures. [SWE-bench](/paper/2310.06770) began this transition; [SWE-Bench Pro](/benchmark/swe-bench-pro?task=coding-agents) and [Terminal-Bench](/benchmark/terminal-bench?task=coding-agents) now push toward multi-hour, executable workflows in realistic repositories and command-line environments.',
+    '**Context and harness design become first-class systems research.** Strong models still lose time and tokens locating relevant code or carrying stale observations, so recent systems separate planning, exploration, and execution; parallelize tool use; compact histories; and preserve project knowledge. [OPENDEV](/paper/2603.05344) combines routing, dual agents, compaction, and memory; [FastContext](/paper/2606.14066) specializes repository exploration; and [Agent READMEs](/paper/2511.12884) formalize persistent instructions.',
+    '**Executable experience drives post-training.** Training is moving toward repository-grounded tasks, test feedback, agent trajectories, learned verifiers, and reinforcement learning over long interactions. [SWE-smith](/paper/2504.21798) synthesizes 50,000 executable issues, [SWE-Gym](/paper/2412.21139) trains agents and trajectory verifiers, and [GLM-5](/paper/2602.15763) uses asynchronous agent reinforcement learning—showing a shared shift from imitating code toward learning to act, verify, and improve inside software environments.'
+),
+updated_at = NOW()
+WHERE slug = 'coding-agents';

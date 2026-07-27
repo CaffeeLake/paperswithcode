@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Transformers make temporal structure native.** The field has moved beyond separate RGB/flow streams and monolithic 3D convolutions toward attention that explicitly balances space, time, and scale. [TimeSformer](/paper/2102.05095) factorizes spatial and temporal attention, [Video Swin](/paper/2106.13230) restores locality with shifted windows, and [MViTv2](/paper/2112.01526) pools across scales—a progression reflected across [Kinetics-400](/benchmark/kinetics-400?task=video-classification) and [Something-Something V2](/benchmark/something-something-v2?task=video-classification).',
+    '**Pretraining scale now sets the accuracy ceiling.** Classification labels alone are giving way to high-mask reconstruction and heterogeneous video-language corpora. [VideoMAE V2](/paper/2303.16727) makes billion-scale masked pretraining tractable with dual masking, [InternVideo2](/paper/2403.15377) combines reconstruction, contrastive alignment, and next-token prediction, and [Action100M](/paper/2601.10592) pushes supervision toward open-vocabulary action segments at web scale.',
+    '**Selective computation makes recognition deployable.** Instead of processing every frame and token uniformly, [MoViNet](/paper/2103.11511) keeps online inference bounded with stream buffers, [TokenLearner](/paper/2106.11297) compresses dense features into a few adaptive tokens, and [VidPrism](/paper/2605.28229) routes content-aware, multi-rate streams through specialized temporal experts. The target is no longer accuracy alone, but a better balance of latency, memory, temporal coverage, and test-view cost.'
+),
+updated_at = NOW()
+WHERE slug = 'video-classification';
