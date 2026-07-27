@@ -1,7 +1,10 @@
 """Focused tests for full-corpus normalization with targeted paper writes."""
 
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -64,3 +67,40 @@ def test_full_and_targeted_compute_agree_for_same_paper(monkeypatch):
     )
 
     assert targeted == [next(update for update in full if update["id"] == 2)]
+
+
+def test_decaying_pins_share_state_for_arxiv_and_internal_paper_ids(
+    monkeypatch, tmp_path
+):
+    cron = _load_module()
+    state_path = tmp_path / "trending_pin_state.json"
+    monkeypatch.setattr(cron, "PIN_STATE_PATH", state_path)
+    monkeypatch.setenv("PWC_TRENDING_PIN_ARXIV_IDS", "2606.16140:48")
+    monkeypatch.setenv("PWC_TRENDING_PIN_PAPER_IDS", "104054:96")
+
+    rows = [
+        SimpleNamespace(id=1, arxiv_id="2606.16140", trending_score=50.0),
+        SimpleNamespace(id=104054, arxiv_id=None, trending_score=50.0),
+    ]
+    selection = Mock()
+    selection.fetchall.return_value = rows
+    session = Mock()
+    session.execute.side_effect = [selection, Mock(), Mock()]
+
+    assert cron.apply_decaying_trending_pins(session) == 2
+
+    selection_params = session.execute.call_args_list[0].args[1]
+    assert selection_params == {
+        "arxiv_ids": ["2606.16140"],
+        "paper_ids": [104054],
+    }
+    update_params = [call.args[1] for call in session.execute.call_args_list[1:]]
+    assert update_params == [
+        {"id": 1, "score": 100.0},
+        {"id": 104054, "score": 100.0},
+    ]
+    session.commit.assert_called_once_with()
+
+    state = json.loads(state_path.read_text())
+    assert state["2606.16140"]["decay_hours"] == 48.0
+    assert state["paper:104054"]["decay_hours"] == 96.0

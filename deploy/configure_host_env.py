@@ -254,6 +254,13 @@ def main() -> int:
         or key == "PWC_GITHUB_RATE_LIMIT_RESERVE"
         or key in {"PWC_GITHUB_TOKEN", "PWC_GITHUB_TOKEN_HOT"}
     }
+    cron.update(
+        {
+            key: line
+            for key, line in current_cron.items()
+            if key.startswith("PWC_TRENDING_PIN_")
+        }
+    )
     cron = assign(
         cron,
         {

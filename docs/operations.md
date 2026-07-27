@@ -124,6 +124,19 @@ calls without GitHub requests or database writes. Disable the schedule to roll
 back; snapshots are retained. If it stays disabled, restore hot papers to the
 hourly fresh ownership before releasing that rollback.
 
+The hourly paper reconciliation also supports temporary, linearly decaying
+emergency floors. Configure comma-separated `identifier:decay_hours` entries in
+the production CRON overlay (hours default to 72):
+
+```dotenv
+PWC_TRENDING_PIN_ARXIV_IDS=2606.16140:72
+PWC_TRENDING_PIN_PAPER_IDS=104054:72
+```
+
+The paper-ID form supports external papers without an arXiv ID. Both forms
+share the persisted pin state and decay behavior; use them only as a bridge
+while the underlying ranking signal is corrected.
+
 ## PDF Validation for URL Extraction
 
 - Helper: `_is_valid_pdf` in `backend/utils/pdf_utils.py`

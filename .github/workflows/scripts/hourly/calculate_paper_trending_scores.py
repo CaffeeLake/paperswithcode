@@ -36,6 +36,7 @@ from backend.utils.trending import (
     apply_decaying_pin,
     compute_paper_score,
     decaying_pin_floor,
+    parse_trending_paper_id_pin_specs,
     parse_trending_pin_specs,
     sorted_positive,
 )
@@ -275,41 +276,61 @@ def apply_decaying_trending_pins(session) -> int:
     """Raise pinned papers toward 100, linearly decaying to their true score.
 
     ``PWC_TRENDING_PIN_ARXIV_IDS`` entries look like ``2606.16140:72`` (arXiv id
-    and decay hours; hours default to 72). Pin start times are persisted in
-    ``trending_pin_state.json`` so the fade continues across hourly runs.
+    and decay hours; hours default to 72). ``PWC_TRENDING_PIN_PAPER_IDS`` uses
+    the same syntax for internal paper IDs, including external papers. Pin start
+    times are persisted in ``trending_pin_state.json`` so the fade continues
+    across hourly runs.
     """
-    specs = parse_trending_pin_specs(os.getenv("PWC_TRENDING_PIN_ARXIV_IDS", ""))
-    if not specs:
+    arxiv_specs = parse_trending_pin_specs(os.getenv("PWC_TRENDING_PIN_ARXIV_IDS", ""))
+    paper_specs = parse_trending_paper_id_pin_specs(
+        os.getenv("PWC_TRENDING_PIN_PAPER_IDS", "")
+    )
+    state_specs = {
+        **arxiv_specs,
+        **{
+            f"paper:{paper_id}": decay_hours
+            for paper_id, decay_hours in paper_specs.items()
+        },
+    }
+    if not state_specs:
         return 0
 
     state = _load_pin_state()
     now = datetime.now(timezone.utc)
 
-    for arxiv_id, decay_hours in specs.items():
-        if arxiv_id not in state:
-            state[arxiv_id] = {
+    for pin_key, decay_hours in state_specs.items():
+        if pin_key not in state:
+            state[pin_key] = {
                 "started_at": now.isoformat(),
                 "decay_hours": decay_hours,
             }
         else:
-            state[arxiv_id]["decay_hours"] = decay_hours
+            state[pin_key]["decay_hours"] = decay_hours
 
-    state = {arxiv_id: state[arxiv_id] for arxiv_id in specs if arxiv_id in state}
+    state = {pin_key: state[pin_key] for pin_key in state_specs if pin_key in state}
     _save_pin_state(state)
 
     rows = session.execute(
         text("""
             SELECT id, arxiv_id, trending_score
             FROM papers
-            WHERE arxiv_id = ANY(:arxiv_ids)
+            WHERE (
+                    arxiv_id = ANY(:arxiv_ids)
+                    OR id = ANY(:paper_ids)
+                  )
               AND is_latest_version = TRUE
         """),
-        {"arxiv_ids": list(specs.keys())},
+        {
+            "arxiv_ids": list(arxiv_specs.keys()),
+            "paper_ids": list(paper_specs.keys()),
+        },
     ).fetchall()
 
     applied = 0
     for row in rows:
-        pin = state[row.arxiv_id]
+        paper_pin_key = f"paper:{row.id}"
+        pin_key = paper_pin_key if row.id in paper_specs else row.arxiv_id
+        pin = state[pin_key]
         started_at = datetime.fromisoformat(pin["started_at"])
         if started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=timezone.utc)
@@ -320,7 +341,7 @@ def apply_decaying_trending_pins(session) -> int:
         final = apply_decaying_pin(computed, hours_elapsed, decay_hours)
 
         if floor <= 0 and computed is not None:
-            log(f"Decaying pin finished for {row.arxiv_id} (computed={computed:.2f})")
+            log(f"Decaying pin finished for {pin_key} (computed={computed:.2f})")
             continue
 
         if computed is not None and abs(final - computed) < 1e-4:
@@ -339,7 +360,7 @@ def apply_decaying_trending_pins(session) -> int:
         applied += 1
         computed_label = f"{computed:.2f}" if computed is not None else "none"
         log(
-            f"Decaying pin {row.arxiv_id}: computed={computed_label}, "
+            f"Decaying pin {pin_key}: computed={computed_label}, "
             f"floor={floor:.2f}, final={final:.2f} "
             f"({hours_elapsed:.1f}h / {decay_hours:.0f}h)"
         )

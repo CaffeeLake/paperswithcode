@@ -73,6 +73,21 @@ def parse_trending_pin_specs(
     return specs
 
 
+def parse_trending_paper_id_pin_specs(
+    raw: str, default_decay_hours: float = DEFAULT_PIN_DECAY_HOURS
+) -> Dict[int, float]:
+    """Parse ``paper_id[:hours],...`` into positive integer paper IDs."""
+    specs: Dict[int, float] = {}
+    for raw_id, decay_hours in parse_trending_pin_specs(
+        raw, default_decay_hours
+    ).items():
+        paper_id = int(raw_id)
+        if paper_id <= 0:
+            raise ValueError("trending pin paper IDs must be positive")
+        specs[paper_id] = decay_hours
+    return specs
+
+
 def decaying_pin_floor(
     hours_elapsed: float,
     decay_hours: float,

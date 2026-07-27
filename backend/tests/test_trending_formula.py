@@ -6,6 +6,8 @@ returns, and the GitHub/HF blend, including a DeepSeek-like scenario where a
 paper trends purely on its Hugging Face models.
 """
 
+import pytest
+
 from backend.utils.trending import (
     GITHUB_WEIGHT,
     HF_WEIGHT,
@@ -16,6 +18,7 @@ from backend.utils.trending import (
     decaying_pin_floor,
     github_component,
     hf_component,
+    parse_trending_paper_id_pin_specs,
     parse_trending_pin_specs,
     quantile_rank,
     sorted_positive,
@@ -129,6 +132,19 @@ def test_parse_trending_pin_specs():
         "2606.16140": 48.0,
         "2606.10804": 72.0,
     }
+
+
+def test_parse_trending_paper_id_pin_specs():
+    assert parse_trending_paper_id_pin_specs("") == {}
+    assert parse_trending_paper_id_pin_specs("104054:96,42") == {
+        104054: 96.0,
+        42: 72.0,
+    }
+
+    with pytest.raises(ValueError):
+        parse_trending_paper_id_pin_specs("external:72")
+    with pytest.raises(ValueError, match="positive"):
+        parse_trending_paper_id_pin_specs("0:72")
 
 
 def test_decaying_pin_fades_to_computed_score():
