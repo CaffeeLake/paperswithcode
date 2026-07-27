@@ -9,6 +9,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.chat_sandbox_worker.contract import (
+    DEFAULT_BACKEND,
+    MODAL_IMAGE_ID,
+    NEW_CHAT_MODAL_PERCENTAGE,
+    PWC_CLI_VERSION,
+    WORKER_CONTRACT_VERSION,
+)
+from backend.services.chat_runtime_contract import require_immutable_image_id
+
 ENVIRONMENTS = ("production", "staging")
 FEATURE_CONTRACT_VERSION = 4
 
@@ -63,6 +72,36 @@ def _profile_features_for_version(environment: str, version: int) -> dict[str, b
     raise ValueError("unsupported release feature contract version")
 
 
+def chat_runtime(
+    environment: str, descriptor: dict[str, object] | None = None
+) -> dict[str, object]:
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"unsupported environment: {environment}")
+    if environment == "production":
+        return {
+            "enabled": False,
+            "new_chat_modal_percentage": 0,
+            "default_backend": "local_mcp",
+            "modal_image_version": "",
+            "pwc_cli_version": "",
+            "worker_contract_version": "",
+            "system_prompt_sha256": "",
+        }
+    if descriptor is not None:
+        return descriptor
+    from backend.chat_sandbox_worker.prompt import sha256
+
+    return {
+        "enabled": True,
+        "new_chat_modal_percentage": NEW_CHAT_MODAL_PERCENTAGE,
+        "default_backend": DEFAULT_BACKEND,
+        "modal_image_version": MODAL_IMAGE_ID,
+        "pwc_cli_version": PWC_CLI_VERSION,
+        "worker_contract_version": WORKER_CONTRACT_VERSION,
+        "system_prompt_sha256": sha256(),
+    }
+
+
 def release_id(git_sha: str, environment: str) -> str:
     if len(git_sha) != 40 or any(c not in "0123456789abcdef" for c in git_sha):
         raise ValueError("git_sha must be a full lowercase SHA-1")
@@ -71,7 +110,12 @@ def release_id(git_sha: str, environment: str) -> str:
     return f"{git_sha[:12]}-{environment}"
 
 
-def build_manifest(git_sha: str, environment: str) -> dict[str, object]:
+def build_manifest(
+    git_sha: str,
+    environment: str,
+    *,
+    chat_descriptor: dict[str, object] | None = None,
+) -> dict[str, object]:
     features = profile_features(environment)
     return {
         "release_id": release_id(git_sha, environment),
@@ -81,6 +125,7 @@ def build_manifest(git_sha: str, environment: str) -> dict[str, object]:
         "feature_contract_version": FEATURE_CONTRACT_VERSION,
         "backend_features": features,
         "frontend_features": features,
+        "chat_runtime": chat_runtime(environment, chat_descriptor),
         "frontend_entrypoint": "frontend-dist/index.html",
     }
 
@@ -97,21 +142,21 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "frontend_features",
         "frontend_entrypoint",
     }
-    current_required = legacy_required | {"feature_contract_version"}
-    bridge_required = current_required | {"chat_runtime"}
+    versioned_required = legacy_required | {"feature_contract_version"}
+    bridge_required = versioned_required | {"chat_runtime"}
+    profile = manifest.get("build_profile")
     if set(manifest) == legacy_required:
-        expected = {"chat": manifest["build_profile"] == "staging"}
-    elif set(manifest) in {frozenset(current_required), frozenset(bridge_required)}:
+        expected = {"chat": profile == "staging"}
+    elif set(manifest) == versioned_required:
         expected = _profile_features_for_version(
-            manifest["build_profile"], manifest["feature_contract_version"]
+            profile, manifest["feature_contract_version"]
         )
-        if "chat_runtime" in manifest and not isinstance(
-            manifest["chat_runtime"], dict
-        ):
-            raise ValueError("release chat_runtime must be an object")
+    elif set(manifest) == bridge_required:
+        expected = _profile_features_for_version(
+            profile, manifest["feature_contract_version"]
+        )
     else:
         raise ValueError("release.json has an unexpected schema")
-    profile = manifest["build_profile"]
     if environment is not None and profile != environment:
         raise ValueError("release profile does not match target environment")
     if (
@@ -123,7 +168,54 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         raise ValueError("release ID does not match SHA and profile")
     if manifest["frontend_entrypoint"] != "frontend-dist/index.html":
         raise ValueError("unsupported frontend entrypoint")
+    runtime = manifest.get("chat_runtime")
+    if runtime is None:
+        return _validate_release_files(release_dir, manifest, expected)
+    if not isinstance(runtime, dict) or set(runtime) != {
+        "enabled",
+        "new_chat_modal_percentage",
+        "default_backend",
+        "modal_image_version",
+        "pwc_cli_version",
+        "worker_contract_version",
+        "system_prompt_sha256",
+    }:
+        raise ValueError("release chat_runtime has an unexpected schema")
+    if profile == "production":
+        if runtime != chat_runtime("production"):
+            raise ValueError("production release contains an active chat runtime")
+    else:
+        percentage = runtime["new_chat_modal_percentage"]
+        if not isinstance(percentage, int) or not 0 <= percentage <= 100:
+            raise ValueError("chat runtime rollout percentage is invalid")
+        if runtime["default_backend"] not in {"local_mcp", "modal_cli"}:
+            raise ValueError("chat runtime default backend is invalid")
+        if percentage == 0 and runtime["default_backend"] != "local_mcp":
+            raise ValueError("zero-percent rollout must default to local_mcp")
+        if percentage == 100 and runtime["default_backend"] != "modal_cli":
+            raise ValueError("full rollout must default to modal_cli")
+        for key in (
+            "pwc_cli_version",
+            "worker_contract_version",
+        ):
+            if not isinstance(runtime[key], str) or not runtime[key]:
+                raise ValueError(f"chat runtime {key} is required")
+        require_immutable_image_id(runtime["modal_image_version"])
+        prompt_hash = runtime["system_prompt_sha256"]
+        if (
+            not isinstance(prompt_hash, str)
+            or len(prompt_hash) != 64
+            or any(character not in "0123456789abcdef" for character in prompt_hash)
+        ):
+            raise ValueError("chat runtime system prompt hash is invalid")
+        if runtime["enabled"] is not True:
+            raise ValueError("staging chat runtime must be enabled")
+    return _validate_release_files(release_dir, manifest, expected)
 
+
+def _validate_release_files(
+    release_dir: Path, manifest: dict, expected: dict[str, bool]
+) -> dict:
     features = json.loads(
         (release_dir / "frontend-dist" / "features.json").read_text(encoding="utf-8")
     )

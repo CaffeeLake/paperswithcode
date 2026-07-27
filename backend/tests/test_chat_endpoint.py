@@ -590,6 +590,7 @@ def test_chat_endpoint_requires_authentication(monkeypatch):
 
 def test_chat_endpoint_stream_contract(monkeypatch):
     from backend.routers import chat as chat_router
+    from backend.services import chat_stream_service
 
     async def fake_stream(_prompt, _settings, **_kwargs):
         yield {"type": "answer_delta", "text": "hello"}
@@ -613,6 +614,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         is_replacement=False,
         prompt_revision=1,
         title_should_generate=True,
+        execution_backend="local_mcp",
     )
 
     class FakeDB:
@@ -644,9 +646,27 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
     monkeypatch.setattr(settings, "hf_token", "test-token")
-    monkeypatch.setattr(chat_router, "stream_agent_events", fake_stream)
-    monkeypatch.setattr(chat_router, "stream_title", fake_title)
+
+    class FakeRunner:
+        sdk_directory = settings.chat_agent_cwd
+
+        def events(self):
+            return fake_stream("", settings)
+
+        async def cancel(self):
+            return None
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        chat_stream_service,
+        "create_chat_turn_runner",
+        lambda **_kwargs: FakeRunner(),
+    )
+    monkeypatch.setattr(chat_stream_service, "stream_title", fake_title)
     monkeypatch.setattr(chat_router, "ChatSessionService", FakeService)
+    monkeypatch.setattr(chat_stream_service, "ChatSessionService", FakeService)
     monkeypatch.setattr(chat_router.db_manager, "_session_local", FakeDB)
     monkeypatch.setattr(chat_router, "_admission", chat_router._AdmissionControl())
     monkeypatch.setattr(
