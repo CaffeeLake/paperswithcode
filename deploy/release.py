@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENTS = ("production", "staging")
-FEATURE_CONTRACT_VERSION = 3
+FEATURE_CONTRACT_VERSION = 4
 
 
 def sha256_file(path: Path) -> str:
@@ -26,10 +26,10 @@ def profile_features(environment: str) -> dict[str, bool]:
         raise ValueError(f"unsupported environment: {environment}")
     return {
         "chat": environment == "staging",
-        # Catalog curation runs only in production, where the API owns the
-        # writable catalog and the controls remain protected by HF admin auth.
-        "codex_add_evals": environment == "production",
-        "codex_enrich_paper": environment == "production",
+        # Staging inherits production capabilities and layers preview features
+        # such as chat on top.
+        "codex_add_evals": True,
+        "codex_enrich_paper": True,
     }
 
 
@@ -41,6 +41,26 @@ def _profile_features_v2(environment: str) -> dict[str, bool]:
         "codex_add_evals": False,
         "codex_enrich_paper": False,
     }
+
+
+def _profile_features_v3(environment: str) -> dict[str, bool]:
+    if environment not in ENVIRONMENTS:
+        raise ValueError(f"unsupported environment: {environment}")
+    return {
+        "chat": environment == "staging",
+        "codex_add_evals": environment == "production",
+        "codex_enrich_paper": environment == "production",
+    }
+
+
+def _profile_features_for_version(environment: str, version: int) -> dict[str, bool]:
+    if version == 2:
+        return _profile_features_v2(environment)
+    if version == 3:
+        return _profile_features_v3(environment)
+    if version == FEATURE_CONTRACT_VERSION:
+        return profile_features(environment)
+    raise ValueError("unsupported release feature contract version")
 
 
 def release_id(git_sha: str, environment: str) -> str:
@@ -82,13 +102,9 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
     if set(manifest) == legacy_required:
         expected = {"chat": manifest["build_profile"] == "staging"}
     elif set(manifest) in {frozenset(current_required), frozenset(bridge_required)}:
-        version = manifest["feature_contract_version"]
-        if version == 2:
-            expected = _profile_features_v2(manifest["build_profile"])
-        elif version == FEATURE_CONTRACT_VERSION:
-            expected = profile_features(manifest["build_profile"])
-        else:
-            raise ValueError("unsupported release feature contract version")
+        expected = _profile_features_for_version(
+            manifest["build_profile"], manifest["feature_contract_version"]
+        )
         if "chat_runtime" in manifest and not isinstance(
             manifest["chat_runtime"], dict
         ):

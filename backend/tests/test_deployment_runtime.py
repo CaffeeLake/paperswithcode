@@ -183,12 +183,34 @@ def test_modal_bridge_manifest_remains_a_valid_rollback_target(tmp_path: Path):
     assert validate_manifest(release, "production")["git_sha"] == "a" * 40
 
 
-def test_staging_profile_keeps_unmediated_catalog_actions_hidden():
+def test_staging_profile_inherits_admin_catalog_actions():
     assert profile_features("staging") == {
+        "chat": True,
+        "codex_add_evals": True,
+        "codex_enrich_paper": True,
+    }
+
+
+def test_version_three_staging_release_remains_valid_after_profile_expansion(
+    tmp_path: Path,
+):
+    release = make_bundle(tmp_path, chat=True)
+    manifest_path = release / "release.json"
+    manifest = json.loads(manifest_path.read_text())
+    previous_features = {
         "chat": True,
         "codex_add_evals": False,
         "codex_enrich_paper": False,
     }
+    manifest["feature_contract_version"] = 3
+    manifest["backend_features"] = previous_features
+    manifest["frontend_features"] = previous_features
+    manifest_path.write_text(json.dumps(manifest))
+    (release / "frontend-dist" / "features.json").write_text(
+        json.dumps(previous_features)
+    )
+
+    assert validate_manifest(release, "staging")["feature_contract_version"] == 3
 
 
 def test_production_profile_enables_admin_catalog_actions():
@@ -216,8 +238,8 @@ def test_production_profile_enables_admin_catalog_actions():
             {
                 "VITE_CHAT_ENABLED": "1",
                 "VITE_CHAT_LIVE": "1",
-                "VITE_CODEX_ADD_EVALS_ENABLED": "0",
-                "VITE_CODEX_ENRICH_PAPER_ENABLED": "0",
+                "VITE_CODEX_ADD_EVALS_ENABLED": "1",
+                "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
             },
         ),
     ],
