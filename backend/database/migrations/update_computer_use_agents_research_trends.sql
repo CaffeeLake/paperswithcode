@@ -1,0 +1,8 @@
+UPDATE tasks
+SET research_trends = jsonb_build_array(
+    '**Native visual policies are replacing stitched agent stacks.** The frontier is moving from DOM/accessibility-tree pipelines and prompt-engineered wrappers toward end-to-end vision-language-action models that unify screenshot perception, GUI grounding, deliberative planning, memory, and cross-platform action spaces. [Aguvis](/paper/2412.04454), [UI-TARS](/paper/2501.12326), and [Mobile-Agent-v3.5](/paper/2602.16855) trace this shift from pure-vision interaction to one policy spanning desktop, mobile, and web.',
+    '**Grounding is becoming an active inference process.** High-resolution professional interfaces expose the limits of one-shot coordinate prediction, so leading systems increasingly zoom, crop, verify, or invoke tools before clicking. On [ScreenSpot-Pro](/benchmark/screenspot-pro?task=computer-use-agents), two-stage refinement in [Mobile-Agent-v3.5](/paper/2602.16855) and [MAI-UI](/paper/2512.22047) yields large gains, showing that adaptive visual search can matter as much as larger backbones.',
+    '**Executable environments are turning interaction data into a flywheel.** Progress is shifting from static imitation on scarce human traces to synthetic task generation, stateful rollouts, multi-turn reinforcement learning, and verifiable rewards. [UI-TARS-2](/paper/2509.02544) stabilizes long-horizon RL in unified sandboxes, while [Fara-1.5](/paper/2606.20785) and [CUA-Gym](/paper/2605.25624) scale environment generation and automated verification, making coverage and reward fidelity the main training frontier.'
+),
+updated_at = NOW()
+WHERE slug = 'computer-use-agents';
