@@ -12,6 +12,12 @@
       "prompt": "Check whether the update_citations cron is healthy and whether its Semantic Scholar credential works. Keep this read-only and machine-readable.",
       "expected_output": "Uses pwc cron health update_citations --json and pwc cron token-check PWC_SEMANTIC_SCHOLAR_API_KEY --json without revealing the credential.",
       "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Replace paper 104054's explicit Hugging Face models with moonshotai/Kimi-K3 using the supported PwC command, then explain what must be verified for composite trending.",
+      "expected_output": "Uses pwc paper update 104054 hf-artifacts --model https://huggingface.co/moonshotai/Kimi-K3 --json and verifies that both the paper array and normalized paper_hf_artifacts link exist; it does not suggest an arrays-only SQL update.",
+      "files": []
     }
   ]
 }

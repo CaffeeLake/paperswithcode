@@ -74,13 +74,19 @@ output is intended for terminal inspection.
 - `pwc paper update PAPER project-pages [URL ...]` — Replace project-page links;
   positional URLs are official. `[--unofficial URL (repeatable) --json]`
 - `pwc paper update PAPER hf-artifacts` — Replace explicit Hugging Face artifact
-  links. `[--model URL --dataset URL --space URL (each repeatable) --json]`
+  links and immediately synchronize their normalized `hf_artifacts` and
+  `paper_hf_artifacts` rows. The write also invalidates the discovery checkpoint
+  so the hourly job can reconcile removals and arXiv-discovered extras.
+  `[--model URL --dataset URL --space URL (each repeatable) --json]`
 - `pwc paper update PAPER source-url URL` — Replace an external paper's canonical
   source URL. `[--json]`
 
 `PAPER` accepts a PwC paper URL, ArXiv ID, or numeric external-paper ID unless the
 individual command above states otherwise. Replace-style commands accept an empty
 list to clear that relation category, so do not omit values accidentally.
+After an HF-artifact write, verify both the paper arrays and normalized links;
+an artifact URL displayed on a paper is not sufficient evidence that its Hub
+trending metrics are participating in the composite paper score.
 
 ## Paper lineage
 

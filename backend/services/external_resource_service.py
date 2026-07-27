@@ -33,6 +33,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
+from backend.database.paper_merge import find_arxiv_paper_for_title
 from backend.models.api import Paper
 from backend.models.database import (
     Author as DBAuthor,
@@ -41,7 +42,7 @@ from backend.models.database import (
     PaperRepository as DBPaperRepository,
     Repository as DBRepository,
 )
-from backend.database.paper_merge import find_arxiv_paper_for_title
+from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import DatabaseError
 from backend.utils.github_utils import normalize_github_url, parse_github_url
@@ -469,6 +470,15 @@ class ExternalResourceService:
         paper.hf_models = existing_models or None
         paper.hf_datasets = existing_datasets or None
         paper.hf_spaces = existing_spaces or None
+        sync_explicit_hf_artifact_links(
+            self.db,
+            paper.id,
+            paper.hf_models,
+            paper.hf_datasets,
+            paper.hf_spaces,
+        )
+        # New explicit URLs must not inherit a previously completed empty scan.
+        paper.hf_artifacts_scanned_at = None
 
         return {
             "models_added": models_added,

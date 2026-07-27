@@ -43,6 +43,57 @@ def test_backfill_query_is_limited_to_unscanned_trend_population():
     assert params == {"batch_size": 123, "start_date": date(2021, 1, 1)}
 
 
+def test_explicit_backfill_query_includes_all_publication_dates():
+    session = Mock()
+    session.execute.return_value.fetchall.return_value = []
+
+    UPDATE_HF_ARTIFACTS.get_papers_with_explicit_artifacts(session, 321)
+
+    query, params = session.execute.call_args.args
+    sql = str(query)
+    assert "is_latest_version = TRUE" in sql
+    assert "cardinality(hf_models)" in sql
+    assert "date_published" not in sql
+    assert params == {"batch_size": 321}
+
+
+def test_explicit_backfill_syncs_without_hub_discovery(monkeypatch):
+    session = Mock()
+    paper = SimpleNamespace(
+        id=104054,
+        hf_models=["https://huggingface.co/moonshotai/Kimi-K3"],
+        hf_datasets=[],
+        hf_spaces=[],
+    )
+    monkeypatch.setattr(
+        UPDATE_HF_ARTIFACTS,
+        "get_papers_with_explicit_artifacts",
+        Mock(return_value=[paper]),
+    )
+    sync = Mock(return_value={"artifacts": 1, "links_added": 1})
+    monkeypatch.setattr(
+        UPDATE_HF_ARTIFACTS,
+        "sync_explicit_hf_artifact_links",
+        sync,
+    )
+
+    result = UPDATE_HF_ARTIFACTS.run_explicit_backfill_phase(session, 50)
+
+    assert result == {
+        "papers_processed": 1,
+        "papers_failed": 0,
+        "links_created": 1,
+    }
+    sync.assert_called_once_with(
+        session,
+        104054,
+        paper.hf_models,
+        paper.hf_datasets,
+        paper.hf_spaces,
+    )
+    session.commit.assert_called_once_with()
+
+
 def test_failed_hub_lookup_is_not_checkpointed(monkeypatch):
     session = Mock()
     monkeypatch.setattr(

@@ -74,12 +74,13 @@ from backend.utils.urls import (
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.config import get_settings
-from backend.services.semantic_scholar_service import SemanticScholarService
+from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.services.paper_retrieval_service import PaperRetrievalService
 from backend.services.paper_version_refresh_service import (
     ArxivPaperRefreshResult,
     PaperVersionRefreshService,
 )
+from backend.services.semantic_scholar_service import SemanticScholarService
 
 
 class PaperService:
@@ -2324,6 +2325,16 @@ class PaperService:
             db_paper.hf_models = models or None
             db_paper.hf_datasets = datasets or None
             db_paper.hf_spaces = spaces or None
+            sync_explicit_hf_artifact_links(
+                self.db,
+                db_paper.id,
+                db_paper.hf_models,
+                db_paper.hf_datasets,
+                db_paper.hf_spaces,
+            )
+            # Explicit URL edits must invalidate the discovery checkpoint so
+            # the cron can reconcile removed links and arXiv-discovered extras.
+            db_paper.hf_artifacts_scanned_at = None
             self.db.commit()
 
             return self.get_paper_by_id(paper_id, include_resources=True)

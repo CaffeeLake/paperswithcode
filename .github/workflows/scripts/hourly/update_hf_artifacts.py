@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
+from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.utils.hf_utils import (
     HfArtifactDiscoveryError,
     fetch_hf_artifact_metrics,
@@ -121,6 +122,54 @@ def get_papers_needing_backfill(session, batch_size: int) -> list:
         query,
         {"batch_size": batch_size, "start_date": BACKFILL_START_DATE},
     ).fetchall()
+
+
+def get_papers_with_explicit_artifacts(session, batch_size: int) -> list:
+    """Return latest papers with curated HF URLs, regardless of publication age."""
+    return session.execute(
+        text("""
+            SELECT id, hf_models, hf_datasets, hf_spaces
+            FROM papers
+            WHERE is_latest_version = TRUE
+              AND (
+                COALESCE(cardinality(hf_models), 0)
+                + COALESCE(cardinality(hf_datasets), 0)
+                + COALESCE(cardinality(hf_spaces), 0)
+              ) > 0
+            ORDER BY id
+            LIMIT :batch_size
+        """),
+        {"batch_size": batch_size},
+    ).fetchall()
+
+
+def run_explicit_backfill_phase(session, batch_size: int) -> dict:
+    """Idempotently normalize explicit HF URLs without Hub discovery calls."""
+    log("-" * 80)
+    log("Phase A: explicit artifact link backfill")
+    papers = get_papers_with_explicit_artifacts(session, batch_size)
+    papers_processed = 0
+    links_created = 0
+    for paper in papers:
+        result = sync_explicit_hf_artifact_links(
+            session,
+            paper.id,
+            paper.hf_models,
+            paper.hf_datasets,
+            paper.hf_spaces,
+        )
+        session.commit()
+        papers_processed += 1
+        links_created += result["links_added"]
+    log(
+        f"Explicit backfill complete: {papers_processed} papers scanned, "
+        f"{links_created} missing links created"
+    )
+    return {
+        "papers_processed": papers_processed,
+        "papers_failed": 0,
+        "links_created": links_created,
+    }
 
 
 def collect_paper_artifacts(row, hf_token) -> list:
@@ -378,6 +427,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--backfill-explicit",
+        action="store_true",
+        help=(
+            "Normalize curated paper HF URLs for all publication dates, then "
+            "refresh metrics for artifacts linked to recent papers"
+        ),
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=MAX_PAPERS_PER_RUN,
@@ -396,6 +453,8 @@ def parse_args():
         help=f"Stop cleanly after this many seconds (default: {MAX_RUNTIME_SECONDS})",
     )
     args = parser.parse_args()
+    if args.backfill and args.backfill_explicit:
+        parser.error("--backfill and --backfill-explicit are mutually exclusive")
     if args.batch_size <= 0:
         parser.error("--batch-size must be greater than zero")
     if args.api_delay_seconds < 0:
@@ -411,6 +470,8 @@ def main():
     log(
         "Starting Hugging Face Artifact Historical Backfill"
         if args.backfill
+        else "Starting Hugging Face Explicit Artifact Backfill"
+        if args.backfill_explicit
         else "Starting Hugging Face Artifact Refresh"
     )
     log("=" * 80)
@@ -420,7 +481,14 @@ def main():
     recent_cutoff = (datetime.now() - timedelta(days=RECENT_WINDOW_DAYS)).date()
 
     log("Configuration:")
-    log(f"  - Mode: {'historical backfill' if args.backfill else 'hourly refresh'}")
+    mode = (
+        "historical backfill"
+        if args.backfill
+        else "explicit artifact backfill"
+        if args.backfill_explicit
+        else "hourly refresh"
+    )
+    log(f"  - Mode: {mode}")
     log(f"  - Recent window: {RECENT_WINDOW_DAYS} days (cutoff {recent_cutoff})")
     if args.backfill:
         log(f"  - Backfill starts: {BACKFILL_START_DATE}")
@@ -435,15 +503,19 @@ def main():
     start_time = time.time()
     try:
         session = db_manager.session_local()
-        discovery = run_discovery_phase(
-            session,
-            hf_token,
-            recent_cutoff,
-            start_time,
-            backfill=args.backfill,
-            batch_size=args.batch_size,
-            api_delay_seconds=args.api_delay_seconds,
-            max_runtime_seconds=args.max_runtime_seconds,
+        discovery = (
+            run_explicit_backfill_phase(session, args.batch_size)
+            if args.backfill_explicit
+            else run_discovery_phase(
+                session,
+                hf_token,
+                recent_cutoff,
+                start_time,
+                backfill=args.backfill,
+                batch_size=args.batch_size,
+                api_delay_seconds=args.api_delay_seconds,
+                max_runtime_seconds=args.max_runtime_seconds,
+            )
         )
         refresh = (
             {"refreshed": 0, "failed": 0}

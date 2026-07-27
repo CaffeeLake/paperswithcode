@@ -322,35 +322,25 @@ When a release has multiple official surfaces, put them all in `project_pages`; 
 
 ## Add Or Fix HF Artifacts
 
-There is no general public update endpoint for `papers.hf_models`, `papers.hf_datasets`, and `papers.hf_spaces`; `ExternalResourceService` handles these during ingestion. For existing rows that need artifact fixes, do a direct, minimal SQL update after normalizing to full URLs:
+`ExternalResourceService` synchronizes explicit URLs into both the paper arrays
+and the normalized `hf_artifacts` / `paper_hf_artifacts` tables during
+ingestion. For an existing row, use the repository CLI instead of updating the
+arrays directly:
 
 ```bash
-uv run --env-file backend/keys.env python - <<'PY'
-from sqlalchemy import text
-from backend.database.connection import get_engine
-
-paper_id = <paper_id>
-hf_models = ["https://huggingface.co/<org>/<model>"]
-hf_datasets = ["https://huggingface.co/datasets/<org>/<dataset>"]
-hf_spaces = ["https://huggingface.co/spaces/<org>/<space>"]
-
-with get_engine().begin() as conn:
-    conn.execute(text("""
-        UPDATE papers
-        SET hf_models = :hf_models,
-            hf_datasets = :hf_datasets,
-            hf_spaces = :hf_spaces
-        WHERE id = :paper_id AND source = 'external'
-    """), {
-        "paper_id": paper_id,
-        "hf_models": hf_models or None,
-        "hf_datasets": hf_datasets or None,
-        "hf_spaces": hf_spaces or None,
-    })
-PY
+uv run --env-file backend/keys.env pwc paper update <paper_id> hf-artifacts \
+  --model "https://huggingface.co/<org>/<model>" \
+  --dataset "https://huggingface.co/datasets/<org>/<dataset>" \
+  --space "https://huggingface.co/spaces/<org>/<space>" \
+  --json
 ```
 
-Preserve existing artifacts unless the user asked to replace them.
+The command is replace-style, so read and preserve existing artifacts unless
+the user asked to remove them. It creates normalized junction rows immediately
+and invalidates the discovery checkpoint for authoritative CRON reconciliation.
+Do not use direct SQL on only `papers.hf_models`, `hf_datasets`, or `hf_spaces`;
+that can leave the paper visible in the UI while excluding it from composite
+trending.
 
 ## Migrate Existing Evaluations
 
@@ -413,6 +403,29 @@ For model-family releases, explicitly inspect that:
 - `hf_models`, `hf_datasets`, and `hf_spaces` contain every individual artifact, not just the first or canonical model.
 - Individual model cards were not duplicated as project pages unless the model card is the canonical release surface.
 - `thumbnail_url` is set and the custom thumbnail endpoint returns HTTP 200.
+
+Also verify normalization when HF artifacts were added:
+
+```bash
+uv run --env-file backend/keys.env python - <<'PY'
+from sqlalchemy import text
+from backend.database.connection import get_engine
+paper_id = <paper_id>
+with get_engine().connect() as conn:
+    rows = conn.execute(text("""
+        SELECT a.kind, a.repo_id, a.trending_score, a.fetched_at
+        FROM paper_hf_artifacts pha
+        JOIN hf_artifacts a ON a.id = pha.hf_artifact_id
+        WHERE pha.paper_id = :paper_id
+        ORDER BY a.kind, a.repo_id
+    """), {"paper_id": paper_id}).mappings().all()
+    print([dict(row) for row in rows])
+PY
+```
+
+Every explicit artifact should have a normalized row. A newly inserted artifact
+may have a null metric until `update_hf_artifacts` refreshes it, but the junction
+must already exist.
 
 Check the local route:
 

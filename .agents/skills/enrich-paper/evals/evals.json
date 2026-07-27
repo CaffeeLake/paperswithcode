@@ -46,6 +46,20 @@
         {"text": "The legitimate existing method diffusion-transformer-dit is preserved"},
         {"text": "No invented GitHub repo (none exists for this paper)"}
       ]
+    },
+    {
+      "id": 3,
+      "name": "external-paper-hf-artifact-normalization",
+      "paper_id": 104054,
+      "prompt": "Enrich external paper 104054 and make sure its official Hugging Face model participates in composite trending, not merely appears as a link on the paper page.",
+      "expected_output": "Preserves the official moonshotai/Kimi-K3 model URL, writes through the supported HF-artifact update path, verifies a normalized paper_hf_artifacts link and Hub trending metric, and does not use a paper-score pin as a substitute.",
+      "files": [],
+      "assertions": [
+        {"text": "The explicit model URL https://huggingface.co/moonshotai/Kimi-K3 remains attached"},
+        {"text": "A normalized paper_hf_artifacts link exists for moonshotai/Kimi-K3"},
+        {"text": "The report distinguishes normalized Hub metrics from paper display arrays"},
+        {"text": "No emergency paper-score pin is presented as the HF-link fix"}
+      ]
     }
   ]
 }

@@ -89,6 +89,7 @@ The backfill and maintenance scripts are not scheduled by GitHub Actions:
 
 ```bash
 uv run --env-file backend/keys.env python .github/workflows/scripts/hourly/update_hf_artifacts.py --backfill
+uv run --env-file backend/keys.env python .github/workflows/scripts/hourly/update_hf_artifacts.py --backfill-explicit
 
 PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.backfill.backfill_hf_papers
 PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m scripts.backfill.backfill_hf_papers --max-papers 200
@@ -104,6 +105,12 @@ published since January 2021 (the start of the public trend series), and commits
 after every paper. Re-run it until it reports zero papers needing discovery.
 Valid empty Hub responses are checkpointed; rate limits and transient failures
 are retried and remain unscanned if all retries fail.
+
+`--backfill-explicit` is the bounded, idempotent repair path for paper rows that
+already contain curated HF URLs. It scans all latest-version publication dates,
+creates missing normalized artifact/junction rows without arXiv discovery
+calls, and refreshes metrics only for artifacts linked to papers in the active
+180-day window.
 
 Keep these manual unless a production schedule is intentionally added.
 

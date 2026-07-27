@@ -2,7 +2,7 @@
 name: enrich-paper
 description: >-
   Enrich an existing paperswithcode paper with (1) its official GitHub repository and project page URL,
-  and (2) appropriate task and method tags drawn from the existing taxonomy in the SQL database.
+  explicit Hugging Face artifacts, and (2) appropriate task and method tags drawn from the existing taxonomy in the SQL database.
   Use this whenever the user asks to enrich a paper, find/attach the GitHub repo or project page for
   a paper, tag a paper with tasks/methods, fill in missing code links, or run URL extraction for a
   paper without the Gemini cron — e.g. enrich 2509.14033, find the github + tasks for this paper,
@@ -19,7 +19,8 @@ description: >-
 This skill fills in the two things a freshly imported paper most often lacks:
 
 1. **Code links** — the paper's *own* official GitHub repository and project page URL.
-2. **Taxonomy tags** — `tasks` and `methods` that already exist in the database, matched to what the paper is actually about.
+2. **Hugging Face artifacts** — official model, dataset, and Space URLs, synchronized into normalized artifact links.
+3. **Taxonomy tags** — `tasks` and `methods` that already exist in the database, matched to what the paper is actually about.
 
 It is the agent-driven replacement for the Gemini URL-extraction cron (`backend/genai_steps/extract_github_and_project_page_url.py` + `backend/database/repos_and_pages_setup/batch_extract.py`). Instead of calling the Gemini API, **you** (the coding agent) fetch a small amount of evidence and reason over it yourself. The whole point is to find *authentic* URLs at low token cost, so prefer cheap structured sources first and only escalate to heavier ones (PDF text, project-page HTML) when something is still missing.
 
@@ -250,6 +251,45 @@ print("urls_extracted set")
 PY
 ```
 
+### Save and verify Hugging Face artifacts
+
+When the source, official repository, project page, or model card identifies
+official HF models, datasets, or Spaces, merge them with the existing artifact
+arrays and write the full set through the CLI:
+
+```bash
+uv run --env-file backend/keys.env pwc paper update <paper_id> hf-artifacts \
+  --model "https://huggingface.co/<org>/<model>" \
+  --dataset "https://huggingface.co/datasets/<org>/<dataset>" \
+  --space "https://huggingface.co/spaces/<org>/<space>" \
+  --json
+```
+
+This command is replace-style. Preserve existing URLs unless removal is
+intentional. It synchronizes `paper_hf_artifacts` immediately and invalidates
+the discovery checkpoint. Never update only the paper URL arrays with SQL,
+because the UI can then display an HF link that contributes no normalized Hub
+metrics to composite trending.
+
+Verify the normalized relationship, not only the API arrays:
+
+```bash
+uv run --env-file backend/keys.env python - <<'PY'
+from sqlalchemy import text
+from backend.database.connection import get_engine
+paper_id = <paper_id>
+with get_engine().connect() as conn:
+    rows = conn.execute(text("""
+        SELECT a.kind, a.repo_id, a.trending_score
+        FROM paper_hf_artifacts pha
+        JOIN hf_artifacts a ON a.id = pha.hf_artifact_id
+        WHERE pha.paper_id = :paper_id
+        ORDER BY a.kind, a.repo_id
+    """), {"paper_id": paper_id}).mappings().all()
+    print([dict(row) for row in rows])
+PY
+```
+
 ## Part B — Task & method tags from the taxonomy
 
 The goal is a small set of high-confidence tags that reflect what the paper does. Read the paper's abstract (and the first PDF pages or HF markdown you already fetched in Part A — don't re-download). You generally do **not** need the full paper for tagging.
@@ -386,6 +426,8 @@ End with a concise report:
 - Local paper URL: `https://paperswithcode.co/paper/<arxiv_id>` (or `/paper/<paper_id>` for external rows).
 - **GitHub repo**: the URL saved + which layer found it (HF API / abstract / PDF first pages / project-page HTML), or "none found" with where you looked. Note any rejected candidates and why (e.g. "skipped github.com/foo/bar — cited baseline, not the paper's repo").
 - **Project page**: URL saved + source, or "none".
+- **Hugging Face artifacts**: official URLs saved and whether normalized rows
+  and Hub metrics were verified.
 - **Tasks** added and **methods** added (slugs), distinguishing newly added from pre-existing merged tags, and listing any pre-existing tags you **removed** as false positives with the reason.
 - Any taxonomy gaps (a task/method the paper needs that doesn't exist yet → suggest `add-task` / `add-method`) and any `needs review` URL candidates you intentionally did not save.
 - Whether `urls_extracted` was set to TRUE.
