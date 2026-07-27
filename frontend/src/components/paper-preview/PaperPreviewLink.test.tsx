@@ -1,0 +1,240 @@
+import React from "react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import {
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
+import { MemoryRouter, useLocation } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
+import MarkdownText from "@/components/MarkdownText";
+import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
+import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
+import { getPaper, type Paper } from "@/lib/api";
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...actual, getPaper: vi.fn() };
+});
+
+const mockedGetPaper = vi.mocked(getPaper);
+
+const paper: Paper = {
+  id: "42",
+  arxiv_id: "2501.12326",
+  source: "arxiv",
+  source_url: "https://arxiv.org/abs/2501.12326",
+  url_abs: "https://arxiv.org/abs/2501.12326",
+  url_pdf: null,
+  thumbnail_url: "/api/thumbnails/paper.png",
+  title: "A Useful Paper",
+  abstract: "",
+  authors: ["Ada Lovelace", "Grace Hopper"],
+  published: "2025-01-20",
+  conference: "ICLR 2025",
+  version: "v1",
+  is_latest_version: true,
+  citation_count: 123,
+  tasks: [{ id: "1", name: "Agents", slug: "agents", level: 0 }],
+};
+
+const initialData: PaperPreviewData = {
+  routeId: "2501.12326",
+  title: "Snapshot Paper",
+  arxivId: "2501.12326",
+  source: "arxiv",
+  sourceUrl: "https://arxiv.org/abs/2501.12326",
+  thumbnailUrl: null,
+  authors: ["Historical Author"],
+  published: "2025-01-20",
+  conference: null,
+  citationCount: 5,
+  tasks: [],
+};
+
+function renderWithProviders(node: React.ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{node}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+const CurrentPath: React.FC = () => {
+  const location = useLocation();
+  return <output data-testid="current-path">{location.pathname}</output>;
+};
+
+async function hoverLink(name: string) {
+  await userEvent.hover(screen.getByRole("link", { name }));
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  mockedGetPaper.mockReset();
+});
+
+describe("PaperPreviewLink", () => {
+  it("is a normal anchor before interaction and loads only after opening", async () => {
+    let resolvePaper: (value: Paper) => void = () => {};
+    mockedGetPaper.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePaper = resolve;
+      }),
+    );
+    renderWithProviders(
+      <PaperPreviewLink routeId="2501.12326">Useful</PaperPreviewLink>,
+    );
+
+    const link = screen.getByRole("link", { name: "Useful" });
+    expect(link).toHaveAttribute("href", "/paper/2501.12326");
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+
+    await hoverLink("Useful");
+    expect(await screen.findByText("Loading preview…")).toBeInTheDocument();
+    expect(mockedGetPaper).toHaveBeenCalledWith("2501.12326", false);
+    resolvePaper(paper);
+    expect(await screen.findByText("A Useful Paper")).toBeInTheDocument();
+  });
+
+  it("deduplicates repeated paper links through the shared query key", async () => {
+    mockedGetPaper.mockResolvedValue(paper);
+    renderWithProviders(
+      <>
+        <PaperPreviewLink routeId="2501.12326">First</PaperPreviewLink>
+        <PaperPreviewLink routeId="2501-12326v2">Second</PaperPreviewLink>
+      </>,
+    );
+
+    await hoverLink("First");
+    expect(await screen.findByText("A Useful Paper")).toBeInTheDocument();
+    await userEvent.unhover(screen.getByRole("link", { name: "First" }));
+    await hoverLink("Second");
+    await screen.findByText("A Useful Paper");
+    expect(mockedGetPaper).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders supplied snapshot metadata without fetching", async () => {
+    renderWithProviders(
+      <PaperPreviewLink routeId="2501.12326" initialData={initialData}>
+        Snapshot
+      </PaperPreviewLink>,
+    );
+    await hoverLink("Snapshot");
+    expect(await screen.findByText("Snapshot Paper")).toBeInTheDocument();
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+  });
+
+  it.each(["404", "network"])(
+    "keeps the link usable after a %s preview failure",
+    async (failure) => {
+      mockedGetPaper.mockRejectedValue(new Error(failure));
+      renderWithProviders(
+        <PaperPreviewLink routeId="999999">Missing</PaperPreviewLink>,
+      );
+      await hoverLink("Missing");
+      expect(await screen.findByText("Preview unavailable")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Missing" })).toHaveAttribute(
+        "href",
+        "/paper/999999",
+      );
+    },
+  );
+
+  it("uses the faux thumbnail when the image fails", async () => {
+    mockedGetPaper.mockResolvedValue(paper);
+    renderWithProviders(
+      <PaperPreviewLink routeId="2501.12326">Thumbnail</PaperPreviewLink>,
+    );
+    await hoverLink("Thumbnail");
+    const image = await screen.findByTestId("paper-preview-image");
+    fireEvent.error(image);
+    expect(await screen.findByTestId("faux-paper-thumb")).toBeInTheDocument();
+  });
+
+  it("opens from keyboard focus and closes with Escape", async () => {
+    renderWithProviders(
+      <PaperPreviewLink routeId="2501.12326" initialData={initialData}>
+        Keyboard
+      </PaperPreviewLink>,
+    );
+    screen.getByRole("link", { name: "Keyboard" }).focus();
+    expect(await screen.findByText("Snapshot Paper")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByText("Snapshot Paper")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("does not turn a coarse-pointer tap into a preview-only interaction", () => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({
+      matches: true,
+    } as MediaQueryList);
+    renderWithProviders(
+      <>
+        <PaperPreviewLink routeId="2501.12326">Touch</PaperPreviewLink>
+        <CurrentPath />
+      </>,
+    );
+    const link = screen.getByRole("link", { name: "Touch" });
+    fireEvent.pointerEnter(link, { pointerType: "touch" });
+    fireEvent.click(link);
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+    expect(screen.queryByText("Loading preview…")).not.toBeInTheDocument();
+    expect(screen.getByTestId("current-path")).toHaveTextContent(
+      "/paper/2501.12326",
+    );
+  });
+});
+
+describe("Markdown and chat policy", () => {
+  it("previews strict internal paper links but never other links", async () => {
+    mockedGetPaper.mockResolvedValue(paper);
+    renderWithProviders(
+      <MarkdownText
+        text={
+          "[paper](/paper/2501.12326) [task](/tasks/agents) [external](https://example.com/paper/2501.12326)"
+        }
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "task" })).toHaveAttribute(
+      "href",
+      "/tasks/agents",
+    );
+    expect(screen.getByRole("link", { name: "external" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+    await userEvent.hover(screen.getByRole("link", { name: "task" }));
+    await userEvent.hover(screen.getByRole("link", { name: "external" }));
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+    await hoverLink("paper");
+    expect(await screen.findByText("A Useful Paper")).toBeInTheDocument();
+    expect(mockedGetPaper).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps invalid chat citations visibly invalid and never fetches them", () => {
+    renderWithProviders(
+      <ChatMarkdown
+        text="[Unknown](paper:2501.12326)"
+        papers={{}}
+        citations={{}}
+      />,
+    );
+    expect(screen.getByText("Unknown")).toHaveClass("chat-invalid-citation");
+    expect(screen.queryByRole("link", { name: "Unknown" })).not.toBeInTheDocument();
+    expect(mockedGetPaper).not.toHaveBeenCalled();
+  });
+});

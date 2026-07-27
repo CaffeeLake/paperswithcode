@@ -5,39 +5,13 @@ import rehypeKatex from 'rehype-katex';
 import { Link } from 'react-router-dom';
 import 'katex/dist/katex.min.css';
 
+import { PaperPreviewLink } from '@/components/paper-preview/PaperPreviewLink';
+import { extractPaperRouteId, resolveInternalPath } from '@/lib/internalLinks';
+
 interface MarkdownTextProps {
   text: string;
   className?: string;
 }
-
-const INTERNAL_HOSTS = new Set([
-  'paperswithcode.co',
-  'www.paperswithcode.co',
-  'localhost',
-  '127.0.0.1',
-  '167.235.148.241',
-]);
-
-const INTERNAL_PATH_PREFIXES = ['/methods', '/paper', '/papers', '/tasks', '/benchmark', '/conferences'];
-
-const resolveInternalPath = (href: string | undefined): string | null => {
-  if (!href) return null;
-  if (href.startsWith('/')) {
-    return INTERNAL_PATH_PREFIXES.some((p) => href === p || href.startsWith(`${p}/`))
-      ? href
-      : null;
-  }
-  try {
-    const url = new URL(href, window.location.origin);
-    if (!INTERNAL_HOSTS.has(url.hostname)) return null;
-    const path = `${url.pathname}${url.search}${url.hash}`;
-    return INTERNAL_PATH_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))
-      ? path
-      : null;
-  } catch {
-    return null;
-  }
-};
 
 const MarkdownText = ({ text, className = '' }: MarkdownTextProps) => {
   return (
@@ -46,9 +20,17 @@ const MarkdownText = ({ text, className = '' }: MarkdownTextProps) => {
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          a: ({ href, children, ...props }) => {
+          a: ({ href, children, node: _node, ...props }) => {
             const internalPath = resolveInternalPath(href);
             if (internalPath) {
+              const routeId = extractPaperRouteId(internalPath);
+              if (routeId) {
+                return (
+                  <PaperPreviewLink routeId={routeId} to={internalPath} {...props}>
+                    {children}
+                  </PaperPreviewLink>
+                );
+              }
               return (
                 <Link to={internalPath} {...props}>
                   {children}

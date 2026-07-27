@@ -1,0 +1,100 @@
+import React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+import {
+  PaperPreviewCard,
+} from "@/components/paper-preview/PaperPreviewCard";
+import {
+  paperToPreviewData,
+  type PaperPreviewData,
+} from "@/components/paper-preview/paperPreviewData";
+import { getPaper } from "@/lib/api";
+import { normalizePaperRouteId } from "@/lib/utils";
+
+interface PaperPreviewLinkProps {
+  routeId: string;
+  to?: string;
+  initialData?: PaperPreviewData;
+  className?: string;
+  children: React.ReactNode;
+  target?: React.HTMLAttributeAnchorTarget;
+  title?: string;
+}
+
+const isCoarsePointer = (): boolean =>
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: none), (pointer: coarse)").matches;
+
+export const PaperPreviewLink: React.FC<PaperPreviewLinkProps> = ({
+  routeId,
+  to,
+  initialData,
+  className,
+  children,
+  target,
+  title,
+}) => {
+  const normalizedRouteId = normalizePaperRouteId(routeId);
+  const [open, setOpen] = React.useState(false);
+  const hasInitialData = Boolean(initialData?.title.trim());
+  const query = useQuery({
+    queryKey: ["paper-preview", normalizedRouteId],
+    queryFn: () => getPaper(normalizedRouteId, false),
+    enabled: open && !hasInitialData,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    retry: false,
+  });
+  const data =
+    initialData ??
+    (query.data
+      ? paperToPreviewData(query.data, normalizedRouteId)
+      : undefined);
+
+  const link = (
+    <Link
+      className={className}
+      to={to ?? `/paper/${normalizedRouteId}`}
+      target={target}
+      title={title}
+      rel={target === "_blank" ? "noopener noreferrer" : undefined}
+    >
+      {children}
+    </Link>
+  );
+
+  return (
+    <HoverCard
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen || !isCoarsePointer()) setOpen(nextOpen);
+      }}
+      openDelay={150}
+      closeDelay={100}
+    >
+      <HoverCardTrigger asChild>{link}</HoverCardTrigger>
+      <HoverCardContent
+        className="paper-preview-pop"
+        side="bottom"
+        align="start"
+        collisionPadding={12}
+      >
+        {data ? (
+          <PaperPreviewCard data={data} />
+        ) : query.isError ? (
+          <div className="paper-preview-status">Preview unavailable</div>
+        ) : (
+          <div className="paper-preview-status" aria-live="polite">
+            Loading preview…
+          </div>
+        )}
+      </HoverCardContent>
+    </HoverCard>
+  );
+};

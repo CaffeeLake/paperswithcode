@@ -10,7 +10,7 @@ export function normalizePaperRouteId(routeId: string): string {
   const trimmed = routeId.trim();
   const dashMatch = trimmed.match(/^(\d{4})-(\d{4,5})(v\d+)?$/);
   if (dashMatch) {
-    return `${dashMatch[1]}.${dashMatch[2]}${dashMatch[3] ?? ""}`;
+    return `${dashMatch[1]}.${dashMatch[2]}`;
   }
   const versionMatch = trimmed.match(/^(\d{4}\.\d{4,5})(v\d+)$/);
   if (versionMatch) {
