@@ -33,6 +33,9 @@ dependencies = [
     "requests>=2.31.0",
     "schedule>=1.2.0",
     "sqlalchemy>=2.0.0",
+    # Floor pinned to address CVE-2026-48710 (GHSA-86qp-5c8j-p5mr):
+    # malformed Host headers can poison request.url.path.
+    "starlette>=1.0.1",
     "uvicorn[standard]>=0.30.0",
 ]
 
