@@ -4,10 +4,11 @@ Production cron scheduling is driven by GitHub Actions. The workflows under
 `.github/workflows/cron-*.yml` SSH into the VPS and run the entrypoints in this
 directory with `uv run --env-file backend/keys.env ...`.
 
-## Active Production Jobs
+## Production Jobs and Pending Activations
 
 | Workflow | Schedule (UTC) | VPS entrypoint | Python job |
 | --- | --- | --- | --- |
+| `cron-update-hot-github-trending.yml` | Manual dispatch only (production activation pending) | `.github/workflows/scripts/run_hot_github_trending.sh` | `.github/workflows/scripts/hourly/update_hot_github_trending.py` |
 | `cron-update-github-stars.yml` | `0 * * * *` | `.github/workflows/scripts/run_github_stars.sh` | `.github/workflows/scripts/hourly/update_github_stars.py` |
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
@@ -31,6 +32,7 @@ The `test-database.yml` workflow is unrelated to cron scheduling.
 │   ├── extract_urls.py
 │   ├── refresh_paper_embeddings.py
 │   ├── update_citations.py
+│   ├── update_hot_github_trending.py
 │   └── update_github_stars.py
 ├── backfill/
 │   └── backfill_hf_papers.py
@@ -52,9 +54,16 @@ data and is intentionally ignored by git.
 
 ## Job Summary
 
-`update_github_stars.py` refreshes repository star counts and writes historical
-snapshots to `repository_star_history`. Recent papers are refreshed more often
-than older papers so trending calculations have enough signal.
+`update_hot_github_trending.py` is designed to own official repositories for
+latest papers aged 0–30 days. Once separately activated in production, every
+15 minutes it snapshots up to 500 normalized repository groups, calculates
+repository EMA only for touched rows, then writes composite scores only for
+their linked latest papers using full-corpus normalization.
+
+`update_github_stars.py` owns the non-overlapping hourly fresh (31–180 days,
+2,500 calls) and weekly (>180 days, 1,000 calls) queues.
+The hot/fresh boundary is a fixed 30 days shared by both adapters and CRON
+health; only cadence, caps, delays, and credentials are configurable.
 
 `calculate_trending_scores.py` computes EMA-smoothed trending scores from star
 history and stores them on repositories for the trending API/view pipeline.
@@ -108,6 +117,27 @@ uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py test
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py summary
 uv run --env-file backend/keys.env .github/workflows/scripts/manage_cron.py cleanup
 ```
+
+Production recovery and dry-run selection use the allowlisted launcher:
+
+```bash
+sudo pwc-cron update_hot_github_trending --dry-run
+pwc cron health update_hot_github_trending --strict --json
+```
+
+The optional `PWC_GITHUB_TOKEN_HOT` belongs only in
+`/etc/paperswithcode/production-cron.env`. Without it, the hot queue falls back
+to `PWC_GITHUB_TOKEN` and stops at the configured reserve (at least 500 calls).
+Requests reuse a session, retain GitHub rate headers, honor `Retry-After`, and
+retry transient 5xx responses with bounded jittered backoff. Structured
+`api_calls` counts every HTTP attempt, including retry attempts.
+
+The workflow is intentionally `workflow_dispatch`-only for staging review.
+Production activation is not implied by merging or staging deployment. First
+install the checked-in deploy tooling from the exact authorized production SHA,
+then deploy that SHA to production and confirm `sudo pwc-cron status` lists the
+new command. Only then add `*/15 * * * *` in a separately reviewed workflow
+commit.
 
 The management script discovers `hourly/`, `daily/`, `weekly/`, and `monthly/`
 Python jobs. It does not schedule jobs itself.

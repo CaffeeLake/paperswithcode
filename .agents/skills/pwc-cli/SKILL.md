@@ -137,6 +137,7 @@ inspect it before `create` when publication scope or repository selection is unc
   without displaying its value. `[--json]`
 
 Registered health jobs currently include `update_github_stars`,
+`update_hot_github_trending`,
 `update_citations`, `extract_urls`, `calculate_trending_scores`,
 `calculate_paper_trending_scores`, `update_hf_artifacts`,
 `import_hf_daily_papers`, `preload_thumbnails`, `mirror_thumbnails_to_disk`,
@@ -145,6 +146,7 @@ The active-generation maintenance job `refresh_paper_embeddings` is also
 registered and runs hourly after paper ingestion.
 
 Supported token probes are `PWC_GEMINI_API_KEY`, `PWC_GITHUB_TOKEN`,
+`PWC_GITHUB_TOKEN_HOT`,
 `PWC_HF_TOKEN`, `PWC_OPENROUTER_API_KEY`, and
 `PWC_SEMANTIC_SCHOLAR_API_KEY`.
 

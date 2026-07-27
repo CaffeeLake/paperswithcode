@@ -32,9 +32,103 @@ def _job(job_id: str):
 
 def test_registry_includes_hf_artifacts_and_embedding_crons():
     job_ids = {job.id for job in list_cron_jobs()}
+    assert "update_hot_github_trending" in job_ids
     assert "update_hf_artifacts" in job_ids
     assert "refresh_paper_embeddings" in job_ids
-    assert len(job_ids) == 12
+    assert len(job_ids) == 13
+
+
+def test_hot_job_has_dedicated_lock_and_operational_metrics():
+    job = _job("update_hot_github_trending")
+    assert job.schedule.startswith("paused")
+    assert job.category == "manual"
+    assert job.critical is False
+    assert job.lock_file.endswith("/update_hot_github_trending.lock")
+    assert "one_snapshot_over_30m" in job.db_freshness_query
+    assert "stale_paper_scores" in job.db_freshness_query
+    assert "r.trending_score > 0" in job.db_freshness_query
+    assert "r.trending_score IS NOT NULL" not in job.db_freshness_query
+    assert job.workflow_file == "cron-update-hot-github-trending.yml"
+
+
+def test_hot_health_allows_recent_no_work_when_population_is_empty():
+    job = _job("update_hot_github_trending")
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success_no_work",
+                "last_run": recent,
+                "is_running": False,
+                "work_metrics": {"repositories_processed": 0},
+            },
+            db_metrics={
+                "last_write": None,
+                "recent_writes": 0,
+                "hot_repository_count": 0,
+                "one_snapshot_over_30m": 0,
+                "stale_paper_scores": 0,
+                "oldest_eligible_wait_minutes": 0,
+            },
+            lock_state={"exists": False, "stale": False},
+        )
+    assert evaluated["status"] == "healthy"
+
+
+def test_hot_zero_seed_does_not_mark_paper_propagation_stale():
+    job = _job("update_hot_github_trending")
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": recent,
+                "is_running": False,
+                "work_metrics": {},
+            },
+            db_metrics={
+                "last_write": recent,
+                "recent_writes": 1,
+                "hot_repository_count": 1,
+                "one_snapshot_over_30m": 0,
+                # The SQL excludes the repository's one-snapshot 0.0 seed.
+                "stale_paper_scores": 0,
+                "oldest_eligible_wait_minutes": 0,
+            },
+            lock_state={"exists": False, "stale": False},
+        )
+    assert evaluated["status"] == "healthy"
+
+
+def test_hot_health_alerts_on_rate_reserve_violation():
+    job = _job("update_hot_github_trending")
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {
+                "status": "success",
+                "last_run": recent,
+                "is_running": False,
+                "work_metrics": {
+                    "rate_limit_remaining": 499,
+                    "rate_limit_reserve": 500,
+                },
+            },
+            db_metrics={
+                "last_write": recent,
+                "recent_writes": 1,
+                "hot_repository_count": 1,
+                "one_snapshot_over_30m": 0,
+                "stale_paper_scores": 0,
+                "oldest_eligible_wait_minutes": 0,
+            },
+            lock_state={"exists": False, "stale": False},
+        )
+    assert evaluated["status"] == "broken"
+    assert "reserve violated" in evaluated["status_reason"]
 
 
 def test_cron_status_requires_admin(client):

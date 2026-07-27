@@ -40,6 +40,8 @@ ALPHA = 0.75
 
 # Minimum hours between snapshots to calculate velocity (avoid division by very small numbers)
 MIN_HOURS_BETWEEN_SNAPSHOTS = 0.5
+HOT_MIN_HOURS_BETWEEN_SNAPSHOTS = 0.25
+HOT_EARLY_SIGNAL_HOURS = 1
 
 # ``repositories.trending_score`` is NUMERIC(10, 4). Values below this are just
 # old EMA decay residue and can trigger PostgreSQL numeric underflow in batch math.
@@ -123,7 +125,9 @@ def get_repositories_needing_trending_update(
         gc.collect()
 
 
-def process_repository_batch(session, repository_ids: list, logger=None) -> dict:
+def process_repository_batch(
+    session, repository_ids: list, logger=None, *, hot_mode: bool = False
+) -> dict:
     """Calculate and persist trending scores for a whole batch in one SQL pass.
 
     Replaces the previous per-repository approach (three queries plus a commit
@@ -184,7 +188,8 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             SELECT
                 repository_id,
                 MAX(prev_score) AS prev_score,
-                COUNT(*) AS snap_count
+                COUNT(*) AS snap_count,
+                MIN(snapshot_at) AS first_snapshot_at
             FROM snapshots
             GROUP BY repository_id
         ),
@@ -204,8 +209,22 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
                 AND s.rn > l.rn
             WHERE l.rn = 1
               AND EXTRACT(EPOCH FROM (l.snapshot_at - s.snapshot_at))
-                      / 3600.0 >= :min_hours
-            ORDER BY l.repository_id, s.rn
+                      / 3600.0 >= CASE
+                          WHEN :hot_mode
+                           AND sc.first_snapshot_at
+                               >= NOW() - (:hot_early_hours || ' hours')::interval
+                          THEN :hot_min_hours
+                          ELSE :min_hours
+                      END
+            ORDER BY
+                l.repository_id,
+                CASE
+                    WHEN EXTRACT(EPOCH FROM (l.snapshot_at - s.snapshot_at))
+                             / 3600.0 >= :min_hours
+                    THEN 0
+                    ELSE 1
+                END,
+                s.rn
         ),
         raw_scores AS (
             SELECT
@@ -274,6 +293,9 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
             {
                 "repo_ids": repository_ids,
                 "min_hours": MIN_HOURS_BETWEEN_SNAPSHOTS,
+                "hot_min_hours": HOT_MIN_HOURS_BETWEEN_SNAPSHOTS,
+                "hot_early_hours": str(HOT_EARLY_SIGNAL_HOURS),
+                "hot_mode": hot_mode,
                 "min_prev_score": MIN_PREVIOUS_SCORE,
                 "max_score": MAX_TRENDING_SCORE,
                 "alpha": ALPHA,
@@ -292,6 +314,22 @@ def process_repository_batch(session, repository_ids: list, logger=None) -> dict
         raise
     finally:
         gc.collect()
+
+
+def calculate_repository_scores(
+    session, repository_ids: list[int], *, hot_mode: bool = False, logger=None
+) -> dict:
+    """Calculate scores only for explicit repository IDs.
+
+    The hourly full-population job and the 15-minute hot orchestrator share this
+    write path. Hot mode permits a 15-minute pair only while the repository's
+    first observed snapshot is less than one hour old, and otherwise prefers a
+    baseline at least 30 minutes old.
+    """
+    unique_ids = sorted(set(repository_ids))
+    return process_repository_batch(
+        session, unique_ids, logger=logger, hot_mode=hot_mode
+    )
 
 
 def check_memory_usage() -> int:

@@ -4,7 +4,34 @@ This directory contains CRON jobs that run hourly to keep the PapersWithCode dat
 
 ## Active Jobs
 
-### 1. GitHub Stars Update (`update_github_stars.py`)
+### 1. Hot GitHub Trending (`update_hot_github_trending.py`)
+
+This staging-ready job is intended to run every 15 minutes and own official
+repositories linked to latest papers aged 0–30 days. It fetches up to 500
+normalized owner/name groups with a 250-millisecond delay, writes snapshots,
+scores only touched repositories, and immediately propagates composite scores
+to their linked latest papers.
+
+Hot repositories prefer a snapshot baseline at least 30 minutes old. During
+the first hour after their first observed snapshot, a 15-minute baseline is
+accepted. Negative velocity is clamped to zero and the ordinary α=0.75 EMA and
+maximum-score safeguard remain in force.
+
+`PWC_GITHUB_TOKEN_HOT` is optional. Without it, `PWC_GITHUB_TOKEN` is used and
+the job preserves at least `PWC_GITHUB_RATE_LIMIT_RESERVE=500` calls.
+
+```bash
+sudo pwc-cron update_hot_github_trending --dry-run
+pwc cron health update_hot_github_trending --strict --json
+```
+
+The workflow is currently manual-only. To activate production, separately
+authorize installation of the checked-in deploy tooling from the exact
+production SHA, deploy that SHA to production, confirm the installed
+`pwc-cron` allowlist contains the command, and then add the `*/15` schedule in a
+separately reviewed commit.
+
+### 2. GitHub Stars Update (`update_github_stars.py`)
 
 **Purpose**: Fetch current GitHub star counts from the GitHub API and store historical snapshots.
 
@@ -13,17 +40,21 @@ This directory contains CRON jobs that run hourly to keep the PapersWithCode dat
 **What it does**:
 - Fetches GitHub star counts for repositories linked to papers
 - Stores historical snapshots in `repository_star_history` table
-- Prioritizes recent papers (< 6 months old) for more frequent updates
+- Selects only fresh papers aged 31 days through 6 months
 - Groups repositories by owner/name to avoid duplicate API calls
 - Runs fresh and weekly queues concurrently with separate GitHub accounts
 
 **Queue System**:
-- **FRESH** (`PWC_GITHUB_TOKEN`): papers < 6 months old, oldest update first
+- **HOT**: 0–30 days, exclusively owned by the 15-minute job
+- **FRESH** (`PWC_GITHUB_TOKEN`): 31 days–6 months, oldest update first
 - **WEEKLY** (`GITHUB_CLASSIC_TOKEN_AICONSULTANCYNIELSROGGE`): older and
   never-updated repositories, oldest update first, refreshed every 7 days
 
+The 30-day boundary is intentionally fixed so hot selection, fresh exclusion,
+and health queries cannot drift through environment configuration.
+
 **Configuration**:
-- Max updates: up to 3,000 fresh and 1,000 weekly repositories/hour
+- Max updates: up to 2,500 fresh and 1,000 weekly repositories/hour
 - API delay: 1 second between calls
 - Memory threshold: 200MB minimum
 
@@ -39,7 +70,7 @@ PYTHONPATH=.github/workflows uv run --env-file backend/keys.env python -m script
 
 ---
 
-### 2. Trending Scores Calculation (`calculate_trending_scores.py`)
+### 3. Trending Scores Calculation (`calculate_trending_scores.py`)
 
 **Purpose**: Calculate EMA-based trending scores from historical GitHub star data.
 
@@ -156,9 +187,9 @@ WHERE snapshot_at >= NOW() - INTERVAL '1 hour';
 ### Expected Performance (per hourly run)
 
 **GitHub Stars Update**:
-- Repositories processed: ~3,000 unique repos
-- API calls: ~3,000 (60% of GitHub's 5K/hour limit)
-- Snapshots stored: ~3,000+
+- Repositories processed: up to 2,500 fresh groups
+- API calls: up to 2,500 on the shared token
+- Snapshots stored: one per duplicate repository row in successful groups
 - Runtime: ~50-55 minutes
 - Memory usage: ~200-400MB
 
@@ -171,8 +202,10 @@ WHERE snapshot_at >= NOW() - INTERVAL '1 hour';
 ### GitHub API Rate Limits
 
 - **Limit**: 5,000 requests/hour (authenticated)
-- **Our usage**: ~3,000 requests/hour (safe margin)
-- **Rate limit check**: Script automatically waits if limit hit
+- **Maximum shared usage**: 2,500 fresh plus 4×500 hot calls/hour
+- **Reserve**: At least 500 calls; queues stop rather than consume it
+- **Rate handling**: Honor `Retry-After`; bounded retries for transient 5xx
+- **Metrics**: `api_calls` counts physical HTTP attempts, including retries
 - **Token**: Set `PWC_GITHUB_TOKEN` in `backend/keys.env`
 
 ---
@@ -181,10 +214,9 @@ WHERE snapshot_at >= NOW() - INTERVAL '1 hour';
 
 ### Problem: "PWC_GITHUB_TOKEN not set"
 
-**Solution**: Add your GitHub token to `backend/keys.env`:
-```bash
-echo "PWC_GITHUB_TOKEN=ghp_your_token_here" >> backend/keys.env
-```
+**Solution**: Configure the credential through the appropriate environment
+tooling. Production automation reads `/etc/paperswithcode/production-cron.env`;
+never put production tokens in command arguments or the checkout.
 
 ### Problem: "Rate limit hit"
 
@@ -220,7 +252,7 @@ echo "PWC_GITHUB_TOKEN=ghp_your_token_here" >> backend/keys.env
 
 ## Architecture Notes
 
-### Why Two Separate Scripts?
+### Why keep independent full reconciliation jobs?
 
 **Benefits**:
 1. **Separation of concerns**: API fetching vs. mathematical calculations

@@ -188,6 +188,9 @@ def main() -> int:
             "WEB_CONCURRENCY": "2",
         },
     )
+    # The optional hot-queue credential is automation-only. Keep it out of the
+    # application environment and install it only in the CRON overlay below.
+    production.pop("PWC_GITHUB_TOKEN_HOT", None)
 
     staging = {
         key: line
@@ -247,8 +250,9 @@ def main() -> int:
     cron = {
         key: line
         for key, line in legacy.items()
-        if key.startswith(("PWC_POSTGRES_BACKUP_", "GITHUB_"))
-        or key in {"PWC_GITHUB_TOKEN"}
+        if key.startswith(("PWC_POSTGRES_BACKUP_", "PWC_GITHUB_HOT_", "GITHUB_"))
+        or key == "PWC_GITHUB_RATE_LIMIT_RESERVE"
+        or key in {"PWC_GITHUB_TOKEN", "PWC_GITHUB_TOKEN_HOT"}
     }
     cron = assign(
         cron,

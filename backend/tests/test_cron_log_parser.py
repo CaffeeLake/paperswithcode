@@ -16,7 +16,8 @@ WORKFLOW_SCRIPTS = REPO_ROOT / ".github" / "workflows"
 
 
 def _load_cron_helpers():
-    sys.path.insert(0, str(WORKFLOW_SCRIPTS))
+    if str(WORKFLOW_SCRIPTS) not in sys.path:
+        sys.path.append(str(WORKFLOW_SCRIPTS))
     module_path = WORKFLOW_SCRIPTS / "scripts" / "utils" / "cron_helpers.py"
     spec = importlib.util.spec_from_file_location("cron_helpers_for_test", module_path)
     module = importlib.util.module_from_spec(spec)

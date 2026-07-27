@@ -27,6 +27,89 @@ class CronJobDefinition:
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     CronJobDefinition(
+        id="update_hot_github_trending",
+        display_name="Update Hot GitHub Trending",
+        category="manual",
+        schedule="paused (workflow_dispatch only; production activation pending)",
+        script_path="hourly/update_hot_github_trending.py",
+        log_name="update_hot_github_trending",
+        process_patterns=("update_hot_github_trending",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/"
+            "update_hot_github_trending.lock"
+        ),
+        expected_runtime_minutes=12,
+        stale_after_minutes=45,
+        critical=False,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            WITH hot_repositories AS (
+                SELECT DISTINCT r.id, r.created_at AS repository_created_at
+                FROM repositories r
+                JOIN paper_repositories pr
+                  ON pr.repository_id = r.id
+                 AND pr.is_official = TRUE
+                JOIN papers p
+                  ON p.id = pr.paper_id
+                 AND p.is_latest_version = TRUE
+                WHERE p.date_published >= CURRENT_DATE - INTERVAL '30 days'
+            ),
+            history AS (
+                SELECT
+                    hr.id,
+                    hr.repository_created_at,
+                    count(rsh.id) AS snapshot_count,
+                    min(rsh.snapshot_at) AS first_snapshot_at,
+                    max(rsh.snapshot_at) AS last_snapshot_at
+                FROM hot_repositories hr
+                LEFT JOIN repository_star_history rsh
+                  ON rsh.repository_id = hr.id
+                GROUP BY hr.id, hr.repository_created_at
+            ),
+            stale_papers AS (
+                SELECT count(DISTINCT p.id) AS count
+                FROM papers p
+                JOIN paper_repositories pr
+                  ON pr.paper_id = p.id
+                 AND pr.is_official = TRUE
+                JOIN hot_repositories hr ON hr.id = pr.repository_id
+                JOIN repositories r ON r.id = hr.id
+                WHERE p.is_latest_version = TRUE
+                  AND r.trending_score > 0
+                  AND (
+                    p.trending_score IS NULL
+                    OR p.trending_score_updated_at < r.trending_score_updated_at
+                  )
+            )
+            SELECT
+                max(last_snapshot_at) AS last_write,
+                count(*) AS hot_repository_count,
+                count(*) FILTER (
+                  WHERE last_snapshot_at > now() - interval '30 minutes'
+                ) AS recent_writes,
+                count(*) FILTER (
+                  WHERE snapshot_count = 1
+                    AND first_snapshot_at < now() - interval '30 minutes'
+                ) AS one_snapshot_over_30m,
+                (SELECT count FROM stale_papers) AS stale_paper_scores,
+                COALESCE(
+                  EXTRACT(EPOCH FROM (
+                    now() - min(
+                      COALESCE(last_snapshot_at, repository_created_at)
+                    )
+                      FILTER (
+                        WHERE COALESCE(last_snapshot_at, repository_created_at)
+                              < now() - interval '15 minutes'
+                      )
+                  )) / 60,
+                  0
+                )::bigint AS oldest_eligible_wait_minutes
+            FROM history
+        """,
+        workflow_file="cron-update-hot-github-trending.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="update_github_stars",
         display_name="Update GitHub Stars",
         category="hourly",

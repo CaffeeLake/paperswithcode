@@ -125,6 +125,7 @@ def show_job_status(job_name: str = None, date: str = None):
 
                         # Map script names to actual log file names
                         log_name_mapping = {
+                            "update_hot_github_trending": "update_hot_github_trending",
                             "update_github_stars": "github_stars_cron",
                             "update_citations": "update_citations_hourly",
                             "extract_urls": "extract_urls_hourly",

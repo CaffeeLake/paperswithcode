@@ -902,6 +902,26 @@ def test_cron_jobs_declare_bounded_execution_contracts():
         assert spec.health_job
 
 
+def test_hot_workflow_is_manual_only_until_production_activation():
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "cron-update-hot-github-trending.yml"
+    ).read_text()
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" not in workflow
+    assert 'cron: "*/15 * * * *"' not in workflow
+
+    cron_env_example = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "env"
+        / "production-cron.env.example"
+    ).read_text()
+    assert "PWC_GITHUB_HOT_WINDOW_DAYS" not in cron_env_example
+
+
 def test_cron_status_reports_exact_production_release(
     tmp_path: Path, monkeypatch, capsys
 ):
@@ -924,6 +944,7 @@ def test_cron_status_reports_exact_production_release(
     assert status["release_id"] == "a" * 12 + "-production"
     assert status["git_sha"] == "a" * 40
     assert status["jobs"]["refresh_paper_embeddings"]["timeout"] == "6h"
+    assert status["jobs"]["update_hot_github_trending"]["timeout"] == "30m"
 
 
 def test_shared_runtime_is_made_service_readable(tmp_path: Path, monkeypatch):

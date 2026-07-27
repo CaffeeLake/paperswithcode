@@ -9,6 +9,7 @@ executes them from a checkout. GitHub Actions invokes the installed
 
 | Schedule | Script | Purpose |
 | --- | --- | --- |
+| Manual dispatch only | `.github/workflows/scripts/hourly/update_hot_github_trending.py` | Staging-ready hot pipeline; production schedule remains intentionally disabled. |
 | `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh fresh and weekly official repositories concurrently using separate GitHub accounts. |
 | `15 * * * *` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
 | `30 * * * *` | `.github/workflows/scripts/hourly/update_citations.py` | Pull citation counts from Semantic Scholar for ArXiv papers. |
@@ -51,10 +52,24 @@ documented in [deployment.md](deployment.md).
 
 ## Trending Pipeline
 
-1. `update_github_stars.py` snapshots star counts into `repository_star_history`.
-2. `calculate_trending_scores.py` computes a trending score per repository using an exponential moving average (α = 0.75) of hourly velocity.
-3. Database views (`trending_repositories_24h`, `trending_papers_24h`) join the latest official repositories to papers.
-4. API endpoint `/api/v1/papers/trending` reads from the view and supports filters:
+Once production activation is separately authorized, queue ownership is
+exclusive: the 15-minute hot job owns latest papers aged
+0–30 days (500 calls/run), the hourly fresh queue owns days 31–180 (2,500
+calls/run), and the weekly queue owns older repositories (1,000 calls/run).
+The 30-day ownership boundary is intentionally fixed across selection and
+health checks; it is not an environment override.
+`PWC_GITHUB_TOKEN_HOT` is optional in
+`/etc/paperswithcode/production-cron.env`; when absent, hot requests use
+`PWC_GITHUB_TOKEN` and preserve a 500-call reserve.
+
+1. `update_hot_github_trending.py` is the targeted path that snapshots hot repositories, calculates their
+   EMA scores, and updates only their linked latest papers in the same run.
+2. `update_github_stars.py` snapshots the fresh and weekly queues into
+   `repository_star_history`.
+3. The hourly `calculate_trending_scores.py` and
+   `calculate_paper_trending_scores.py` jobs reconcile the full populations.
+   Targeted paper writes still normalize against the full live GitHub/HF corpus.
+4. Database views and `/api/v1/papers/trending` expose the resulting scores.
 
 ```bash
 curl "http://localhost:8000/api/v1/papers/trending?limit=10&max_age_days=180"
@@ -83,6 +98,31 @@ Response snippet:
 ```
 
 Frontend integration (`frontend/src/pages/Papers.tsx`) uses the dedicated endpoint when users select the 🔥 Trending tab without a search query, and gracefully falls back to `/papers` plus sort options for mixed queries.
+
+The checked-in workflow is `workflow_dispatch`-only. A merge to `main` or a
+staging deployment does not activate production, and the installed
+`/usr/local/sbin/pwc-cron` will not recognize this command until deploy tooling
+from the authorized production SHA is installed.
+
+Production activation requires a separately authorized and reviewed sequence:
+
+1. Install the checked-in deploy tooling from the exact authorized production SHA.
+2. Deploy that same SHA to production so the immutable release contains the job.
+3. Verify `sudo pwc-cron status` lists `update_hot_github_trending`.
+4. In a separate reviewed commit, add the `*/15 * * * *` schedule to
+   `cron-update-hot-github-trending.yml`.
+
+After those steps, recovery and selection-only checks are:
+
+```bash
+pwc cron health update_hot_github_trending --strict --json
+sudo pwc-cron update_hot_github_trending --dry-run
+```
+
+The dry run prints the bounded selected population and projected shared-token
+calls without GitHub requests or database writes. Disable the schedule to roll
+back; snapshots are retained. If it stays disabled, restore hot papers to the
+hourly fresh ownership before releasing that rollback.
 
 ## PDF Validation for URL Extraction
 

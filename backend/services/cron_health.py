@@ -357,6 +357,13 @@ def evaluate_job_health(
             db_stale, db_reason = _db_is_stale(db_metrics, job.stale_after_minutes)
 
     recent_log_success, recent_log_reason = _recent_log_success(job, log_status)
+    if (
+        job.id == "update_hot_github_trending"
+        and db_metrics.get("hot_repository_count") == 0
+        and recent_log_success
+    ):
+        db_stale = False
+        db_reason = None
 
     # Lock files persist after `flock` releases; only treat as blocking when DB
     # freshness also looks bad (otherwise it is a harmless leftover file).
@@ -457,6 +464,39 @@ def evaluate_job_health(
         else:
             status = "degraded"
             reasons.append(f"log status is {log_result}")
+
+    if job.id == "update_hot_github_trending":
+        oldest_wait = db_metrics.get("oldest_eligible_wait_minutes", 0)
+        stale_scores = db_metrics.get("stale_paper_scores", 0)
+        one_snapshot = db_metrics.get("one_snapshot_over_30m", 0)
+        reserve_stops = work_metrics.get("rate_limit_stops", 0)
+        remaining = work_metrics.get("rate_limit_remaining")
+        reserve = work_metrics.get("rate_limit_reserve")
+
+        if oldest_wait > 30:
+            status = "broken"
+            reasons.append(f"oldest eligible hot repository has waited {oldest_wait}m")
+        if stale_scores:
+            status = "broken"
+            reasons.append(f"{stale_scores} hot paper scores are missing or stale")
+        if one_snapshot and status == "healthy":
+            status = "degraded"
+            reasons.append(
+                f"{one_snapshot} hot repositories have one snapshot after 30m"
+            )
+        if reserve_stops:
+            if status == "healthy":
+                status = "degraded"
+            reasons.append(f"rate-limit reserve stopped {reserve_stops} run(s)")
+        if (
+            remaining is not None
+            and reserve is not None
+            and int(remaining) < int(reserve)
+        ):
+            status = "broken"
+            reasons.append(
+                f"rate-limit reserve violated ({remaining} remaining < {reserve})"
+            )
 
     if dependency_status and dependency_status not in {"healthy", "running"}:
         if status == "healthy":

@@ -144,6 +144,79 @@ def derive_corpora(population):
     return github_sorted, sorted_by_kind
 
 
+def build_score_changes(population, github_sorted, sorted_by_kind, paper_ids=None):
+    """Compute updates/clears for all papers or an explicit target set."""
+    selected = sorted(population) if paper_ids is None else sorted(set(paper_ids))
+    updates = []
+    clears = []
+    for paper_id in selected:
+        entry = population.get(paper_id)
+        if entry is None:
+            continue
+        score, github_component, hf_component = compute_paper_score(
+            entry["github_raw"],
+            github_sorted,
+            entry["artifacts"],
+            sorted_by_kind,
+        )
+        if github_component > 0 or hf_component > 0:
+            updates.append(
+                {
+                    "id": paper_id,
+                    "score": round(score, 4),
+                    "g": round(github_component, 4),
+                    "h": round(hf_component, 4),
+                }
+            )
+        elif entry["existing"]:
+            clears.append(paper_id)
+    return updates, clears
+
+
+def get_latest_paper_ids_for_repositories(
+    session, repository_ids: list[int]
+) -> list[int]:
+    """Return latest papers linked officially to the touched repository rows."""
+    if not repository_ids:
+        return []
+    rows = session.execute(
+        text("""
+            SELECT DISTINCT p.id
+            FROM papers p
+            JOIN paper_repositories pr ON pr.paper_id = p.id
+            WHERE pr.repository_id = ANY(:repository_ids)
+              AND pr.is_official = TRUE
+              AND p.is_latest_version = TRUE
+        """),
+        {"repository_ids": sorted(set(repository_ids))},
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def calculate_paper_scores(session, paper_ids=None) -> dict:
+    """Normalize against the full corpus and write only selected paper rows."""
+    cutoff = (datetime.now() - timedelta(days=SCORING_WINDOW_DAYS)).date()
+    population = load_population(session, cutoff)
+    if not population:
+        return {"population": 0, "selected": 0, "written": 0, "cleared": 0}
+
+    github_sorted, sorted_by_kind = derive_corpora(population)
+    updates, clears = build_score_changes(
+        population,
+        github_sorted,
+        sorted_by_kind,
+        paper_ids=paper_ids,
+    )
+    written, cleared = write_scores(session, updates, clears)
+    selected = len(population) if paper_ids is None else len(set(paper_ids))
+    return {
+        "population": len(population),
+        "selected": selected,
+        "written": written,
+        "cleared": cleared,
+    }
+
+
 def write_scores(session, updates, clears):
     """Persist computed scores and clear stale ones, in chunks."""
     written = 0
@@ -332,38 +405,13 @@ def main():
     start_time = time.time()
     try:
         session = db_manager.session_local()
-        population = load_population(session, cutoff)
-        if not population:
+        result = calculate_paper_scores(session)
+        if not result["population"]:
             log("No papers in scoring window - nothing to do")
             return
-
-        github_sorted, sorted_by_kind = derive_corpora(population)
-
-        updates = []
-        clears = []
-        for paper_id, entry in population.items():
-            score, g, h = compute_paper_score(
-                entry["github_raw"],
-                github_sorted,
-                entry["artifacts"],
-                sorted_by_kind,
-            )
-            has_signal = g > 0 or h > 0
-            if has_signal:
-                updates.append(
-                    {
-                        "id": paper_id,
-                        "score": round(score, 4),
-                        "g": round(g, 4),
-                        "h": round(h, 4),
-                    }
-                )
-            elif entry["existing"]:
-                # Previously scored, now no live signal -> drop from feed.
-                clears.append(paper_id)
-
-        log(f"Papers with signal: {len(updates)}; clearing stale: {len(clears)}")
-        written, cleared = write_scores(session, updates, clears)
+        written = result["written"]
+        cleared = result["cleared"]
+        log(f"Scores written: {written}; clearing stale: {cleared}")
         pinned = apply_decaying_trending_pins(session)
 
         log_top_papers(session)

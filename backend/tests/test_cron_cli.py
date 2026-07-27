@@ -73,3 +73,7 @@ def test_cron_cli_parses_health_and_token_commands():
     assert health.job == "update_citations"
     assert health.strict
     assert token.environment_variable == "PWC_HF_TOKEN"
+
+
+def test_hot_token_is_registered_for_safe_probe():
+    assert "PWC_GITHUB_TOKEN_HOT" in cron_token_probe.TOKEN_PROBES

@@ -42,6 +42,12 @@ def job(
 
 
 COMMANDS: dict[str, Job] = {
+    "update_hot_github_trending": job(
+        "-m",
+        "scripts.hourly.update_hot_github_trending",
+        timeout="30m",
+        idempotency="upsert hot star snapshots and targeted trending scores",
+    ),
     "update_github_stars": job(
         "-m",
         "scripts.hourly.update_github_stars",

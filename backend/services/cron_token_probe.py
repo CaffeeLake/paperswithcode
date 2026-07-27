@@ -29,6 +29,14 @@ class TokenProbe:
 
 
 TOKEN_PROBES = {
+    "PWC_GITHUB_TOKEN_HOT": (
+        "GitHub",
+        "https://api.github.com/repos/huggingface/transformers",
+        lambda token: {
+            "Authorization": f"token {token}",
+            "User-Agent": "PapersWithCode-Stars/1.0",
+        },
+    ),
     "PWC_GITHUB_TOKEN": (
         "GitHub",
         "https://api.github.com/repos/huggingface/transformers",

@@ -1,14 +1,25 @@
 from pathlib import Path
 import sys
+from datetime import datetime
+from inspect import signature
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 
 WORKFLOWS_DIR = Path(__file__).parents[2] / ".github" / "workflows"
-sys.path.insert(0, str(WORKFLOWS_DIR))
+if str(WORKFLOWS_DIR) not in sys.path:
+    sys.path.append(str(WORKFLOWS_DIR))
 
-from scripts.hourly.update_github_stars import get_next_repository_group  # noqa: E402
+from scripts.hourly.update_github_stars import (  # noqa: E402
+    fetch_github_stars,
+    get_next_repository_group,
+    rate_limit_reserve_reached,
+    run_queue,
+    store_star_snapshot,
+)
+from scripts.hourly.update_hot_github_trending import resolve_hot_token  # noqa: E402
 
 
 def _session_with_row():
@@ -22,7 +33,8 @@ def _session_with_row():
             None,
             162_685,
             None,
-            3,
+            1,
+            None,
         )
     ]
     return session
@@ -34,10 +46,66 @@ def test_fresh_queue_uses_recent_eligibility():
     get_next_repository_group(session, "fresh")
 
     query = str(session.execute.call_args.args[0])
-    assert "linked.newest_paper_date >= :six_months_ago" in query
+    assert "linked.newest_paper_date < :hot_cutoff" in query
+    assert "linked.newest_paper_date >= :fresh_cutoff" in query
     assert "repo_groups.oldest_update < :threshold_recent" in query
     assert "repo_groups.oldest_update ASC NULLS FIRST" in query
     assert "array_agg(r.id ORDER BY r.id)" in query
+    assert "GROUP BY LOWER(r.owner), LOWER(r.name)" in query
+
+
+def test_queue_helper_binds_thresholds_by_keyword():
+    session = _session_with_row()
+    before = datetime.now()
+
+    get_next_repository_group(
+        session,
+        "fresh",
+        threshold_hours_recent=5,
+        threshold_days_regular=11,
+    )
+
+    params = session.execute.call_args.args[1]
+    after = datetime.now()
+    assert params["group_limit"] == 1
+    assert timedelta_hours(before - params["threshold_recent"]) >= 4.99
+    assert timedelta_hours(after - params["threshold_recent"]) <= 5.01
+    assert (before - params["threshold_regular"]).days >= 10
+    assert (after - params["threshold_regular"]).days <= 11
+    assert (before - params["hot_cutoff"]).days >= 29
+    assert (after - params["fresh_cutoff"]).days <= 180
+
+
+def timedelta_hours(value):
+    return value.total_seconds() / 3600
+
+
+def test_hot_fresh_boundary_is_fixed_even_if_legacy_env_override_is_set(
+    monkeypatch,
+):
+    monkeypatch.setenv("PWC_GITHUB_HOT_WINDOW_DAYS", "7")
+    hot_session = _session_with_row()
+    fresh_session = _session_with_row()
+    before = datetime.now()
+
+    get_next_repository_group(hot_session, "hot")
+    get_next_repository_group(fresh_session, "fresh")
+
+    hot_cutoff = hot_session.execute.call_args.args[1]["hot_cutoff"]
+    fresh_cutoff = fresh_session.execute.call_args.args[1]["hot_cutoff"]
+    assert 29.99 <= timedelta_hours(before - hot_cutoff) / 24 <= 30.01
+    assert abs((hot_cutoff - fresh_cutoff).total_seconds()) < 1
+    assert "hot_window_days" not in signature(run_queue).parameters
+
+
+def test_hot_queue_owns_only_the_hot_window():
+    session = _session_with_row()
+
+    get_next_repository_group(session, "hot")
+
+    query = str(session.execute.call_args.args[0])
+    assert "linked.newest_paper_date >= :hot_cutoff" in query
+    assert "repo_groups.oldest_update < :threshold_hot" in query
 
 
 def test_weekly_queue_uses_regular_eligibility():
@@ -46,7 +114,7 @@ def test_weekly_queue_uses_regular_eligibility():
     result = get_next_repository_group(session, "weekly")
 
     query = str(session.execute.call_args.args[0])
-    assert "linked.newest_paper_date < :six_months_ago" in query
+    assert "linked.newest_paper_date < :fresh_cutoff" in query
     assert "repo_groups.oldest_update < :threshold_regular" in query
     assert result["owner"] == "huggingface"
     assert result["repository_ids"] == [1, 2]
@@ -67,3 +135,88 @@ def test_database_errors_are_not_reported_as_an_empty_queue():
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         get_next_repository_group(session, "fresh")
+
+
+def test_rate_limit_reserve_stops_at_boundary():
+    assert rate_limit_reserve_reached(500, 500)
+    assert rate_limit_reserve_reached(499, 500)
+    assert not rate_limit_reserve_reached(501, 500)
+    assert not rate_limit_reserve_reached(None, 500)
+
+
+def test_fetch_retries_retry_after_and_retains_rate_headers():
+    throttled = SimpleNamespace(
+        status_code=429,
+        headers={
+            "Retry-After": "2",
+            "X-RateLimit-Limit": "5000",
+            "X-RateLimit-Remaining": "700",
+            "X-RateLimit-Reset": "12345",
+        },
+    )
+    success = SimpleNamespace(
+        status_code=200,
+        headers={
+            "X-RateLimit-Limit": "5000",
+            "X-RateLimit-Remaining": "699",
+            "X-RateLimit-Reset": "12345",
+        },
+        json=lambda: {"stargazers_count": 42},
+    )
+    http = Mock()
+    http.get.side_effect = [throttled, success]
+    sleeps = []
+
+    result = fetch_github_stars(
+        "owner", "repo", "token", http=http, sleep=sleeps.append
+    )
+
+    assert result.stars == 42
+    assert result.retries == 1
+    assert result.http_attempts == 2
+    assert sleeps == [2.0]
+    assert result.rate_limit.limit == 5000
+    assert result.rate_limit.remaining == 699
+    assert result.rate_limit.reset == 12345
+
+
+def test_fetch_uses_bounded_exponential_retry_for_server_errors(monkeypatch):
+    response = SimpleNamespace(status_code=503, headers={})
+    http = Mock()
+    http.get.return_value = response
+    sleeps = []
+    monkeypatch.setattr(
+        "scripts.hourly.update_github_stars.random.uniform", lambda *_: 0.0
+    )
+
+    result = fetch_github_stars(
+        "owner",
+        "repo",
+        "token",
+        http=http,
+        max_retries=2,
+        sleep=sleeps.append,
+    )
+
+    assert result.failure == "http_503"
+    assert result.retries == 2
+    assert sleeps == [1, 2]
+
+
+def test_hot_token_falls_back_to_fresh_token(monkeypatch):
+    monkeypatch.delenv("PWC_GITHUB_TOKEN_HOT", raising=False)
+    monkeypatch.setenv("PWC_GITHUB_TOKEN", "shared")
+    assert resolve_hot_token() == ("shared", True)
+
+    monkeypatch.setenv("PWC_GITHUB_TOKEN_HOT", "dedicated")
+    assert resolve_hot_token() == ("dedicated", False)
+
+
+def test_snapshot_write_is_idempotent_for_same_timestamp():
+    session = Mock()
+
+    assert store_star_snapshot(session, [1, 2], 10) == 2
+
+    statement = str(session.execute.call_args.args[0])
+    assert "ON CONFLICT (repository_id, snapshot_at)" in statement
+    assert "DO UPDATE SET num_stars = EXCLUDED.num_stars" in statement

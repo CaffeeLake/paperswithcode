@@ -10,6 +10,7 @@ This module provides common functionality for all cron jobs including:
 """
 
 import logging
+import json
 import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone, timedelta
@@ -463,8 +464,14 @@ def get_cron_job_status(job_name: str, date: Optional[str] = None) -> Dict[str, 
         # Extract work metrics from logs (papers processed, repos updated, etc)
         work_metrics = {}
         for line in current_run_lines:
+            if "HOT_GITHUB_TRENDING_SUMMARY " in line:
+                payload = line.split("HOT_GITHUB_TRENDING_SUMMARY ", 1)[1]
+                try:
+                    work_metrics.update(json.loads(payload))
+                except json.JSONDecodeError:
+                    pass
             # Papers processed
-            if re.search(r"Papers processed:\s*(\d+)", line):
+            elif re.search(r"Papers processed:\s*(\d+)", line):
                 match = re.search(r"Papers processed:\s*(\d+)", line)
                 work_metrics["papers_processed"] = int(match.group(1))
             # Repositories processed (with or without "Total")

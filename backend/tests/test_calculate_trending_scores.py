@@ -13,7 +13,8 @@ CRON_SCRIPT = WORKFLOW_SCRIPTS / "scripts" / "hourly" / "calculate_trending_scor
 
 
 def _load_cron_module():
-    sys.path.insert(0, str(WORKFLOW_SCRIPTS))
+    if str(WORKFLOW_SCRIPTS) not in sys.path:
+        sys.path.append(str(WORKFLOW_SCRIPTS))
     spec = importlib.util.spec_from_file_location(
         "calculate_trending_scores_for_test", CRON_SCRIPT
     )
@@ -76,6 +77,7 @@ def test_process_repository_batch_sanitizes_and_clamps_scores():
     )
     assert session.params["min_prev_score"] == cron.MIN_PREVIOUS_SCORE
     assert session.params["max_score"] == cron.MAX_TRENDING_SCORE
+    assert session.params["hot_mode"] is False
 
 
 def test_process_repository_batch_reraises_batch_errors():
@@ -102,3 +104,29 @@ def test_repository_queue_prioritizes_recent_official_paper_repos():
     assert "pr.is_official = TRUE" in session.statement
     assert "p.is_latest_version" in session.statement
     assert "MAX(p.date_published) >= NOW() - INTERVAL '30 days'" in session.statement
+
+
+def test_hot_scoring_allows_15_minute_early_pair_and_prefers_30_minutes():
+    cron = _load_cron_module()
+    session = _Session(result=_Result(row=(1, 0, 0)))
+
+    cron.calculate_repository_scores(session, [42, 42], hot_mode=True)
+
+    assert session.params["repo_ids"] == [42]
+    assert session.params["hot_mode"] is True
+    assert session.params["hot_min_hours"] == 0.25
+    assert session.params["min_hours"] == 0.5
+    assert "sc.first_snapshot_at" in session.statement
+    assert "THEN :hot_min_hours" in session.statement
+    assert "THEN 0" in session.statement
+
+
+def test_ema_decays_previous_seed_and_clamps_negative_velocity():
+    alpha = 0.75
+    seeded_score = 40.0
+    measured_velocity = 4.0
+    decayed = alpha * measured_velocity + (1 - alpha) * seeded_score
+    negative = max(alpha * -10.0 + (1 - alpha) * seeded_score, 0.0)
+
+    assert decayed == 13.0
+    assert negative == 2.5

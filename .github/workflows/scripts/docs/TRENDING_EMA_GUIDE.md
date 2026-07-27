@@ -8,9 +8,46 @@ The **Trending Papers** feature uses an **Exponential Moving Average (EMA)** to 
 
 ## Architecture
 
-### 1. Two-Phase Approach
+### 15-minute targeted hot path
 
-The system is split into two independent CRON jobs:
+The hot path is designed to own normalized official repositories for latest
+papers aged 0–30 days. Once separately activated,
+`update_hot_github_trending.py` runs every 15 minutes and performs snapshot
+fetch, targeted repository EMA calculation, and targeted paper composite
+propagation in one bounded job. The ordinary hourly fetch owns days 31–180; the
+weekly queue owns older repositories, so no queue overlaps.
+The hot/fresh ownership boundary is intentionally fixed at 30 days across both
+selectors and operational health; it is not configurable through the
+environment.
+
+Targeted paper scoring reads the full live GitHub and Hugging Face corpora for
+normalization, then writes only papers linked to touched repository IDs. The
+hourly full calculations remain the correctness backstop and produce the same
+score for a given corpus.
+
+Hot repositories accept a 15-minute snapshot pair only during the first hour
+after the first observed snapshot, otherwise requiring and preferring a
+30-minute baseline. The α=0.75 EMA, negative clamp, and numeric maximum are
+unchanged.
+
+GitHub requests reuse a session and retain `X-RateLimit-*` and `Retry-After`.
+Transient 5xx responses use bounded exponential backoff with jitter. Shared
+token mode stops before the remaining budget reaches the configured reserve.
+
+```bash
+sudo pwc-cron update_hot_github_trending --dry-run
+pwc cron health update_hot_github_trending --strict --json
+```
+
+The checked-in workflow is manual-only. Production activation requires
+installing deploy tooling from the exact authorized production SHA, deploying
+that SHA to production, verifying the installed `pwc-cron` allowlist, and only
+then enabling `*/15` in a separately reviewed commit.
+
+### 1. Full reconciliation plus targeted hot propagation
+
+The full reconciliation remains split into independent fetching, repository
+scoring, and paper composite jobs:
 
 #### **Phase 1: GitHub Stars Fetching** (`update_github_stars.py`)
 - **Purpose**: Fetch current GitHub star counts from GitHub API
@@ -22,12 +59,18 @@ The system is split into two independent CRON jobs:
 - **Frequency**: Hourly (runs independently of Phase 1)
 - **Output**: Updates `repositories.trending_score` based on star velocity
 
-### Why Two Scripts?
+#### **Phase 3: Paper Composite Calculation** (`calculate_paper_trending_scores.py`)
+- **Purpose**: Normalize live GitHub and HF signals and write paper scores
+- **Frequency**: Hourly
+- **Output**: Updates `papers.trending_score` and its debug components
 
-1. **Separation of Concerns**: API fetching vs. mathematical calculations
-2. **Flexibility**: Trending calculation can run more/less frequently than API fetching
-3. **Resilience**: GitHub API failures don't affect trending score updates
-4. **Efficiency**: Can calculate trends for ALL repositories, not just recently fetched ones
+The hot orchestrator calls the same targeted repository and paper functions in
+one run, while the independent jobs remain the full-population backstop.
+
+1. **Separation of Concerns**: API fetching and scoring stay independently testable.
+2. **Low latency**: Hot repository and paper rows propagate in the same 15-minute run.
+3. **Resilience**: Hourly full reconciliation repairs missed targeted work.
+4. **Comparability**: Targeted paper writes normalize against the full corpus.
 
 ---
 
@@ -120,15 +163,15 @@ trending_score = 0.75 × 5.0 + 0.25 × 4.5
 **Configuration**:
 ```python
 delay = 1.0  # 1 second between API calls
-max_updates = 3000  # Process up to 3000 repos/hour
-threshold_hours_recent = 2  # Update recent papers every 2 hours
+max_updates = 2500  # Fresh queue, days 31-180
+threshold_hours_recent = 1
 threshold_days_regular = 7  # Update regular papers every 7 days
 ```
 
-**Priority System**:
-1. **NEW** (Priority 1): Never-updated repositories
-2. **RECENT** (Priority 2): Papers < 6 months old (update every 2 hours)
-3. **REGULAR** (Priority 3): Papers > 6 months old (update every 7 days)
+**Exclusive queues**:
+1. **HOT**: Days 0–30, 500 calls every 15 minutes.
+2. **FRESH**: Days 31–180, 2,500 calls hourly.
+3. **WEEKLY**: Older than 180 days, 1,000 calls every seven days.
 
 **Output**:
 - Updates `repositories.num_stars`
@@ -267,14 +310,15 @@ LIMIT 50;
 
 | Repository Type | GitHub API Fetch | Trending Calculation |
 |----------------|------------------|---------------------|
-| Recent papers (< 6 months) | Every 2 hours | Every 1 hour |
-| Regular papers (> 6 months) | Every 7 days | Every 1 hour |
-| All repositories | ~3000/hour | ~500/hour |
+| Hot papers (0–30 days) | Every 15 minutes | Same hot run |
+| Fresh papers (31–180 days) | Every hour | Every hour |
+| Weekly papers (>180 days) | Every 7 days | Every hour |
 
 ### API Usage
 
 - **GitHub API Rate Limit**: 5,000 requests/hour (with token)
-- **Our Usage**: ~3,000 requests/hour (60% of limit, safe margin)
+- **Shared-token maximum**: 2,500 fresh plus 4×500 hot calls/hour
+- **Reserve**: At least 500 authenticated calls in shared-token mode
 - **Efficiency Gain**: 1 API call can update multiple repository URLs (grouped by owner/name)
 
 ### Memory Requirements
