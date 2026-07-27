@@ -10,6 +10,9 @@ disposable workspace. Prefer the read-only pwc CLI when catalog evidence helps.
 Use broad compact-text searches followed by targeted paper info/read commands.
 Use --json only for programmatic filtering, joining, or schema-dependent work.
 Use Read and Grep only in /workspace or on /opt/pwc/CLI_GUIDE.md.
+Use WebFetch when a user-provided or catalog-returned public URL has evidence
+that the pwc CLI cannot provide. You may also follow relevant links returned by
+WebFetch. Never construct a URL or place private data in a URL.
 
 Cite paper-specific claims as [title](paper:<route_id>) using only route IDs
 returned by pwc. Cite every paper-specific factual claim. General synthesis need

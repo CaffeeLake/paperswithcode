@@ -14,13 +14,15 @@ from claude_agent_sdk import (
     MirrorErrorMessage,
     ToolResultBlock,
     UserMessage,
+)
+from claude_agent_sdk import (
     query as sdk_query,
 )
 
-from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
-from backend.chat_sandbox_worker.prompt import render as render_system_prompt
-from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
 from backend.chat_sandbox_worker.config import WorkerSettings
+from backend.chat_sandbox_worker.prompt import render as render_system_prompt
+from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
+from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
 
@@ -49,13 +51,14 @@ def _response_text(value: Any) -> str:
 
 
 class WorkerToolHooks:
-    def __init__(self, settings: WorkerSettings):
+    def __init__(self, settings: WorkerSettings, prompt: str = ""):
         self.budget = ToolBudget(
             maximum_calls=settings.chat_max_tool_calls,
             maximum_direct_searches=settings.chat_max_direct_search_calls,
             maximum_result_bytes=settings.chat_tool_result_max_bytes,
             maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
         )
+        self.budget.observe_urls(prompt)
         self.bash_timeout_ms = round(settings.chat_bash_timeout_seconds * 1000)
         self.results: dict[str, dict[str, Any]] = {}
 
@@ -148,7 +151,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8_000:
         raise ValueError("Invalid prompt")
     request_id = str(frame.get("request_id") or "")
-    hooks = WorkerToolHooks(settings)
+    hooks = WorkerToolHooks(settings, prompt)
     adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
     prompt_text = render_system_prompt(
         max_turns=settings.chat_max_turns,
@@ -158,13 +161,12 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     )
     model = str(frame["model"])
     options = ClaudeAgentOptions(
-        tools=["Bash", "Read", "Grep"],
-        allowed_tools=["Bash", "Read", "Grep"],
+        tools=["Bash", "Read", "Grep", "WebFetch"],
+        allowed_tools=["Bash", "Read", "Grep", "WebFetch"],
         disallowed_tools=[
             "Glob",
             "Write",
             "Edit",
-            "WebFetch",
             "WebSearch",
             "Task",
             "AskUserQuestion",
@@ -192,13 +194,21 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         stderr=lambda _line: None,
         hooks={
             "PreToolUse": [
-                HookMatcher(matcher="Bash|Read|Grep", hooks=[hooks.pre], timeout=5)
+                HookMatcher(
+                    matcher="Bash|Read|Grep|WebFetch", hooks=[hooks.pre], timeout=5
+                )
             ],
             "PostToolUse": [
-                HookMatcher(matcher="Bash|Read|Grep", hooks=[hooks.post], timeout=5)
+                HookMatcher(
+                    matcher="Bash|Read|Grep|WebFetch", hooks=[hooks.post], timeout=5
+                )
             ],
             "PostToolUseFailure": [
-                HookMatcher(matcher="Bash|Read|Grep", hooks=[hooks.failure], timeout=5)
+                HookMatcher(
+                    matcher="Bash|Read|Grep|WebFetch",
+                    hooks=[hooks.failure],
+                    timeout=5,
+                )
             ],
         },
         session_store=RemoteSessionStore(),

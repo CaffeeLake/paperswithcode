@@ -5,13 +5,16 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
-ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep"})
+ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep", "WebFetch"})
 _HINT = "\n[output truncated; narrow, filter, or paginate the request and try again]\n"
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
 _SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)
+_URL = re.compile(r'https?://[^\s<>"\\]+', re.IGNORECASE)
 
 
 def _prefix(payload: bytes, maximum: int) -> bytes:
@@ -48,6 +51,40 @@ def _inside(value: Path, root: Path) -> bool:
         return False
 
 
+def _public_url(value: str) -> str | None:
+    try:
+        parsed = urlsplit(value.rstrip(".,;:!?)\\]}'\""))
+        host = parsed.hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or not host.isascii()
+        ):
+            return None
+        lowered = host.lower().rstrip(".")
+        if lowered == "localhost" or lowered.endswith(
+            (".local", ".internal", ".localhost")
+        ):
+            return None
+        try:
+            address = ip_address(lowered)
+        except ValueError:
+            pass
+        else:
+            if not address.is_global:
+                return None
+        netloc = lowered
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit(
+            (parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, "")
+        )
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class Decision:
     allowed: bool
@@ -64,6 +101,12 @@ class ToolBudget:
     searches: int = 0
     output_bytes: int = 0
     started: dict[str, float] = field(default_factory=dict)
+    fetchable_urls: set[str] = field(default_factory=set)
+
+    def observe_urls(self, payload: str) -> None:
+        for match in _URL.finditer(payload):
+            if normalized := _public_url(match.group()):
+                self.fetchable_urls.add(normalized)
 
     def authorize(
         self,
@@ -74,9 +117,20 @@ class ToolBudget:
         guide: Path = Path("/opt/pwc/CLI_GUIDE.md"),
     ) -> Decision:
         if name not in ALLOWED_TOOLS:
-            return Decision(False, "Only Bash, Read, and Grep are available.")
+            return Decision(False, "Only Bash, Read, Grep, and WebFetch are available.")
         if self.calls >= self.maximum_calls:
             return Decision(False, "Tool limit reached. Answer from existing evidence.")
+        if name == "WebFetch":
+            url = args.get("url")
+            normalized = _public_url(url) if isinstance(url, str) else None
+            if normalized is None:
+                return Decision(False, "WebFetch requires a public HTTP or HTTPS URL.")
+            if normalized not in self.fetchable_urls:
+                return Decision(
+                    False,
+                    "WebFetch is limited to URLs supplied by the user "
+                    "or returned by a tool.",
+                )
         if name in {"Read", "Grep"}:
             path = args.get("file_path") or args.get("path")
             if isinstance(path, str):
@@ -116,6 +170,7 @@ class ToolBudget:
             payload, min(self.maximum_result_bytes, remaining)
         )
         self.output_bytes += len(text.encode())
+        self.observe_urls(text)
         started = self.started.pop(tool_id, None)
         took_ms = round((time.monotonic() - started) * 1000) if started else 0
         return {

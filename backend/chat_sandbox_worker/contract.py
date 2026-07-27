@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "1"
+WORKER_CONTRACT_VERSION = "2"
 SDK_VERSION = "0.2.115"
 PWC_CLI_VERSION = "0.1.2"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
@@ -9,7 +9,7 @@ BASE_IMAGE = (
     "python:3.12-slim-bookworm@"
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
-# Immutable image emitted by publish_image.py for the v1 worker contract.
+# Immutable image emitted by publish_image.py for the selected worker contract.
 MODAL_IMAGE_ID = "im-suMbEg9noyb17ftSP7fAe2"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100

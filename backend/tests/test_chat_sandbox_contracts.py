@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import asyncio
 import importlib
+import json
 import os
 import sys
 import uuid
@@ -13,47 +13,46 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk import StreamEvent
 
+from backend.chat_gateway_app import (
+    MAX_PROVIDER_OUTPUT_TOKENS,
+    MAX_PROVIDER_TURN_TOKENS,
+    _output_tokens_allowed,
+)
+from backend.chat_sandbox_worker import publish_image, supervisor
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     IMAGE_PUBLISH_NAME,
     MODAL_APP_NAME,
     MODAL_IMAGE_ID,
 )
-from backend.chat_sandbox_worker import supervisor
-from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDKAdapter
 from backend.chat_sandbox_worker.prompt import render, sha256
-from backend.chat_sandbox_worker import publish_image
 from backend.chat_sandbox_worker.protocol import (
     ProtocolError,
     WorkerEventValidator,
     decode_frame,
     encode_frame,
 )
-from backend.scripts.qualify_chat_sandbox import QualificationRunner, Sample, summarize
+from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDKAdapter
+from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, sse_event
 from backend.models.database import ChatTurnCapability
+from backend.scripts.qualify_chat_sandbox import QualificationRunner, Sample, summarize
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
     _digest,
 )
-from backend.services.chat_sandbox_service import WorkspaceSnapshotProvider
-from backend.services.chat_sandbox_service import resolve_modal_image
 from backend.services.chat_sandbox_service import (
     RunningWorker,
     SandboxSessionManager,
     WorkerClaim,
+    WorkspaceSnapshotProvider,
+    resolve_modal_image,
 )
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
     SessionStoreGatewayError,
-)
-from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
-from backend.chat_gateway_app import (
-    MAX_PROVIDER_OUTPUT_TOKENS,
-    MAX_PROVIDER_TURN_TOKENS,
-    _output_tokens_allowed,
 )
 from deploy.release import build_manifest
 
@@ -164,14 +163,15 @@ def test_worker_adapter_assembles_streamed_tool_arguments():
     ]
 
 
-def test_generic_tool_projection_and_event_are_v2_raw_text():
+@pytest.mark.parametrize("name", ["Bash", "Read", "Grep", "WebFetch"])
+def test_generic_tool_projection_and_event_are_v2_raw_text(name):
     block = DISPLAY_BLOCKS_ADAPTER.validate_python(
         [
             {
                 "kind": "tool",
                 "schema_version": 2,
                 "id": "tool-1",
-                "name": "Bash",
+                "name": name,
                 "args": {"command": "pwc search vision"},
                 "status": "success",
                 "took_ms": 25,
@@ -182,7 +182,7 @@ def test_generic_tool_projection_and_event_are_v2_raw_text():
             }
         ]
     )[0]
-    assert block.name == "Bash"
+    assert block.name == name
     assert b'"status":"success"' in sse_event(
         "tool_result",
         id="tool-1",
@@ -207,6 +207,48 @@ def test_tool_budget_counts_parallel_calls_and_fifth_search_is_denied():
     denied = budget.authorize("tool-5", "Bash", {"command": "pwc search fifth"})
     assert not denied.allowed
     assert budget.calls == 4
+
+
+def test_web_fetch_is_limited_to_observed_public_urls():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=4,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+    )
+    budget.observe_urls(
+        "Read https://arxiv.org/abs/2607.12345 and http://127.0.0.1/private"
+    )
+
+    assert budget.authorize(
+        "fetch", "WebFetch", {"url": "https://arxiv.org/abs/2607.12345"}
+    ).allowed
+    assert not budget.authorize(
+        "unknown", "WebFetch", {"url": "https://example.com/unseen"}
+    ).allowed
+    assert not budget.authorize(
+        "private", "WebFetch", {"url": "http://127.0.0.1/private"}
+    ).allowed
+
+
+def test_tool_results_make_returned_urls_fetchable():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=4,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+    )
+    assert budget.authorize("info", "Bash", {"command": "pwc paper info 1"}).allowed
+    budget.result(
+        "info",
+        "Project page: https://example.com/project",
+        status="success",
+        exit_code=0,
+    )
+
+    assert budget.authorize(
+        "fetch", "WebFetch", {"url": "https://example.com/project"}
+    ).allowed
 
 
 def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():

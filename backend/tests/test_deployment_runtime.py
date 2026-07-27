@@ -18,8 +18,7 @@ import deploy.smoke_test as smoke_test
 from backend.chat_sandbox_worker.contract import MODAL_IMAGE_ID
 from backend.config import Settings
 from backend.services.runtime_validation import validate_chat_schema, validate_runtime
-from deploy.cli import _chat_descriptor_from_source
-from deploy.cli import parser_for
+from deploy.cli import _chat_descriptor_from_source, parser_for
 from deploy.install_deploy_tools import (
     RUNTIME_CONTRACT_PATHS,
     bundle_runtime_contract,
@@ -27,6 +26,8 @@ from deploy.install_deploy_tools import (
 )
 from deploy.nginx_validate import (
     CURATION_CALLBACK_LOCATION,
+)
+from deploy.nginx_validate import (
     validate as validate_nginx,
 )
 from deploy.release import (
@@ -440,7 +441,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "1"
+    assert descriptor["worker_contract_version"] == "2"
     assert _chat_descriptor_from_source(source, "production") is None
 
 
