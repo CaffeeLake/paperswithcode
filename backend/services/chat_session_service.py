@@ -21,6 +21,11 @@ from backend.models.database import (
     ChatSDKTranscriptEntry,
     ChatSession,
 )
+from backend.services.chat_edit_service import (
+    INACTIVE_STATUSES,
+    PREPARING_STATUS,
+    ChatEditService,
+)
 from backend.services.chat_title_service import normalize_title
 
 
@@ -101,6 +106,7 @@ class ChatSessionService:
     def __init__(self, db: Session, settings: Settings):
         self.db = db
         self.settings = settings
+        self.edits = ChatEditService(db)
 
     def _owned(
         self, owner: ChatOwner, session_id: uuid.UUID, *, lock: bool = False
@@ -123,28 +129,6 @@ class ChatSessionService:
                 "invalid_chat_model", 422, "Unsupported research model"
             )
         return selected, route
-
-    def _delete_recorded_edit_fork(
-        self, session: ChatSession, message: ChatMessageRecord
-    ) -> None:
-        if not message.error_code or not message.error_code.startswith("fork:"):
-            return
-        with contextlib.suppress(ValueError):
-            orphan_id = uuid.UUID(message.error_code.removeprefix("fork:"))
-            if not session.sdk_project_key:
-                return
-            self.db.execute(
-                delete(ChatSDKTranscriptEntry).where(
-                    ChatSDKTranscriptEntry.project_key == session.sdk_project_key,
-                    ChatSDKTranscriptEntry.sdk_session_id == orphan_id,
-                )
-            )
-            self.db.execute(
-                delete(ChatSDKSessionSummary).where(
-                    ChatSDKSessionSummary.project_key == session.sdk_project_key,
-                    ChatSDKSessionSummary.sdk_session_id == orphan_id,
-                )
-            )
 
     def create_session(
         self, owner: ChatOwner, selected_model: str | None = None
@@ -241,7 +225,7 @@ class ChatSessionService:
                 select(ChatMessageRecord)
                 .where(
                     ChatMessageRecord.session_id == session.id,
-                    ChatMessageRecord.status.notin_(["superseded", "preparing"]),
+                    ChatMessageRecord.status.notin_(INACTIVE_STATUSES),
                 )
                 .order_by(ChatMessageRecord.sequence)
             ).scalars()
@@ -332,14 +316,12 @@ class ChatSessionService:
                     execution_backend=session.execution_backend,
                 )
             if (
-                existing.status in ("generating", "preparing")
+                existing.status in ("generating", PREPARING_STATUS)
                 and session.active_turn_expires_at
                 and session.active_turn_expires_at <= now
             ):
-                if existing.status == "preparing":
-                    self._delete_recorded_edit_fork(session, existing)
-                    existing.status = "superseded"
-                    existing.error_code = "edit_prepare_lease_expired"
+                if existing.status == PREPARING_STATUS:
+                    self.edits.expire_preparation(session, existing)
                 else:
                     existing.status = "interrupted"
                     existing.error_code = "lease_expired"
@@ -428,14 +410,12 @@ class ChatSessionService:
                     ChatMessageRecord.session_id == session.id,
                     ChatMessageRecord.turn_id == session.active_turn_id,
                     ChatMessageRecord.role == "user",
-                    ChatMessageRecord.status.in_(["generating", "preparing"]),
+                    ChatMessageRecord.status.in_(["generating", PREPARING_STATUS]),
                 )
             ).scalar_one_or_none()
             if stale:
-                if stale.status == "preparing":
-                    self._delete_recorded_edit_fork(session, stale)
-                    stale.status = "superseded"
-                    stale.error_code = "edit_prepare_lease_expired"
+                if stale.status == PREPARING_STATUS:
+                    self.edits.expire_preparation(session, stale)
                 else:
                     stale.status = "interrupted"
                     stale.error_code = "lease_expired"
@@ -489,7 +469,7 @@ class ChatSessionService:
                     ChatMessageRecord.session_id == session.id,
                     ChatMessageRecord.role == "user",
                     ChatMessageRecord.revision == prior_revision,
-                    ChatMessageRecord.status.notin_(["superseded", "preparing"]),
+                    ChatMessageRecord.status.notin_(INACTIVE_STATUSES),
                 )
             ).scalar_one_or_none()
             if prior is None:
@@ -502,7 +482,7 @@ class ChatSessionService:
                     .where(
                         ChatMessageRecord.session_id == session.id,
                         ChatMessageRecord.sequence >= prior.sequence,
-                        ChatMessageRecord.status.notin_(["superseded", "preparing"]),
+                        ChatMessageRecord.status.notin_(INACTIVE_STATUSES),
                     )
                     .order_by(ChatMessageRecord.sequence)
                 ).scalars()
@@ -541,7 +521,7 @@ class ChatSessionService:
                     .where(
                         ChatMessageRecord.session_id == session.id,
                         ChatMessageRecord.sequence < prior.sequence,
-                        ChatMessageRecord.status.notin_(["superseded", "preparing"]),
+                        ChatMessageRecord.status.notin_(INACTIVE_STATUSES),
                     )
                 )
                 or 0
@@ -597,7 +577,7 @@ class ChatSessionService:
             revision=revision,
             supersedes_message_id=prior.id if prior else None,
             sdk_resume_boundary_id=resume_boundary,
-            status="preparing" if prior is not None else "generating",
+            status=PREPARING_STATUS if prior is not None else "generating",
             model=model,
             model_route=route,
             app_release_id=self.settings.release_id,
@@ -690,101 +670,24 @@ class ChatSessionService:
         project_key: str,
     ) -> bool:
         session = self._owned(owner, admission.session_id, lock=True)
-        prepared = self.db.get(ChatMessageRecord, admission.user_message_id)
-        if (
-            not admission.is_replacement
-            or prepared is None
-            or prepared.status != "preparing"
-            or session.active_turn_id != admission.turn_id
-            or session.sdk_session_id != admission.sdk_session_id
-            or session.sdk_project_key != admission.sdk_project_key
-        ):
-            return False
-        target = self.db.get(ChatMessageRecord, admission.replacement_target_id)
-        if (
-            target is None
-            or target.session_id != session.id
-            or target.role != "user"
-            or target.status in ("superseded", "preparing")
-            or target.sequence != admission.replacement_target_sequence
-            or target.revision != admission.replacement_target_revision
-        ):
-            return False
-        active_suffix_ids = tuple(
-            self.db.execute(
-                select(ChatMessageRecord.id)
-                .where(
-                    ChatMessageRecord.session_id == session.id,
-                    ChatMessageRecord.sequence >= target.sequence,
-                    ChatMessageRecord.id != prepared.id,
-                    ChatMessageRecord.status.notin_(["superseded", "preparing"]),
-                )
-                .order_by(ChatMessageRecord.sequence)
-            ).scalars()
+        return self.edits.activate(
+            session,
+            admission,
+            replacement_sdk_session_id,
+            project_key,
         )
-        if active_suffix_ids != admission.replacement_active_suffix_ids:
-            return False
-        old_suffix = self.db.execute(
-            select(ChatMessageRecord).where(
-                ChatMessageRecord.session_id == session.id,
-                ChatMessageRecord.sequence >= target.sequence,
-                ChatMessageRecord.id != prepared.id,
-                ChatMessageRecord.status.notin_(["superseded", "preparing"]),
-            )
-        ).scalars()
-        for message in old_suffix:
-            message.status = "superseded"
-        prepared.status = "generating"
-        prepared.error_code = None
-        session.sdk_session_id = replacement_sdk_session_id
-        session.sdk_project_key = project_key if replacement_sdk_session_id else None
-        session.transcript_status = "ready" if replacement_sdk_session_id else "pending"
-        session.transcript_bytes = 0
-        if replacement_sdk_session_id:
-            session.transcript_bytes = (
-                self.db.scalar(
-                    select(
-                        func.coalesce(func.sum(ChatSDKTranscriptEntry.byte_size), 0)
-                    ).where(
-                        ChatSDKTranscriptEntry.project_key == project_key,
-                        ChatSDKTranscriptEntry.sdk_session_id
-                        == replacement_sdk_session_id,
-                    )
-                )
-                or 0
-            )
-        self.db.flush()
-        session.message_count = (
-            self.db.scalar(
-                select(func.count())
-                .select_from(ChatMessageRecord)
-                .where(
-                    ChatMessageRecord.session_id == session.id,
-                    ChatMessageRecord.status.notin_(["superseded", "preparing"]),
-                )
-            )
-            or 0
-        )
-        session.updated_at = _now()
-        return True
 
     def record_prepared_fork(
         self,
         owner: ChatOwner,
         admission: TurnAdmission,
         fork_sdk_session_id: uuid.UUID,
+        project_key: str,
     ) -> bool:
         session = self._owned(owner, admission.session_id, lock=True)
-        prepared = self.db.get(ChatMessageRecord, admission.user_message_id)
-        if (
-            prepared is None
-            or prepared.status != "preparing"
-            or session.active_turn_id != admission.turn_id
-            or session.sdk_session_id != admission.sdk_session_id
-        ):
-            return False
-        prepared.error_code = f"fork:{fork_sdk_session_id}"
-        return True
+        return self.edits.record_fork(
+            session, admission, fork_sdk_session_id, project_key
+        )
 
     def abort_prepared_edit(
         self,
@@ -793,14 +696,7 @@ class ChatSessionService:
         code: str = "edit_prepare_failed",
     ) -> None:
         session = self._owned(owner, admission.session_id, lock=True)
-        prepared = self.db.get(ChatMessageRecord, admission.user_message_id)
-        if prepared and prepared.status == "preparing":
-            prepared.status = "superseded"
-            prepared.error_code = code
-        if session.active_turn_id == admission.turn_id:
-            session.active_turn_id = None
-            session.active_turn_expires_at = None
-            session.updated_at = _now()
+        self.edits.abort(session, admission, code)
 
     def complete_turn(
         self,
@@ -886,12 +782,7 @@ class ChatSessionService:
             return
         message = self.db.get(ChatMessageRecord, admission.user_message_id)
         if message:
-            if message.status == "preparing":
-                message.status = "superseded"
-                message.error_code = code
-                session.active_turn_id = None
-                session.active_turn_expires_at = None
-                session.updated_at = _now()
+            if self.edits.fail_preparation(session, message, code):
                 return
             message.status = "interrupted" if interrupted else "error"
             message.error_code = code

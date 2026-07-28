@@ -29,7 +29,15 @@ export function useChat(options: UseChatOptions) {
   const promptRef = useRef("");
   const titleRef = useRef("");
   const idRef = useRef(0);
+  const messagesGenerationRef = useRef(0);
   const activeSessionIdRef = useRef(options.sessionId);
+  const renderedSessionIdRef = useRef(options.sessionId);
+  if (renderedSessionIdRef.current !== options.sessionId) {
+    renderedSessionIdRef.current = options.sessionId;
+    if (activeSessionIdRef.current !== options.sessionId) {
+      messagesGenerationRef.current += 1;
+    }
+  }
   optionsRef.current = options;
   messagesRef.current = messages;
 
@@ -121,9 +129,10 @@ export function useChat(options: UseChatOptions) {
     }
   };
 
-  const reloadCanonical = async (sessionId: string) => {
+  const reloadCanonical = async (sessionId: string, generation: number) => {
     const detail = await getSession(sessionId);
     const restored = toUiMessages(detail);
+    if (messagesGenerationRef.current !== generation) return null;
     setMessages(restored);
     messagesRef.current = restored;
     return restored;
@@ -141,6 +150,7 @@ export function useChat(options: UseChatOptions) {
     optimistic: ChatMessage[],
     edit?: EditRequest,
   ) => {
+    const messagesGeneration = ++messagesGenerationRef.current;
     busyRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -181,16 +191,18 @@ export function useChat(options: UseChatOptions) {
                 messagesRef.current = edit.snapshot;
               }
               try {
-                const canonical = await reloadCanonical(canonicalId);
+                const canonical = await reloadCanonical(canonicalId, messagesGeneration);
                 if (
-                  edit
+                  canonical && edit
                   && !edit.first
                   && canonical.some((message) => message.id === edit.targetId)
                 ) {
                   setSessionError("Couldn’t resend this message. Your original conversation was restored.");
                 }
               } catch {
-                patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+                if (messagesGenerationRef.current === messagesGeneration) {
+                  patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+                }
               }
             } else {
               patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
@@ -294,17 +306,21 @@ export function useChat(options: UseChatOptions) {
     });
     optionsRef.current.onInterrupted(promptRef.current);
     const sessionId = activeSessionIdRef.current;
+    const messagesGeneration = ++messagesGenerationRef.current;
     window.setTimeout(() => {
-      if (sessionId) void reloadCanonical(sessionId)
+      if (sessionId && messagesGenerationRef.current === messagesGeneration) {
+        void reloadCanonical(sessionId, messagesGeneration)
         .catch(() => undefined)
         .finally(() => optionsRef.current.onSettled(sessionId));
-      else optionsRef.current.onSettled(null);
+      } else if (!sessionId) {
+        optionsRef.current.onSettled(null);
+      }
     }, 450);
   }, []);
 
   const toggleBlock = useCallback((messageId: string, blockIndex: number) => setMessages((previous) => previous.map((message) => message.id !== messageId ? message : { ...message, blocks: message.blocks?.map((block, index) => index === blockIndex && (block.kind === "reasoning" || block.kind === "tool") ? { ...block, open: !block.open } : block) })), []);
-  const reset = useCallback(() => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; activeSessionIdRef.current = null; setMessages([]); setBusy(false); setSessionError(""); }, []);
-  const load = useCallback((restored: ChatMessage[]) => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages(restored); setBusy(false); setSessionError(""); }, []);
+  const reset = useCallback(() => { messagesGenerationRef.current += 1; abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; activeSessionIdRef.current = null; setMessages([]); setBusy(false); setSessionError(""); }, []);
+  const load = useCallback((restored: ChatMessage[]) => { messagesGenerationRef.current += 1; abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages(restored); setBusy(false); setSessionError(""); }, []);
 
   return { messages, busy, papers, sessionError, send, editAndResend, stop, toggleBlock, reset, load };
 }

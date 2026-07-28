@@ -39,7 +39,6 @@ class _ShareDB:
         self.session = session
         self.source_messages = messages
         self.share = None
-        self.manifest = []
 
     def execute(self, statement):
         sql = str(statement)
@@ -49,17 +48,11 @@ class _ShareDB:
             return _Result(values=self.source_messages)
         if "FROM chat_shares" in sql:
             return _Result(self.share)
-        if sql.startswith("DELETE FROM chat_share_messages"):
-            self.manifest = []
-            return _Result()
         raise AssertionError(sql)
 
     def add(self, value):
         if isinstance(value, ChatShare):
             self.share = value
-
-    def add_all(self, values):
-        self.manifest = list(values)
 
     def flush(self):
         if self.share and self.share.created_at is None:
@@ -77,11 +70,31 @@ def _session(*, busy=False):
     )
 
 
-def _row(sequence: int):
-    return SimpleNamespace(id=uuid.uuid4(), sequence=sequence)
+def _row(
+    sequence: int,
+    *,
+    role: str = "user",
+    content: str = "Question",
+    status: str = "complete",
+    display_blocks=None,
+    citations=None,
+    finish_reason=None,
+    error_code=None,
+):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        sequence=sequence,
+        role=role,
+        content=content,
+        status=status,
+        display_blocks=display_blocks or [],
+        citations=citations or [],
+        finish_reason=finish_reason,
+        error_code=error_code,
+    )
 
 
-def test_create_or_refresh_retains_capability_and_replaces_ordered_manifest():
+def test_create_or_refresh_retains_capability_and_replaces_owned_snapshot():
     session = _session()
     first = _row(1)
     second = _row(2)
@@ -91,15 +104,45 @@ def test_create_or_refresh_retains_capability_and_replaces_ordered_manifest():
 
     created = service.create_or_refresh(owner, session.id)
     first_share_id = created.id
-    assert [entry.message_id for entry in db.manifest] == [first.id, second.id]
-    assert [entry.position for entry in db.manifest] == [0, 1]
+    assert [message["content"] for message in created.messages] == [
+        "Question",
+        "Question",
+    ]
+    assert {uuid.UUID(message["id"]) for message in created.messages}.isdisjoint(
+        {first.id, second.id}
+    )
+    first_snapshot = created.messages
 
-    third = _row(3)
+    third = _row(3, content="Replacement")
     db.source_messages = [first, third]
     refreshed = service.create_or_refresh(owner, session.id)
     assert refreshed.id == first_share_id
-    assert [entry.message_id for entry in db.manifest] == [first.id, third.id]
+    assert [message["content"] for message in refreshed.messages] == [
+        "Question",
+        "Replacement",
+    ]
+    assert refreshed.messages != first_snapshot
+    assert refreshed.snapshot_version == 1
     assert refreshed.updated_at >= created.created_at
+
+
+def test_private_message_purge_cannot_change_stored_public_snapshot():
+    session = _session()
+    source = _row(1, content="Published")
+    db = _ShareDB(session, [source])
+    service = ChatShareService(db, get_settings())
+    share = service.create_or_refresh(
+        ChatOwner(hf_user_id="hf-owner", hf_username="owner"), session.id
+    )
+    stored_messages = list(share.messages)
+
+    db.source_messages = []
+    detail = ChatShareService(_PublicDB(share), get_settings()).get_public(
+        str(share.id)
+    )
+
+    assert detail.messages[0].content == "Published"
+    assert share.messages == stored_messages
 
 
 @pytest.mark.parametrize(
@@ -147,20 +190,15 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
         "title": "A paper",
         "source_url": "https://arxiv.org/abs/2501.00001",
     }
-    user = SimpleNamespace(
-        id=user_id,
-        role="user",
+    user = _row(
+        1,
         content="private-title-is-not-here",
-        status="complete",
-        display_blocks=[],
-        citations=[],
-        error_code=None,
     )
-    assistant = SimpleNamespace(
-        id=assistant_id,
+    user.id = user_id
+    assistant = _row(
+        2,
         role="assistant",
         content="Answer",
-        status="complete",
         display_blocks=[
             {"kind": "reasoning", "text": "bounded reasoning"},
             tool,
@@ -173,19 +211,14 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
         ],
         citations=[citation],
         finish_reason="tool_limit",
-        model_route="secret-provider-route",
-        followups=["private followup"],
-        error_code=None,
     )
-    now = datetime.now(UTC)
-    share = SimpleNamespace(
-        id=uuid.uuid4(),
-        created_at=now,
-        updated_at=now,
-        messages=[
-            SimpleNamespace(position=0, message=user),
-            SimpleNamespace(position=1, message=assistant),
-        ],
+    assistant.id = assistant_id
+    assistant.model_route = "secret-provider-route"
+    assistant.followups = ["private followup"]
+    db = _ShareDB(_session(), [user, assistant])
+    service = ChatShareService(db, get_settings())
+    share = service.create_or_refresh(
+        ChatOwner(hf_user_id="hf-owner", hf_username="owner"), db.session.id
     )
 
     detail = ChatShareService(_PublicDB(share), get_settings()).get_public(
@@ -200,25 +233,22 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     assert "private followup" not in serialized
     assert set(payload) == {"share_id", "created_at", "updated_at", "messages"}
     assert "title" not in payload
+    assert str(user_id) not in serialized
+    assert str(assistant_id) not in serialized
 
 
 @pytest.mark.parametrize("status", ["error", "interrupted"])
 def test_failed_and_interrupted_rows_expand_to_stable_public_assistant(status):
-    row = SimpleNamespace(
-        id=uuid.uuid4(),
-        role="user",
+    row = _row(
+        1,
         content="Question",
         status=status,
         display_blocks=[{"kind": "reasoning", "text": "Partial"}],
-        citations=[],
         error_code="provider_error",
     )
-    now = datetime.now(UTC)
-    share = SimpleNamespace(
-        id=uuid.uuid4(),
-        created_at=now,
-        updated_at=now,
-        messages=[SimpleNamespace(position=0, message=row)],
+    db = _ShareDB(_session(), [row])
+    share = ChatShareService(db, get_settings()).create_or_refresh(
+        ChatOwner(hf_user_id="hf-owner", hf_username="owner"), db.session.id
     )
     messages = (
         ChatShareService(_PublicDB(share), get_settings())
@@ -249,6 +279,7 @@ def test_public_route_sets_no_store_without_an_authentication_dependency():
     now = datetime.now(UTC)
     share = SimpleNamespace(
         id=uuid.uuid4(),
+        snapshot_version=1,
         created_at=now,
         updated_at=now,
         messages=[],
@@ -267,6 +298,7 @@ def test_public_http_get_is_anonymous_and_no_store(monkeypatch):
     now = datetime.now(UTC)
     share = SimpleNamespace(
         id=uuid.uuid4(),
+        snapshot_version=1,
         created_at=now,
         updated_at=now,
         messages=[],

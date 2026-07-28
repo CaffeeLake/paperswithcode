@@ -460,13 +460,14 @@ The external request shape can remain unchanged:
 The Pydantic pairing validation for `replace_message_id` and `prior_revision`
 already fits the new behavior.
 
-No schema migration is required merely to add the `preparing` state:
-`chat_messages.status` is currently an unconstrained `VARCHAR(24)`, and the
-existing columns (`supersedes_message_id`, `sdk_resume_boundary_id`, status,
-turn ID, revision, and monotonic sequence) carry the preparation state. Add a
-migration only if implementation introduces a new constraint/index after query
-plans are inspected. No transcript schema change is required: the existing
-boundary ID and opaque SDK store are sufficient.
+The unconstrained `chat_messages.status` already supports `preparing`, but
+crash-safe fork cleanup requires typed durable fork identity. Add nullable
+`prepared_fork_sdk_session_id` and `prepared_fork_sdk_project_key` columns with
+a constraint requiring both or neither. Persist the exact fork namespace after
+forking, clear it on activation or cleanup, and migrate legacy preparing rows
+that encoded `fork:<uuid>` in `error_code`. Readiness validation must require
+both columns before activating the release. No transcript schema change is
+required: the existing boundary ID and opaque SDK store remain sufficient.
 
 ## Tests
 

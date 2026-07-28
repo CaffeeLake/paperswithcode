@@ -295,7 +295,6 @@ def validate_chat_schema(db) -> None:
                     ('chat_sessions'),
                     ('chat_messages'),
                     ('chat_shares'),
-                    ('chat_share_messages'),
                     ('chat_sandbox_leases'),
                     ('chat_turn_capabilities')
                 ) AS required(name)
@@ -311,7 +310,11 @@ def validate_chat_schema(db) -> None:
             FROM information_schema.columns
             WHERE (table_name, column_name) IN (
                 ('chat_sessions', 'execution_backend'),
-                ('chat_messages', 'finish_reason')
+                ('chat_messages', 'finish_reason'),
+                ('chat_messages', 'prepared_fork_sdk_session_id'),
+                ('chat_messages', 'prepared_fork_sdk_project_key'),
+                ('chat_shares', 'snapshot_version'),
+                ('chat_shares', 'messages')
             )
             """
         )
@@ -319,5 +322,21 @@ def validate_chat_schema(db) -> None:
     if missing or set(required_columns) != {
         ("chat_sessions", "execution_backend"),
         ("chat_messages", "finish_reason"),
+        ("chat_messages", "prepared_fork_sdk_session_id"),
+        ("chat_messages", "prepared_fork_sdk_project_key"),
+        ("chat_shares", "snapshot_version"),
+        ("chat_shares", "messages"),
     }:
+        raise RuntimeError("required chat sandbox schema is missing")
+    share_snapshot_constraint = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM pg_constraint
+            WHERE conrelid = 'chat_shares'::regclass
+              AND conname = 'chat_shares_messages_array_check'
+            """
+        )
+    ).first()
+    if share_snapshot_constraint is None:
         raise RuntimeError("required chat sandbox schema is missing")

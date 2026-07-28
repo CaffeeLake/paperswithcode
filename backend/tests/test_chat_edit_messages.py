@@ -205,8 +205,10 @@ def test_prepare_edit_forks_at_boundary_and_activates_for_each_runner(
         def __init__(self, *_args):
             pass
 
-        def record_prepared_fork(self, _owner, _admission, fork_id):
-            calls.append(("record", fork_id))
+        def record_prepared_fork(
+            self, _owner, _admission, fork_id, recorded_project_key
+        ):
+            calls.append(("record", fork_id, recorded_project_key))
             return True
 
         def activate_edit(
@@ -239,7 +241,7 @@ def test_prepare_edit_forks_at_boundary_and_activates_for_each_runner(
     )
 
     assert resume_id is not None and resume_id != source_id
-    assert ("record", resume_id) in calls
+    assert ("record", resume_id, project_key) in calls
     assert ("activate", resume_id, project_key) in calls
     forked = store.entries[(project_key, str(resume_id), "")]
     assert [entry["message"] for entry in forked[:4]] == [
@@ -429,7 +431,9 @@ def _activation_fixture():
         status="preparing",
         sequence=6,
         revision=2,
-        error_code=f"fork:{uuid.uuid4()}",
+        error_code=None,
+        prepared_fork_sdk_session_id=None,
+        prepared_fork_sdk_project_key=None,
     )
     session = SimpleNamespace(
         id=session_id,
@@ -463,13 +467,14 @@ def _activation_fixture():
 def test_successful_activation_commits_new_lineage_and_recounts_messages():
     session, target, old_answer, old_later, prepared, admission = _activation_fixture()
     fork_id = uuid.uuid4()
+    prepared.prepared_fork_sdk_session_id = fork_id
+    prepared.prepared_fork_sdk_project_key = "fork-project"
 
     class ActivationDB:
         def __init__(self):
             self.execute_results = iter(
                 [
                     FakeResult(one=session),
-                    FakeResult(rows=[target.id, old_answer.id, old_later.id]),
                     FakeResult(rows=[target, old_answer, old_later]),
                 ]
             )
@@ -508,6 +513,8 @@ def test_successful_activation_commits_new_lineage_and_recounts_messages():
     ]
     assert prepared.status == "generating"
     assert prepared.error_code is None
+    assert prepared.prepared_fork_sdk_session_id is None
+    assert prepared.prepared_fork_sdk_project_key is None
     assert session.sdk_session_id == fork_id
     assert session.sdk_project_key == "fork-project"
     assert session.transcript_bytes == 321
@@ -515,15 +522,61 @@ def test_successful_activation_commits_new_lineage_and_recounts_messages():
     assert db.flushed is True
 
 
+def test_record_prepared_fork_persists_session_and_project_key():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    source_id = uuid.uuid4()
+    fork_id = uuid.uuid4()
+    prepared = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="preparing",
+        prepared_fork_sdk_session_id=None,
+        prepared_fork_sdk_project_key=None,
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        hf_user_id="hf-user",
+        active_turn_id=turn_id,
+        sdk_session_id=source_id,
+    )
+    admission = SimpleNamespace(
+        session_id=session_id,
+        turn_id=turn_id,
+        user_message_id=prepared.id,
+        sdk_session_id=source_id,
+    )
+
+    class RecordingDB:
+        def execute(self, _query):
+            return FakeResult(one=session)
+
+        def get(self, _model, key):
+            return prepared if key == prepared.id else None
+
+    recorded = ChatSessionService(RecordingDB(), get_settings()).record_prepared_fork(
+        ChatOwner("hf-user", "tester"),
+        admission,
+        fork_id,
+        "fork-project",
+    )
+
+    assert recorded is True
+    assert prepared.prepared_fork_sdk_session_id == fork_id
+    assert prepared.prepared_fork_sdk_project_key == "fork-project"
+
+
 def test_activation_suffix_race_leaves_old_history_and_binding_unchanged():
     session, target, old_answer, old_later, prepared, admission = _activation_fixture()
+    fork_id = uuid.uuid4()
+    prepared.prepared_fork_sdk_session_id = fork_id
+    prepared.prepared_fork_sdk_project_key = "fork-project"
 
     class RacingDB:
         def __init__(self):
             self.execute_results = iter(
                 [
                     FakeResult(one=session),
-                    FakeResult(rows=[target.id, old_answer.id]),
+                    FakeResult(rows=[target, old_answer]),
                 ]
             )
 
@@ -538,7 +591,7 @@ def test_activation_suffix_race_leaves_old_history_and_binding_unchanged():
     activated = ChatSessionService(RacingDB(), get_settings()).activate_edit(
         ChatOwner("hf-user", "tester"),
         admission,
-        uuid.uuid4(),
+        fork_id,
         "fork-project",
     )
 
@@ -654,12 +707,14 @@ def test_same_client_replay_recovers_expired_preparing_edit_and_orphan_fork():
         turn_id=turn_id,
         role="user",
         status="preparing",
-        error_code=f"fork:{orphan_id}",
+        error_code=None,
+        prepared_fork_sdk_session_id=orphan_id,
+        prepared_fork_sdk_project_key="fork-project",
     )
     session = SimpleNamespace(
         id=session_id,
         hf_user_id="hf-user",
-        sdk_project_key="project-key",
+        sdk_project_key="source-project",
         active_turn_id=turn_id,
         active_turn_expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
@@ -675,9 +730,11 @@ def test_same_client_replay_recovers_expired_preparing_edit_and_orphan_fork():
                 ]
             )
             self.executed = 0
+            self.statements = []
 
-        def execute(self, _query):
+        def execute(self, query):
             self.executed += 1
+            self.statements.append(query)
             return next(self.results)
 
     db = ReplayDB()
@@ -696,6 +753,16 @@ def test_same_client_replay_recovers_expired_preparing_edit_and_orphan_fork():
     assert exc_info.value.commit_changes is True
     assert prepared.status == "superseded"
     assert prepared.error_code == "edit_prepare_lease_expired"
+    assert prepared.prepared_fork_sdk_session_id is None
+    assert prepared.prepared_fork_sdk_project_key is None
     assert session.active_turn_id is None
     assert session.active_turn_expires_at is None
     assert db.executed == 4
+    cleanup_values = [
+        value
+        for statement in db.statements[2:]
+        for value in statement.compile().params.values()
+    ]
+    assert "fork-project" in cleanup_values
+    assert "source-project" not in cleanup_values
+    assert orphan_id in cleanup_values

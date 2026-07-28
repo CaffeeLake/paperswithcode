@@ -85,6 +85,14 @@ const stream = (...events: ChatEvent[]) => async function* () {
   for (const event of events) yield event;
 };
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+};
+
 const renderChat = (sessionId: string | null = "session-1") => {
   const onSessionId = vi.fn();
   const onSettled = vi.fn();
@@ -234,5 +242,78 @@ describe("useChat editAndResend", () => {
     expect(result.current.sessionError).toBe(
       "Couldn’t resend this message. Your original conversation was restored.",
     );
+  });
+});
+
+describe("useChat canonical reloads", () => {
+  it("does not overwrite a conversation loaded while a canonical reload is pending", async () => {
+    const canonical = deferred<ChatSessionDetail>();
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: "session-1" },
+      { type: "done", followups: [], finish_reason: "success" },
+    )());
+    getSessionMock.mockReturnValue(canonical.promise);
+    const { result } = renderChat();
+
+    act(() => {
+      expect(result.current.send("New turn")).toBe(true);
+    });
+    await waitFor(() => expect(getSessionMock).toHaveBeenCalledWith("session-1"));
+
+    const loaded = uiTurn("other-user", "Other conversation");
+    act(() => result.current.load(loaded));
+    await act(async () => {
+      canonical.resolve(sessionDetail("session-1", [
+        persistedUser("stale-user", 1, "Stale conversation"),
+      ]));
+      await canonical.promise;
+    });
+
+    expect(result.current.messages).toEqual(loaded);
+  });
+
+  it("does not let an older canonical reload replace a newer request", async () => {
+    const firstCanonical = deferred<ChatSessionDetail>();
+    const secondCanonical = deferred<ChatSessionDetail>();
+    streamChatMock
+      .mockImplementationOnce(() => stream(
+        { type: "stream_start", request_id: "r1", session_id: "session-1" },
+        { type: "done", followups: [], finish_reason: "success" },
+      )())
+      .mockImplementationOnce(() => stream(
+        { type: "stream_start", request_id: "r2", session_id: "session-1" },
+        { type: "done", followups: [], finish_reason: "success" },
+      )());
+    getSessionMock
+      .mockReturnValueOnce(firstCanonical.promise)
+      .mockReturnValueOnce(secondCanonical.promise);
+    const { result } = renderChat();
+
+    act(() => {
+      expect(result.current.send("First turn")).toBe(true);
+    });
+    await waitFor(() => expect(getSessionMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      expect(result.current.send("Second turn")).toBe(true);
+    });
+    await waitFor(() => expect(getSessionMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      firstCanonical.resolve(sessionDetail("session-1", [
+        persistedUser("stale-user", 1, "Stale conversation"),
+      ]));
+      await firstCanonical.promise;
+    });
+    expect(result.current.messages.some((message) => message.text === "Second turn")).toBe(true);
+    expect(result.current.messages.some((message) => message.id === "stale-user")).toBe(false);
+
+    await act(async () => {
+      secondCanonical.resolve(sessionDetail("session-1", [
+        persistedUser("latest-user", 1, "Second turn"),
+      ]));
+      await secondCanonical.promise;
+    });
+    await waitFor(() => expect(result.current.messages[0]?.id).toBe("latest-user"));
   });
 });

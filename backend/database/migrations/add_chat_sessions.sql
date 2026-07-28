@@ -44,10 +44,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     model VARCHAR(255),
     model_route VARCHAR(255),
     error_code VARCHAR(64),
+    prepared_fork_sdk_session_id UUID,
+    prepared_fork_sdk_project_key TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 1,
     last_attempted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_chat_messages_session_sequence UNIQUE (session_id, sequence)
+    CONSTRAINT uq_chat_messages_session_sequence UNIQUE (session_id, sequence),
+    CONSTRAINT chat_messages_prepared_fork_pair_check CHECK (
+        (prepared_fork_sdk_session_id IS NULL)
+        = (prepared_fork_sdk_project_key IS NULL)
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session_turn ON chat_messages (session_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session_sequence ON chat_messages (session_id, sequence);

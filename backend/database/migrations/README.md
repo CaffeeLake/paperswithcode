@@ -32,8 +32,9 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_conference_suggestion_edit_type.sql` | conference suggestions submitted from the conference directory |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |
 | `add_chat_sessions.sql` | Authenticated chat sessions, UI messages, and opaque Agent SDK transcript storage |
+| `add_chat_edit_preparation_state.sql` | Typed durable fork identity used to recover interrupted chat edits |
 | `add_chat_sandbox_runtime.sql` | Staging-only additive immutable chat backend selection, runtime provenance, sandbox leases, and hash-only turn capabilities; run as PostgreSQL superuser with `search_path=staging,public` before activating the bridge |
-| `add_chat_shares.sql` | Staging-only public chat capability snapshots and durable assistant finish reasons; run as PostgreSQL superuser with `search_path=staging,public` before activating chat sharing |
+| `add_chat_shares.sql` | Staging-only self-contained public chat capability snapshots and durable assistant finish reasons; run as PostgreSQL superuser with `search_path=staging,public` before activating chat sharing |
 | `add_paper_curation_jobs.sql` | durable admin-triggered Hugging Face paper-curation Jobs |
 | `add_curation_thumbnail_queue.sql` | transactionally queued, CRON-owned thumbnail work and accepted-submission state for paper-curation Jobs |
 | `add_external_resources_schema.sql` + `run_add_external_resources_schema.py` | external resources |

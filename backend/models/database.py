@@ -13,6 +13,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Integer,
+    SmallInteger,
     BigInteger,
     LargeBinary,
     String,
@@ -1632,6 +1633,12 @@ class ChatMessageRecord(Base):
     )
     finish_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    prepared_fork_sdk_session_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    prepared_fork_sdk_project_key: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
     attempt_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1"
     )
@@ -1643,12 +1650,14 @@ class ChatMessageRecord(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
-    share_entries: Mapped[list["ChatShareMessage"]] = relationship(
-        back_populates="message", passive_deletes=True
-    )
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')", name="chat_messages_role_check"
+        ),
+        CheckConstraint(
+            "(prepared_fork_sdk_session_id IS NULL) = "
+            "(prepared_fork_sdk_project_key IS NULL)",
+            name="chat_messages_prepared_fork_pair_check",
         ),
         UniqueConstraint(
             "session_id", "sequence", name="uq_chat_messages_session_sequence"
@@ -1672,7 +1681,7 @@ class ChatMessageRecord(Base):
 
 
 class ChatShare(Base):
-    """Stable public capability and current message-manifest snapshot."""
+    """Stable public capability and self-contained public transcript snapshot."""
 
     __tablename__ = "chat_shares"
 
@@ -1683,6 +1692,10 @@ class ChatShare(Base):
         nullable=False,
         unique=True,
     )
+    snapshot_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default="1"
+    )
+    messages: Mapped[list] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1691,36 +1704,10 @@ class ChatShare(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="share")
-    messages: Mapped[list["ChatShareMessage"]] = relationship(
-        back_populates="share",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="ChatShareMessage.position",
-    )
-
-
-class ChatShareMessage(Base):
-    """One ordered message reference in a public chat snapshot."""
-
-    __tablename__ = "chat_share_messages"
-
-    share_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("chat_shares.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    position: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("chat_messages.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    share: Mapped[ChatShare] = relationship(back_populates="messages")
-    message: Mapped[ChatMessageRecord] = relationship(back_populates="share_entries")
     __table_args__ = (
-        UniqueConstraint(
-            "share_id", "message_id", name="uq_chat_share_messages_message"
+        CheckConstraint(
+            "jsonb_typeof(messages) = 'array'",
+            name="chat_shares_messages_array_check",
         ),
     )
 

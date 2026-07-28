@@ -265,7 +265,7 @@ async def _prepare_replacement(
             replacement_id = uuid.UUID(result.session_id)
             with db_manager.session_local() as db:
                 recorded = ChatSessionService(db, settings).record_prepared_fork(
-                    owner, admission, replacement_id
+                    owner, admission, replacement_id, project_key
                 )
                 if not recorded:
                     db.rollback()

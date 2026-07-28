@@ -412,8 +412,18 @@ class _ChatSchemaResult:
 
 
 class _ChatSchemaDB:
-    def __init__(self, transaction_read_only: str):
+    def __init__(
+        self,
+        transaction_read_only: str,
+        *,
+        include_edit_columns: bool = True,
+        include_share_columns: bool = True,
+        include_share_constraint: bool = True,
+    ):
         self.transaction_read_only = transaction_read_only
+        self.include_edit_columns = include_edit_columns
+        self.include_share_columns = include_share_columns
+        self.include_share_constraint = include_share_constraint
 
     def execute(self, statement):
         sql = str(statement)
@@ -424,19 +434,35 @@ class _ChatSchemaDB:
                 "chat_sessions",
                 "chat_messages",
                 "chat_shares",
-                "chat_share_messages",
                 "chat_sandbox_leases",
                 "chat_turn_capabilities",
             )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
         if "information_schema.columns" in sql:
+            rows = [
+                ("chat_sessions", "execution_backend"),
+                ("chat_messages", "finish_reason"),
+            ]
+            if self.include_edit_columns:
+                rows.extend(
+                    [
+                        ("chat_messages", "prepared_fork_sdk_session_id"),
+                        ("chat_messages", "prepared_fork_sdk_project_key"),
+                    ]
+                )
+            if self.include_share_columns:
+                rows.extend(
+                    [
+                        ("chat_shares", "snapshot_version"),
+                        ("chat_shares", "messages"),
+                    ]
+                )
+            return _ChatSchemaResult(rows=rows)
+        if "chat_shares_messages_array_check" in sql:
             return _ChatSchemaResult(
-                rows=[
-                    ("chat_sessions", "execution_backend"),
-                    ("chat_messages", "finish_reason"),
-                ]
+                first=(1,) if self.include_share_constraint else None
             )
-        return _ChatSchemaResult(first=(1,))
+        raise AssertionError(f"Unexpected schema validation query: {sql}")
 
 
 def test_chat_schema_rejects_read_only_staging_connection():
@@ -446,6 +472,21 @@ def test_chat_schema_rejects_read_only_staging_connection():
 
 def test_chat_schema_accepts_writable_staging_connection():
     validate_chat_schema(_ChatSchemaDB("off"))
+
+
+def test_chat_schema_requires_typed_edit_preparation_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_edit_columns=False))
+
+
+def test_chat_schema_requires_self_contained_share_snapshot_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_share_columns=False))
+
+
+def test_chat_schema_requires_share_snapshot_array_constraint():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_share_constraint=False))
 
 
 def test_deployed_runtime_rejects_source_shell(tmp_path: Path):
@@ -1094,11 +1135,14 @@ def test_chat_share_migration_is_staging_owned_and_idempotent():
 
     assert "current_schema() <> 'staging'" in migration
     assert "CREATE TABLE IF NOT EXISTS chat_shares" in migration
-    assert "CREATE TABLE IF NOT EXISTS chat_share_messages" in migration
-    assert migration.count("ON DELETE CASCADE") >= 3
+    assert "snapshot_version SMALLINT NOT NULL DEFAULT 1" in migration
+    assert "messages JSONB NOT NULL" in migration
+    assert "chat_shares_messages_array_check" in migration
+    assert "REFERENCES chat_messages" not in migration
+    assert migration.count("ON DELETE CASCADE") >= 1
     assert "ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(64)" in migration
     assert "ALTER TABLE chat_shares OWNER TO pwc_staging_owner" in migration
-    assert "ALTER TABLE chat_share_messages OWNER TO pwc_staging_owner" in migration
+    assert "DROP TABLE IF EXISTS chat_share_messages" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration
 
@@ -1115,6 +1159,18 @@ def test_staging_role_defaults_to_read_only_outside_application_pool():
     assert "ALTER ROLE pwc_staging RESET default_transaction_read_only" not in migration
     assert 'options += " -c default_transaction_read_only=off"' in connection
     assert 'read_only_default != "on"' in audit
+
+
+def test_chat_edit_preparation_migration_is_staging_only_and_typed():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_edit_preparation_state.sql"
+    ).read_text()
+
+    assert "current_schema() <> 'staging'" in migration
+    assert "prepared_fork_sdk_session_id UUID" in migration
+    assert "prepared_fork_sdk_project_key TEXT" in migration
+    assert "chat_messages_prepared_fork_pair_check" in migration
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):

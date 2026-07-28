@@ -161,35 +161,37 @@ migration README.
 ```text
 id                 uuid primary key
 chat_session_id    uuid not null unique references chat_sessions(id) on delete cascade
+snapshot_version   smallint not null default 1
+messages           jsonb not null
 created_at         timestamptz not null default now()
 updated_at         timestamptz not null default now()
 ```
 
 `id` is the public capability. A unique `chat_session_id` enforces one stable
 share URL per chat. The private title is deliberately absent from the public
-snapshot schema.
+snapshot schema. `messages` stores an ordered, self-contained array of the
+allowlisted `PublicChatMessage` projection described below; it never stores
+foreign keys to `chat_messages` or raw private persistence records.
+`snapshot_version` identifies that persisted projection contract so a future
+format change can be migrated explicitly rather than guessed at read time.
 
-### `chat_share_messages`
+Copying the bounded public projection is intentional. The share is the owner of
+the data it publishes, so private edits and any later purge of superseded
+`chat_messages` cannot mutate or truncate an existing public snapshot. V1 keeps
+only one snapshot per chat, and PostgreSQL TOAST handles a large JSONB value
+without requiring a second table or a message-retention pinning system. A later
+Share click atomically replaces `messages` with the then-current projection.
+The only source relationship retained is the `chat_session_id` foreign key,
+which implements the separate product decision that deleting the private chat
+invalidates its public URL.
 
-```text
-share_id           uuid not null references chat_shares(id) on delete cascade
-position           integer not null
-message_id         uuid not null references chat_messages(id) on delete cascade
-primary key (share_id, position)
-unique (share_id, message_id)
-```
-
-The ordered message-ID manifest freezes the visible revision without copying up
-to 25 MB of JSON projection data per share. Existing edit behavior retains
-superseded projection rows, so a snapshot remains renderable after the private
-chat is edited. A later Share click transactionally replaces this manifest
-with the then-current visible message IDs.
-
-Add `ChatShare` and `ChatShareMessage` ORM models and relationships in
-`backend/models/database.py`. Keep cascade behavior explicit and use the
-staging owner/application grants established by the other chat migrations.
-Update `validate_chat_schema()` so staging readiness fails if either new table
-is absent.
+Add a `ChatShare` ORM model and its session relationship in
+`backend/models/database.py`. Keep the session-delete cascade explicit and use
+the staging owner/application grants established by the other chat migrations.
+Add a check constraint requiring `jsonb_typeof(messages) = 'array'`; validate
+the full contents through the strict API model at the service boundary. Update
+`validate_chat_schema()` so staging readiness fails if the new table or its
+required columns are absent.
 
 The consistency pass found that `ChatSessionService.complete_turn()` accepts a
 `finish_reason`, and the live UI can display it, but
@@ -212,9 +214,10 @@ In `backend/models/chat.py`, add strict models for:
 
 - `ChatShareSummary`: `share_id`, `public_path`, `created_at`, `updated_at`;
 - `ChatShareDetail`: timestamps and public messages, with no private title;
-- `PublicChatMessage`: `id`, `role`, `content`, the complete validated
-  browser-display block projection, citation snapshots, and a narrow
-  user-facing completion/interruption/failure state.
+- `PublicChatMessage`: a snapshot-local `id`, `role`, `content`, the complete
+  validated browser-display block projection, citation snapshots, and a narrow
+  user-facing completion/interruption/failure state. Generate snapshot-local
+  IDs while projecting; do not publish source `chat_messages.id` values.
 
 ### Service boundary
 
@@ -227,15 +230,22 @@ rather than adding public-capability queries to the stream orchestrator.
 2. reject a currently leased/busy session with 409;
 3. select the same current rows as `get_session()` in sequence order;
 4. reject an empty transcript;
-5. create a share UUID if needed, or retain the existing share UUID;
-6. replace the ordered manifest in one transaction;
-7. flush and return the share record.
+5. build and strictly validate the complete allowlisted public projection in
+   memory, while the source-session lock still fixes the visible revision;
+6. create a share UUID if needed, or retain the existing share UUID;
+7. insert the share or replace its `messages`, `snapshot_version`, and
+   `updated_at` in one transaction;
+8. flush and return the share record.
 
-If manifest replacement fails, roll back and leave the preceding public
-snapshot intact.
+Do not commit the share write until projection of every message succeeds. If
+projection validation or snapshot replacement fails, roll back and leave the
+preceding public snapshot intact.
 
-`get_public(share_id)` must query only through `chat_shares`, load manifest
-rows in `position` order, and build an allowlisted public projection:
+`get_public(share_id)` must query only `chat_shares`, validate
+`snapshot_version` and `messages` as the strict persisted public contract, and
+return that stored projection without joining to `chat_messages` or rebuilding
+it from current private state. `create_or_refresh()` constructs each stored
+message as follows:
 
 - completed user rows expose their prompt text;
 - failed/interrupted user rows expand exactly as `toUiMessages()` does: one
@@ -255,9 +265,11 @@ rows in `position` order, and build an allowlisted public projection:
   by an interrupted turn becomes a failed historical block.
 
 Construct this projection server-side from the already bounded and validated UI
-fields. A custom caller of the public API must never receive raw SDK entries,
-provider metadata, capability material, or other persistence fields merely
-because the React view ignores them.
+fields before persisting it. Revalidate the stored value on read so corrupt or
+unsupported snapshot data fails closed rather than leaking unmodeled fields. A
+custom caller of the public API must never receive raw SDK entries, provider
+metadata, capability material, or other persistence fields merely because the
+React view ignores them.
 
 ### Routes
 
@@ -365,16 +377,19 @@ streaming, editing, auto-scroll, or composer state into a generic abstraction.
 
 ## Concurrency and failure behavior
 
-- Lock the source session while taking the message manifest so Share cannot
-  race an edit activation or turn admission.
+- Lock the source session while selecting and projecting its visible messages
+  so Share cannot race an edit activation or turn admission.
 - The frontend disables Share while busy, but the server remains authoritative
   and returns 409 to stale/custom clients.
-- Generate the new snapshot inside one database transaction. Readers see
-  either the old complete manifest or the new complete manifest, never a
-  partially refreshed transcript.
+- Generate and validate the complete projection before writing it, then replace
+  the single `chat_shares.messages` value inside the same database transaction.
+  PostgreSQL row-level MVCC means readers see either the old complete JSONB
+  snapshot or the new complete JSONB snapshot, never a partial refresh.
 - A failed refresh keeps the previous public link and contents intact.
-- Source-chat deletion relies on database cascades and must not leave orphan
-  share or manifest rows.
+- Private-message deletion or superseded-row purging cannot affect stored share
+  contents because there is no share-to-message foreign key. Source-chat
+  deletion still cascades to its single `chat_shares` row and invalidates the
+  link.
 - Never claim clipboard success on rejection. Clipboard failure is recoverable
   without issuing a second POST or rotating the link.
 - Treat the public endpoint as capability access: do not vary behavior based on
@@ -393,21 +408,26 @@ Add focused tests alongside `backend/tests/test_chat_endpoint.py` or in
   bounded partial transcript or public display state;
 - the first POST generates a UUID and a repeated POST retains it;
 - a private rename never appears in the public API or page, and new messages
-  leave the manifest unchanged until POST is called again;
-- refresh atomically replaces the manifest in sequence order;
-- edited/superseded rows referenced by an older snapshot remain readable;
+  leave the stored projection unchanged until POST is called again;
+- refresh atomically replaces the complete ordered JSONB projection;
+- editing and then purging superseded private rows leaves the previous public
+  snapshot byte-for-byte unchanged and readable;
 - public GET works without authentication;
 - public GET preserves the complete validated browser transcript, including
   reasoning and tool blocks, while excluding raw SDK entries, model routes,
   capabilities, followups, owner identity, and other private persistence data;
+- persisted public messages use snapshot-local IDs and expose no source
+  `chat_messages.id` values;
 - authenticated history and public snapshots preserve the validated
   `finish_reason`/user-facing early-stop note across reloads;
 - missing and source-deleted IDs return the same 404;
-- deleting a chat cascades through both share tables;
+- deleting a chat cascades to its share, while deleting individual private
+  messages does not alter the share;
 - public GET sends `Cache-Control: no-store`;
 - API models reject unexpected fields.
 
-Extend runtime/deployment schema tests for both new tables and migration grants.
+Extend runtime/deployment schema tests for the new table, required columns,
+JSON-array constraint, and migration grants.
 Add nginx validation tests proving that only the shared-page GET, its public GET
 API, hashed assets, and `/api/v1/auth/me` bypass staging admin auth, and that
 the owner POST and all unrelated staging routes remain gated. Assert the
@@ -444,8 +464,9 @@ Do not run `npm run build` as a routine validation step.
 
 ## Implementation sequence
 
-1. Add the two tables, ORM relationships, migration documentation, and staging
-   readiness validation; persist the currently dropped `finish_reason`.
+1. Add the self-contained `chat_shares` table, ORM relationship, migration
+   documentation, and staging readiness validation; persist the currently
+   dropped `finish_reason`.
 2. Add strict share API models and `ChatShareService`.
 3. Add the authenticated create/refresh route and the anonymous public GET
    with server-side projection filtering.
