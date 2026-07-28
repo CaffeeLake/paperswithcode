@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,10 @@ from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
     SessionStoreGatewayError,
+)
+from backend.services.chat_web_fetch_service import (
+    ChatWebFetchError,
+    fetch_catalog_url,
 )
 from backend.utils.exceptions import PaperNotFoundError
 
@@ -43,6 +48,11 @@ class StoreRequest(BaseModel):
     key: dict[str, Any] | None = None
     entries: list[dict[str, Any]] | None = None
     project_key: str | None = None
+
+
+class WebFetchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(max_length=2000)
 
 
 def _bearer(authorization: Annotated[str, Header()]) -> str:
@@ -108,6 +118,10 @@ def catalog(
         )
     except PaperNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from None
+    except (HfHubHTTPError, OSError):
+        raise HTTPException(
+            status_code=502, detail="Paper Markdown could not be read"
+        ) from None
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {"result": result}
@@ -139,6 +153,32 @@ def session_store(
     except SessionStoreGatewayError as error:
         db.rollback()
         raise HTTPException(status_code=error.status_code, detail=str(error)) from None
+
+
+@app.post("/web-fetch")
+async def web_fetch(
+    body: WebFetchRequest,
+    authorization: Annotated[str, Header()],
+    x_pwc_session: Annotated[str, Header()],
+    x_pwc_turn: Annotated[str, Header()],
+    db: Session = Depends(get_database_session),
+):
+    token = _bearer(authorization)
+    _scope(token, "web_fetch", x_pwc_session, x_pwc_turn, db)
+    db.commit()
+    try:
+        result = await fetch_catalog_url(db, body.url)
+    except ChatWebFetchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from None
+    return Response(
+        content=result.body,
+        status_code=result.status_code,
+        headers={
+            "Content-Type": result.content_type,
+            "Content-Length": str(len(result.body)),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.post("/v1/messages")

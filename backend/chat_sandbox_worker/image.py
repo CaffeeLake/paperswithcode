@@ -26,7 +26,7 @@ app = modal.App(MODAL_APP_NAME)
 image = (
     modal.Image.from_registry(BASE_IMAGE)
     .apt_install("bash", "ripgrep", "jq", "coreutils", "util-linux", "procps")
-    .pip_install(f"claude-agent-sdk=={SDK_VERSION}")
+    .pip_install(f"claude-agent-sdk=={SDK_VERSION}", "cryptography==48.0.0")
     .run_commands(
         "groupadd --system pwc-broker && useradd --system --gid pwc-broker --home-dir /var/empty/pwc-broker pwc-broker",
         "groupadd --system pwc-chat && useradd --system --gid pwc-chat --create-home --home-dir /home/pwc-chat pwc-chat",

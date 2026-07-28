@@ -12,7 +12,7 @@ from backend.services.benchmark_trend_service import BenchmarkTrendService
 from backend.services.dataset_service import DatasetService
 from backend.services.evaluation_service import EvaluationService
 from backend.services.paper_lineage_service import get_paper_lineage
-from backend.services.paper_markdown_service import read_paper_markdown
+from backend.services.paper_markdown_service import read_paper_markdown_bounded
 from backend.services.paper_service import PaperService
 
 CATALOG_OPERATIONS = frozenset(
@@ -80,12 +80,13 @@ class ChatGatewayService:
                 )
             )
         if operation == "paper_read":
-            markdown = read_paper_markdown(
+            markdown, truncated = read_paper_markdown_bounded(
                 str(arguments["paper"])[:64],
                 bucket_id=self.settings.paper_markdown_hf_bucket_id,
                 token=self.settings.hf_token or None,
+                max_bytes=256 * 1024,
             )
-            return {"markdown": markdown[: 256 * 1024]}
+            return {"markdown": markdown, "truncated": truncated}
         if operation == "paper_list":
             return _dump(
                 paper.get_papers(

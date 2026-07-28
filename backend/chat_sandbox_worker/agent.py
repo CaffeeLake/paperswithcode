@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,10 +26,49 @@ from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
 from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter
-from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
+from backend.chat_sandbox_worker.tool_policy import (
+    ToolBudget,
+    _public_url,
+    bound_tool_output,
+)
 
 GUIDE = Path("/opt/pwc/PWC_CLI_SKILL.md")
 WORKSPACE = Path("/workspace")
+
+
+def _load_proxy_token() -> str | None:
+    raw_fd = os.environ.pop("PWC_WEBFETCH_TOKEN_FD", None)
+    if raw_fd is None:
+        return None
+    with os.fdopen(int(raw_fd), "rb", closefd=True) as handle:
+        token = handle.read(256).decode()
+    return token or None
+
+
+WEBFETCH_PROXY_TOKEN = _load_proxy_token()
+
+
+def _authorize_web_fetch_proxy(url: str) -> None:
+    if WEBFETCH_PROXY_TOKEN is None:
+        raise RuntimeError("WebFetch proxy authorization is unavailable")
+    connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=2)
+    body = json.dumps({"url": url}, separators=(",", ":")).encode()
+    try:
+        connection.request(
+            "POST",
+            "/proxy-authorize",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-PWC-Proxy-Token": WEBFETCH_PROXY_TOKEN,
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+    finally:
+        connection.close()
+    if response.status != 204:
+        raise RuntimeError("WebFetch proxy authorization was rejected")
 
 
 def _response_text(value: Any) -> str:
@@ -79,6 +120,24 @@ class WorkerToolHooks:
                 }
             }
         updated = dict(arguments)
+        if name == "WebFetch":
+            try:
+                normalized_url = _public_url(str(updated["url"]))
+                if normalized_url is None:
+                    raise RuntimeError
+                _authorize_web_fetch_proxy(normalized_url)
+            except (KeyError, OSError, RuntimeError):
+                reason = "WebFetch secure transport is unavailable."
+                self.results[tool_id] = self.budget.result(
+                    tool_id, reason, status="denied"
+                )
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
         if name == "Bash":
             requested = updated.get("timeout")
             updated["timeout"] = min(
@@ -172,6 +231,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
             "AskUserQuestion",
         ],
         system_prompt=prompt_text,
+        settings=json.dumps({"skipWebFetchPreflight": True}),
         mcp_servers={},
         strict_mcp_config=True,
         permission_mode="dontAsk",
@@ -185,6 +245,8 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
             "PWC_API_URL": "http://127.0.0.1:8765/api/v1",
             "CLAUDE_CONFIG_DIR": "/home/pwc-chat/.claude",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "HTTPS_PROXY": "http://127.0.0.1:8766",
+            "NODE_EXTRA_CA_CERTS": "/tmp/pwc-webfetch-ca.pem",
         },
         cwd=WORKSPACE,
         setting_sources=[],

@@ -7,6 +7,7 @@ import json
 import os
 import pwd
 import resource
+import secrets
 import select
 import socket
 import subprocess
@@ -52,6 +53,13 @@ def _safe_environment(home: str) -> dict[str, str]:
     return environment
 
 
+def _agent_environment() -> dict[str, str]:
+    environment = _safe_environment("/home/pwc-chat")
+    environment["HTTPS_PROXY"] = "http://127.0.0.1:8766"
+    environment["NODE_EXTRA_CA_CERTS"] = "/tmp/pwc-webfetch-ca.pem"
+    return environment
+
+
 def _readline_unbuffered(fd: int, maximum_bytes: int) -> bytes:
     """Read exactly one line without prefetching bytes from the next frame."""
     line = bytearray()
@@ -74,6 +82,10 @@ def _wait_for_broker(process: subprocess.Popen, timeout: float = 10) -> None:
             raise RuntimeError("Broker exited before readiness")
         try:
             with socket.create_connection(("127.0.0.1", 8765), timeout=0.1):
+                pass
+            with socket.create_connection(("127.0.0.1", 8766), timeout=0.1):
+                pass
+            if Path("/tmp/pwc-webfetch-ca.pem").is_file():
                 return
         except OSError:
             time.sleep(0.05)
@@ -111,6 +123,8 @@ def main() -> int:
     required = {"capability", "gateway_url", "session_id", "turn_id"}
     if set(config) != required:
         raise RuntimeError("Invalid private supervisor launch frame")
+    proxy_token = secrets.token_urlsafe(32)
+    config["proxy_token"] = proxy_token
 
     read_fd, write_fd = os.pipe()
     broker_environment = _safe_environment("/var/empty/pwc-broker")
@@ -130,18 +144,26 @@ def main() -> int:
     del config
     _wait_for_broker(broker)
 
+    agent_read_fd, agent_write_fd = os.pipe()
+    agent_environment = _agent_environment()
+    agent_environment["PWC_WEBFETCH_TOKEN_FD"] = str(agent_read_fd)
     agent = subprocess.Popen(
         [sys.executable, "-m", "backend.chat_sandbox_worker.agent"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,
-        env=_safe_environment("/home/pwc-chat"),
+        env=agent_environment,
+        pass_fds=(agent_read_fd,),
         preexec_fn=_demote(
             "pwc-chat",
             pids_max=int(os.environ.get("PWC_CHAT_SANDBOX_PIDS_MAX", "64")),
         ),
         bufsize=0,
     )
+    os.close(agent_read_fd)
+    os.write(agent_write_fd, proxy_token.encode())
+    os.close(agent_write_fd)
+    del proxy_token
     assert agent.stdin is not None and agent.stdout is not None
     poller = select.poll()
     poller.register(sys.stdin.buffer, select.POLLIN | select.POLLHUP)

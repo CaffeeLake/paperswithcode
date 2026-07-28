@@ -509,7 +509,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "2"
+    assert descriptor["worker_contract_version"] == "3"
     assert _chat_descriptor_from_source(source, "production") is None
 
 
@@ -1003,6 +1003,7 @@ def test_nginx_cross_environment_references_are_rejected():
         " client_max_body_size 512k;"
         " location = /api/internal/chat-gateway/catalog { }"
         " location = /api/internal/chat-gateway/session-store { }"
+        " location = /api/internal/chat-gateway/web-fetch { }"
         " location = /api/internal/chat-gateway/v1/messages { }",
     )
     assert "production references staging backend" in failures

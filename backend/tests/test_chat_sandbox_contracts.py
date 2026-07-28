@@ -16,13 +16,13 @@ from claude_agent_sdk import StreamEvent
 from fastapi import HTTPException
 
 from backend.chat_gateway_app import (
-    CatalogRequest,
     MAX_PROVIDER_OUTPUT_TOKENS,
     MAX_PROVIDER_TURN_TOKENS,
+    CatalogRequest,
     _output_tokens_allowed,
     catalog,
 )
-from backend.chat_sandbox_worker import publish_image, supervisor
+from backend.chat_sandbox_worker import agent, publish_image, supervisor
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     IMAGE_PUBLISH_NAME,
@@ -30,14 +30,14 @@ from backend.chat_sandbox_worker.contract import (
     MODAL_IMAGE_ID,
 )
 from backend.chat_sandbox_worker.prompt import render, sha256
-from backend.chat_sandbox_worker.render_task_catalog import (
-    render as render_task_catalog,
-)
 from backend.chat_sandbox_worker.protocol import (
     ProtocolError,
     WorkerEventValidator,
     decode_frame,
     encode_frame,
+)
+from backend.chat_sandbox_worker.render_task_catalog import (
+    render as render_task_catalog,
 )
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDKAdapter
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
@@ -62,6 +62,15 @@ from backend.services.chat_session_store_gateway import (
     SessionStoreCommand,
     SessionStoreGatewayError,
 )
+from backend.services.chat_web_fetch_service import (
+    ChatWebFetchError,
+    _arxiv_identifier,
+    _public_addresses,
+    _validate_body_size,
+    _validate_origin_metadata,
+    authorize_catalog_url,
+    canonical_fetch_url,
+)
 from backend.utils.exceptions import PaperNotFoundError
 from deploy.release import build_manifest
 
@@ -77,6 +86,7 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
                     "gateway_url": "https://gateway.example.test/api/internal/chat-gateway",
                     "session_id": str(uuid.uuid4()),
                     "turn_id": str(uuid.uuid4()),
+                    "proxy_token": "test-proxy-token",
                 }
             ).encode(),
         )
@@ -160,6 +170,63 @@ def test_gateway_catalog_returns_not_found_for_unknown_task(monkeypatch):
     assert exc_info.value.detail == (
         "Task with ID, slug, or name 'speech recognition' not found"
     )
+
+
+def test_gateway_paper_read_uses_bounded_diskless_reader(monkeypatch):
+    calls = []
+
+    def read(paper, **options):
+        calls.append((paper, options))
+        return "# EoMT", True
+
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.read_paper_markdown_bounded", read
+    )
+    settings = SimpleNamespace(
+        paper_markdown_hf_bucket_id="papers",
+        hf_token="token",
+    )
+
+    result = ChatGatewayService(object(), settings).catalog(
+        "paper_read", {"paper": "2503.19108"}
+    )
+
+    assert result == {"markdown": "# EoMT", "truncated": True}
+    assert calls == [
+        (
+            "2503.19108",
+            {"bucket_id": "papers", "token": "token", "max_bytes": 256 * 1024},
+        )
+    ]
+
+
+def test_gateway_paper_read_returns_controlled_upstream_error(monkeypatch):
+    class DB:
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(
+        "backend.chat_gateway_app._scope", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        ChatCapabilityService, "meter_catalog", lambda *_args, **_kwargs: None
+    )
+
+    def failed(*_args, **_kwargs):
+        raise OSError("read-only cache failure")
+
+    monkeypatch.setattr(ChatGatewayService, "catalog", failed)
+    with pytest.raises(HTTPException) as exc_info:
+        catalog(
+            CatalogRequest(operation="paper_read", arguments={"paper": "2503.19108"}),
+            authorization="Bearer test",
+            x_pwc_session=str(uuid.uuid4()),
+            x_pwc_turn=str(uuid.uuid4()),
+            db=DB(),
+            settings=SimpleNamespace(chat_max_direct_search_calls=4),
+        )
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "Paper Markdown could not be read"
 
 
 def test_worker_adapter_assembles_streamed_tool_arguments():
@@ -276,6 +343,9 @@ def test_web_fetch_is_limited_to_observed_public_urls():
     assert not budget.authorize(
         "private", "WebFetch", {"url": "http://127.0.0.1/private"}
     ).allowed
+    assert not budget.authorize(
+        "http", "WebFetch", {"url": "http://arxiv.org/abs/2607.12345"}
+    ).allowed
 
 
 def test_tool_results_make_returned_urls_fetchable():
@@ -296,6 +366,97 @@ def test_tool_results_make_returned_urls_fetchable():
     assert budget.authorize(
         "fetch", "WebFetch", {"url": "https://example.com/project"}
     ).allowed
+
+
+def test_web_fetch_results_do_not_authorize_discovered_links():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=4,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+    )
+    source = "https://arxiv.org/abs/2607.12345"
+    budget.observe_urls(source)
+    assert budget.authorize("fetch", "WebFetch", {"url": source}).allowed
+    budget.result(
+        "fetch",
+        "Discovered https://example.com/not-catalog-authorized",
+        status="success",
+    )
+    assert not budget.authorize(
+        "follow",
+        "WebFetch",
+        {"url": "https://example.com/not-catalog-authorized"},
+    ).allowed
+
+
+def test_catalog_web_fetch_url_normalization_and_arxiv_matching():
+    assert (
+        canonical_fetch_url("https://ARXIV.org:443/abs/2503.19108/#section")
+        == "https://arxiv.org/abs/2503.19108"
+    )
+    assert _arxiv_identifier("https://arxiv.org/pdf/2503.19108v2.pdf") == "2503.19108"
+    assert _arxiv_identifier("https://arxiv.org/abs/2503.19108?download=1") is None
+    for value in (
+        "http://arxiv.org/abs/2503.19108",
+        "https://user@arxiv.org/abs/2503.19108",
+        "https://arxiv.org:444/abs/2503.19108",
+    ):
+        with pytest.raises(ChatWebFetchError):
+            canonical_fetch_url(value)
+
+
+def test_catalog_web_fetch_requires_existing_arxiv_or_exact_attached_url():
+    class Result:
+        def __init__(self, found):
+            self.found = found
+
+        def scalar_one(self):
+            return self.found
+
+    class DB:
+        def __init__(self, *results):
+            self.results = iter(results)
+
+        def execute(self, _statement):
+            return Result(next(self.results))
+
+    assert (
+        authorize_catalog_url(DB(True), "https://arxiv.org/abs/2503.19108")
+        == "https://arxiv.org/abs/2503.19108"
+    )
+    assert (
+        authorize_catalog_url(DB(True), "https://github.com/org/repo")
+        == "https://github.com/org/repo"
+    )
+    with pytest.raises(ChatWebFetchError, match="not attached"):
+        authorize_catalog_url(DB(False, False), "https://github.com/org/repo/issues")
+
+
+def test_catalog_web_fetch_rejects_private_dns_redirects_and_unsupported_content(
+    monkeypatch,
+):
+    class Loop:
+        async def getaddrinfo(self, *_args, **_kwargs):
+            return [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: Loop())
+    with pytest.raises(ChatWebFetchError, match="private network"):
+        asyncio.run(_public_addresses("example.com"))
+    with pytest.raises(ChatWebFetchError, match="redirect"):
+        _validate_origin_metadata(302, "text/html")
+    with pytest.raises(ChatWebFetchError, match="Unsupported"):
+        _validate_origin_metadata(200, "application/octet-stream")
+    with pytest.raises(ChatWebFetchError, match="too large"):
+        _validate_body_size(b"x" * (10 * 1024 * 1024 + 1))
+    assert _validate_origin_metadata(200, "text/html; charset=utf-8") == "text/html"
+
+
+def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
+    source = Path(agent.__file__).read_text()
+    assert 'tools=["Bash", "Read", "Grep", "WebFetch"]' in source
+    assert '"skipWebFetchPreflight": True' in source
+    assert '"HTTPS_PROXY": "http://127.0.0.1:8766"' in source
 
 
 def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():
@@ -555,6 +716,10 @@ def test_supervisor_child_environment_preserves_packaged_worker_path(monkeypatch
     assert environment["PYTHONPATH"] == "/opt/pwc"
     assert environment["PWC_CHAT_MAX_TURNS"] == "8"
     assert "ANTHROPIC_API_KEY" not in environment
+    agent_environment = supervisor._agent_environment()
+    assert agent_environment["HTTPS_PROXY"] == "http://127.0.0.1:8766"
+    assert agent_environment["NODE_EXTRA_CA_CERTS"] == "/tmp/pwc-webfetch-ca.pem"
+    assert "PWC_WEBFETCH_TOKEN_FD" not in agent_environment
 
 
 def test_resource_probe_treats_ephemeral_disk_as_provider_managed(monkeypatch):

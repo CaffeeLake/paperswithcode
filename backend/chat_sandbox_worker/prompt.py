@@ -47,7 +47,7 @@ Refer to /opt/pwc/PWC_CLI_SKILL.md. regarding usage.
 
 Use Read and Grep only in /workspace or on /opt/pwc/PWC_CLI_SKILL.md.
 
-Use WebFetch when a user-provided or catalog-returned public URL has evidence that the pwc CLI cannot provide. You may also follow relevant links returned by WebFetch. Never construct a URL or place private data in a URL.
+Use WebFetch when an exact user-provided or catalog-returned ArXiv, GitHub repository, or project-page URL has evidence that the pwc CLI cannot provide. Never follow links returned by WebFetch, construct a URL, or place private data in a URL.
 
 In order to limit latency, you have at most {max_turns} tool-use round trips, {max_calls} total tool calls, and {max_searches} direct pwc searches. Stop retrieving before exhausting them and synthesize the final answer.
 

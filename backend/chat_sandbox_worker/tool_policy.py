@@ -56,10 +56,11 @@ def _public_url(value: str) -> str | None:
         parsed = urlsplit(value.rstrip(".,;:!?)\\]}'\""))
         host = parsed.hostname
         if (
-            parsed.scheme not in {"http", "https"}
+            parsed.scheme != "https"
             or not host
             or parsed.username is not None
             or parsed.password is not None
+            or parsed.port not in {None, 443}
             or not host.isascii()
         ):
             return None
@@ -76,11 +77,7 @@ def _public_url(value: str) -> str | None:
             if not address.is_global:
                 return None
         netloc = lowered
-        if parsed.port is not None:
-            netloc = f"{netloc}:{parsed.port}"
-        return urlunsplit(
-            (parsed.scheme.lower(), netloc, parsed.path or "/", parsed.query, "")
-        )
+        return urlunsplit(("https", netloc, parsed.path or "/", parsed.query, ""))
     except ValueError:
         return None
 
@@ -101,6 +98,7 @@ class ToolBudget:
     searches: int = 0
     output_bytes: int = 0
     started: dict[str, float] = field(default_factory=dict)
+    started_names: dict[str, str] = field(default_factory=dict)
     fetchable_urls: set[str] = field(default_factory=set)
 
     def observe_urls(self, payload: str) -> None:
@@ -124,7 +122,7 @@ class ToolBudget:
             url = args.get("url")
             normalized = _public_url(url) if isinstance(url, str) else None
             if normalized is None:
-                return Decision(False, "WebFetch requires a public HTTP or HTTPS URL.")
+                return Decision(False, "WebFetch requires a public HTTPS URL.")
             if normalized not in self.fetchable_urls:
                 return Decision(
                     False,
@@ -155,6 +153,7 @@ class ToolBudget:
         self.calls += 1
         self.searches += int(search)
         self.started[tool_id] = time.monotonic()
+        self.started_names[tool_id] = name
         return Decision(True)
 
     def result(
@@ -170,7 +169,9 @@ class ToolBudget:
             payload, min(self.maximum_result_bytes, remaining)
         )
         self.output_bytes += len(text.encode())
-        self.observe_urls(text)
+        name = self.started_names.pop(tool_id, None)
+        if name != "WebFetch":
+            self.observe_urls(text)
         started = self.started.pop(tool_id, None)
         took_ms = round((time.monotonic() - started) * 1000) if started else 0
         return {

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-
 CURATION_CALLBACK_LOCATION = (
     'location ~ "^/api/v1/admin/codex-curation/jobs/'
     "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
@@ -75,7 +74,7 @@ def validate(production: str, staging: str) -> list[str]:
     gateway_host = "server_name chat-gateway-staging.paperswithcode.co;"
     if gateway_host not in staging:
         failures.append("staging chat gateway hostname is missing")
-    for endpoint in ("catalog", "session-store", "v1/messages"):
+    for endpoint in ("catalog", "session-store", "web-fetch", "v1/messages"):
         location = f"location = /api/internal/chat-gateway/{endpoint}"
         if location not in staging:
             failures.append(f"staging chat gateway {endpoint} route is missing")

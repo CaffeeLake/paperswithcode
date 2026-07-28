@@ -97,7 +97,7 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    committed nginx template with the explicit `pwc-nginx staging` lifecycle,
    and set `PWC_CHAT_GATEWAY_URL` to
    `https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway`.
-   The dedicated host exposes only the three capability-authenticated gateway
+   The dedicated host exposes only the four capability-authenticated gateway
    routes.
 4. Apply `add_chat_sandbox_runtime.sql` as PostgreSQL superuser with
    `search_path=staging,public`. The migration refuses any other schema, assigns

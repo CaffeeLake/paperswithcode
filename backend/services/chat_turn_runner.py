@@ -140,7 +140,7 @@ def create_chat_turn_runner(
             turn_id=admission.turn_id,
             owner_id=owner.hf_user_id,
             model=admission.model_route,
-            scopes={"model", "catalog", "session_store"},
+            scopes={"model", "catalog", "session_store", "web_fetch"},
             sdk_session_id=resume_id,
             lifetime_seconds=round(settings.chat_agent_timeout_seconds + 60),
         )

@@ -44,7 +44,7 @@ class ChatCapabilityService:
         sdk_session_id: uuid.UUID | None = None,
         lifetime_seconds: int = 240,
     ) -> IssuedCapability:
-        allowed = {"model", "catalog", "session_store"}
+        allowed = {"model", "catalog", "session_store", "web_fetch"}
         if not scopes or not scopes <= allowed:
             raise ValueError("Capability scopes are invalid")
         token = secrets.token_urlsafe(32)
