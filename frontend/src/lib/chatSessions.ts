@@ -34,6 +34,7 @@ export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash";
 export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   { id: DEFAULT_CHAT_MODEL, label: "DeepSeek V4 Flash" },
   { id: "zai-org/GLM-5.2", label: "GLM 5.2" },
+  { id: "moonshotai/Kimi-K3", label: "Kimi K3" },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

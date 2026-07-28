@@ -223,6 +223,7 @@ class Settings(BaseSettings):
     chat_enabled: bool = Field(default=False)
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_deepseek_route: str = Field(default="deepseek-ai/DeepSeek-V4-Flash:fastest")
+    chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
     chat_title_model: str = Field(default="deepseek-ai/DeepSeek-V4-Flash")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
     chat_title_max_tokens: int = Field(default=32, ge=8, le=64)
@@ -286,6 +287,11 @@ class Settings(BaseSettings):
                 "id": "zai-org/GLM-5.2",
                 "label": "GLM 5.2",
                 "route": self.chat_glm_route,
+            },
+            {
+                "id": "moonshotai/Kimi-K3",
+                "label": "Kimi K3",
+                "route": self.chat_kimi_route,
             },
         )
 

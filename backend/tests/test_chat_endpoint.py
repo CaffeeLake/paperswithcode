@@ -135,11 +135,13 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     assert [choice["id"] for choice in settings.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash",
         "zai-org/GLM-5.2",
+        "moonshotai/Kimi-K3",
     ]
     assert settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash"].endswith(
         ":fastest"
     )
     assert settings.chat_model_routes["zai-org/GLM-5.2"].endswith(":together")
+    assert settings.chat_model_routes["moonshotai/Kimi-K3"].endswith(":fastest")
 
 
 def test_title_and_display_projection_bounds():
