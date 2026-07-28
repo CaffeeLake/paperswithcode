@@ -35,11 +35,17 @@ ALTER TABLE chat_shares
     ADD COLUMN IF NOT EXISTS messages JSONB;
 
 DO $$
+DECLARE
+    legacy_manifests_exist BOOLEAN;
 BEGIN
-    IF to_regclass('chat_share_messages') IS NOT NULL
-       AND EXISTS (SELECT FROM chat_share_messages LIMIT 1) THEN
-        RAISE EXCEPTION
-            'legacy chat share manifests exist; migrate them before applying this schema';
+    IF to_regclass('chat_share_messages') IS NOT NULL THEN
+        EXECUTE
+            'SELECT EXISTS (SELECT 1 FROM chat_share_messages LIMIT 1)'
+            INTO legacy_manifests_exist;
+        IF legacy_manifests_exist THEN
+            RAISE EXCEPTION
+                'legacy chat share manifests exist; migrate them before applying this schema';
+        END IF;
     END IF;
 END $$;
 

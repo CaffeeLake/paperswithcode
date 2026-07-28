@@ -1143,6 +1143,11 @@ def test_chat_share_migration_is_staging_owned_and_idempotent():
     assert "ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(64)" in migration
     assert "ALTER TABLE chat_shares OWNER TO pwc_staging_owner" in migration
     assert "DROP TABLE IF EXISTS chat_share_messages" in migration
+    assert (
+        "EXECUTE\n            "
+        "'SELECT EXISTS (SELECT 1 FROM chat_share_messages LIMIT 1)'" in migration
+    )
+    assert "AND EXISTS (SELECT FROM chat_share_messages LIMIT 1)" not in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration
 
