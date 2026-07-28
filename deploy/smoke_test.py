@@ -29,6 +29,14 @@ ASSET_RE = re.compile(
 PAPER_LINK_RE = re.compile(rb'href=["\']/paper/[^"\']+["\']')
 
 
+def header_value(headers: dict, name: str) -> str:
+    expected = name.lower()
+    return next(
+        (str(value) for key, value in headers.items() if key.lower() == expected),
+        "",
+    )
+
+
 def run_seo_http_smoke(base_url: str) -> list[str]:
     """Qualify raw paper HTML, canonical errors, discovery HTML, and XML."""
     failures: list[str] = []
@@ -46,7 +54,7 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
         ):
             if marker not in paper_html:
                 failures.append(f"SEO paper is missing {marker}")
-        if "paperswithcode.co/paper/2607.24653" not in headers.get("Link", ""):
+        if "paperswithcode.co/paper/2607.24653" not in header_value(headers, "Link"):
             failures.append("SEO paper canonical Link header is missing")
 
     status, _, _ = request(urljoin(base_url, "/paper/9999.99999"))
@@ -55,11 +63,11 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
     status, headers, _ = request(
         urljoin(base_url, "/papers/2607.24653"), allow_redirects=False
     )
-    if status != 301 or headers.get("Location") != "/paper/2607.24653":
+    if status != 301 or header_value(headers, "Location") != "/paper/2607.24653":
         failures.append("legacy paper route is not a direct canonical 301")
 
     status, headers, body = request(urljoin(base_url, "/sitemap.xml"))
-    if status != 200 or "xml" not in headers.get("Content-Type", ""):
+    if status != 200 or "xml" not in header_value(headers, "Content-Type"):
         failures.append(f"sitemap index returned {status} non-XML")
     else:
         try:
@@ -78,8 +86,8 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
                 failures.append("sitemap index has no paper shard")
             else:
                 shard_status, shard_headers, shard_body = request(shard)
-                if shard_status != 200 or "xml" not in shard_headers.get(
-                    "Content-Type", ""
+                if shard_status != 200 or "xml" not in header_value(
+                    shard_headers, "Content-Type"
                 ):
                     failures.append("paper sitemap shard returned non-XML")
                 else:

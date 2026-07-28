@@ -798,6 +798,34 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
     ) == ["numeric paper API returned 500"]
 
 
+def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
+    def request(url: str, *, allow_redirects: bool = True):
+        if url.endswith("/paper/2607.24653"):
+            return (
+                200,
+                {"link": "<https://paperswithcode.co/paper/2607.24653>; rel=canonical"},
+                b'<main data-pwc-initial-document="paper"><h1>Kimi K3: Open Frontier Intelligence</h1><h2 id="abstract-heading"></h2><meta name="citation_arxiv_id" content="2607.24653"><script type="application/ld+json"></script></main>',
+            )
+        if url.endswith("/paper/9999.99999"):
+            return 404, {}, b""
+        if url.endswith("/papers/2607.24653"):
+            return 301, {"location": "/paper/2607.24653"}, b""
+        if url.endswith("/sitemap.xml"):
+            return (
+                200,
+                {"content-type": "application/xml"},
+                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+            )
+        if url.endswith("/sitemaps/papers-2026-1.xml"):
+            return 200, {"content-type": "application/xml"}, b"<urlset/>"
+        if url.endswith("/papers/recent"):
+            return 200, {}, b'<a href="/paper/2607.24653">Kimi K3</a>'
+        raise AssertionError(url)
+
+    monkeypatch.setattr(smoke_test, "request", request)
+    assert smoke_test.run_seo_http_smoke("http://127.0.0.1:8100") == []
+
+
 def test_nginx_cross_environment_references_are_rejected():
     failures = validate_nginx(
         "root /srv/paperswithcode/environments/production/current/frontend-dist;"
