@@ -246,6 +246,7 @@ def create_app() -> FastAPI:
 
     # Include routers
     from backend.routers import (
+        agent_discovery,
         papers,
         external_resources,
         authors,
@@ -274,6 +275,7 @@ def create_app() -> FastAPI:
         research_catalog,
     )
 
+    app.include_router(agent_discovery.router, tags=["agent_discovery"])
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
     app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])
