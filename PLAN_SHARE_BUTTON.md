@@ -41,6 +41,8 @@ production link.
   `Update & copy link`, or snapshot-staleness state.
 - The public identifier is a new cryptographically random UUID. Never expose
   the private chat session ID as the share capability.
+- **User-confirmed decision:** retain the standard UUID text format in
+  `/share/<uuid>` rather than introducing a short slug or alternate encoding.
 - **User-confirmed decision:** a share is an unlisted snapshot, not a live
   view. Later messages and edits remain private until the owner explicitly
   publishes another snapshot; the private title is never published.
