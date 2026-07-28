@@ -75,7 +75,7 @@ from backend.utils.exceptions import PaperNotFoundError
 from deploy.release import build_manifest
 
 
-def test_broker_accepts_claude_messages_beta_query(monkeypatch):
+def _import_broker(monkeypatch):
     read_fd, write_fd = os.pipe()
     try:
         os.write(
@@ -94,7 +94,11 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
         os.close(write_fd)
     monkeypatch.setenv("PWC_BROKER_CONFIG_FD", str(read_fd))
     sys.modules.pop("backend.chat_sandbox_worker.broker", None)
-    broker = importlib.import_module("backend.chat_sandbox_worker.broker")
+    return importlib.import_module("backend.chat_sandbox_worker.broker")
+
+
+def test_broker_accepts_claude_messages_beta_query(monkeypatch):
+    broker = _import_broker(monkeypatch)
 
     class Request:
         path = "/v1/messages?beta=true"
@@ -117,7 +121,7 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
 
 
 def test_proxy_routes_only_claude_model_posts_to_gateway(monkeypatch):
-    broker = sys.modules["backend.chat_sandbox_worker.broker"]
+    broker = _import_broker(monkeypatch)
 
     class Response:
         status = 200
@@ -641,7 +645,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-hCwvxkfavoGQh3sgEPK48U"
+    assert MODAL_IMAGE_ID == "im-xYDZ7oCK2ely10XnbBA5Q8"
 
 
 def test_task_catalog_is_bounded_ranked_and_filters_hidden_tasks():
