@@ -195,6 +195,24 @@ class Settings(BaseSettings):
         ),
     )
     session_cookie_name: str = Field(default="pwc_session")
+    shared_session_cookie_name: str = Field(default="")
+    shared_session_cookie_domain: str = Field(default="")
+    session_signing_private_key: str = Field(
+        default="",
+        description="Base64url Ed25519 private key; configured only on production",
+    )
+    session_verification_public_key: str = Field(
+        default="",
+        description="Base64url Ed25519 public key shared with session verifiers",
+    )
+    auth_authority_origin: str = Field(
+        default="",
+        description="Canonical origin that owns OAuth login and session issuance",
+    )
+    auth_return_origins: str = Field(
+        default="",
+        description="Comma-separated origins accepted as OAuth return destinations",
+    )
 
     # Hugging Face API configuration
     hf_token: str = Field(
@@ -359,6 +377,14 @@ class Settings(BaseSettings):
             name.strip().lower()
             for name in self.admin_hf_usernames.split(",")
             if name.strip()
+        }
+
+    @property
+    def auth_return_origin_set(self) -> set[str]:
+        return {
+            origin.strip().rstrip("/")
+            for origin in self.auth_return_origins.split(",")
+            if origin.strip()
         }
 
     @property

@@ -154,9 +154,13 @@ or feature manifests disagree.
 
 While chat remains staging-only, production build and runtime configuration
 disable it; its backend router is absent and `/chat` redirects home.
-Production and staging use host-only `pwc_session` and
-`pwc_staging_session` cookies, distinct JWT secrets, and the shared OAuth
-client with host-validated callback state.
+Production is the sole OAuth/session authority. It signs
+`pwc_shared_session` with an Ed25519 private key and scopes the cookie to
+`.paperswithcode.co`; staging receives only the public verification key.
+The host-only `pwc_session` and `pwc_staging_session` cookies and their
+distinct HS256 secrets remain temporarily readable for rollback compatibility.
+Staging login redirects through the production callback, whose return
+destinations are restricted to the production and staging HTTPS origins.
 
 Codex add-evals and enrich-paper buttons are enabled only in production and
 remain protected by Hugging Face admin authentication in both the frontend and

@@ -9,7 +9,7 @@
 
 import React from "react";
 
-import { apiUrl, isAuthDisabled } from "@/lib/apiUrl";
+import { authUrl, isAuthDisabled } from "@/lib/apiUrl";
 
 const HF_LOGO_SRC =
   "/hf-logo.svg?v=20260513b";
@@ -35,9 +35,13 @@ export const HfSignInButton: React.FC<HfSignInButtonProps> = ({ returnTo, compac
   if (isAuthDisabled()) return null;
 
   const handleClick = () => {
-    const url = apiUrl(
-      `/api/v1/auth/hf/login?return_to=${encodeURIComponent(returnTo)}`,
-    );
+    const endpoint = authUrl("/api/v1/auth/hf/login");
+    const authority = new URL(endpoint, window.location.origin).origin;
+    const target =
+      authority === window.location.origin
+        ? returnTo
+        : new URL(returnTo, window.location.origin).toString();
+    const url = `${endpoint}?return_to=${encodeURIComponent(target)}`;
     window.location.href = url;
   };
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -9,6 +10,8 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import deploy.cli as deploy_cli
 import deploy.configure_host_env as configure_host_env
@@ -232,6 +235,18 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
     ):
         path.mkdir(parents=True, exist_ok=True)
     runtime = json.loads((release / "release.json").read_text())["chat_runtime"]
+    private_key = Ed25519PrivateKey.from_private_bytes(b"\x01" * 32)
+    private_value = base64.urlsafe_b64encode(b"\x01" * 32).rstrip(b"=").decode()
+    public_value = (
+        base64.urlsafe_b64encode(
+            private_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+        )
+        .rstrip(b"=")
+        .decode()
+    )
     return Settings(
         environment=environment,
         release_id=json.loads((release / "release.json").read_text())["release_id"],
@@ -249,6 +264,16 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         session_cookie_domain="",
         session_cookie_name=(
             "pwc_staging_session" if environment == "staging" else "pwc_session"
+        ),
+        shared_session_cookie_name="pwc_shared_session",
+        shared_session_cookie_domain=".paperswithcode.co",
+        session_signing_private_key=(
+            private_value if environment == "production" else ""
+        ),
+        session_verification_public_key=public_value,
+        auth_authority_origin="https://paperswithcode.co",
+        auth_return_origins=(
+            "https://paperswithcode.co,https://staging.paperswithcode.co"
         ),
         chat_enabled=environment == "staging",
         chat_default_backend=runtime["default_backend"],
@@ -307,6 +332,48 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     release = make_bundle(tmp_path, chat=environment == "staging")
     settings = deployed_settings(tmp_path, release, environment)
     assert validate_runtime(settings) == profile_features(environment)
+
+
+def test_staging_runtime_rejects_shared_session_signer(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.session_signing_private_key = (
+        base64.urlsafe_b64encode(b"\x01" * 32).rstrip(b"=").decode()
+    )
+    with pytest.raises(RuntimeError, match="staging must not have"):
+        validate_runtime(settings)
+
+
+def test_production_runtime_rejects_mismatched_session_keys(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.session_signing_private_key = (
+        base64.urlsafe_b64encode(b"\x03" * 32).rstrip(b"=").decode()
+    )
+    with pytest.raises(RuntimeError, match="signing and verification keys differ"):
+        validate_runtime(settings)
+
+
+def test_shared_session_key_generation_is_stable():
+    private_value, public_value = configure_host_env.shared_session_keys({}, {})
+    production = {
+        "PWC_SESSION_SIGNING_PRIVATE_KEY": (
+            f"PWC_SESSION_SIGNING_PRIVATE_KEY={private_value}"
+        ),
+        "PWC_SESSION_VERIFICATION_PUBLIC_KEY": (
+            f"PWC_SESSION_VERIFICATION_PUBLIC_KEY={public_value}"
+        ),
+    }
+    staging = {
+        "PWC_SESSION_VERIFICATION_PUBLIC_KEY": (
+            f"PWC_SESSION_VERIFICATION_PUBLIC_KEY={public_value}"
+        )
+    }
+
+    assert configure_host_env.shared_session_keys(production, staging) == (
+        private_value,
+        public_value,
+    )
 
 
 def test_deployed_runtime_rejects_relative_path(tmp_path: Path):
@@ -553,6 +620,7 @@ def test_production_profile_enables_admin_catalog_actions():
         (
             "production",
             {
+                "VITE_AUTH_URL": "",
                 "VITE_CHAT_ENABLED": "0",
                 "VITE_CHAT_LIVE": "0",
                 "VITE_CODEX_ADD_EVALS_ENABLED": "1",
@@ -562,6 +630,7 @@ def test_production_profile_enables_admin_catalog_actions():
         (
             "staging",
             {
+                "VITE_AUTH_URL": "https://paperswithcode.co",
                 "VITE_CHAT_ENABLED": "1",
                 "VITE_CHAT_LIVE": "1",
                 "VITE_CODEX_ADD_EVALS_ENABLED": "1",

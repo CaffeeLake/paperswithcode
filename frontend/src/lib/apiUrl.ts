@@ -58,6 +58,14 @@ export function apiUrl(path: string): string {
   return origin ? `${origin}${normalised}` : normalised;
 }
 
+/** Build an auth URL, optionally targeting the canonical session authority. */
+export function authUrl(path: string): string {
+  const normalised = path.startsWith("/") ? path : `/${path}`;
+  const raw = import.meta.env.VITE_AUTH_URL?.trim();
+  if (!raw) return apiUrl(normalised);
+  return `${stripTrailingSlash(raw)}${normalised}`;
+}
+
 /**
  * Normalise a backend-provided asset URL so it always points at the API
  * origin. Backend responses include thumbnail paths like

@@ -14,7 +14,6 @@ from fastapi.security import APIKeyHeader
 
 from backend.config import get_settings
 
-
 admin_token_header = APIKeyHeader(name="X-Admin-Token", auto_error=False)
 
 
@@ -32,15 +31,15 @@ def require_admin(
     settings = get_settings()
 
     # 1) Session cookie set by the HF OAuth callback.
-    from backend.routers.auth import decode_session_cookie, session_cookie_name
+    from backend.routers.auth import decode_request_session
 
-    cookie = request.cookies.get(session_cookie_name())
-    if cookie:
-        payload = decode_session_cookie(cookie)
-        if payload and payload.get("is_admin"):
+    payload = decode_request_session(request)
+    if payload:
+        username = payload.get("username")
+        if username and username.lower() in settings.admin_hf_username_set:
             return {
                 "source": "cookie",
-                "username": payload.get("username"),
+                "username": username,
             }
 
     # 2) X-Admin-Token header fallback (CLI / cron tooling).
@@ -60,11 +59,10 @@ def require_admin(
 def require_hf_admin(request: Request) -> dict:
     """Allow the request only for an allowlisted Hugging Face session."""
 
-    from backend.routers.auth import decode_session_cookie, session_cookie_name
+    from backend.routers.auth import decode_request_session
 
     settings = get_settings()
-    cookie = request.cookies.get(session_cookie_name())
-    payload = decode_session_cookie(cookie or "")
+    payload = decode_request_session(request)
     username = (payload or {}).get("username")
     if username and username.lower() in settings.admin_hf_username_set:
         return {
@@ -86,10 +84,9 @@ def require_user(request: Request) -> dict:
     the canonical HF ``username`` (lowercased) pulled from the session JWT.
     """
 
-    from backend.routers.auth import decode_session_cookie, session_cookie_name
+    from backend.routers.auth import decode_request_session
 
-    cookie = request.cookies.get(session_cookie_name())
-    payload = decode_session_cookie(cookie or "")
+    payload = decode_request_session(request)
     username = (payload or {}).get("username")
     hf_user_id = (payload or {}).get("sub")
     if not username or not isinstance(hf_user_id, str) or not hf_user_id.strip():

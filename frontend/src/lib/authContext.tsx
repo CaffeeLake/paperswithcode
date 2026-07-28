@@ -12,7 +12,7 @@
 
 import React from "react";
 
-import { apiUrl, isAuthDisabled } from "./apiUrl";
+import { apiUrl, authUrl, isAuthDisabled } from "./apiUrl";
 
 export interface AuthUser {
   username: string;
@@ -55,6 +55,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = React.useCallback(async () => {
+    const endpoint = authUrl("/api/v1/auth/logout");
+    if (
+      new URL(endpoint, window.location.origin).origin !==
+      window.location.origin
+    ) {
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = `${endpoint}?return_to=${encodeURIComponent(window.location.href)}`;
+      document.body.appendChild(form);
+      form.submit();
+      return;
+    }
     await fetch(apiUrl("/api/v1/auth/logout"), {
       method: "POST",
       credentials: "include",

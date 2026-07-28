@@ -203,6 +203,9 @@ print(json.dumps({
 def frontend_feature_environment(environment: str) -> dict[str, str]:
     features = profile_features(environment)
     return {
+        "VITE_AUTH_URL": (
+            "https://paperswithcode.co" if environment == "staging" else ""
+        ),
         "VITE_CHAT_ENABLED": "1" if features["chat"] else "0",
         "VITE_CHAT_LIVE": "1" if features["chat"] else "0",
         "VITE_CODEX_ADD_EVALS_ENABLED": ("1" if features["codex_add_evals"] else "0"),

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from sqlalchemy import text
 
 from backend.config import Settings
@@ -97,6 +103,38 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             f"PWC_SESSION_COOKIE_NAME must be {expected_cookie!r} for "
             f"{settings.environment}"
         )
+    if settings.shared_session_cookie_name != "pwc_shared_session":
+        raise RuntimeError(
+            "PWC_SHARED_SESSION_COOKIE_NAME must be 'pwc_shared_session'"
+        )
+    if settings.shared_session_cookie_domain != ".paperswithcode.co":
+        raise RuntimeError(
+            "PWC_SHARED_SESSION_COOKIE_DOMAIN must be '.paperswithcode.co'"
+        )
+    if not settings.session_verification_public_key:
+        raise RuntimeError("PWC_SESSION_VERIFICATION_PUBLIC_KEY is required")
+    try:
+        public_bytes = base64.urlsafe_b64decode(
+            settings.session_verification_public_key
+            + "=" * (-len(settings.session_verification_public_key) % 4)
+        )
+        Ed25519PublicKey.from_public_bytes(public_bytes)
+    except (ValueError, TypeError) as error:
+        raise RuntimeError(
+            "PWC_SESSION_VERIFICATION_PUBLIC_KEY must be a base64url Ed25519 key"
+        ) from error
+    if settings.auth_authority_origin != "https://paperswithcode.co":
+        raise RuntimeError(
+            "PWC_AUTH_AUTHORITY_ORIGIN must be 'https://paperswithcode.co'"
+        )
+    required_return_origins = {
+        "https://paperswithcode.co",
+        "https://staging.paperswithcode.co",
+    }
+    if settings.auth_return_origin_set != required_return_origins:
+        raise RuntimeError(
+            "PWC_AUTH_RETURN_ORIGINS must contain production and staging origins"
+        )
 
     if not Path(settings.frontend_dist_dir).is_absolute():
         raise RuntimeError("PWC_FRONTEND_DIST_DIR must be absolute")
@@ -147,6 +185,24 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             )
 
     if settings.environment == "production":
+        if not settings.session_signing_private_key:
+            raise RuntimeError("production requires PWC_SESSION_SIGNING_PRIVATE_KEY")
+        try:
+            private_bytes = base64.urlsafe_b64decode(
+                settings.session_signing_private_key
+                + "=" * (-len(settings.session_signing_private_key) % 4)
+            )
+            private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+            derived_public = private_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+        except (ValueError, TypeError) as error:
+            raise RuntimeError(
+                "PWC_SESSION_SIGNING_PRIVATE_KEY must be a base64url Ed25519 key"
+            ) from error
+        if derived_public != public_bytes:
+            raise RuntimeError("shared-session signing and verification keys differ")
         if settings.chat_enabled:
             raise RuntimeError(
                 "production chat is not authorized by this release policy"
@@ -162,6 +218,8 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         ):
             raise RuntimeError("production contains an active chat runtime descriptor")
     else:
+        if settings.session_signing_private_key:
+            raise RuntimeError("staging must not have the session signing private key")
         if settings.catalog_mutations_enabled:
             raise RuntimeError("staging catalog mutations must be disabled")
         if settings.cron_enabled:

@@ -13,13 +13,15 @@ https://huggingface.co/docs/hub/oauth :
   * `GET  /auth/admin-check`  — 204/401/403 gate for nginx `auth_request`
                                 (used to admin-lock staging.paperswithcode.co).
 
-The session cookie is a JWT (HS256) signed with `PWC_JWT_SECRET`.  It is the
-sole source of truth for "is this request from an admin?" — see
-`backend.utils.auth.require_admin`.
+Production signs the shared session cookie with Ed25519. Staging has only the
+public verification key, so it can consume production sessions without being
+able to forge them. Environment-specific HS256 cookies remain readable during
+the rollback window.
 """
 
 from __future__ import annotations
 
+import base64
 import secrets
 import time
 from typing import Optional
@@ -27,12 +29,15 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from backend.config import get_settings
-
 
 router = APIRouter()
 
@@ -43,7 +48,8 @@ HF_USERINFO_URL = "https://huggingface.co/oauth/userinfo"
 
 
 def session_cookie_name() -> str:
-    return get_settings().session_cookie_name
+    settings = get_settings()
+    return settings.shared_session_cookie_name or settings.session_cookie_name
 
 
 SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
@@ -77,12 +83,21 @@ def _redirect_uri(request: Request) -> str:
 
 
 def _safe_return_to(value: Optional[str]) -> str:
-    """Restrict `return_to` to same-origin paths to prevent open redirects."""
+    """Restrict ``return_to`` to local paths or explicitly trusted origins."""
 
     if not value:
         return "/"
     parsed = urlparse(value)
     if parsed.scheme or parsed.netloc:
+        origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        if (
+            parsed.scheme == "https"
+            and origin in get_settings().auth_return_origin_set
+            and parsed.path.startswith("/")
+            and not parsed.username
+            and not parsed.password
+        ):
+            return value
         return "/"
     if not value.startswith("/"):
         return "/"
@@ -112,6 +127,29 @@ def _decode_state(token: str) -> dict:
 
 def _encode_session(user: dict) -> str:
     settings = get_settings()
+    now = int(time.time())
+    payload = {
+        "sub": user["sub"],
+        "username": user["username"],
+        "name": user.get("name"),
+        "avatar_url": user.get("avatar_url"),
+        "is_admin": _is_admin(user["username"]),
+        "iat": now,
+        "exp": now + SESSION_TTL_SECONDS,
+    }
+    if settings.session_signing_private_key:
+        payload["iss"] = settings.auth_authority_origin.rstrip("/")
+        payload["aud"] = "paperswithcode"
+        return jwt.encode(
+            payload,
+            _private_key(settings.session_signing_private_key),
+            algorithm="EdDSA",
+        )
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def _encode_legacy_session(user: dict) -> str:
+    settings = get_settings()
     payload = {
         "sub": user["sub"],
         "username": user["username"],
@@ -123,16 +161,60 @@ def _encode_session(user: dict) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
+def _decode_key(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _private_key(value: str) -> Ed25519PrivateKey:
+    return Ed25519PrivateKey.from_private_bytes(_decode_key(value))
+
+
+def _public_key(value: str) -> Ed25519PublicKey:
+    return Ed25519PublicKey.from_public_bytes(_decode_key(value))
+
+
+def _decode_shared_session(token: str) -> Optional[dict]:
+    settings = get_settings()
+    if not token or not settings.session_verification_public_key:
+        return None
+    try:
+        return jwt.decode(
+            token,
+            _public_key(settings.session_verification_public_key),
+            algorithms=["EdDSA"],
+            audience="paperswithcode",
+            issuer=settings.auth_authority_origin.rstrip("/"),
+        )
+    except (jwt.PyJWTError, ValueError):
+        return None
+
+
 def decode_session_cookie(token: str) -> Optional[dict]:
-    """Decode + validate the session JWT.  Returns None on any failure."""
+    """Decode a legacy environment-specific HS256 session JWT."""
 
     settings = get_settings()
-    if not settings.jwt_secret or not token:
+    if not settings.jwt_secret:
         return None
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
     except jwt.PyJWTError:
         return None
+
+
+def decode_request_session(request: Request) -> Optional[dict]:
+    """Prefer the shared session, then accept the local legacy cookie."""
+
+    settings = get_settings()
+    if settings.shared_session_cookie_name:
+        shared = request.cookies.get(settings.shared_session_cookie_name)
+        if shared:
+            payload = _decode_shared_session(shared)
+            if payload:
+                return payload
+    legacy = request.cookies.get(settings.session_cookie_name)
+    if not legacy:
+        return None
+    return decode_session_cookie(legacy)
 
 
 def _cookie_domain() -> Optional[str]:
@@ -147,24 +229,32 @@ def _cookie_domain() -> Optional[str]:
     return get_settings().session_cookie_domain.strip() or None
 
 
+def _shared_cookie_domain() -> Optional[str]:
+    return get_settings().shared_session_cookie_domain.strip() or None
+
+
 def _set_session_cookie(response: Response, token: str, secure: bool) -> None:
+    settings = get_settings()
     response.set_cookie(
-        session_cookie_name(),
+        settings.shared_session_cookie_name or settings.session_cookie_name,
         token,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         secure=secure,
         samesite="lax",
         path="/",
-        domain=_cookie_domain(),
+        domain=(
+            _shared_cookie_domain()
+            if settings.shared_session_cookie_name
+            else _cookie_domain()
+        ),
     )
 
 
 def _clear_session_cookie(response: Response, secure: bool) -> None:
-    # Clear both scopes: pre-change sessions were host-only, post-change ones
-    # carry the configured domain — logout must invalidate either kind.
+    settings = get_settings()
     response.delete_cookie(
-        session_cookie_name(),
+        settings.session_cookie_name,
         path="/",
         httponly=True,
         secure=secure,
@@ -179,6 +269,15 @@ def _clear_session_cookie(response: Response, secure: bool) -> None:
             secure=secure,
             samesite="lax",
             domain=domain,
+        )
+    if settings.shared_session_cookie_name:
+        response.delete_cookie(
+            settings.shared_session_cookie_name,
+            path="/",
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            domain=_shared_cookie_domain(),
         )
 
 
@@ -195,13 +294,29 @@ def hf_login(
     """Kick off the HF OAuth authorization-code flow."""
 
     settings = get_settings()
+    safe_return = _safe_return_to(return_to)
+    authority = settings.auth_authority_origin.rstrip("/")
+    request_origin = _origin_from_request(request).rstrip("/")
+    if authority and request_origin != authority:
+        if safe_return.startswith("/"):
+            authority_return = f"{request_origin}{safe_return}"
+        elif safe_return.startswith(f"{request_origin}/"):
+            authority_return = safe_return
+        else:
+            authority_return = f"{request_origin}/"
+        return RedirectResponse(
+            url=(
+                f"{authority}/api/v1/auth/hf/login?"
+                f"{urlencode({'return_to': authority_return})}"
+            ),
+            status_code=status.HTTP_302_FOUND,
+        )
     if not settings.hf_oauth_client_id or not settings.jwt_secret:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Hugging Face OAuth is not configured on this server",
         )
 
-    safe_return = _safe_return_to(return_to)
     state = _encode_state(safe_return, request.headers.get("host", ""))
     params = {
         "client_id": settings.hf_oauth_client_id,
@@ -308,23 +423,44 @@ async def hf_callback(
             detail="HF userinfo did not include an immutable account subject",
         )
 
-    session_token = _encode_session(
-        {
-            "sub": hf_user_id,
-            "username": username,
-            "name": userinfo.get("name"),
-            "avatar_url": userinfo.get("picture"),
-        }
-    )
+    user = {
+        "sub": hf_user_id,
+        "username": username,
+        "name": userinfo.get("name"),
+        "avatar_url": userinfo.get("picture"),
+    }
+    session_token = _encode_session(user)
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)
     _set_session_cookie(response, session_token, secure=_is_secure_origin(request))
+    if settings.session_signing_private_key:
+        response.set_cookie(
+            settings.session_cookie_name,
+            _encode_legacy_session(user),
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=_is_secure_origin(request),
+            samesite="lax",
+            path="/",
+            domain=_cookie_domain(),
+        )
     return response
 
 
 @router.post("/auth/logout")
-def logout(request: Request):
-    response = JSONResponse({"ok": True})
+def logout(
+    request: Request,
+    return_to: Optional[str] = Query(default=None),
+):
+    safe_return = _safe_return_to(return_to)
+    response: Response
+    if return_to and safe_return != "/":
+        response = RedirectResponse(
+            url=safe_return,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    else:
+        response = JSONResponse({"ok": True})
     _clear_session_cookie(response, secure=_is_secure_origin(request))
     return response
 
@@ -339,8 +475,7 @@ def admin_check(request: Request) -> Response:
     two prevents a redirect loop for signed-in non-admins.
     """
 
-    token = request.cookies.get(session_cookie_name())
-    payload = decode_session_cookie(token or "")
+    payload = decode_request_session(request)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -356,8 +491,7 @@ def admin_check(request: Request) -> Response:
 
 @router.get("/auth/me", response_model=AuthMe)
 def me(request: Request):
-    token = request.cookies.get(session_cookie_name())
-    payload = decode_session_cookie(token or "")
+    payload = decode_request_session(request)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import grp
 import hashlib
 import os
@@ -12,6 +13,9 @@ import pwd
 import secrets
 import subprocess
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 CONFIG_ROOT = Path("/etc/paperswithcode")
 
@@ -56,6 +60,37 @@ def decoded_value(line: str) -> str:
 def existing_or_random(lines: dict[str, str], key: str) -> str:
     line = lines.get(key)
     return decoded_value(line) if line else secrets.token_urlsafe(48)
+
+
+def shared_session_keys(
+    production: dict[str, str], staging: dict[str, str]
+) -> tuple[str, str]:
+    private_line = production.get("PWC_SESSION_SIGNING_PRIVATE_KEY")
+    public_line = production.get("PWC_SESSION_VERIFICATION_PUBLIC_KEY")
+    staging_public_line = staging.get("PWC_SESSION_VERIFICATION_PUBLIC_KEY")
+    if private_line:
+        private_value = decoded_value(private_line)
+        private_bytes = base64.urlsafe_b64decode(
+            private_value + "=" * (-len(private_value) % 4)
+        )
+        private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+    else:
+        private_key = Ed25519PrivateKey.generate()
+        private_bytes = private_key.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        private_value = base64.urlsafe_b64encode(private_bytes).rstrip(b"=").decode()
+    public_bytes = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    public_value = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode()
+    for line in (public_line, staging_public_line):
+        if line and decoded_value(line) != public_value:
+            raise ValueError("configured shared-session public key does not match")
+    return private_value, public_value
 
 
 def assign(lines: dict[str, str], values: dict[str, str]) -> dict[str, str]:
@@ -144,6 +179,7 @@ def main() -> int:
     if args.staging_codex_too:
         parser.error("--staging-codex-too requires --production-codex-only")
 
+    current_production = read_lines(CONFIG_ROOT / "production.env")
     current_staging = read_lines(CONFIG_ROOT / "staging.env")
     current_cron = read_lines(CONFIG_ROOT / "production-cron.env")
     staging_db_password = existing_or_random(current_staging, "PWC_DB_PASSWORD")
@@ -152,10 +188,23 @@ def main() -> int:
         current_cron, "PWC_POSTGRES_BACKUP_DB_PASSWORD"
     )
     production_jwt = decoded_value(legacy["PWC_JWT_SECRET"])
+    session_private_key, session_public_key = shared_session_keys(
+        current_production, current_staging
+    )
+    shared_auth = {
+        "PWC_AUTH_AUTHORITY_ORIGIN": "https://paperswithcode.co",
+        "PWC_AUTH_RETURN_ORIGINS": (
+            "https://paperswithcode.co,https://staging.paperswithcode.co"
+        ),
+        "PWC_SHARED_SESSION_COOKIE_DOMAIN": ".paperswithcode.co",
+        "PWC_SHARED_SESSION_COOKIE_NAME": "pwc_shared_session",
+        "PWC_SESSION_VERIFICATION_PUBLIC_KEY": session_public_key,
+    }
 
     production = assign(
         legacy,
         {
+            **shared_auth,
             "PWC_CATALOG_MUTATIONS_ENABLED": "true",
             "PWC_CHAT_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": ("/var/lib/paperswithcode/production/chat-agent"),
@@ -178,6 +227,7 @@ def main() -> int:
             "PWC_RUNTIME_DATA_DIR": "/var/lib/paperswithcode/production",
             "PWC_SESSION_COOKIE_DOMAIN": "",
             "PWC_SESSION_COOKIE_NAME": "pwc_session",
+            "PWC_SESSION_SIGNING_PRIVATE_KEY": session_private_key,
             "PWC_THUMBNAIL_CACHE_DIR": ("/var/lib/paperswithcode/shared/thumbnails"),
             "PWC_THUMBNAIL_MUTATIONS_ENABLED": "false",
             "PWC_THUMBNAIL_TEMP_CACHE_DIR": (
@@ -201,6 +251,7 @@ def main() -> int:
     staging = assign(
         staging,
         {
+            **shared_auth,
             **production_codex_values(legacy, args.codex_jobs_namespace),
             "PWC_CATALOG_MUTATIONS_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": "/var/lib/paperswithcode/staging/chat-agent",
