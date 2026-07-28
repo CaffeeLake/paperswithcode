@@ -92,7 +92,7 @@ const ConferencesIndexView: React.FC = () => {
           <div className="feed-subtitle">
             Browse accepted papers from major AI conferences, grouped by research area and task.
           </div>
-          <div className="feed-subtitle">
+          <div className="conference-deadlines-link">
             Find deadlines for upcoming conferences{" "}
             <Link to="/ai-deadlines" className="underline underline-offset-2 hover:text-foreground">
               here
