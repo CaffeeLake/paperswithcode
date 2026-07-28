@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 
 from backend.config import get_settings
 from backend.main import create_app
-from backend.services.cron_health import _gh_json, evaluate_job_health
+from backend.services.cron_health import (
+    _gh_json,
+    evaluate_job_health,
+    fetch_workflow_status,
+)
 from backend.services.cron_registry import get_cron_job, list_cron_jobs
 
 
@@ -54,6 +58,59 @@ def test_gh_json_uses_configured_token_and_explicit_repository(monkeypatch):
     assert environment["GH_TOKEN"] == "test-github-token"
     assert environment["GH_REPO"] == "huggingface/paperswithcode"
     get_settings.cache_clear()
+
+
+def test_single_job_workflow_does_not_fetch_job_details():
+    list_payload = [
+        {
+            "databaseId": 123,
+            "status": "completed",
+            "conclusion": "success",
+            "updatedAt": "2026-07-28T15:00:00Z",
+        }
+    ]
+
+    with patch(
+        "backend.services.cron_health._gh_json",
+        return_value=(list_payload, None),
+    ) as gh_json:
+        status = fetch_workflow_status(
+            "test-single-job.yml",
+            expected_jobs=("run",),
+        )
+
+    assert status["available"] is True
+    assert status["conclusion"] == "success"
+    assert status["updated_at"] == "2026-07-28T15:00:00Z"
+    gh_json.assert_called_once()
+
+
+def test_multi_job_workflow_fetches_job_details():
+    list_payload = [
+        {
+            "databaseId": 456,
+            "status": "completed",
+            "conclusion": "failure",
+        }
+    ]
+    view_payload = {
+        "jobs": [
+            {"name": "select", "status": "completed", "conclusion": "success"},
+            {"name": "persist", "status": "completed", "conclusion": "failure"},
+        ]
+    }
+
+    with patch(
+        "backend.services.cron_health._gh_json",
+        side_effect=[(list_payload, None), (view_payload, None)],
+    ) as gh_json:
+        status = fetch_workflow_status(
+            "test-multi-job.yml",
+            expected_jobs=("select", "discover", "persist"),
+        )
+
+    assert status["failed_jobs"] == ["persist"]
+    assert gh_json.call_count == 2
 
 
 def test_registry_includes_hf_artifacts_and_embedding_crons():

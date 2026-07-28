@@ -228,7 +228,7 @@ def fetch_workflow_status(
     latest = list_payload[0]
     run_id = latest.get("databaseId")
     view_payload = latest
-    if run_id:
+    if run_id and len(expected_jobs) > 1:
         fetched_view, view_error = _gh_json(
             [
                 "run",
