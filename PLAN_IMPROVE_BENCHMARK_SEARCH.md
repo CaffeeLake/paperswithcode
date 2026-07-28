@@ -21,6 +21,109 @@ real duplication.
 Implement benchmark search first. Apply the same pattern to method search in a
 separate follow-up after benchmark relevance and latency are validated.
 
+## Resolved design decisions
+
+### Multi-term query semantics
+
+Use AND semantics for complete query terms, matching
+`websearch_to_tsquery` behavior. A benchmark must match every complete term;
+do not broaden ordinary lexical retrieval to results matching only one term.
+
+This still supports benchmark-family discovery. For example, `SWE Bench`
+matches SWE-Bench Pro, SWE-Bench Verified, SWE-Bench Multilingual, and other
+variants because every result contains both terms. The more specific
+`SWE Bench Multilingual` should narrow to multilingual matches rather than
+injecting sibling family members that do not match the final term.
+
+If the product later needs explicit family expansion, model and rank it as a
+separate relation-aware candidate lane rather than weakening lexical matching
+to OR semantics.
+
+### Partial-token semantics
+
+In the live-typing name/slug lane, prefix-match every query token and require
+all token prefixes to match. For example, `swe ben mul` should match
+`SWE-Bench Multilingual`.
+
+Do not perform arbitrary within-token suffix or infix matching. A query such as
+`imi` should not match the `Kimi` token. Exact short tokens remain valid:
+`k3` matches `Kimi K3` because `K3` is a complete standalone token, not because
+of substring matching.
+
+### Searchable content boundary
+
+Benchmark, method, and task search should match entity names, not descriptive
+content. For benchmarks, ordinary lexical candidates come from the displayed
+`name` only. `full_name`, `description`, and `short_description` must not
+contribute ordinary matches or rank. An exact normalized `full_name` remains an
+identity lookup for users who deliberately enter the complete expansion.
+
+Apply the same boundary to follow-up method and task search:
+
+- methods: displayed name for ordinary search and exact full name for identity,
+  not description, keywords, collection description, or source text;
+- tasks: name, not description, research trends, or keywords; and
+- papers remain unchanged: paper keyword/hybrid search continues to use title
+  and abstract.
+
+This deliberately trades descriptive discovery for precision in navigational
+entity search. It prevents results such as an EETm2 benchmark appearing for
+`Transformer` solely because the description mentions transformers.
+
+### Slug semantics
+
+Use slugs only for exact, case-insensitive identity lookup. Do not include slug
+tokens in ordinary FTS or partial-prefix matching.
+
+This preserves navigation from pasted URLs and known stable identifiers while
+ensuring every non-identity result has a visible match in its displayed name.
+Legacy or internal wording present only in a slug must not produce a surprising
+result.
+
+### Sparse benchmark visibility
+
+Global navigational search must include every configured benchmark, including
+benchmarks with zero or one logical leaderboard entry. Remove the overlay's
+`min_eval_count=2` argument.
+
+Keep `min_eval_count` as a supported datasets API filter for task-page browsing
+and other callers that intentionally suppress sparse leaderboards. Search must
+continue to honor it when explicitly supplied, but global search should not
+supply it. Leaderboard-entry count remains a secondary ranking and display
+signal, not a visibility gate.
+
+### Global trend tie-breaker
+
+After identity and textual relevance, rank ties by benchmark reporting trend,
+not raw logical leaderboard-entry count.
+
+Global search has no task context, so compute the trend across all task
+associations: count each distinct latest-version paper once per benchmark when
+it reports an evaluation during the most recent 90 days, then normalize that
+count to reports per 30 days, matching the existing benchmark trend concept.
+For tied trend scores, prefer the most recent reporting-paper date, then
+all-time distinct reporting-paper count, then alphabetical name and dataset ID.
+
+As of 2026-07-28, only 42 of 1,484 benchmarks (2.83%) are linked to more than
+one task: 39 have two tasks, two have three, and one has four. Global
+aggregation is therefore equivalent to task-specific trend for nearly all
+linked benchmarks while giving the global overlay one coherent signal.
+
+Calculate trend aggregates only for the bounded textual candidate set, not the
+entire benchmark catalog on every keystroke. Entry count remains response
+metadata and may be a final deterministic fallback, but it is not the primary
+popularity tie-breaker.
+
+### Featured rank is outside this plan
+
+Do not read, preserve, migrate, or rank by `task_datasets.featured_rank` in this
+work. Its end-to-end removal is owned by a separate task.
+
+Build benchmark search ranking solely from identity, name relevance, and
+benchmark reporting trend. Keep this implementation compatible with the
+expected absence of `featured_rank`; do not add a temporary compatibility
+branch that would prolong the obsolete ranking path.
+
 ## Problem
 
 The global search overlay advertises benchmark search, but benchmark queries
@@ -41,8 +144,8 @@ papers because paper search uses tokenized lexical/hybrid retrieval.
 The current behavior also has these limitations:
 
 - word order and punctuation variations frequently produce zero results;
-- a relevant name match and an incidental description match are not ranked by
-  a common lexical relevance score;
+- incidental description text produces surprising entity matches, such as
+  EETm2 appearing for `Transformer`;
 - the frontend's requested `ordering=-paper_count` is not used by
   `search_datasets`, which currently forces name ordering; and
 - whole-query substring matching becomes increasingly brittle as benchmark
@@ -53,7 +156,7 @@ The current behavior also has these limitations:
 - Make `swe bench multilingual` find `SWE-Bench Multilingual`.
 - Preserve exact lookup by numeric ID and slug.
 - Rank exact name and slug matches deterministically above ordinary FTS hits.
-- Weight benchmark names more strongly than descriptive text.
+- Search benchmark names only; exclude descriptive text from retrieval.
 - Preserve useful results while the user is still typing a final partial word.
 - Preserve all existing dataset filters, especially task scoping,
   descendant-task expansion, `min_eval_count`, and `is_open`.
@@ -67,7 +170,6 @@ The current behavior also has these limitations:
 - Do not add semantic embeddings or hybrid vector search for benchmarks.
 - Do not add Elasticsearch, OpenSearch, or another search service.
 - Do not change paper hybrid search.
-- Do not remove the overlay's `min_eval_count=2` visibility rule.
 - Do not redesign the global search overlay.
 - Do not combine papers, tasks, methods, and benchmarks into one API endpoint.
 - Do not deploy to production without explicit production-release approval.
@@ -98,40 +200,33 @@ changing the stored display value.
 
 ### 2. Partial live-typing lane
 
-Retain a bounded normalized partial-name path for inputs such as `swe mult`.
-Plain PostgreSQL FTS does not automatically match an unfinished lexeme such as
-`mult` to `multilingual`, and removing partial matching would regress the
-command-palette experience.
+Retain a bounded token-prefix path for inputs such as `swe ben mul`. Plain
+PostgreSQL FTS does not automatically match unfinished lexemes, and removing
+prefix matching would regress the command-palette experience.
 
-Apply partial matching only to normalized slug, name, and full name, not the
-full description. Prefer:
+Apply token-prefix matching only to normalized `name`. Require every query
+token to prefix-match a token in that displayed name.
 
-1. normalized name prefix;
-2. normalized name substring;
-3. normalized full-name prefix;
-4. normalized full-name substring;
-5. normalized slug prefix or substring.
+Do not add arbitrary within-token suffix or infix matching. Keep this lane
+index-friendly where practical. Prefer PostgreSQL prefix `tsquery` terms if
+they produce the required behavior and acceptable plans. Measure an expression
+index or `pg_trgm` only if query plans show it is needed; do not add an
+extension by default.
 
-Keep this lane index-friendly where practical. Measure an expression index or
-`pg_trgm` only if query plans show it is needed; do not add an extension by
-default.
-
-### 3. Weighted FTS lane
+### 3. Name FTS lane
 
 Add a maintained `datasets.search_vector` with these initial weights:
 
 ```sql
-setweight(to_tsvector('simple',  coalesce(name, '')),              'A') ||
-setweight(to_tsvector('simple',  coalesce(full_name, '')),         'A') ||
-setweight(to_tsvector('simple',  coalesce(slug, '')),              'A') ||
-setweight(to_tsvector('english', coalesce(short_description, '')), 'B') ||
-setweight(to_tsvector('english', coalesce(description, '')),       'C')
+setweight(to_tsvector('simple', coalesce(name, '')), 'A')
 ```
 
 Use `websearch_to_tsquery` and `ts_rank_cd`, following the paper keyword-search
-implementation. If combining `simple` name lexemes with an `english` query
-causes measured acronym or stemming regressions, use separate name and
-description vectors/queries and combine their ranks rather than guessing.
+implementation. Unquoted multi-term queries use AND semantics: all complete
+terms must match. Use the `simple` configuration so entity names, acronyms, and
+identifiers are not English-stemmed. Do not include description or
+short-description fields in the vector. Do not include `full_name`; it is
+identity-only.
 
 The relevance fixture described below decides the final configuration.
 
@@ -142,22 +237,18 @@ Rank candidate benchmarks by:
 1. identity tier;
 2. partial-name tier;
 3. descending weighted FTS rank;
-4. descending logical leaderboard-entry count (`paper_count`);
-5. ascending benchmark name;
-6. ascending benchmark ID.
+4. descending global 90-day reporting trend;
+5. descending latest reporting-paper date;
+6. descending all-time distinct reporting-paper count;
+7. ascending benchmark name;
+8. ascending benchmark ID.
 
 A benchmark may appear in more than one candidate lane. Deduplicate by dataset
 ID and retain its best identity/partial tier and best lexical rank.
 
-When task scoping is active, preserve the existing featured-rank rule before
-ordinary relevance only if product behavior requires curated pins to override
-an explicit search query. Add a test documenting the chosen behavior. The
-recommended default is that exact identity matches come first, then featured
-rank, then lexical relevance.
-
-Do not use raw evaluation-record count as popularity. Continue using the
-service's distinct logical leaderboard-row count so ranking and displayed
-entry counts agree.
+Do not use raw evaluation-record count or logical leaderboard-row count as the
+primary popularity signal. Continue using the distinct logical leaderboard-row
+count for the displayed `paper_count` value so the API and benchmark page agree.
 
 ## Implementation phases
 
@@ -170,12 +261,14 @@ covering:
 - acronyms: `gpqa`, `mmlu pro`, `humaneval`;
 - exact slug and numeric ID;
 - reordered or descriptive queries;
-- partial live input: `swe mult`, `multi swe`;
+- partial live input: `swe ben mul`, `k3`;
+- negative infix input: `imi` must not match a standalone `Kimi` token;
 - broad terms with multiple legitimate results;
 - quoted phrases and punctuation;
 - stop-word-heavy input;
 - blank or whitespace-only input; and
 - task-scoped queries with `min_eval_count`.
+- exact global-search matches with zero and one leaderboard entry.
 
 Record the current ordered IDs and zero-result cases before changing search.
 Hand-label the expected first result and any acceptable top results.
@@ -250,14 +343,14 @@ Add targeted tests for:
 - punctuation-insensitive matching;
 - exact ID, slug, name, and full-name priority;
 - partial final-token matching;
-- name matches outranking description-only matches;
-- entry count as a secondary, not primary, relevance signal;
+- descriptions not creating matches;
+- global trend, latest report date, and all-time reporting-paper tie-breaks;
 - deterministic ordering for ties;
 - deduplication across candidate lanes;
 - pagination and total counts;
 - `min_eval_count`;
+- global overlay visibility for zero- and one-entry benchmarks;
 - task scoping and descendant inclusion;
-- featured benchmark ordering under search;
 - `is_open` summary selection;
 - empty, whitespace, punctuation-only, and quoted queries;
 - newly inserted and updated rows receiving a search vector; and
@@ -275,8 +368,9 @@ uv run --env-file backend/keys.env ruff check <changed Python files>
 git diff --check
 ```
 
-Do not run a routine frontend production build. No frontend change should be
-required unless the existing API wiring exposes a defect during validation.
+Do not run a routine frontend production build. The expected frontend change
+is limited to removing `min_eval_count: 2` from the global overlay's benchmark
+request.
 
 ### Phase 4: Staging rollout and validation
 
@@ -310,12 +404,14 @@ Keep:
 - task, descendant, `min_eval_count`, and `is_open` parameters; and
 - the overlay's existing benchmark rendering and navigation.
 
+The API retains `min_eval_count`; the global overlay no longer supplies it.
+
 The frontend currently supplies `ordering=-paper_count`. Decide explicitly
 whether search should honor that parameter. The recommended behavior is:
 
 - relevance is always primary when `q` is present;
-- requested ordering is a documented secondary tie-breaker; and
-- `paper_count` remains the default secondary tie-breaker for the overlay.
+- the global overlay stops requesting `ordering=-paper_count`; and
+- global benchmark reporting trend is the default popularity tie-breaker.
 
 Update the endpoint documentation so “search” describes tokenized,
 relevance-ranked matching rather than generic substring matching.
@@ -326,17 +422,18 @@ Yes, methods should use the same search pattern after benchmarks.
 
 Method search currently performs the same whole-query `%ILIKE%` matching over
 name, full name, and description. It is therefore vulnerable to punctuation,
-word-order, and ranking problems, and method metadata already has useful
-keyword and descriptive fields.
+word-order, and ranking problems.
 
 For methods, use:
 
-- weight A: name, full name, slug;
-- weight B: explicit `keywords`;
-- weight C: description and collection description;
+- weight A: displayed name only;
 - exact ID/slug/normalized-name identity lanes;
 - normalized partial-name matching for live typing; and
-- paper count as a stable secondary popularity signal.
+- a separately defined method popularity tie-breaker; benchmark reporting trend
+  must not be copied to methods because their evidence model differs.
+
+Do not search method descriptions, keywords, collection descriptions, or
+source text. The global entity search is navigational and name-only.
 
 Do not implement methods in the benchmark migration. First extract and validate
 the reusable pieces:
@@ -350,9 +447,10 @@ Then create a separate method search vector, migration, relevance fixture, and
 targeted rollout. This limits blast radius and prevents a benchmark-specific
 ranking choice from becoming an accidental generic abstraction.
 
-Tasks likely have the same eventual need, but they should be evaluated
-separately because hierarchy, aliases/keywords, and curated navigation make
-their ranking policy materially different.
+Tasks should eventually adopt the same name-only matching boundary, but they
+should be evaluated separately because hierarchy and curated navigation make
+their ranking policy materially different. Task descriptions, research trends,
+and keywords should not create search matches.
 
 ## Completion criteria
 
@@ -361,7 +459,7 @@ The benchmark-search work is complete when:
 - punctuation and whitespace variants find the intended benchmark;
 - exact identifiers remain deterministic;
 - partial live typing has not regressed;
-- relevance is text-first with entry count only as a secondary signal;
+- relevance is text-first with global reporting trend only as a tie-breaker;
 - all existing filters and API contracts are preserved;
 - the maintained vector and GIN index are verified;
 - focused tests and lint pass;

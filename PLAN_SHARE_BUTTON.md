@@ -24,26 +24,71 @@ production link.
 - Sharing is available only for an authenticated user's persisted, non-empty,
   idle chat. Do not show it on `/chat` before the first turn has received a
   session ID, and disable it while that chat is loading or generating.
+- **User-confirmed decision:** an idle failed or interrupted chat remains
+  shareable. Its snapshot preserves the same bounded partial reasoning, tool
+  output, answer text, and user-facing failure/interruption state visible to
+  the owner.
+- **User-confirmed decision:** Share is disabled throughout active generation.
+  The owner must wait for completion or stop the response; once the stop has
+  settled, the resulting idle interrupted transcript can be shared. The
+  backend also rejects concurrent/stale share attempts with 409.
+- **User-confirmed decision:** clicking `Share` immediately publishes or
+  refreshes the snapshot and copies its URL. There is no preview or
+  confirmation dialog before publication.
+- **User-confirmed decision:** the top-right control is always labeled
+  `Share`, before and after first publication. Every click refreshes the
+  existing snapshot and copies its URL; there is no `Copy link`,
+  `Update & copy link`, or snapshot-staleness state.
 - The public identifier is a new cryptographically random UUID. Never expose
   the private chat session ID as the share capability.
-- A share is an unlisted snapshot, not a live view. Later messages, edits, and
-  title changes remain private until the owner clicks `Share` again.
-- Re-sharing refreshes the existing snapshot and reuses its URL. This avoids
-  creating a pile of links while still making publication an explicit action.
-- A shared transcript contains user messages, final assistant answer blocks,
-  and the citation snapshots needed to render those answers. It does **not**
-  expose reasoning blocks, tool names, tool arguments, tool output, model
-  routes, SDK transcript data, internal errors, or the owner's Hugging Face
-  identity.
-- Public pages are read-only: no composer, model picker, edit controls, chat
-  history sidebar, follow-up chips, or private session API calls.
-- A share can be revoked. Add `Unshare` to the active chat's action menu once a
-  public link exists. Revocation immediately makes the URL return 404.
-- Deleting the source chat also deletes its share and invalidates the public
-  link.
-- Public links are deliberately unlisted: do not add them to sitemaps, set the
-  shared page's robots metadata to `noindex,nofollow`, and serve the public API
-  response with `Cache-Control: no-store` so revocation is not hidden behind a
+- **User-confirmed decision:** a share is an unlisted snapshot, not a live
+  view. Later messages and edits remain private until the owner explicitly
+  publishes another snapshot; the private title is never published.
+- **User-confirmed decision:** re-sharing atomically replaces the snapshot
+  behind the existing public URL. It does not mint another URL or retain
+  separately revocable historical snapshots.
+- **User-confirmed decision:** a shared transcript includes the entire
+  browser-visible conversation: user messages, reasoning blocks, tool calls
+  and results, final answers, and citations. The sandbox limits these traces to
+  its public research surface (`Bash`, `Read`, `Grep`, and `WebFetch`, with
+  policy and filesystem/network restrictions).
+- **User-confirmed boundary:** “entire transcript” means that complete bounded
+  browser projection only. Sharing never exposes raw SDK events, system
+  prompts, capability data, model routes, sandbox/provider metadata, or the
+  owner's Hugging Face identity.
+- **User-confirmed decision:** the public page has no owner attribution. It
+  does not show or return a Hugging Face username, avatar, or profile link.
+- **User-confirmed decision:** the public page does not display, return, or
+  snapshot the private chat title. Its page label and document title use the
+  generic text `Shared conversation`.
+- **User-confirmed decision:** the shared transcript itself is immutable—no
+  edit controls, chat history sidebar, follow-up actions, or private source
+  session calls—but the page includes a separate fresh-chat composer.
+- The fresh composer never continues, forks, or imports context from the shared
+  transcript. Submitting hands only the new prompt to the existing `/chat`
+  launch flow, which starts a new private chat for a signed-in viewer or
+  preserves the draft through the normal sign-in flow.
+- **User-confirmed decision:** the public fresh-chat composer has no model
+  picker. It queues the prompt without an explicit model so the normal private
+  chat flow selects its default and exposes model controls after navigation or
+  sign-in.
+- **User-confirmed decision:** the shared page uses the existing Papers With
+  Code site header and a centered transcript. It has no owner or viewer
+  chat-history sidebar.
+- **User-confirmed decision:** do not add message timestamps or date
+  separators. The snapshot publishes the same transcript metadata visible in
+  the owner chat.
+- **User-confirmed decision:** viewers do not need to sign in. Possession of the
+  unguessable share URL is sufficient, and the public route never redirects to
+  OAuth.
+- **User-confirmed decision:** V1 has no revoke button or revoke API. A public
+  link remains valid until the owner deletes the source chat; that deletion
+  cascades through the snapshot and invalidates the URL.
+- **User-confirmed decision:** shared conversations are completely unlisted.
+  Do not include them in sitemaps, internal search, feeds, galleries, or
+  discovery endpoints. Set the shared page's robots metadata to
+  `noindex,nofollow`, and serve the public API response with
+  `Cache-Control: no-store` so source-chat deletion is not hidden behind a
   browser or CDN cache.
 - Do not show the success toast until clipboard writing succeeds. If the
   Clipboard API is unavailable or denied, show the URL in a small copyable
@@ -83,9 +128,10 @@ production link.
    `new URL(public_path, window.location.origin).toString()` and calls
    `navigator.clipboard.writeText(url)`.
 6. On success, show the short-lived top-center toast. Keep the button labeled
-   `Share`; repeat clicks refresh and copy the same link.
+   `Share`; repeat clicks refresh and copy the same link, even when the private
+   chat has not changed.
 7. On API failure, restore the button and show the existing session-level error
-   or a destructive toast. Do not overwrite or revoke the last valid snapshot.
+   or a destructive toast. Do not overwrite the last valid snapshot.
 8. On clipboard failure, keep the successfully created share, open a fallback
    dialog containing the URL, and let the user select/copy it manually.
 
@@ -97,21 +143,10 @@ contents and `updated_at`.
 1. `/share/:shareId` lazy-loads `SharedChatView`.
 2. The view requests `GET /api/v1/chat/shares/{share_id}` without credentials
    or an authentication redirect.
-3. It renders the snapshotted title and transcript in the normal centered chat
-   width, with a small “Shared conversation” label and a link to start a new
-   Papers With Code chat.
-4. Missing, malformed, revoked, or deleted links render the normal not-found
+3. It renders the transcript in the normal centered chat width under the
+   generic label `Shared conversation`, followed by a fresh-chat composer.
+4. Missing, malformed, or source-deleted links render the normal not-found
    state without revealing whether the source session or owner exists.
-
-### Revoke
-
-1. Once the active session reports a share ID, its context menu includes
-   `Unshare`.
-2. Confirm with: “Remove this public link? Anyone with the link will lose
-   access.”
-3. `DELETE /api/v1/chat/sessions/{session_id}/share` verifies ownership, deletes
-   the share snapshot, and returns 204.
-4. Clear the session's local share state and show “Public link removed.”
 
 ## Persistence design
 
@@ -124,14 +159,13 @@ migration README.
 ```text
 id                 uuid primary key
 chat_session_id    uuid not null unique references chat_sessions(id) on delete cascade
-title              varchar(80) not null
 created_at         timestamptz not null default now()
 updated_at         timestamptz not null default now()
 ```
 
 `id` is the public capability. A unique `chat_session_id` enforces one stable
-share URL per chat. The title is copied into this row so a later private rename
-does not mutate the snapshot.
+share URL per chat. The private title is deliberately absent from the public
+snapshot schema.
 
 ### `chat_share_messages`
 
@@ -155,7 +189,7 @@ staging owner/application grants established by the other chat migrations.
 Update `validate_chat_schema()` so staging readiness fails if either new table
 is absent.
 
-Do not use a deterministic hash of the session ID, username, or title. Generate
+Do not use a deterministic hash of the session ID or username. Generate
 the share UUID with `uuid.uuid4()` and do not log full share URLs at normal log
 levels.
 
@@ -166,13 +200,10 @@ levels.
 In `backend/models/chat.py`, add strict models for:
 
 - `ChatShareSummary`: `share_id`, `public_path`, `created_at`, `updated_at`;
-- `ChatShareDetail`: snapshotted `title`, timestamps, and public messages;
-- `PublicChatMessage`: only `id`, `role`, `content`, filtered answer blocks,
-  and citation snapshots.
-
-Add `share_id: UUID | None` to the authenticated session summary/detail so the
-owner UI can expose `Unshare`. Do not include that field in the public response
-under a misleading private-session name.
+- `ChatShareDetail`: timestamps and public messages, with no private title;
+- `PublicChatMessage`: `id`, `role`, `content`, the complete validated
+  browser-display block projection, citation snapshots, and a narrow
+  user-facing completion/interruption/failure state.
 
 ### Service boundary
 
@@ -186,9 +217,8 @@ rather than adding public-capability queries to the stream orchestrator.
 3. select the same current rows as `get_session()` in sequence order;
 4. reject an empty transcript;
 5. create a share UUID if needed, or retain the existing share UUID;
-6. update the title snapshot;
-7. replace the ordered manifest in one transaction;
-8. flush and return the share record.
+6. replace the ordered manifest in one transaction;
+7. flush and return the share record.
 
 If manifest replacement fails, roll back and leave the preceding public
 snapshot intact.
@@ -197,18 +227,22 @@ snapshot intact.
 rows in `position` order, and build an allowlisted public projection:
 
 - user rows expose only their prompt text;
-- assistant rows expose only `kind == "answer"` display blocks and their
-  bounded citation snapshots;
-- omit reasoning/tool blocks even if they are closed in the owner UI;
-- omit `followups`, `model`, `error_code`, revisions, status internals, and all
+- assistant rows expose the complete validated `display_blocks` projection,
+  including reasoning, tool calls/results, answer blocks, and their bounded
+  citation snapshots;
+- failed or interrupted turns expose a stable public display state and generic
+  user-facing message equivalent to the owner UI, not the internal
+  `error_code`;
+- omit `followups`, `model`, raw status/error fields, revisions, and all
   owner/session fields;
-- normalize restored answer blocks to `done: true`.
+- normalize restored blocks to an idle historical state: reasoning is
+  inactive, completed blocks retain their result, and any tool left `running`
+  by an interrupted turn becomes a failed historical block.
 
-Do the filtering server-side. A custom caller of the public API must never
-receive private blocks merely because the React view hides them.
-
-`revoke(owner, session_id)` locks the owned session, deletes its share, and is
-idempotent (204 whether or not a share currently exists).
+Construct this projection server-side from the already bounded and validated UI
+fields. A custom caller of the public API must never receive raw SDK entries,
+provider metadata, capability material, or other persistence fields merely
+because the React view ignores them.
 
 ### Routes
 
@@ -216,19 +250,14 @@ Extend `backend/routers/chat.py` with:
 
 ```text
 POST   /api/v1/chat/sessions/{session_id}/share   authenticated owner
-DELETE /api/v1/chat/sessions/{session_id}/share   authenticated owner
 GET    /api/v1/chat/shares/{share_id}             public
 ```
 
 Keep all chat routes behind the existing `PWC_CHAT_ENABLED` feature mounting.
 The public GET must not depend on `require_user`, set `Cache-Control: no-store`,
-and return the same generic 404 for a missing/revoked share. The POST response
-returns a relative `public_path` (`/share/<id>`), leaving origin selection to
-the browser.
-
-When returning authenticated session summaries, fetch share IDs without an
-N+1 query. Use a relationship eager load or a small outer join in the session
-service; do not query once per sidebar row.
+and return the same generic 404 for a missing or source-deleted share. The POST
+response returns a relative `public_path` (`/share/<id>`), leaving origin
+selection to the browser.
 
 ## Frontend design
 
@@ -236,9 +265,7 @@ service; do not query once per sidebar row.
 
 Extend `frontend/src/lib/chatSessions.ts` with:
 
-- `share_id: string | null` on authenticated session types;
 - `createOrRefreshShare(sessionId)`;
-- `revokeShare(sessionId)`;
 - a separate public request helper and `getSharedChat(shareId)`.
 
 The public helper should omit `credentials: "include"` to make its anonymous
@@ -255,8 +282,6 @@ In `frontend/src/views/ChatView.tsx`:
 - disable it while the chat is busy or a share request is in flight;
 - use an existing Lucide share icon or add a matching icon to
   `components/chat/icons.tsx`;
-- update the active session's `share_id` from POST/DELETE results;
-- add the conditional `Unshare` context-menu action;
 - use `useToast()` for success/error feedback;
 - keep API errors separate from clipboard errors so an automatic-copy failure
   does not imply the public link was not created.
@@ -274,15 +299,20 @@ Add and lazy-load `frontend/src/views/SharedChatView.tsx`, then register
 The shared view should:
 
 - have explicit loading, not-found, and retryable network-error states;
-- set a useful document title and a temporary `robots=noindex,nofollow` meta
-  tag, restoring prior document metadata on unmount;
+- set the generic document title `Shared conversation` and a temporary
+  `robots=noindex,nofollow` meta tag, restoring prior document metadata on
+  unmount;
 - render the snapshot without invoking `useChat`, opening SSE, listing private
   sessions, or requiring OAuth;
-- initialize collapsible state locally for the remaining answer renderer (the
-  public payload will contain no tool/reasoning blocks);
+- initialize reasoning and tool blocks as collapsed historical blocks and keep
+  their normal owner-view expand/collapse interaction;
 - reuse normal user/assistant typography and citation links;
-- offer a restrained “Start a new chat” link to `/chat`, subject to the existing
-  chat feature flag.
+- render the existing `Composer` in fresh-chat mode without `models`,
+  `selectedModel`, or `onModelChange`; on submit call
+  `queueChatLaunch(prompt)` and navigate to `/chat` so the normal new-chat/auth
+  behavior owns the default model, model loading, and SSE;
+- do not include any shared message IDs, transcript text, or source session
+  identifier in that launch.
 
 Extract a small presentational transcript component only if it materially
 reduces duplication between `ChatView` and `SharedChatView`. Do not move
@@ -291,15 +321,15 @@ streaming, editing, auto-scroll, or composer state into a generic abstraction.
 ## Concurrency and failure behavior
 
 - Lock the source session while taking the message manifest so Share cannot
-  race a title update, edit activation, or turn admission.
+  race an edit activation or turn admission.
 - The frontend disables Share while busy, but the server remains authoritative
   and returns 409 to stale/custom clients.
 - Generate the new snapshot inside one database transaction. Readers see
   either the old complete manifest or the new complete manifest, never a
   partially refreshed transcript.
 - A failed refresh keeps the previous public link and contents intact.
-- Revocation and source-chat deletion rely on database cascades and must not
-  leave orphan manifest rows.
+- Source-chat deletion relies on database cascades and must not leave orphan
+  share or manifest rows.
 - Never claim clipboard success on rejection. Clipboard failure is recoverable
   without issuing a second POST or rotating the link.
 - Treat the public endpoint as capability access: do not vary behavior based on
@@ -312,18 +342,21 @@ streaming, editing, auto-scroll, or composer state into a generic abstraction.
 Add focused tests alongside `backend/tests/test_chat_endpoint.py` or in
 `backend/tests/test_chat_shares.py`:
 
-- only the immutable OAuth-subject owner can create, refresh, or revoke a share;
+- only the immutable OAuth-subject owner can create or refresh a share;
 - POST rejects missing, empty, and busy chats;
+- idle failed and interrupted chats can be snapshotted without dropping their
+  bounded partial transcript or public display state;
 - the first POST generates a UUID and a repeated POST retains it;
-- the snapshot title and manifest remain unchanged after private rename/new
-  messages until POST is called again;
+- a private rename never appears in the public API or page, and new messages
+  leave the manifest unchanged until POST is called again;
 - refresh atomically replaces the manifest in sequence order;
 - edited/superseded rows referenced by an older snapshot remain readable;
 - public GET works without authentication;
-- public GET excludes reasoning, tool args/output, model fields, followups, and
-  owner identity while preserving answer text and citations;
-- missing and revoked IDs return the same 404;
-- DELETE is idempotent, and deleting a chat cascades through both share tables;
+- public GET preserves the complete validated browser transcript, including
+  reasoning and tool blocks, while excluding raw SDK entries, model routes,
+  capabilities, followups, owner identity, and other private persistence data;
+- missing and source-deleted IDs return the same 404;
+- deleting a chat cascades through both share tables;
 - public GET sends `Cache-Control: no-store`;
 - API models reject unexpected fields.
 
@@ -339,10 +372,12 @@ Add Vitest/Testing Library coverage for:
 - a clipboard rejection opens the manual-copy fallback without creating a
   second link;
 - API failure does not show a copied-success message;
-- Unshare confirms, calls DELETE, and removes local shared state;
-- `/share/:shareId` loads anonymously and renders title, prompts, answers, and
-  citations;
-- shared view has no composer, edit action, sidebar, reasoning, or tool output;
+- `/share/:shareId` loads anonymously and renders `Shared conversation`,
+  prompts, answers, and citations without the private title;
+- shared view has no edit action or sidebar, does render collapsible reasoning
+  and tool output, and its composer launches a separate empty-context chat;
+- submitting the public composer passes only its new prompt into the existing
+  `/chat` launch/auth flow and never mutates or imports the shared transcript;
 - missing shares render a non-enumerating not-found state;
 - the route wins over the organization catch-all.
 
@@ -361,26 +396,28 @@ Do not run `npm run build` as a routine validation step.
 1. Add the two tables, ORM relationships, migration documentation, and staging
    readiness validation.
 2. Add strict share API models and `ChatShareService`.
-3. Add authenticated create/revoke routes and the anonymous public GET with
-   server-side projection filtering.
-4. Extend authenticated session responses with `share_id` and update the
-   frontend API types.
-5. Implement the owner top-bar Share flow, clipboard fallback, toast, and
-   Unshare action.
+3. Add the authenticated create/refresh route and the anonymous public GET
+   with server-side projection filtering.
+4. Update the frontend API types and request helpers.
+5. Implement the owner top-bar Share flow, clipboard fallback, and toast.
 6. Add the anonymous shared-chat route and read-only transcript view.
 7. Add backend and frontend tests, then run the focused validation commands.
 8. Commit the intended source changes to `main`, push `origin main`, and deploy
    that exact commit to staging following the repository publishing policy.
    Apply the additive staging migration before the new release is made active,
    then smoke-test the owner flow, an anonymous/incognito shared URL,
-   revocation, `/health`, `/`, `/share/<test-id>`, and the public share API.
+   source-chat deletion invalidation, `/health`, `/`, `/share/<test-id>`, and
+   the public share API.
 
 ## Out of scope for V1
 
 - searchable or browsable galleries of shared chats;
 - multiple simultaneous public links for one chat;
+- revoking or rotating a public link without deleting the source chat;
 - live-updating shares;
 - expiry dates, passwords, access analytics, comments, or collaborative edits;
-- exposing chain-of-thought, tool traces, or raw SDK transcripts;
+- exposing raw SDK transcripts, provider metadata, or sandbox capabilities
+  beyond the bounded browser-visible reasoning and tool projection;
 - server-rendered social preview cards for shared conversations;
-- copying or forking a public chat into another user's private history.
+- copying or forking the shared transcript into another user's private history;
+  the public composer starts with empty context.
