@@ -799,7 +799,10 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
 
 
 def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
+    requested: list[str] = []
+
     def request(url: str, *, allow_redirects: bool = True):
+        requested.append(url)
         if url.endswith("/paper/2607.24653"):
             return (
                 200,
@@ -824,6 +827,8 @@ def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
 
     monkeypatch.setattr(smoke_test, "request", request)
     assert smoke_test.run_seo_http_smoke("http://127.0.0.1:8100") == []
+    assert "http://127.0.0.1:8100/sitemaps/papers-2026-1.xml" in requested
+    assert "https://example.test/sitemaps/papers-2026-1.xml" not in requested
 
 
 def test_nginx_cross_environment_references_are_rejected():

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from xml.etree import ElementTree
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -85,7 +85,8 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
             if not shard:
                 failures.append("sitemap index has no paper shard")
             else:
-                shard_status, shard_headers, shard_body = request(shard)
+                shard_candidate_url = urljoin(base_url, urlsplit(shard).path)
+                shard_status, shard_headers, shard_body = request(shard_candidate_url)
                 if shard_status != 200 or "xml" not in header_value(
                     shard_headers, "Content-Type"
                 ):
