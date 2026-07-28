@@ -21,6 +21,9 @@ import type {
 const Caret: React.FC = () => <span className="chat-caret" />;
 
 const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
+  if (event.button !== 0 || event.detail !== 2) return;
+  event.preventDefault();
+
   const element = event.currentTarget;
   const document = element.ownerDocument;
   const point = document.caretPositionFromPoint?.(event.clientX, event.clientY);
@@ -46,7 +49,6 @@ const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
   range.setEnd(node, end);
   selection.removeAllRanges();
   selection.addRange(range);
-  event.preventDefault();
 };
 
 const RestrictedReasoning: React.FC<{
@@ -229,7 +231,7 @@ const AnswerBlockView: React.FC<{
 export const UserMessage: React.FC<{ text: string }> = ({ text }) => (
   <div className="chat-msg chat-msg-user">
     <div className="chat-bubble">
-      <span className="chat-bubble-text" onDoubleClick={selectClickedWord}>{text}</span>
+      <span className="chat-bubble-text" onMouseDown={selectClickedWord}>{text}</span>
     </div>
   </div>
 );

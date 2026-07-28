@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("UserMessage", () => {
-  it("constrains double-click selection to the clicked word", () => {
+  it("cancels Safari's second mousedown and selects only the clicked word", () => {
     render(<UserMessage text="What's the SOTA for image classification?" />);
     const message = screen.getByText("What's the SOTA for image classification?");
     const textNode = message.firstChild;
@@ -20,8 +20,14 @@ describe("UserMessage", () => {
       value: () => ({ offsetNode: textNode, offset: 12 }),
     });
 
-    fireEvent.doubleClick(message, { clientX: 20, clientY: 10 });
+    const allowed = fireEvent.mouseDown(message, {
+      button: 0,
+      clientX: 20,
+      clientY: 10,
+      detail: 2,
+    });
 
+    expect(allowed).toBe(false);
     expect(document.getSelection()?.toString()).toBe("SOTA");
   });
 
@@ -40,8 +46,23 @@ describe("UserMessage", () => {
       },
     });
 
-    fireEvent.doubleClick(message, { clientX: 20, clientY: 10 });
+    const allowed = fireEvent.mouseDown(message, {
+      button: 0,
+      clientX: 20,
+      clientY: 10,
+      detail: 2,
+    });
 
+    expect(allowed).toBe(false);
     expect(document.getSelection()?.toString()).toBe("image");
+  });
+
+  it("does not interfere with the first press used for drag selection", () => {
+    render(<UserMessage text="Select any part of this prompt" />);
+    const message = screen.getByText("Select any part of this prompt");
+
+    const allowed = fireEvent.mouseDown(message, { button: 0, detail: 1 });
+
+    expect(allowed).toBe(true);
   });
 });
