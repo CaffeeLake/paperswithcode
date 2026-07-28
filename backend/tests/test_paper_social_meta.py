@@ -481,11 +481,26 @@ def test_paper_route_returns_404_when_paper_missing(client, monkeypatch):
     response = client.get("/paper/9999.99999")
 
     assert response.status_code == 404
+    assert response.headers["cache-control"] == "no-store"
     assert 'name="robots" content="noindex"' in response.text
-    assert "<h1>Paper not found</h1>" in response.text
+    assert "<title>Paper not indexed yet | Papers with Code</title>" in response.text
+    assert '<div id="root"></div>' in response.text
+    assert 'type="module"' in response.text
     markdown = client.get("/paper/9999.99999", headers={"Accept": "text/markdown"})
     assert markdown.status_code == 404
     assert markdown.headers["content-type"].startswith("text/html")
+    assert '<div id="root"></div>' in markdown.text
+
+
+def test_paper_route_returns_standalone_404_for_invalid_identifier(client, monkeypatch):
+    _stub_paper_lookup_missing(monkeypatch)
+
+    response = client.get("/paper/not-an-arxiv-id")
+
+    assert response.status_code == 404
+    assert 'name="robots" content="noindex"' in response.text
+    assert "<h1>Paper not found</h1>" in response.text
+    assert '<div id="root">' not in response.text
 
 
 def test_legacy_papers_route_redirects_to_canonical_url(client, monkeypatch):

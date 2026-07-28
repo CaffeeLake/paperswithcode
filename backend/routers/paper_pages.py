@@ -41,14 +41,63 @@ from backend.services.social_meta_service import (
     build_paper_meta,
     inject_paper_meta,
 )
-from backend.services.spa_shell_service import load_index_html
+from backend.services.spa_shell_service import (
+    load_index_html,
+    replace_document_head,
+)
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
-from backend.utils.urls import get_paper_route_identifier
+from backend.utils.urls import (
+    get_paper_route_identifier,
+    normalize_paper_route_identifier,
+    validate_arxiv_id,
+)
 
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
+
+
+def _render_missing_paper() -> HTMLResponse:
+    return HTMLResponse(
+        content=(
+            '<!doctype html><html lang="en"><head>'
+            '<meta charset="utf-8"><meta name="robots" content="noindex">'
+            "<title>Paper not found | Papers with Code</title></head>"
+            "<body><main><h1>Paper not found</h1>"
+            "<p>The requested paper is not available.</p>"
+            '<p><a href="/papers/recent">Browse recent papers</a></p>'
+            "</main></body></html>"
+        ),
+        status_code=404,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _render_unindexed_arxiv_paper() -> HTMLResponse:
+    index_html = load_index_html()
+    if index_html is None:
+        return _render_missing_paper()
+
+    try:
+        rendered = replace_document_head(
+            index_html,
+            (
+                "    <title>Paper not indexed yet | Papers with Code</title>\n"
+                '    <meta name="description" content="This arXiv paper has not '
+                'been indexed by Papers with Code yet.">\n'
+                '    <meta name="robots" content="noindex">'
+            ),
+        )
+    except ValueError as exc:
+        logger.error("Paper shell contract failed for unindexed paper: %s", exc)
+        return _render_missing_paper()
+
+    return HTMLResponse(
+        content=rendered,
+        status_code=404,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _render_paper_html(
@@ -62,19 +111,10 @@ def _render_paper_html(
             paper_id, include_resources=True
         )
     except PaperNotFoundError:
-        return HTMLResponse(
-            content=(
-                '<!doctype html><html lang="en"><head>'
-                '<meta charset="utf-8"><meta name="robots" content="noindex">'
-                "<title>Paper not found | Papers with Code</title></head>"
-                "<body><main><h1>Paper not found</h1>"
-                "<p>The requested paper is not available.</p>"
-                '<p><a href="/papers/recent">Browse recent papers</a></p>'
-                "</main></body></html>"
-            ),
-            status_code=404,
-            headers={"Cache-Control": "no-store"},
-        )
+        normalized_id = normalize_paper_route_identifier(paper_id)
+        if validate_arxiv_id(normalized_id):
+            return _render_unindexed_arxiv_paper()
+        return _render_missing_paper()
     except DatabaseError as exc:
         logger.warning("Database error rendering /paper/%s: %s", paper_id, exc)
         return HTMLResponse(
