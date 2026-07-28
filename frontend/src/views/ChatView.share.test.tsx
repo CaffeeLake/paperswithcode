@@ -174,6 +174,32 @@ describe("ChatView sharing", () => {
     expect(screen.getByRole("button", { name: "Share conversation" })).toBeDisabled();
   });
 
+  it("disables sharing while its publication request is pending", async () => {
+    const user = userEvent.setup();
+    let resolveShare!: (value: {
+      share_id: string;
+      public_path: string;
+      created_at: string;
+      updated_at: string;
+    }) => void;
+    mocks.createShare.mockReturnValueOnce(new Promise((resolve) => {
+      resolveShare = resolve;
+    }));
+    renderChat();
+
+    const button = await screen.findByRole("button", { name: "Share conversation" });
+    await user.click(button);
+
+    expect(button).toBeDisabled();
+    resolveShare({
+      share_id: "22222222-2222-4222-8222-222222222222",
+      public_path: "/share/22222222-2222-4222-8222-222222222222",
+      created_at: "2026-07-28T20:00:00Z",
+      updated_at: "2026-07-28T20:00:00Z",
+    });
+    await waitFor(() => expect(button).toBeEnabled());
+  });
+
   it("does not claim copy success when publication fails", async () => {
     const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", {

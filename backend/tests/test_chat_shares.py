@@ -43,7 +43,10 @@ class _ShareDB:
     def execute(self, statement):
         sql = str(statement)
         if "FROM chat_sessions" in sql:
-            return _Result(self.session)
+            parameters = set(statement.compile().params.values())
+            if self.session.id in parameters and self.session.hf_user_id in parameters:
+                return _Result(self.session)
+            return _Result(None)
         if "FROM chat_messages" in sql:
             return _Result(values=self.source_messages)
         if "FROM chat_shares" in sql:
@@ -124,6 +127,20 @@ def test_create_or_refresh_retains_capability_and_replaces_owned_snapshot():
     assert refreshed.messages != first_snapshot
     assert refreshed.snapshot_version == 1
     assert refreshed.updated_at >= created.created_at
+
+
+def test_only_immutable_subject_owner_can_create_share():
+    session = _session()
+    service = ChatShareService(_ShareDB(session, [_row(1)]), get_settings())
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.create_or_refresh(
+            ChatOwner(hf_user_id="different-subject", hf_username="owner"),
+            session.id,
+        )
+
+    assert exc_info.value.code == "session_not_found"
+    assert exc_info.value.status_code == 404
 
 
 def test_private_message_purge_cannot_change_stored_public_snapshot():

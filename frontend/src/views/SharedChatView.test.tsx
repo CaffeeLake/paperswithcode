@@ -75,6 +75,7 @@ function renderView() {
         <Routes>
           <Route path="/share/:shareId" element={<SharedChatView />} />
           <Route path="/chat" element={<div>Fresh private chat</div>} />
+          <Route path="/:orgSlug" element={<div>Organization catch-all</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -102,6 +103,7 @@ describe("SharedChatView", () => {
 
     expect(await screen.findByText("What is new?")).toBeInTheDocument();
     expect(screen.getByText("Shared conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Organization catch-all")).not.toBeInTheDocument();
     expect(screen.queryByText("Private title")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit message" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Thought for/ })).toHaveAttribute("aria-expanded", "false");

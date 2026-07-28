@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +32,11 @@ from backend.services.chat_agent_service import (
     build_agent_options,
     stream_agent_events,
 )
-from backend.services.chat_session_service import ChatOwner, ChatSessionService
+from backend.services.chat_session_service import (
+    ChatOwner,
+    ChatSessionService,
+    TurnAdmission,
+)
 from backend.services.chat_stream_service import ChatTurnProjection
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
@@ -580,6 +584,71 @@ def test_failed_turn_keeps_partial_tool_projection():
     assert message.display_blocks == blocks
     assert session.active_turn_id is None
     assert session.projection_bytes > 0
+
+
+def test_completed_turn_persists_finish_reason_in_authenticated_history():
+    from backend.routers.chat import _message
+
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    user_message_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        hf_user_id="hf-user",
+        active_turn_id=turn_id,
+        last_sequence=1,
+        message_count=1,
+        projection_bytes=0,
+        updated_at=None,
+    )
+    user_message = SimpleNamespace(status="generating")
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return session
+
+    class FakeDB:
+        def __init__(self):
+            self.added = []
+
+        def execute(self, _query):
+            return FakeResult()
+
+        def get(self, _model, key):
+            return user_message if key == user_message_id else None
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            for value in self.added:
+                value.revision = 1
+                value.created_at = datetime.now(UTC)
+
+    db = FakeDB()
+    admission = TurnAdmission(
+        session_id=session_id,
+        turn_id=turn_id,
+        user_message_id=user_message_id,
+        selected_model="smoke-model",
+        model_route="smoke-route",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        is_first_turn=False,
+    )
+
+    assistant = ChatSessionService(db, get_settings()).complete_turn(
+        ChatOwner(hf_user_id="hf-user", hf_username="tester"),
+        admission,
+        answer="Bounded answer",
+        citations=[],
+        followups=[],
+        display_blocks=[],
+        finish_reason="tool_limit",
+    )
+
+    assert assistant.finish_reason == "tool_limit"
+    assert _message(assistant).finish_reason == "tool_limit"
 
 
 def test_agent_timeout_emits_typed_error_and_closes_sdk_stream(monkeypatch):
