@@ -195,6 +195,34 @@ def test_cron_status_accepts_admin_token(client):
     assert response.json()["summary"]["total_jobs"] == 0
 
 
+def test_paper_markdown_jobs_requires_admin(client):
+    response = client.get("/api/v1/cron/paper-markdown-jobs")
+    assert response.status_code == 401
+
+
+def test_paper_markdown_jobs_returns_remote_snapshot(client):
+    payload = {
+        "available": True,
+        "namespace": "huggingface",
+        "updated_at": "2026-07-28T15:20:00Z",
+        "jobs": [{"id": "job-123", "stage": "RUNNING"}],
+        "summary": {"active_jobs": 1},
+        "error": None,
+    }
+    with patch(
+        "backend.routers.cron.get_paper_markdown_job_monitor",
+        return_value=payload,
+    ):
+        response = client.get(
+            "/api/v1/cron/paper-markdown-jobs",
+            headers={"X-Admin-Token": "test-admin-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["jobs"][0]["id"] == "job-123"
+    assert response.json()["summary"]["active_jobs"] == 1
+
+
 def test_log_success_with_stale_db_is_broken_for_critical_writer():
     job = _job("calculate_trending_scores")
     stale_time = datetime.now(timezone.utc) - timedelta(hours=8)

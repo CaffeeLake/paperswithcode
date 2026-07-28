@@ -10,6 +10,9 @@ from pydantic import BaseModel, Field
 
 from backend.services.cron_health import build_cron_dashboard, to_iso8601
 from backend.services.cron_registry import get_cron_job
+from backend.services.paper_markdown_job_monitor import (
+    get_paper_markdown_job_monitor,
+)
 from backend.utils.auth import require_admin
 
 
@@ -46,6 +49,15 @@ class CronJobsResponse(BaseModel):
     summary: Dict[str, Any]
 
 
+class PaperMarkdownJobsResponse(BaseModel):
+    available: bool
+    namespace: str
+    updated_at: Optional[str] = None
+    jobs: List[Dict[str, Any]] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
 @router.get(
     "/cron/status",
     response_model=CronJobsResponse,
@@ -61,6 +73,17 @@ def get_cron_status(
     _ = days  # reserved for future history windows
     payload = build_cron_dashboard()
     return CronJobsResponse(**payload)
+
+
+@router.get(
+    "/cron/paper-markdown-jobs",
+    response_model=PaperMarkdownJobsResponse,
+    summary="Get paper Markdown Hugging Face Jobs",
+    dependencies=[Depends(require_admin)],
+)
+def get_paper_markdown_jobs():
+    """Return recent Chandra shard state and compact worker progress."""
+    return PaperMarkdownJobsResponse(**get_paper_markdown_job_monitor())
 
 
 @router.get(

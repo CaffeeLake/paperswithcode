@@ -8,14 +8,22 @@ import {
   ChevronUp,
   Clock,
   Database,
+  ExternalLink,
   FileText,
+  Images,
   Loader2,
   TrendingUp,
   XCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import type { CronJobHealth, CronJobStatus, CronWorkflowStatus } from "@/lib/api";
+import type {
+  CronJobHealth,
+  CronJobStatus,
+  CronWorkflowStatus,
+  PaperMarkdownJobsResponse,
+  PaperMarkdownRemoteJob,
+} from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
 
 function formatDuration(duration: number | null): string {
@@ -130,18 +138,166 @@ function WorkflowDetails({ workflow }: { workflow: CronWorkflowStatus }) {
   );
 }
 
+function remoteStageClass(stage: string): string {
+  if (stage === "COMPLETED") return "cron-status--healthy";
+  if (stage === "ERROR" || stage === "CANCELED") return "cron-status--broken";
+  if (stage === "RUNNING") return "cron-status--running";
+  return "cron-status--unknown";
+}
+
+function PaperMarkdownShard({ job }: { job: PaperMarkdownRemoteJob }) {
+  const progress = job.progress;
+  const percentage = progress?.total_papers
+    ? Math.min(100, (progress.processed_papers / progress.total_papers) * 100)
+    : 0;
+  return (
+    <div className="cron-metric-card space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold">
+            {job.mode ?? "unknown"} · shard {job.shard_id ?? "N/A"}
+          </div>
+          <div className="font-mono text-xs cron-muted truncate">{job.id}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className={remoteStageClass(job.stage)}>
+            {job.stage.toLowerCase()}
+          </Badge>
+          {job.url && (
+            <a
+              href={job.url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open Hugging Face Job ${job.id}`}
+              className="cron-info-text"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          )}
+        </div>
+      </div>
+
+      {progress ? (
+        <>
+          <div>
+            <div className="flex justify-between gap-3 text-xs cron-muted mb-1">
+              <span>{progress.processed_papers.toLocaleString()} / {progress.total_papers.toLocaleString()} papers</span>
+              <span>{percentage.toFixed(0)}%</span>
+            </div>
+            <div className="cron-progress-track">
+              <div className="cron-progress-value" style={{ width: `${percentage}%` }} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+            <span><strong>{progress.succeeded_papers.toLocaleString()}</strong> succeeded</span>
+            <span><strong>{progress.failed_papers.toLocaleString()}</strong> failed</span>
+            <span><strong>{progress.already_existed_papers.toLocaleString()}</strong> skipped</span>
+            <span><strong>{progress.extracted_images.toLocaleString()}</strong> images</span>
+          </div>
+          {progress.updated_at && (
+            <div className="text-xs cron-muted">Progress updated {formatCronDate(progress.updated_at)}</div>
+          )}
+          {(progress.fatal_error || progress.error_samples.length > 0) && (
+            <div className="cron-message cron-message--error space-y-1">
+              {progress.fatal_error && <div>{progress.fatal_error}</div>}
+              {progress.error_samples.map((item) => (
+                <div key={`${item.arxiv_id}:${item.error}`}>
+                  <span className="font-mono">{item.arxiv_id}</span>: {item.error}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="text-sm cron-muted">
+          Waiting for the shard progress checkpoint.
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs cron-muted">
+        {job.hardware && <span>{job.hardware}</span>}
+        {job.created_at && <span>Created {formatCronDate(job.created_at)}</span>}
+        {job.duration_seconds != null && <span>Duration {formatDuration(job.duration_seconds)}</span>}
+      </div>
+      {job.stage_message && <div className="cron-message cron-message--warning">{job.stage_message}</div>}
+    </div>
+  );
+}
+
+function PaperMarkdownJobs({
+  monitor,
+  loading,
+  error,
+}: {
+  monitor?: PaperMarkdownJobsResponse;
+  loading: boolean;
+  error: unknown;
+}) {
+  return (
+    <div className="md:col-span-2">
+      <div className="cron-section-heading">
+        <Images className="h-4 w-4" />
+        <h4>Hugging Face OCR shards</h4>
+      </div>
+      {loading && (
+        <div className="cron-metric-card flex items-center gap-2 text-sm cron-muted">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading remote Jobs…
+        </div>
+      )}
+      {error && (
+        <div className="cron-message cron-message--error">
+          Could not load Hugging Face Jobs.
+        </div>
+      )}
+      {monitor && !monitor.available && (
+        <div className="cron-message cron-message--warning">
+          {monitor.error ?? "Hugging Face monitoring is unavailable."}
+        </div>
+      )}
+      {monitor?.available && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            {Object.entries(monitor.summary).map(([key, value]) => (
+              <div key={key} className="cron-metric-card">
+                <div className="cron-label">{metricLabel(key)}</div>
+                <div className="text-lg font-semibold">{value.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+          {monitor.jobs.length === 0 ? (
+            <div className="cron-metric-card text-sm cron-muted">
+              No OCR shards have been launched yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              {monitor.jobs.map((job) => <PaperMarkdownShard key={job.id} job={job} />)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function CronJobCard({
   job,
   expanded,
   onToggle,
+  paperMarkdownJobs,
+  paperMarkdownJobsLoading = false,
+  paperMarkdownJobsError = null,
 }: {
   job: CronJobStatus;
   expanded: boolean;
   onToggle: () => void;
+  paperMarkdownJobs?: PaperMarkdownJobsResponse;
+  paperMarkdownJobsLoading?: boolean;
+  paperMarkdownJobsError?: unknown;
 }) {
   const hasWorkMetrics = Boolean(job.work_metrics && Object.keys(job.work_metrics).length);
   const hasDbMetrics = Boolean(job.db_metrics && Object.keys(job.db_metrics).length);
-  const hasDetails = hasWorkMetrics || hasDbMetrics || Boolean(job.workflow_status);
+  const hasRemoteJobs = job.job_name === "paper_markdown_backfill";
+  const hasDetails = hasWorkMetrics || hasDbMetrics || Boolean(job.workflow_status) || hasRemoteJobs;
 
   return (
     <div className="cron-job-card">
@@ -181,6 +337,13 @@ export function CronJobCard({
             {job.work_metrics && hasWorkMetrics && <MetricGroup icon={FileText} title="Log Metrics" metrics={job.work_metrics} />}
             {job.db_metrics && hasDbMetrics && <MetricGroup icon={Database} title="Database Metrics" metrics={job.db_metrics} />}
             {job.workflow_status && <WorkflowDetails workflow={job.workflow_status} />}
+            {hasRemoteJobs && (
+              <PaperMarkdownJobs
+                monitor={paperMarkdownJobs}
+                loading={paperMarkdownJobsLoading}
+                error={paperMarkdownJobsError}
+              />
+            )}
           </div>
         </div>
       )}

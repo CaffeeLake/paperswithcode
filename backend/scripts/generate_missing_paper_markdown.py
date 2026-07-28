@@ -289,6 +289,45 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
     }
 
 
+def progress_payload(
+    *,
+    run_id: str,
+    shard_id: str,
+    total_papers: int,
+    results: list[dict],
+    status: str,
+    started_at: str,
+    fatal_error: str | None = None,
+) -> dict:
+    succeeded = [item for item in results if item.get("status") == "succeeded"]
+    failed = [item for item in results if item.get("status") == "failed"]
+    already_existed = [
+        item for item in results if item.get("status") == "already_exists"
+    ]
+    return {
+        "run_id": run_id,
+        "shard_id": shard_id,
+        "hf_job_id": os.environ.get("JOB_ID"),
+        "status": status,
+        "total_papers": total_papers,
+        "processed_papers": len(results),
+        "succeeded_papers": len(succeeded),
+        "failed_papers": len(failed),
+        "already_existed_papers": len(already_existed),
+        "extracted_images": sum(int(item.get("image_count") or 0) for item in results),
+        "error_samples": [
+            {
+                "arxiv_id": item.get("arxiv_id"),
+                "error": str(item.get("error") or "")[:500],
+            }
+            for item in failed[:5]
+        ],
+        "fatal_error": fatal_error,
+        "started_at": started_at,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
@@ -304,6 +343,9 @@ def main() -> None:
     run_id = args.manifest.parent.name
     shard_id = args.manifest.stem
     result_path = args.content_root / "_jobs" / "results" / run_id / f"{shard_id}.jsonl"
+    progress_path = (
+        args.content_root / "_jobs" / "progress" / run_id / f"{shard_id}.json"
+    )
     completed: dict[str, dict] = {}
     if result_path.exists():
         completed = {
@@ -311,9 +353,43 @@ def main() -> None:
             for item in map(json.loads, result_path.read_text().splitlines())
         }
 
-    server = None if args.stub_root else start_vllm()
+    started_at = datetime.now(UTC).isoformat()
     results = list(completed.values())
+    server = None
+    fatal_error = None
+    atomic_write(
+        progress_path,
+        json.dumps(
+            progress_payload(
+                run_id=run_id,
+                shard_id=shard_id,
+                total_papers=len(entries),
+                results=results,
+                status="starting",
+                started_at=started_at,
+            ),
+            sort_keys=True,
+            indent=2,
+        ).encode(),
+    )
     try:
+        if not args.stub_root:
+            server = start_vllm()
+        atomic_write(
+            progress_path,
+            json.dumps(
+                progress_payload(
+                    run_id=run_id,
+                    shard_id=shard_id,
+                    total_papers=len(entries),
+                    results=results,
+                    status="running",
+                    started_at=started_at,
+                ),
+                sort_keys=True,
+                indent=2,
+            ).encode(),
+        )
         for entry in entries:
             if entry["arxiv_id"] in completed:
                 continue
@@ -353,9 +429,50 @@ def main() -> None:
                     + "\n"
                 ).encode(),
             )
+            atomic_write(
+                progress_path,
+                json.dumps(
+                    progress_payload(
+                        run_id=run_id,
+                        shard_id=shard_id,
+                        total_papers=len(entries),
+                        results=results,
+                        status="running",
+                        started_at=started_at,
+                    ),
+                    sort_keys=True,
+                    indent=2,
+                ).encode(),
+            )
+    except Exception as error:
+        fatal_error = str(error)[:1000]
+        raise
     finally:
         if server is not None:
             server.terminate()
+        final_status = (
+            "failed"
+            if fatal_error
+            else "completed"
+            if len(results) >= len(entries)
+            else "stopped"
+        )
+        atomic_write(
+            progress_path,
+            json.dumps(
+                progress_payload(
+                    run_id=run_id,
+                    shard_id=shard_id,
+                    total_papers=len(entries),
+                    results=results,
+                    status=final_status,
+                    started_at=started_at,
+                    fatal_error=fatal_error,
+                ),
+                sort_keys=True,
+                indent=2,
+            ).encode(),
+        )
 
 
 if __name__ == "__main__":

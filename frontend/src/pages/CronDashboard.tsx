@@ -39,6 +39,13 @@ const CronDashboard = () => {
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,
   });
+  const paperMarkdownJobsQuery = useQuery({
+    queryKey: ["paperMarkdownJobs", user?.username],
+    queryFn: () => apiClient.getPaperMarkdownJobs(),
+    enabled: !!user?.is_admin,
+    refetchInterval: autoRefresh ? 30000 : false,
+    retry: false,
+  });
 
   const errorStatus = error && typeof error === "object" && "status" in error ? error.status : undefined;
   const errorMessage = errorStatus === 401
@@ -74,12 +81,28 @@ const CronDashboard = () => {
       job={job}
       expanded={expandedJobs.has(job.job_name)}
       onToggle={() => toggleJobExpansion(job.job_name)}
+      paperMarkdownJobs={
+        job.job_name === "paper_markdown_backfill"
+          ? paperMarkdownJobsQuery.data
+          : undefined
+      }
+      paperMarkdownJobsLoading={
+        job.job_name === "paper_markdown_backfill"
+          ? paperMarkdownJobsQuery.isLoading
+          : false
+      }
+      paperMarkdownJobsError={
+        job.job_name === "paper_markdown_backfill"
+          ? paperMarkdownJobsQuery.error
+          : null
+      }
     />
   );
 
   const refreshAll = () => {
     setRefreshToken((value) => value + 1);
     void refetch();
+    void paperMarkdownJobsQuery.refetch();
   };
 
   return (

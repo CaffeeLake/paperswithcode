@@ -112,3 +112,12 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
     assert status["image_count"] == 1
     assert len(status["asset_keys"]) == 1
     assert (content / status["asset_keys"][0]).is_file()
+    progress = json.loads(
+        (content / "_jobs" / "progress" / "run-1" / "00000.json").read_text()
+    )
+    assert progress["status"] == "completed"
+    assert progress["total_papers"] == 1
+    assert progress["processed_papers"] == 1
+    assert progress["succeeded_papers"] == 1
+    assert progress["failed_papers"] == 0
+    assert progress["extracted_images"] == 1

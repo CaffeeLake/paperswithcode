@@ -39,3 +39,18 @@
 .cron-status--unknown { color: var(--ink-soft); border-color: var(--hairline); background: var(--bg-subtle); }
 .cron-status-icon { border: 0; background: transparent; }
 .cron-info-text { color: var(--info-text); }
+
+.cron-progress-track {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--hairline);
+}
+
+.cron-progress-value {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--info-text);
+  transition: width 200ms ease;
+}

@@ -601,6 +601,45 @@ export interface CronJobsResponse {
   };
 }
 
+export interface PaperMarkdownJobProgress {
+  status: string;
+  total_papers: number;
+  processed_papers: number;
+  succeeded_papers: number;
+  failed_papers: number;
+  already_existed_papers: number;
+  extracted_images: number;
+  updated_at?: string | null;
+  started_at?: string | null;
+  fatal_error?: string | null;
+  error_samples: Array<{ arxiv_id: string; error: string }>;
+}
+
+export interface PaperMarkdownRemoteJob {
+  id: string;
+  url: string;
+  stage: string;
+  stage_message?: string | null;
+  mode?: string | null;
+  run_id?: string | null;
+  shard_id?: string | null;
+  hardware?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_seconds?: number | null;
+  progress?: PaperMarkdownJobProgress | null;
+}
+
+export interface PaperMarkdownJobsResponse {
+  available: boolean;
+  namespace: string;
+  updated_at?: string | null;
+  jobs: PaperMarkdownRemoteJob[];
+  summary: Record<string, number>;
+  error?: string | null;
+}
+
 export type PaperOrderBy = 'trending' | 'date_published' | 'citation_count';
 export type PaperTimeWindow = 'today' | 'week' | 'month' | 'all_time';
 export type PaperSearchMode = 'keyword' | 'semantic' | 'hybrid';
@@ -1748,6 +1787,10 @@ class ApiClient {
 
   async getCronStatus(): Promise<CronJobsResponse> {
     return this.request<CronJobsResponse>('/cron/status', { cache: 'no-store' });
+  }
+
+  async getPaperMarkdownJobs(): Promise<PaperMarkdownJobsResponse> {
+    return this.request<PaperMarkdownJobsResponse>('/cron/paper-markdown-jobs', { cache: 'no-store' });
   }
 
   async getResearchTrends(): Promise<TrendsResponse> {
