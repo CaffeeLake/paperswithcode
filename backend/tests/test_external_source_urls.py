@@ -1,4 +1,5 @@
 from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
+from backend.models.database import Repository as DBRepository
 from backend.services.evaluation_service import (
     evaluation_external_flag,
     evaluation_is_external,
@@ -82,8 +83,9 @@ class _FakePaper:
 
 
 class _FakeQuery:
-    def __init__(self, result):
+    def __init__(self, result, rows=None):
         self._result = result
+        self._rows = rows or []
 
     def filter(self, *args, **kwargs):
         return self
@@ -95,14 +97,20 @@ class _FakeQuery:
         return self._result
 
     def all(self):
-        return []
+        return self._rows
 
 
 class _FakeDB:
-    def __init__(self, result):
+    def __init__(self, result, repository_urls=None):
         self._result = result
+        self._repository_urls = repository_urls or []
 
     def query(self, *args, **kwargs):
+        if len(args) == 1 and getattr(args[0], "class_", None) is DBRepository:
+            return _FakeQuery(
+                None,
+                [(url,) for url in self._repository_urls],
+            )
         return _FakeQuery(self._result)
 
 
@@ -123,6 +131,44 @@ def test_evaluation_is_external_true_for_independent_source():
         "https://example.com/a-competition-page",
         None,
         40193,
+        db,
+    )
+
+
+def test_evaluation_is_external_false_for_file_in_linked_github_repository():
+    repository_url = "https://github.com/MoonshotAI/Kimi-K3"
+    report_url = "https://github.com/MoonshotAI/Kimi-K3/blob/main/k3_tech_report.pdf"
+    db = _FakeDB(
+        _FakePaper(paper_id=104584),
+        repository_urls=[repository_url],
+    )
+    assert not evaluation_is_external(
+        report_url,
+        "2607.24653",
+        104584,
+        db,
+    )
+    assert (
+        evaluation_result_url(
+            report_url,
+            104584,
+            "2607.24653",
+            None,
+            db,
+        )
+        == "https://arxiv.org/pdf/2607.24653.pdf"
+    )
+
+
+def test_evaluation_is_external_true_for_file_in_unrelated_github_repository():
+    db = _FakeDB(
+        _FakePaper(paper_id=104584),
+        repository_urls=["https://github.com/MoonshotAI/Kimi-K3"],
+    )
+    assert evaluation_is_external(
+        "https://github.com/another-org/benchmark/blob/main/results.json",
+        "2607.24653",
+        104584,
         db,
     )
 

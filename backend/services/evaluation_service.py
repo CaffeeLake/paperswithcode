@@ -131,6 +131,15 @@ def _source_match_keys(url: Optional[str]) -> set[str]:
     if netloc.startswith("www."):
         netloc = netloc[4:]
     path = parsed.path.rstrip("/")
+    path_parts = [part for part in path.split("/") if part]
+
+    # A report, result file, or README inside a linked GitHub repository is
+    # first-party evidence for that paper. Give both repository roots and files
+    # below them the same key while keeping different repositories distinct.
+    if netloc in {"github.com", "raw.githubusercontent.com"} and len(path_parts) >= 2:
+        owner = path_parts[0].lower()
+        repository = path_parts[1].removesuffix(".git").lower()
+        keys.add(f"githubrepo:{owner}/{repository}")
 
     cvf_match = _CVF_OPENACCESS_PATH.match(path)
     if cvf_match and netloc == "openaccess.thecvf.com":
