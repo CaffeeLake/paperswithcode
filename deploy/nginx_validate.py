@@ -17,7 +17,7 @@ SEO_LOCATIONS = (
     "location ^~ /sitemaps/",
     "location = /papers/recent",
     "location = /papers/archive",
-    r"location ~ ^/papers/archive/[0-9]{4}(/[0-9]{2})?$",
+    r'location ~ "^/papers/archive/[0-9]{4}(/[0-9]{2})?$"',
 )
 
 
