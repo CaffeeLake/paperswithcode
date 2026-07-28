@@ -55,6 +55,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
         execute: bool,
         confirm: bool,
         max_jobs: int | None,
+        batch_size: int | None,
     ):
         super().__init__("paper_markdown_backfill")
         self.settings = get_settings()
@@ -62,6 +63,7 @@ class PaperMarkdownBackfillJob(CronJobBase):
         self.should_execute = execute
         self.confirm = confirm
         self.max_jobs = max_jobs
+        self.batch_size = batch_size
         self.api = HfApi(token=self.settings.hf_token or None)
 
     def _papers(self) -> list[dict[str, object]]:
@@ -75,7 +77,10 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 query = query.where(
                     Paper.created_at >= datetime.now(UTC) - timedelta(days=14)
                 )
-            rows = db.execute(query.order_by(Paper.id)).scalars()
+                query = query.order_by(Paper.created_at.desc(), Paper.id.desc())
+            else:
+                query = query.order_by(Paper.id)
+            rows = db.execute(query).scalars()
             papers: dict[str, dict[str, object]] = {}
             for paper in rows:
                 arxiv_id = normalize_arxiv_id(paper.arxiv_id)
@@ -177,9 +182,23 @@ class PaperMarkdownBackfillJob(CronJobBase):
                 if created_at < now - timedelta(days=30):
                     continue
             relevant.append(job)
-        # Deliberately account at the configured timeout rather than optimistic
-        # runtime. This bounds spend even if a worker stalls.
-        projected = (len(relevant) + planned_jobs) * timeout_hours * hourly_rate
+        spent = 0.0
+        reserved = planned_jobs * timeout_hours * hourly_rate
+        for job in relevant:
+            started_at = getattr(job, "started_at", None)
+            finished_at = getattr(job, "finished_at", None)
+            if started_at is not None and finished_at is not None:
+                spent += (
+                    max(0.0, (finished_at - started_at).total_seconds())
+                    / 3600
+                    * hourly_rate
+                )
+            elif job_stage(job) in ACTIVE_STAGES:
+                reserved += timeout_hours * hourly_rate
+            else:
+                # Missing terminal timing must fail conservatively.
+                spent += timeout_hours * hourly_rate
+        projected = spent + reserved
         ceiling = (
             self.settings.paper_markdown_backfill_budget_usd
             if self.full
@@ -204,6 +223,11 @@ class PaperMarkdownBackfillJob(CronJobBase):
             if self.full
             else self.settings.paper_markdown_incremental_batch_size
         )
+        if self.batch_size is not None:
+            maximum = 500 if self.full else 100
+            if self.batch_size < 1 or self.batch_size > maximum:
+                raise ValueError(f"batch size must be between 1 and {maximum}")
+            batch_size = self.batch_size
         plans = chunks(candidates, batch_size)[:available_slots]
         if self.should_execute and plans and not self.confirm:
             raise ValueError("paid GPU dispatch requires --confirm")
@@ -331,12 +355,14 @@ def main() -> None:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--max-jobs", type=int)
+    parser.add_argument("--batch-size", type=int)
     args = parser.parse_args()
     job = PaperMarkdownBackfillJob(
         full=args.full,
         execute=args.execute,
         confirm=args.confirm,
         max_jobs=args.max_jobs,
+        batch_size=args.batch_size,
     )
     raise SystemExit(0 if job.execute() else 1)
 

@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import io
+
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from backend.main import create_app
+from backend.routers import paper_assets
+from backend.services import paper_markdown_service
+
+
+def _webp_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (12, 8), "teal").save(buffer, format="WEBP")
+    return buffer.getvalue()
+
+
+def test_asset_key_is_scoped_to_a_modern_arxiv_identity():
+    assert (
+        paper_markdown_service.paper_asset_bucket_key(
+            "2607.24653v2", "0123456789abcdef.webp"
+        )
+        == "2607/2607.24653/images/0123456789abcdef.webp"
+    )
+
+
+def test_asset_reader_is_bounded_and_validates_image(monkeypatch):
+    data = _webp_bytes()
+    reads: list[int] = []
+
+    class TrackedFile(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    class FakeFileSystem:
+        def __init__(self, *, token):
+            assert token == "private-token"
+
+        def open(self, path, mode, *, block_size):
+            assert (
+                path == "hf://buckets/owner/content/2607/2607.24653/images/"
+                "0123456789abcdef.webp"
+            )
+            assert mode == "rb"
+            assert block_size == 0
+            return TrackedFile(data)
+
+    monkeypatch.setattr(paper_markdown_service, "HfFileSystem", FakeFileSystem)
+    actual, media_type = paper_markdown_service.read_paper_asset(
+        "2607.24653",
+        "0123456789abcdef.webp",
+        bucket_id="owner/content",
+        token="private-token",
+        max_bytes=len(data),
+        max_pixels=1_000,
+    )
+
+    assert reads == [len(data) + 1]
+    assert actual == data
+    assert media_type == "image/webp"
+
+
+def test_public_asset_route_is_immutable_and_anonymous(monkeypatch):
+    data = _webp_bytes()
+    monkeypatch.setattr(
+        paper_assets,
+        "read_paper_asset",
+        lambda *_args, **_kwargs: (data, "image/webp"),
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/paper-assets/2607/2607.24653/0123456789abcdef.webp")
+
+    assert response.status_code == 200
+    assert response.content == data
+    assert response.headers["content-type"] == "image/webp"
+    assert "immutable" in response.headers["cache-control"]

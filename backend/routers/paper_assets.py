@@ -1,0 +1,46 @@
+"""Public, immutable serving for OCR-extracted paper images."""
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+
+from backend.config import get_settings
+from backend.services.paper_markdown_service import read_paper_asset
+
+router = APIRouter(prefix="/paper-assets", tags=["paper_assets"])
+
+ASSET_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "X-Content-Type-Options": "nosniff",
+}
+MISSING_ASSET_HEADERS = {"Cache-Control": "no-store"}
+
+
+@router.get("/{prefix}/{arxiv_id}/{filename}")
+def get_paper_asset(prefix: str, arxiv_id: str, filename: str) -> Response:
+    settings = get_settings()
+    if prefix != arxiv_id[:4]:
+        raise HTTPException(
+            status_code=404,
+            detail="Paper asset not found",
+            headers=MISSING_ASSET_HEADERS,
+        )
+    try:
+        data, media_type = read_paper_asset(
+            arxiv_id,
+            filename,
+            bucket_id=settings.paper_markdown_hf_bucket_id,
+            token=settings.hf_token,
+            max_bytes=settings.paper_markdown_image_max_bytes,
+            max_pixels=settings.paper_markdown_image_max_pixels,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Paper asset not found",
+            headers=MISSING_ASSET_HEADERS,
+        ) from error
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers=ASSET_CACHE_HEADERS,
+    )

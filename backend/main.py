@@ -255,6 +255,7 @@ def create_app() -> FastAPI:
         external_resources,
         authors,
         thumbnails,
+        paper_assets,
         paper_pages,
         search_discovery,
         sitemaps,
@@ -314,6 +315,7 @@ def create_app() -> FastAPI:
         codex_curation_callbacks.router, prefix="/api/v1", tags=["admin"]
     )
     app.include_router(thumbnails.router, prefix="/api", tags=["thumbnails"])
+    app.include_router(paper_assets.router)
     # Server-rendered paper-page HTML for social previews. Mounted at the
     # app root because the public URL shape is `/paper/{id}` (not under
     # `/api/v1/...`).

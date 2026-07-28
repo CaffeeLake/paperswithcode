@@ -3,6 +3,7 @@
 # dependencies = [
 #   "chandra-ocr==0.2.0",
 #   "httpx>=0.28.1",
+#   "pillow>=11.0.0",
 #   "pypdf>=5.0.0",
 #   "vllm==0.17.0",
 # ]
@@ -19,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +29,7 @@ from io import BytesIO
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 MODEL_ID = os.environ.get("PWC_MARKDOWN_MODEL_ID", "datalab-to/chandra-ocr-2")
 MODEL_REVISION = os.environ.get(
@@ -35,6 +38,14 @@ MODEL_REVISION = os.environ.get(
 )
 MAX_PAGES = int(os.environ.get("PWC_MARKDOWN_MAX_PAGES", "30"))
 USER_AGENT = "paperswithcode-paper-markdown/1.0 (https://paperswithcode.co)"
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_PIXELS = 80_000_000
+MARKDOWN_IMAGE = re.compile(r"(!\[[^\]]*\]\()(?P<source>[^)\s]+)(\))")
+HTML_IMAGE = re.compile(
+    r"(<img\b[^>]*\bsrc=[\"'])(?P<source>[^\"']+)([\"'])", re.IGNORECASE
+)
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+FORMAT_EXTENSIONS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -108,7 +119,7 @@ def download_pdf(arxiv_id: str, version: str) -> bytes:
     return data
 
 
-def run_chandra(pdf: Path, output: Path, pages: int) -> str:
+def run_chandra(pdf: Path, output: Path, pages: int) -> tuple[str, dict[str, bytes]]:
     output.mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
@@ -124,9 +135,11 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> str:
             "--method",
             "vllm",
             "--page-range",
-            f"1-{pages}",
+            f"0-{pages - 1}",
             "--max-output-tokens",
             "12384",
+            "--include-images",
+            "--no-html",
         ],
         env=env,
         check=True,
@@ -134,7 +147,112 @@ def run_chandra(pdf: Path, output: Path, pages: int) -> str:
     markdown_files = list(output.rglob("*.md"))
     if len(markdown_files) != 1:
         raise ValueError("invalid_chandra_output")
-    return markdown_files[0].read_text(encoding="utf-8")
+    markdown_path = markdown_files[0]
+    assets = {
+        path.name: path.read_bytes()
+        for path in markdown_path.parent.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    }
+    return markdown_path.read_text(encoding="utf-8"), assets
+
+
+def canonicalize_assets(
+    arxiv_id: str, body: str, assets: dict[str, bytes]
+) -> tuple[str, dict[str, bytes], list[str]]:
+    """Validate images and replace Chandra-local references with public URLs."""
+    source_to_url: dict[str, str] = {}
+    canonical_assets: dict[str, bytes] = {}
+    asset_keys: list[str] = []
+    for source_name, data in sorted(assets.items()):
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ValueError("image_too_large")
+        try:
+            with Image.open(BytesIO(data)) as image:
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    raise ValueError("image_too_many_pixels")
+                image.verify()
+                extension = FORMAT_EXTENSIONS.get(image.format or "")
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("invalid_extracted_image") from error
+        if extension is None:
+            raise ValueError("unsupported_extracted_image")
+        filename = f"{hashlib.sha256(data).hexdigest()[:16]}{extension}"
+        key = f"{arxiv_id[:4]}/{arxiv_id}/images/{filename}"
+        url = f"https://paperswithcode.co/paper-assets/{key}"
+        source_to_url[Path(source_name).name] = url
+        canonical_assets[key] = data
+        asset_keys.append(key)
+
+    def replace(match: re.Match[str]) -> str:
+        source = match.group("source")
+        if source.startswith(("https://", "http://", "data:")):
+            return match.group(0)
+        replacement = source_to_url.get(Path(source).name)
+        if replacement is None:
+            raise ValueError(f"missing_extracted_image:{source}")
+        return f"{match.group(1)}{replacement}{match.group(3)}"
+
+    rewritten = MARKDOWN_IMAGE.sub(replace, body)
+    rewritten = HTML_IMAGE.sub(replace, rewritten)
+    return rewritten, canonical_assets, sorted(set(asset_keys))
+
+
+def publish(
+    entry: dict[str, object],
+    body: str,
+    assets: dict[str, bytes],
+    content_root: Path,
+    *,
+    page_count: int | None = None,
+    processed_pages: int | None = None,
+) -> dict:
+    arxiv_id = str(entry["arxiv_id"])
+    version = str(entry["version"])
+    body, canonical_assets, asset_keys = canonicalize_assets(arxiv_id, body, assets)
+    if page_count and processed_pages and page_count > processed_pages:
+        body = (
+            f"> **Truncated rendition:** This Markdown contains the first "
+            f"{processed_pages} of {page_count} pages. Read the complete paper "
+            f"at https://arxiv.org/pdf/{arxiv_id}{version}.pdf.\n\n{body}"
+        )
+    markdown = (
+        f"Title: {str(entry['title']).strip()}\n\n"
+        f"URL Source: https://arxiv.org/abs/{arxiv_id}{version}\n\n"
+        f"Markdown Content:\n\n{body.strip()}\n"
+    ).encode()
+    if len(markdown) < 120 or len(markdown) > 64 * 1024 * 1024:
+        raise ValueError("invalid_markdown_size")
+
+    for key, data in canonical_assets.items():
+        destination = content_root / key
+        if destination.exists() and destination.read_bytes() != data:
+            raise ValueError(f"immutable_asset_conflict:{key}")
+        if not destination.exists():
+            atomic_write(destination, data)
+        if destination.read_bytes() != data:
+            raise ValueError(f"asset_verification_failed:{key}")
+
+    output = content_root / str(entry["output_key"])
+    atomic_write(output, markdown)
+    if output.read_bytes() != markdown:
+        raise ValueError("markdown_verification_failed")
+    return {
+        "arxiv_id": arxiv_id,
+        "status": "succeeded",
+        "page_count": page_count,
+        "processed_page_count": processed_pages,
+        "truncated": bool(
+            page_count and processed_pages and page_count > processed_pages
+        ),
+        "image_count": len(asset_keys),
+        "asset_keys": asset_keys,
+        "asset_sha256": {
+            key: hashlib.sha256(canonical_assets[key]).hexdigest() for key in asset_keys
+        },
+        "markdown_sha256": hashlib.sha256(markdown).hexdigest(),
+    }
 
 
 def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dict:
@@ -153,28 +271,17 @@ def process(entry: dict[str, object], content_root: Path, run_root: Path) -> dic
     processed_pages = min(page_count, MAX_PAGES)
     pdf_path = paper_dir / "paper.pdf"
     atomic_write(pdf_path, pdf_data)
-    body = run_chandra(pdf_path, paper_dir / "ocr", processed_pages)
-    if page_count > processed_pages:
-        body = (
-            f"> **Truncated rendition:** This Markdown contains the first "
-            f"{processed_pages} of {page_count} pages. Read the complete paper "
-            f"at https://arxiv.org/pdf/{arxiv_id}{version}.pdf.\n\n{body}"
-        )
-    markdown = (
-        f"Title: {str(entry['title']).strip()}\n\n"
-        f"URL Source: https://arxiv.org/abs/{arxiv_id}{version}\n\n"
-        f"Markdown Content:\n\n{body.strip()}\n"
-    ).encode()
-    if len(markdown) < 120 or len(markdown) > 64 * 1024 * 1024:
-        raise ValueError("invalid_markdown_size")
-    atomic_write(output, markdown)
+    body, assets = run_chandra(pdf_path, paper_dir / "ocr", processed_pages)
+    result = publish(
+        entry,
+        body,
+        assets,
+        content_root,
+        page_count=page_count,
+        processed_pages=processed_pages,
+    )
     return {
-        "arxiv_id": arxiv_id,
-        "status": "succeeded",
-        "page_count": page_count,
-        "processed_page_count": processed_pages,
-        "truncated": page_count > processed_pages,
-        "markdown_sha256": hashlib.sha256(markdown).hexdigest(),
+        **result,
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "duration_seconds": round(time.monotonic() - started, 3),
@@ -215,17 +322,17 @@ def main() -> None:
                     body = (args.stub_root / f"{entry['arxiv_id']}.md").read_text(
                         encoding="utf-8"
                     )
-                    markdown = (
-                        f"Title: {entry['title']}\n\n"
-                        f"URL Source: https://arxiv.org/abs/"
-                        f"{entry['arxiv_id']}{entry['version']}\n\n"
-                        f"Markdown Content:\n\n{body}\n"
-                    ).encode()
-                    atomic_write(args.content_root / entry["output_key"], markdown)
-                    result = {
-                        "arxiv_id": entry["arxiv_id"],
-                        "status": "succeeded",
-                    }
+                    asset_dir = args.stub_root / str(entry["arxiv_id"])
+                    assets = (
+                        {
+                            path.name: path.read_bytes()
+                            for path in asset_dir.iterdir()
+                            if path.is_file()
+                        }
+                        if asset_dir.exists()
+                        else {}
+                    )
+                    result = publish(entry, body, assets, args.content_root)
                 else:
                     result = process(entry, args.content_root, result_path.parent)
             except Exception as error:  # noqa: BLE001 - isolate failures per paper

@@ -4,9 +4,11 @@ import importlib.util
 import json
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 sys.path.insert(0, str(WORKFLOWS))
@@ -45,6 +47,7 @@ def test_paid_dispatch_requires_confirmation(monkeypatch):
     job.should_execute = True
     job.confirm = False
     job.max_jobs = None
+    job.batch_size = None
     monkeypatch.setattr(job, "_active_jobs", list)
     with pytest.raises(ValueError, match="requires --confirm"):
         job._launch(
@@ -72,7 +75,14 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
         "output_key": "2607/2607.24653.md",
     }
     manifest.write_text(json.dumps(entry) + "\n")
-    (stub / "2607.24653.md").write_text("OCR body " * 30)
+    (stub / "2607.24653.md").write_text(
+        "Before image.\n\n![figure](figure.webp)\n\nAfter image. " * 20
+    )
+    asset_dir = stub / "2607.24653"
+    asset_dir.mkdir()
+    image_buffer = BytesIO()
+    Image.new("RGB", (16, 12), "navy").save(image_buffer, format="WEBP")
+    (asset_dir / "figure.webp").write_bytes(image_buffer.getvalue())
     worker = (
         Path(__file__).resolve().parents[1]
         / "scripts"
@@ -95,5 +105,10 @@ def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):
 
     markdown = (content / entry["output_key"]).read_text()
     assert markdown.startswith("Title: Kimi K3\n\nURL Source:")
+    assert "https://paperswithcode.co/paper-assets/2607/2607.24653/images/" in markdown
+    assert "figure.webp" not in markdown
     status = json.loads((content / "_jobs" / "status" / "2607.24653.json").read_text())
     assert status["status"] == "succeeded"
+    assert status["image_count"] == 1
+    assert len(status["asset_keys"]) == 1
+    assert (content / status["asset_keys"][0]).is_file()

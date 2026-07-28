@@ -346,6 +346,8 @@ class Settings(BaseSettings):
     paper_markdown_job_timeout: str = Field(default="12h")
     paper_markdown_incremental_monthly_budget_usd: float = Field(default=100.0, gt=0)
     paper_markdown_backfill_budget_usd: float = Field(default=750.0, gt=0)
+    paper_markdown_image_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
+    paper_markdown_image_max_pixels: int = Field(default=80_000_000, ge=1)
 
     # bioRxiv / medRxiv TDM (requester-pays S3 bucket). Optional: when unset,
     # thumbnails fall back to Europe PMC PDF mirrors where available.

@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from huggingface_hub import HfFileSystem, download_bucket_files
 from huggingface_hub.errors import EntryNotFoundError
-
+from PIL import Image
 
 _MODERN_ARXIV_ID = re.compile(r"^(?P<base>\d{4}\.\d{4,5})(?:v\d+)?$")
+
+
+_PAPER_ASSET_NAME = re.compile(
+    r"^(?P<digest>[0-9a-f]{16,64})\.(?P<extension>png|jpe?g|webp)$"
+)
+_ASSET_MEDIA_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+}
 
 
 def normalize_markdown_arxiv_id(value: str) -> str:
@@ -27,6 +39,58 @@ def normalize_markdown_arxiv_id(value: str) -> str:
 def paper_markdown_bucket_key(arxiv_id: str) -> str:
     normalized = normalize_markdown_arxiv_id(arxiv_id)
     return f"{normalized[:4]}/{normalized}.md"
+
+
+def paper_asset_bucket_key(arxiv_id: str, filename: str) -> str:
+    """Return the immutable bucket key for one OCR-extracted paper image."""
+    normalized = normalize_markdown_arxiv_id(arxiv_id)
+    if _PAPER_ASSET_NAME.fullmatch(filename) is None:
+        raise ValueError("Invalid paper asset filename")
+    return f"{normalized[:4]}/{normalized}/images/{filename}"
+
+
+def read_paper_asset(
+    arxiv_id: str,
+    filename: str,
+    *,
+    bucket_id: str,
+    token: str | None,
+    max_bytes: int,
+    max_pixels: int,
+) -> tuple[bytes, str]:
+    """Read and validate one immutable OCR image from the paper-content bucket."""
+    if max_bytes < 1 or max_pixels < 1:
+        raise ValueError("Paper asset limits must be positive")
+    if not bucket_id.strip():
+        raise ValueError("PWC_PAPER_MARKDOWN_HF_BUCKET_ID is not configured")
+
+    key = paper_asset_bucket_key(arxiv_id, filename)
+    path = f"hf://buckets/{bucket_id.strip()}/{key}"
+    try:
+        filesystem = HfFileSystem(token=token)
+        with filesystem.open(path, "rb", block_size=0) as handle:
+            data = handle.read(max_bytes + 1)
+    except (EntryNotFoundError, FileNotFoundError) as error:
+        raise ValueError(f"Paper asset was not found: {key}") from error
+    if len(data) > max_bytes:
+        raise ValueError("Paper asset exceeds the maximum size")
+
+    extension = filename.rsplit(".", 1)[1]
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.width * image.height > max_pixels:
+                raise ValueError("Paper asset exceeds the maximum pixel count")
+            expected_format = (
+                "JPEG" if extension in {"jpg", "jpeg"} else extension.upper()
+            )
+            if image.format != expected_format:
+                raise ValueError("Paper asset format does not match its filename")
+            image.verify()
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("Paper asset is not a valid image") from error
+    return data, _ASSET_MEDIA_TYPES[extension]
 
 
 def read_paper_markdown(
@@ -109,6 +173,5 @@ def _read_paper_markdown_bytes(
         raise ValueError(
             f"Markdown for paper {normalized_arxiv_id} was not found in {path}"
         ) from error
-
     truncated = len(raw) > max_bytes
     return raw[:max_bytes], truncated
