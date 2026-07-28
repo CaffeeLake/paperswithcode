@@ -55,6 +55,11 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_paper_performance_indexes.sql` | paper query indexes |
 | `add_missing_dataset_variant_fields.sql` | dataset variant columns |
 
+Before running `remove_task_datasets_featured_rank.sql`, deploy application
+code without `featured_rank` into both the current and previous release slots
+for staging and production. This keeps the immediate rollback releases
+compatible after the column is dropped.
+
 ## Adding new migrations
 
 - **Schema changes**: add idempotent SQL here; add a `run_*.py` wrapper when
