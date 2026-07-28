@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from backend.config import get_settings
 from backend.main import create_app
-from backend.services.cron_health import evaluate_job_health
+from backend.services.cron_health import _gh_json, evaluate_job_health
 from backend.services.cron_registry import get_cron_job, list_cron_jobs
 
 
@@ -28,6 +28,32 @@ def _job(job_id: str):
     job = get_cron_job(job_id)
     assert job is not None
     return job
+
+
+def test_gh_json_uses_configured_token_and_explicit_repository(monkeypatch):
+    monkeypatch.setenv("PWC_GITHUB_TOKEN", "test-github-token")
+    get_settings.cache_clear()
+    completed = type(
+        "CompletedProcess",
+        (),
+        {"returncode": 0, "stdout": "[]", "stderr": ""},
+    )()
+
+    with patch(
+        "backend.services.cron_health.subprocess.run", return_value=completed
+    ) as run:
+        payload, error = _gh_json(["run", "list"])
+
+    assert payload == []
+    assert error is None
+    command = run.call_args.args[0]
+    environment = run.call_args.kwargs["env"]
+    assert command == ["gh", "run", "list"]
+    assert run.call_args.kwargs["check"] is False
+    assert "test-github-token" not in command
+    assert environment["GH_TOKEN"] == "test-github-token"
+    assert environment["GH_REPO"] == "huggingface/paperswithcode"
+    get_settings.cache_clear()
 
 
 def test_registry_includes_hf_artifacts_and_embedding_crons():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from backend.services.cron_registry import CronJobDefinition, list_cron_jobs
 
 WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 SCRIPTS_DIR = WORKFLOWS_DIR / "scripts"
+GITHUB_REPOSITORY = "huggingface/paperswithcode"
 WORKFLOW_STATUS_CACHE_SECONDS = 60
 _WORKFLOW_STATUS_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
@@ -146,10 +148,18 @@ def fetch_thumbnail_cache_freshness() -> Dict[str, Any]:
 
 
 def _gh_json(args: list[str], timeout: int = 10) -> tuple[Any, Optional[str]]:
+    env = os.environ.copy()
+    github_token = get_settings().github_token
+    if github_token:
+        env["GH_TOKEN"] = github_token
+    env["GH_REPO"] = GITHUB_REPOSITORY
+
     try:
         result = subprocess.run(
             ["gh", *args],
             capture_output=True,
+            check=False,
+            env=env,
             text=True,
             timeout=timeout,
         )
