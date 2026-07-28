@@ -1,6 +1,8 @@
 name: Cron - Update Hot GitHub Trending
 
 on:
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
 concurrency:

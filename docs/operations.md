@@ -134,8 +134,9 @@ PWC_TRENDING_PIN_PAPER_IDS=104054:72
 ```
 
 The paper-ID form supports external papers without an arXiv ID. Both forms
-share the persisted pin state and decay behavior; use them only as a bridge
-while the underlying ranking signal is corrected.
+share the persisted pin state and decay behavior. The CRON worker stores that
+state in its writable lock directory so immutable releases remain read-only.
+Use pins only as a bridge while the underlying ranking signal is corrected.
 
 ## PDF Validation for URL Extraction
 

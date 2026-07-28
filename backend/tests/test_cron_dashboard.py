@@ -40,15 +40,47 @@ def test_registry_includes_hf_artifacts_and_embedding_crons():
 
 def test_hot_job_has_dedicated_lock_and_operational_metrics():
     job = _job("update_hot_github_trending")
-    assert job.schedule.startswith("paused")
-    assert job.category == "manual"
+    assert job.schedule.startswith("*/15")
+    assert job.category == "hourly"
     assert job.critical is False
     assert job.lock_file.endswith("/update_hot_github_trending.lock")
     assert "one_snapshot_over_30m" in job.db_freshness_query
     assert "stale_paper_scores" in job.db_freshness_query
     assert "r.trending_score > 0" in job.db_freshness_query
     assert "r.trending_score IS NOT NULL" not in job.db_freshness_query
+    assert "COALESCE(r.owner, '') != ''" in job.db_freshness_query
+    assert "COALESCE(r.name, '') != ''" in job.db_freshness_query
+    assert "p.date_published >= CURRENT_DATE - INTERVAL '365 days'" in (
+        job.db_freshness_query
+    )
     assert job.workflow_file == "cron-update-hot-github-trending.yml"
+
+
+def test_action_backed_jobs_expose_workflow_health():
+    paper_trending = _job("calculate_paper_trending_scores")
+    thumbnails = _job("preload_thumbnails")
+
+    assert paper_trending.workflow_file == "cron-calculate-paper-trending-scores.yml"
+    assert thumbnails.workflow_file == "cron-preload-thumbnails.yml"
+
+
+def test_successful_workflow_is_health_evidence_without_logs_or_database():
+    job = _job("preload_thumbnails")
+    with patch("backend.services.cron_health.is_process_running", return_value=False):
+        evaluated = evaluate_job_health(
+            job,
+            {"status": "unknown", "is_running": False},
+            db_metrics={},
+            workflow_status={
+                "available": True,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            lock_state={"exists": False, "stale": False},
+        )
+
+    assert evaluated["status"] == "healthy"
+    assert evaluated["status_reason"] == "latest GitHub Actions workflow succeeded"
 
 
 def test_hot_health_allows_recent_no_work_when_population_is_empty():

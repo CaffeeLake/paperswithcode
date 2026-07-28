@@ -48,7 +48,13 @@ SCORING_WINDOW_DAYS = 365
 GITHUB_FRESHNESS_HOURS = 24
 WRITE_CHUNK_SIZE = 500
 PIN_STATE_PATH = (
-    Path(__file__).resolve().parent.parent / "data" / "trending_pin_state.json"
+    Path(
+        os.getenv(
+            "PWC_CRON_LOCK_DIR",
+            str(Path(__file__).resolve().parent.parent / "data"),
+        )
+    )
+    / "trending_pin_state.json"
 )
 
 

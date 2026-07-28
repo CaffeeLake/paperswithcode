@@ -29,8 +29,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     CronJobDefinition(
         id="update_hot_github_trending",
         display_name="Update Hot GitHub Trending",
-        category="manual",
-        schedule="paused (workflow_dispatch only; production activation pending)",
+        category="hourly",
+        schedule="*/15 * * * * (every 15 minutes)",
         script_path="hourly/update_hot_github_trending.py",
         log_name="update_hot_github_trending",
         process_patterns=("update_hot_github_trending",),
@@ -52,7 +52,9 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                 JOIN papers p
                   ON p.id = pr.paper_id
                  AND p.is_latest_version = TRUE
-                WHERE p.date_published >= CURRENT_DATE - INTERVAL '30 days'
+                WHERE p.date_published >= now() - INTERVAL '30 days'
+                  AND COALESCE(r.owner, '') != ''
+                  AND COALESCE(r.name, '') != ''
             ),
             history AS (
                 SELECT
@@ -75,6 +77,7 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                 JOIN hot_repositories hr ON hr.id = pr.repository_id
                 JOIN repositories r ON r.id = hr.id
                 WHERE p.is_latest_version = TRUE
+                  AND p.date_published >= CURRENT_DATE - INTERVAL '365 days'
                   AND r.trending_score > 0
                   AND (
                     p.trending_score IS NULL
@@ -225,6 +228,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
                    ) AS fresh_github_component_scores
             FROM papers
         """,
+        workflow_file="cron-calculate-paper-trending-scores.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="update_hf_artifacts",
@@ -336,6 +341,8 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         critical=False,
         healthy_no_work_allowed=True,
         db_freshness_query=None,
+        workflow_file="cron-preload-thumbnails.yml",
+        workflow_jobs=("run",),
     ),
     CronJobDefinition(
         id="mirror_thumbnails_to_disk",

@@ -519,6 +519,11 @@ def evaluate_job_health(
         and workflow_status.get("status") == "completed"
         and workflow_status.get("conclusion") not in {None, "", "success", "skipped"}
     )
+    workflow_succeeded = (
+        workflow_status.get("available")
+        and workflow_status.get("status") == "completed"
+        and workflow_status.get("conclusion") in {"success", "skipped"}
+    )
 
     if workflow_running and status == "healthy":
         status = "running"
@@ -529,6 +534,10 @@ def evaluate_job_health(
             )
         else:
             reasons.append("GitHub Actions workflow running")
+
+    if workflow_succeeded and status == "unknown":
+        status = "healthy"
+        reasons = ["latest GitHub Actions workflow succeeded"]
 
     if workflow_failed:
         failed_jobs = workflow_status.get("failed_jobs") or []
