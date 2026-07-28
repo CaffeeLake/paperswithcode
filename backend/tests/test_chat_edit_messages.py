@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -640,3 +641,61 @@ def test_begin_turn_admits_completed_middle_message_without_superseding_it():
     assert admission.title_should_generate is False
     assert session.message_count == 6
     assert session.active_turn_id == prepared.turn_id
+
+
+def test_same_client_replay_recovers_expired_preparing_edit_and_orphan_fork():
+    settings = get_settings()
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    orphan_id = uuid.uuid4()
+    prepared = SimpleNamespace(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        turn_id=turn_id,
+        role="user",
+        status="preparing",
+        error_code=f"fork:{orphan_id}",
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        hf_user_id="hf-user",
+        sdk_project_key="project-key",
+        active_turn_id=turn_id,
+        active_turn_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    class ReplayDB:
+        def __init__(self):
+            self.results = iter(
+                [
+                    FakeResult(one=prepared),
+                    FakeResult(one=None),
+                    FakeResult(),
+                    FakeResult(),
+                ]
+            )
+            self.executed = 0
+
+        def execute(self, _query):
+            self.executed += 1
+            return next(self.results)
+
+    db = ReplayDB()
+    service = ChatSessionService(db, settings)
+    service._owned = lambda *_args, **_kwargs: session
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        service.begin_turn(
+            ChatOwner("hf-user", "tester"),
+            session_id=session_id,
+            client_message_id="same-client-id",
+            text="edited prompt",
+        )
+
+    assert exc_info.value.code == "turn_requires_retry"
+    assert exc_info.value.commit_changes is True
+    assert prepared.status == "superseded"
+    assert prepared.error_code == "edit_prepare_lease_expired"
+    assert session.active_turn_id is None
+    assert session.active_turn_expires_at is None
+    assert db.executed == 4

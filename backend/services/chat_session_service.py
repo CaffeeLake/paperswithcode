@@ -124,6 +124,28 @@ class ChatSessionService:
             )
         return selected, route
 
+    def _delete_recorded_edit_fork(
+        self, session: ChatSession, message: ChatMessageRecord
+    ) -> None:
+        if not message.error_code or not message.error_code.startswith("fork:"):
+            return
+        with contextlib.suppress(ValueError):
+            orphan_id = uuid.UUID(message.error_code.removeprefix("fork:"))
+            if not session.sdk_project_key:
+                return
+            self.db.execute(
+                delete(ChatSDKTranscriptEntry).where(
+                    ChatSDKTranscriptEntry.project_key == session.sdk_project_key,
+                    ChatSDKTranscriptEntry.sdk_session_id == orphan_id,
+                )
+            )
+            self.db.execute(
+                delete(ChatSDKSessionSummary).where(
+                    ChatSDKSessionSummary.project_key == session.sdk_project_key,
+                    ChatSDKSessionSummary.sdk_session_id == orphan_id,
+                )
+            )
+
     def create_session(
         self, owner: ChatOwner, selected_model: str | None = None
     ) -> ChatSession:
@@ -310,12 +332,17 @@ class ChatSessionService:
                     execution_backend=session.execution_backend,
                 )
             if (
-                existing.status == "generating"
+                existing.status in ("generating", "preparing")
                 and session.active_turn_expires_at
                 and session.active_turn_expires_at <= now
             ):
-                existing.status = "interrupted"
-                existing.error_code = "lease_expired"
+                if existing.status == "preparing":
+                    self._delete_recorded_edit_fork(session, existing)
+                    existing.status = "superseded"
+                    existing.error_code = "edit_prepare_lease_expired"
+                else:
+                    existing.status = "interrupted"
+                    existing.error_code = "lease_expired"
                 if session.active_turn_id == existing.turn_id:
                     session.active_turn_id = None
                     session.active_turn_expires_at = None
@@ -406,28 +433,7 @@ class ChatSessionService:
             ).scalar_one_or_none()
             if stale:
                 if stale.status == "preparing":
-                    if stale.error_code and stale.error_code.startswith("fork:"):
-                        with contextlib.suppress(ValueError):
-                            orphan_id = uuid.UUID(
-                                stale.error_code.removeprefix("fork:")
-                            )
-                            if session.sdk_project_key:
-                                self.db.execute(
-                                    delete(ChatSDKTranscriptEntry).where(
-                                        ChatSDKTranscriptEntry.project_key
-                                        == session.sdk_project_key,
-                                        ChatSDKTranscriptEntry.sdk_session_id
-                                        == orphan_id,
-                                    )
-                                )
-                                self.db.execute(
-                                    delete(ChatSDKSessionSummary).where(
-                                        ChatSDKSessionSummary.project_key
-                                        == session.sdk_project_key,
-                                        ChatSDKSessionSummary.sdk_session_id
-                                        == orphan_id,
-                                    )
-                                )
+                    self._delete_recorded_edit_fork(session, stale)
                     stale.status = "superseded"
                     stale.error_code = "edit_prepare_lease_expired"
                 else:
