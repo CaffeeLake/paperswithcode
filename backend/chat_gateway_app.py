@@ -24,6 +24,7 @@ from backend.services.chat_session_store_gateway import (
     SessionStoreCommand,
     SessionStoreGatewayError,
 )
+from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 MAX_PROVIDER_OUTPUT_TOKENS = 32_000
@@ -105,6 +106,8 @@ def catalog(
         result = ChatGatewayService(db, settings).catalog(
             body.operation, body.arguments
         )
+    except PaperNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from None
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {"result": result}

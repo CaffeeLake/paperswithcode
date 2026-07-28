@@ -9,14 +9,18 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from claude_agent_sdk import StreamEvent
+from fastapi import HTTPException
 
 from backend.chat_gateway_app import (
+    CatalogRequest,
     MAX_PROVIDER_OUTPUT_TOKENS,
     MAX_PROVIDER_TURN_TOKENS,
     _output_tokens_allowed,
+    catalog,
 )
 from backend.chat_sandbox_worker import publish_image, supervisor
 from backend.chat_sandbox_worker.contract import (
@@ -42,6 +46,7 @@ from backend.services.chat_capability_service import (
     ChatCapabilityService,
     _digest,
 )
+from backend.services.chat_gateway_service import ChatGatewayService
 from backend.services.chat_sandbox_service import (
     RunningWorker,
     SandboxSessionManager,
@@ -54,6 +59,7 @@ from backend.services.chat_session_store_gateway import (
     SessionStoreCommand,
     SessionStoreGatewayError,
 )
+from backend.utils.exceptions import PaperNotFoundError
 from deploy.release import build_manifest
 
 
@@ -113,6 +119,44 @@ def test_gateway_accepts_claude_output_token_limit_and_rejects_larger():
     assert MAX_PROVIDER_TURN_TOKENS >= 8 * MAX_PROVIDER_OUTPUT_TOKENS
     assert _output_tokens_allowed(32_000)
     assert not _output_tokens_allowed(32_001)
+
+
+def test_gateway_catalog_returns_not_found_for_unknown_task(monkeypatch):
+    class DB:
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(
+        "backend.chat_gateway_app._scope", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        ChatCapabilityService, "meter_catalog", lambda *_args, **_kwargs: None
+    )
+
+    def missing_task(*_args, **_kwargs):
+        raise PaperNotFoundError(
+            "Task with ID, slug, or name 'speech recognition' not found"
+        )
+
+    monkeypatch.setattr(ChatGatewayService, "catalog", missing_task)
+
+    with pytest.raises(HTTPException) as exc_info:
+        catalog(
+            CatalogRequest(
+                operation="benchmark_trending",
+                arguments={"task": "speech recognition"},
+            ),
+            authorization="Bearer test",
+            x_pwc_session=str(uuid.uuid4()),
+            x_pwc_turn=str(uuid.uuid4()),
+            db=DB(),
+            settings=SimpleNamespace(chat_max_direct_search_calls=4),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == (
+        "Task with ID, slug, or name 'speech recognition' not found"
+    )
 
 
 def test_worker_adapter_assembles_streamed_tool_arguments():
