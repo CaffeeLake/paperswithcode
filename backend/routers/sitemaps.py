@@ -46,6 +46,20 @@ def sitemap_index(db: Session = Depends(get_database_session)) -> Response:
     service = SitemapService(db)
     entries = [f"<sitemap><loc>{PRODUCTION_ORIGIN}/sitemaps/static.xml</loc></sitemap>"]
     entries.extend(
+        f"<sitemap><loc>{PRODUCTION_ORIGIN}/sitemaps/{kind}.xml</loc></sitemap>"
+        for kind in (
+            "tasks",
+            "methods",
+            "benchmarks",
+            "conferences",
+            "organizations",
+        )
+    )
+    entries.extend(
+        f"<sitemap><loc>{PRODUCTION_ORIGIN}/sitemaps/authors-{bucket}.xml</loc></sitemap>"
+        for bucket in service.list_author_shards()
+    )
+    entries.extend(
         "<sitemap><loc>"
         f"{PRODUCTION_ORIGIN}/sitemaps/papers-{shard.name}.xml"
         "</loc></sitemap>"
@@ -88,6 +102,20 @@ def _paper_sitemap_xml(service: SitemapService, shard: SitemapShard) -> Iterator
     yield "</urlset>"
 
 
+def _entity_sitemap_xml(entities) -> Iterator[str]:
+    yield (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    )
+    for entity in entities:
+        location = html.escape(f"{PRODUCTION_ORIGIN}{entity.path}", quote=True)
+        yield (
+            f"<url><loc>{location}</loc>"
+            f"<lastmod>{entity.lastmod.isoformat()}</lastmod></url>"
+        )
+    yield "</urlset>"
+
+
 @router.api_route(
     "/sitemaps/papers-{shard_name}.xml",
     methods=["GET", "HEAD"],
@@ -104,6 +132,22 @@ def paper_sitemap(
         year=int(match.group("year")), bucket=int(match.group("bucket"))
     )
     return _xml_response(_paper_sitemap_xml(SitemapService(db), shard))
+
+
+@router.api_route(
+    "/sitemaps/{kind}.xml", methods=["GET", "HEAD"], include_in_schema=False
+)
+def entity_sitemap(kind: str, db: Session = Depends(get_database_session)) -> Response:
+    author_match = re.fullmatch(r"authors-(\d+)", kind)
+    if author_match:
+        return _xml_response(
+            _entity_sitemap_xml(
+                SitemapService(db).iter_author_shard(int(author_match.group(1)))
+            )
+        )
+    if kind not in {"tasks", "methods", "benchmarks", "conferences", "organizations"}:
+        return Response(status_code=404)
+    return _xml_response(_entity_sitemap_xml(SitemapService(db).iter_entities(kind)))
 
 
 def _archive_html(

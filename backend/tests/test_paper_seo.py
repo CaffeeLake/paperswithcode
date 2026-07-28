@@ -7,6 +7,7 @@ from datetime import date
 import pytest
 
 from backend.models.api import (
+    AuthorLink,
     MethodSummary,
     Paper,
     ProjectPage,
@@ -33,6 +34,10 @@ def _paper(**overrides) -> Paper:
         "title": r"Kimi K3: Open Frontier Intelligence",
         "abstract": "A complete abstract with <markup> & evidence.",
         "authors": ["Kimi Team", "A. Researcher"],
+        "author_links": [
+            AuthorLink(id="7", name="Kimi Team"),
+            AuthorLink(id="8", name="A. Researcher"),
+        ],
         "published": date(2026, 7, 27),
         "tldr": "The technical report introduces Kimi K3.",
         "repositories": [
@@ -66,7 +71,8 @@ def test_initial_document_contains_visible_bibliography_and_resources():
     rendered = render_initial_paper_document(document)
 
     assert "<h1>Kimi K3: Open Frontier Intelligence</h1>" in rendered
-    assert "Kimi Team, A. Researcher" in rendered
+    assert 'href="/authors/7">Kimi Team</a>' in rendered
+    assert 'href="/authors/8">A. Researcher</a>' in rendered
     assert "arXiv:2607.24653" in rendered
     assert "Kimi K3 technical report · arXiv:2607.24653" in rendered
     assert "A complete abstract with &lt;markup&gt; &amp; evidence." in rendered

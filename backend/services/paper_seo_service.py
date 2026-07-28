@@ -40,6 +40,7 @@ class PaperSeoDocument:
     social_description: str
     abstract: str
     authors: tuple[str, ...]
+    author_links: tuple[NamedLink, ...]
     published: Optional[date]
     arxiv_id: Optional[str]
     source: str
@@ -126,6 +127,11 @@ def build_paper_seo_document(paper: Paper, route_identifier: str) -> PaperSeoDoc
         social_description=_truncate(description_source, SOCIAL_DESCRIPTION_CHARS),
         abstract=_plain(paper.abstract),
         authors=tuple(_plain(name) for name in paper.authors if _plain(name)),
+        author_links=tuple(
+            NamedLink(author.name, f"/authors/{author.id}")
+            for author in (paper.author_links or [])
+            if author.id and _plain(author.name)
+        ),
         published=paper.published,
         arxiv_id=paper.arxiv_id,
         source=paper.source,
@@ -164,7 +170,7 @@ def build_paper_seo_document(paper: Paper, route_identifier: str) -> PaperSeoDoc
             if method.slug and method.name
         ),
         organizations=tuple(
-            NamedLink(organization.name, f"/organization/{organization.slug}")
+            NamedLink(organization.name, f"/{organization.slug}")
             for organization in (paper.organizations or [])
             if organization.slug and organization.name
         ),
@@ -224,15 +230,27 @@ def render_initial_paper_document(document: PaperSeoDocument) -> str:
         else "Paper"
     )
     author_text = ", ".join(document.authors)
+    author_urls = {link.name: link.url for link in document.author_links}
+
+    def linked_authors(names: tuple[str, ...]) -> str:
+        return ", ".join(
+            _link(NamedLink(name, author_urls[name]))
+            if name in author_urls
+            else _escape(name)
+            for name in names
+        )
+
     if len(document.authors) > 20:
         author_markup = (
             '<details class="initial-paper-authors"><summary>'
-            f"{_escape(', '.join(document.authors[:5]))} and "
+            f"{linked_authors(document.authors[:5])} and "
             f"{len(document.authors) - 5} more authors</summary>"
-            f'<p class="citation_author">{_escape(author_text)}</p></details>'
+            f'<p class="citation_author">{linked_authors(document.authors)}</p></details>'
         )
     elif author_text:
-        author_markup = f'<p class="citation_author">{_escape(author_text)}</p>'
+        author_markup = (
+            f'<p class="citation_author">{linked_authors(document.authors)}</p>'
+        )
     else:
         author_markup = ""
     resource_links: list[NamedLink] = []

@@ -23,8 +23,7 @@ from PIL import Image as PILImage
 from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.api import Paper
-from backend.routers import paper_pages as paper_pages_module
-from backend.services import default_og_image, social_meta_service
+from backend.services import default_og_image, social_meta_service, spa_shell_service
 from backend.services.paper_service import PaperService
 from backend.services.social_meta_service import (
     PRODUCTION_ORIGIN,
@@ -100,13 +99,9 @@ def _reset_default_og_cache():
 
 @pytest.fixture(autouse=True)
 def _reset_index_cache():
-    paper_pages_module._cached_index_html = None
-    paper_pages_module._cached_index_mtime = None
-    paper_pages_module._cached_index_path = None
+    spa_shell_service.reset_cache()
     yield
-    paper_pages_module._cached_index_html = None
-    paper_pages_module._cached_index_mtime = None
-    paper_pages_module._cached_index_path = None
+    spa_shell_service.reset_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +117,11 @@ def test_load_index_html_prefers_active_release(tmp_path, monkeypatch):
     dist_index.write_text("stale checkout build", encoding="utf-8")
     source_index.write_text("vite source", encoding="utf-8")
 
-    monkeypatch.setattr(paper_pages_module, "_RELEASE_INDEX_PATH", release_index)
-    monkeypatch.setattr(paper_pages_module, "_DIST_INDEX_PATH", dist_index)
-    monkeypatch.setattr(paper_pages_module, "_SRC_INDEX_PATH", source_index)
+    monkeypatch.setattr(spa_shell_service, "_RELEASE_INDEX_PATH", release_index)
+    monkeypatch.setattr(spa_shell_service, "_DIST_INDEX_PATH", dist_index)
+    monkeypatch.setattr(spa_shell_service, "_SRC_INDEX_PATH", source_index)
 
-    assert paper_pages_module._load_index_html() == "active release"
+    assert spa_shell_service.load_index_html() == "active release"
 
 
 def test_build_request_origin_uses_forwarded_headers():

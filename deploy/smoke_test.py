@@ -10,6 +10,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -29,6 +30,34 @@ ASSET_RE = re.compile(
 PAPER_LINK_RE = re.compile(rb'href=["\']/paper/[^"\']+["\']')
 
 
+class DiscoveryHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.paper_links = 0
+        self.entity_links = 0
+        self.discovery_documents = 0
+        self.h1_count = 0
+        self.canonicals: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        attributes = dict(attrs)
+        if attributes.get("data-pwc-initial-document") == "discovery":
+            self.discovery_documents += 1
+        if tag == "h1":
+            self.h1_count += 1
+        if tag == "link" and attributes.get("rel") == "canonical":
+            self.canonicals.append(attributes.get("href", ""))
+        if tag != "a":
+            return
+        href = attributes.get("href", "")
+        if href.startswith("/paper/"):
+            self.paper_links += 1
+        elif href.startswith(
+            ("/tasks/", "/methods/", "/benchmark/", "/conferences/", "/authors/")
+        ):
+            self.entity_links += 1
+
+
 def header_value(headers: dict, name: str) -> str:
     expected = name.lower()
     return next(
@@ -37,9 +66,23 @@ def header_value(headers: dict, name: str) -> str:
     )
 
 
-def run_seo_http_smoke(base_url: str) -> list[str]:
+def run_seo_http_smoke(base_url: str, environment: str = "production") -> list[str]:
     """Qualify raw paper HTML, canonical errors, discovery HTML, and XML."""
     failures: list[str] = []
+    status, headers, body = request(urljoin(base_url, "/robots.txt"))
+    robots = body.decode("utf-8", "replace")
+    if status != 200 or "text/plain" not in header_value(headers, "Content-Type"):
+        failures.append(f"robots returned {status} non-text")
+    elif any(
+        marker in robots.lower() for marker in ("<!doctype", "<html", 'id="root"')
+    ):
+        failures.append("robots contains SPA HTML")
+    elif environment == "staging":
+        if "User-agent: *\nDisallow: /" not in robots or "Sitemap:" in robots:
+            failures.append("staging robots does not disallow crawling")
+    elif robots.count("Sitemap: https://paperswithcode.co/sitemap.xml") != 1:
+        failures.append("production robots sitemap directive is missing or duplicated")
+
     status, headers, body = request(urljoin(base_url, "/paper/2607.24653"))
     paper_html = body.decode("utf-8", "replace")
     if status != 200:
@@ -67,11 +110,17 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
         failures.append("legacy paper route is not a direct canonical 301")
 
     status, headers, body = request(urljoin(base_url, "/sitemap.xml"))
+    sitemap_locations: list[str] = []
     if status != 200 or "xml" not in header_value(headers, "Content-Type"):
         failures.append(f"sitemap index returned {status} non-XML")
     else:
         try:
             root = ElementTree.fromstring(body)
+            sitemap_locations = [
+                node.text
+                for node in root.iter()
+                if node.tag.endswith("loc") and node.text
+            ]
             shard = next(
                 (
                     node.text
@@ -99,6 +148,76 @@ def run_seo_http_smoke(base_url: str) -> list[str]:
     status, _, body = request(urljoin(base_url, "/papers/recent"))
     if status != 200 or not PAPER_LINK_RE.search(body):
         failures.append(f"recent paper archive returned {status} without paper links")
+
+    status, _, body = request(urljoin(base_url, "/"))
+    parser = DiscoveryHTMLParser()
+    if status == 200:
+        parser.feed(body.decode("utf-8", "replace"))
+    if (
+        status != 200
+        or parser.discovery_documents != 1
+        or parser.paper_links < 20
+        or parser.entity_links < 5
+    ):
+        failures.append(
+            f"homepage discovery HTML returned {status} with "
+            f"{parser.paper_links} paper links and {parser.entity_links} entity links"
+        )
+
+    entity_sitemaps = (
+        "tasks",
+        "methods",
+        "benchmarks",
+        "conferences",
+        "organizations",
+        "authors-",
+    )
+    for entity_kind in entity_sitemaps:
+        sitemap_url = next(
+            (
+                location
+                for location in sitemap_locations
+                if f"/sitemaps/{entity_kind}" in location
+            ),
+            None,
+        )
+        if sitemap_url is None:
+            failures.append(f"sitemap index has no {entity_kind} entity sitemap")
+            continue
+        entity_status, entity_headers, entity_body = request(
+            urljoin(base_url, urlsplit(sitemap_url).path)
+        )
+        if entity_status != 200 or "xml" not in header_value(
+            entity_headers, "Content-Type"
+        ):
+            failures.append(f"{entity_kind} entity sitemap returned non-XML")
+            continue
+        try:
+            entity_root = ElementTree.fromstring(entity_body)
+            entity_url = next(
+                node.text
+                for node in entity_root.iter()
+                if node.tag.endswith("loc") and node.text
+            )
+        except (ElementTree.ParseError, StopIteration):
+            failures.append(f"{entity_kind} entity sitemap has no URL")
+            continue
+        page_status, _, page_body = request(
+            urljoin(base_url, urlsplit(entity_url).path)
+        )
+        page_parser = DiscoveryHTMLParser()
+        if page_status == 200:
+            page_parser.feed(page_body.decode("utf-8", "replace"))
+        if (
+            page_status != 200
+            or page_parser.discovery_documents != 1
+            or page_parser.h1_count != 1
+            or page_parser.paper_links < 1
+            or entity_url not in page_parser.canonicals
+        ):
+            failures.append(
+                f"{entity_kind} sitemap sample is not indexable discovery HTML"
+            )
     return failures
 
 
@@ -179,7 +298,7 @@ def run_http_smoke(
 
     if environment == "staging":
         if candidate:
-            failures.extend(run_seo_http_smoke(base_url))
+            failures.extend(run_seo_http_smoke(base_url, environment))
             status, _, _ = request(urljoin(base_url, "/api/v1/papers/1"))
             if status not in {200, 404}:
                 failures.append(f"numeric paper API returned {status}")
@@ -193,7 +312,7 @@ def run_http_smoke(
         return failures
 
     if candidate:
-        failures.extend(run_seo_http_smoke(base_url))
+        failures.extend(run_seo_http_smoke(base_url, environment))
         status, _, body = request(
             urljoin(base_url, "/api/v1/papers/?page=1&page_size=1")
         )

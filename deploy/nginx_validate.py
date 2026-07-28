@@ -13,11 +13,14 @@ CURATION_CALLBACK_LOCATION = (
     '(context|taxonomy|leaderboards|apply|complete)$"'
 )
 SEO_LOCATIONS = (
+    "location = /robots.txt",
     "location = /sitemap.xml",
     "location ^~ /sitemaps/",
     "location = /papers/recent",
     "location = /papers/archive",
     r'location ~ "^/papers/archive/[0-9]{4}(/[0-9]{2})?$"',
+    "location = / {",
+    r'location ~ "^/(tasks|task|methods|benchmark|conferences|authors|organizations)/[^/]+(/[^/]+)?$"',
 )
 
 
@@ -84,6 +87,15 @@ def validate(production: str, staging: str) -> list[str]:
         _validate_seo_routes(production, "pwc_production_backend", "production")
     )
     failures.extend(_validate_seo_routes(staging, "pwc_staging_backend", "staging"))
+    staging_robots = staging.split("location = /robots.txt", 1)
+    if len(staging_robots) == 2:
+        robots_block = staging_robots[1].split("}", 1)[0]
+        if "auth_request" in robots_block:
+            failures.append("staging robots route is browser-authenticated")
+    if "try_files $uri @public_pages;" not in production:
+        failures.append("production public-page fallback is missing")
+    if "try_files $uri @staging_public_pages;" not in staging:
+        failures.append("staging public-page fallback is missing")
     return failures
 
 

@@ -11,6 +11,7 @@ from backend.main import create_app
 from backend.services.sitemap_service import (
     ArchivePaper,
     SitemapPaper,
+    SitemapEntity,
     SitemapService,
     SitemapShard,
 )
@@ -34,6 +35,7 @@ def test_sitemap_index_is_xml_and_apex_hosted(client, monkeypatch):
         "list_shards",
         lambda self: [SitemapShard(2026, 2), SitemapShard(0, 1)],
     )
+    monkeypatch.setattr(SitemapService, "list_author_shards", lambda self: [3])
     response = client.get("/sitemap.xml")
 
     assert response.status_code == 200
@@ -42,6 +44,12 @@ def test_sitemap_index_is_xml_and_apex_hosted(client, monkeypatch):
     locations = [node.text for node in root.iter() if node.tag.endswith("loc")]
     assert locations == [
         "https://paperswithcode.co/sitemaps/static.xml",
+        "https://paperswithcode.co/sitemaps/tasks.xml",
+        "https://paperswithcode.co/sitemaps/methods.xml",
+        "https://paperswithcode.co/sitemaps/benchmarks.xml",
+        "https://paperswithcode.co/sitemaps/conferences.xml",
+        "https://paperswithcode.co/sitemaps/organizations.xml",
+        "https://paperswithcode.co/sitemaps/authors-3.xml",
         "https://paperswithcode.co/sitemaps/papers-2026-2.xml",
         "https://paperswithcode.co/sitemaps/papers-0000-1.xml",
     ]
@@ -74,8 +82,29 @@ def test_paper_shard_streams_valid_xml_and_lastmod(client, monkeypatch):
     assert len([node for node in root.iter() if node.tag.endswith("lastmod")]) == 2
 
 
+def test_entity_sitemap_contains_only_canonical_apex_urls(client, monkeypatch):
+    monkeypatch.setattr(
+        SitemapService,
+        "iter_entities",
+        lambda self, kind: iter(
+            [
+                SitemapEntity(
+                    path="/tasks/image-classification",
+                    lastmod=datetime(2026, 7, 28, tzinfo=timezone.utc),
+                )
+            ]
+        ),
+    )
+    response = client.get("/sitemaps/tasks.xml")
+    root = ElementTree.fromstring(response.content)
+    locations = [node.text for node in root.iter() if node.tag.endswith("loc")]
+    assert response.status_code == 200
+    assert locations == ["https://paperswithcode.co/tasks/image-classification"]
+
+
 def test_sitemap_head_has_no_body(client, monkeypatch):
     monkeypatch.setattr(SitemapService, "list_shards", lambda self: [])
+    monkeypatch.setattr(SitemapService, "list_author_shards", lambda self: [])
     response = client.head("/sitemap.xml")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")

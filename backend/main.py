@@ -215,6 +215,10 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def add_public_cache_headers(request, call_next):
         response = await call_next(request)
+        if settings.environment == "staging" and response.headers.get(
+            "content-type", ""
+        ).startswith("text/html"):
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
         if request.method != "GET":
             return response
 
@@ -252,6 +256,7 @@ def create_app() -> FastAPI:
         authors,
         thumbnails,
         paper_pages,
+        search_discovery,
         sitemaps,
         repositories,
         areas,
@@ -312,6 +317,7 @@ def create_app() -> FastAPI:
     # Server-rendered paper-page HTML for social previews. Mounted at the
     # app root because the public URL shape is `/paper/{id}` (not under
     # `/api/v1/...`).
+    app.include_router(search_discovery.router, tags=["search_discovery"])
     app.include_router(sitemaps.router, tags=["sitemaps"])
     app.include_router(paper_pages.router, tags=["paper_pages"])
     if settings.cron_enabled:
@@ -365,16 +371,11 @@ def create_app() -> FastAPI:
             "thumbnail_store_valid": True,
         }
 
-    # Root endpoint
-    @app.get("/")
-    async def root():
-        """Root endpoint with API information."""
-        return {
-            "name": "PapersWithCode API",
-            "version": "1.0.0",
-            "description": "Re-implementation of the deprecated PapersWithCode API",
-            "docs": "/docs" if settings.environment == "development" else None,
-        }
+    # Must remain last: it owns the public homepage/entity HTML routes and the
+    # narrow top-level organization fallback.
+    from backend.routers import discovery_pages
+
+    app.include_router(discovery_pages.router, tags=["discovery_pages"])
 
     # Global exception handlers
     @app.exception_handler(PaperNotFoundError)

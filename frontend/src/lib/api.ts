@@ -154,14 +154,13 @@ export interface Paper {
 
 export interface Author {
   id: string;
-  name: string;
+  full_name: string;
+  hf_username?: string | null;
   paper_count: number;
-  citation_count: number;
-  h_index: number;
-  semantic_scholar_id?: string;
 }
 
 export interface AuthorLink {
+  id?: string | null;
   name: string;
   hf_username?: string | null;
 }
@@ -1018,6 +1017,19 @@ class ApiClient {
 
   async getAuthor(id: string): Promise<Author> {
     return this.request<Author>(`/authors/${id}`);
+  }
+
+  async getAuthorPapers(id: string, params?: {
+    page?: number;
+    page_size?: number;
+  }): Promise<PaginatedResponse<Paper>> {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append("page", params.page.toString());
+    if (params?.page_size) searchParams.append("page_size", params.page_size.toString());
+    const query = searchParams.toString();
+    return this.request<PaginatedResponse<Paper>>(
+      `/authors/${id}/papers${query ? `?${query}` : ""}`,
+    );
   }
 
   // Areas API

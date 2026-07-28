@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.database.connection import get_database_session
+from backend.main import create_app
+from backend.routers import discovery_pages
+from backend.routers.search_discovery import robots_policy
+from backend.services.discovery_html_service import render_discovery_document
+from backend.services.discovery_page_service import (
+    DiscoveryLink,
+    DiscoveryPage,
+    DiscoveryPageService,
+    DiscoveryPaperLink,
+)
+
+
+def _page(*, robots: str = "index,follow") -> DiscoveryPage:
+    return DiscoveryPage(
+        kind="Task",
+        canonical_path="/tasks/safe",
+        title="Safe task",
+        description='A <useful> "description"',
+        heading="<Safe & sound>",
+        breadcrumbs=(DiscoveryLink("/", "Home"),),
+        entity_links=(DiscoveryLink("/benchmark/test", "Test & benchmark"),),
+        paper_links=(
+            DiscoveryPaperLink(
+                "2607.24653",
+                '<script>alert("x")</script>',
+                date(2026, 7, 27),
+                "Tagged <here>",
+            ),
+        ),
+        robots=robots,
+    )
+
+
+@pytest.fixture
+def client(monkeypatch):
+    app = create_app()
+
+    def database():
+        yield object()
+
+    app.dependency_overrides[get_database_session] = database
+    monkeypatch.setattr(
+        discovery_pages,
+        "load_index_html",
+        lambda: (
+            "<!doctype html><html><head><title>Generic</title>"
+            '<meta name="description" content="Generic"></head><body>'
+            '<div id="root"></div><script src="/assets/app.js"></script></body></html>'
+        ),
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_robots_policies_are_environment_aware_and_end_with_newline():
+    production, production_headers = robots_policy("production")
+    staging, staging_headers = robots_policy("staging")
+    assert production.endswith("\n")
+    assert production.count("Sitemap: https://paperswithcode.co/sitemap.xml") == 1
+    assert "Allow: /" in production
+    assert staging == "User-agent: *\nDisallow: /\n"
+    assert "Sitemap:" not in staging
+    assert staging_headers["X-Robots-Tag"] == "noindex, nofollow"
+    assert "X-Robots-Tag" not in production_headers
+
+
+def test_robots_get_and_head_are_plain_text(client):
+    get = client.get("/robots.txt")
+    head = client.head("/robots.txt")
+    assert get.status_code == head.status_code == 200
+    assert get.headers["content-type"].startswith("text/plain")
+    assert head.headers["content-type"].startswith("text/plain")
+    assert "<html" not in get.text.lower()
+    assert head.content == b""
+
+
+def test_renderer_escapes_every_database_value():
+    document = render_discovery_document(_page())
+    assert "<script>" not in document
+    assert "&lt;Safe &amp; sound&gt;" in document
+    assert "&lt;script&gt;alert(" in document
+    assert "Tagged &lt;here&gt;" in document
+    assert document.count("<h1>") == 1
+
+
+def test_entity_route_has_semantic_html_and_query_variant_policy(client, monkeypatch):
+    monkeypatch.setattr(DiscoveryPageService, "task", lambda self, slug: _page())
+    response = client.get("/tasks/safe")
+    variant = client.get("/tasks/safe?sort=oldest")
+    assert response.status_code == 200
+    assert 'data-pwc-initial-document="discovery"' in response.text
+    assert (
+        '<link rel="canonical" href="https://paperswithcode.co/tasks/safe">'
+        in response.text
+    )
+    assert '<meta name="robots" content="index,follow">' in response.text
+    assert response.text.count("<title>") == 1
+    assert response.text.count('name="description"') == 1
+    assert response.text.count('rel="canonical"') == 1
+    assert '<meta name="robots" content="noindex,follow">' in variant.text
+
+
+def test_missing_entity_and_unknown_top_level_are_real_404s(client, monkeypatch):
+    monkeypatch.setattr(DiscoveryPageService, "task", lambda self, slug: None)
+    monkeypatch.setattr(DiscoveryPageService, "organization", lambda self, slug: None)
+    assert client.get("/tasks/missing").status_code == 404
+    assert client.get("/definitely-not-an-organization").status_code == 404
+    assert client.get("/api/not-a-route").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/papers", "/tasks", "/methods", "/conferences", "/organizations", "/chat/abc"],
+)
+def test_known_client_only_routes_keep_the_spa_shell(client, path):
+    response = client.get(path)
+    assert response.status_code == 200
+    assert '<div id="root"></div>' in response.text
+
+
+def test_legacy_aliases_redirect_permanently(client):
+    assert client.get("/task/safe", follow_redirects=False).status_code == 301
+    alias = client.get("/organizations/example", follow_redirects=False)
+    assert alias.status_code == 301
+    assert alias.headers["location"] == "/example"
+
+
+@pytest.mark.parametrize(
+    ("path", "method_name"),
+    [
+        ("/", "homepage"),
+        ("/tasks/safe", "task"),
+        ("/methods/safe", "method"),
+        ("/benchmark/safe", "benchmark"),
+        ("/conferences/safe", "conference"),
+        ("/authors/7", "author"),
+        ("/safe-org", "organization"),
+    ],
+)
+def test_discovery_page_classes_support_head(client, monkeypatch, path, method_name):
+    monkeypatch.setattr(
+        DiscoveryPageService, method_name, lambda self, *args, **kwargs: _page()
+    )
+    response = client.head(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["link"] == (
+        '<https://paperswithcode.co/tasks/safe>; rel="canonical"'
+    )
+    assert response.content == b""

@@ -691,6 +691,7 @@ const PaperDetailView: React.FC = () => {
   const AUTHOR_LIMIT = 12;
   const authorEntries = paper.authors.map((name, i) => ({
     name,
+    id: paper.author_links?.[i]?.id ?? null,
     hf_username: paper.author_links?.[i]?.hf_username ?? null,
   }));
   const visibleAuthors =
@@ -768,7 +769,9 @@ const PaperDetailView: React.FC = () => {
           <div className="detail-authors">
             {visibleAuthors.map((a, i) => (
               <React.Fragment key={i}>
-                {a.hf_username ? (
+                {a.id ? (
+                  <Link to={`/authors/${a.id}`}>{a.name}</Link>
+                ) : a.hf_username ? (
                   <a
                     href={`https://huggingface.co/${a.hf_username}`}
                     target="_blank"

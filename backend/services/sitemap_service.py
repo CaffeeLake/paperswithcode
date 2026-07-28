@@ -6,10 +6,24 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterator, Optional
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, exists, func, or_
 from sqlalchemy.orm import Query, Session
 
-from backend.models.database import Paper as DBPaper
+from backend.models.database import (
+    Author,
+    Conference,
+    Dataset,
+    Evaluation,
+    Method,
+    Organization,
+    Paper as DBPaper,
+    PaperAuthor,
+    PaperConference,
+    PaperMethod,
+    PaperOrganization,
+    PaperTask,
+    Task,
+)
 from backend.utils.urls import get_paper_route_identifier
 
 
@@ -40,6 +54,12 @@ class ArchivePaper:
     route_identifier: str
     title: str
     published: Optional[date]
+
+
+@dataclass(frozen=True)
+class SitemapEntity:
+    path: str
+    lastmod: datetime
 
 
 def eligible_paper_filter():
@@ -195,3 +215,89 @@ class SitemapService:
             for paper in rows[:ARCHIVE_PAGE_SIZE]
         ]
         return items, len(rows) > ARCHIVE_PAGE_SIZE
+
+    @staticmethod
+    def _eligible_relation_exists(relation, relation_entity_column, entity_id):
+        return exists().where(
+            relation_entity_column == entity_id,
+            relation.paper_id == DBPaper.id,
+            eligible_paper_filter(),
+        )
+
+    def iter_entities(self, kind: str) -> Iterator[SitemapEntity]:
+        definitions = {
+            "tasks": (Task, PaperTask, PaperTask.task_id, "/tasks/"),
+            "methods": (Method, PaperMethod, PaperMethod.method_id, "/methods/"),
+            "benchmarks": (
+                Dataset,
+                Evaluation,
+                Evaluation.dataset_id,
+                "/benchmark/",
+            ),
+            "conferences": (
+                Conference,
+                PaperConference,
+                PaperConference.conference_id,
+                "/conferences/",
+            ),
+            "organizations": (
+                Organization,
+                PaperOrganization,
+                PaperOrganization.organization_id,
+                "/",
+            ),
+        }
+        model, relation, relation_entity_column, prefix = definitions[kind]
+        query = (
+            self.db.query(model)
+            .filter(
+                model.slug.is_not(None),
+                func.length(func.trim(model.slug)) > 0,
+                self._eligible_relation_exists(
+                    relation, relation_entity_column, model.id
+                ),
+            )
+            .order_by(model.id)
+            .yield_per(SITEMAP_BATCH_SIZE)
+        )
+        for entity in query:
+            updated = entity.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            yield SitemapEntity(f"{prefix}{entity.slug}", updated)
+
+    def list_author_shards(self) -> list[int]:
+        bucket = func.floor(Author.id / SITEMAP_BUCKET_SIZE).label("bucket")
+        rows = (
+            self.db.query(bucket)
+            .filter(
+                self._eligible_relation_exists(
+                    PaperAuthor, PaperAuthor.author_id, Author.id
+                )
+            )
+            .distinct()
+            .order_by(bucket)
+            .all()
+        )
+        return [int(row.bucket) for row in rows]
+
+    def iter_author_shard(self, bucket: int) -> Iterator[SitemapEntity]:
+        lower = bucket * SITEMAP_BUCKET_SIZE
+        upper = lower + SITEMAP_BUCKET_SIZE
+        query = (
+            self.db.query(Author)
+            .filter(
+                Author.id >= lower,
+                Author.id < upper,
+                self._eligible_relation_exists(
+                    PaperAuthor, PaperAuthor.author_id, Author.id
+                ),
+            )
+            .order_by(Author.id)
+            .yield_per(SITEMAP_BATCH_SIZE)
+        )
+        for author in query:
+            updated = author.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            yield SitemapEntity(f"/authors/{author.id}", updated)

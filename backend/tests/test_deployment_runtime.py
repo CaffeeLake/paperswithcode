@@ -711,11 +711,90 @@ def test_staging_smoke_accepts_versioned_feature_manifest(tmp_path: Path):
     assert validate_local_bundle(release, True) == []
 
 
+def _seo_sitemap_index() -> bytes:
+    names = (
+        "papers-2026-1.xml",
+        "tasks.xml",
+        "methods.xml",
+        "benchmarks.xml",
+        "conferences.xml",
+        "organizations.xml",
+        "authors-0.xml",
+    )
+    return (
+        "<sitemapindex>"
+        + "".join(
+            f"<sitemap><loc>https://paperswithcode.co/sitemaps/{name}</loc></sitemap>"
+            for name in names
+        )
+        + "</sitemapindex>"
+    ).encode()
+
+
+def _entity_sitemap_response(url: str):
+    paths = {
+        "tasks.xml": "/tasks/example",
+        "methods.xml": "/methods/example",
+        "benchmarks.xml": "/benchmark/example",
+        "conferences.xml": "/conferences/example",
+        "organizations.xml": "/example-org",
+        "authors-0.xml": "/authors/1",
+    }
+    path = paths.get(url.rsplit("/", 1)[-1])
+    if path is None:
+        return None
+    location = f"https://paperswithcode.co{path}"
+    return (
+        200,
+        {"Content-Type": "application/xml"},
+        f"<urlset><url><loc>{location}</loc></url></urlset>".encode(),
+    )
+
+
+def _entity_page_response(url: str):
+    paths = (
+        "/tasks/example",
+        "/methods/example",
+        "/benchmark/example",
+        "/conferences/example",
+        "/example-org",
+        "/authors/1",
+    )
+    path = next((candidate for candidate in paths if url.endswith(candidate)), None)
+    if path is None:
+        return None
+    canonical = f"https://paperswithcode.co{path}"
+    return (
+        200,
+        {},
+        (
+            f'<link rel="canonical" href="{canonical}">'
+            '<main data-pwc-initial-document="discovery"><h1>Entity</h1>'
+            '<a href="/paper/1">Paper</a></main>'
+        ).encode(),
+    )
+
+
 def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
     requested: list[str] = []
 
     def request(url: str, *, allow_redirects: bool = True):
         requested.append(url)
+        if response := _entity_sitemap_response(url):
+            return response
+        if response := _entity_page_response(url):
+            return response
+        if url.endswith("/robots.txt"):
+            return 200, {"Content-Type": "text/plain"}, b"User-agent: *\nDisallow: /\n"
+        if url.rstrip("/").endswith(":8100"):
+            links = b"".join(
+                f'<a href="/paper/{i}">Paper</a>'.encode() for i in range(20)
+            ) + b"".join(f'<a href="/tasks/{i}">Task</a>'.encode() for i in range(5))
+            return (
+                200,
+                {},
+                b'<main data-pwc-initial-document="discovery">' + links + b"</main>",
+            )
         if url.endswith("/health"):
             return 200, {}, b'{"release_id":"release-staging"}'
         if url.endswith("/api/v1/papers/1"):
@@ -736,7 +815,7 @@ def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
             return (
                 200,
                 {"Content-Type": "application/xml"},
-                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+                _seo_sitemap_index(),
             )
         if url.endswith("/sitemaps/papers-2026-1.xml"):
             return 200, {"Content-Type": "application/xml"}, b"<urlset/>"
@@ -760,6 +839,21 @@ def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
 
 def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch):
     def request(url: str, *, allow_redirects: bool = True):
+        if response := _entity_sitemap_response(url):
+            return response
+        if response := _entity_page_response(url):
+            return response
+        if url.endswith("/robots.txt"):
+            return 200, {"Content-Type": "text/plain"}, b"User-agent: *\nDisallow: /\n"
+        if url.rstrip("/").endswith(":8100"):
+            links = b"".join(
+                f'<a href="/paper/{i}">Paper</a>'.encode() for i in range(20)
+            ) + b"".join(f'<a href="/tasks/{i}">Task</a>'.encode() for i in range(5))
+            return (
+                200,
+                {},
+                b'<main data-pwc-initial-document="discovery">' + links + b"</main>",
+            )
         if url.endswith("/health"):
             return 200, {}, b'{"release_id":"release-staging"}'
         if url.endswith("/api/v1/papers/1"):
@@ -780,7 +874,7 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
             return (
                 200,
                 {"Content-Type": "application/xml"},
-                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+                _seo_sitemap_index(),
             )
         if url.endswith("/sitemaps/papers-2026-1.xml"):
             return 200, {"Content-Type": "application/xml"}, b"<urlset/>"
@@ -803,6 +897,25 @@ def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
 
     def request(url: str, *, allow_redirects: bool = True):
         requested.append(url)
+        if response := _entity_sitemap_response(url):
+            return response
+        if response := _entity_page_response(url):
+            return response
+        if url.endswith("/robots.txt"):
+            return (
+                200,
+                {"content-type": "text/plain"},
+                b"User-agent: *\nAllow: /\nSitemap: https://paperswithcode.co/sitemap.xml\n",
+            )
+        if url.rstrip("/").endswith(":8100"):
+            links = b"".join(
+                f'<a href="/paper/{i}">Paper</a>'.encode() for i in range(20)
+            ) + b"".join(f'<a href="/tasks/{i}">Task</a>'.encode() for i in range(5))
+            return (
+                200,
+                {},
+                b'<main data-pwc-initial-document="discovery">' + links + b"</main>",
+            )
         if url.endswith("/paper/2607.24653"):
             return (
                 200,
@@ -817,7 +930,7 @@ def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
             return (
                 200,
                 {"content-type": "application/xml"},
-                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+                _seo_sitemap_index(),
             )
         if url.endswith("/sitemaps/papers-2026-1.xml"):
             return 200, {"content-type": "application/xml"}, b"<urlset/>"

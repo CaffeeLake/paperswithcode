@@ -188,17 +188,26 @@ class PaperService:
             return relation_data
 
         author_rows = (
-            self.db.query(PaperAuthor.paper_id, DBAuthor.name, DBAuthor.hf_username)
+            self.db.query(
+                PaperAuthor.paper_id,
+                DBAuthor.id,
+                DBAuthor.name,
+                DBAuthor.hf_username,
+            )
             .join(DBAuthor, PaperAuthor.author_id == DBAuthor.id)
             .filter(PaperAuthor.paper_id.in_(unique_ids))
             .order_by(PaperAuthor.paper_id, PaperAuthor.author_order)
             .all()
         )
-        for paper_id, author_name, hf_username in author_rows:
+        for paper_id, author_id, author_name, hf_username in author_rows:
             relation_data["authors"][paper_id].append(author_name)
             if not card_view:
                 relation_data["author_links"][paper_id].append(
-                    AuthorLink(name=author_name, hf_username=hf_username)
+                    AuthorLink(
+                        id=str(author_id),
+                        name=author_name,
+                        hf_username=hf_username,
+                    )
                 )
 
         task_rows = (

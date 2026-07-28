@@ -17,15 +17,12 @@ unchanged.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Path as FastApiPath
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
-from backend.config import get_settings
 from backend.services.default_og_image import get_default_og_image_bytes
 from backend.services.paper_service import PaperService
 from backend.services.paper_seo_service import (
@@ -38,6 +35,7 @@ from backend.services.social_meta_service import (
     build_paper_meta,
     inject_paper_meta,
 )
+from backend.services.spa_shell_service import load_index_html
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.urls import get_paper_route_identifier
 
@@ -45,62 +43,6 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
-
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_INDEX_PATH = (
-    _PROJECT_ROOT.parent / "pwc-releases" / "current" / "frontend-dist" / "index.html"
-)
-_DIST_INDEX_PATH = _PROJECT_ROOT / "frontend" / "dist" / "index.html"
-_SRC_INDEX_PATH = _PROJECT_ROOT / "frontend" / "index.html"
-
-_cached_index_html: Optional[str] = None
-_cached_index_mtime: Optional[float] = None
-_cached_index_path: Optional[Path] = None
-
-
-def _load_index_html() -> Optional[str]:
-    """
-    Load the SPA shell HTML, preferring the active production release.
-
-    Production nginx serves an immutable snapshot through the sibling
-    ``pwc-releases/current`` symlink. Paper routes must use that same shell;
-    the checkout's ``frontend/dist`` can contain an unrelated development
-    build whose hashed chunks are not publicly available. In dev and tests,
-    where the release link is absent, fall back to the checkout build and
-    then the Vite source shell.
-    """
-    global _cached_index_html, _cached_index_mtime, _cached_index_path
-
-    settings = get_settings()
-    if settings.is_deployed:
-        paths = (settings.frontend_dist_path / "index.html",)
-    else:
-        paths = (_RELEASE_INDEX_PATH, _DIST_INDEX_PATH, _SRC_INDEX_PATH)
-
-    for path in paths:
-        if not path.exists():
-            continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if (
-            _cached_index_html is not None
-            and _cached_index_mtime == mtime
-            and _cached_index_path == path
-        ):
-            return _cached_index_html
-        try:
-            _cached_index_html = path.read_text(encoding="utf-8")
-            _cached_index_mtime = mtime
-            _cached_index_path = path
-            return _cached_index_html
-        except OSError as exc:
-            logger.warning("Failed to read SPA index from %s: %s", path, exc)
-            continue
-
-    return None
 
 
 def _render_paper_html(
@@ -151,7 +93,7 @@ def _render_paper_html(
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
-    index_html = _load_index_html()
+    index_html = load_index_html()
     if index_html is None:
         return HTMLResponse(
             "<!doctype html><title>Papers with Code</title>"

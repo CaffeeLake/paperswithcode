@@ -403,6 +403,7 @@ class AuthorLink(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    id: Optional[str] = Field(None, description="Stable local author ID")
     name: str = Field(..., description="Author display name")
     hf_username: Optional[str] = Field(
         None,

@@ -60,6 +60,7 @@ const ConferenceTaskView = React.lazy(() => import("@/views/ConferenceTaskView")
 const OrganizationsIndexView = React.lazy(() => import("@/views/OrganizationsIndexView"));
 const OrganizationDetailView = React.lazy(() => import("@/views/OrganizationDetailView"));
 const OrganizationTaskView = React.lazy(() => import("@/views/OrganizationTaskView"));
+const AuthorDetailView = React.lazy(() => import("@/views/AuthorDetailView"));
 const MethodDetailView = React.lazy(() => import("@/views/MethodDetailView"));
 const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView"));
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
@@ -184,6 +185,9 @@ const Shell: React.FC = () => {
   const [searchOpen, setSearchOpen] = React.useState(false);
 
   useScrollToTop();
+  React.useLayoutEffect(() => {
+    document.getElementById("initial-discovery-footer")?.remove();
+  }, []);
 
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -228,6 +232,7 @@ const Shell: React.FC = () => {
             <Route path="/organizations" element={<OrganizationsIndexView />} />
             <Route path="/organizations/:orgSlug" element={<OrganizationAliasRedirect />} />
             <Route path="/organizations/:orgSlug/:taskSlug" element={<OrganizationAliasRedirect />} />
+            <Route path="/authors/:authorId" element={<AuthorDetailView />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
