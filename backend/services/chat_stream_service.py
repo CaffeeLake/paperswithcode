@@ -212,14 +212,33 @@ def _persist_failure(
             logger.exception("chat cleanup failed session_id=%s", admission.session_id)
 
 
+def _persist_preparation_failure(
+    owner: ChatOwner,
+    settings: Settings,
+    admission: TurnAdmission,
+    code: str,
+) -> None:
+    with db_manager.session_local() as db:
+        try:
+            ChatSessionService(db, settings).abort_prepared_edit(owner, admission, code)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "chat edit preparation cleanup failed session_id=%s",
+                admission.session_id,
+            )
+
+
 async def _prepare_replacement(
     owner: ChatOwner,
     settings: Settings,
     admission: TurnAdmission,
     store: PostgresSDKSessionStore,
+    on_activated: Callable[[], None] | None = None,
 ) -> uuid.UUID | None:
     old_id = admission.sdk_session_id
-    if not admission.is_replacement or old_id is None:
+    if not admission.is_replacement:
         return old_id
     session_directory = (
         "/workspace"
@@ -228,32 +247,81 @@ async def _prepare_replacement(
     )
     project_key = project_key_for_directory(session_directory)
     replacement_id: uuid.UUID | None = None
-    if admission.resume_boundary_id:
-        result = await fork_session_via_store(
-            store,
-            str(old_id),
-            directory=session_directory,
-            up_to_message_id=str(admission.resume_boundary_id),
-        )
-        replacement_id = uuid.UUID(result.session_id)
-    with db_manager.session_local() as db:
-        rebound = ChatSessionService(db, settings).rebind_sdk_session(
-            owner,
-            admission.session_id,
-            admission.turn_id,
-            old_id,
-            replacement_id,
-            project_key,
-        )
-        if not rebound:
-            db.rollback()
-            if replacement_id:
+    logger.info(
+        "chat edit preparing session_id=%s target_id=%s source_sdk_id=%s cutoff_id=%s",
+        admission.session_id,
+        admission.replacement_target_id,
+        old_id,
+        admission.resume_boundary_id,
+    )
+    try:
+        if old_id is not None and admission.resume_boundary_id:
+            result = await fork_session_via_store(
+                store,
+                str(old_id),
+                directory=session_directory,
+                up_to_message_id=str(admission.resume_boundary_id),
+            )
+            replacement_id = uuid.UUID(result.session_id)
+            with db_manager.session_local() as db:
+                recorded = ChatSessionService(db, settings).record_prepared_fork(
+                    owner, admission, replacement_id
+                )
+                if not recorded:
+                    db.rollback()
+                    raise ChatServiceError("stale_turn", 409, "The edit turn changed")
+                db.commit()
+        with db_manager.session_local() as db:
+            activated = ChatSessionService(db, settings).activate_edit(
+                owner,
+                admission,
+                replacement_id,
+                project_key,
+            )
+            if not activated:
+                db.rollback()
+                raise ChatServiceError("stale_turn", 409, "The edit turn changed")
+            db.commit()
+    except BaseException:
+        if replacement_id:
+            with contextlib.suppress(Exception):
                 await store.delete(
                     {"project_key": project_key, "session_id": str(replacement_id)}
                 )
-            raise ChatServiceError("stale_turn", 409, "The replacement turn changed")
-        db.commit()
-    await store.delete({"project_key": project_key, "session_id": str(old_id)})
+        logger.info(
+            "chat edit activation outcome session_id=%s target_id=%s outcome=failed",
+            admission.session_id,
+            admission.replacement_target_id,
+        )
+        raise
+    logger.info(
+        "chat edit activation outcome session_id=%s target_id=%s fork_sdk_id=%s outcome=activated",
+        admission.session_id,
+        admission.replacement_target_id,
+        replacement_id,
+    )
+    if on_activated:
+        on_activated()
+    if old_id is not None:
+        try:
+            await store.delete(
+                {
+                    "project_key": admission.sdk_project_key or project_key,
+                    "session_id": str(old_id),
+                }
+            )
+            logger.info(
+                "chat edit transcript cleanup session_id=%s source_sdk_id=%s outcome=deleted",
+                admission.session_id,
+                old_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup leaks must not undo activation
+            logger.warning(
+                "chat edit transcript cleanup session_id=%s source_sdk_id=%s outcome=leaked error=%s",
+                admission.session_id,
+                old_id,
+                type(exc).__name__,
+            )
     return replacement_id
 
 
@@ -337,6 +405,7 @@ class ChatStreamOrchestrator:
         self.title_task: asyncio.Task | None = None
         self.runner: ChatTurnRunner | None = None
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
+        self.edit_activated = False
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         try:
@@ -366,9 +435,7 @@ class ChatStreamOrchestrator:
                 yield ChatStreamFrame(
                     "error",
                     {
-                        "message": (
-                            "The interrupted prompt could not be prepared for retry."
-                        ),
+                        "message": "Couldn’t resend this message. Your original conversation was restored.",
                         "code": "replacement_prepare_failed",
                     },
                 )
@@ -407,17 +474,28 @@ class ChatStreamOrchestrator:
                     await self.title_task
         except asyncio.CancelledError:
             await self._cancel_runner()
-            await asyncio.shield(
-                asyncio.to_thread(
-                    _persist_failure,
-                    self.owner,
-                    self.settings,
-                    self.admission,
-                    "interrupted",
-                    True,
-                    self.projection.completed_blocks(),
+            if self.admission.is_replacement and not self.edit_activated:
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        _persist_preparation_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                    )
                 )
-            )
+            else:
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        _persist_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                        True,
+                        self.projection.completed_blocks(),
+                    )
+                )
             raise
         except Exception as exc:
             logger.warning(
@@ -447,24 +525,22 @@ class ChatStreamOrchestrator:
 
     async def _replacement_or_error(self) -> tuple[bool, uuid.UUID | None]:
         try:
-            return (
-                True,
-                await _prepare_replacement(
-                    self.owner, self.settings, self.admission, self.store
-                ),
+            resume_id = await _prepare_replacement(
+                self.owner,
+                self.settings,
+                self.admission,
+                self.store,
+                lambda: setattr(self, "edit_activated", True),
             )
+            return True, resume_id
         except Exception as exc:
             logger.warning(
                 "chat replacement preparation failed session_id=%s error=%s",
                 self.admission.session_id,
                 type(exc).__name__,
             )
-            _persist_failure(
-                self.owner,
-                self.settings,
-                self.admission,
-                "replacement_prepare_failed",
-                False,
+            _persist_preparation_failure(
+                self.owner, self.settings, self.admission, "replacement_prepare_failed"
             )
             self.terminal = "error"
             return False, None

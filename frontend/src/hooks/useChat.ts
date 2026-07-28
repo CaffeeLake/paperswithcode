@@ -7,19 +7,21 @@ import {
   type ChatPaperHit,
   streamChat,
 } from "@/lib/chat";
+import { getSession, toUiMessages } from "@/lib/chatSessions";
 
 interface UseChatOptions {
   sessionId: string | null;
   initialModel?: string;
   onSessionId: (id: string) => void;
   onTitle: (title: string) => void;
-  onSettled: () => void;
+  onSettled: (sessionId: string | null) => void;
   onInterrupted: (text: string) => void;
 }
 
 export function useChat(options: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  const [sessionError, setSessionError] = useState("");
   const busyRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -27,10 +29,14 @@ export function useChat(options: UseChatOptions) {
   const promptRef = useRef("");
   const titleRef = useRef("");
   const idRef = useRef(0);
+  const activeSessionIdRef = useRef(options.sessionId);
   optionsRef.current = options;
   messagesRef.current = messages;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    if (!busyRef.current) activeSessionIdRef.current = options.sessionId;
+  }, [options.sessionId]);
 
   const papers = useMemo(() => {
     const map: Record<string, ChatPaperHit> = {};
@@ -60,7 +66,10 @@ export function useChat(options: UseChatOptions) {
   const applyEvent = (event: ChatEvent) => {
     switch (event.type) {
       case "stream_start":
-        if (event.session_id) optionsRef.current.onSessionId(event.session_id);
+        if (event.session_id) {
+          activeSessionIdRef.current = event.session_id;
+          optionsRef.current.onSessionId(event.session_id);
+        }
         break;
       case "sandbox_start":
       case "sandbox_ready":
@@ -112,50 +121,155 @@ export function useChat(options: UseChatOptions) {
     }
   };
 
-  const send = useCallback((text: string) => {
-    const question = text.trim();
-    if (!question || busyRef.current) return false;
+  const reloadCanonical = async (sessionId: string) => {
+    const detail = await getSession(sessionId);
+    const restored = toUiMessages(detail);
+    setMessages(restored);
+    messagesRef.current = restored;
+    return restored;
+  };
+
+  interface EditRequest {
+    targetId: string;
+    snapshot: ChatMessage[];
+    first: boolean;
+  }
+
+  const run = (
+    question: string,
+    request: Parameters<typeof streamChat>[0],
+    optimistic: ChatMessage[],
+    edit?: EditRequest,
+  ) => {
     busyRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
     promptRef.current = question;
-    const latestUser = [...messagesRef.current].reverse().find((message) => message.role === "user");
-    const replacement = latestUser?.status && latestUser.status !== "complete" && latestUser.revision
-      ? { replace_message_id: latestUser.id, prior_revision: latestUser.revision }
-      : null;
-    setMessages((previous) => {
-      const nextUser: ChatMessage = { id: nextId(), role: "user", text: question };
-      const nextAssistant: ChatMessage = { id: nextId(), role: "assistant", streaming: true, blocks: [] };
-      if (!replacement) return [...previous, nextUser, nextAssistant];
-      const replaceIndex = previous.findLastIndex((message) => message.id === latestUser.id);
-      return replaceIndex < 0
-        ? [...previous, nextUser, nextAssistant]
-        : [...previous.slice(0, replaceIndex), nextUser, nextAssistant];
-    });
+    activeSessionIdRef.current = request.session_id;
+    setSessionError("");
+    setMessages(optimistic);
     setBusy(true);
     void (async () => {
+      let sawStreamStart = false;
+      let sawTerminalEvent = false;
+      let streamFailed = false;
       try {
-        for await (const event of streamChat({
-          message: question,
-          session_id: optionsRef.current.sessionId,
-          client_message_id: crypto.randomUUID(),
-          ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
-          ...(replacement ?? {}),
-        }, { signal: controller.signal })) {
+        for await (const event of streamChat(request, { signal: controller.signal })) {
+          if (event.type === "stream_start") sawStreamStart = true;
+          if (event.type === "done" || event.type === "error") {
+            sawTerminalEvent = true;
+            streamFailed = event.type === "error";
+          }
           if (!controller.signal.aborted) applyEvent(event);
         }
       } catch (error) {
+        streamFailed = true;
         if (!controller.signal.aborted) applyEvent({ type: "error", message: error instanceof Error ? error.message : "The assistant stream failed." });
       } finally {
         if (abortRef.current === controller) {
           busyRef.current = false;
           setBusy(false);
-          patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
-          optionsRef.current.onSettled();
+          if (!controller.signal.aborted) {
+            const canonicalId = activeSessionIdRef.current;
+            if (edit && !sawStreamStart) {
+              setMessages(edit.snapshot);
+              messagesRef.current = edit.snapshot;
+              setSessionError("Couldn’t resend this message. Your original conversation was restored.");
+            } else if (canonicalId) {
+              if (edit && !edit.first && (streamFailed || !sawTerminalEvent)) {
+                setMessages(edit.snapshot);
+                messagesRef.current = edit.snapshot;
+              }
+              try {
+                const canonical = await reloadCanonical(canonicalId);
+                if (
+                  edit
+                  && !edit.first
+                  && canonical.some((message) => message.id === edit.targetId)
+                ) {
+                  setSessionError("Couldn’t resend this message. Your original conversation was restored.");
+                }
+              } catch {
+                patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+              }
+            } else {
+              patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
+            }
+            optionsRef.current.onSettled(canonicalId);
+          }
         }
       }
     })();
     return true;
+  };
+
+  const send = useCallback((text: string) => {
+    const question = text.trim();
+    if (!question || question.length > 8_000 || busyRef.current) return false;
+    const current = messagesRef.current;
+    const latestUser = [...current].reverse().find((message) => message.role === "user");
+    const replacement = latestUser?.status && latestUser.status !== "complete" && latestUser.revision
+      ? { replace_message_id: latestUser.id, prior_revision: latestUser.revision }
+      : null;
+    const nextUser: ChatMessage = { id: nextId(), role: "user", text: question };
+    const nextAssistant: ChatMessage = { id: nextId(), role: "assistant", streaming: true, blocks: [] };
+    const replaceIndex = replacement && latestUser
+      ? current.findLastIndex((message) => message.id === latestUser.id)
+      : -1;
+    const optimistic = replaceIndex < 0
+      ? [...current, nextUser, nextAssistant]
+      : [...current.slice(0, replaceIndex), nextUser, nextAssistant];
+    return run(question, {
+      message: question,
+      session_id: optionsRef.current.sessionId,
+      client_message_id: crypto.randomUUID(),
+      ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
+      ...(replacement ?? {}),
+    }, optimistic);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const editAndResend = useCallback((messageId: string, text: string) => {
+    const question = text.trim();
+    if (!question || question.length > 8_000 || busyRef.current) return false;
+    const snapshot = messagesRef.current.slice();
+    const targetIndex = snapshot.findIndex(
+      (message) => message.id === messageId && message.role === "user",
+    );
+    if (targetIndex < 0) return false;
+    const target = snapshot[targetIndex];
+    const firstUserIndex = snapshot.findIndex((message) => message.role === "user");
+    const first = targetIndex === firstUserIndex;
+    if (!first && (!optionsRef.current.sessionId || !target.revision)) return false;
+    const nextUser: ChatMessage = {
+      id: target.id,
+      role: "user",
+      text: question,
+      revision: first ? undefined : target.revision! + 1,
+      status: "generating",
+    };
+    const nextAssistant: ChatMessage = {
+      id: nextId(),
+      role: "assistant",
+      streaming: true,
+      blocks: [],
+    };
+    const optimistic = first
+      ? [nextUser, nextAssistant]
+      : [...snapshot.slice(0, targetIndex), nextUser, nextAssistant];
+    return run(question, {
+      message: question,
+      session_id: first ? null : optionsRef.current.sessionId,
+      client_message_id: crypto.randomUUID(),
+      ...(first && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
+      ...(!first ? {
+        replace_message_id: target.id,
+        prior_revision: target.revision!,
+      } : {}),
+    }, optimistic, {
+      targetId: target.id,
+      snapshot,
+      first,
+    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stop = useCallback(() => {
@@ -179,12 +293,18 @@ export function useChat(options: UseChatOptions) {
       ];
     });
     optionsRef.current.onInterrupted(promptRef.current);
-    window.setTimeout(optionsRef.current.onSettled, 250);
+    const sessionId = activeSessionIdRef.current;
+    window.setTimeout(() => {
+      if (sessionId) void reloadCanonical(sessionId)
+        .catch(() => undefined)
+        .finally(() => optionsRef.current.onSettled(sessionId));
+      else optionsRef.current.onSettled(null);
+    }, 450);
   }, []);
 
   const toggleBlock = useCallback((messageId: string, blockIndex: number) => setMessages((previous) => previous.map((message) => message.id !== messageId ? message : { ...message, blocks: message.blocks?.map((block, index) => index === blockIndex && (block.kind === "reasoning" || block.kind === "tool") ? { ...block, open: !block.open } : block) })), []);
-  const reset = useCallback(() => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages([]); setBusy(false); }, []);
-  const load = useCallback((restored: ChatMessage[]) => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages(restored); setBusy(false); }, []);
+  const reset = useCallback(() => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; activeSessionIdRef.current = null; setMessages([]); setBusy(false); setSessionError(""); }, []);
+  const load = useCallback((restored: ChatMessage[]) => { abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages(restored); setBusy(false); setSessionError(""); }, []);
 
-  return { messages, busy, papers, send, stop, toggleBlock, reset, load };
+  return { messages, busy, papers, sessionError, send, editAndResend, stop, toggleBlock, reset, load };
 }

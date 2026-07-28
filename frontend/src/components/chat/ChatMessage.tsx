@@ -5,6 +5,7 @@
  */
 
 import React from "react";
+import { Pencil } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons";
@@ -229,13 +230,117 @@ const AnswerBlockView: React.FC<{
   </div>
 );
 
-export const UserMessage: React.FC<{ text: string }> = ({ text }) => (
-  <div className="chat-msg chat-msg-user">
-    <div className="chat-bubble">
-      <span className="chat-bubble-text" onMouseDown={selectClickedWord}>{text}</span>
+export const UserMessage: React.FC<{
+  id?: string;
+  text: string;
+  isInitial?: boolean;
+  editingAllowed?: boolean;
+  editing?: boolean;
+  editNotice?: string;
+  onEdit?: () => void;
+  onCancel?: () => void;
+  onResend?: (text: string) => boolean;
+}> = ({
+  id,
+  text,
+  editingAllowed = false,
+  editing = false,
+  editNotice,
+  onEdit,
+  onCancel,
+  onResend,
+}) => {
+  const [value, setValue] = React.useState(text);
+  const [submitting, setSubmitting] = React.useState(false);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const resize = React.useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const maximum = Math.max(120, window.innerHeight * 0.4);
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maximum)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maximum ? "auto" : "hidden";
+  }, []);
+
+  React.useLayoutEffect(() => {
+    if (!editing) return;
+    setValue(text);
+    setSubmitting(false);
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(text.length, text.length);
+    resize();
+  }, [editing, resize, text]);
+
+  React.useLayoutEffect(resize, [resize, value]);
+
+  const valid = Boolean(value.trim()) && value.length <= 8_000;
+  const resend = () => {
+    if (!valid || submitting) return;
+    setSubmitting(true);
+    if (!onResend?.(value)) setSubmitting(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
+        <div className="chat-inline-editor">
+          <textarea
+            ref={textareaRef}
+            className="chat-inline-editor-textarea"
+            aria-label="Edit message"
+            value={value}
+            maxLength={8_000}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancel?.();
+              } else if (
+                event.key === "Enter"
+                && !event.shiftKey
+                && !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                resend();
+              }
+            }}
+          />
+          {editNotice && <div className="chat-inline-editor-notice">{editNotice}</div>}
+          <div className="chat-inline-editor-actions">
+            <button type="button" onClick={onCancel}>Cancel</button>
+            <button type="button" className="chat-inline-editor-send" disabled={!valid || submitting} onClick={resend}>Send</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat-msg chat-msg-user" data-message-id={id}>
+      <div className="chat-user-message-wrap">
+        <div className="chat-bubble">
+          <span className="chat-bubble-text" onMouseDown={selectClickedWord}>{text}</span>
+        </div>
+        {editingAllowed && (
+          <div className="chat-user-actions">
+            <button
+              type="button"
+              className="chat-user-edit"
+              aria-label="Edit message"
+              title="Edit"
+              onClick={onEdit}
+            >
+              <Pencil aria-hidden="true" />
+            </button>
+          </div>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export const AssistantMessage: React.FC<{
   msg: ChatMessageType;

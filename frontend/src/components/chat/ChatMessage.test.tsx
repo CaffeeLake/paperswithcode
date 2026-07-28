@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
@@ -65,6 +66,84 @@ describe("UserMessage", () => {
     const allowed = fireEvent.mouseDown(message, { button: 0, detail: 1 });
 
     expect(allowed).toBe(true);
+  });
+
+  it("exposes a keyboard-accessible Codex-style edit action", async () => {
+    const user = userEvent.setup();
+    let edited = false;
+    render(
+      <UserMessage
+        id="user-1"
+        text="Editable prompt"
+        editingAllowed
+        onEdit={() => { edited = true; }}
+      />,
+    );
+
+    const edit = screen.getByRole("button", { name: "Edit message" });
+    expect(edit).toHaveAttribute("title", "Edit");
+    await user.tab();
+    expect(edit).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(edited).toBe(true);
+  });
+
+  it("focuses the inline editor at the end and resends unchanged text with Enter", async () => {
+    const user = userEvent.setup();
+    const submissions: string[] = [];
+    render(
+      <UserMessage
+        id="user-1"
+        text="Same prompt"
+        editing
+        editNotice="Sending will replace the response."
+        onResend={(text) => { submissions.push(text); return true; }}
+      />,
+    );
+
+    const editor = screen.getByRole("textbox", { name: "Edit message" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue("Same prompt");
+    expect((editor as HTMLTextAreaElement).selectionStart).toBe("Same prompt".length);
+    expect((editor as HTMLTextAreaElement).selectionEnd).toBe("Same prompt".length);
+    expect(screen.getByText("Sending will replace the response.")).toBeVisible();
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Cancel",
+      "Send",
+    ]);
+
+    await user.keyboard("{Enter}");
+    expect(submissions).toEqual(["Same prompt"]);
+  });
+
+  it("supports Shift+Enter for newlines and Escape to cancel", async () => {
+    const user = userEvent.setup();
+    let cancelled = false;
+    const submissions: string[] = [];
+    render(
+      <UserMessage
+        text="Line one"
+        editing
+        onCancel={() => { cancelled = true; }}
+        onResend={(text) => { submissions.push(text); return true; }}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Edit message" });
+
+    await user.keyboard("{Shift>}{Enter}{/Shift}Line two");
+    expect(editor).toHaveValue("Line one\nLine two");
+    expect(submissions).toEqual([]);
+    await user.keyboard("{Escape}");
+    expect(cancelled).toBe(true);
+  });
+
+  it("rejects whitespace-only edits", async () => {
+    const user = userEvent.setup();
+    render(<UserMessage text="Original" editing onResend={() => true} />);
+    const editor = screen.getByRole("textbox", { name: "Edit message" });
+    await user.clear(editor);
+    await user.type(editor, "   ");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 });
 

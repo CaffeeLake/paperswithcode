@@ -65,6 +65,7 @@ const ChatView: React.FC = () => {
     () => searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
   );
   const autoSendStartedRef = useRef(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -108,17 +109,17 @@ const ChatView: React.FC = () => {
     },
     onSettled: () => {
       void refreshSessions();
-      if (routeSessionId) {
-        void getSession(routeSessionId).then((detail) => chat.load(toUiMessages(detail)));
-      }
     },
     onInterrupted: (text) => {
       setDraft(text);
-      if (routeSessionId) window.setTimeout(() => { void getSession(routeSessionId).then((detail) => chat.load(toUiMessages(detail))); }, 450);
     },
   });
   const loadChat = chat.load;
   const sendChat = chat.send;
+
+  useEffect(() => {
+    if (chat.busy) setEditingMessageId(null);
+  }, [chat.busy]);
 
   const send = useCallback((text: string) => {
     if (!user) {
@@ -301,6 +302,10 @@ const ChatView: React.FC = () => {
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTopBeforeToggleRef = useRef<number | null>(null);
+  const editScrollAnchorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chat.busy) editScrollAnchorRef.current = null;
+  }, [chat.busy]);
   const toggleBlock = (messageId: string, blockIndex: number) => {
     scrollTopBeforeToggleRef.current = scrollRef.current?.scrollTop ?? null;
     chat.toggleBlock(messageId, blockIndex);
@@ -313,10 +318,24 @@ const ChatView: React.FC = () => {
       scrollTopBeforeToggleRef.current = null;
       return;
     }
+    if (editScrollAnchorRef.current) {
+      const target = Array.from(
+        scrollElement.querySelectorAll<HTMLElement>("[data-message-id]"),
+      ).find((element) => element.dataset.messageId === editScrollAnchorRef.current);
+      if (target) {
+        const containerRect = scrollElement.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        scrollElement.scrollTop += targetRect.top - containerRect.top - 24;
+        return;
+      }
+    }
     scrollElement.scrollTop = scrollElement.scrollHeight;
   }, [chat.messages]);
 
   const current = sessions.find((session) => session.id === routeSessionId);
+  const userMessages = chat.messages.filter((message) => message.role === "user");
+  const firstUserId = userMessages[0]?.id;
+  const latestUserId = userMessages.at(-1)?.id;
   const isEmpty = chat.messages.length === 0;
   const routeStateMatches = routeSessionState?.id === routeSessionId;
   const isRouteSessionLoading = Boolean(routeSessionId && (
@@ -400,9 +419,31 @@ const ChatView: React.FC = () => {
           <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
           <div className="chat-examples">{EXAMPLES.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
         </div></div> : <>
+          {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
           <div className="chat-conversation" ref={scrollRef}><div className="chat-conversation-inner">
             {chat.messages.map((message) => message.role === "user"
-              ? <UserMessage key={message.id} text={message.text ?? ""} />
+              ? <UserMessage
+                  key={message.id}
+                  id={message.id}
+                  text={message.text ?? ""}
+                  isInitial={message.id === firstUserId}
+                  editingAllowed={!chat.busy && Boolean(message.revision)}
+                  editing={editingMessageId === message.id}
+                  editNotice={message.id === firstUserId
+                    ? "Sending will start a new chat."
+                    : message.id === latestUserId
+                      ? "Sending will replace the response."
+                      : "Sending will replace the response and all messages after it."}
+                  onEdit={() => setEditingMessageId(message.id)}
+                  onCancel={() => setEditingMessageId(null)}
+                  onResend={(text) => {
+                    if (message.id !== firstUserId) editScrollAnchorRef.current = message.id;
+                    const accepted = chat.editAndResend(message.id, text);
+                    if (accepted) setEditingMessageId(null);
+                    else editScrollAnchorRef.current = null;
+                    return accepted;
+                  }}
+                />
               : <AssistantMessage key={message.id} msg={message} papers={chat.papers} onToggleBlock={toggleBlock} />)}
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">
