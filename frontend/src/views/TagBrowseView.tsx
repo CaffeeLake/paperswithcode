@@ -375,6 +375,7 @@ const TagBrowseView: React.FC = () => {
                   <span role="columnheader">Best model</span>
                   <span role="columnheader">Paper title</span>
                   <span role="columnheader">Code</span>
+                  <span role="columnheader">Compare</span>
                 </div>
                 {(benchmarksExpanded ? benchmarkRows : benchmarkRows.slice(0, 5)).map((benchmark) => (
                   <div
@@ -456,6 +457,14 @@ const TagBrowseView: React.FC = () => {
                       ) : (
                         <span className="bench-row-best-empty">—</span>
                       )}
+                    </div>
+                    <div className="bench-row-compare" role="cell">
+                      <Link
+                        to={benchmarkPath(benchmark.slug || benchmark.id, taskSlug)}
+                        aria-label={`Compare ${benchmark.best_model_name || "the best model"} with all results on ${benchmark.name}`}
+                      >
+                        Compare
+                      </Link>
                     </div>
                   </div>
                 ))}

@@ -2799,7 +2799,7 @@ a.paper-resource.is-link:focus-visible {
   display: grid;
   grid-template-columns:
     124px minmax(150px, 0.8fr) minmax(150px, 0.9fr)
-    minmax(220px, 1.3fr) 44px;
+    minmax(200px, 1.3fr) 44px 78px;
   gap: 20px;
   align-items: center;
 }
@@ -2961,6 +2961,35 @@ a.paper-resource.is-link:focus-visible {
 .bench-row-code a:hover {
   color: var(--accent-text);
   transform: translateY(-1px);
+}
+.bench-row-compare {
+  display: flex;
+  justify-content: center;
+}
+.bench-row-compare a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.bench-row-compare a:hover {
+  color: var(--bg);
+  background: var(--accent);
+}
+.bench-row-compare a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Compact benchmark rows used inside subtask cards. */
@@ -4145,7 +4174,7 @@ html { scroll-behavior: smooth; }
   .benchmark-trend-row {
     grid-template-columns:
       112px minmax(130px, 0.8fr) minmax(120px, 0.8fr)
-      minmax(180px, 1.2fr) 36px;
+      minmax(160px, 1.2fr) 36px 72px;
     gap: 14px;
   }
   .benchmark-trend-sparkline { width: 104px; }
@@ -4220,9 +4249,10 @@ html { scroll-behavior: smooth; }
     grid-template-areas:
       "trend benchmark code"
       "trend best code"
-      "trend paper code";
+      "trend paper paper"
+      "trend compare compare";
     gap: 4px 12px;
-    min-height: 98px;
+    min-height: 120px;
     padding: 12px 4px;
   }
   .benchmark-trend-cell { grid-area: trend; }
@@ -4235,6 +4265,16 @@ html { scroll-behavior: smooth; }
   }
   .benchmark-trend-row .bench-row-paper { grid-area: paper; }
   .benchmark-trend-row .bench-row-code { grid-area: code; }
+  .benchmark-trend-row .bench-row-compare {
+    grid-area: compare;
+    justify-content: flex-start;
+    margin-top: 4px;
+  }
+  .bench-row-compare a {
+    min-height: 26px;
+    padding: 0 9px;
+    font-size: 8.5px;
+  }
   .benchmark-trend-sparkline { width: 96px; }
   .benchmark-trend-meta {
     flex-wrap: wrap;
