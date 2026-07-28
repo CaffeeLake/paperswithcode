@@ -4717,6 +4717,9 @@ html { scroll-behavior: smooth; }
   line-height: 1.45;
   max-width: 74%;
   white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 .chat-msg-blocks { display: flex; flex-direction: column; gap: 14px; }
 
