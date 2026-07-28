@@ -14,6 +14,12 @@
       "files": []
     },
     {
+      "id": 4,
+      "prompt": "This external model-release paper now has an arXiv version and was merged automatically. Audit the canonicalization: the old paper URL should still resolve, and its evaluations, code, project page, and Hugging Face model must all survive on the arXiv paper and still contribute to trending.",
+      "expected_output": "The agent should resolve the old numeric route to the canonical arXiv row and verify that explicit HF arrays and normalized paper_hf_artifacts links survived alongside evaluations, repository, project page, tasks, and methods. It should flag or repair a missing HF relationship rather than treating a working redirect as sufficient.",
+      "files": []
+    },
+    {
       "id": 3,
       "prompt": "Index this company technical report as a paper page: https://www.zyphra.com/zaya1-vl-8b-technical-report. It should get a concise abstract/summary, publication date, source URL, linked GitHub/HF resources if present, and current taxonomy tags.",
       "expected_output": "The agent should use the external metadata extractor or page text, require a credible publication date, create/update the external paper row, link resources and tags, and verify the local paper page/API response.",

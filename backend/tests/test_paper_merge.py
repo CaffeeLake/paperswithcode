@@ -1,7 +1,10 @@
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
+from backend.database import paper_merge
 from backend.database.paper_merge import (
+    _merge_hf_artifacts,
     lookup_paper_merge_redirect,
     record_paper_merge_redirect,
 )
@@ -67,3 +70,63 @@ def test_paper_redirects_migration_preserves_staging_read_only_boundary():
     assert (
         "GRANT SELECT, INSERT, UPDATE, DELETE ON public.paper_redirects TO pwc_staging"
     ) not in " ".join(migration.split())
+
+
+def test_merge_hf_artifacts_preserves_arrays_and_normalized_links(monkeypatch):
+    arxiv_paper = SimpleNamespace(
+        id=20,
+        hf_models=["https://huggingface.co/org/existing"],
+        hf_datasets=None,
+        hf_spaces=None,
+        hf_artifacts_scanned_at="stale",
+    )
+    external = SimpleNamespace(
+        id=10,
+        hf_models=[
+            "https://huggingface.co/org/existing",
+            "https://huggingface.co/moonshotai/Kimi-K3",
+        ],
+        hf_datasets=["https://huggingface.co/datasets/org/data"],
+        hf_spaces=["https://huggingface.co/spaces/org/demo"],
+    )
+    target_link = SimpleNamespace(paper_id=20, hf_artifact_id=1)
+    duplicate_link = SimpleNamespace(paper_id=10, hf_artifact_id=1)
+    moved_link = SimpleNamespace(paper_id=10, hf_artifact_id=2)
+    query = Mock()
+    query.filter.return_value.all.side_effect = [
+        [target_link],
+        [duplicate_link, moved_link],
+    ]
+    db = Mock()
+    db.query.return_value = query
+    sync = Mock(return_value={"artifacts": 4, "links_added": 1})
+    monkeypatch.setattr(paper_merge, "sync_explicit_hf_artifact_links", sync)
+    stats = {
+        "hf_artifacts_merged": 0,
+        "hf_artifacts_moved": 0,
+        "hf_artifact_links_created": 0,
+    }
+
+    _merge_hf_artifacts(db, external, arxiv_paper, stats)
+
+    assert arxiv_paper.hf_models == [
+        "https://huggingface.co/org/existing",
+        "https://huggingface.co/moonshotai/Kimi-K3",
+    ]
+    assert arxiv_paper.hf_datasets == ["https://huggingface.co/datasets/org/data"]
+    assert arxiv_paper.hf_spaces == ["https://huggingface.co/spaces/org/demo"]
+    assert arxiv_paper.hf_artifacts_scanned_at is None
+    assert moved_link.paper_id == 20
+    db.delete.assert_called_once_with(duplicate_link)
+    sync.assert_called_once_with(
+        db,
+        20,
+        arxiv_paper.hf_models,
+        arxiv_paper.hf_datasets,
+        arxiv_paper.hf_spaces,
+    )
+    assert stats == {
+        "hf_artifacts_merged": 1,
+        "hf_artifacts_moved": 1,
+        "hf_artifact_links_created": 1,
+    }

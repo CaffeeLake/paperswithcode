@@ -18,6 +18,7 @@ from backend.models.database import (
     PaperAuthor,
     PaperConference,
     PaperDataset,
+    PaperHfArtifact,
     PaperMethod,
     PaperOrganization,
     PaperProjectPage,
@@ -26,6 +27,7 @@ from backend.models.database import (
     Repository,
 )
 from backend.services.evaluation_service import EvaluationService
+from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.utils.urls import get_paper_route_identifier
 
 
@@ -94,6 +96,63 @@ def find_external_paper_for_title(db: Session, title: str) -> Paper | None:
     )
 
 
+def _merge_url_lists(
+    target_urls: list[str] | None,
+    source_urls: list[str] | None,
+) -> list[str] | None:
+    merged = list(dict.fromkeys([*(target_urls or []), *(source_urls or [])]))
+    return merged or None
+
+
+def _merge_hf_artifacts(
+    db: Session,
+    external: Paper,
+    arxiv_paper: Paper,
+    stats: dict[str, Any],
+) -> None:
+    """Preserve explicit and normalized HF links on the canonical ArXiv row."""
+    arxiv_paper.hf_models = _merge_url_lists(
+        arxiv_paper.hf_models,
+        external.hf_models,
+    )
+    arxiv_paper.hf_datasets = _merge_url_lists(
+        arxiv_paper.hf_datasets,
+        external.hf_datasets,
+    )
+    arxiv_paper.hf_spaces = _merge_url_lists(
+        arxiv_paper.hf_spaces,
+        external.hf_spaces,
+    )
+
+    arxiv_links = {
+        link.hf_artifact_id: link
+        for link in db.query(PaperHfArtifact)
+        .filter(PaperHfArtifact.paper_id == arxiv_paper.id)
+        .all()
+    }
+    for link in (
+        db.query(PaperHfArtifact).filter(PaperHfArtifact.paper_id == external.id).all()
+    ):
+        if link.hf_artifact_id in arxiv_links:
+            db.delete(link)
+            stats["hf_artifacts_merged"] += 1
+        else:
+            link.paper_id = arxiv_paper.id
+            arxiv_links[link.hf_artifact_id] = link
+            stats["hf_artifacts_moved"] += 1
+
+    synced = sync_explicit_hf_artifact_links(
+        db,
+        arxiv_paper.id,
+        arxiv_paper.hf_models,
+        arxiv_paper.hf_datasets,
+        arxiv_paper.hf_spaces,
+    )
+    stats["hf_artifact_links_created"] += synced["links_added"]
+    # Reconcile the transferred explicit links with ArXiv discovery next run.
+    arxiv_paper.hf_artifacts_scanned_at = None
+
+
 def merge_external_paper_into_arxiv(
     db: Session,
     external_id: int,
@@ -130,6 +189,9 @@ def merge_external_paper_into_arxiv(
         "authors_moved": 0,
         "datasets_merged": 0,
         "datasets_moved": 0,
+        "hf_artifacts_merged": 0,
+        "hf_artifacts_moved": 0,
+        "hf_artifact_links_created": 0,
         "project_pages_merged": 0,
         "project_pages_moved": 0,
         "conferences_merged": 0,
@@ -271,6 +333,8 @@ def merge_external_paper_into_arxiv(
             link.paper_id = arxiv_paper_id
             stats["datasets_moved"] += 1
             arxiv_datasets.add(link.dataset_id)
+
+    _merge_hf_artifacts(db, external, arxiv_paper, stats)
 
     arxiv_pages = {
         link.project_page_id

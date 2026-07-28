@@ -38,6 +38,13 @@ Use `ADMIN_TOKEN=$(grep '^PWC_ADMIN_API_TOKEN=' backend/keys.env | cut -d= -f2-)
 2. If the source is a paper-like external release with no arXiv ID, create or reuse an external row keyed by canonical `source_url`.
 3. If the source is only a related code repo or model card for an existing paper, attach it to the existing paper instead of making a new row. Be strict: citations, base-model references, forks, or benchmark mentions are not enough to claim the source introduces the paper.
 
+An external release may acquire an arXiv paper later. The daily importer then
+canonicalizes it onto the arXiv row and leaves the old numeric route as a
+redirect. Verify that this merge preserves explicit HF arrays and normalized
+`paper_hf_artifacts` links along with evaluations, repositories, project pages,
+tasks, and methods; otherwise the paper can silently lose its HF trending
+component after canonicalization.
+
 Canonical `source_url` should be the most durable primary surface for the release:
 
 - Technical report or blog post over a GitHub README when both exist.
@@ -426,6 +433,11 @@ PY
 Every explicit artifact should have a normalized row. A newly inserted artifact
 may have a null metric until `update_hf_artifacts` refreshes it, but the junction
 must already exist.
+
+If the external paper has since been merged into an arXiv row, resolve the old
+numeric route and run these checks against the canonical paper ID. Confirm the
+old route redirects successfully and the canonical row retained the same
+explicit and normalized HF artifacts.
 
 Check the local route:
 

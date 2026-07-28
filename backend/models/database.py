@@ -114,10 +114,10 @@ class Paper(Base):
     tldr: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     num_pages: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # Hugging Face artifact URLs explicitly linked to this paper. Used for
-    # `source='external'` rows because external rows have no reliable arxiv_id
-    # to query the Hugging Face arxiv filter URL with. ArXiv rows leave these
-    # NULL and derive artifacts from `arxiv_id` at request/render time.
+    # Hugging Face artifact URLs explicitly linked to this paper. External rows
+    # need these because they have no reliable arxiv_id. ArXiv rows usually
+    # derive artifacts from arxiv_id, but retain curated URLs when an external
+    # release is later canonicalized onto an ArXiv paper.
     hf_models: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
     hf_datasets: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
     hf_spaces: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), nullable=True)
