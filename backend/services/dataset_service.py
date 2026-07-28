@@ -414,9 +414,12 @@ class DatasetService:
 
             # Apply filters
             if search:
-                # Use ilike for case-insensitive search in name and description
+                # Stable identifiers emitted by the CLI should be accepted as
+                # lookup inputs alongside human-readable metadata.
                 query = query.filter(
                     or_(
+                        cast(DBDataset.id, String) == str(search),
+                        DBDataset.slug.ilike(f"%{search}%"),
                         DBDataset.name.ilike(f"%{search}%"),
                         DBDataset.full_name.ilike(f"%{search}%")
                         if DBDataset.full_name
@@ -887,7 +890,7 @@ class DatasetService:
         is_open: Optional[bool] = None,
     ) -> Datasets:
         """
-        Search datasets by name, full_name, or description.
+        Search datasets by ID, slug, name, full_name, or description.
 
         Args:
             query: Search query string

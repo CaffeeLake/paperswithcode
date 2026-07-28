@@ -18,7 +18,8 @@ command tree. In an interactive terminal, benchmark lists render the top
 benchmarks under each visible task, grouped by research area. Use `--flat` for
 the paginated dataset table or `--group-by-area` to force Markdown when piping.
 Each grouped benchmark includes its name, full name when distinct, slug, and ID;
-inspect it with `pwc benchmark --name SLUG`.
-Task-scoped benchmark lists include the best model, its paper title, and the
-preferred code repository. The stable exit codes are 0 (success), 2 (usage),
-3 (network or server failure), and 4 (invalid response).
+inspect it with `pwc benchmark --name IDENTIFIER`. Task-scoped benchmark lists
+also include the benchmark ID and slug alongside the best model, its paper
+title, and the preferred code repository. Either identifier can be passed to
+`pwc benchmark --name`. The stable exit codes are 0 (success), 2 (usage), 3
+(network or server failure), and 4 (invalid response).

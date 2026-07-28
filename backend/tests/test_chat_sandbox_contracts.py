@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -389,7 +389,9 @@ def test_worker_protocol_allows_terminal_less_correlated_cancellation():
 
 
 def test_prompt_and_manifest_share_eight_round_contract():
-    prompt = render()
+    prompt = render(current_date=date(2026, 7, 28))
+    assert "The current UTC date is 2026-07-28." in prompt
+    assert "Judge publication recency relative to this date." in prompt
     assert "at most 8 tool-use round trips" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt

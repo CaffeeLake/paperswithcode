@@ -389,6 +389,18 @@ def test_get_datasets_for_child_task_only_returns_its_benchmarks(db_session):
     assert sorted(d.slug for d in result.results) == ["gpqa-diamond", "mmlu"]
 
 
+def test_search_datasets_accepts_slug_and_id(db_session):
+    """CLI-emitted benchmark identifiers must round-trip through search."""
+    _seed_lm_with_subtasks(db_session)
+    service = DatasetService(db_session)
+
+    by_slug = service.search_datasets("gpqa-diamond")
+    by_id = service.search_datasets("2")
+
+    assert [(item.id, item.slug) for item in by_slug.results] == [("2", "gpqa-diamond")]
+    assert [(item.id, item.slug) for item in by_id.results] == [("2", "gpqa-diamond")]
+
+
 def test_task_benchmark_best_model_can_be_scoped_to_open_rows(client):
     """Task-page benchmark cards should match open-only leaderboard views.
 

@@ -301,12 +301,16 @@ def benchmark_list(args: argparse.Namespace, client: Client) -> int:
         }
 
         def render_trends(rows: list[dict[str, Any]]) -> None:
-            print("id\tname\trecent_papers\ttrend_score\tbest_model\tpaper_title\tcode")
+            print(
+                "id\tslug\tname\trecent_papers\ttrend_score"
+                "\tbest_model\tpaper_title\tcode"
+            )
             for item in rows:
                 print(
                     "\t".join(
                         (
                             _clean(item.get("id")),
+                            _clean(item.get("slug")),
                             _clean(item.get("name")),
                             _clean(item.get("recent_paper_count")),
                             _clean(item.get("trend_score")),
