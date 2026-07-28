@@ -424,6 +424,9 @@ export interface Dataset {
   featured_rank?: number | null;
   supports_harness?: boolean;
   best_model_name?: string | null;
+  best_paper_route?: string | null;
+  best_paper_title?: string | null;
+  best_code_url?: string | null;
   leaderboard_summary?: {
     task_id: string;
     task_slug?: string | null;

@@ -179,11 +179,24 @@ const TagBrowseView: React.FC = () => {
   const sisters = (pageQ.data.sisters || []).filter((s) => s.id !== task.id);
   const recommendedFrameworks = pageQ.data.recommended_frameworks || [];
   const datasets = pageQ.data.benchmarks || [];
+  const datasetsById = new Map(datasets.map((dataset) => [dataset.id, dataset]));
   const visibleDatasetIds = new Set(datasets.map((dataset) => dataset.id));
-  const visibleTrendRows = (benchmarkTrendsQ.data?.results || []).filter((benchmark) =>
-    visibleDatasetIds.has(benchmark.id),
-  );
-  const benchmarkRows: TrendingBenchmark[] =
+  const visibleTrendRows = (benchmarkTrendsQ.data?.results || [])
+    .filter((benchmark) => visibleDatasetIds.has(benchmark.id))
+    .map((benchmark) => {
+      const dataset = datasetsById.get(benchmark.id);
+      return {
+        ...benchmark,
+        best_model_name: dataset?.best_model_name ?? benchmark.best_model_name,
+        best_paper_route: dataset?.best_paper_route,
+        best_paper_title: dataset?.best_paper_title,
+        best_code_url: dataset?.best_code_url,
+      };
+    });
+  const benchmarkRows: Array<TrendingBenchmark & Pick<
+    Dataset,
+    "best_paper_route" | "best_paper_title" | "best_code_url"
+  >> =
     visibleTrendRows.length
       ? visibleTrendRows
       : datasets.map((dataset) => ({
@@ -199,6 +212,9 @@ const TagBrowseView: React.FC = () => {
           rate_change: null,
           latest_reported_on: null,
           best_model_name: dataset.best_model_name,
+          best_paper_route: dataset.best_paper_route,
+          best_paper_title: dataset.best_paper_title,
+          best_code_url: dataset.best_code_url,
           history: [],
         }));
   const trendWindowDays = benchmarkTrendsQ.data?.recent_days || 90;
@@ -346,7 +362,7 @@ const TagBrowseView: React.FC = () => {
             <>
               <div className="task-section-head">
                 <div className="task-section-eyebrow">
-                  {trendWindowDays}-day reporting activity · click any
+                  {trendWindowDays}-day reporting activity · select a benchmark
                 </div>
                 <div className="task-section-title">
                   Benchmarks <span className="meta">[{benchmarkRows.length}]</span>
@@ -357,13 +373,13 @@ const TagBrowseView: React.FC = () => {
                   <span role="columnheader">Trend</span>
                   <span role="columnheader">Benchmark</span>
                   <span role="columnheader">Best model</span>
-                  <span aria-hidden="true" />
+                  <span role="columnheader">Paper title</span>
+                  <span role="columnheader">Code</span>
                 </div>
                 {(benchmarksExpanded ? benchmarkRows : benchmarkRows.slice(0, 5)).map((benchmark) => (
-                  <Link
+                  <div
                     key={benchmark.id}
                     className="benchmark-trend-row"
-                    to={benchmarkPath(benchmark.slug || benchmark.id, taskSlug)}
                     role="row"
                   >
                     <div className="benchmark-trend-cell" role="cell">
@@ -394,7 +410,12 @@ const TagBrowseView: React.FC = () => {
                       </div>
                     </div>
                     <div className="benchmark-trend-benchmark" role="cell">
-                      <div className="bench-row-name">{benchmark.name}</div>
+                      <Link
+                        className="bench-row-name"
+                        to={benchmarkPath(benchmark.slug || benchmark.id, taskSlug)}
+                      >
+                        {benchmark.name}
+                      </Link>
                       <div className="bench-row-sub">
                         <span>
                           <strong>{benchmark.all_time_paper_count}</strong> reporting papers
@@ -413,8 +434,30 @@ const TagBrowseView: React.FC = () => {
                         <span className="bench-row-best-empty">—</span>
                       )}
                     </div>
-                    <div className="bench-row-arrow" aria-hidden="true">→</div>
-                  </Link>
+                    <div className="bench-row-paper" role="cell">
+                      {benchmark.best_paper_route && benchmark.best_paper_title ? (
+                        <Link to={`/paper/${encodeURIComponent(benchmark.best_paper_route)}`}>
+                          {benchmark.best_paper_title}
+                        </Link>
+                      ) : (
+                        <span className="bench-row-best-empty">—</span>
+                      )}
+                    </div>
+                    <div className="bench-row-code" role="cell">
+                      {benchmark.best_code_url ? (
+                        <a
+                          href={benchmark.best_code_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Code for ${benchmark.best_paper_title || benchmark.best_model_name}`}
+                        >
+                          <Github size={18} strokeWidth={1.8} aria-hidden="true" />
+                        </a>
+                      ) : (
+                        <span className="bench-row-best-empty">—</span>
+                      )}
+                    </div>
+                  </div>
                 ))}
               </div>
               {benchmarkRows.length > 5 && (

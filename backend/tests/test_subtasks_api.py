@@ -28,6 +28,8 @@ from backend.models.database import (
     Evaluation as DBEvaluation,
     Metric as DBMetric,
     Paper as DBPaper,
+    PaperRepository as DBPaperRepository,
+    Repository as DBRepository,
     Task as DBTask,
     TaskDataset,
     TaskDatasetMetric,
@@ -398,6 +400,16 @@ def test_task_benchmark_best_model_can_be_scoped_to_open_rows(client):
     db.query(DBEvaluation).filter(DBEvaluation.id == 10).update(
         {"best_rank": 2, "is_open": True}
     )
+    db.add(
+        DBRepository(
+            id=1,
+            url="https://github.com/example/gpt-y",
+            owner="example",
+            name="gpt-y",
+            num_stars=100,
+        )
+    )
+    db.add(DBPaperRepository(paper_id=2, repository_id=1, is_official=True))
     db.commit()
     db.close()
 
@@ -408,7 +420,13 @@ def test_task_benchmark_best_model_can_be_scoped_to_open_rows(client):
     open_mmlu = next(d for d in open_only["benchmarks"] if d["slug"] == "mmlu")
 
     assert unfiltered_mmlu["best_model_name"] == "GPT-y"
+    assert unfiltered_mmlu["best_paper_route"] == "2026.00002"
+    assert unfiltered_mmlu["best_paper_title"] == "Paper 2"
+    assert unfiltered_mmlu["best_code_url"] == "https://github.com/example/gpt-y"
     assert open_mmlu["best_model_name"] == "GPT-x"
+    assert open_mmlu["best_paper_route"] == "2026.00001"
+    assert open_mmlu["best_paper_title"] == "Paper 1"
+    assert open_mmlu["best_code_url"] is None
 
 
 def test_dataset_detail_embeds_task_scoped_leaderboard_summary(client):

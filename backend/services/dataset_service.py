@@ -16,6 +16,8 @@ from backend.models.database import (
     TaskDataset,
     Task as DBTask,
     Paper as DBPaper,
+    PaperRepository as DBPaperRepository,
+    Repository as DBRepository,
 )
 from backend.models.api import (
     Dataset,
@@ -115,22 +117,22 @@ class DatasetService:
             result[dataset_id] = result.get(dataset_id, False) or bool(supports)
         return result
 
-    def _best_models_for_datasets(
+    def _best_results_for_datasets(
         self,
         dataset_ids: List[int],
         scoped_task_ids: List[int],
         is_open: Optional[bool] = None,
     ) -> dict:
-        """Map dataset_id -> best visible model name for the scoped task(s).
+        """Map dataset_id to its best visible model, paper, and code metadata.
 
         Mirrors the benchmark page's primary-metric logic: a (task, dataset)
         can host multiple metric leaderboards, so we first pick the metric the
-        most evaluation rows rank on, then take that metric's top-ranked model.
+        most evaluation rows rank on, then take that metric's top-ranked result.
         When `is_open` is set, only rows matching that source-availability
         state participate so task-page benchmark summaries match filtered
         benchmark leaderboards.
-        Done in two batched queries (no N+1) since the task page renders up to
-        ~100 benchmark rows.
+        All paper and repository metadata is loaded in batches since the task
+        page renders up to ~100 benchmark rows.
         """
         if not dataset_ids:
             return {}
@@ -161,15 +163,25 @@ class DatasetService:
             return {}
 
         # Step 2: fetch each dataset's best visible model for its primary metric.
-        ranked_rows = self.db.query(
-            DBEvaluation.dataset_id,
-            DBEvaluation.best_metric,
-            DBEvaluation.model_name,
-            DBEvaluation.best_rank,
-            DBEvaluation.id,
-        ).filter(
-            DBEvaluation.dataset_id.in_(list(primary_metric.keys())),
-            DBEvaluation.task_id.in_(scoped_task_ids),
+        ranked_rows = (
+            self.db.query(
+                DBEvaluation.dataset_id,
+                DBEvaluation.best_metric,
+                DBEvaluation.model_name,
+                DBEvaluation.best_rank,
+                DBEvaluation.id,
+                DBPaper.id,
+                DBPaper.arxiv_id,
+                DBPaper.title,
+            )
+            .join(
+                DBPaper,
+                DBPaper.id == DBEvaluation.paper_id,
+            )
+            .filter(
+                DBEvaluation.dataset_id.in_(list(primary_metric.keys())),
+                DBEvaluation.task_id.in_(scoped_task_ids),
+            )
         )
         if is_open is not None:
             ranked_rows = ranked_rows.filter(DBEvaluation.is_open == is_open)
@@ -177,11 +189,69 @@ class DatasetService:
             asc(DBEvaluation.best_rank).nulls_last(),
             asc(DBEvaluation.id),
         ).all()
-        best_models: dict = {}
-        for dataset_id, metric, model_name, _rank, _evaluation_id in ranked_rows:
+        best_results: dict = {}
+        for (
+            dataset_id,
+            metric,
+            model_name,
+            _rank,
+            _evaluation_id,
+            paper_id,
+            arxiv_id,
+            paper_title,
+        ) in ranked_rows:
             if metric == primary_metric.get(dataset_id) and model_name:
-                best_models.setdefault(dataset_id, model_name)
-        return best_models
+                best_results.setdefault(
+                    dataset_id,
+                    {
+                        "model_name": model_name,
+                        "paper_id": paper_id,
+                        "paper_route": arxiv_id or str(paper_id),
+                        "paper_title": paper_title,
+                        "code_url": None,
+                    },
+                )
+
+        paper_ids = [result["paper_id"] for result in best_results.values()]
+        if paper_ids:
+            repository_rows = (
+                self.db.query(
+                    DBPaperRepository.paper_id,
+                    DBRepository.url,
+                )
+                .join(
+                    DBRepository,
+                    DBRepository.id == DBPaperRepository.repository_id,
+                )
+                .filter(DBPaperRepository.paper_id.in_(paper_ids))
+                .order_by(
+                    desc(DBPaperRepository.is_official),
+                    desc(DBRepository.num_stars),
+                    asc(DBRepository.url),
+                )
+                .all()
+            )
+            code_urls: dict = {}
+            for paper_id, code_url in repository_rows:
+                code_urls.setdefault(paper_id, code_url)
+            for result in best_results.values():
+                result["code_url"] = code_urls.get(result["paper_id"])
+
+        return best_results
+
+    def _best_models_for_datasets(
+        self,
+        dataset_ids: List[int],
+        scoped_task_ids: List[int],
+        is_open: Optional[bool] = None,
+    ) -> dict:
+        """Compatibility projection used by callers that only need model names."""
+        results = self._best_results_for_datasets(
+            dataset_ids, scoped_task_ids, is_open=is_open
+        )
+        return {
+            dataset_id: result["model_name"] for dataset_id, result in results.items()
+        }
 
     def _leaderboard_summary_for_dataset(
         self,
@@ -449,9 +519,9 @@ class DatasetService:
 
             # Best (rank 1) model per benchmark, only when task-scoped. The
             # dataset index (no task filter) skips this so it stays untouched.
-            best_models: dict = {}
+            best_results: dict = {}
             if scoped_task_ids is not None:
-                best_models = self._best_models_for_datasets(
+                best_results = self._best_results_for_datasets(
                     page_dataset_ids, scoped_task_ids, is_open=is_open
                 )
 
@@ -471,6 +541,7 @@ class DatasetService:
                 db_dataset, paper_count, task_count = row[:3]
                 featured_rank = row[3] if task_id is not None else None
                 supports_harness = supports_harness_map.get(db_dataset.id, False)
+                best_result = best_results.get(db_dataset.id, {})
                 dataset_dict = {
                     "id": str(db_dataset.id),
                     "name": db_dataset.name,
@@ -516,7 +587,10 @@ class DatasetService:
                     "task_count": task_count,
                     "featured_rank": featured_rank,
                     "supports_harness": supports_harness,
-                    "best_model_name": best_models.get(db_dataset.id),
+                    "best_model_name": best_result.get("model_name"),
+                    "best_paper_route": best_result.get("paper_route"),
+                    "best_paper_title": best_result.get("paper_title"),
+                    "best_code_url": best_result.get("code_url"),
                 }
                 dataset_list.append(Dataset(**dataset_dict))
 
