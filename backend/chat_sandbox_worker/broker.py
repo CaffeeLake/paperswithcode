@@ -348,6 +348,48 @@ class OriginHandler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args) -> None:
         return
 
+    def do_POST(self) -> None:
+        host = str(getattr(self.server, "target_host", ""))
+        requested_host = (self.headers.get("Host") or "").partition(":")[0].lower()
+        path = urlsplit(self.path).path
+        if (
+            host != "api.anthropic.com"
+            or requested_host != host
+            or path != "/v1/messages"
+            or self.path.startswith(("http://", "https://"))
+        ):
+            self.send_error(403)
+            return
+        length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
+        body = self.rfile.read(length)
+        connection = _connection()
+        prefix = UPSTREAM.path.rstrip("/")
+        connection.request(
+            "POST",
+            f"{prefix}/v1/messages",
+            body=body,
+            headers={
+                **_gateway_headers(
+                    content_type=self.headers.get("Content-Type", "application/json")
+                ),
+                "Accept": self.headers.get("Accept", "application/json"),
+            },
+        )
+        response = connection.getresponse()
+        self.send_response(response.status)
+        if content_type := response.getheader("Content-Type"):
+            self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            while chunk := response.read(16 * 1024):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            connection.close()
+
     def do_GET(self) -> None:
         host = str(getattr(self.server, "target_host", ""))
         requested_host = (self.headers.get("Host") or "").partition(":")[0].lower()

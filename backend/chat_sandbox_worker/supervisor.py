@@ -56,6 +56,7 @@ def _safe_environment(home: str) -> dict[str, str]:
 def _agent_environment() -> dict[str, str]:
     environment = _safe_environment("/home/pwc-chat")
     environment["HTTPS_PROXY"] = "http://127.0.0.1:8766"
+    environment["NO_PROXY"] = "127.0.0.1,localhost"
     environment["NODE_EXTRA_CA_CERTS"] = "/tmp/pwc-webfetch-ca.pem"
     return environment
 

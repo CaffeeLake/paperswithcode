@@ -116,6 +116,74 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
     assert request.error is None
 
 
+def test_proxy_routes_only_claude_model_posts_to_gateway(monkeypatch):
+    broker = sys.modules["backend.chat_sandbox_worker.broker"]
+
+    class Response:
+        status = 200
+
+        def getheader(self, name):
+            return "application/json" if name == "Content-Type" else None
+
+        def read(self, _size):
+            return b""
+
+    class Connection:
+        requests: list[tuple[str, str, bytes]] = []
+
+        def request(self, method, path, body, headers):
+            del headers
+            self.requests.append((method, path, body))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return
+
+    monkeypatch.setattr(broker, "_connection", Connection)
+
+    class Request:
+        path = "/v1/messages?beta=true"
+        headers = {
+            "Host": "api.anthropic.com",
+            "Content-Length": "2",
+            "Content-Type": "application/json",
+        }
+        rfile = BytesIO(b"{}")
+        wfile = BytesIO()
+        server = type("Server", (), {"target_host": "api.anthropic.com"})()
+        error: int | None = None
+
+        def send_response(self, status):
+            assert status == 200
+
+        def send_header(self, _name, _value):
+            return
+
+        def end_headers(self):
+            return
+
+        def send_error(self, status):
+            self.error = status
+
+    request = Request()
+    broker.OriginHandler.do_POST(request)
+
+    assert Connection.requests == [
+        (
+            "POST",
+            "/api/internal/chat-gateway/v1/messages",
+            b"{}",
+        )
+    ]
+    assert request.error is None
+
+    request.path = "/v1/complete"
+    broker.OriginHandler.do_POST(request)
+    assert request.error == 403
+
+
 def test_supervisor_launch_read_does_not_consume_worker_frame():
     read_fd, write_fd = os.pipe()
     try:
@@ -457,6 +525,7 @@ def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
     assert 'tools=["Bash", "Read", "Grep", "WebFetch"]' in source
     assert '"skipWebFetchPreflight": True' in source
     assert '"HTTPS_PROXY": "http://127.0.0.1:8766"' in source
+    assert '"NO_PROXY": "127.0.0.1,localhost"' in source
 
 
 def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():
@@ -718,6 +787,7 @@ def test_supervisor_child_environment_preserves_packaged_worker_path(monkeypatch
     assert "ANTHROPIC_API_KEY" not in environment
     agent_environment = supervisor._agent_environment()
     assert agent_environment["HTTPS_PROXY"] == "http://127.0.0.1:8766"
+    assert agent_environment["NO_PROXY"] == "127.0.0.1,localhost"
     assert agent_environment["NODE_EXTRA_CA_CERTS"] == "/tmp/pwc-webfetch-ca.pem"
     assert "PWC_WEBFETCH_TOKEN_FD" not in agent_environment
 

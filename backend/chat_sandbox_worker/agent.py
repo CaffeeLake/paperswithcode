@@ -246,6 +246,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
             "CLAUDE_CONFIG_DIR": "/home/pwc-chat/.claude",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
             "HTTPS_PROXY": "http://127.0.0.1:8766",
+            "NO_PROXY": "127.0.0.1,localhost",
             "NODE_EXTRA_CA_CERTS": "/tmp/pwc-webfetch-ca.pem",
         },
         cwd=WORKSPACE,
