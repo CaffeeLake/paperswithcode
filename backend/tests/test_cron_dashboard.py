@@ -35,7 +35,8 @@ def test_registry_includes_hf_artifacts_and_embedding_crons():
     assert "update_hot_github_trending" in job_ids
     assert "update_hf_artifacts" in job_ids
     assert "refresh_paper_embeddings" in job_ids
-    assert len(job_ids) == 13
+    assert "paper_markdown_backfill" in job_ids
+    assert len(job_ids) == 14
 
 
 def test_hot_job_has_dedicated_lock_and_operational_metrics():

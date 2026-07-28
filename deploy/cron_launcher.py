@@ -136,6 +136,15 @@ COMMANDS: dict[str, Job] = {
         timeout="6h",
         idempotency="resume generation and activate only complete embeddings",
     ),
+    "paper_markdown_backfill": job(
+        "-m",
+        "scripts.hourly.backfill_paper_markdown",
+        timeout="45m",
+        idempotency=(
+            "copy immutable upstream Markdown or dispatch one manifest per "
+            "missing arXiv identity"
+        ),
+    ),
 }
 
 

@@ -27,6 +27,24 @@ class CronJobDefinition:
 
 CRON_JOBS: Tuple[CronJobDefinition, ...] = (
     CronJobDefinition(
+        id="paper_markdown_backfill",
+        display_name="Paper Markdown Backfill",
+        category="hourly",
+        schedule="17 * * * * (live); 43 2 * * * (full backfill reconciliation)",
+        script_path="hourly/backfill_paper_markdown.py",
+        log_name="paper_markdown_backfill",
+        process_patterns=("backfill_paper_markdown",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/paper_markdown_backfill.lock"
+        ),
+        expected_runtime_minutes=45,
+        stale_after_minutes=150,
+        critical=True,
+        healthy_no_work_allowed=True,
+        workflow_file="cron-paper-markdown.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="update_hot_github_trending",
         display_name="Update Hot GitHub Trending",
         category="hourly",

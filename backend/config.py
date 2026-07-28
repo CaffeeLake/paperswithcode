@@ -322,6 +322,24 @@ class Settings(BaseSettings):
         default="huggingface/pwc-papers-content",
         description="Private Hugging Face bucket containing paper Markdown files",
     )
+    paper_markdown_upstream_bucket_id: str = Field(
+        default="huggingchat/papers-content",
+        description="Read-only Hugging Face bucket used before OCR fallback",
+    )
+    paper_markdown_hf_namespace: str = Field(default="huggingface")
+    paper_markdown_model_id: str = Field(default="datalab-to/chandra-ocr-2")
+    paper_markdown_model_revision: str = Field(
+        default="af93b47dba1b47b6640c86ccf487ed2260ab9a09"
+    )
+    paper_markdown_runtime_image: str = Field(default="vllm/vllm-openai:v0.17.0")
+    paper_markdown_hardware: Literal["l40sx1"] = Field(default="l40sx1")
+    paper_markdown_incremental_batch_size: int = Field(default=100, ge=1, le=100)
+    paper_markdown_backfill_batch_size: int = Field(default=500, ge=1, le=500)
+    paper_markdown_backfill_concurrency: int = Field(default=4, ge=1, le=16)
+    paper_markdown_max_pages: int = Field(default=30, ge=1, le=30)
+    paper_markdown_job_timeout: str = Field(default="12h")
+    paper_markdown_incremental_monthly_budget_usd: float = Field(default=100.0, gt=0)
+    paper_markdown_backfill_budget_usd: float = Field(default=750.0, gt=0)
 
     # bioRxiv / medRxiv TDM (requester-pays S3 bucket). Optional: when unset,
     # thumbnails fall back to Europe PMC PDF mirrors where available.
