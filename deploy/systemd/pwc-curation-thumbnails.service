@@ -1,0 +1,12 @@
+[Unit]
+Description=Process queued Papers With Code curation thumbnails
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pwc-cron process_curation_thumbnails
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

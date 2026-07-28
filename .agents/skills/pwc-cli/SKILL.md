@@ -153,6 +153,8 @@ Registered health jobs currently include `update_github_stars`,
 `link_methods_by_references`, and `link_papers_by_task_keywords`.
 The active-generation maintenance job `refresh_paper_embeddings` is also
 registered and runs hourly after paper ingestion.
+The local `process_curation_thumbnails` worker runs every minute through its
+systemd timer; pass `--retry-failed` only for an explicit operator retry.
 
 Supported token probes are `PWC_GEMINI_API_KEY`, `PWC_GITHUB_TOKEN`,
 `PWC_GITHUB_TOKEN_HOT`,

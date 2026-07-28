@@ -145,6 +145,15 @@ COMMANDS: dict[str, Job] = {
             "missing arXiv identity"
         ),
     ),
+    "process_curation_thumbnails": job(
+        "-m",
+        "scripts.hourly.process_curation_thumbnails",
+        timeout="30m",
+        idempotency=(
+            "claim one queued job row with skip-locked semantics; recover stale "
+            "claims and record terminal thumbnail results"
+        ),
+    ),
 }
 
 
@@ -198,7 +207,11 @@ def main() -> int:
     env["PWC_RELEASE_ID"] = manifest["release_id"]
     env["PWC_CRON_LOG_DIR"] = str(LOG_DIR)
     env["PYTHONPATH"] = str(CURRENT / ".github" / "workflows")
-    if job in {"preload_thumbnails", "mirror_thumbnails_to_disk"}:
+    if job in {
+        "preload_thumbnails",
+        "mirror_thumbnails_to_disk",
+        "process_curation_thumbnails",
+    }:
         env["PWC_THUMBNAIL_MUTATIONS_ENABLED"] = "true"
     argv = [str(VENV / "bin" / "python"), *command, *extra]
     lock_dir = Path(

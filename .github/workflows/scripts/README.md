@@ -8,6 +8,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 
 | Workflow | Schedule (UTC) | VPS entrypoint | Python job |
 | --- | --- | --- | --- |
+| local `pwc-curation-thumbnails.timer` | Every minute | `pwc-cron process_curation_thumbnails` | `.github/workflows/scripts/hourly/process_curation_thumbnails.py` |
 | `cron-update-hot-github-trending.yml` | Every 15 minutes | `.github/workflows/scripts/run_hot_github_trending.sh` | `.github/workflows/scripts/hourly/update_hot_github_trending.py` |
 | `cron-update-github-stars.yml` | `0 * * * *` | `.github/workflows/scripts/run_github_stars.sh` | `.github/workflows/scripts/hourly/update_github_stars.py` |
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` |
@@ -30,6 +31,7 @@ The `test-database.yml` workflow is unrelated to cron scheduling.
 ├── hourly/
 │   ├── calculate_trending_scores.py
 │   ├── extract_urls.py
+│   ├── process_curation_thumbnails.py
 │   ├── refresh_paper_embeddings.py
 │   ├── update_citations.py
 │   ├── update_hot_github_trending.py

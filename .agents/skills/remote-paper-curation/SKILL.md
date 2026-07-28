@@ -52,10 +52,20 @@ The remote container must not generate or upload thumbnails itself. Ask the VPS
 to run its existing validated thumbnail pipeline by including
 `"regenerate_thumbnail": true` inside `enrich` whenever the context has no
 `thumbnail_url`, or when the existing thumbnail is stale, broken, squat, or
-letterboxed. The apply response reports the old and generated dimensions,
-public URL, validation result, and warnings. Include that outcome in the audit
-report. Do not claim the thumbnail was fixed unless the response says
-`"status": "regenerated"` and `"success": true`.
+letterboxed. The apply response confirms that the request was durably queued;
+it does not mean the thumbnail has been regenerated. After an apply that
+requests a thumbnail, wait for the VPS-owned worker with:
+
+```bash
+python jobs/curation_api.py thumbnail-status --wait-seconds 240
+```
+
+The terminal response reports the old and generated dimensions, public URL,
+validation result, warnings, or bounded failure. Include that outcome in the
+audit report. Do not claim the thumbnail was fixed unless the terminal response
+says `"status": "succeeded"` and `"success": true`. If it remains queued or
+processing after the bounded wait, report it as pending; the runner will prevent
+the curation job from being labeled completed.
 
 Example:
 

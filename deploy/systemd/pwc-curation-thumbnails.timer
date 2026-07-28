@@ -1,0 +1,11 @@
+[Unit]
+Description=Run queued Papers With Code curation thumbnails promptly
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=1m
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

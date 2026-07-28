@@ -188,6 +188,7 @@ def test_dedicated_app_exposes_remote_callback_routes():
     assert "/api/v1/admin/codex-curation/jobs" in paths
     assert "/api/v1/admin/codex-curation/jobs/{job_id}/context" in paths
     assert "/api/v1/admin/codex-curation/jobs/{job_id}/leaderboards" in paths
+    assert "/api/v1/admin/codex-curation/jobs/{job_id}/thumbnail" in paths
     assert "/api/v1/chat/models" not in paths
 
 
@@ -277,7 +278,8 @@ def test_empty_add_evals_apply_is_an_explicit_no_op(monkeypatch):
         "evaluations_updated": 0,
     }
     assert row.applied_at is None
-    assert database.commits == 0
+    assert row.submitted_at is not None
+    assert database.commits == 1
 
 
 def test_scoped_worker_can_apply_discovered_evaluation(monkeypatch):
@@ -351,7 +353,7 @@ def test_scoped_worker_can_apply_discovered_evaluation(monkeypatch):
     assert database.commits == 1
 
 
-def test_scoped_enrichment_can_regenerate_thumbnail(monkeypatch):
+def test_scoped_enrichment_queues_thumbnail_without_web_process_mutation(monkeypatch):
     from backend.routers import codex_curation_callbacks
 
     settings = get_settings().model_copy(update={"codex_jobs_enabled": True})
@@ -359,14 +361,6 @@ def test_scoped_enrichment_can_regenerate_thumbnail(monkeypatch):
         kind="enrich-paper", status="running", applied_at=None, paper_id=42
     )
     paper = SimpleNamespace(thumbnail_url=None, urls_extracted=False)
-    generated = SimpleNamespace(
-        thumbnail_url="/api/thumbnails/2601_00001_v1.jpg?fit=fit9&v=123",
-        previous=SimpleNamespace(width=400, height=282),
-        generated=SimpleNamespace(width=400, height=550),
-        success=True,
-        warnings=(),
-    )
-    calls = []
 
     class Database:
         commits = 0
@@ -378,17 +372,8 @@ def test_scoped_enrichment_can_regenerate_thumbnail(monkeypatch):
         def commit(self):
             self.commits += 1
 
-    async def fake_regenerate(db, paper_reference, *, force):
-        calls.append((db, paper_reference, force))
-        return generated
-
     database = Database()
     monkeypatch.setattr(codex_curation_callbacks, "_callback_job", lambda *_args: row)
-    monkeypatch.setattr(
-        codex_curation_callbacks,
-        "regenerate_paper_thumbnail",
-        fake_regenerate,
-    )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_database_session] = lambda: database
@@ -406,17 +391,152 @@ def test_scoped_enrichment_can_regenerate_thumbnail(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json()["thumbnail"] == {
-        "status": "regenerated",
-        "thumbnail_url": "/api/thumbnails/2601_00001_v1.jpg?fit=fit9&v=123",
-        "previous_dimensions": [400, 282],
-        "generated_dimensions": [400, 550],
-        "success": True,
+    assert response.json()["thumbnail"] | {
+        "requested_at": None,
+    } == {
+        "requested": True,
+        "status": "queued",
+        "attempt_count": 0,
+        "requested_at": None,
+        "claimed_at": None,
+        "finished_at": None,
+        "thumbnail_url": None,
+        "previous_dimensions": None,
+        "generated_dimensions": None,
+        "success": None,
         "warnings": [],
+        "error": None,
     }
     assert paper.urls_extracted
-    assert calls == [(database, "42", True)]
     assert row.applied_at is not None
+    router_source = Path(codex_curation_callbacks.__file__).read_text()
+    assert "regenerate_paper_thumbnail" not in router_source
+    assert "ThumbnailService" not in router_source
+
+
+def test_enrichment_relations_and_thumbnail_enqueue_commit_atomically(monkeypatch):
+    from backend.routers import codex_curation_callbacks
+
+    settings = get_settings().model_copy(update={"codex_jobs_enabled": True})
+    row = SimpleNamespace(
+        kind="enrich-paper", status="running", applied_at=None, paper_id=42
+    )
+    paper = SimpleNamespace(thumbnail_url=None, urls_extracted=False)
+    calls = []
+
+    class Database:
+        commits = 0
+
+        def get(self, _model, _paper_id):
+            return paper
+
+        def commit(self):
+            self.commits += 1
+
+    class FakePaperService:
+        def __init__(self, _db):
+            pass
+
+        def update_paper_tasks(self, paper_id, values, *, commit):
+            calls.append(("tasks", paper_id, values, commit))
+
+        def update_paper_methods(self, paper_id, values, *, commit):
+            calls.append(("methods", paper_id, values, commit))
+
+    database = Database()
+    monkeypatch.setattr(codex_curation_callbacks, "_callback_job", lambda *_args: row)
+    monkeypatch.setattr(codex_curation_callbacks, "PaperService", FakePaperService)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_database_session] = lambda: database
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/admin/codex-curation/jobs/{_job().id}/apply",
+            headers={"Authorization": "Bearer scoped-token"},
+            json={
+                "enrich": {
+                    "task_ids": [19],
+                    "method_ids": [59],
+                    "regenerate_thumbnail": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls == [
+        ("tasks", 42, [19], False),
+        ("methods", 42, [59], False),
+    ]
+    assert row.thumbnail_status == "queued"
+    assert row.submitted_at == row.applied_at
+    assert database.commits == 1
+
+
+def test_late_invalid_enrichment_input_rolls_back_before_enqueue(monkeypatch):
+    from backend.routers import codex_curation_callbacks
+
+    settings = get_settings().model_copy(update={"codex_jobs_enabled": True})
+    row = SimpleNamespace(
+        kind="enrich-paper", status="running", applied_at=None, paper_id=42
+    )
+    paper = SimpleNamespace(
+        thumbnail_url=None, urls_extracted=False, tasks_changed=False
+    )
+
+    class Database:
+        commits = 0
+        rollbacks = 0
+
+        def get(self, _model, _paper_id):
+            return paper
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+            paper.tasks_changed = False
+
+    class FakePaperService:
+        def __init__(self, db):
+            self.db = db
+
+        def update_paper_tasks(self, _paper_id, _values, *, commit):
+            assert commit is False
+            paper.tasks_changed = True
+
+        def update_paper_methods(self, _paper_id, _values, *, commit):
+            assert commit is False
+            self.db.rollback()
+            raise ValueError("Invalid method IDs: {999}")
+
+    database = Database()
+    monkeypatch.setattr(codex_curation_callbacks, "_callback_job", lambda *_args: row)
+    monkeypatch.setattr(codex_curation_callbacks, "PaperService", FakePaperService)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_database_session] = lambda: database
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            f"/api/v1/admin/codex-curation/jobs/{_job().id}/apply",
+            headers={"Authorization": "Bearer scoped-token"},
+            json={
+                "enrich": {
+                    "task_ids": [19],
+                    "method_ids": [999],
+                    "regenerate_thumbnail": True,
+                }
+            },
+        )
+
+    assert response.status_code == 500
+    assert database.rollbacks == 1
+    assert database.commits == 0
+    assert paper.tasks_changed is False
+    assert not hasattr(row, "thumbnail_status")
+    assert not hasattr(row, "submitted_at")
 
 
 def test_admin_can_list_curation_queue(monkeypatch):

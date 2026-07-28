@@ -145,6 +145,8 @@ def main() -> int:
         "paperswithcode-backend@.service",
         "pwc-postgres-backup.service",
         "pwc-postgres-backup.timer",
+        "pwc-curation-thumbnails.service",
+        "pwc-curation-thumbnails.timer",
     ):
         shutil.copy2(systemd / name, Path("/etc/systemd/system") / name)
     Path("/etc/systemd/journald.conf.d").mkdir(parents=True, exist_ok=True)

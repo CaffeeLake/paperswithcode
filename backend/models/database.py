@@ -825,9 +825,40 @@ class PaperCurationJob(Base):
     report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     applied_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    thumbnail_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    thumbnail_requested_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    thumbnail_claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    thumbnail_finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    thumbnail_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    thumbnail_previous_width: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    thumbnail_previous_height: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    thumbnail_generated_width: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    thumbnail_generated_height: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    thumbnail_warnings: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    thumbnail_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -849,8 +880,17 @@ class PaperCurationJob(Base):
             "status IN ('queued', 'dispatching', 'running', 'completed', 'failed', 'canceled')",
             name="paper_curation_jobs_status_check",
         ),
+        CheckConstraint(
+            "thumbnail_status IS NULL OR thumbnail_status IN ('queued', 'processing', 'succeeded', 'failed')",
+            name="paper_curation_jobs_thumbnail_status_check",
+        ),
         Index("idx_paper_curation_jobs_queue", "status", "created_at"),
         Index("idx_paper_curation_jobs_paper", "paper_id", "created_at"),
+        Index(
+            "idx_paper_curation_jobs_thumbnail_queue",
+            "thumbnail_status",
+            "thumbnail_requested_at",
+        ),
     )
 
 

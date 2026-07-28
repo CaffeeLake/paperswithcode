@@ -198,6 +198,17 @@ pwc cron health refresh_paper_embeddings --strict --json
 read-only `pwc_backup` role, verifies the local checksum and remote object
 listing, keeps three local dumps, and keeps thirty remote dumps.
 
+`pwc-curation-thumbnails.timer` invokes the allowlisted
+`pwc-cron process_curation_thumbnails` command every minute. Web identities only
+enqueue work on `paper_curation_jobs`; the timer's `pwc-cron` transient unit is
+the curation path that enables thumbnail mutations and writes the shared
+thumbnail mirror. Stale processing claims are recoverable, and an operator can
+retry terminal failures once per invocation with
+`sudo pwc-cron process_curation_thumbnails --retry-failed`.
+Install the committed deploy tools and apply
+`backend/database/migrations/add_curation_thumbnail_queue.sql` before enabling
+the timer with `sudo systemctl enable --now pwc-curation-thumbnails.timer`.
+
 The hourly GitHub Actions monitor uses the same
 `deploy/smoke_test.py --monitor-subset` implementation as releases. It checks
 the production SPA and hashed asset MIME types plus the staging health/auth

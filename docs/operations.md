@@ -9,6 +9,7 @@ executes them from a checkout. GitHub Actions invokes the installed
 
 | Schedule | Script | Purpose |
 | --- | --- | --- |
+| Every minute (local systemd timer) | `.github/workflows/scripts/hourly/process_curation_thumbnails.py` | Claim remote-curation thumbnail requests and record terminal results as `pwc-cron`. |
 | Manual dispatch only | `.github/workflows/scripts/hourly/update_hot_github_trending.py` | Staging-ready hot pipeline; production schedule remains intentionally disabled. |
 | `0 * * * *` | `.github/workflows/scripts/hourly/update_github_stars.py` | Refresh fresh and weekly official repositories concurrently using separate GitHub accounts. |
 | `15 * * * *` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` | Compute EMA-based trending scores using repository star history. |
@@ -25,6 +26,16 @@ sudo pwc-cron status
 pwc cron health
 pwc cron health refresh_paper_embeddings --strict --json
 journalctl -u 'run-u*.service' --since today
+```
+
+Remote paper-curation thumbnail requests run through the local
+`pwc-curation-thumbnails.timer` and the allowlisted
+`process_curation_thumbnails` command. Inspect the timer with
+`systemctl status pwc-curation-thumbnails.timer`; retry existing terminal
+failures once with:
+
+```bash
+sudo pwc-cron process_curation_thumbnails --retry-failed
 ```
 
 ## Admin Dashboard

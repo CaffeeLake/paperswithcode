@@ -1889,7 +1889,9 @@ class PaperService:
         except Exception as e:
             raise DatabaseError(f"Error getting citation statistics: {str(e)}")
 
-    def update_paper_tasks(self, paper_id: int, task_ids: List[int]) -> Paper:
+    def update_paper_tasks(
+        self, paper_id: int, task_ids: List[int], *, commit: bool = True
+    ) -> Paper | DBPaper:
         """
         Update the tasks associated with a paper.
 
@@ -1930,6 +1932,9 @@ class PaperService:
                 )
                 self.db.add(paper_task)
 
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             # Return updated paper
@@ -1999,7 +2004,9 @@ class PaperService:
                 raise
             raise DatabaseError(f"Error updating paper organizations: {str(e)}")
 
-    def update_paper_methods(self, paper_id: int, method_ids: List[int]) -> Paper:
+    def update_paper_methods(
+        self, paper_id: int, method_ids: List[int], *, commit: bool = True
+    ) -> Paper | DBPaper:
         """
         Update the methods associated with a paper.
 
@@ -2039,6 +2046,9 @@ class PaperService:
                 paper_method = PaperMethod(paper_id=paper_id, method_id=method_id)
                 self.db.add(paper_method)
 
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             # Return updated paper
@@ -2051,8 +2061,12 @@ class PaperService:
             raise DatabaseError(f"Error updating paper methods: {str(e)}")
 
     def update_paper_repositories(
-        self, paper_id: int, repositories: List[Dict[str, Any]]
-    ) -> Paper:
+        self,
+        paper_id: int,
+        repositories: List[Dict[str, Any]],
+        *,
+        commit: bool = True,
+    ) -> Paper | DBPaper:
         """
         Update the repositories associated with a paper.
 
@@ -2161,6 +2175,9 @@ class PaperService:
                 )
                 self.db.add(paper_repository)
 
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             # Return updated paper
@@ -2173,8 +2190,12 @@ class PaperService:
             raise DatabaseError(f"Error updating paper repositories: {str(e)}")
 
     def update_paper_project_pages(
-        self, paper_id: int, project_pages: List[Dict[str, Any]]
-    ) -> Paper:
+        self,
+        paper_id: int,
+        project_pages: List[Dict[str, Any]],
+        *,
+        commit: bool = True,
+    ) -> Paper | DBPaper:
         """
         Update the project pages associated with a paper.
 
@@ -2246,6 +2267,9 @@ class PaperService:
                 )
                 self.db.add(paper_project_page)
 
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             # Return updated paper

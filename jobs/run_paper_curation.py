@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,19 +22,43 @@ ASKPASS = Path("/tmp/pwc-git-askpass.sh")
 USER_AGENT = "PapersWithCode-Curation/1.0 (+https://paperswithcode.co)"
 
 
-def callback(path: str, payload: dict) -> None:
+def api_request(path: str, payload: dict | None = None, method: str = "GET") -> dict:
     request = urllib.request.Request(
         f"{API_URL}/admin/codex-curation/jobs/{JOB_ID}/{path}",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload).encode() if payload is not None else None,
         headers={
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
         },
-        method="POST",
+        method=method,
     )
-    with urllib.request.urlopen(request, timeout=30):
-        pass
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode())
+
+
+def callback(path: str, payload: dict) -> dict:
+    return api_request(path, payload, "POST")
+
+
+def wait_for_thumbnail(timeout_seconds: int = 240, poll_seconds: int = 5) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        result = api_request("thumbnail")
+        thumbnail = result["thumbnail"]
+        if thumbnail["status"] in {"not_requested", "succeeded", "failed"}:
+            return thumbnail
+        if time.monotonic() >= deadline:
+            return thumbnail
+        time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+
+
+def thumbnail_completion_error(thumbnail: dict) -> str | None:
+    if thumbnail["status"] in {"queued", "processing"}:
+        return "Timed out waiting for the queued thumbnail request to finish."
+    if thumbnail["status"] == "failed":
+        return thumbnail.get("error") or "Thumbnail generation failed."
+    return None
 
 
 def main() -> int:
@@ -108,16 +133,23 @@ def main() -> int:
             else ""
         )
         if completed.returncode:
-            callback(
+            completion = callback(
                 "complete",
                 {
                     "report": report,
                     "error": f"Codex exited with status {completed.returncode}.",
                 },
             )
-            return completed.returncode
-        callback("complete", {"report": report})
-        return 0
+            return completed.returncode or (
+                1 if completion.get("status") == "failed" else 0
+            )
+        thumbnail = wait_for_thumbnail()
+        completion_error = thumbnail_completion_error(thumbnail)
+        completion = callback(
+            "complete",
+            {"report": report, "error": completion_error},
+        )
+        return 1 if completion.get("status") == "failed" else 0
     except Exception as exc:
         try:
             callback(

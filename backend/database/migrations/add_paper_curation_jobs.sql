@@ -14,7 +14,21 @@ CREATE TABLE IF NOT EXISTS paper_curation_jobs (
     report TEXT,
     error TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    submitted_at TIMESTAMPTZ,
     applied_at TIMESTAMPTZ,
+    thumbnail_status VARCHAR(24)
+        CHECK (thumbnail_status IS NULL OR thumbnail_status IN ('queued', 'processing', 'succeeded', 'failed')),
+    thumbnail_requested_at TIMESTAMPTZ,
+    thumbnail_claimed_at TIMESTAMPTZ,
+    thumbnail_finished_at TIMESTAMPTZ,
+    thumbnail_attempt_count INTEGER NOT NULL DEFAULT 0,
+    thumbnail_url TEXT,
+    thumbnail_previous_width INTEGER,
+    thumbnail_previous_height INTEGER,
+    thumbnail_generated_width INTEGER,
+    thumbnail_generated_height INTEGER,
+    thumbnail_warnings JSONB,
+    thumbnail_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ
@@ -24,6 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_paper_curation_jobs_queue
     ON paper_curation_jobs (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_paper_curation_jobs_paper
     ON paper_curation_jobs (paper_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_paper_curation_jobs_thumbnail_queue
+    ON paper_curation_jobs (thumbnail_status, thumbnail_requested_at);
 
 DO $$
 BEGIN

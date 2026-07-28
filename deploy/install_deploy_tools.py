@@ -14,6 +14,7 @@ from pathlib import Path
 
 INSTALL_ROOT = Path("/usr/local/lib/paperswithcode-deploy")
 BIN_ROOT = Path("/usr/local/sbin")
+SYSTEMD_ROOT = Path("/etc/systemd/system")
 COMMANDS = ("pwc-deploy", "pwc-rollback", "pwc-status", "pwc-cleanup")
 RUNTIME_CONTRACT_PATHS = (
     "backend/__init__.py",
@@ -115,6 +116,12 @@ def main() -> int:
             '/usr/local/lib/paperswithcode-deploy/cron_launcher.py "$@"\n'
         )
         wrapper.chmod(0o755)
+        for unit in (
+            "pwc-curation-thumbnails.service",
+            "pwc-curation-thumbnails.timer",
+        ):
+            shutil.copy2(INSTALL_ROOT / "systemd" / unit, SYSTEMD_ROOT / unit)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
         if backup.exists():
             shutil.rmtree(backup)
     finally:

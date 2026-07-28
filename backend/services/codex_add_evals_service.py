@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import PaperCurationJob
+from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
 
 JobKind = Literal["add-evals", "enrich-paper"]
 JobStatus = Literal[
@@ -51,10 +52,12 @@ class CodexPaperJob(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    submitted_at: datetime | None = None
     applied_at: datetime | None = None
     report: str | None = None
     error: str | None = None
     attempt_count: int
+    thumbnail: dict | None = None
 
 
 class CodexPaperJobCounts(BaseModel):
@@ -139,10 +142,16 @@ class CodexPaperJobService:
             created_at=row.created_at,
             started_at=row.started_at,
             finished_at=row.finished_at,
+            submitted_at=getattr(row, "submitted_at", None),
             applied_at=row.applied_at,
             report=row.report,
             error=row.error,
             attempt_count=row.attempt_count,
+            thumbnail=(
+                serialize_thumbnail(row)
+                if getattr(row, "thumbnail_requested_at", None) is not None
+                else None
+            ),
         )
 
     def enqueue(
@@ -336,9 +345,23 @@ class CodexPaperJobService:
     ) -> CodexPaperJob:
         if row.status in TERMINAL_STATUSES:
             return self._serialize(row, settings)
-        row.status = "failed" if error else "completed"
+        completion_error = error
+        if completion_error is None and getattr(row, "submitted_at", None) is None:
+            completion_error = "Remote job completed without an accepted apply."
+        thumbnail_status = getattr(row, "thumbnail_status", None)
+        if completion_error is None and thumbnail_status in {"queued", "processing"}:
+            completion_error = (
+                "Remote job completed before requested thumbnail work reached a "
+                "terminal state."
+            )
+        if completion_error is None and thumbnail_status == "failed":
+            completion_error = (
+                getattr(row, "thumbnail_error", None)
+                or "Requested thumbnail generation failed."
+            )
+        row.status = "failed" if completion_error else "completed"
         row.report = report[:40_000] or None
-        row.error = error[:4_000] if error else None
+        row.error = completion_error[:4_000] if completion_error else None
         row.finished_at = _now()
         db.commit()
         self.dispatch_next(db, settings)

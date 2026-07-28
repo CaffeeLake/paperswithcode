@@ -32,7 +32,7 @@ from backend.services.codex_add_evals_service import (
     codex_paper_job_service,
 )
 from backend.services.evaluation_service import EvaluationService
-from backend.services.paper_thumbnail_service import regenerate_paper_thumbnail
+from backend.services.curation_thumbnail_queue_service import serialize_thumbnail
 from backend.services.paper_service import PaperService
 from backend.utils.auth import require_hf_admin
 
@@ -294,7 +294,7 @@ def search_leaderboards(
 
 
 @router.post("/{job_id}/apply")
-async def apply_mutation(
+def apply_mutation(
     job_id: uuid.UUID,
     body: ApplyMutationRequest,
     authorization: str | None = Header(default=None),
@@ -303,13 +303,18 @@ async def apply_mutation(
 ):
     _require_enabled(settings)
     row = _callback_job(job_id, authorization, db)
-    if row.status in {"completed", "failed", "canceled"} or row.applied_at is not None:
+    if hasattr(db, "refresh"):
+        db.refresh(row, with_for_update=True)
+    if (
+        row.status in {"completed", "failed", "canceled"}
+        or getattr(row, "submitted_at", None) is not None
+        or row.applied_at is not None
+    ):
         raise HTTPException(
             status_code=409, detail="This job may no longer apply mutations"
         )
     created = 0
     updated = 0
-    thumbnail_result = None
     if row.kind == "add-evals":
         if body.enrich is not None:
             raise HTTPException(
@@ -360,53 +365,68 @@ async def apply_mutation(
         paper_service = PaperService(db)
         mutation = body.enrich
         if mutation.task_ids is not None:
-            paper_service.update_paper_tasks(row.paper_id, mutation.task_ids)
+            paper_service.update_paper_tasks(
+                row.paper_id, mutation.task_ids, commit=False
+            )
         if mutation.method_ids is not None:
-            paper_service.update_paper_methods(row.paper_id, mutation.method_ids)
+            paper_service.update_paper_methods(
+                row.paper_id, mutation.method_ids, commit=False
+            )
         if mutation.repositories is not None:
             paper_service.update_paper_repositories(
-                row.paper_id, [item.model_dump() for item in mutation.repositories]
+                row.paper_id,
+                [item.model_dump() for item in mutation.repositories],
+                commit=False,
             )
         if mutation.project_pages is not None:
             paper_service.update_paper_project_pages(
-                row.paper_id, [item.model_dump() for item in mutation.project_pages]
+                row.paper_id,
+                [item.model_dump() for item in mutation.project_pages],
+                commit=False,
             )
         paper = db.get(Paper, row.paper_id)
         if mutation.thumbnail_url is not None:
             paper.thumbnail_url = mutation.thumbnail_url
         if mutation.urls_extracted is not None:
             paper.urls_extracted = mutation.urls_extracted
-        db.commit()
         if mutation.regenerate_thumbnail:
-            thumbnail_result = await regenerate_paper_thumbnail(
-                db, str(row.paper_id), force=True
-            )
+            row.thumbnail_status = "queued"
+            row.thumbnail_requested_at = datetime.now(UTC)
+            row.thumbnail_claimed_at = None
+            row.thumbnail_finished_at = None
+            row.thumbnail_attempt_count = 0
+            row.thumbnail_url = None
+            row.thumbnail_previous_width = None
+            row.thumbnail_previous_height = None
+            row.thumbnail_generated_width = None
+            row.thumbnail_generated_height = None
+            row.thumbnail_warnings = None
+            row.thumbnail_error = None
     changed = row.kind == "enrich-paper" or created + updated > 0
+    row.submitted_at = datetime.now(UTC)
     if changed:
-        row.applied_at = datetime.now(UTC)
-        db.commit()
+        row.applied_at = row.submitted_at
+    db.commit()
     response = {
         "status": "applied" if changed else "no_changes",
         "evaluations_created": created,
         "evaluations_updated": updated,
     }
-    if thumbnail_result is not None:
-        response["thumbnail"] = {
-            "status": "regenerated",
-            "thumbnail_url": thumbnail_result.thumbnail_url,
-            "previous_dimensions": (
-                [thumbnail_result.previous.width, thumbnail_result.previous.height]
-                if thumbnail_result.previous
-                else None
-            ),
-            "generated_dimensions": [
-                thumbnail_result.generated.width,
-                thumbnail_result.generated.height,
-            ],
-            "success": thumbnail_result.success,
-            "warnings": list(thumbnail_result.warnings),
-        }
+    if getattr(row, "thumbnail_requested_at", None) is not None:
+        response["thumbnail"] = serialize_thumbnail(row)
     return response
+
+
+@router.get("/{job_id}/thumbnail")
+def get_thumbnail_status(
+    job_id: uuid.UUID,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_enabled(settings)
+    row = _callback_job(job_id, authorization, db)
+    return {"thumbnail": serialize_thumbnail(row)}
 
 
 @router.post("/{job_id}/complete", response_model=CodexPaperJob)

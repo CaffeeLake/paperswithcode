@@ -2,6 +2,21 @@ import { apiUrl } from "@/lib/apiUrl";
 
 export type CodexPaperJobStatus = "queued" | "dispatching" | "running" | "completed" | "failed" | "canceled";
 
+export interface CodexThumbnailResult {
+  requested: boolean;
+  status: "queued" | "processing" | "succeeded" | "failed";
+  attempt_count: number;
+  requested_at: string;
+  claimed_at: string | null;
+  finished_at: string | null;
+  thumbnail_url: string | null;
+  previous_dimensions: [number, number] | null;
+  generated_dimensions: [number, number] | null;
+  success: boolean | null;
+  warnings: string[];
+  error: string | null;
+}
+
 export interface CodexPaperJob {
   id: string;
   paper_id: number;
@@ -15,10 +30,12 @@ export interface CodexPaperJob {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  submitted_at: string | null;
   applied_at: string | null;
   report: string | null;
   error: string | null;
   attempt_count: number;
+  thumbnail: CodexThumbnailResult | null;
 }
 
 export interface CodexPaperJobsResponse {
