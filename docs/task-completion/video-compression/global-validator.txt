@@ -1,0 +1,36 @@
+============================================================
+Evaluation Metrics Validation
+============================================================
+
+⚠️  DRY RUN MODE - No changes will be made
+Use --fix to actually apply changes
+
+
+1. Auditing metric labels against leaderboard definitions...
+
+Metric label audit:
+  valid_source_label: 15188
+  possible_alias: 0
+  leaderboard_mismatch: 4
+
+Metric labels needing review, grouped by leaderboard:
+  [leaderboard_mismatch] 3D understanding / ETH3D (relative) / best=Overall (Chamfer): Accuracy (1 evaluation(s); allowed: F1, Overall (Chamfer))
+  [leaderboard_mismatch] Machine Translation / FLORES-101 / best=spBLEU: chrF++ (1 evaluation(s); allowed: spBLEU)
+  [leaderboard_mismatch] Machine Translation / FLORES-200 devtest / best=spBLEU: chrF++ (1 evaluation(s); allowed: COMET-22, spBLEU)
+  [leaderboard_mismatch] Reasoning / Livebench / best=Accuracy: Accuracy (1 evaluation(s); allowed: Score, Score (0-10))
+
+2. Checking for safe metric naming standardizations...
+✓ No safe metric naming standardizations found!
+
+3. Checking for missing best_metric values...
+
+✓ All evaluations have best_metric set!
+
+============================================================
+Summary:
+  Metric labels needing review: 4
+  Metric names standardized: 0
+  Best metrics set: 0
+============================================================
+
+💡 Review leaderboard mismatches before applying manual fixes

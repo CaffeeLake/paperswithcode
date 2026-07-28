@@ -1,0 +1,29 @@
+dataset_id,slug,name,metrics,eval_rows,eval_papers,introduced_date,introduced_year,source_arxiv,featured_rank,supports_harness
+1648,davis-2019-test-dev-256x256-video-tokenization,DAVIS 2019 Test-Dev 256x256 Video Tokenization,BPP16; FVD; LPIPS; PSNR; SSIM,5,1,2025-12-18,2025,2512.16975,,f
+1655,uvg-rgb-bt709-96-frame-ip32-vtm-17-0,UVG RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1658,hevc-class-b-rgb-bt709-96-frame-ip32-vtm-17-0,HEVC Class B RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1659,mcl-jcv-rgb-bt-709-96-frame-ip32-vtm-17-0,MCL-JCV RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1661,hevc-class-c-rgb-bt-709-96-frame-ip32-vtm-17-0,HEVC Class C RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1663,hevc-class-e-rgb-bt-709-96-frame-ip32-vtm-17-0,HEVC Class E RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1664,hevc-class-d-rgb-bt709-96-frame-ip32-vtm-17-0,HEVC Class D RGB BT.709 96-frame IP32 VTM-17.0,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),3,2,2024-02-27,2024,2402.17414,,f
+1666,uvg-rgb-bt601-96-frame-ip32-vtm-13-2-ldb,UVG RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1668,hevc-class-b-rgb-bt601-96-frame-ip32-vtm-13-2-ldb,HEVC Class B RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1669,mcl-jcv-rgb-bt-601-96-frame-ip32-vtm-13-2-ldb,MCL-JCV RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1670,hevc-class-d-rgb-bt601-96-frame-ip32-vtm-13-2-ldb,HEVC Class D RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1671,hevc-class-c-rgb-bt-601-96-frame-ip32-vtm-13-2-ldb,HEVC Class C RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1672,hevc-class-e-rgb-bt601-96-frame-ip32-vtm-13-2-ldb,HEVC Class E RGB BT.601 96-frame IP32 VTM-13.2 LDB,BD-Rate (MS-SSIM RGB); BD-Rate (PSNR RGB),5,3,2024-10-13,2024,2410.09706,,f
+1673,uvg-rgb-bt-601-96-frame-ip-1-vtm-13-2-ldb,UVG RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1674,mcl-jcv-rgb-bt-601-96-frame-ip-1-vtm-13-2-ldb,MCL-JCV RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1675,hevc-class-c-rgb-bt-601-96-frame-ip-1-vtm-13-2-ldb,HEVC Class C RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1676,hevc-class-d-rgb-bt-601-96-frame-ip-1-vtm-13-2-ldb,HEVC Class D RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1677,hevc-class-b-rgb-bt601-96-frame-ip-1-vtm-13-2-ldb,HEVC Class B RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1678,hevc-class-e-rgb-bt-601-96-frame-ip-1-vtm-13-2-ldb,HEVC Class E RGB BT.601 96-frame IP-1 VTM-13.2 LDB,BD-Rate (PSNR RGB),2,2,2024-10-13,2024,2410.09706,,f
+1679,uvg-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,UVG YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1680,hevc-class-b-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,HEVC Class B YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1681,mcl-jcv-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,MCL-JCV YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1682,hevc-class-e-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,HEVC Class E YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1683,hevc-class-c-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,HEVC Class C YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1684,hevc-class-d-yuv420-all-frame-ip-1-actual-bitstream-vtm-17-0,HEVC Class D YUV420 All-Frame IP-1 Actual-Bitstream VTM-17.0,BD-Rate (Weighted PSNR YUV420),1,1,2025-02-28,2025,2502.20762,,f
+1685,mcl-jcv-17x256x256-30fps-causal-4x8x8-video-tokenization,MCL-JCV 17x256x256 30fps Causal 4x8x8 Video Tokenization,FVD; LPIPS; PSNR; SSIM,4,1,2024-12-17,2024,2412.13061,,f
+1686,ucf-101-split-1-validation-16x128x128-video-tokenizer-reconstruction,UCF-101 Split 1 Validation 16x128x128 Video Tokenizer Reconstruction,LPIPS; PSNR; rFVD; SSIM,4,1,2024-06-11,2024,2406.07548,,f
+1687,uvg-1080p-13m-inr-video-reconstruction,UVG 1080p ~13M INR Video Reconstruction,Average PSNR (dB),2,2,2023-06-16,2023,2306.09818,,f
