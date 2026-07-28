@@ -33,6 +33,7 @@ from backend.services.chat_agent_service import (
     stream_agent_events,
 )
 from backend.services.chat_session_service import ChatOwner, ChatSessionService
+from backend.services.chat_stream_service import ChatTurnProjection
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.utils.auth import require_user
@@ -91,6 +92,42 @@ def test_sse_serialization_preserves_unicode_and_newlines():
     assert frame.startswith(b"data: ")
     assert frame.endswith(b"\n\n")
     assert json.loads(frame[6:-2])["text"] == "héllo\nworld"
+
+
+def test_chat_projection_preserves_sse_block_order():
+    projection = ChatTurnProjection()
+    projection.apply("answer_delta", {"text": "Before tool."})
+    projection.apply(
+        "tool_call",
+        {"id": "tool-1", "name": "Bash", "args": {"command": "pwc task list"}},
+    )
+    projection.apply(
+        "tool_result",
+        {
+            "id": "tool-1",
+            "status": "success",
+            "took_ms": 12,
+            "content": [{"type": "text", "text": "done", "truncated": False}],
+            "metadata": {"exit_code": 0, "output_truncated": False},
+        },
+    )
+    projection.apply("reasoning_start", {})
+    projection.apply("reasoning_delta", {"text": "Check another benchmark."})
+    projection.apply("reasoning_end", {})
+    projection.apply("answer_delta", {"text": "After tool."})
+
+    blocks = projection.completed_blocks()
+
+    assert [block["kind"] for block in blocks] == [
+        "answer",
+        "tool",
+        "reasoning",
+        "answer",
+    ]
+    assert [block["text"] for block in blocks if block["kind"] == "answer"] == [
+        "Before tool.",
+        "After tool.",
+    ]
 
 
 def test_model_registry_exposes_stable_ids_not_provider_routes():

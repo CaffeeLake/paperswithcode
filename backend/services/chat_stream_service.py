@@ -67,30 +67,34 @@ class ChatTurnProjection:
     citations: list[dict[str, Any]] = field(default_factory=list)
 
     def completed_blocks(self) -> list[dict[str, Any]]:
-        completed = [
-            block
+        return [
+            {**block, "done": True} if block.get("kind") == "answer" else block
             for block in self.blocks
-            if block.get("kind") != "tool" or block.get("status") != "running"
+            if (block.get("kind") != "tool" or block.get("status") != "running")
+            and block is not self.reasoning
         ]
-        answer = "".join(self.answer_parts)
-        if answer.strip():
-            completed.append({"kind": "answer", "text": answer, "done": True})
-        return completed
 
     def apply(self, kind: str, event: dict[str, Any]) -> None:
         if kind == "reasoning_start":
             self.reasoning = {"kind": "reasoning", "text": ""}
+            self.blocks.append(self.reasoning)
         elif kind == "reasoning_delta" and self.reasoning is not None:
             self.reasoning["text"] += event["text"]
         elif kind == "reasoning_end" and self.reasoning is not None:
-            self.blocks.append(self.reasoning)
             self.reasoning = None
         elif kind == "tool_call":
             self._start_tool(event)
         elif kind == "tool_result":
             self._finish_tool(event)
         elif kind == "answer_delta":
-            self.answer_parts.append(event["text"])
+            self._append_answer(event["text"])
+
+    def _append_answer(self, text: str) -> None:
+        self.answer_parts.append(text)
+        if self.blocks and self.blocks[-1].get("kind") == "answer":
+            self.blocks[-1]["text"] += text
+            return
+        self.blocks.append({"kind": "answer", "text": text, "done": False})
 
     def _start_tool(self, event: dict[str, Any]) -> None:
         legacy_tool = event["name"] == "search_papers"
@@ -158,7 +162,12 @@ class ChatTurnProjection:
 
     def finalize(self, db) -> tuple[str, list[dict[str, Any]]]:
         answer = "".join(self.answer_parts)
-        self.blocks.append({"kind": "answer", "text": answer, "done": True})
+        if not any(block.get("kind") == "answer" for block in self.blocks):
+            self.blocks.append({"kind": "answer", "text": "", "done": True})
+        else:
+            for block in self.blocks:
+                if block.get("kind") == "answer":
+                    block["done"] = True
         text = "\n".join(
             block.get("text", "")
             for block in self.blocks
