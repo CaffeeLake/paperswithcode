@@ -20,6 +20,35 @@ import type {
 
 const Caret: React.FC = () => <span className="chat-caret" />;
 
+const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
+  const element = event.currentTarget;
+  const document = element.ownerDocument;
+  const point = document.caretPositionFromPoint?.(event.clientX, event.clientY);
+  const fallbackRange = point
+    ? null
+    : document.caretRangeFromPoint?.(event.clientX, event.clientY);
+  const node = point?.offsetNode ?? fallbackRange?.startContainer;
+  const rawOffset = point?.offset ?? fallbackRange?.startOffset;
+  if (!(node instanceof Text) || rawOffset === undefined || !element.contains(node)) return;
+
+  const text = node.data;
+  const wordCharacter = /[\p{L}\p{M}\p{N}_'-]/u;
+  let start = Math.min(rawOffset, text.length);
+  let end = start;
+  while (start > 0 && wordCharacter.test(text[start - 1])) start -= 1;
+  while (end < text.length && wordCharacter.test(text[end])) end += 1;
+  if (start === end) return;
+
+  const selection = document.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.setStart(node, start);
+  range.setEnd(node, end);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  event.preventDefault();
+};
+
 const RestrictedReasoning: React.FC<{
   text: string;
   papers: Record<string, ChatPaperHit>;
@@ -200,7 +229,7 @@ const AnswerBlockView: React.FC<{
 export const UserMessage: React.FC<{ text: string }> = ({ text }) => (
   <div className="chat-msg chat-msg-user">
     <div className="chat-bubble">
-      <span className="chat-bubble-text">{text}</span>
+      <span className="chat-bubble-text" onDoubleClick={selectClickedWord}>{text}</span>
     </div>
   </div>
 );
