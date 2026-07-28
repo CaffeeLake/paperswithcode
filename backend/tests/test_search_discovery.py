@@ -106,6 +106,33 @@ def test_entity_route_has_semantic_html_and_query_variant_policy(client, monkeyp
     assert response.text.count('name="description"') == 1
     assert response.text.count('rel="canonical"') == 1
     assert '<meta name="robots" content="noindex,follow">' in variant.text
+    assert response.headers["vary"] == "Accept"
+
+
+def test_discovery_markdown_is_available_without_frontend_bundle(client, monkeypatch):
+    monkeypatch.setattr(DiscoveryPageService, "task", lambda self, slug: _page())
+    monkeypatch.setattr(discovery_pages, "load_index_html", lambda: None)
+    response = client.get("/tasks/safe", headers={"Accept": "text/markdown"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["vary"] == "Accept"
+    assert response.headers["link"] == (
+        '<https://paperswithcode.co/tasks/safe>; rel="canonical"'
+    )
+    assert response.headers["cache-control"].startswith("public, max-age=300")
+    assert response.text.startswith("---\n")
+    assert response.text.count("\n# ") == 1
+    assert "\n# <Safe" not in response.text
+    assert "<script>" not in response.text
+
+
+def test_missing_discovery_page_keeps_html_error_for_markdown_accept(
+    client, monkeypatch
+):
+    monkeypatch.setattr(DiscoveryPageService, "task", lambda self, slug: None)
+    response = client.get("/tasks/missing", headers={"Accept": "text/markdown"})
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
 
 
 def test_missing_entity_and_unknown_top_level_are_real_404s(client, monkeypatch):
@@ -131,6 +158,10 @@ def test_legacy_aliases_redirect_permanently(client):
     alias = client.get("/organizations/example", follow_redirects=False)
     assert alias.status_code == 301
     assert alias.headers["location"] == "/example"
+    markdown_alias = client.get(
+        "/task/safe", headers={"Accept": "text/markdown"}, follow_redirects=False
+    )
+    assert markdown_alias.status_code == 301
 
 
 @pytest.mark.parametrize(
@@ -156,3 +187,15 @@ def test_discovery_page_classes_support_head(client, monkeypatch, path, method_n
         '<https://paperswithcode.co/tasks/safe>; rel="canonical"'
     )
     assert response.content == b""
+
+
+def test_discovery_markdown_head_matches_get(client, monkeypatch):
+    monkeypatch.setattr(DiscoveryPageService, "task", lambda self, slug: _page())
+    headers = {"Accept": "text/markdown"}
+    get = client.get("/tasks/safe", headers=headers)
+    head = client.head("/tasks/safe", headers=headers)
+    assert head.status_code == get.status_code == 200
+    assert head.headers["content-type"] == get.headers["content-type"]
+    assert head.headers["vary"] == get.headers["vary"] == "Accept"
+    assert head.headers["link"] == get.headers["link"]
+    assert head.content == b""

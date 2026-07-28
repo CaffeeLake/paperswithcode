@@ -23,6 +23,7 @@ from PIL import Image as PILImage
 from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.api import Paper
+from backend.routers import paper_pages
 from backend.services import default_og_image, social_meta_service, spa_shell_service
 from backend.services.paper_service import PaperService
 from backend.services.social_meta_service import (
@@ -452,6 +453,26 @@ def test_paper_route_returns_html_with_paper_specific_meta(client, monkeypatch):
         'twitter:image" content="https://paperswithcode.co/api/thumbnails/'
         '2504_12516_v1.jpg?fit=fit2"'
     ) in body
+    assert response.headers["vary"] == "Accept"
+
+
+def test_paper_markdown_is_available_without_frontend_bundle(client, monkeypatch):
+    paper = _make_paper(
+        title='A # Paper <script>alert("x")</script>',
+        abstract="<h2>Injected heading</h2> Safe [abstract]",
+    )
+    _stub_paper_lookup(monkeypatch, paper)
+    monkeypatch.setattr(paper_pages, "load_index_html", lambda: None)
+    response = client.get("/paper/2504.12516", headers={"Accept": "text/markdown"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["vary"] == "Accept"
+    assert response.headers["link"] == (
+        '<https://paperswithcode.co/paper/2504.12516>; rel="canonical"'
+    )
+    assert response.text.startswith("---\n")
+    assert "<script>" not in response.text
+    assert "\n## Injected heading" not in response.text
 
 
 def test_paper_route_returns_404_when_paper_missing(client, monkeypatch):
@@ -462,6 +483,9 @@ def test_paper_route_returns_404_when_paper_missing(client, monkeypatch):
     assert response.status_code == 404
     assert 'name="robots" content="noindex"' in response.text
     assert "<h1>Paper not found</h1>" in response.text
+    markdown = client.get("/paper/9999.99999", headers={"Accept": "text/markdown"})
+    assert markdown.status_code == 404
+    assert markdown.headers["content-type"].startswith("text/html")
 
 
 def test_legacy_papers_route_redirects_to_canonical_url(client, monkeypatch):
@@ -515,6 +539,19 @@ def test_head_matches_get_headers_without_body(client, monkeypatch):
     assert (
         head_response.headers["cache-control"] == get_response.headers["cache-control"]
     )
+    assert head_response.headers["link"] == get_response.headers["link"]
+    assert head_response.content == b""
+
+
+def test_markdown_head_matches_get_headers_without_body(client, monkeypatch):
+    paper = _make_paper()
+    _stub_paper_lookup(monkeypatch, paper)
+    headers = {"Accept": "text/markdown"}
+    get_response = client.get("/paper/2504.12516", headers=headers)
+    head_response = client.head("/paper/2504.12516", headers=headers)
+    assert head_response.status_code == get_response.status_code == 200
+    assert head_response.headers["content-type"] == get_response.headers["content-type"]
+    assert head_response.headers["vary"] == get_response.headers["vary"] == "Accept"
     assert head_response.headers["link"] == get_response.headers["link"]
     assert head_response.content == b""
 

@@ -10,8 +10,13 @@ from sqlalchemy.orm import Session
 
 from backend.config import get_settings
 from backend.database.connection import get_database_session
+from backend.services.content_negotiation_service import (
+    prefers_markdown,
+    public_page_headers,
+)
 from backend.services.discovery_html_service import render_discovery_shell
 from backend.services.discovery_page_service import DiscoveryPage, DiscoveryPageService
+from backend.services.public_page_markdown_service import render_discovery_markdown
 from backend.services.spa_shell_service import load_index_html
 
 router = APIRouter()
@@ -98,6 +103,15 @@ def _render(page: DiscoveryPage | None, request: Request) -> Response:
         page = replace(page, robots="noindex,nofollow")
     elif request.query_params:
         page = replace(page, robots="noindex,follow")
+    headers = public_page_headers(page.canonical_url)
+    if settings.environment.lower() == "staging":
+        headers["X-Robots-Tag"] = "noindex, nofollow"
+    if prefers_markdown(request.headers.get("accept")):
+        return Response(
+            render_discovery_markdown(page),
+            media_type="text/markdown",
+            headers=headers,
+        )
     shell = load_index_html()
     if shell is None:
         return HTMLResponse(
@@ -115,12 +129,6 @@ def _render(page: DiscoveryPage | None, request: Request) -> Response:
             status_code=500,
             headers={"Cache-Control": "no-store"},
         )
-    headers = {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
-        "Link": f'<{page.canonical_url}>; rel="canonical"',
-    }
-    if settings.environment.lower() == "staging":
-        headers["X-Robots-Tag"] = "noindex, nofollow"
     return HTMLResponse(content, headers=headers)
 
 

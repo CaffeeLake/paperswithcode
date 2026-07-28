@@ -16,7 +16,6 @@ from backend.models.database import (
     Evaluation,
     Method,
     Organization,
-    Paper as DBPaper,
     PaperAuthor,
     PaperConference,
     PaperMethod,
@@ -24,8 +23,10 @@ from backend.models.database import (
     PaperTask,
     Task,
 )
+from backend.models.database import (
+    Paper as DBPaper,
+)
 from backend.utils.urls import get_paper_route_identifier
-
 
 PRODUCTION_ORIGIN = "https://paperswithcode.co"
 SITEMAP_BUCKET_SIZE = 50_000
@@ -54,6 +55,30 @@ class ArchivePaper:
     route_identifier: str
     title: str
     published: Optional[date]
+
+
+@dataclass(frozen=True)
+class ArchiveLink:
+    href: str
+    label: str
+    suffix: str = ""
+
+
+@dataclass(frozen=True)
+class ArchivePage:
+    title: str
+    description: str
+    heading: str
+    canonical_path: str
+    papers: tuple[ArchivePaper, ...] = ()
+    navigation: tuple[ArchiveLink, ...] = ()
+    page: int = 1
+    has_next: bool = False
+
+    @property
+    def canonical_url(self) -> str:
+        suffix = f"?page={self.page}" if self.page > 1 else ""
+        return f"{PRODUCTION_ORIGIN}{self.canonical_path}{suffix}"
 
 
 @dataclass(frozen=True)

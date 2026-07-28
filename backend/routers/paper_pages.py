@@ -18,19 +18,25 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Path as FastApiPath
+from fastapi import APIRouter, Depends, Request
+from fastapi import Path as FastApiPath
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
+from backend.services.content_negotiation_service import (
+    prefers_markdown,
+    public_page_headers,
+)
 from backend.services.default_og_image import get_default_og_image_bytes
-from backend.services.paper_service import PaperService
 from backend.services.paper_seo_service import (
     PRODUCTION_ORIGIN,
     build_paper_seo_document,
     inject_initial_document,
     render_initial_paper_document,
 )
+from backend.services.paper_service import PaperService
+from backend.services.public_page_markdown_service import render_paper_markdown
 from backend.services.social_meta_service import (
     build_paper_meta,
     inject_paper_meta,
@@ -49,6 +55,7 @@ def _render_paper_html(
     paper_id: str,
     db: Session,
     is_legacy_path: bool,
+    request: Request,
 ) -> Response:
     try:
         paper = PaperService(db).get_paper_by_id_or_arxiv(
@@ -93,6 +100,15 @@ def _render_paper_html(
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
+    document = build_paper_seo_document(paper, route_identifier)
+    headers = public_page_headers(document.canonical_url)
+    if prefers_markdown(request.headers.get("accept")):
+        return Response(
+            render_paper_markdown(document),
+            media_type="text/markdown",
+            headers=headers,
+        )
+
     index_html = load_index_html()
     if index_html is None:
         return HTMLResponse(
@@ -102,7 +118,6 @@ def _render_paper_html(
             headers={"Cache-Control": "no-store"},
         )
 
-    document = build_paper_seo_document(paper, route_identifier)
     meta = build_paper_meta(
         paper, route_identifier=route_identifier, origin=PRODUCTION_ORIGIN
     )
@@ -120,11 +135,6 @@ def _render_paper_html(
             headers={"Cache-Control": "no-store"},
         )
 
-    headers = {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
-        "Link": f'<{document.canonical_url}>; rel="canonical"',
-    }
-
     return HTMLResponse(content=rendered, status_code=200, headers=headers)
 
 
@@ -135,11 +145,12 @@ def _render_paper_html(
     include_in_schema=False,
 )
 def get_paper_page(
+    request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
 ) -> Response:
     """Serve the SPA shell with paper-specific social meta tags."""
-    return _render_paper_html(paper_id, db, is_legacy_path=False)
+    return _render_paper_html(paper_id, db, is_legacy_path=False, request=request)
 
 
 @router.api_route(
@@ -149,13 +160,14 @@ def get_paper_page(
     include_in_schema=False,
 )
 def get_paper_page_legacy(
+    request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
 ) -> Response:
     """
     Redirect the legacy plural shape directly to the resolved canonical route.
     """
-    return _render_paper_html(paper_id, db, is_legacy_path=True)
+    return _render_paper_html(paper_id, db, is_legacy_path=True, request=request)
 
 
 @router.get(

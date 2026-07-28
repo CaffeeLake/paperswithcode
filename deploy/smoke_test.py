@@ -11,9 +11,9 @@ import sys
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
-from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
+from xml.etree import ElementTree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -64,6 +64,45 @@ def header_value(headers: dict, name: str) -> str:
         (str(value) for key, value in headers.items() if key.lower() == expected),
         "",
     )
+
+
+def _run_markdown_smoke(base_url: str) -> list[str]:
+    failures: list[str] = []
+    pages = (
+        ("/", "/", 100_000),
+        ("/paper/2607.24653", "/paper/2607.24653", 250_000),
+        ("/tasks/image-classification", "/tasks/image-classification", 100_000),
+        ("/papers/recent", "/papers/recent", 250_000),
+    )
+    for path, canonical_path, byte_limit in pages:
+        status, headers, body = request(
+            urljoin(base_url, path),
+            headers={"Accept": "text/markdown"},
+        )
+        content_type = header_value(headers, "Content-Type").lower()
+        vary = {
+            item.strip().lower() for item in header_value(headers, "Vary").split(",")
+        }
+        canonical = f"https://paperswithcode.co{canonical_path}"
+        text = body.decode("utf-8", "replace")
+        if status != 200:
+            failures.append(f"Markdown {path} returned {status}")
+        if not content_type.startswith("text/markdown"):
+            failures.append(f"Markdown {path} returned {content_type or 'no type'}")
+        if "accept" not in vary:
+            failures.append(f"Markdown {path} is missing Vary: Accept")
+        if canonical not in header_value(headers, "Link"):
+            failures.append(f"Markdown {path} canonical Link is missing")
+        if not text.startswith("---\n") or not any(
+            line.startswith("# ") for line in text.splitlines()
+        ):
+            failures.append(f"Markdown {path} has no frontmatter and H1")
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("<html", "<script", "/assets/")):
+            failures.append(f"Markdown {path} contains frontend HTML or assets")
+        if len(body) > byte_limit:
+            failures.append(f"Markdown {path} exceeds {byte_limit} bytes ({len(body)})")
+    return failures
 
 
 def run_seo_http_smoke(base_url: str, environment: str = "production") -> list[str]:
@@ -218,10 +257,16 @@ def run_seo_http_smoke(base_url: str, environment: str = "production") -> list[s
             failures.append(
                 f"{entity_kind} sitemap sample is not indexable discovery HTML"
             )
+    failures.extend(_run_markdown_smoke(base_url))
     return failures
 
 
-def request(url: str, *, allow_redirects: bool = True) -> tuple[int, dict, bytes]:
+def request(
+    url: str,
+    *,
+    allow_redirects: bool = True,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict, bytes]:
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
@@ -233,7 +278,10 @@ def request(url: str, *, allow_redirects: bool = True) -> tuple[int, dict, bytes
     )
     try:
         with opener.open(
-            urllib.request.Request(url, headers={"User-Agent": "pwc-smoke/1"}),
+            urllib.request.Request(
+                url,
+                headers={"User-Agent": "pwc-smoke/1", **(headers or {})},
+            ),
             timeout=20,
         ) as response:
             return response.status, dict(response.headers), response.read()

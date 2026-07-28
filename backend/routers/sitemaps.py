@@ -7,17 +7,23 @@ import re
 from datetime import date
 from typing import Iterator, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
+from backend.services.content_negotiation_service import (
+    prefers_markdown,
+    public_page_headers,
+)
+from backend.services.public_page_markdown_service import render_archive_markdown
 from backend.services.sitemap_service import (
     PRODUCTION_ORIGIN,
+    ArchiveLink,
+    ArchivePage,
     SitemapService,
     SitemapShard,
 )
-
 
 router = APIRouter()
 SITEMAP_HEADERS = {
@@ -150,26 +156,16 @@ def entity_sitemap(kind: str, db: Session = Depends(get_database_session)) -> Re
     return _xml_response(_entity_sitemap_xml(SitemapService(db).iter_entities(kind)))
 
 
-def _archive_html(
-    *,
-    title: str,
-    description: str,
-    canonical_path: str,
-    papers,
-    page: int,
-    has_next: bool,
-    navigation: str = "",
-) -> str:
-    canonical = PRODUCTION_ORIGIN + canonical_path
-    page_suffix = f"?page={page}" if page > 1 else ""
+def _archive_html(document: ArchivePage) -> str:
     links = []
-    if page > 1:
-        previous = page - 1
-        href = canonical_path + (f"?page={previous}" if previous > 1 else "")
+    if document.page > 1:
+        previous = document.page - 1
+        href = document.canonical_path + (f"?page={previous}" if previous > 1 else "")
         links.append(f'<a rel="prev" href="{href}">Newer papers</a>')
-    if has_next:
+    if document.has_next:
         links.append(
-            f'<a rel="next" href="{canonical_path}?page={page + 1}">Older papers</a>'
+            f'<a rel="next" href="{document.canonical_path}?page={document.page + 1}">'
+            "Older papers</a>"
         )
     items = "".join(
         "<li>"
@@ -182,26 +178,60 @@ def _archive_html(
             else ""
         )
         + "</li>"
-        for paper in papers
+        for paper in document.papers
     )
     empty = (
-        "<p>No eligible papers were published in this period.</p>" if not papers else ""
+        "<p>No eligible papers were published in this period.</p>"
+        if not document.papers and document.canonical_path != "/papers/archive"
+        else ""
     )
+    navigation = ""
+    if document.navigation:
+        anchors = [
+            f'<a href="{html.escape(item.href, quote=True)}">'
+            f"{html.escape(item.label)}</a>{html.escape(item.suffix)}"
+            for item in document.navigation
+        ]
+        if document.canonical_path == "/papers/archive":
+            navigation = (
+                "<main><ul>"
+                + "".join(f"<li>{anchor}</li>" for anchor in anchors)
+                + "</ul></main>"
+            )
+        elif re.fullmatch(r"/papers/archive/\d{4}", document.canonical_path):
+            navigation = '<nav aria-label="Months">' + " ".join(anchors) + "</nav>"
+        else:
+            navigation = "<nav>" + " ".join(anchors) + "</nav>"
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title>"
-        f'<meta name="description" content="{html.escape(description, quote=True)}">'
-        f'<link rel="canonical" href="{canonical}{page_suffix}">'
+        f"<title>{html.escape(document.title)}</title>"
+        f'<meta name="description" content="{html.escape(document.description, quote=True)}">'
+        f'<link rel="canonical" href="{html.escape(document.canonical_url, quote=True)}">'
         "<style>body{max-width:920px;margin:auto;padding:24px;font:16px/1.55 system-ui,sans-serif}"
         "li{margin:.65rem 0}time{color:#666;font-size:.9rem}nav{display:flex;gap:1rem;flex-wrap:wrap}"
         '</style></head><body><header><a href="/">Papers with Code</a>'
-        f"<h1>{html.escape(title.split(' | ')[0])}</h1><p>{html.escape(description)}</p>"
+        f"<h1>{html.escape(document.heading)}</h1>"
+        f"<p>{html.escape(document.description)}</p>"
         f"</header>{navigation}<main><ol>{items}</ol>{empty}</main>"
         f'<nav aria-label="Pagination">{" ".join(links)}</nav>'
         '<footer><p><a href="/papers/recent">Recent papers</a> · '
         '<a href="/papers/archive">Paper archive</a></p></footer></body></html>'
     )
+
+
+def _archive_response(document: ArchivePage, request: Request) -> Response:
+    headers = public_page_headers(
+        document.canonical_url,
+        cache_control=ARCHIVE_HEADERS["Cache-Control"],
+    )
+    if prefers_markdown(request.headers.get("accept")):
+        return Response(
+            render_archive_markdown(document),
+            media_type="text/markdown",
+            headers=headers,
+        )
+    return HTMLResponse(_archive_html(document), headers=headers)
 
 
 def _page_number(page: int) -> Optional[Response]:
@@ -212,6 +242,7 @@ def _page_number(page: int) -> Optional[Response]:
 
 @router.api_route("/papers/recent", methods=["GET", "HEAD"], include_in_schema=False)
 def recent_papers(
+    request: Request,
     page: int = Query(1),
     db: Session = Depends(get_database_session),
 ) -> Response:
@@ -219,41 +250,41 @@ def recent_papers(
     if invalid:
         return invalid
     papers, has_next = SitemapService(db).archive_page(page=page, recent=True)
-    return HTMLResponse(
-        _archive_html(
+    return _archive_response(
+        ArchivePage(
             title="Recent AI research papers | Papers with Code",
             description="Canonical AI research papers added or published in the last fourteen days.",
+            heading="Recent AI research papers",
             canonical_path="/papers/recent",
-            papers=papers,
+            papers=tuple(papers),
             page=page,
             has_next=has_next,
         ),
-        headers=ARCHIVE_HEADERS,
+        request,
     )
 
 
 @router.api_route("/papers/archive", methods=["GET", "HEAD"], include_in_schema=False)
-def paper_archive(db: Session = Depends(get_database_session)) -> Response:
+def paper_archive(
+    request: Request, db: Session = Depends(get_database_session)
+) -> Response:
     years = SitemapService(db).archive_years()
-    navigation = (
-        "<main><ul>"
-        + "".join(
-            f'<li><a href="/papers/archive/{year}">{year}</a> ({count:,} papers)</li>'
-            for year, count in years
-        )
-        + "</ul></main>"
-    )
-    return HTMLResponse(
-        _archive_html(
+    return _archive_response(
+        ArchivePage(
             title="AI research paper archive | Papers with Code",
             description="Browse canonical AI research papers by publication year.",
+            heading="AI research paper archive",
             canonical_path="/papers/archive",
-            papers=[],
-            page=1,
-            has_next=False,
-            navigation=navigation,
-        ).replace("<p>No eligible papers were published in this period.</p>", ""),
-        headers=ARCHIVE_HEADERS,
+            navigation=tuple(
+                ArchiveLink(
+                    f"/papers/archive/{year}",
+                    str(year),
+                    f" ({count:,} papers)",
+                )
+                for year, count in years
+            ),
+        ),
+        request,
     )
 
 
@@ -267,6 +298,7 @@ def _valid_period(year: int, month: Optional[int] = None) -> bool:
 )
 def paper_archive_year(
     year: int,
+    request: Request,
     page: int = Query(1),
     db: Session = Depends(get_database_session),
 ) -> Response:
@@ -277,21 +309,24 @@ def paper_archive_year(
         return invalid
     service = SitemapService(db)
     papers, has_next = service.archive_page(page=page, year=year)
-    months = " ".join(
-        f'<a href="/papers/archive/{year}/{month:02d}">{date(year, month, 1).strftime("%B")}</a>'
-        for month in range(1, 13)
-    )
-    return HTMLResponse(
-        _archive_html(
+    return _archive_response(
+        ArchivePage(
             title=f"AI research papers published in {year} | Papers with Code",
             description=f"Browse canonical AI research papers published in {year}.",
+            heading=f"AI research papers published in {year}",
             canonical_path=f"/papers/archive/{year}",
-            papers=papers,
+            papers=tuple(papers),
             page=page,
             has_next=has_next,
-            navigation=f'<nav aria-label="Months">{months}</nav>',
+            navigation=tuple(
+                ArchiveLink(
+                    f"/papers/archive/{year}/{month:02d}",
+                    date(year, month, 1).strftime("%B"),
+                )
+                for month in range(1, 13)
+            ),
         ),
-        headers=ARCHIVE_HEADERS,
+        request,
     )
 
 
@@ -303,6 +338,7 @@ def paper_archive_year(
 def paper_archive_month(
     year: int,
     month: str,
+    request: Request,
     page: int = Query(1),
     db: Session = Depends(get_database_session),
 ) -> Response:
@@ -318,15 +354,16 @@ def paper_archive_month(
         page=page, year=year, month=month_number
     )
     month_name = date(year, month_number, 1).strftime("%B")
-    return HTMLResponse(
-        _archive_html(
+    return _archive_response(
+        ArchivePage(
             title=f"AI research papers published in {month_name} {year} | Papers with Code",
             description=f"Browse canonical AI research papers published in {month_name} {year}.",
+            heading=f"AI research papers published in {month_name} {year}",
             canonical_path=f"/papers/archive/{year}/{month}",
-            papers=papers,
+            papers=tuple(papers),
             page=page,
             has_next=has_next,
-            navigation=f'<nav><a href="/papers/archive/{year}">All {year} papers</a></nav>',
+            navigation=(ArchiveLink(f"/papers/archive/{year}", f"All {year} papers"),),
         ),
-        headers=ARCHIVE_HEADERS,
+        request,
     )

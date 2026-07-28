@@ -10,8 +10,8 @@ from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.services.sitemap_service import (
     ArchivePaper,
-    SitemapPaper,
     SitemapEntity,
+    SitemapPaper,
     SitemapService,
     SitemapShard,
 )
@@ -128,6 +128,35 @@ def test_recent_archive_exposes_ordinary_links_and_pagination(client, monkeypatc
         '<link rel="canonical" href="https://paperswithcode.co/papers/recent">'
         in response.text
     )
+    assert response.headers["vary"] == "Accept"
+    assert response.headers["link"] == (
+        '<https://paperswithcode.co/papers/recent>; rel="canonical"'
+    )
+
+
+def test_recent_archive_markdown_and_head_contract(client, monkeypatch):
+    monkeypatch.setattr(
+        SitemapService,
+        "archive_page",
+        lambda self, **kwargs: (
+            [ArchivePaper("2607.24653", "<h1>Kimi [K3]</h1>", date(2026, 7, 27))],
+            True,
+        ),
+    )
+    headers = {"Accept": "text/markdown"}
+    response = client.get("/papers/recent", headers=headers)
+    head = client.head("/papers/recent", headers=headers)
+    assert response.status_code == head.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["vary"] == head.headers["vary"] == "Accept"
+    assert response.headers["link"] == (
+        '<https://paperswithcode.co/papers/recent>; rel="canonical"'
+    )
+    assert response.headers["cache-control"].startswith("public, max-age=300")
+    assert response.text.startswith("---\n")
+    assert "<h1>" not in response.text
+    assert "Kimi \\[K3\\]" in response.text
+    assert head.content == b""
 
 
 def test_empty_month_is_real_archive_and_invalid_period_is_404(client, monkeypatch):

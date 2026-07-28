@@ -775,11 +775,46 @@ def _entity_page_response(url: str):
     )
 
 
+def _markdown_page_response(url: str, headers: dict[str, str] | None):
+    if not headers or headers.get("Accept") != "text/markdown":
+        return None
+    paths = (
+        "/",
+        "/paper/2607.24653",
+        "/tasks/image-classification",
+        "/papers/recent",
+    )
+    path = next((candidate for candidate in paths if url.endswith(candidate)), None)
+    if path is None:
+        return None
+    canonical = f"https://paperswithcode.co{path}"
+    return (
+        200,
+        {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Vary": "Accept",
+            "Link": f'<{canonical}>; rel="canonical"',
+        },
+        (
+            "---\n"
+            f'title: "Example"\ncanonical: "{canonical}"\n'
+            'description: "Example"\ntype: "page"\n---\n\n# Example\n'
+        ).encode(),
+    )
+
+
 def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
     requested: list[str] = []
 
-    def request(url: str, *, allow_redirects: bool = True):
+    def request(
+        url: str,
+        *,
+        allow_redirects: bool = True,
+        headers: dict[str, str] | None = None,
+    ):
         requested.append(url)
+        if response := _markdown_page_response(url, headers):
+            return response
         if response := _entity_sitemap_response(url):
             return response
         if response := _entity_page_response(url):
@@ -838,7 +873,14 @@ def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
 
 
 def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch):
-    def request(url: str, *, allow_redirects: bool = True):
+    def request(
+        url: str,
+        *,
+        allow_redirects: bool = True,
+        headers: dict[str, str] | None = None,
+    ):
+        if response := _markdown_page_response(url, headers):
+            return response
         if response := _entity_sitemap_response(url):
             return response
         if response := _entity_page_response(url):
@@ -895,8 +937,15 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
 def test_seo_smoke_treats_http_headers_case_insensitively(monkeypatch):
     requested: list[str] = []
 
-    def request(url: str, *, allow_redirects: bool = True):
+    def request(
+        url: str,
+        *,
+        allow_redirects: bool = True,
+        headers: dict[str, str] | None = None,
+    ):
         requested.append(url)
+        if response := _markdown_page_response(url, headers):
+            return response
         if response := _entity_sitemap_response(url):
             return response
         if response := _entity_page_response(url):
@@ -984,6 +1033,20 @@ def test_nginx_requires_backend_routes_for_seo_surfaces():
         staging,
     )
     assert "production SEO route is missing" in " ".join(failures)
+
+
+def test_nginx_public_page_proxies_preserve_accept_and_origin_headers():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    assert "proxy_set_header Accept" not in production
+    assert "proxy_set_header Accept" not in staging
+    assert "proxy_hide_header Content-Type" not in production + staging
+    assert "proxy_hide_header Vary" not in production + staging
+    assert "proxy_hide_header Link" not in production + staging
+    assert "proxy_hide_header Cache-Control" not in production + staging
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
