@@ -12,6 +12,37 @@ CURATION_CALLBACK_LOCATION = (
     "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
     '(context|taxonomy|leaderboards|apply|complete)$"'
 )
+SEO_LOCATIONS = (
+    "location = /sitemap.xml",
+    "location ^~ /sitemaps/",
+    "location = /papers/recent",
+    "location = /papers/archive",
+    r"location ~ ^/papers/archive/[0-9]{4}(/[0-9]{2})?$",
+)
+
+
+def _validate_seo_routes(config: str, backend: str, environment: str) -> list[str]:
+    failures: list[str] = []
+    catch_all = config.find("location / {")
+    for location in SEO_LOCATIONS:
+        index = config.find(location)
+        if index < 0:
+            failures.append(f"{environment} SEO route is missing: {location}")
+            continue
+        if catch_all >= 0 and index > catch_all:
+            failures.append(
+                f"{environment} SEO route follows the SPA catch-all: {location}"
+            )
+        line_end = config.find("\n", index)
+        block_end = config.find("}", line_end)
+        block = config[index : block_end + 1]
+        if f"proxy_pass http://{backend};" not in block:
+            failures.append(f"{environment} SEO route misses {backend}: {location}")
+        if "try_files" in block or "index.html" in block:
+            failures.append(
+                f"{environment} SEO route falls through to SPA HTML: {location}"
+            )
+    return failures
 
 
 def validate(production: str, staging: str) -> list[str]:
@@ -49,6 +80,10 @@ def validate(production: str, staging: str) -> list[str]:
         failures.append("staging chat gateway body limit is missing")
     if staging.count("location / {") != 1 or production.count("location / {") != 1:
         failures.append("ambiguous catch-all location")
+    failures.extend(
+        _validate_seo_routes(production, "pwc_production_backend", "production")
+    )
+    failures.extend(_validate_seo_routes(staging, "pwc_staging_backend", "staging"))
     return failures
 
 

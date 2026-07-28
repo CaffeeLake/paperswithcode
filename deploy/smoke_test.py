@@ -10,6 +10,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -25,6 +26,71 @@ except ModuleNotFoundError:
 ASSET_RE = re.compile(
     r"""(?:src|href)=["'](?P<url>/assets/[^"'?#]+\.(?P<kind>js|css))(?:[?#][^"']*)?["']"""
 )
+PAPER_LINK_RE = re.compile(rb'href=["\']/paper/[^"\']+["\']')
+
+
+def run_seo_http_smoke(base_url: str) -> list[str]:
+    """Qualify raw paper HTML, canonical errors, discovery HTML, and XML."""
+    failures: list[str] = []
+    status, headers, body = request(urljoin(base_url, "/paper/2607.24653"))
+    paper_html = body.decode("utf-8", "replace")
+    if status != 200:
+        failures.append(f"SEO paper returned {status}")
+    else:
+        for marker in (
+            'data-pwc-initial-document="paper"',
+            "<h1>Kimi K3: Open Frontier Intelligence</h1>",
+            'id="abstract-heading"',
+            'name="citation_arxiv_id" content="2607.24653"',
+            'type="application/ld+json"',
+        ):
+            if marker not in paper_html:
+                failures.append(f"SEO paper is missing {marker}")
+        if "paperswithcode.co/paper/2607.24653" not in headers.get("Link", ""):
+            failures.append("SEO paper canonical Link header is missing")
+
+    status, _, _ = request(urljoin(base_url, "/paper/9999.99999"))
+    if status != 404:
+        failures.append(f"missing SEO paper returned {status}")
+    status, headers, _ = request(
+        urljoin(base_url, "/papers/2607.24653"), allow_redirects=False
+    )
+    if status != 301 or headers.get("Location") != "/paper/2607.24653":
+        failures.append("legacy paper route is not a direct canonical 301")
+
+    status, headers, body = request(urljoin(base_url, "/sitemap.xml"))
+    if status != 200 or "xml" not in headers.get("Content-Type", ""):
+        failures.append(f"sitemap index returned {status} non-XML")
+    else:
+        try:
+            root = ElementTree.fromstring(body)
+            shard = next(
+                (
+                    node.text
+                    for node in root.iter()
+                    if node.tag.endswith("loc")
+                    and node.text
+                    and "/sitemaps/papers-" in node.text
+                ),
+                None,
+            )
+            if not shard:
+                failures.append("sitemap index has no paper shard")
+            else:
+                shard_status, shard_headers, shard_body = request(shard)
+                if shard_status != 200 or "xml" not in shard_headers.get(
+                    "Content-Type", ""
+                ):
+                    failures.append("paper sitemap shard returned non-XML")
+                else:
+                    ElementTree.fromstring(shard_body)
+        except (ElementTree.ParseError, StopIteration):
+            failures.append("sitemap XML did not parse")
+
+    status, _, body = request(urljoin(base_url, "/papers/recent"))
+    if status != 200 or not PAPER_LINK_RE.search(body):
+        failures.append(f"recent paper archive returned {status} without paper links")
+    return failures
 
 
 def request(url: str, *, allow_redirects: bool = True) -> tuple[int, dict, bytes]:
@@ -104,6 +170,7 @@ def run_http_smoke(
 
     if environment == "staging":
         if candidate:
+            failures.extend(run_seo_http_smoke(base_url))
             status, _, _ = request(urljoin(base_url, "/api/v1/papers/1"))
             if status not in {200, 404}:
                 failures.append(f"numeric paper API returned {status}")
@@ -117,6 +184,7 @@ def run_http_smoke(
         return failures
 
     if candidate:
+        failures.extend(run_seo_http_smoke(base_url))
         status, _, body = request(
             urljoin(base_url, "/api/v1/papers/?page=1&page_size=1")
         )

@@ -33,7 +33,7 @@ from backend.services.social_meta_service import (
     inject_paper_meta,
     resolve_social_image_url,
 )
-from backend.utils.exceptions import PaperNotFoundError
+from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
 class _FakeThumbnailService:
@@ -465,12 +465,11 @@ def test_paper_route_returns_404_when_paper_missing(client, monkeypatch):
     response = client.get("/paper/9999.99999")
 
     assert response.status_code == 404
-    # The shell HTML is still returned so the SPA can render its NotFound view
-    # for normal browser visitors.
-    assert '<div id="root">' in response.text
+    assert 'name="robots" content="noindex"' in response.text
+    assert "<h1>Paper not found</h1>" in response.text
 
 
-def test_legacy_papers_route_renders_canonical_link_header(client, monkeypatch):
+def test_legacy_papers_route_redirects_to_canonical_url(client, monkeypatch):
     paper = _make_paper()
     _stub_paper_lookup(monkeypatch, paper)
     _stub_thumbnail_present(monkeypatch, set())  # force fallback image
@@ -478,15 +477,51 @@ def test_legacy_papers_route_renders_canonical_link_header(client, monkeypatch):
     response = client.get(
         "/papers/2504.12516",
         headers={"X-Forwarded-Proto": "https", "Host": "paperswithcode.co"},
+        follow_redirects=False,
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 301
+    assert response.headers["location"] == "/paper/2504.12516"
+
+
+def test_versioned_alias_redirects_to_canonical_url(client, monkeypatch):
+    paper = _make_paper()
+    _stub_paper_lookup(monkeypatch, paper)
+
+    response = client.get("/paper/2504.12516v2", follow_redirects=False)
+
+    assert response.status_code == 301
+    assert response.headers["location"] == "/paper/2504.12516"
+
+
+def test_database_failure_returns_index_safe_503(client, monkeypatch):
+    def fake(self, identifier, include_resources=False):
+        raise DatabaseError("database unavailable")
+
+    monkeypatch.setattr(PaperService, "get_paper_by_id_or_arxiv", fake)
+    response = client.get("/paper/2504.12516")
+
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["retry-after"] == "60"
+    assert 'name="robots" content="noindex"' in response.text
+
+
+def test_head_matches_get_headers_without_body(client, monkeypatch):
+    paper = _make_paper()
+    _stub_paper_lookup(monkeypatch, paper)
+    _stub_thumbnail_present(monkeypatch, set())
+
+    get_response = client.get("/paper/2504.12516")
+    head_response = client.head("/paper/2504.12516")
+
+    assert head_response.status_code == get_response.status_code == 200
+    assert head_response.headers["content-type"] == get_response.headers["content-type"]
     assert (
-        response.headers.get("link")
-        == '<https://paperswithcode.co/paper/2504.12516>; rel="canonical"'
+        head_response.headers["cache-control"] == get_response.headers["cache-control"]
     )
-    body = response.text
-    assert 'og:image" content="https://paperswithcode.co/api/og/default.png"' in body
+    assert head_response.headers["link"] == get_response.headers["link"]
+    assert head_response.content == b""
 
 
 def test_default_og_image_endpoint_returns_png(client):

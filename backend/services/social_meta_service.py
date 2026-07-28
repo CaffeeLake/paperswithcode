@@ -31,6 +31,10 @@ from PIL import Image as PILImage
 
 from backend.models.api import Paper
 from backend.services.thumbnail_service import ThumbnailService
+from backend.services.paper_seo_service import (
+    PaperSeoDocument,
+    render_bibliographic_meta,
+)
 from backend.utils.latex_text import latex_to_plain_text
 
 logger = logging.getLogger(__name__)
@@ -341,7 +345,11 @@ def _replace_or_remove(html: str, pattern: re.Pattern[str]) -> str:
     return pattern.sub("", html, count=1)
 
 
-def inject_paper_meta(html: str, meta: PaperMetaTags) -> str:
+def inject_paper_meta(
+    html: str,
+    meta: PaperMetaTags,
+    document: Optional[PaperSeoDocument] = None,
+) -> str:
     """
     Return ``html`` with paper-specific meta tags replacing the static ones.
 
@@ -368,7 +376,7 @@ def inject_paper_meta(html: str, meta: PaperMetaTags) -> str:
         )
         rewritten = _replace_or_remove(rewritten, pattern)
 
-    block = _render_meta_block(meta)
+    block = _render_meta_block(meta, document)
 
     match = _HEAD_CLOSE_RE.search(rewritten)
     if match:
@@ -378,19 +386,26 @@ def inject_paper_meta(html: str, meta: PaperMetaTags) -> str:
     return rewritten + block
 
 
-def _render_meta_block(meta: PaperMetaTags) -> str:
+def _render_meta_block(
+    meta: PaperMetaTags, document: Optional[PaperSeoDocument] = None
+) -> str:
     title = _escape(meta.title)
     description = _escape(meta.description)
     canonical = _escape(meta.canonical_url)
     image = _escape(meta.image_url)
     image_alt = _escape(meta.image_alt)
 
+    page_title = _escape(document.search_title) if document else title
+    page_description = _escape(document.description) if document else description
+    social_description = (
+        _escape(document.social_description) if document else description
+    )
     lines = [
-        f"    <title>{title}</title>",
-        f'    <meta name="description" content="{description}" />',
+        f"    <title>{page_title}</title>",
+        f'    <meta name="description" content="{page_description}" />',
         f'    <link rel="canonical" href="{canonical}" />',
         f'    <meta property="og:title" content="{title}" />',
-        f'    <meta property="og:description" content="{description}" />',
+        f'    <meta property="og:description" content="{social_description}" />',
         '    <meta property="og:type" content="article" />',
         f'    <meta property="og:url" content="{canonical}" />',
         f'    <meta property="og:image" content="{image}" />',
@@ -415,10 +430,15 @@ def _render_meta_block(meta: PaperMetaTags) -> str:
             '    <meta property="og:site_name" content="Papers with Code" />',
             '    <meta name="twitter:card" content="summary_large_image" />',
             f'    <meta name="twitter:title" content="{title}" />',
-            f'    <meta name="twitter:description" content="{description}" />',
+            f'    <meta name="twitter:description" content="{social_description}" />',
             f'    <meta name="twitter:image" content="{image}" />',
             f'    <meta name="twitter:image:alt" content="{image_alt}" />',
         ]
     )
+
+    if document:
+        lines.append(
+            "    " + render_bibliographic_meta(document).replace("\n", "\n    ")
+        )
 
     return "\n" + "\n".join(lines) + "\n  "

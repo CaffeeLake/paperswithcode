@@ -1,5 +1,5 @@
 """
-Server-side rendered paper-page HTML with per-paper social meta tags.
+Server-rendered paper-page HTML with crawlable content and scholarly metadata.
 
 Paper detail pages are otherwise a pure React SPA, which means crawlers
 that don't execute JavaScript (Twitterbot, Slackbot, Discord, etc.) see
@@ -20,17 +20,22 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Path as FastApiPath, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Depends, Path as FastApiPath
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
 from backend.config import get_settings
 from backend.services.default_og_image import get_default_og_image_bytes
 from backend.services.paper_service import PaperService
+from backend.services.paper_seo_service import (
+    PRODUCTION_ORIGIN,
+    build_paper_seo_document,
+    inject_initial_document,
+    render_initial_paper_document,
+)
 from backend.services.social_meta_service import (
     build_paper_meta,
-    build_request_origin,
     inject_paper_meta,
 )
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
@@ -98,84 +103,117 @@ def _load_index_html() -> Optional[str]:
     return None
 
 
-def _origin_from_request(request: Request) -> str:
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get(
-        "host"
-    )
-    return build_request_origin(forwarded_proto or request.url.scheme, forwarded_host)
-
-
 def _render_paper_html(
     paper_id: str,
-    request: Request,
     db: Session,
     is_legacy_path: bool,
 ) -> Response:
-    index_html = _load_index_html()
-    if index_html is None:
-        return HTMLResponse(
-            "<!doctype html><title>Papers with Code</title>"
-            "<p>Frontend bundle is not available.</p>",
-            status_code=500,
-        )
-
     try:
-        paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
+        paper = PaperService(db).get_paper_by_id_or_arxiv(
+            paper_id, include_resources=True
+        )
     except PaperNotFoundError:
         return HTMLResponse(
-            content=index_html,
+            content=(
+                '<!doctype html><html lang="en"><head>'
+                '<meta charset="utf-8"><meta name="robots" content="noindex">'
+                "<title>Paper not found | Papers with Code</title></head>"
+                "<body><main><h1>Paper not found</h1>"
+                "<p>The requested paper is not available.</p>"
+                '<p><a href="/papers/recent">Browse recent papers</a></p>'
+                "</main></body></html>"
+            ),
             status_code=404,
             headers={"Cache-Control": "no-store"},
         )
     except DatabaseError as exc:
         logger.warning("Database error rendering /paper/%s: %s", paper_id, exc)
         return HTMLResponse(
-            content=index_html,
-            status_code=200,
-            headers={"Cache-Control": "no-store"},
+            content=(
+                '<!doctype html><html lang="en"><head>'
+                '<meta charset="utf-8"><meta name="robots" content="noindex">'
+                "<title>Paper temporarily unavailable | Papers with Code</title>"
+                "</head><body><main><h1>Paper temporarily unavailable</h1>"
+                "<p>Please try again shortly.</p></main></body></html>"
+            ),
+            status_code=503,
+            headers={"Cache-Control": "no-store", "Retry-After": "60"},
         )
 
-    origin = _origin_from_request(request)
     route_identifier = get_paper_route_identifier(
         paper.source, paper.arxiv_id, int(paper.id)
     )
-    meta = build_paper_meta(paper, route_identifier=route_identifier, origin=origin)
-    rendered = inject_paper_meta(index_html, meta)
+    canonical_path = f"/paper/{route_identifier}"
+    if is_legacy_path or paper_id != route_identifier:
+        return RedirectResponse(
+            url=canonical_path,
+            status_code=301,
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    index_html = _load_index_html()
+    if index_html is None:
+        return HTMLResponse(
+            "<!doctype html><title>Papers with Code</title>"
+            "<p>Frontend bundle is not available.</p>",
+            status_code=500,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    document = build_paper_seo_document(paper, route_identifier)
+    meta = build_paper_meta(
+        paper, route_identifier=route_identifier, origin=PRODUCTION_ORIGIN
+    )
+    try:
+        rendered = inject_paper_meta(index_html, meta, document)
+        rendered = inject_initial_document(
+            rendered, render_initial_paper_document(document)
+        )
+    except ValueError as exc:
+        logger.error("Paper shell contract failed: %s", exc)
+        return HTMLResponse(
+            "<!doctype html><title>Papers with Code</title>"
+            "<p>Frontend bundle is not available.</p>",
+            status_code=500,
+            headers={"Cache-Control": "no-store"},
+        )
 
     headers = {
         "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+        "Link": f'<{document.canonical_url}>; rel="canonical"',
     }
-    if is_legacy_path:
-        headers["Link"] = f'<{meta.canonical_url}>; rel="canonical"'
 
     return HTMLResponse(content=rendered, status_code=200, headers=headers)
 
 
-@router.get("/paper/{paper_id}", response_class=HTMLResponse, include_in_schema=False)
+@router.api_route(
+    "/paper/{paper_id}",
+    methods=["GET", "HEAD"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
 def get_paper_page(
-    request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
 ) -> Response:
     """Serve the SPA shell with paper-specific social meta tags."""
-    return _render_paper_html(paper_id, request, db, is_legacy_path=False)
+    return _render_paper_html(paper_id, db, is_legacy_path=False)
 
 
-@router.get("/papers/{paper_id}", response_class=HTMLResponse, include_in_schema=False)
+@router.api_route(
+    "/papers/{paper_id}",
+    methods=["GET", "HEAD"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
 def get_paper_page_legacy(
-    request: Request,
     paper_id: str = FastApiPath(..., description="ArXiv ID or internal paper ID"),
     db: Session = Depends(get_database_session),
 ) -> Response:
     """
-    Legacy alias for ``/paper/{id}`` (singular is canonical).
-
-    The React app already redirects ``/papers/:id`` to ``/paper/:id``
-    client-side. Mirroring that here means crawlers and direct shares
-    of the legacy URL still get a fully populated social card.
+    Redirect the legacy plural shape directly to the resolved canonical route.
     """
-    return _render_paper_html(paper_id, request, db, is_legacy_path=True)
+    return _render_paper_html(paper_id, db, is_legacy_path=True)
 
 
 @router.get(

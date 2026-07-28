@@ -29,6 +29,7 @@ from deploy.install_deploy_tools import (
 )
 from deploy.nginx_validate import (
     CURATION_CALLBACK_LOCATION,
+    SEO_LOCATIONS,
 )
 from deploy.nginx_validate import (
     validate as validate_nginx,
@@ -721,6 +722,26 @@ def test_staging_candidate_smoke_leaves_spa_to_nginx(monkeypatch):
             return 404, {}, b'{"detail":"Paper not found"}'
         if url.endswith("/api/v1/chat/sessions"):
             return 401, {}, b""
+        if url.endswith("/paper/2607.24653"):
+            return (
+                200,
+                {"Link": "<https://paperswithcode.co/paper/2607.24653>; rel=canonical"},
+                b'<main data-pwc-initial-document="paper"><h1>Kimi K3: Open Frontier Intelligence</h1><h2 id="abstract-heading"></h2><meta name="citation_arxiv_id" content="2607.24653"><script type="application/ld+json"></script></main>',
+            )
+        if url.endswith("/paper/9999.99999"):
+            return 404, {}, b""
+        if url.endswith("/papers/2607.24653"):
+            return 301, {"Location": "/paper/2607.24653"}, b""
+        if url.endswith("/sitemap.xml"):
+            return (
+                200,
+                {"Content-Type": "application/xml"},
+                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+            )
+        if url.endswith("/sitemaps/papers-2026-1.xml"):
+            return 200, {"Content-Type": "application/xml"}, b"<urlset/>"
+        if url.endswith("/papers/recent"):
+            return 200, {}, b'<a href="/paper/2607.24653">Kimi K3</a>'
         raise AssertionError(f"unexpected candidate request: {url}")
 
     monkeypatch.setattr(smoke_test, "request", request)
@@ -745,6 +766,26 @@ def test_staging_candidate_smoke_rejects_numeric_paper_server_error(monkeypatch)
             return 500, {}, b"Internal Server Error"
         if url.endswith("/api/v1/chat/sessions"):
             return 401, {}, b""
+        if url.endswith("/paper/2607.24653"):
+            return (
+                200,
+                {"Link": "<https://paperswithcode.co/paper/2607.24653>; rel=canonical"},
+                b'<main data-pwc-initial-document="paper"><h1>Kimi K3: Open Frontier Intelligence</h1><h2 id="abstract-heading"></h2><meta name="citation_arxiv_id" content="2607.24653"><script type="application/ld+json"></script></main>',
+            )
+        if url.endswith("/paper/9999.99999"):
+            return 404, {}, b""
+        if url.endswith("/papers/2607.24653"):
+            return 301, {"Location": "/paper/2607.24653"}, b""
+        if url.endswith("/sitemap.xml"):
+            return (
+                200,
+                {"Content-Type": "application/xml"},
+                b"<sitemapindex><sitemap><loc>https://example.test/sitemaps/papers-2026-1.xml</loc></sitemap></sitemapindex>",
+            )
+        if url.endswith("/sitemaps/papers-2026-1.xml"):
+            return 200, {"Content-Type": "application/xml"}, b"<urlset/>"
+        if url.endswith("/papers/recent"):
+            return 200, {}, b'<a href="/paper/2607.24653">Kimi K3</a>'
         raise AssertionError(f"unexpected candidate request: {url}")
 
     monkeypatch.setattr(smoke_test, "request", request)
@@ -784,6 +825,19 @@ def test_staging_nginx_requires_bearer_authenticated_curation_callback_route():
         staging.replace(CURATION_CALLBACK_LOCATION, "location /missing-callback"),
     )
     assert "staging job-token callback route is missing" in failures
+
+
+def test_nginx_requires_backend_routes_for_seo_surfaces():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    failures = validate_nginx(
+        production.replace(SEO_LOCATIONS[0], "location = /missing-sitemap"),
+        staging,
+    )
+    assert "production SEO route is missing" in " ".join(failures)
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
