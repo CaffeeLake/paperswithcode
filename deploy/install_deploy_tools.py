@@ -18,7 +18,7 @@ COMMANDS = ("pwc-deploy", "pwc-rollback", "pwc-status", "pwc-cleanup")
 RUNTIME_CONTRACT_PATHS = (
     "backend/__init__.py",
     "backend/chat_sandbox_worker/__init__.py",
-    "backend/chat_sandbox_worker/CLI_GUIDE.md",
+    "backend/chat_sandbox_worker/PWC_CLI_SKILL.md",
     "backend/chat_sandbox_worker/contract.py",
     "backend/chat_sandbox_worker/prompt.py",
     "backend/services/__init__.py",

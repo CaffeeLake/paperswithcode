@@ -26,7 +26,7 @@ from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
 
-GUIDE = Path("/opt/pwc/CLI_GUIDE.md")
+GUIDE = Path("/opt/pwc/PWC_CLI_SKILL.md")
 WORKSPACE = Path("/workspace")
 
 

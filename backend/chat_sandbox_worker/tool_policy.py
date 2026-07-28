@@ -114,7 +114,7 @@ class ToolBudget:
         name: str,
         args: dict[str, Any],
         workspace: Path = Path("/workspace"),
-        guide: Path = Path("/opt/pwc/CLI_GUIDE.md"),
+        guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
     ) -> Decision:
         if name not in ALLOWED_TOOLS:
             return Decision(False, "Only Bash, Read, Grep, and WebFetch are available.")

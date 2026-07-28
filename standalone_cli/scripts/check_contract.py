@@ -57,7 +57,7 @@ def main() -> int:
     if parser_commands() != expected:
         raise SystemExit("standalone parser command inventory drifted")
     guide = (
-        REPOSITORY / "backend" / "chat_sandbox_worker" / "CLI_GUIDE.md"
+        REPOSITORY / "backend" / "chat_sandbox_worker" / "PWC_CLI_SKILL.md"
     ).read_text()
     skill = (REPOSITORY / "standalone_cli" / "SKILL.md").read_text()
     for command in COMMANDS:

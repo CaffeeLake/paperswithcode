@@ -45,11 +45,11 @@ image = (
             path.name in {"image.py", "publish_image.py", "__pycache__"}
         ),
     )
-    .add_local_file(WORKER / "CLI_GUIDE.md", "/opt/pwc/CLI_GUIDE.md", copy=True)
+    .add_local_file(WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md", copy=True)
     .add_local_file(STANDALONE / "install.py", "/opt/pwc/install-pwc.py", copy=True)
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
-        "chmod 0644 /opt/pwc/CLI_GUIDE.md /opt/pwc/install-pwc.py",
+        "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
         f"python /opt/pwc/install-pwc.py --version {PWC_CLI_VERSION} --prefix /usr/local",
         "pwc version",
         "pwc --help >/dev/null",

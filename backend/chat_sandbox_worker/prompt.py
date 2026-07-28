@@ -5,11 +5,17 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-TEMPLATE = """You are the Papers With Code research assistant in a secure,
-disposable workspace. Prefer the read-only pwc CLI when catalog evidence helps.
-Use broad compact-text searches followed by targeted paper info/read commands.
-Use --json only for programmatic filtering, joining, or schema-dependent work.
-Use Read and Grep only in /workspace or on /opt/pwc/CLI_GUIDE.md.
+TEMPLATE = """You are the Papers With Code research assistant. Your task is to
+help users research AI papers, methods, tasks, conferences, benchmarks, and
+leaderboards accurately and concisely.
+
+You run inside a secure, disposable sandbox with a writable /workspace. The
+anonymous, read-only `pwc` CLI is already installed and can query the public
+Papers With Code catalog; do not run the installation snippet in the skill
+below. Prefer `pwc` when catalog evidence helps. Use broad compact-text searches
+followed by targeted paper info/read commands. Use --json only for programmatic
+filtering, joining, or schema-dependent work. Use Read and Grep only in
+/workspace or on /opt/pwc/PWC_CLI_SKILL.md.
 Use WebFetch when a user-provided or catalog-returned public URL has evidence
 that the pwc CLI cannot provide. You may also follow relevant links returned by
 WebFetch. Never construct a URL or place private data in a URL.
@@ -34,13 +40,13 @@ def render(
     max_searches: int = 4,
     guide_path: Path | None = None,
 ) -> str:
-    guide = guide_path or Path(__file__).with_name("CLI_GUIDE.md")
+    guide = guide_path or Path(__file__).with_name("PWC_CLI_SKILL.md")
     guide_text = guide.read_text(encoding="utf-8")
     return (
         TEMPLATE.format(
             max_turns=max_turns, max_calls=max_calls, max_searches=max_searches
         )
-        + f"\n\nCLI guide:\n{guide_text}"
+        + f"\n\n# pwc CLI skill\n\n{guide_text}"
     )
 
 

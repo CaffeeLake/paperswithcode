@@ -1,0 +1,85 @@
+name: Sync pwc CLI skill
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-pwc-cli-skill
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    env:
+      UPSTREAM_REPOSITORY: huggingface/pwc-cli
+      UPSTREAM_PATH: standalone_cli/SKILL.md
+      DESTINATION: backend/chat_sandbox_worker/PWC_CLI_SKILL.md
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Fetch and validate upstream skill
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_commit="$(
+            gh api \
+              "repos/${UPSTREAM_REPOSITORY}/commits?path=${UPSTREAM_PATH}&per_page=1" \
+              --jq '.[0].sha'
+          )"
+          [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]
+          upstream_url="https://raw.githubusercontent.com/${UPSTREAM_REPOSITORY}/${upstream_commit}/${UPSTREAM_PATH}"
+          temporary="${RUNNER_TEMP}/pwc-cli-SKILL.md"
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --max-filesize 131072 \
+            "$upstream_url" \
+            --output "$temporary"
+          test "$(sed -n '1p' "$temporary")" = "---"
+          grep -qx 'name: pwc-cli' "$temporary"
+          grep -q 'The standalone parser contains no authentication' "$temporary"
+          if cmp -s "$temporary" "$DESTINATION"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          install -m 0644 "$temporary" "$DESTINATION"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Open sync pull request
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_COMMIT: ${{ steps.sync.outputs.upstream_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="automation/sync-pwc-cli-skill-${UPSTREAM_COMMIT:0:12}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "Sync branch already exists: $branch"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "$DESTINATION"
+          git commit -m "Sync pwc CLI skill"
+          git push --set-upstream origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Sync pwc CLI skill" \
+            --body "Syncs \`${UPSTREAM_PATH}\` from \`${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}\` into the staging sandbox system prompt. Review the prompt change before merging and publishing a new sandbox image."

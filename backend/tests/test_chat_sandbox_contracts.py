@@ -305,7 +305,7 @@ def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():
 def test_tool_policy_rejects_traversal_and_enforces_aggregate_bytes(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    guide = tmp_path / "CLI_GUIDE.md"
+    guide = tmp_path / "PWC_CLI_SKILL.md"
     guide.write_text("guide")
     budget = ToolBudget(
         maximum_calls=12,
@@ -389,6 +389,11 @@ def test_prompt_and_manifest_share_eight_round_contract():
     prompt = render()
     assert "at most 8 tool-use round trips" in prompt
     assert "--json only" in prompt
+    assert "secure, disposable sandbox" in prompt
+    assert "anonymous, read-only `pwc` CLI" in prompt
+    assert "already installed" in prompt
+    assert "# pwc CLI skill" in prompt
+    assert "name: pwc-cli" in prompt
     manifest = build_manifest("a" * 40, "staging")
     assert manifest["chat_runtime"]["system_prompt_sha256"] == sha256()
     assert manifest["chat_runtime"]["new_chat_modal_percentage"] == 100
@@ -401,14 +406,14 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_IMAGE_ID == "im-idyeHjfGih0k01SJfW14ss"
 
 
-def test_image_makes_copied_worker_readable_and_installs_guide():
+def test_image_makes_copied_worker_readable_and_installs_skill():
     source = (
         Path(__file__).resolve().parents[1] / "chat_sandbox_worker" / "image.py"
     ).read_text()
 
-    assert 'WORKER / "CLI_GUIDE.md", "/opt/pwc/CLI_GUIDE.md"' in source
+    assert 'WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md"' in source
     assert '"chmod -R a+rX /opt/pwc/backend"' in source
-    assert '"chmod 0644 /opt/pwc/CLI_GUIDE.md /opt/pwc/install-pwc.py"' in source
+    assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
     assert '"chown pwc-broker:pwc-broker /var/empty/pwc-broker"' in source
 
 
