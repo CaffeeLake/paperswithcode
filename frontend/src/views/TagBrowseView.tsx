@@ -463,7 +463,7 @@ const TagBrowseView: React.FC = () => {
                         to={benchmarkPath(benchmark.slug || benchmark.id, taskSlug)}
                         aria-label={`Compare ${benchmark.best_model_name || "the best model"} with all results on ${benchmark.name}`}
                       >
-                        Compare
+                        See all
                       </Link>
                     </div>
                   </div>
