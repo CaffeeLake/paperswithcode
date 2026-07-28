@@ -52,6 +52,12 @@ jobs:
           INPUT_FULL: ${{ inputs.full }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
+          if ! ssh -o StrictHostKeyChecking=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              "sudo /usr/local/sbin/pwc-cron status | grep -q 'paper_markdown_backfill'"; then
+            echo "paper_markdown_backfill is not activated in the production CRON allowlist"
+            exit 0
+          fi
           REMOTE_COMMAND='sudo /usr/local/sbin/pwc-cron paper_markdown_backfill'
           if [ "$SCHEDULE" = "43 2 * * *" ] || [ "$INPUT_FULL" = "true" ]; then
             REMOTE_COMMAND="$REMOTE_COMMAND --full"
