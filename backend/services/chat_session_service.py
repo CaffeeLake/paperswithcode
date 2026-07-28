@@ -816,6 +816,10 @@ class ChatSessionService:
         user_message = self.db.get(ChatMessageRecord, admission.user_message_id)
         if not user_message or session.active_turn_id != admission.turn_id:
             raise ChatServiceError("stale_turn", 409, "The chat turn lease changed")
+        if finish_reason not in {"success", "max_turns", "tool_limit"}:
+            raise ChatServiceError(
+                "invalid_finish_reason", 422, "Unsupported completion state"
+            )
         validated_blocks = [
             block.model_dump(mode="json", exclude_defaults=True)
             for block in DISPLAY_BLOCKS_ADAPTER.validate_python(display_blocks)
@@ -857,6 +861,7 @@ class ChatSessionService:
             worker_contract_version=admission.worker_contract_version or None,
             pwc_cli_version=admission.pwc_cli_version or None,
             system_prompt_sha256=admission.system_prompt_sha256 or None,
+            finish_reason=finish_reason,
         )
         self.db.add(assistant)
         user_message.status = "complete"

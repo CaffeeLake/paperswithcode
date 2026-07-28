@@ -46,6 +46,7 @@ if (!useHashRouter && typeof window !== "undefined") {
 // for visitors landing on a single route. See PLAN.md §4.
 const FeedView = React.lazy(() => import("@/views/FeedView"));
 const ChatView = React.lazy(() => import("@/views/ChatView"));
+const SharedChatView = React.lazy(() => import("@/views/SharedChatView"));
 const PapersListView = React.lazy(() => import("@/views/PapersListView"));
 const PaperDetailView = React.lazy(() => import("@/views/PaperDetailView"));
 const TagsIndexView = React.lazy(() => import("@/views/TagsIndexView"));
@@ -214,6 +215,10 @@ const Shell: React.FC = () => {
             <Route
               path="/chat/:sessionId?"
               element={isChatEnabled() ? <ChatView /> : <Navigate to="/" replace />}
+            />
+            <Route
+              path="/share/:shareId"
+              element={isChatEnabled() ? <SharedChatView /> : <NotFound />}
             />
             <Route path="/papers" element={<PapersListView />} />
             <Route path="/papers/:arxivId" element={<LegacyPaperRedirect />} />

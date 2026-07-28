@@ -19,6 +19,7 @@ from pydantic import (
 
 StrictText = Annotated[str, StringConstraints(max_length=8000)]
 AuthorName = Annotated[str, StringConstraints(max_length=300)]
+FinishReason = Literal["success", "max_turns", "tool_limit"]
 
 
 class ChatRequest(BaseModel):
@@ -166,8 +167,40 @@ class ChatMessageResponse(BaseModel):
     followups: list[str] = Field(default_factory=list)
     display_blocks: list[DisplayBlock] = Field(default_factory=list)
     model: str | None = None
+    finish_reason: FinishReason | None = None
     error_code: str | None = None
     created_at: datetime
+
+
+class ChatShareSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: uuid.UUID
+    public_path: str = Field(max_length=64)
+    created_at: datetime
+    updated_at: datetime
+
+
+class PublicChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=256_000)
+    display_blocks: list[DisplayBlock] = Field(default_factory=list)
+    citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
+    display_state: Literal["complete", "interrupted", "failed"] = "complete"
+    finish_reason: FinishReason | Literal["stopped"] | None = None
+    error: str | None = Field(default=None, max_length=500)
+
+
+class ChatShareDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    messages: list[PublicChatMessage]
 
 
 class ChatSessionSummary(BaseModel):
@@ -281,7 +314,7 @@ class AnswerDeltaEvent(_StrictEvent):
 class DoneEvent(_StrictEvent):
     type: Literal["done"]
     followups: list[str] = Field(default_factory=list)
-    finish_reason: str = "success"
+    finish_reason: FinishReason = "success"
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
 
 

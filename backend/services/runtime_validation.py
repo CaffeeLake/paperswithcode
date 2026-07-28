@@ -294,6 +294,8 @@ def validate_chat_schema(db) -> None:
                 FROM (VALUES
                     ('chat_sessions'),
                     ('chat_messages'),
+                    ('chat_shares'),
+                    ('chat_share_messages'),
                     ('chat_sandbox_leases'),
                     ('chat_turn_capabilities')
                 ) AS required(name)
@@ -302,14 +304,20 @@ def validate_chat_schema(db) -> None:
         ).all()
     )
     missing = [name for name, resolved in rows.items() if resolved is None]
-    execution_backend = db.execute(
+    required_columns = db.execute(
         text(
             """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'chat_sessions'
-              AND column_name = 'execution_backend'
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE (table_name, column_name) IN (
+                ('chat_sessions', 'execution_backend'),
+                ('chat_messages', 'finish_reason')
+            )
             """
         )
-    ).first()
-    if missing or execution_backend is None:
+    ).all()
+    if missing or set(required_columns) != {
+        ("chat_sessions", "execution_backend"),
+        ("chat_messages", "finish_reason"),
+    }:
         raise RuntimeError("required chat sandbox schema is missing")

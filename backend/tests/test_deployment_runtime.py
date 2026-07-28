@@ -30,6 +30,9 @@ from deploy.install_deploy_tools import (
 from deploy.nginx_validate import (
     CURATION_CALLBACK_LOCATION,
     SEO_LOCATIONS,
+    SHARE_API_LOCATION,
+    SHARE_PAGE_LOCATION,
+    location_block,
 )
 from deploy.nginx_validate import (
     validate as validate_nginx,
@@ -420,10 +423,19 @@ class _ChatSchemaDB:
             names = (
                 "chat_sessions",
                 "chat_messages",
+                "chat_shares",
+                "chat_share_messages",
                 "chat_sandbox_leases",
                 "chat_turn_capabilities",
             )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
+        if "information_schema.columns" in sql:
+            return _ChatSchemaResult(
+                rows=[
+                    ("chat_sessions", "execution_backend"),
+                    ("chat_messages", "finish_reason"),
+                ]
+            )
         return _ChatSchemaResult(first=(1,))
 
 
@@ -1048,6 +1060,47 @@ def test_nginx_public_page_proxies_preserve_accept_and_origin_headers():
     assert "proxy_hide_header Vary" not in production + staging
     assert "proxy_hide_header Link" not in production + staging
     assert "proxy_hide_header Cache-Control" not in production + staging
+
+
+def test_nginx_share_capability_bypasses_only_narrow_public_get_surfaces():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    for config in (production, staging):
+        page = location_block(config, SHARE_PAGE_LOCATION)
+        api = location_block(config, SHARE_API_LOCATION)
+        assert "auth_request" not in page + api
+        assert "limit_except GET" in page
+        assert "limit_except GET" in api
+        assert 'X-Robots-Tag "noindex, nofollow" always' in page
+        assert 'Cache-Control "no-store"' in page
+
+    assets = staging.split("location ^~ /assets/", 1)[1].split("}", 1)[0]
+    auth_me = staging.split("location = /api/v1/auth/me", 1)[1].split("}", 1)[0]
+    owner_api = staging.split("location /api/", 1)[1].split("}", 1)[0]
+    catch_all = staging.split("location / {", 1)[1].split("}", 1)[0]
+    assert "auth_request" not in assets + auth_me
+    assert "auth_request /_admin_check;" in owner_api
+    assert "auth_request /_admin_check;" in catch_all
+
+
+def test_chat_share_migration_is_staging_owned_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_shares.sql"
+    ).read_text()
+
+    assert "current_schema() <> 'staging'" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_shares" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_share_messages" in migration
+    assert migration.count("ON DELETE CASCADE") >= 3
+    assert "ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(64)" in migration
+    assert "ALTER TABLE chat_shares OWNER TO pwc_staging_owner" in migration
+    assert "ALTER TABLE chat_share_messages OWNER TO pwc_staging_owner" in migration
+    assert "TO pwc_staging;" in migration
+    assert "FROM paperswithcode_user;" in migration
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):

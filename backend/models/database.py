@@ -1560,6 +1560,12 @@ class ChatSession(Base):
     messages: Mapped[list["ChatMessageRecord"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", passive_deletes=True
     )
+    share: Mapped[Optional["ChatShare"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
     sandbox_lease: Mapped[Optional["ChatSandboxLease"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
@@ -1624,6 +1630,7 @@ class ChatMessageRecord(Base):
     system_prompt_sha256: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
+    finish_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     attempt_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1"
@@ -1636,6 +1643,9 @@ class ChatMessageRecord(Base):
     )
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
+    share_entries: Mapped[list["ChatShareMessage"]] = relationship(
+        back_populates="message", passive_deletes=True
+    )
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')", name="chat_messages_role_check"
@@ -1657,6 +1667,60 @@ class ChatMessageRecord(Base):
             "turn_id",
             unique=True,
             postgresql_where=text("role = 'user' AND status <> 'superseded'"),
+        ),
+    )
+
+
+class ChatShare(Base):
+    """Stable public capability and current message-manifest snapshot."""
+
+    __tablename__ = "chat_shares"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[ChatSession] = relationship(back_populates="share")
+    messages: Mapped[list["ChatShareMessage"]] = relationship(
+        back_populates="share",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ChatShareMessage.position",
+    )
+
+
+class ChatShareMessage(Base):
+    """One ordered message reference in a public chat snapshot."""
+
+    __tablename__ = "chat_share_messages"
+
+    share_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_shares.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    share: Mapped[ChatShare] = relationship(back_populates="messages")
+    message: Mapped[ChatMessageRecord] = relationship(back_populates="share_entries")
+    __table_args__ = (
+        UniqueConstraint(
+            "share_id", "message_id", name="uq_chat_share_messages_message"
         ),
     )
 

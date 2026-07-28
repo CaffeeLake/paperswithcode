@@ -28,6 +28,8 @@ from backend.models.chat import (
     ChatSessionDetail,
     ChatSessionList,
     ChatSessionSummary,
+    ChatShareDetail,
+    ChatShareSummary,
     CreateSessionRequest,
     UpdateSessionRequest,
     sse_event,
@@ -39,6 +41,7 @@ from backend.services.chat_session_service import (
     ChatSessionService,
     owner_from_user,
 )
+from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.utils.auth import require_user
 
@@ -93,11 +96,14 @@ _admission = _AdmissionControl()
 _rate_limiter = _PrincipalRateLimiter()
 
 
-def _raise(exc: ChatServiceError) -> None:
+def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None:
+    response_headers = dict(headers or {})
+    if exc.status_code == 429:
+        response_headers["Retry-After"] = "5"
     raise HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": str(exc)},
-        headers={"Retry-After": "5"} if exc.status_code == 429 else None,
+        headers=response_headers or None,
     )
 
 
@@ -136,6 +142,7 @@ def _message(row: ChatMessageRecord) -> ChatMessageResponse:
         followups=row.followups or [],
         display_blocks=row.display_blocks or [],
         model=row.model,
+        finish_reason=row.finish_reason,
         error_code=row.error_code,
         created_at=row.created_at,
     )
@@ -214,6 +221,47 @@ def get_session(
         )
     except ChatServiceError as exc:
         _raise(exc)
+
+
+@router.post(
+    "/sessions/{session_id}/share",
+    response_model=ChatShareSummary,
+)
+def create_or_refresh_share(
+    session_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        share = ChatShareService(db, settings).create_or_refresh(
+            owner_from_user(user), session_id
+        )
+        db.commit()
+        db.refresh(share)
+        return ChatShareSummary(
+            share_id=share.id,
+            public_path=f"/share/{share.id}",
+            created_at=share.created_at,
+            updated_at=share.updated_at,
+        )
+    except ChatServiceError as exc:
+        db.rollback()
+        _raise(exc)
+
+
+@router.get("/shares/{share_id}", response_model=ChatShareDetail)
+def get_shared_chat(
+    share_id: str,
+    response: Response,
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return ChatShareService(db, settings).get_public(share_id)
+    except ChatServiceError as exc:
+        _raise(exc, {"Cache-Control": "no-store"})
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionSummary)

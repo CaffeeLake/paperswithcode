@@ -1,0 +1,152 @@
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  CHAT_AUTO_SEND_KEY,
+  CHAT_DRAFT_KEY,
+  CHAT_MODEL_KEY,
+} from "@/lib/chatLaunch";
+import SharedChatView from "@/views/SharedChatView";
+
+const shareId = "11111111-1111-4111-8111-111111111111";
+const payload = {
+  share_id: shareId,
+  created_at: "2026-07-28T20:00:00Z",
+  updated_at: "2026-07-28T20:00:00Z",
+  messages: [
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      role: "user",
+      content: "What is new?",
+      display_blocks: [],
+      citations: [],
+      display_state: "complete",
+      finish_reason: null,
+      error: null,
+    },
+    {
+      id: "33333333-3333-4333-8333-333333333333",
+      role: "assistant",
+      content: "See the paper.",
+      display_blocks: [
+        { kind: "reasoning", text: "Bounded reasoning" },
+        {
+          kind: "tool",
+          schema_version: 2,
+          id: "tool-1",
+          name: "Bash",
+          args: { command: "pwc paper search" },
+          status: "success",
+          took_ms: 5,
+          content: [{ type: "text", text: "Bounded output", truncated: false }],
+          metadata: { exit_code: 0, output_truncated: false },
+        },
+        {
+          kind: "answer",
+          text: "[See the paper](paper:2607.00001).",
+          done: true,
+          citations: [{
+            position: 0,
+            route_id: "2607.00001",
+            title: "Shared citation",
+            source_url: "https://arxiv.org/abs/2607.00001",
+          }],
+        },
+      ],
+      citations: [],
+      display_state: "complete",
+      finish_reason: null,
+      error: null,
+    },
+  ],
+};
+
+function renderView() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[`/share/${shareId}`]}>
+        <Routes>
+          <Route path="/share/:shareId" element={<SharedChatView />} />
+          <Route path="/chat" element={<div>Fresh private chat</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  sessionStorage.clear();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  ));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("SharedChatView", () => {
+  it("loads anonymously and renders only the generic immutable transcript", async () => {
+    renderView();
+
+    expect(await screen.findByText("What is new?")).toBeInTheDocument();
+    expect(screen.getByText("Shared conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Private title")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Thought for/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Bash/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: "See the paper" })).toHaveAttribute(
+      "href",
+      "/paper/2607.00001",
+    );
+    const fetchInit = vi.mocked(fetch).mock.calls[0][1];
+    expect(fetchInit).not.toHaveProperty("credentials");
+    expect(document.title).toBe("Shared conversation");
+    expect(document.head.querySelector('meta[name="robots"]')).toHaveAttribute(
+      "content",
+      "noindex,nofollow",
+    );
+  });
+
+  it("launches a fresh chat with only the new prompt and no model or transcript", async () => {
+    const user = userEvent.setup();
+    sessionStorage.setItem(CHAT_MODEL_KEY, "stale-model");
+    renderView();
+    await screen.findByText("What is new?");
+
+    await user.type(
+      screen.getByPlaceholderText("Ask a new research question…"),
+      "A completely new question",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Fresh private chat")).toBeInTheDocument();
+    expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe("A completely new question");
+    expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
+    expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBeNull();
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain("What is new?");
+  });
+
+  it("renders the same non-enumerating not-found state for a missing capability", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(
+      JSON.stringify({ detail: { code: "share_not_found", message: "Shared conversation not found" } }),
+      { status: 404, headers: { "Content-Type": "application/json" } },
+    ));
+    renderView();
+
+    expect(await screen.findByRole("heading", { name: "Shared conversation not found" })).toBeInTheDocument();
+    expect(screen.getByText("This link is invalid or is no longer available.")).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  });
+});

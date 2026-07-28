@@ -105,7 +105,12 @@ const ReasoningBlockView: React.FC<{
   }
   return (
     <div className="chat-reason-done">
-      <button type="button" className="chat-reason-done-head" onClick={onToggle}>
+      <button
+        type="button"
+        className="chat-reason-done-head"
+        onClick={onToggle}
+        aria-expanded={block.open}
+      >
         <CheckIcon />
         <span>Thought for a few seconds</span>
         <Chevron open={block.open} />

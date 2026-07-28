@@ -17,6 +17,7 @@ export function queueChatLaunch(prompt: string, model?: string): void {
   sessionStorage.setItem(CHAT_DRAFT_KEY, question);
   sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
   if (model) sessionStorage.setItem(CHAT_MODEL_KEY, model);
+  else sessionStorage.removeItem(CHAT_MODEL_KEY);
 }
 
 export function readQueuedChatLaunch(): QueuedChatLaunch | null {

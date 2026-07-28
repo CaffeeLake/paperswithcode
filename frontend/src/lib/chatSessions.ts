@@ -24,8 +24,34 @@ export interface ChatSessionDetail extends ChatSession {
     display_blocks: ChatBlock[];
     citations: ChatCitation[];
     followups: string[];
+    finish_reason?: string | null;
     error_code: string | null;
   }>;
+}
+
+export interface ChatShareSummary {
+  share_id: string;
+  public_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublicChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  display_blocks: ChatBlock[];
+  citations: ChatCitation[];
+  display_state: "complete" | "interrupted" | "failed";
+  finish_reason: string | null;
+  error: string | null;
+}
+
+export interface ChatShareDetail {
+  share_id: string;
+  created_at: string;
+  updated_at: string;
+  messages: PublicChatMessage[];
 }
 
 export interface ChatModelChoice { id: string; label: string }
@@ -49,6 +75,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail?.message || detail || `Chat request failed (${response.status})`);
   }
   return response.status === 204 ? (undefined as T) : response.json();
+}
+
+export class ChatRequestError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+  }
+}
+
+async function publicRequest<T>(path: string): Promise<T> {
+  const response = await fetch(apiUrl(path), {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const detail = payload?.detail;
+    throw new ChatRequestError(
+      detail?.message || detail || `Shared conversation request failed (${response.status})`,
+      response.status,
+    );
+  }
+  return response.json();
 }
 
 export async function listSessions(): Promise<ChatSession[]> {
@@ -76,6 +123,14 @@ export function updateSession(id: string, patch: { title?: string; selected_mode
 
 export function removeSession(id: string): Promise<void> {
   return request(`/api/v1/chat/sessions/${id}`, { method: "DELETE" });
+}
+
+export function createOrRefreshShare(id: string): Promise<ChatShareSummary> {
+  return request(`/api/v1/chat/sessions/${id}/share`, { method: "POST" });
+}
+
+export function getSharedChat(id: string): Promise<ChatShareDetail> {
+  return publicRequest(`/api/v1/chat/shares/${encodeURIComponent(id)}`);
 }
 
 export async function getChatModels(): Promise<{ items: ChatModelChoice[]; default_model: string }> {
@@ -107,6 +162,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
         blocks: restoreBlocks(message.display_blocks),
         followups: message.followups,
         citations: message.citations,
+        finishReason: message.finish_reason ?? undefined,
         streaming: false,
       }];
     }
@@ -118,15 +174,36 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
       status: message.status,
       error: message.status === "complete" ? undefined : message.error_code || message.status,
     };
-    if (message.status !== "error") return [userMessage];
+    if (!["error", "interrupted"].includes(message.status)) return [userMessage];
+    const interrupted = message.status === "interrupted";
     return [userMessage, {
-      id: `${message.id}-error`,
+      id: `${message.id}-${interrupted ? "interrupted" : "error"}`,
       role: "assistant",
       blocks: restoreBlocks(message.display_blocks),
       streaming: false,
-      error: failureMessage(message.error_code),
+      finishReason: interrupted ? "stopped" : undefined,
+      error: interrupted ? undefined : failureMessage(message.error_code),
     }];
   });
+}
+
+export function publicShareToUiMessages(detail: ChatShareDetail): ChatMessage[] {
+  const restoreBlocks = (blocks: ChatBlock[]): ChatBlock[] => blocks.map((block) => block.kind === "reasoning"
+    ? { ...block, active: false, open: false }
+    : block.kind === "tool"
+      ? { ...block, status: block.status === "running" ? "error" as const : block.status, open: false }
+      : { ...block, done: true as const });
+  return detail.messages.map((message): ChatMessage => message.role === "user"
+    ? { id: message.id, role: "user", text: message.content }
+    : {
+        id: message.id,
+        role: "assistant",
+        blocks: restoreBlocks(message.display_blocks),
+        citations: message.citations,
+        finishReason: message.finish_reason ?? undefined,
+        error: message.error ?? undefined,
+        streaming: false,
+      });
 }
 
 export interface ChatSessionGroup { label: string; items: ChatSession[] }

@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Share2 } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import Composer from "@/components/chat/Composer";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons";
+import { useToast } from "@/components/ui/use-toast";
 import { useChat } from "@/hooks/useChat";
 import { isChatLive } from "@/lib/chat";
 import {
@@ -20,6 +22,7 @@ import {
   FALLBACK_CHAT_MODELS,
   type ChatModelChoice,
   type ChatSession,
+  createOrRefreshShare,
   getChatModels,
   getSession,
   groupSessions,
@@ -46,6 +49,7 @@ const ChatView: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, isLoading: authLoading } = useAuth();
+  const { toast } = useToast();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionError, setSessionError] = useState("");
@@ -70,6 +74,8 @@ const ChatView: React.FC = () => {
   const [editingTitle, setEditingTitle] = useState("");
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 900);
+  const [sharePending, setSharePending] = useState(false);
+  const [manualShareUrl, setManualShareUrl] = useState("");
   const manualTitleLockRef = useRef<Set<string>>(new Set());
   const sessionsLoadedRef = useRef(false);
   const routeSessionIdRef = useRef(routeSessionId);
@@ -289,6 +295,32 @@ const ChatView: React.FC = () => {
     }
     catch (error) { setSelectedModel(previousModel); setSessionError(error instanceof Error ? error.message : "Model change failed"); }
   };
+  const shareChat = async () => {
+    if (!routeSessionId || chat.busy || sharePending) return;
+    setSharePending(true);
+    try {
+      const share = await createOrRefreshShare(routeSessionId);
+      const url = new URL(share.public_path, window.location.origin).toString();
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+        await navigator.clipboard.writeText(url);
+        toast({
+          className: "chat-share-toast",
+          duration: 5_000,
+          title: "Public link copied to your clipboard",
+          description: "Anyone with this link can see this conversation.",
+        });
+      } catch {
+        setManualShareUrl(url);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not share this conversation";
+      setSessionError(message);
+      toast({ variant: "destructive", title: "Share failed", description: message });
+    } finally {
+      setSharePending(false);
+    }
+  };
 
   const [headerHeight, setHeaderHeight] = useState(60);
   useLayoutEffect(() => {
@@ -401,6 +433,18 @@ const ChatView: React.FC = () => {
           <span className="chat-topbar-title">{isRouteSessionLoading
             ? current?.title || ""
             : liveTitle || current?.title || (isEmpty ? "" : "New chat")}</span>
+          {routeSessionId && routeStateMatches && routeSessionState?.status === "loaded" && !isEmpty && (
+            <button
+              type="button"
+              className="chat-share-button"
+              onClick={() => void shareChat()}
+              disabled={chat.busy || sharePending || isRouteSessionLoading}
+              aria-label="Share conversation"
+            >
+              {sharePending ? <Spinner /> : <Share2 aria-hidden="true" />}
+              <span>Share</span>
+            </button>
+          )}
         </div>
 
         {isRouteSessionLoading ? <div className="chat-session-loading" role="status" aria-live="polite">
@@ -455,6 +499,28 @@ const ChatView: React.FC = () => {
           </div></div>
         </>}
       </section>
+      {manualShareUrl && (
+        <div className="chat-share-dialog-backdrop" role="presentation" onMouseDown={() => setManualShareUrl("")}>
+          <div
+            className="chat-share-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chat-share-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 id="chat-share-dialog-title">Public link created</h2>
+            <p>It could not be copied automatically. Copy this link manually:</p>
+            <input
+              readOnly
+              value={manualShareUrl}
+              aria-label="Public conversation link"
+              autoFocus
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <button type="button" onClick={() => setManualShareUrl("")}>Close</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

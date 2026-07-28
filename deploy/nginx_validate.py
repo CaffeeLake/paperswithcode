@@ -21,6 +21,14 @@ SEO_LOCATIONS = (
     "location = / {",
     r'location ~ "^/(tasks|task|methods|benchmark|conferences|authors|organizations)/[^/]+(/[^/]+)?$"',
 )
+SHARE_PAGE_LOCATION = (
+    r'location ~ "^/share/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-'
+    r'[0-9a-f]{4}-[0-9a-f]{12}$"'
+)
+SHARE_API_LOCATION = (
+    r'location ~ "^/api/v1/chat/shares/[0-9a-f]{8}-[0-9a-f]{4}-'
+    r'[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"'
+)
 
 
 def _validate_seo_routes(config: str, backend: str, environment: str) -> list[str]:
@@ -45,6 +53,26 @@ def _validate_seo_routes(config: str, backend: str, environment: str) -> list[st
                 f"{environment} SEO route falls through to SPA HTML: {location}"
             )
     return failures
+
+
+def location_block(config: str, location: str) -> str:
+    """Return a complete nginx location block, including nested limit blocks."""
+
+    start = config.find(location)
+    if start < 0:
+        return ""
+    opening = config.find("{", start + len(location))
+    if opening < 0:
+        return ""
+    depth = 0
+    for index in range(opening, len(config)):
+        if config[index] == "{":
+            depth += 1
+        elif config[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return config[start : index + 1]
+    return ""
 
 
 def validate(production: str, staging: str) -> list[str]:
@@ -95,6 +123,36 @@ def validate(production: str, staging: str) -> list[str]:
         failures.append("production public-page fallback is missing")
     if "try_files $uri @staging_public_pages;" not in staging:
         failures.append("staging public-page fallback is missing")
+    for config, backend, environment in (
+        (production, "pwc_production_backend", "production"),
+        (staging, "pwc_staging_backend", "staging"),
+    ):
+        if SHARE_PAGE_LOCATION not in config:
+            failures.append(f"{environment} public share page route is missing")
+        else:
+            block = location_block(config, SHARE_PAGE_LOCATION)
+            if "auth_request" in block:
+                failures.append(f"{environment} public share page uses browser auth")
+            if 'X-Robots-Tag "noindex, nofollow" always' not in block:
+                failures.append(f"{environment} public share page permits indexing")
+            if 'Cache-Control "no-store"' not in block:
+                failures.append(f"{environment} public share page may be cached")
+        if SHARE_API_LOCATION not in config:
+            failures.append(f"{environment} public share API route is missing")
+        else:
+            block = location_block(config, SHARE_API_LOCATION)
+            if "auth_request" in block:
+                failures.append(f"{environment} public share API uses browser auth")
+            if f"proxy_pass http://{backend};" not in block:
+                failures.append(f"{environment} public share API misses {backend}")
+            if "limit_except GET" not in block:
+                failures.append(f"{environment} public share API accepts writes")
+    assets = staging.split("location ^~ /assets/", 1)
+    if len(assets) != 2 or "auth_request" in assets[1].split("}", 1)[0]:
+        failures.append("staging hashed assets are browser-authenticated")
+    auth_me = staging.split("location = /api/v1/auth/me", 1)
+    if len(auth_me) != 2 or "auth_request" in auth_me[1].split("}", 1)[0]:
+        failures.append("staging auth status route is browser-authenticated")
     return failures
 
 
