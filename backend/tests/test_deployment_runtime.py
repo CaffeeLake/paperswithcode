@@ -1103,6 +1103,20 @@ def test_chat_share_migration_is_staging_owned_and_idempotent():
     assert "FROM paperswithcode_user;" in migration
 
 
+def test_staging_role_defaults_to_read_only_outside_application_pool():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/consolidate_staging_schema.sql"
+    ).read_text()
+    connection = (repository / "backend/database/connection.py").read_text()
+    audit = (repository / "deploy/audit_staging_db.py").read_text()
+
+    assert "ALTER ROLE pwc_staging SET default_transaction_read_only = on" in migration
+    assert "ALTER ROLE pwc_staging RESET default_transaction_read_only" not in migration
+    assert 'options += " -c default_transaction_read_only=off"' in connection
+    assert 'read_only_default != "on"' in audit
+
+
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
     first = tmp_path / "first"
     second = tmp_path / "second"
