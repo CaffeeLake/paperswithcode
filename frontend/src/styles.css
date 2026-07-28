@@ -4717,6 +4717,10 @@ html { scroll-behavior: smooth; }
   line-height: 1.45;
   max-width: 74%;
   white-space: pre-wrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.chat-bubble-text {
   -webkit-user-select: text;
   user-select: text;
   cursor: text;

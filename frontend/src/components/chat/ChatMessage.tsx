@@ -199,7 +199,9 @@ const AnswerBlockView: React.FC<{
 
 export const UserMessage: React.FC<{ text: string }> = ({ text }) => (
   <div className="chat-msg chat-msg-user">
-    <div className="chat-bubble">{text}</div>
+    <div className="chat-bubble">
+      <span className="chat-bubble-text">{text}</span>
+    </div>
   </div>
 );
 
