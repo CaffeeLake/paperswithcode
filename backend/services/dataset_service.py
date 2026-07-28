@@ -239,20 +239,6 @@ class DatasetService:
 
         return best_results
 
-    def _best_models_for_datasets(
-        self,
-        dataset_ids: List[int],
-        scoped_task_ids: List[int],
-        is_open: Optional[bool] = None,
-    ) -> dict:
-        """Compatibility projection used by callers that only need model names."""
-        results = self._best_results_for_datasets(
-            dataset_ids, scoped_task_ids, is_open=is_open
-        )
-        return {
-            dataset_id: result["model_name"] for dataset_id, result in results.items()
-        }
-
     def _leaderboard_summary_for_dataset(
         self,
         dataset_id: int,

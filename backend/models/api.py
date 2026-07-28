@@ -1224,6 +1224,18 @@ class TrendingBenchmark(BaseModel):
         None,
         description="Top-ranked model on this benchmark for the scoped task",
     )
+    best_paper_route: Optional[str] = Field(
+        None,
+        description="Route identifier for the paper supplying the top-ranked model",
+    )
+    best_paper_title: Optional[str] = Field(
+        None,
+        description="Title of the paper supplying the top-ranked model",
+    )
+    best_code_url: Optional[str] = Field(
+        None,
+        description="Preferred code repository for the top-ranked model's paper",
+    )
     history: List[BenchmarkTrendPoint] = Field(
         default_factory=list,
         description="Chronological reporting-paper counts for sparkline rendering",

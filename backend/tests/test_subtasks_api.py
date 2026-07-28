@@ -312,6 +312,9 @@ def test_trending_benchmarks_endpoint_exposes_default_window(client):
     assert body["baseline_days"] == 180
     assert body["results"][0]["name"] == "RisingBench"
     assert body["results"][0]["best_model_name"] == "Model 500"
+    assert body["results"][0]["best_paper_title"] == "Paper 500"
+    assert body["results"][0]["best_paper_route"] == "2607.00500"
+    assert body["results"][0]["best_code_url"] is None
     assert len(body["results"][0]["history"]) == 6
 
 

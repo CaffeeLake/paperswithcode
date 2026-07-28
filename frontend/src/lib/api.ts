@@ -368,6 +368,9 @@ export interface TrendingBenchmark {
   rate_change?: number | null;
   latest_reported_on?: string | null;
   best_model_name?: string | null;
+  best_paper_route?: string | null;
+  best_paper_title?: string | null;
+  best_code_url?: string | null;
   history: BenchmarkTrendPoint[];
 }
 

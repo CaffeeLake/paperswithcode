@@ -116,7 +116,7 @@ class BenchmarkTrendService:
             bucket_days=bucket_days,
             history_buckets=history_buckets,
         )
-        best_models = DatasetService(self.db)._best_models_for_datasets(
+        best_results = DatasetService(self.db)._best_results_for_datasets(
             [row[0].id for row in rows],
             scoped_task_ids,
             is_open=is_open,
@@ -135,6 +135,7 @@ class BenchmarkTrendService:
             baseline = int(baseline or 0)
             recent_velocity = recent * 30.0 / recent_days
             baseline_velocity = baseline * 30.0 / baseline_days
+            best_result = best_results.get(dataset.id, {})
             results.append(
                 TrendingBenchmark(
                     id=dataset.id,
@@ -152,7 +153,10 @@ class BenchmarkTrendService:
                         else None
                     ),
                     latest_reported_on=latest_reported_on,
-                    best_model_name=best_models.get(dataset.id),
+                    best_model_name=best_result.get("model_name"),
+                    best_paper_route=best_result.get("paper_route"),
+                    best_paper_title=best_result.get("paper_title"),
+                    best_code_url=best_result.get("code_url"),
                     history=history.get(dataset.id, []),
                 )
             )

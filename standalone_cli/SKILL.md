@@ -23,6 +23,9 @@ pwc benchmark --name "SWE-Bench Pro"
 pwc version
 ```
 
+Task-scoped benchmark lists include the best model, paper title, and preferred
+code repository for each row.
+
 The standalone parser contains no authentication, mutation, ingestion,
 publication, image, CRON, embedding, or infrastructure commands. Do not
 substitute repository-maintenance commands into a public or sandbox workflow.

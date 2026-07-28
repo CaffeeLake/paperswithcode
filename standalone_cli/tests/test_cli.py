@@ -165,6 +165,9 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
                 "all_time_paper_count": 5,
                 "trend_score": 1.3333,
                 "best_model_name": "Reader 2",
+                "best_paper_title": "Recent OCR Paper",
+                "best_paper_route": "2607.00002",
+                "best_code_url": "https://github.com/example/reader-2",
             },
             {
                 "id": "1",
@@ -173,6 +176,9 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
                 "all_time_paper_count": 20,
                 "trend_score": 0.3333,
                 "best_model_name": "Reader 1",
+                "best_paper_title": "Classic OCR Paper",
+                "best_paper_route": "2001.00001",
+                "best_code_url": None,
             },
         ],
     }
@@ -192,9 +198,13 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
 
     assert calls[0][0] == "tasks/OCR/trending-benchmarks"
     assert calls[0][1]["min_recent_papers"] == 0
-    assert output.getvalue().splitlines()[1:3] == [
-        "2\tRecent OCR\t4\t1.3333\tReader 2",
-        "1\tClassic OCR\t1\t0.3333\tReader 1",
+    assert output.getvalue().splitlines() == [
+        "id\tname\trecent_papers\ttrend_score\tbest_model\tpaper_title\tcode",
+        (
+            "2\tRecent OCR\t4\t1.3333\tReader 2\tRecent OCR Paper"
+            "\thttps://github.com/example/reader-2"
+        ),
+        "1\tClassic OCR\t1\t0.3333\tReader 1\tClassic OCR Paper\t",
     ]
 
 
