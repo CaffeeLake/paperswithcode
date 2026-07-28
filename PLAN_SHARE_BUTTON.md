@@ -191,6 +191,15 @@ staging owner/application grants established by the other chat migrations.
 Update `validate_chat_schema()` so staging readiness fails if either new table
 is absent.
 
+The consistency pass found that `ChatSessionService.complete_turn()` accepts a
+`finish_reason`, and the live UI can display it, but
+`ChatMessageRecord` currently discards it. Add a nullable, bounded
+`finish_reason` column to `chat_messages` in the same migration, persist the
+validated value on completed assistant rows, expose it in authenticated
+history, and restore it in `toUiMessages()`. The public projection maps it to
+the same user-facing early-stop note. Without this addition, a share created
+immediately after a turn could differ from the same chat after reload.
+
 Do not use a deterministic hash of the session ID or username. Generate
 the share UUID with `uuid.uuid4()` and do not log full share URLs at normal log
 levels.
@@ -228,7 +237,11 @@ snapshot intact.
 `get_public(share_id)` must query only through `chat_shares`, load manifest
 rows in `position` order, and build an allowlisted public projection:
 
-- user rows expose only their prompt text;
+- completed user rows expose their prompt text;
+- failed/interrupted user rows expand exactly as `toUiMessages()` does: one
+  public user prompt plus a derived public assistant message containing that
+  row's bounded partial `display_blocks` and generic user-facing failure or
+  interruption notice;
 - assistant rows expose the complete validated `display_blocks` projection,
   including reasoning, tool calls/results, answer blocks, and their bounded
   citation snapshots;
@@ -260,6 +273,36 @@ The public GET must not depend on `require_user`, set `Cache-Control: no-store`,
 and return the same generic 404 for a missing or source-deleted share. The POST
 response returns a relative `public_path` (`/share/<id>`), leaving origin
 selection to the browser.
+
+Accept the public path parameter as a string and parse the UUID inside the
+service/adapter so malformed and unknown capabilities both produce the same
+generic 404 instead of FastAPI's distinguishable 422 validation response.
+
+### Public edge routing
+
+The production nginx config already serves hashed frontend assets publicly,
+but the staging host currently places the SPA, assets, and all `/api/` routes
+behind its admin gate. Anonymous shared links therefore require explicit,
+reviewed locations in both checked-in nginx templates:
+
+- match only `/share/<uuid>`, serve the current SPA shell with
+  `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`;
+- proxy only `GET`/`HEAD /api/v1/chat/shares/<uuid>` without browser auth and
+  retain the API's `no-store` header;
+- on staging, allow hashed `/assets/` files without the admin gate so the public
+  share shell can load; this exposes immutable frontend code, not private
+  staging data or API access;
+- on staging, allow `GET /api/v1/auth/me` through to FastAPI without the nginx
+  admin gate so the global `AuthProvider` receives its normal 200/401 response
+  instead of following an OAuth redirect;
+- keep the owner POST endpoint, `/chat`, every other staging SPA route, and all
+  other staging APIs behind their existing authentication boundaries.
+
+Keep the client-side `noindex,nofollow` metadata as defense in depth. The HTTP
+`X-Robots-Tag` is the authoritative crawler control because the SPA shell is
+otherwise served before React runs. Applying these checked-in nginx changes is
+a separate explicit `pwc-nginx` operation; an application deploy alone does
+not install them.
 
 ## Frontend design
 
@@ -357,12 +400,18 @@ Add focused tests alongside `backend/tests/test_chat_endpoint.py` or in
 - public GET preserves the complete validated browser transcript, including
   reasoning and tool blocks, while excluding raw SDK entries, model routes,
   capabilities, followups, owner identity, and other private persistence data;
+- authenticated history and public snapshots preserve the validated
+  `finish_reason`/user-facing early-stop note across reloads;
 - missing and source-deleted IDs return the same 404;
 - deleting a chat cascades through both share tables;
 - public GET sends `Cache-Control: no-store`;
 - API models reject unexpected fields.
 
 Extend runtime/deployment schema tests for both new tables and migration grants.
+Add nginx validation tests proving that only the shared-page GET, its public GET
+API, hashed assets, and `/api/v1/auth/me` bypass staging admin auth, and that
+the owner POST and all unrelated staging routes remain gated. Assert the
+share-page HTTP response carries `X-Robots-Tag: noindex, nofollow`.
 
 ### Frontend tests
 
@@ -396,20 +445,25 @@ Do not run `npm run build` as a routine validation step.
 ## Implementation sequence
 
 1. Add the two tables, ORM relationships, migration documentation, and staging
-   readiness validation.
+   readiness validation; persist the currently dropped `finish_reason`.
 2. Add strict share API models and `ChatShareService`.
 3. Add the authenticated create/refresh route and the anonymous public GET
    with server-side projection filtering.
-4. Update the frontend API types and request helpers.
-5. Implement the owner top-bar Share flow, clipboard fallback, and toast.
-6. Add the anonymous shared-chat route and read-only transcript view.
-7. Add backend and frontend tests, then run the focused validation commands.
-8. Commit the intended source changes to `main`, push `origin main`, and deploy
+4. Add the narrow public nginx routing and authoritative no-index headers while
+   retaining the staging owner-route/API gates.
+5. Update the frontend API types and request helpers.
+6. Implement the owner top-bar Share flow, clipboard fallback, and toast.
+7. Add the anonymous shared-chat route, immutable transcript, and fresh-chat
+   composer.
+8. Add backend, frontend, and nginx tests, then run the focused validation
+   commands.
+9. Commit the intended source changes to `main`, push `origin main`, and deploy
    that exact commit to staging following the repository publishing policy.
    Apply the additive staging migration before the new release is made active,
-   then smoke-test the owner flow, an anonymous/incognito shared URL,
-   source-chat deletion invalidation, `/health`, `/`, `/share/<test-id>`, and
-   the public share API.
+   apply the separately reviewed staging nginx template with `pwc-nginx`, then
+   smoke-test the owner flow, an anonymous/incognito shared URL, source-chat
+   deletion invalidation, no-index headers, `/health`, `/`,
+   `/share/<test-id>`, and the public share API.
 
 ## Out of scope for V1
 
