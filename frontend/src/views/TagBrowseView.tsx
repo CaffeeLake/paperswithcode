@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Github, Trophy } from "lucide-react";
+import { ArrowRight, Github, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
@@ -463,7 +463,8 @@ const TagBrowseView: React.FC = () => {
                         to={benchmarkPath(benchmark.slug || benchmark.id, taskSlug)}
                         aria-label={`Compare ${benchmark.best_model_name || "the best model"} with all results on ${benchmark.name}`}
                       >
-                        See all
+                        <span>See all</span>
+                        <ArrowRight size={11} strokeWidth={2} aria-hidden="true" />
                       </Link>
                     </div>
                   </div>

@@ -2970,6 +2970,7 @@ a.paper-resource.is-link:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 30px;
   padding: 0 10px;
   border: 1px solid var(--accent);
@@ -2983,9 +2984,15 @@ a.paper-resource.is-link:focus-visible {
   white-space: nowrap;
   transition: color 0.15s, background 0.15s;
 }
+.bench-row-compare a svg {
+  transition: transform 0.15s;
+}
 .bench-row-compare a:hover {
   color: var(--bg);
   background: var(--accent);
+}
+.bench-row-compare a:hover svg {
+  transform: translateX(2px);
 }
 .bench-row-compare a:focus-visible {
   outline: 2px solid var(--accent);
