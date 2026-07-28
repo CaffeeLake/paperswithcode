@@ -230,7 +230,6 @@ def test_benchmark_list_groups_top_benchmarks_as_markdown(monkeypatch):
                                 "slug": "imagenet",
                                 "full_name": "ImageNet Large Scale Visual Recognition",
                                 "evaluation_count": 1234,
-                                "featured_rank": 1,
                             }
                         ],
                     }
