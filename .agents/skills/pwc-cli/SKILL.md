@@ -113,9 +113,12 @@ trending metrics are participating in the composite paper score.
   `--metric`, and `--source-paper`. `[--full-name TEXT --url URL --hf-url URL
   --homepage URL --supports-harness --json]`
 - `pwc benchmark list` — List/filter benchmarks. `[--page N --page-size N
-  --search TEXT --name TEXT --full-name TEXT --task SLUG_OR_ID
+  --search TEXT --task SLUG_OR_ID
   --include-descendants --min-eval-count N --is-open true|false
-  --order-by name|full_name|created_at|paper_count --order-dir asc|desc --json]`
+  --order-by name|full_name|created_at|paper_count --order-dir asc|desc
+  --group-by-area --flat --area NAME_OR_ID --benchmarks-per-task N --json]`
+- `pwc benchmark --name NAME` — Show one benchmark and its leaderboard.
+  `NAME` accepts the exact benchmark name, full name, slug, or ID.
 
 ## Images and thumbnails
 

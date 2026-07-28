@@ -26,7 +26,9 @@ pwc version
 
 Benchmark lists group the top benchmarks under each visible task by research
 area in an interactive terminal. Use `--flat` for the paginated dataset table
-or `--group-by-area` to force Markdown when piping. Task-scoped lists include
+or `--group-by-area` to force Markdown when piping. Grouped rows include the
+benchmark name, full name when distinct, slug, and ID; use the slug with
+`pwc benchmark --name SLUG` for leaderboard details. Task-scoped lists include
 the best model, paper title, and preferred code repository for each row.
 
 The standalone parser contains no authentication, mutation, ingestion,
