@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { UserMessage } from "@/components/chat/ChatMessage";
+import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
+import type { ChatMessage as ChatMessageType } from "@/lib/chat";
 
 afterEach(() => {
   delete (document as Partial<Document>).caretPositionFromPoint;
@@ -64,5 +65,57 @@ describe("UserMessage", () => {
     const allowed = fireEvent.mouseDown(message, { button: 0, detail: 1 });
 
     expect(allowed).toBe(true);
+  });
+});
+
+describe("AssistantMessage", () => {
+  const renderAssistant = (msg: ChatMessageType) => render(
+    <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
+  );
+
+  it("shows a caret only on the active tail answer block", () => {
+    const { container } = renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [
+        { kind: "answer", text: "First answer segment.", done: false },
+        {
+          kind: "tool",
+          id: "tool-1",
+          name: "Bash",
+          args: { command: "pwc benchmark list" },
+          status: "done",
+          hits: 0,
+          took_ms: 10,
+          results: [],
+          open: false,
+        },
+        { kind: "answer", text: "Latest answer segment.", done: false },
+      ],
+    });
+
+    expect(container.querySelectorAll(".chat-caret")).toHaveLength(1);
+  });
+
+  it("does not show an answer caret while a tool is running", () => {
+    const { container } = renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [
+        { kind: "answer", text: "I will check the benchmark.", done: false },
+        {
+          kind: "tool",
+          id: "tool-1",
+          name: "Bash",
+          args: { command: "pwc benchmark list" },
+          status: "running",
+          open: false,
+        },
+      ],
+    });
+
+    expect(container.querySelectorAll(".chat-caret")).toHaveLength(0);
   });
 });

@@ -221,10 +221,11 @@ const AnswerBlockView: React.FC<{
   block: AnswerBlock;
   papers: Record<string, ChatPaperHit>;
   citations: Record<string, ChatCitation>;
-}> = ({ block, papers, citations }) => (
+  streaming: boolean;
+}> = ({ block, papers, citations, streaming }) => (
   <div className="chat-answer">
-    <ChatMarkdown text={block.text} streaming={!block.done} papers={papers} citations={citations} />
-    {!block.done && Boolean(block.text.trim()) && <Caret />}
+    <ChatMarkdown text={block.text} streaming={streaming} papers={papers} citations={citations} />
+    {streaming && Boolean(block.text.trim()) && <Caret />}
   </div>
 );
 
@@ -273,7 +274,15 @@ export const AssistantMessage: React.FC<{
             <ToolBlockView key={key} block={b} papers={papers} onToggle={() => onToggleBlock(msg.id, i)} />
           );
         }
-        return <AnswerBlockView key={key} block={b} papers={papers} citations={citations} />;
+        return (
+          <AnswerBlockView
+            key={key}
+            block={b}
+            papers={papers}
+            citations={citations}
+            streaming={Boolean(msg.streaming && i === (msg.blocks?.length ?? 0) - 1)}
+          />
+        );
       })}
       {msg.error && <div className="chat-error">The assistant hit an error: {msg.error}</div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (
