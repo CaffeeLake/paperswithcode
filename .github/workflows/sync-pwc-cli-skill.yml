@@ -1,4 +1,4 @@
-name: Sync pwc CLI skill
+name: Sync chat prompt context
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: sync-pwc-cli-skill
+  group: sync-chat-prompt-context
   cancel-in-progress: false
 
 permissions:
@@ -20,12 +20,14 @@ jobs:
       UPSTREAM_REPOSITORY: huggingface/pwc-cli
       UPSTREAM_PATH: standalone_cli/SKILL.md
       DESTINATION: backend/chat_sandbox_worker/PWC_CLI_SKILL.md
+      TAXONOMY_URL: https://paperswithcode.co/api/v1/areas/with-tasks/
+      TAXONOMY_DESTINATION: backend/chat_sandbox_worker/TASK_CATALOG.md
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Fetch and validate upstream skill
+      - name: Fetch and validate prompt context
         id: sync
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,7 +41,7 @@ jobs:
           )"
           [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]
           upstream_url="https://raw.githubusercontent.com/${UPSTREAM_REPOSITORY}/${upstream_commit}/${UPSTREAM_PATH}"
-          temporary="${RUNNER_TEMP}/pwc-cli-SKILL.md"
+          skill_temporary="${RUNNER_TEMP}/pwc-cli-SKILL.md"
           curl \
             --fail \
             --location \
@@ -47,27 +49,53 @@ jobs:
             --show-error \
             --max-filesize 131072 \
             "$upstream_url" \
-            --output "$temporary"
-          test "$(sed -n '1p' "$temporary")" = "---"
-          grep -qx 'name: pwc-cli' "$temporary"
-          grep -q 'The standalone parser contains no authentication' "$temporary"
-          if cmp -s "$temporary" "$DESTINATION"; then
+            --output "$skill_temporary"
+          test "$(sed -n '1p' "$skill_temporary")" = "---"
+          grep -qx 'name: pwc-cli' "$skill_temporary"
+          grep -q 'The standalone parser contains no authentication' "$skill_temporary"
+
+          taxonomy_json="${RUNNER_TEMP}/pwc-task-taxonomy.json"
+          taxonomy_temporary="${RUNNER_TEMP}/TASK_CATALOG.md"
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            --max-filesize 4194304 \
+            "$TAXONOMY_URL" \
+            --output "$taxonomy_json"
+          python backend/chat_sandbox_worker/render_task_catalog.py \
+            < "$taxonomy_json" \
+            > "$taxonomy_temporary"
+          grep -qx '### Audio' "$taxonomy_temporary"
+          grep -qx '### Vision' "$taxonomy_temporary"
+
+          if cmp -s "$skill_temporary" "$DESTINATION" \
+            && cmp -s "$taxonomy_temporary" "$TAXONOMY_DESTINATION"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          install -m 0644 "$temporary" "$DESTINATION"
+          install -m 0644 "$skill_temporary" "$DESTINATION"
+          install -m 0644 "$taxonomy_temporary" "$TAXONOMY_DESTINATION"
+          context_sha="$(
+            sha256sum "$skill_temporary" "$taxonomy_temporary" \
+              | sha256sum \
+              | cut -d ' ' -f 1
+          )"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
+          echo "context_sha=$context_sha" >> "$GITHUB_OUTPUT"
 
       - name: Open sync pull request
         if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_COMMIT: ${{ steps.sync.outputs.upstream_commit }}
+          CONTEXT_SHA: ${{ steps.sync.outputs.context_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          branch="automation/sync-pwc-cli-skill-${UPSTREAM_COMMIT:0:12}"
+          branch="automation/sync-chat-prompt-context-${CONTEXT_SHA:0:12}"
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             echo "Sync branch already exists: $branch"
             exit 0
@@ -75,11 +103,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add "$DESTINATION"
-          git commit -m "Sync pwc CLI skill"
+          git add "$DESTINATION" "$TAXONOMY_DESTINATION"
+          git commit -m "Sync chat prompt context"
           git push --set-upstream origin "$branch"
           gh pr create \
             --base main \
             --head "$branch" \
-            --title "Sync pwc CLI skill" \
-            --body "Syncs \`${UPSTREAM_PATH}\` from \`${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}\` into the staging sandbox system prompt. Review the prompt change before merging and publishing a new sandbox image."
+            --title "Sync chat prompt context" \
+            --body "Syncs \`${UPSTREAM_PATH}\` from \`${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}\` and refreshes the bounded public area/task catalog embedded in the staging sandbox system prompt. Review the prompt changes before merging and publishing a new sandbox image."

@@ -19,6 +19,7 @@ RUNTIME_CONTRACT_PATHS = (
     "backend/__init__.py",
     "backend/chat_sandbox_worker/__init__.py",
     "backend/chat_sandbox_worker/PWC_CLI_SKILL.md",
+    "backend/chat_sandbox_worker/TASK_CATALOG.md",
     "backend/chat_sandbox_worker/contract.py",
     "backend/chat_sandbox_worker/prompt.py",
     "backend/services/__init__.py",

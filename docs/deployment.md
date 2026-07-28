@@ -109,12 +109,14 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    while disk capacity is provider-managed until bounded snapshots are enabled.
 
 The worker system prompt embeds
-`backend/chat_sandbox_worker/PWC_CLI_SKILL.md`. The hourly
-`sync-pwc-cli-skill.yml` workflow compares that file with
-`huggingface/pwc-cli:standalone_cli/SKILL.md` and opens a review pull request
-when upstream changes. After merging a prompt sync, publish a new immutable
-Modal image, commit its `MODAL_IMAGE_ID`, and deploy that exact commit to
-staging; an application deploy cannot alter an already-published worker image.
+`backend/chat_sandbox_worker/PWC_CLI_SKILL.md` plus the bounded area/task
+taxonomy in `backend/chat_sandbox_worker/TASK_CATALOG.md`. The hourly
+`sync-pwc-cli-skill.yml` workflow compares the skill with
+`huggingface/pwc-cli:standalone_cli/SKILL.md`, regenerates the taxonomy from the
+public catalog, and opens a review pull request when either prompt input
+changes. After merging a prompt sync, publish a new immutable Modal image,
+commit its `MODAL_IMAGE_ID`, and deploy that exact commit to staging; an
+application deploy cannot alter an already-published worker image.
 
 Before any non-zero rollout, deploy two distinct zero-percent bridge commits so
 both `current` and `previous` understand `modal_cli`. Then run the operator-only

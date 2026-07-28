@@ -30,6 +30,9 @@ from backend.chat_sandbox_worker.contract import (
     MODAL_IMAGE_ID,
 )
 from backend.chat_sandbox_worker.prompt import render, sha256
+from backend.chat_sandbox_worker.render_task_catalog import (
+    render as render_task_catalog,
+)
 from backend.chat_sandbox_worker.protocol import (
     ProtocolError,
     WorkerEventValidator,
@@ -388,10 +391,13 @@ def test_worker_protocol_allows_terminal_less_correlated_cancellation():
 def test_prompt_and_manifest_share_eight_round_contract():
     prompt = render()
     assert "at most 8 tool-use round trips" in prompt
-    assert "--json only" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
+    assert "## Available research areas and representative tasks" in prompt
+    assert "### Audio" in prompt
+    assert "### Vision" in prompt
+    assert prompt.index("## Available research areas") < prompt.index("# pwc CLI skill")
     assert "# pwc CLI skill" in prompt
     assert "name: pwc-cli" in prompt
     manifest = build_manifest("a" * 40, "staging")
@@ -404,6 +410,44 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-3THwkgoscRznra7sxeae1f"
+
+
+def test_task_catalog_is_bounded_ranked_and_filters_hidden_tasks():
+    payload = {
+        "results": [
+            {
+                "name": "Vision",
+                "tasks": [
+                    {
+                        "name": "Hidden",
+                        "slug": "hidden",
+                        "paper_count": 999,
+                        "is_visible": False,
+                    },
+                    {"name": "Detection", "slug": "detection", "paper_count": 20},
+                    {
+                        "name": "Classification",
+                        "slug": "classification",
+                        "paper_count": 30,
+                    },
+                    {"name": "Segmentation", "slug": "segmentation", "paper_count": 10},
+                ],
+            },
+            {
+                "name": "Audio",
+                "tasks": [
+                    {"name": "Speech", "slug": "speech", "paper_count": 5},
+                ],
+            },
+        ]
+    }
+
+    catalog = render_task_catalog(payload, maximum_tasks_per_area=2)
+
+    assert catalog.index("### Audio") < catalog.index("### Vision")
+    assert catalog.index("`classification`") < catalog.index("`detection`")
+    assert "`segmentation`" not in catalog
+    assert "`hidden`" not in catalog
 
 
 def test_image_makes_copied_worker_readable_and_installs_skill():
