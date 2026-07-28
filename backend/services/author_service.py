@@ -5,13 +5,25 @@ This service provides methods for retrieving and managing author data,
 including pagination, filtering, and paper relationships.
 """
 
+import re
 from typing import Optional
+
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_
 
 from backend.models.database import Author as DBAuthor, Paper as DBPaper, PaperAuthor
 from backend.models.api import Author, Authors, Papers
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+
+
+def normalize_arxiv_author_name(full_name: str) -> str:
+    """Normalize an author name returned by arXiv without runtime side effects."""
+    if not full_name or not full_name.strip():
+        return "Unknown Author"
+
+    name = re.sub(r"\s+", " ", full_name.strip())
+    name = re.sub(r"^\(.*?\)\s*", "", name)
+    return re.sub(r"\s*\(.*?\)$", "", name)
 
 
 class AuthorService:

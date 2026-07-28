@@ -37,6 +37,7 @@ from backend.services.external_resource_service import (
     ExternalResourceInput,
     ExternalResourceService,
 )
+from backend.services.author_service import normalize_arxiv_author_name
 from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
 from backend.services.badge_service import (
@@ -1094,15 +1095,9 @@ async def add_authors_to_paper(
         paper: Paper database object
         author_names: List of author names from ArXiv
     """
-    from backend.database.authors_setup.populate_missing_authors_from_arxiv import (
-        ArxivAuthorNameParser,
-    )
-
-    parser = ArxivAuthorNameParser()
-
     for order, full_name in enumerate(author_names, start=1):
         # Parse author name
-        name = parser.parse_name(full_name)
+        name = normalize_arxiv_author_name(full_name)
 
         # Find or create author
         author = session.query(Author).filter(Author.name == name).first()
