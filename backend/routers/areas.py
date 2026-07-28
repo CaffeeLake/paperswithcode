@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
-from backend.models.api import Area, Areas, AreasWithTasks, Tasks
+from backend.models.api import (
+    Area,
+    Areas,
+    AreasWithTaskBenchmarks,
+    AreasWithTasks,
+    Tasks,
+)
 from backend.services.area_service import AreaService
 from backend.services.task_service import TaskService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
@@ -122,6 +128,31 @@ def get_areas_with_tasks(
     try:
         area_service = AreaService(db)
         return area_service.get_areas_with_tasks()
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/areas/with-task-benchmarks/",
+    response_model=AreasWithTaskBenchmarks,
+    summary="Get research areas, tasks, and top benchmark previews",
+)
+def get_areas_with_task_benchmarks(
+    benchmarks_per_task: int = Query(
+        3, ge=1, le=10, description="Maximum benchmarks returned per task"
+    ),
+    min_eval_count: int = Query(
+        2, ge=0, description="Minimum logical leaderboard rows per benchmark"
+    ),
+    db: Session = Depends(get_database_session),
+):
+    """Return a bounded areas → tasks → top benchmarks taxonomy for CLI use."""
+    try:
+        area_service = AreaService(db)
+        return area_service.get_areas_with_task_benchmarks(
+            benchmarks_per_task=benchmarks_per_task,
+            min_eval_count=min_eval_count,
+        )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 

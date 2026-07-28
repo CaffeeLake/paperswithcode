@@ -39,6 +39,10 @@ def _page_size(value: str) -> int:
     return _bounded(int(value), 1, 100, "--page-size")
 
 
+def _benchmarks_per_task(value: str) -> int:
+    return _bounded(int(value), 1, 10, "--benchmarks-per-task")
+
+
 def _clean(value: object) -> str:
     return (
         str(value or "")
@@ -242,6 +246,22 @@ def paper_lineage(args: argparse.Namespace, client: Client) -> int:
 
 
 def benchmark_list(args: argparse.Namespace, client: Client) -> int:
+    automatic_grouping = (
+        sys.stdout.isatty()
+        and not args.json
+        and not args.flat
+        and not args.task
+        and not args.search
+        and not args.include_descendants
+        and args.is_open is None
+        and args.order_by is None
+        and args.order_dir == "asc"
+        and args.page == 1
+        and args.page_size == 50
+    )
+    if args.group_by_area or automatic_grouping:
+        return _benchmark_list_grouped(args, client)
+
     if args.task and args.order_by in (None, "trending"):
         trend_payload = client.get(
             f"tasks/{quote(args.task, safe='')}/trending-benchmarks",
@@ -331,6 +351,96 @@ def benchmark_list(args: argparse.Namespace, client: Client) -> int:
             )
 
     return _emit_page(payload, args, render)
+
+
+def _benchmark_list_grouped(args: argparse.Namespace, client: Client) -> int:
+    incompatible = (
+        args.task
+        or args.search
+        or args.include_descendants
+        or args.is_open is not None
+        or args.order_by is not None
+        or args.order_dir != "asc"
+        or args.page != 1
+        or args.page_size != 50
+    )
+    if incompatible:
+        raise ResponseError(
+            "--group-by-area cannot be combined with task/search/pagination/"
+            "ordering/source filters; use --flat for the dataset endpoint"
+        )
+
+    payload = client.get(
+        "areas/with-task-benchmarks/",
+        {
+            "benchmarks_per_task": args.benchmarks_per_task,
+            "min_eval_count": (
+                args.min_eval_count if args.min_eval_count is not None else 2
+            ),
+        },
+    ).json()
+    areas, _total = _rows(payload)
+    if args.area:
+        target = args.area.strip().casefold()
+        available = areas
+        areas = [
+            area
+            for area in areas
+            if target
+            in (
+                str(area.get("id") or "").casefold(),
+                str(area.get("name") or "").casefold(),
+            )
+        ]
+        if not areas:
+            names = ", ".join(
+                sorted(
+                    (str(area.get("name")) for area in available if area.get("name")),
+                    key=str.casefold,
+                )
+            )
+            raise ResponseError(
+                f"Area not found: {args.area}; available areas: {names}"
+            )
+
+    grouped = {"results": areas}
+    if args.json:
+        print(
+            json.dumps(
+                {"schema_version": API_CONTRACT_VERSION, "data": grouped},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        return 0
+
+    for area_index, area in enumerate(areas):
+        if area_index:
+            print()
+        print(f"# Area: {_clean(area.get('name') or 'Uncategorized')}")
+        for task in area.get("tasks") or []:
+            task_name = _clean(task.get("name") or task.get("slug") or "Unnamed task")
+            task_slug = _clean(task.get("slug"))
+            slug_text = f" (`{task_slug}`)" if task_slug else ""
+            print(f"\n## {task_name}{slug_text}\n")
+            for benchmark in task.get("benchmarks") or []:
+                name = (
+                    str(benchmark.get("name") or benchmark.get("slug") or "Benchmark")
+                    .replace("\\", "\\\\")
+                    .replace("[", "\\[")
+                    .replace("]", "\\]")
+                )
+                slug = quote(
+                    str(benchmark.get("slug") or benchmark.get("id") or ""),
+                    safe="",
+                )
+                count = int(benchmark.get("evaluation_count") or 0)
+                noun = "evaluation" if count == 1 else "evaluations"
+                print(
+                    f"- [{name}](https://paperswithcode.co/benchmark/{slug})"
+                    f" — {count:,} {noun}"
+                )
+    return 0
 
 
 def _benchmark_match(name: str, items: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -634,6 +744,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmarks.add_argument("--search")
     benchmarks.add_argument("--task")
+    benchmark_display = benchmarks.add_mutually_exclusive_group()
+    benchmark_display.add_argument(
+        "--group-by-area",
+        action="store_true",
+        help="render top benchmarks under each visible task as Markdown",
+    )
+    benchmark_display.add_argument(
+        "--flat",
+        action="store_true",
+        help="force the paginated flat table in an interactive terminal",
+    )
+    benchmarks.add_argument(
+        "--area",
+        help="case-insensitive exact area name or ID for grouped output",
+    )
+    benchmarks.add_argument(
+        "--benchmarks-per-task",
+        type=_benchmarks_per_task,
+        default=3,
+        help="top benchmarks per task in grouped output, 1-10 (default: 3)",
+    )
     benchmarks.add_argument("--include-descendants", action="store_true")
     benchmarks.add_argument("--min-eval-count", type=int)
     benchmarks.add_argument("--is-open", choices=("true", "false"))

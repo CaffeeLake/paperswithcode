@@ -18,13 +18,16 @@ pwc paper recent --limit 10
 pwc paper trending --limit 20
 pwc paper related 2501.01234 --limit 4
 pwc paper lineage list 2501.01234
+pwc benchmark list
 pwc benchmark list --task OCR
 pwc benchmark --name "SWE-Bench Pro"
 pwc version
 ```
 
-Task-scoped benchmark lists include the best model, paper title, and preferred
-code repository for each row.
+Benchmark lists group the top benchmarks under each visible task by research
+area in an interactive terminal. Use `--flat` for the paginated dataset table
+or `--group-by-area` to force Markdown when piping. Task-scoped lists include
+the best model, paper title, and preferred code repository for each row.
 
 The standalone parser contains no authentication, mutation, ingestion,
 publication, image, CRON, embedding, or infrastructure commands. Do not

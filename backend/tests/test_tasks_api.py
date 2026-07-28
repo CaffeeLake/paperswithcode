@@ -20,11 +20,14 @@ from backend.main import create_app
 from backend.models.database import (
     Base,
     Area as DBArea,
+    Dataset as DBDataset,
+    Evaluation as DBEvaluation,
     Paper as DBPaper,
     Task as DBTask,
     PaperTask,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
+    TaskDataset,
 )
 from backend.database.connection import get_database_session
 from backend.config import get_settings
@@ -272,6 +275,94 @@ def test_public_domain_lists_hide_child_subtasks(
     area = taxonomy_response.json()["results"][0]
     taxonomy_slugs = [task["slug"] for task in area["tasks"]]
     assert taxonomy_slugs == ["graph-machine-learning"]
+
+
+def test_grouped_task_benchmarks_are_bounded_and_featured_first(client):
+    db = TestingSessionLocal()
+    db.add(DBArea(id=1, name="Vision"))
+    db.add(
+        DBTask(
+            id=1,
+            name="Image Classification",
+            slug="image-classification",
+            area_id=1,
+            level=0,
+            is_visible=True,
+        )
+    )
+    db.add_all(
+        [
+            DBDataset(id=1, name="Popular Set", slug="popular-set"),
+            DBDataset(id=2, name="Featured Set", slug="featured-set"),
+        ]
+    )
+    db.add_all(
+        [
+            TaskDataset(task_id=1, dataset_id=1),
+            TaskDataset(task_id=1, dataset_id=2, featured_rank=1),
+        ]
+    )
+    db.add_all(
+        DBPaper(
+            id=i,
+            title=f"Paper {i}",
+            abstract="",
+            arxiv_id=f"2607.{i:05d}",
+            version="v1",
+            is_latest_version=True,
+        )
+        for i in range(1, 5)
+    )
+    db.add_all(
+        [
+            DBEvaluation(
+                id=1,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="Popular 1",
+                metrics={"Accuracy": 1},
+            ),
+            DBEvaluation(
+                id=2,
+                paper_id=2,
+                task_id=1,
+                dataset_id=1,
+                model_name="Popular 2",
+                metrics={"Accuracy": 2},
+            ),
+            DBEvaluation(
+                id=3,
+                paper_id=3,
+                task_id=1,
+                dataset_id=1,
+                model_name="Popular 3",
+                metrics={"Accuracy": 3},
+            ),
+            DBEvaluation(
+                id=4,
+                paper_id=4,
+                task_id=1,
+                dataset_id=2,
+                model_name="Featured",
+                metrics={"Accuracy": 4},
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/api/v1/areas/with-task-benchmarks/?benchmarks_per_task=2&min_eval_count=1"
+    )
+
+    assert response.status_code == 200
+    task = response.json()["results"][0]["tasks"][0]
+    assert task["slug"] == "image-classification"
+    assert [
+        (benchmark["slug"], benchmark["evaluation_count"])
+        for benchmark in task["benchmarks"]
+    ] == [("featured-set", 1), ("popular-set", 3)]
 
 
 @pytest.fixture

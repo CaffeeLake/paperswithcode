@@ -208,6 +208,76 @@ def test_task_benchmark_list_uses_frontend_trending_order(monkeypatch):
     ]
 
 
+def test_benchmark_list_groups_top_benchmarks_as_markdown(monkeypatch):
+    calls = []
+    payload = {
+        "results": [
+            {
+                "id": "1",
+                "name": "Vision",
+                "tasks": [
+                    {
+                        "id": "10",
+                        "name": "Image Classification",
+                        "slug": "image-classification",
+                        "paper_count": 100,
+                        "benchmarks": [
+                            {
+                                "id": "20",
+                                "name": "ImageNet [1K]",
+                                "slug": "imagenet",
+                                "evaluation_count": 1234,
+                                "featured_rank": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    class Client:
+        def __init__(self):
+            pass
+
+        def get(self, path, params):
+            calls.append((path, params))
+            return Response(json.dumps(payload).encode(), {})
+
+    monkeypatch.setattr("pwc_cli.cli.Client", Client)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert (
+            main(
+                [
+                    "benchmark",
+                    "list",
+                    "--group-by-area",
+                    "--area",
+                    "Vision",
+                    "--benchmarks-per-task",
+                    "5",
+                ]
+            )
+            == 0
+        )
+
+    assert calls == [
+        (
+            "areas/with-task-benchmarks/",
+            {"benchmarks_per_task": 5, "min_eval_count": 2},
+        )
+    ]
+    assert output.getvalue() == (
+        "# Area: Vision\n"
+        "\n"
+        "## Image Classification (`image-classification`)\n"
+        "\n"
+        "- [ImageNet \\[1K\\]](https://paperswithcode.co/benchmark/imagenet)"
+        " — 1,234 evaluations\n"
+    )
+
+
 def test_benchmark_detail_renders_merged_markdown_leaderboard(monkeypatch):
     calls = []
     benchmark_payload = {

@@ -1303,6 +1303,60 @@ class AreasWithTasks(BaseModel):
     )
 
 
+class TaskBenchmarkListItem(BaseModel):
+    """Compact benchmark row for the grouped CLI taxonomy view."""
+
+    id: str = Field(..., description="Benchmark dataset ID")
+    name: str = Field(..., description="Benchmark name")
+    slug: Optional[str] = Field(None, description="Benchmark URL slug")
+    full_name: Optional[str] = Field(None, description="Expanded benchmark name")
+    evaluation_count: int = Field(
+        ..., description="Logical leaderboard rows for this task and benchmark"
+    )
+    featured_rank: Optional[int] = Field(
+        None, description="Task-specific curated benchmark rank"
+    )
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v)
+
+
+class TaskWithBenchmarks(BaseModel):
+    """Visible top-level task with a bounded benchmark preview."""
+
+    id: str = Field(..., description="Task ID")
+    name: str = Field(..., description="Task name")
+    slug: str = Field(..., description="Task URL slug")
+    paper_count: int = Field(..., description="Papers linked to this task")
+    benchmarks: List[TaskBenchmarkListItem] = Field(default_factory=list)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v)
+
+
+class AreaWithTaskBenchmarks(BaseModel):
+    """Research area with visible tasks and their top benchmarks."""
+
+    id: str = Field(..., description="Area ID")
+    name: str = Field(..., description="Area name")
+    tasks: List[TaskWithBenchmarks] = Field(default_factory=list)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v)
+
+
+class AreasWithTaskBenchmarks(BaseModel):
+    """Container for grouped task benchmark previews."""
+
+    results: List[AreaWithTaskBenchmarks] = Field(default_factory=list)
+
+
 class ConferenceDeadline(BaseModel):
     """A single submission/abstract/rebuttal deadline for a conference."""
 
