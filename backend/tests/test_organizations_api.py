@@ -20,12 +20,15 @@ from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.database import (
+    Area,
     Base,
     Organization,
     Paper as DBPaper,
     PaperOrganization,
     PaperRepository as DBPaperRepository,
+    PaperTask,
     Repository as DBRepository,
+    Task,
 )
 
 
@@ -103,6 +106,10 @@ def org_client():
         logo_mime_type="image/png",
     )
     db.add(org)
+    db.add(Area(id=1, name="Vision"))
+    db.add(
+        Task(id=1, name="Image Classification", slug="image-classification", area_id=1)
+    )
 
     specs = {
         1: (80.0, _FRESH),
@@ -131,6 +138,8 @@ def org_client():
                 source="hf_org_papers",
             )
         )
+        if paper_id in {1, 3}:
+            db.add(PaperTask(paper_id=paper_id, task_id=1, source="manual"))
 
     repos = [
         DBRepository(
@@ -229,19 +238,53 @@ def test_featured_list_uses_launch_source_and_card_projection(org_client, monkey
     assert organization["paper_count"] == 4
     assert organization["trending_rank"] == 1
     assert organization["top_trending_paper"]["title"] == "Paper 1"
-    assert organization["logo_url"].startswith("/api/v1/organizations/acme/logo?v=")
+    assert organization["logo_url"] == "/api/v1/organizations/acme/logo.png"
 
 
-def test_cached_logo_supports_conditional_requests(org_client):
-    first = org_client.get("/api/v1/organizations/acme/logo")
+def test_cached_logo_supports_edge_and_conditional_caching(org_client):
+    first = org_client.get("/api/v1/organizations/acme/logo.png")
     assert first.status_code == 200
     assert first.content == b"fake-png"
     assert first.headers["cache-control"].startswith("public")
+    assert "stale-while-revalidate" in first.headers["cache-control"]
+    assert first.headers["cdn-cache-control"].startswith("public")
     second = org_client.get(
-        "/api/v1/organizations/acme/logo",
+        "/api/v1/organizations/acme/logo.png",
         headers={"If-None-Match": first.headers["etag"]},
     )
     assert second.status_code == 304
+    assert org_client.get("/api/v1/organizations/acme/logo.webp").status_code == 404
+    assert org_client.get("/api/v1/organizations/acme/logo").status_code == 200
+
+
+def test_organization_task_taxonomy_and_paper_filter(org_client, monkeypatch):
+    _pin_trending_mode(monkeypatch, "composite")
+    taxonomy = org_client.get("/api/v1/organizations/acme/areas-with-tasks")
+    assert taxonomy.status_code == 200
+    tasks = [task for area in taxonomy.json()["results"] for task in area["tasks"]]
+    assert tasks == [
+        {
+            "id": "1",
+            "name": "Image Classification",
+            "slug": "image-classification",
+            "paper_count": 2,
+        }
+    ]
+
+    filtered = org_client.get(
+        "/api/v1/organizations/acme/papers"
+        "?task=image-classification&order_by=trending&page_size=10"
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["count"] == 2
+    assert {paper["title"] for paper in filtered.json()["results"]} == {
+        "Paper 1",
+        "Paper 3",
+    }
+    assert (
+        org_client.get("/api/v1/organizations/acme/papers?task=missing").status_code
+        == 404
+    )
 
 
 if __name__ == "__main__":

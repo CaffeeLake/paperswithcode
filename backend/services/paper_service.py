@@ -75,6 +75,7 @@ from backend.utils.urls import (
     get_paper_url,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.organization_logos import organization_logo_path
 from backend.config import get_settings
 from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
 from backend.services.paper_retrieval_service import PaperRetrievalService
@@ -441,8 +442,9 @@ class PaperService:
                         name=organization.name,
                         slug=organization.slug,
                         logo_url=(
-                            f"/api/v1/organizations/{organization.slug}/logo"
-                            f"?v={int(organization.updated_at.timestamp()) if organization.updated_at else 0}"
+                            organization_logo_path(
+                                organization.slug, organization.logo_mime_type
+                            )
                             if organization.logo_mime_type
                             else organization.logo_url
                         ),

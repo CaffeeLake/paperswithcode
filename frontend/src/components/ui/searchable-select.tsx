@@ -34,6 +34,7 @@ interface SearchableSelectProps {
   queryFn: (query: string) => Promise<SearchableSelectOption[]>;
   enabled?: boolean;
   className?: string;
+  ariaLabel?: string;
 }
 
 export function SearchableSelect({
@@ -48,6 +49,7 @@ export function SearchableSelect({
   queryFn,
   enabled = true,
   className,
+  ariaLabel,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -98,6 +100,7 @@ export function SearchableSelect({
           variant="outline"
           role="combobox"
           aria-expanded={open}
+          aria-label={ariaLabel}
           disabled={disabled}
           className={cn(
             "h-8 w-full justify-between px-2 text-sm font-normal",

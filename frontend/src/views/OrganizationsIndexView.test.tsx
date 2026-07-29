@@ -16,7 +16,7 @@ const payload: Organizations = {
       name: "Qwen",
       slug: "qwen",
       hf_slug: "Qwen",
-      logo_url: "/api/v1/organizations/qwen/logo?v=1",
+      logo_url: "/api/v1/organizations/qwen/logo.webp",
       paper_count: 12,
       is_featured: true,
       display_order: 7,
@@ -131,7 +131,7 @@ describe("OrganizationsIndexView", () => {
     const view = renderView();
     await screen.findByRole("link", { name: "Browse 12 Qwen papers" });
     const image = view.container.querySelector(
-      'img[src="/api/v1/organizations/qwen/logo?v=1"]',
+      'img[src="/api/v1/organizations/qwen/logo.webp"]',
     );
     expect(image).not.toBeNull();
     fireEvent.error(image!);

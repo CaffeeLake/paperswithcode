@@ -5,6 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import { PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  SearchableSelect,
+  type SearchableSelectOption,
+} from "@/components/ui/searchable-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { useInfiniteOrganizationPapers } from "@/hooks/usePapers";
@@ -28,7 +32,6 @@ export const OrganizationPaperFeed: React.FC<{
 }> = ({ organizationSlug, taskSlug }) => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [taskSearch, setTaskSearch] = useState("");
   const [logoFailed, setLogoFailed] = useState(false);
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const taxonomyQ = useQuery({
@@ -56,7 +59,6 @@ export const OrganizationPaperFeed: React.FC<{
   }, [isIntersecting, papersQ.hasNextPage, papersQ.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setTaskSearch("");
     setLogoFailed(false);
   }, [organizationSlug, taskSlug]);
 
@@ -66,7 +68,7 @@ export const OrganizationPaperFeed: React.FC<{
         area.tasks.filter((task) => !!task.slug).map((task) => ({
           ...task,
           slug: task.slug!,
-          label: `${displayTaskName(task.name, task.slug)} (${task.paper_count.toLocaleString()})`,
+          label: displayTaskName(task.name, task.slug),
         })),
       ),
     [taxonomyQ.data],
@@ -100,18 +102,28 @@ export const OrganizationPaperFeed: React.FC<{
     );
   }
 
+  const taskOptions = (query: string): SearchableSelectOption[] => {
+    const needle = query.trim().toLocaleLowerCase();
+    return tasks
+      .filter((task) =>
+        `${task.label} ${task.slug}`.toLocaleLowerCase().includes(needle),
+      )
+      .map((task) => ({
+        value: task.slug,
+        label: task.label,
+        description: `${task.paper_count.toLocaleString()} ${
+          task.paper_count === 1 ? "paper" : "papers"
+        }`,
+      }));
+  };
+
   const selectTask = (value: string) => {
-    setTaskSearch(value);
-    if (value === "All tasks") {
-      navigate(`/orgs/${organizationSlug}`);
-      return;
-    }
-    const selected = tasks.find(
-      (task) =>
-        task.label.toLocaleLowerCase() === value.toLocaleLowerCase() ||
-        task.slug === value,
-    );
-    if (selected) navigate(`/orgs/${organizationSlug}/${selected.slug}`);
+    const pathname =
+      value === "__all__"
+        ? `/orgs/${organizationSlug}`
+        : `/orgs/${organizationSlug}/${value}`;
+    const search = searchParams.toString();
+    navigate({ pathname, search: search ? `?${search}` : "" });
   };
 
   return (
@@ -186,23 +198,42 @@ export const OrganizationPaperFeed: React.FC<{
       </header>
 
       <div className="sort-bar" style={{ alignItems: "center", gap: 16 }}>
-        <label style={{ minWidth: 260 }}>
-          <span className="sr-only">Filter by task</span>
-          <input
-            list={`organization-tasks-${organizationSlug}`}
-            value={taskSearch || activeTask?.label || "All tasks"}
-            onChange={(event) => selectTask(event.target.value)}
-            onFocus={(event) => event.currentTarget.select()}
-            aria-label="Filter papers by task"
-            style={{ width: "100%", minHeight: 38, padding: "0 10px" }}
+        <div style={{ minWidth: 260 }}>
+          <SearchableSelect
+            value={taskSlug ?? "__all__"}
+            onChange={selectTask}
+            placeholder="All tasks"
+            searchPlaceholder="Search organization tasks..."
+            emptyMessage="No matching tasks."
+            ariaLabel="Filter papers by task"
+            selectedOption={
+              activeTask
+                ? {
+                    value: activeTask.slug,
+                    label: activeTask.label,
+                    description: `${activeTask.paper_count.toLocaleString()} ${
+                      activeTask.paper_count === 1 ? "paper" : "papers"
+                    }`,
+                  }
+                : {
+                    value: "__all__",
+                    label: "All tasks",
+                    description: `${organization?.paper_count?.toLocaleString() ?? 0} papers`,
+                  }
+            }
+            queryKey={["organization-task-options", organizationSlug]}
+            queryFn={async (query) => [
+              {
+                value: "__all__",
+                label: "All tasks",
+                description: `${organization?.paper_count?.toLocaleString() ?? 0} papers`,
+              },
+              ...taskOptions(query),
+            ]}
+            enabled={!taxonomyQ.isLoading}
+            className="h-[38px]"
           />
-          <datalist id={`organization-tasks-${organizationSlug}`}>
-            <option value="All tasks" />
-            {tasks.map((task) => (
-              <option key={task.id} value={task.label} />
-            ))}
-          </datalist>
-        </label>
+        </div>
         <div className="sort-options">
           {SORT_OPTIONS.map(([value, label]) => (
             <button

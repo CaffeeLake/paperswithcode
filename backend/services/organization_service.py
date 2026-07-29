@@ -28,6 +28,7 @@ from backend.services.sitemap_service import eligible_paper_filter
 from backend.services.trending_ranking_service import active_paper_score_components
 from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+from backend.utils.organization_logos import organization_logo_path
 
 
 class OrganizationService:
@@ -418,10 +419,8 @@ class OrganizationService:
     @staticmethod
     def logo_url(db_org: DBOrganization) -> Optional[str]:
         if db_org.logo_mime_type:
-            version = (
-                int(db_org.updated_at.timestamp())
-                if db_org.updated_at is not None
-                else 0
+            return (
+                organization_logo_path(db_org.slug, db_org.logo_mime_type)
+                or f"/api/v1/organizations/{db_org.slug}/logo"
             )
-            return f"/api/v1/organizations/{db_org.slug}/logo?v={version}"
         return db_org.logo_url
