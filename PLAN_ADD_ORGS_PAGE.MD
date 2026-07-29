@@ -546,16 +546,19 @@ Retain these useful parts of `OrganizationDetailView.tsx`:
 
 - organization identity and outbound links;
 - total linked papers;
-- a compact task filter derived from the existing task/area data;
+- one searchable task dropdown derived from the existing task/area data,
+  defaulting to `All tasks` and showing each option's HF-attributed paper count;
 - sort controls for trending, newest, and most cited;
 - the infinitely paginated `PaperCard` feed, defaulting to trending.
 
 Change all generated paths to `/orgs/{slug}`. Reuse one shared organization-feed
 component between `/orgs/{slug}` and the task-specific
 `/orgs/{slug}/{task_slug}` route so pagination, sorting, empty states, and paper
-cards cannot drift between two implementations. Task filters may navigate to
-the task-specific canonical route, while an "All papers" filter returns to
-`/orgs/{slug}`.
+cards cannot drift between two implementations. Selecting a task navigates to
+its task-specific canonical route, while selecting `All tasks` returns to
+`/orgs/{slug}`. Searching the dropdown filters its options locally and must not
+change the URL until the visitor selects a task. Do not render a long row of
+task chips.
 
 Ensure the zero-paper detail page still renders organization metadata and the
 "No papers indexed yet" message rather than disappearing as a 404.
@@ -632,7 +635,8 @@ Add React tests for:
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
 - the canonical detail route immediately loading a trending paper feed without
   an intermediate "All papers" click;
-- shared detail/task filtering, sorting, empty state, and paper pagination;
+- searchable, count-bearing task dropdown behavior, canonical task navigation,
+  shared detail/task filtering, sorting, empty state, and paper pagination;
 - paper-detail organization links;
 - the old broad catch-all no longer swallowing unknown routes.
 
@@ -714,8 +718,8 @@ route deployment before changing sitemap/canonical discovery in production.
   controls above the grid while the global header search retains its normal
   site-wide behavior.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
-  feed with compact task and sort controls; no second "All papers" click is
-  required.
+  feed with a searchable task dropdown (including counts and `All tasks`) plus
+  compact sort controls; no second "All papers" click is required.
 - Organization counts, pages, task filters, and paper badges use only
   HF-attributed (`source='hf_org_papers'`) associations at launch.
 - The many-to-many model permits one paper to link to several organizations and
