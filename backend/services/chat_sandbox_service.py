@@ -927,16 +927,26 @@ class SandboxSessionManager:
             return False
         running.cancel_requested = True
         process = running.process
-        process.stdin.write(
-            encode_frame(
-                {
-                    "v": 1,
-                    "type": "cancel",
-                    "request_id": running.request_id,
-                }
+        try:
+            process.stdin.write(
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "cancel",
+                        "request_id": running.request_id,
+                    }
+                )
             )
-        )
-        await process.stdin.drain.aio()
+            await process.stdin.drain.aio()
+        except Exception:
+            await self._terminate_worker(
+                chat_session_id,
+                running.claim,
+                failure_code="cancel_control_lost",
+            )
+            if running.done is not None:
+                running.done.set()
+            return True
         try:
             async with asyncio.timeout(self.settings.chat_cancel_grace_seconds):
                 if running.done is not None:

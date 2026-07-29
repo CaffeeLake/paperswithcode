@@ -427,6 +427,42 @@ def test_turn_runners_share_session_manager_for_one_settings_instance(monkeypatc
     assert created == [first_settings, second_settings]
 
 
+def test_cancel_control_write_failure_terminates_worker():
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    claim = WorkerClaim(sandbox_id="sb-cancel", token_hash="claim")
+    terminated: list[str] = []
+
+    class Input:
+        def __init__(self):
+            self.drain = _AsyncCall(self._drain)
+
+        def write(self, _payload):
+            pass
+
+        async def _drain(self):
+            raise RuntimeError("control closed")
+
+    manager = SandboxSessionManager.__new__(SandboxSessionManager)
+    manager._processes = {
+        turn_id: chat_sandbox_service.RunningWorker(
+            process=SimpleNamespace(stdin=Input()),
+            request_id="request",
+            claim=claim,
+            done=asyncio.Event(),
+        )
+    }
+
+    async def terminate(_session_id, _claim, *, failure_code):
+        terminated.append(failure_code)
+        return True
+
+    manager._terminate_worker = terminate
+
+    assert asyncio.run(manager.cancel(session_id, turn_id)) is True
+    assert terminated == ["cancel_control_lost"]
+
+
 def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
     async def run():
         session_id = uuid.uuid4()
