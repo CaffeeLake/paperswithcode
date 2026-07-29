@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from claude_agent_sdk import MirrorErrorMessage, StreamEvent
+from claude_agent_sdk import MirrorErrorMessage, ResultMessage, StreamEvent
 from fastapi import HTTPException
 
 from backend.chat_gateway_app import (
@@ -310,6 +310,46 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     assert ("model", "model-b") in calls
     assert calls.count(("connect", None)) == 1
     assert calls[-1] == ("disconnect",)
+
+
+def test_adapter_waits_for_late_mirror_before_terminal():
+    async def messages():
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            total_cost_usd=0,
+            usage=None,
+            result="done",
+            structured_output=None,
+        )
+        yield MirrorErrorMessage(
+            subtype="mirror_error",
+            data={},
+            error="late mirror failure",
+            key={"session_id": "sdk-session", "project_key": "workspace"},
+        )
+
+    async def run():
+        return [
+            event
+            async for event in agent._adapt_messages(
+                messages(),
+                request_id="request-1",
+                hooks=agent.WorkerToolHooks(agent.WorkerSettings.from_environment()),
+                adapter=agent.SDKEventAdapter(show_reasoning=False),
+            )
+        ]
+
+    events = asyncio.run(run())
+    assert [event["type"] for event in events] == [
+        "_sdk_session",
+        "_mirror_error",
+    ]
+    assert events[-1]["error"] == "late mirror failure"
 
 
 def test_persistent_agent_accepts_resume_hint_before_sdk_session(monkeypatch):
@@ -989,7 +1029,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-ECeRKPLAM2sMPpVI04bRrj"
+    assert MODAL_IMAGE_ID == "im-HkbWcl4aEl7eTsGCicXmOD"
 
 
 def test_task_catalog_is_bounded_and_ranked():

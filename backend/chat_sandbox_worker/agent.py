@@ -308,6 +308,7 @@ async def _adapt_messages(
     adapter: SDKEventAdapter,
     on_session_id=None,
 ):
+    terminal_events: list[dict[str, Any]] = []
     async for message in messages:
         if isinstance(message, MirrorErrorMessage):
             yield {
@@ -317,17 +318,20 @@ async def _adapt_messages(
                 "key": message.key,
                 "error": message.error[:500],
             }
-            continue
+            return
         session_id = getattr(message, "session_id", None)
         if session_id:
             if on_session_id is not None:
                 on_session_id(str(session_id))
-            yield {
-                "v": 1,
-                "type": "_sdk_session",
-                "request_id": request_id,
-                "session_id": session_id,
-            }
+            if not terminal_events:
+                yield {
+                    "v": 1,
+                    "type": "_sdk_session",
+                    "request_id": request_id,
+                    "session_id": session_id,
+                }
+        if terminal_events:
+            continue
         if isinstance(message, UserMessage):
             for block in message.content if isinstance(message.content, list) else []:
                 if not isinstance(block, ToolResultBlock):
@@ -357,10 +361,17 @@ async def _adapt_messages(
                     }
                 yield {"v": 1, "request_id": request_id, **event}
             continue
-        for event in adapter.feed(message):
-            yield {"v": 1, "request_id": request_id, **event}
+        adapted = [
+            {"v": 1, "request_id": request_id, **event}
+            for event in adapter.feed(message)
+        ]
         if adapter.terminal:
-            return
+            terminal_events = adapted
+            continue
+        for event in adapted:
+            yield event
+    for event in terminal_events:
+        yield event
 
 
 async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
