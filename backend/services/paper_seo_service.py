@@ -453,9 +453,8 @@ _ROOT_RE = re.compile(r'<div\s+id=["\']root["\']\s*>\s*</div>', re.IGNORECASE)
 
 
 def inject_initial_document(shell_html: str, document_html: str) -> str:
-    rewritten, count = _ROOT_RE.subn(
-        f'<div id="root">{document_html}</div>', shell_html, count=1
-    )
+    replacement = f'<div id="root">{document_html}</div>'
+    rewritten, count = _ROOT_RE.subn(lambda _match: replacement, shell_html, count=1)
     if count != 1:
         raise ValueError("SPA shell must contain exactly one empty #root placeholder")
     return rewritten

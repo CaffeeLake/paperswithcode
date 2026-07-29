@@ -138,3 +138,12 @@ def test_unknown_bibliographic_fields_are_omitted():
 def test_initial_document_injection_requires_empty_root():
     with pytest.raises(ValueError, match="empty #root"):
         inject_initial_document('<html><body><div id="app"></div></body></html>', "x")
+
+
+def test_initial_document_injection_preserves_latex_backslashes():
+    shell = '<html><body><div id="root"></div></body></html>'
+    document_html = r"<p>$\pi_{0.5}$ and $\hat{x}$</p>"
+
+    assert inject_initial_document(shell, document_html) == (
+        f'<html><body><div id="root">{document_html}</div></body></html>'
+    )
