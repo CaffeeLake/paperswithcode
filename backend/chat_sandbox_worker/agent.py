@@ -306,6 +306,7 @@ async def _adapt_messages(
     request_id: str,
     hooks: WorkerToolHooks,
     adapter: SDKEventAdapter,
+    on_session_id=None,
 ):
     async for message in messages:
         if isinstance(message, MirrorErrorMessage):
@@ -317,6 +318,8 @@ async def _adapt_messages(
             continue
         session_id = getattr(message, "session_id", None)
         if session_id:
+            if on_session_id is not None:
+                on_session_id(str(session_id))
             yield {
                 "v": 1,
                 "type": "_sdk_session",
@@ -403,11 +406,14 @@ class PersistentAgent:
         self.hooks = WorkerToolHooks(settings)
         self.model: str | None = None
         self.resume: str | None = None
+        self.sdk_session_id: str | None = None
 
     async def connect(self, *, model: str, resume: str | None) -> None:
         if self.client is not None:
-            if resume is not None and resume != self.resume:
-                raise RuntimeError("Resume changed after worker connection")
+            if resume is not None:
+                expected = self.sdk_session_id or self.resume
+                if expected is None or resume != expected:
+                    raise RuntimeError("Resume changed after worker connection")
             if model != self.model:
                 await self.client.set_model(model)
                 self.model = model
@@ -447,8 +453,14 @@ class PersistentAgent:
                 request_id=request_id,
                 hooks=self.hooks,
                 adapter=adapter,
+                on_session_id=self._record_session_id,
             ):
                 yield event
+
+    def _record_session_id(self, session_id: str) -> None:
+        if self.sdk_session_id is not None and self.sdk_session_id != session_id:
+            raise RuntimeError("SDK session changed inside persistent worker")
+        self.sdk_session_id = session_id
 
     async def interrupt(self) -> None:
         if self.client is not None:

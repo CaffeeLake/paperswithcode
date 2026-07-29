@@ -247,6 +247,18 @@ def test_persistent_agent_rejects_resume_change(monkeypatch):
     asyncio.run(run())
 
 
+def test_persistent_agent_accepts_backend_resume_learned_from_first_response():
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+    worker.client = SimpleNamespace()
+    worker.model = "model-a"
+    worker._record_session_id("session-a")
+
+    asyncio.run(worker.connect(model="model-a", resume="session-a"))
+
+    with pytest.raises(RuntimeError, match="Resume changed"):
+        asyncio.run(worker.connect(model="model-a", resume="session-b"))
+
+
 @pytest.mark.parametrize(
     ("path", "operation"),
     [
@@ -884,7 +896,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-hYDYxsklEP6490hN4UkBmS"
+    assert MODAL_IMAGE_ID == "im-aDxl0BoZv5brdEAxA8n2oH"
 
 
 def test_task_catalog_is_bounded_and_ranked():
