@@ -190,6 +190,13 @@ Add a small Python data module such as
 for the 21 HF handles, normalized PwC slugs, and display order. This becomes the
 reviewable source of truth for the curated set and replaces ad hoc shell loops.
 
+Treat this manifest as a strict launch allowlist, not merely a seed list. An HF
+daily-paper payload naming any other organization must not create an
+`organizations` row, create a `paper_organizations` link, or add a logo-grid
+tile. Increment an `unknown_organizations_seen` diagnostic counter and log the
+normalized HF handle for later review, without making it part of the initial
+product.
+
 Names, logos, websites, and HF paper counts remain fetched metadata. Apply small
 explicit name overrides only when HF metadata is visibly unsuitable (for
 example, trim the current `Mistral AI_` name) rather than maintaining a second
@@ -279,7 +286,7 @@ The bootstrap must be rerunnable and support:
   bootstrap and scheduled runs always import missing papers;
 - bounded batch size and per-organization transaction boundaries;
 - a final summary with fetched, existing, imported, linked, already linked,
-  failed, and upstream/local count deltas.
+  failed, unknown-organization, and upstream/local count deltas.
 
 HF organization associations are append-only. Once an HF papers page attributes
 a paper to an organization, retain that `source='hf_org_papers'` link
@@ -499,6 +506,8 @@ Add focused backend tests for:
 - the daily importer linking organizations for both new and already-existing
   papers;
 - the daily importer ignoring organizations outside the curated manifest;
+- unknown HF organizations producing diagnostics without database rows, links,
+  or visible tiles;
 - handle normalization and manifest uniqueness;
 - idempotent organization upsert and paper linking;
 - importing a missing ArXiv paper before linking it;
@@ -612,6 +621,8 @@ route deployment before changing sitemap/canonical discovery in production.
   deterministic tie-breakers rather than reshuffling hourly; the two that
   currently have zero HF papers remain clickable and say "No papers indexed
   yet".
+- The 21-entry manifest is a strict allowlist: unknown HF organizations never
+  create rows, links, or tiles during the initial release.
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
