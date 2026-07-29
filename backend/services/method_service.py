@@ -5,12 +5,14 @@ This service provides methods for retrieving and managing AI/ML method data,
 including pagination, filtering, and paper associations.
 """
 
+from datetime import UTC, date, datetime, timedelta
 from typing import Optional, List
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc, asc, or_, case
+from sqlalchemy import and_, func, desc, asc, or_, case, literal
 
 from backend.models.database import (
     Method as DBMethod,
+    Paper as DBPaper,
     PaperMethod,
 )
 from backend.models.api import Method, Methods
@@ -27,8 +29,22 @@ class MethodService:
 
     @staticmethod
     def _convert_db_method_to_api(
-        db_method: DBMethod, paper_count: Optional[int] = None
+        db_method: DBMethod,
+        paper_count: Optional[int] = None,
+        recent_paper_count: Optional[int] = None,
+        baseline_paper_count: Optional[int] = None,
+        *,
+        recent_days: int = 90,
+        baseline_days: int = 180,
     ) -> Method:
+        recent = int(recent_paper_count) if recent_paper_count is not None else None
+        baseline = (
+            int(baseline_paper_count) if baseline_paper_count is not None else None
+        )
+        recent_velocity = recent * 30.0 / recent_days if recent is not None else None
+        baseline_velocity = (
+            baseline * 30.0 / baseline_days if baseline is not None else None
+        )
         return Method(
             id=str(db_method.id),
             name=db_method.name,
@@ -58,6 +74,16 @@ class MethodService:
             collection_description=db_method.collection_description,
             collection_parent=db_method.collection_parent,
             paper_count=paper_count,
+            recent_paper_count=recent,
+            baseline_paper_count=baseline,
+            trend_score=(
+                round(recent_velocity, 4) if recent_velocity is not None else None
+            ),
+            rate_change=(
+                round(recent_velocity / baseline_velocity, 4)
+                if recent_velocity is not None and baseline_velocity
+                else None
+            ),
             created_at=db_method.created_at,
             updated_at=db_method.updated_at,
         )
@@ -74,6 +100,10 @@ class MethodService:
         exclude_id: Optional[int] = None,
         order_by: str = "name",
         order_dir: str = "asc",
+        include_trends: bool = False,
+        recent_days: int = 90,
+        baseline_days: int = 180,
+        today: Optional[date] = None,
     ) -> Methods:
         """
         Get a paginated list of AI/ML methods with optional filtering.
@@ -86,8 +116,13 @@ class MethodService:
             full_name: Filter by partial full name match
             introduced_year: Filter by year introduced
             order_by: Field to order by
-                (name, full_name, introduced_year, created_at, paper_count)
+                (name, full_name, introduced_year, created_at, paper_count,
+                trend_score)
             order_dir: Order direction (asc, desc)
+            include_trends: Include recent and baseline paper-usage activity
+            recent_days: Length of the recent method-usage window
+            baseline_days: Length of the preceding comparison window
+            today: Optional reproducible endpoint for the usage windows
 
         Returns:
             Methods object with pagination info and results
@@ -96,6 +131,10 @@ class MethodService:
             DatabaseError: If database query fails
         """
         try:
+            include_trends = include_trends or order_by == "trend_score"
+            generated_on = today or datetime.now(UTC).date()
+            recent_start = generated_on - timedelta(days=recent_days)
+            baseline_start = recent_start - timedelta(days=baseline_days)
             paper_count_subq = (
                 self.db.query(
                     PaperMethod.method_id.label("method_id"),
@@ -107,13 +146,63 @@ class MethodService:
             paper_count_col = func.coalesce(paper_count_subq.c.paper_count, 0).label(
                 "paper_count"
             )
+            activity_subq = None
+            if include_trends:
+                in_recent = and_(
+                    DBPaper.date_published > recent_start,
+                    DBPaper.date_published <= generated_on,
+                )
+                in_baseline = and_(
+                    DBPaper.date_published > baseline_start,
+                    DBPaper.date_published <= recent_start,
+                )
+                recent_count = func.count(case((in_recent, DBPaper.id), else_=None))
+                baseline_count = func.count(case((in_baseline, DBPaper.id), else_=None))
+                activity_subq = (
+                    self.db.query(
+                        PaperMethod.method_id.label("method_id"),
+                        recent_count.label("recent_paper_count"),
+                        baseline_count.label("baseline_paper_count"),
+                    )
+                    .join(
+                        DBPaper,
+                        and_(
+                            DBPaper.id == PaperMethod.paper_id,
+                            DBPaper.is_latest_version,
+                        ),
+                    )
+                    .filter(
+                        DBPaper.date_published > baseline_start,
+                        DBPaper.date_published <= generated_on,
+                    )
+                    .group_by(PaperMethod.method_id)
+                    .subquery()
+                )
+                recent_count_col = func.coalesce(
+                    activity_subq.c.recent_paper_count, 0
+                ).label("recent_paper_count")
+                baseline_count_col = func.coalesce(
+                    activity_subq.c.baseline_paper_count, 0
+                ).label("baseline_paper_count")
+            else:
+                recent_count_col = literal(None).label("recent_paper_count")
+                baseline_count_col = literal(None).label("baseline_paper_count")
             query = (
-                self.db.query(DBMethod, paper_count_col)
+                self.db.query(
+                    DBMethod,
+                    paper_count_col,
+                    recent_count_col,
+                    baseline_count_col,
+                )
                 .options(joinedload(DBMethod.source_paper))
                 .outerjoin(
                     paper_count_subq, DBMethod.id == paper_count_subq.c.method_id
                 )
             )
+            if activity_subq is not None:
+                query = query.outerjoin(
+                    activity_subq, DBMethod.id == activity_subq.c.method_id
+                )
 
             if search:
                 query = query.filter(
@@ -167,6 +256,8 @@ class MethodService:
                     order_field = DBMethod.created_at
                 elif order_by == "paper_count":
                     order_field = paper_count_col
+                elif order_by == "trend_score":
+                    order_field = recent_count_col
                 else:
                     order_field = DBMethod.name
 
@@ -181,8 +272,15 @@ class MethodService:
             rows = query.offset(offset).limit(page_size).all()
 
             methods = [
-                self._convert_db_method_to_api(db_method, paper_count or 0)
-                for db_method, paper_count in rows
+                self._convert_db_method_to_api(
+                    db_method,
+                    paper_count or 0,
+                    recent_papers,
+                    baseline_papers,
+                    recent_days=recent_days,
+                    baseline_days=baseline_days,
+                )
+                for db_method, paper_count, recent_papers, baseline_papers in rows
             ]
 
             next_page = page + 1 if offset + page_size < total_count else None
@@ -361,6 +459,7 @@ class MethodService:
         query: str,
         page: int = 1,
         page_size: int = 50,
+        include_trends: bool = False,
     ) -> Methods:
         """
         Full-text search for methods by name, full_name, or description.
@@ -369,6 +468,7 @@ class MethodService:
             query: Search query string
             page: Page number (1-based)
             page_size: Number of methods per page
+            include_trends: Include recent and baseline paper-usage activity
 
         Returns:
             Methods object with pagination info and results
@@ -380,6 +480,7 @@ class MethodService:
             page=page,
             page_size=page_size,
             search=query,
+            include_trends=include_trends,
         )
 
     def get_method_papers(

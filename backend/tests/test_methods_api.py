@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -56,6 +56,14 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@event.listens_for(engine, "connect")
+def register_jsonb_typeof(dbapi_connection, _connection_record):
+    """Let SQLite create PostgreSQL JSONB check constraints in this test DB."""
+    dbapi_connection.create_function("jsonb_typeof", 1, lambda _value: "array")
+
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -152,6 +160,62 @@ def test_methods_search_ranks_name_matches_first(client, methods_with_image_keyw
     assert names.index("Image Transformer") < names.index("DALL-E")
 
     assert "Transformer" not in names
+
+
+def test_methods_expose_recent_usage_trend_score(client):
+    """Method activity mirrors benchmark trends using paper publication dates."""
+    db = TestingSessionLocal()
+    today = datetime.now(timezone.utc).date()
+    methods = [
+        DBMethod(id=20, name="Rising Method", slug="rising-method"),
+        DBMethod(id=21, name="Quiet Method", slug="quiet-method"),
+    ]
+    papers = [
+        DBPaper(
+            id=100 + index,
+            title=f"Method usage {index}",
+            abstract="Abstract",
+            arxiv_id=f"2607.{index:05d}",
+            version="v1",
+            is_latest_version=is_latest,
+            date_published=today - timedelta(days=days_ago),
+        )
+        for index, (days_ago, is_latest) in enumerate(
+            [
+                (10, True),
+                (30, True),
+                (80, True),
+                (100, True),
+                (200, True),
+                (20, False),
+                (15, True),
+            ],
+            start=1,
+        )
+    ]
+    db.add_all(methods)
+    db.add_all(papers)
+    db.flush()
+    db.add_all(
+        [PaperMethod(paper_id=paper.id, method_id=20) for paper in papers[:6]]
+        + [PaperMethod(paper_id=papers[6].id, method_id=21)]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get("/api/v1/methods/?ordering=-trend_score&page_size=20")
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [item["name"] for item in results[:2]] == [
+        "Rising Method",
+        "Quiet Method",
+    ]
+    rising = results[0]
+    assert rising["recent_paper_count"] == 3
+    assert rising["baseline_paper_count"] == 2
+    assert rising["trend_score"] == 1.0
+    assert rising["rate_change"] == 3.0
 
 
 @pytest.fixture

@@ -1023,6 +1023,28 @@ class Method(BaseModel):
     paper_count: Optional[int] = Field(
         None, description="Number of papers using this method"
     )
+    recent_paper_count: Optional[int] = Field(
+        None,
+        description="Distinct latest-version papers using this method in the last 90 days",
+    )
+    baseline_paper_count: Optional[int] = Field(
+        None,
+        description=(
+            "Distinct latest-version papers using this method in the 180 days "
+            "preceding the recent window"
+        ),
+    )
+    trend_score: Optional[float] = Field(
+        None,
+        description="Recent method usage velocity normalized to papers per 30 days",
+    )
+    rate_change: Optional[float] = Field(
+        None,
+        description=(
+            "Recent usage velocity divided by baseline velocity. Null when "
+            "the method has no baseline papers"
+        ),
+    )
 
     # Timestamps
     created_at: Optional[datetime] = Field(

@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { Flame } from "lucide-react";
 
 import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
@@ -31,6 +32,7 @@ const MethodsIndexView: React.FC = () => {
         page: 1,
         page_size: 500,
         ordering: "-paper_count",
+        include_trends: true,
       });
       return res.results;
     },
@@ -47,6 +49,14 @@ const MethodsIndexView: React.FC = () => {
     Object.values(byArea).forEach((arr) => arr.sort((a, b) => (b.paper_count || 0) - (a.paper_count || 0)));
     return byArea;
   }, [methodsQ.data, areasQ.data]);
+
+  const trendingMethodIds = useMemo(() => {
+    const ranked = (methodsQ.data || [])
+      .filter((method) => (method.trend_score || 0) > 0)
+      .sort((a, b) => (b.trend_score || 0) - (a.trend_score || 0));
+    const topCount = Math.ceil(ranked.length * 0.25);
+    return new Set(ranked.slice(0, topCount).map((method) => method.id));
+  }, [methodsQ.data]);
 
   if (areasQ.error || methodsQ.error) {
     return (
@@ -65,7 +75,11 @@ const MethodsIndexView: React.FC = () => {
           <h1 className="feed-title">
             Methods <em>library</em>
           </h1>
-          <div className="feed-subtitle">Common techniques used across AI research, with the papers that use them.</div>
+          <div className="feed-subtitle">
+            Common techniques used across AI research. Trend scores show papers
+            using each method per 30 days, measured over the latest 90 days;
+            the flame marks the top quartile.
+          </div>
         </div>
       </div>
 
@@ -128,9 +142,24 @@ const MethodsIndexView: React.FC = () => {
                   <Link key={m.id} to={`/methods/${m.slug || m.id}`} className="tag-cell">
                     <div className="name" style={{ fontFamily: "var(--mono)", fontSize: 15 }}>
                       {m.name}
+                      {trendingMethodIds.has(m.id) && (
+                        <Flame
+                          className="method-trending-icon"
+                          size={15}
+                          aria-label="Top quartile by recent method usage"
+                        />
+                      )}
                     </div>
                     <div className="meta">
                       <span>{(m.paper_count ?? 0).toLocaleString()} papers</span>
+                      {(m.trend_score ?? 0) > 0 && (
+                        <>
+                          <span>·</span>
+                          <span className="method-trend-score">
+                            {(m.trend_score ?? 0).toFixed(1)}/mo
+                          </span>
+                        </>
+                      )}
                       {m.introduced_year != null && (
                         <>
                           <span>·</span>

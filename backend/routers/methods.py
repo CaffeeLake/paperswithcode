@@ -52,8 +52,12 @@ def list_methods(
         "name",
         description=(
             "Order by field: name, full_name, introduced_year, created_at, "
-            "paper_count (prefix with '-' for descending)"
+            "paper_count, trend_score (prefix with '-' for descending)"
         ),
+    ),
+    include_trends: bool = Query(
+        False,
+        description="Include 90-day method usage scores and baseline rate changes",
     ),
     db: Session = Depends(get_database_session),
 ):
@@ -84,6 +88,7 @@ def list_methods(
             "introduced_year",
             "created_at",
             "paper_count",
+            "trend_score",
         ]
         if order_by not in valid_fields:
             order_by = "name"
@@ -92,7 +97,12 @@ def list_methods(
 
         # Use search if q parameter is provided
         if q:
-            return service.search_methods(query=q, page=page, page_size=page_size)
+            return service.search_methods(
+                query=q,
+                page=page,
+                page_size=page_size,
+                include_trends=include_trends,
+            )
 
         return service.get_methods(
             page=page,
@@ -104,6 +114,7 @@ def list_methods(
             exclude_id=exclude_id,
             order_by=order_by,
             order_dir=order_dir,
+            include_trends=include_trends,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))

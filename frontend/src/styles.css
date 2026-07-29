@@ -1898,12 +1898,21 @@ a.paper-resource.is-link:focus-visible {
   height: 8px;
   border-radius: 50%;
 }
+.method-trending-icon {
+  flex: 0 0 auto;
+  color: var(--accent-text);
+  fill: color-mix(in srgb, var(--accent-text) 18%, transparent);
+}
 .tag-cell .meta {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--ink-faint);
   display: flex;
   gap: 12px;
+}
+.method-trend-score {
+  color: var(--accent-text);
+  font-weight: 600;
 }
 
 /* === FRAMEWORKS INDEX === */
