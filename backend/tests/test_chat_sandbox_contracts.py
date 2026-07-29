@@ -1308,7 +1308,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-4OeAJaecYcTGaVvI4Fm8bv"
+    assert MODAL_IMAGE_ID == "im-Y0t7MA1D587bBUeJ60uKN7"
 
 
 def test_task_catalog_is_bounded_and_ranked():
