@@ -1021,7 +1021,11 @@ const PaperDetailView: React.FC = () => {
           </div>
 
           {hasIntroducedItems && (
-            <div className="introduced-banner">
+            <div
+              className={`introduced-banner${
+                introducedFrameworks.length > 0 ? " introduced-banner--framework" : ""
+              }`}
+            >
               <span className="introduced-label">Introduced</span>
               <div className="introduced-methods">
                 {introducedMethods.map((m) => (
@@ -1050,7 +1054,7 @@ const PaperDetailView: React.FC = () => {
                   <button
                     key={`framework-${framework.slug}`}
                     type="button"
-                    className="introduced-pill introduced-pill--framework"
+                    className="introduced-pill"
                     onClick={() => navigate(`/frameworks#framework-${framework.slug}`)}
                   >
                     {framework.name}
