@@ -156,6 +156,7 @@ async def _run(
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(UTC)
     turns: list[TurnResult] = []
+    normal_turns: list[TurnResult] = []
     session_ids: set[uuid.UUID] = set()
     model_switched = False
     cross_owner_rejected = False
@@ -168,6 +169,7 @@ async def _run(
             initial_model=model_choices[0]["id"],
         )
         turns.append(first)
+        normal_turns.append(first)
         if first.session_id is None:
             continue
         session_ids.add(uuid.UUID(first.session_id))
@@ -187,13 +189,13 @@ async def _run(
                     model_switched = (
                         changed.json().get("selected_model") == model_choices[1]["id"]
                     )
-            turns.append(
-                await _turn(
-                    settings,
-                    subject=subject,
-                    session_id=first.session_id,
-                )
+            followup_result = await _turn(
+                settings,
+                subject=subject,
+                session_id=first.session_id,
             )
+            turns.append(followup_result)
+            normal_turns.append(followup_result)
         if index == 0:
             other_subject = f"soak-cross-owner-{run_id}"
             async with httpx.AsyncClient(
@@ -230,25 +232,29 @@ async def _run(
             session_ids.add(uuid.UUID(result.session_id))
 
     latency = _latency_rows(session_ids, started_at) if session_ids else []
+    latency_by_request = {str(row.request_id): row for row in latency}
     followup_rows = [row for row in latency if row.traffic_class == "followup"]
     clean_cancellations = sum(
-        result.terminal == "done" and result.finish_reason == "stopped"
+        result.request_id is not None
+        and result.request_id in latency_by_request
+        and latency_by_request[result.request_id].terminal_status == "stopped"
         for result in cancellations_landed
     )
     forced_failures = sum(
         result.forced_termination
-        and result.terminal == "error"
-        and result.error_code in {"sandbox_worker_failed", "sandbox_lost"}
+        and result.request_id is not None
+        and result.request_id in latency_by_request
+        and latency_by_request[result.request_id].terminal_status == "error"
         for result in forced_landed
     )
-    successful_turns = sum(
-        result.terminal == "done"
-        and result.finish_reason in {"success", "tool_limit", "stopped"}
-        for result in turns
+    normal_successes = sum(
+        result.terminal == "done" and result.finish_reason in {"success", "tool_limit"}
+        for result in normal_turns
     )
+    successful_turns = normal_successes + clean_cancellations
     expected_followups = sessions * followups
     passed = (
-        successful_turns == len(turns) - forced_cancellations
+        successful_turns == len(normal_turns) + cancellations
         and len(followup_rows) == expected_followups
         and clean_cancellations == cancellations
         and forced_failures == forced_cancellations
