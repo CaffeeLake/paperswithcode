@@ -209,11 +209,13 @@ The bootstrap must be rerunnable and support:
 - a final summary with fetched, existing, imported, linked, already linked,
   failed, and upstream/local count deltas.
 
-For the initial release, only add or refresh links. Do not delete links merely
-because a paper disappears from HF: the page parse is brittle and HF attribution
-may change temporarily. A later cleanup mode may remove only links with
-`source='hf_org_papers'`, and only after repeated successful complete snapshots;
-it must never remove manual links.
+HF organization associations are append-only. Once an HF papers page attributes
+a paper to an organization, retain that `source='hf_org_papers'` link
+indefinitely even if a later HF response omits the paper. Every sync may insert
+new links or refresh organization metadata, but it must never reconcile, delete,
+expire, or deactivate an existing paper-organization link. The local collection
+therefore represents papers HF has attributed to the organization over time,
+not an exact mutable mirror of the latest HF response.
 
 Do not create launch associations from author names, email domains, repository
 owners, organization mentions, acknowledgements, or model names. Those signals
@@ -236,7 +238,7 @@ The job should alert/log on:
 
 - missing or unparseable `orgPapers`;
 - extracted count differing from `overview.numPapers`;
-- a sudden large count drop;
+- a sudden large upstream count drop, for diagnostics only and never deletion;
 - unmatched/import-failed papers;
 - stale `last_hf_synced_at`.
 
@@ -381,6 +383,8 @@ Add focused backend tests for:
 - rerunning a sync without duplicate rows;
 - zero-paper organizations;
 - failed/incomplete fetches not updating `last_hf_synced_at` or deleting links;
+- later successful syncs never deleting previously linked papers that are absent
+  from the latest HF payload;
 - featured filtering and stable display order;
 - organization list/detail paper counts using latest eligible papers.
 
@@ -472,6 +476,8 @@ route deployment before changing sitemap/canonical discovery in production.
   HF-attributed (`source='hf_org_papers'`) associations at launch.
 - The many-to-many model permits one paper to link to several organizations and
   reserves distinct provenance for a future AI affiliation extractor.
+- HF organization links are append-only: syncs add newly attributed papers and
+  never remove previously attributed papers.
 - Every nonzero HF-attributed paper is either linked locally or reported with a
   specific import failure; the run produces a reconciliation summary.
 - Repeating the sync creates no duplicate organizations, papers, or links.
