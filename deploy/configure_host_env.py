@@ -303,7 +303,12 @@ def main() -> int:
         for key, line in legacy.items()
         if key.startswith(("PWC_POSTGRES_BACKUP_", "PWC_GITHUB_HOT_", "GITHUB_"))
         or key == "PWC_GITHUB_RATE_LIMIT_RESERVE"
-        or key in {"PWC_GITHUB_TOKEN", "PWC_GITHUB_TOKEN_HOT"}
+        or key
+        in {
+            "PWC_GITHUB_TOKEN",
+            "PWC_GITHUB_TOKEN_HOT",
+            "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
+        }
     }
     cron.update(
         {

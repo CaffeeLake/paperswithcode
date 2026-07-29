@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
@@ -54,6 +54,13 @@ def _build_in_memory_session() -> Session:
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+    )
+    event.listen(
+        engine,
+        "connect",
+        lambda connection, _record: connection.create_function(
+            "jsonb_typeof", 1, lambda _value: "array"
+        ),
     )
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

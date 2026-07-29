@@ -416,6 +416,12 @@ export interface MethodTrendPoint {
   start_date: string;
   end_date: string;
   paper_count: number;
+  eligible_paper_count?: number;
+  processed_paper_count?: number;
+  coverage_ratio?: number | null;
+  coverage_status?: "pending" | "running" | "complete" | "failed" | "not_applicable";
+  catalog_paper_count?: number;
+  catalog_share?: number;
 }
 
 export interface MethodTrend {
@@ -431,6 +437,9 @@ export interface MethodTrend {
   trend_score: number;
   rate_change?: number | null;
   history: MethodTrendPoint[];
+  undated_paper_count?: number;
+  history_complete?: boolean;
+  current_month_is_partial?: boolean;
 }
 
 export interface IntroducingPaper {

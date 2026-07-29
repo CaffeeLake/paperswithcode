@@ -154,11 +154,19 @@ def build_source_link_plan(db: Session) -> SourceLinkPlan:
 
 
 def apply_source_link_plan(db: Session, plan: SourceLinkPlan) -> None:
+    from backend.services.paper_method_link_service import upsert_evidence_links
+
     for method, paper in plan.source_paper_updates:
         method.source_paper_id = paper.id
 
-    for paper_id, method_id in plan.paper_method_inserts:
-        db.add(PaperMethod(paper_id=paper_id, method_id=method_id))
+    upsert_evidence_links(
+        db,
+        (
+            {"paper_id": paper_id, "method_id": method_id}
+            for paper_id, method_id in plan.paper_method_inserts
+        ),
+        evidence_type="source",
+    )
 
     db.commit()
 

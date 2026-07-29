@@ -1077,17 +1077,23 @@ class Methods(BaseModel):
 
 
 class MethodTrendPoint(BaseModel):
-    """One calendar-month bucket of papers using a method."""
+    """One calendar-month bucket of papers mentioning a method."""
 
     start_date: date = Field(..., description="First day of this month")
     end_date: date = Field(..., description="Last included day of this month")
     paper_count: int = Field(
-        ..., description="Distinct latest-version papers using the method"
+        ..., description="Distinct latest-version papers mentioning the method"
     )
+    eligible_paper_count: int = 0
+    processed_paper_count: int = 0
+    coverage_ratio: Optional[float] = None
+    coverage_status: str = "not_applicable"
+    catalog_paper_count: int = 0
+    catalog_share: float = 0.0
 
 
 class MethodTrend(BaseModel):
-    """Recent paper-usage history and trend metadata for one method."""
+    """Paper-mention history and coverage metadata for one method."""
 
     method_id: str = Field(..., description="Resolved method ID")
     method_slug: Optional[str] = Field(None, description="Resolved method slug")
@@ -1116,6 +1122,9 @@ class MethodTrend(BaseModel):
         None, description="Recent usage velocity divided by baseline velocity"
     )
     history: List[MethodTrendPoint] = Field(default_factory=list)
+    undated_paper_count: int = 0
+    history_complete: bool = False
+    current_month_is_partial: bool = True
 
     @field_validator("method_id", mode="before")
     @classmethod

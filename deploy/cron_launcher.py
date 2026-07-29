@@ -124,6 +124,18 @@ COMMANDS: dict[str, Job] = {
         timeout="6h",
         idempotency="insert missing paper-method relationships",
     ),
+    "backfill_method_keywords": job(
+        "-m",
+        "scripts.backfill.backfill_method_keywords",
+        timeout="6h",
+        idempotency="resume versioned paper-id cursor and upsert keyword evidence",
+    ),
+    "backfill_method_references": job(
+        "-m",
+        "scripts.backfill.backfill_method_references",
+        timeout="6h",
+        idempotency="resume stable monthly paper cursor and upsert reference evidence",
+    ),
     "link_papers_by_task_keywords": job(
         "-m",
         "scripts.weekly.link_papers_by_task_keywords",

@@ -35,6 +35,7 @@ from scripts.utils.cron_helpers import DatabaseCronJob
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
+from backend.services.paper_method_link_service import upsert_evidence_links
 from backend.database.methods_setup.link_papers_by_source_citations import (
     SemanticScholarClient,
 )
@@ -114,9 +115,9 @@ def select_unscanned_papers(
         where_clauses.append("arxiv_id = :paper_arxiv_id AND is_latest_version")
         params["paper_arxiv_id"] = paper_arxiv_id
     elif not rescan:
-        where_clauses.append("methods_scanned_at IS NULL")
+        where_clauses.append("methods_scanned_at IS NULL AND is_latest_version")
     else:
-        where_clauses.append("1 = 1")
+        where_clauses.append("is_latest_version")
 
     sql = text(
         f"""
@@ -134,7 +135,10 @@ def select_unscanned_papers(
 def count_unscanned_papers(db) -> int:
     return (
         db.execute(
-            text("SELECT COUNT(*) FROM papers WHERE methods_scanned_at IS NULL")
+            text(
+                "SELECT COUNT(*) FROM papers "
+                "WHERE methods_scanned_at IS NULL AND is_latest_version"
+            )
         ).scalar()
     ) or 0
 
@@ -158,16 +162,7 @@ def _resolve_paper_ss_id(paper: Dict[str, Any]) -> Optional[str]:
 def _flush_paper_methods(db, batch: List[dict]) -> None:
     if not batch:
         return
-    db.execute(
-        text(
-            """
-            INSERT INTO paper_methods (paper_id, method_id)
-            VALUES (:paper_id, :method_id)
-            ON CONFLICT (paper_id, method_id) DO NOTHING
-            """
-        ),
-        batch,
-    )
+    upsert_evidence_links(db, batch, evidence_type="reference")
 
 
 def _mark_paper_scanned(db, paper_ids: List[int]) -> None:

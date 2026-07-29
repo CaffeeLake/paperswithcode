@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.models.database import Area, Method, PaperMethod
+from backend.services.paper_method_link_service import upsert_evidence_links
 from backend.utils.paper_reference import resolve_paper
 
 
@@ -84,8 +85,11 @@ def add_or_update_method(
     if paper:
         link = db.get(PaperMethod, (paper.id, method.id))
         source_link_status = "existing" if link else "created"
-        if link is None:
-            db.add(PaperMethod(paper_id=paper.id, method_id=method.id))
+        upsert_evidence_links(
+            db,
+            [{"paper_id": paper.id, "method_id": method.id}],
+            evidence_type="source",
+        )
 
     db.commit()
     return MethodUpsertResult(

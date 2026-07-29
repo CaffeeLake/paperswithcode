@@ -455,6 +455,12 @@ The following summarizes the live structure. See the database for full DDL.
 - **Original paper submissions:** unlike pending edits, original paper creation is not attributed to a user today. `/api/v1/papers/submit` and `/api/v1/papers/external/from-url` create or reuse `papers` rows without persisting the authenticated Hugging Face username, request source, or raw submission payload. Add a dedicated submission audit table or nullable provenance columns before relying on submitter identity for moderation, attribution, or abuse analysis.
 - **Paper lineage:** directed predecessor/successor edges between papers live in PAPER_RELATIONS (`source_paper_id` -> `target_paper_id`, predecessor -> successor). Surfaced on the paper detail API via `predecessor_papers` and `successor_papers`, and rendered as the lineage banner on the paper detail view (e.g. DINOv2 shows DINOv3 as the follow-up; DINOv3 shows DINOv2 as the predecessor).
 - **Entity images (tasks, methods, conferences):** curated hero/figure images live in SQL (`image_data` + `image_mime_type`), not in `frontend/public`. Seed PNGs for import live under `data/entity_image_seeds/{tasks,methods,conferences}/` and are loaded with `backend/database/import_entity_image.py` or bulk backfill via `run_add_entity_image_data.py`. Browser-only assets (favicons, `og-image.png`, logos) remain static under `frontend/public`. Datasets and papers still use URL columns (`image_url`, `thumbnail_url`, etc.) — they are not DB-blob backed today.
+- **Method-link provenance:** PAPER_METHODS remains the canonical public
+  relationship. PAPER_METHOD_EVIDENCE stores `source`, `keyword`, `reference`,
+  `manual`, and `legacy_unknown` evidence under that parent link;
+  PAPER_METHOD_EXCLUSIONS stores durable curator vetoes.
+  METHOD_REFERENCE_BACKFILL_MONTHS and METHOD_KEYWORD_BACKFILL_RUNS hold the
+  stable monthly and paper-ID cursors used to expose historical coverage.
 
 Keep this document aligned with `backend/models/database.py` and the migrations in
 `backend/database/migrations/`. The live database remains authoritative when

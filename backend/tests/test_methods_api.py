@@ -226,6 +226,10 @@ def test_methods_expose_recent_usage_trend_score(client):
     assert trend["trend_score"] == 1.0
     assert trend["rate_change"] == 3.0
     assert len(trend["history"]) == 12
+    assert "catalog_paper_count" in trend["history"][0]
+    assert "catalog_share" in trend["history"][0]
+    assert trend["undated_paper_count"] == 0
+    assert trend["history_complete"] is True
     assert sum(point["paper_count"] for point in trend["history"]) == 5
 
 

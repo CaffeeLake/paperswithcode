@@ -15,6 +15,10 @@ const monthFormatter = new Intl.DateTimeFormat("en", {
   year: "2-digit",
   timeZone: "UTC",
 });
+const yearFormatter = new Intl.DateTimeFormat("en", {
+  year: "numeric",
+  timeZone: "UTC",
+});
 
 const formatMonth = (date: string) =>
   monthFormatter.format(new Date(`${date}T00:00:00Z`));
@@ -26,8 +30,7 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
   const chartHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
   const slotWidth = history.length ? chartWidth / history.length : chartWidth;
   const barWidth = Math.max(2, slotWidth * 0.68);
-  const labelEvery =
-    history.length > 48 ? 12 : history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
+  const labelEvery = history.length > 48 ? 12 : history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
   const yTicks = Array.from(new Set([0, Math.ceil(maximum / 2), maximum]));
   const activePoint = activeIndex == null ? null : history[activeIndex];
 
@@ -37,9 +40,9 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
         className="method-usage-chart"
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="group"
-        aria-label={`${methodName}: papers using this method by publication month`}
+        aria-label={`${methodName}: papers mentioning this method by publication month`}
       >
-        <title>{methodName}: papers using this method by publication month</title>
+        <title>{methodName}: papers mentioning this method by publication month</title>
         {yTicks.map((tick) => {
           const y = MARGIN.top + chartHeight - (tick / maximum) * chartHeight;
           return (
@@ -68,10 +71,16 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
           const x = MARGIN.left + slotWidth * index + (slotWidth - barWidth) / 2;
           const y = MARGIN.top + chartHeight - displayHeight;
           const isActive = activeIndex === index;
+          const isCurrent = index === history.length - 1;
+          const isPartial =
+            point.coverage_status !== undefined &&
+            !["complete", "not_applicable"].includes(point.coverage_status);
           return (
             <g
               key={point.start_date}
-              className={`method-usage-bar${isActive ? " is-active" : ""}`}
+              className={`method-usage-bar${isActive ? " is-active" : ""}${
+                isCurrent ? " is-current" : ""
+              }${isPartial ? " is-partial" : ""}`}
               tabIndex={0}
               role="img"
               aria-label={`${formatMonth(point.start_date)}: ${point.paper_count} ${
@@ -109,7 +118,9 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
               y={HEIGHT - 11}
               textAnchor="middle"
             >
-              {formatMonth(point.start_date)}
+              {history.length > 48
+                ? yearFormatter.format(new Date(`${point.start_date}T00:00:00Z`))
+                : formatMonth(point.start_date)}
             </text>
           ) : null,
         )}
@@ -120,6 +131,11 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
           <span>
             {activePoint.paper_count}{" "}
             {activePoint.paper_count === 1 ? "paper" : "papers"}
+            {activeIndex === history.length - 1 ? " · month to date" : ""}
+          </span>
+          <span>
+            {(activePoint.catalog_share ?? 0).toFixed(2)}% of{" "}
+            {(activePoint.catalog_paper_count ?? 0).toLocaleString()} catalog papers
           </span>
         </div>
       )}

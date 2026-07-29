@@ -2120,6 +2120,12 @@ a.paper-resource.is-link:focus-visible {
   fill: color-mix(in srgb, var(--accent-text) 48%, var(--bg));
   transition: fill 0.12s;
 }
+.method-usage-bar.is-current .method-usage-bar-mark { opacity: 0.55; }
+.method-usage-bar.is-partial .method-usage-bar-mark {
+  fill: transparent;
+  stroke: var(--accent-text);
+  stroke-dasharray: 2 2;
+}
 .method-usage-bar:hover .method-usage-bar-mark,
 .method-usage-bar:focus .method-usage-bar-mark,
 .method-usage-bar.is-active .method-usage-bar-mark {
@@ -2141,6 +2147,12 @@ a.paper-resource.is-link:focus-visible {
   pointer-events: none;
 }
 .method-trend-skeleton { margin-top: 20px; }
+.method-trend-note {
+  margin: 6px 0 0;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
 
 @media (max-width: 640px) {
   .method-trend-header {

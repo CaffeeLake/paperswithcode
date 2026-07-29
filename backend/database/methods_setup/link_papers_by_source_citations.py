@@ -116,12 +116,14 @@ class SemanticScholarClient:
         request_delay: float = DEFAULT_REQUEST_DELAY,
         request_timeout: float = 30.0,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        exponential_backoff: bool = False,
         client: Optional[httpx.Client] = None,
         sleep=time.sleep,
     ):
         self.api_key = api_key
         self.request_delay = request_delay
         self.max_retries = max_retries
+        self.exponential_backoff = exponential_backoff
         self._sleep = sleep
         self._owns_client = client is None
         if client is None:
@@ -145,7 +147,8 @@ class SemanticScholarClient:
             except httpx.HTTPError as exc:
                 self.api_errors += 1
                 print(f"  ! HTTP error: {exc}", file=sys.stderr)
-                self._sleep(self.request_delay * (attempt + 1))
+                multiplier = 2**attempt if self.exponential_backoff else attempt + 1
+                self._sleep(self.request_delay * multiplier)
                 continue
 
             status = resp.status_code
@@ -157,7 +160,9 @@ class SemanticScholarClient:
                 return None
             if status == 429:
                 self.rate_limit_hits += 1
-                wait = self.request_delay * (attempt + 2)
+                wait = self.request_delay * (
+                    2 ** (attempt + 1) if self.exponential_backoff else attempt + 2
+                )
                 print(
                     f"  ! 429 rate limited; sleeping {wait:.1f}s before retry",
                     file=sys.stderr,
@@ -166,7 +171,9 @@ class SemanticScholarClient:
                 continue
             if 500 <= status < 600:
                 self.api_errors += 1
-                wait = self.request_delay * (attempt + 1)
+                wait = self.request_delay * (
+                    2**attempt if self.exponential_backoff else attempt + 1
+                )
                 print(
                     f"  ! {status} server error; sleeping {wait:.1f}s before retry",
                     file=sys.stderr,
@@ -312,13 +319,11 @@ def build_local_paper_index(
 ) -> tuple[dict[str, int], dict[str, int]]:
     """Map ``semantic_scholar_id`` and ``arxiv_id`` to local ``paper.id`` for latest versions."""
     rows = db.execute(
-        text(
-            """
+        text("""
             SELECT id, arxiv_id, semantic_scholar_id
             FROM papers
             WHERE is_latest_version
-            """
-        )
+            """)
     ).all()
     by_ss: dict[str, int] = {}
     by_arxiv: dict[str, int] = {}
@@ -339,16 +344,9 @@ def existing_paper_ids_for_method(db: Session, method_id: int) -> set[int]:
 
 
 def _flush_batch(db: Session, batch: Iterable[dict]) -> None:
-    db.execute(
-        text(
-            """
-            INSERT INTO paper_methods (paper_id, method_id)
-            VALUES (:paper_id, :method_id)
-            ON CONFLICT (paper_id, method_id) DO NOTHING
-            """
-        ),
-        list(batch),
-    )
+    from backend.services.paper_method_link_service import upsert_evidence_links
+
+    upsert_evidence_links(db, list(batch), evidence_type="reference")
     db.commit()
 
 

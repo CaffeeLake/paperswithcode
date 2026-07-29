@@ -1,28 +1,25 @@
-"""Method usage trends derived from paper-to-method links."""
+"""Method mention trends derived from the union of paper-method evidence."""
 
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.orm import Session
 
 from backend.models.api import MethodTrend, MethodTrendPoint
 from backend.models.database import Method as DBMethod
 from backend.models.database import Paper as DBPaper
 from backend.models.database import PaperMethod
+from backend.services.method_backfill_service import keyword_catalog_rows
+from backend.services.paper_method_link_service import (
+    method_history_start,
+    month_start,
+    shift_month,
+)
 from backend.utils.exceptions import PaperNotFoundError
 
 
-def _month_start(value: date) -> date:
-    return value.replace(day=1)
-
-
-def _shift_month(value: date, months: int) -> date:
-    month_index = value.year * 12 + value.month - 1 + months
-    return date(month_index // 12, month_index % 12 + 1, 1)
-
-
 class MethodTrendService:
-    """Calculate bounded monthly histories for method usage."""
+    """Calculate complete, coverage-aware monthly method mention histories."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -33,14 +30,23 @@ class MethodTrendService:
         *,
         recent_days: int = 90,
         baseline_days: int = 180,
-        history_months: int = 24,
+        history_months: int | None = None,
         today: date | None = None,
     ) -> MethodTrend:
         method = self._resolve_method(method_id)
         generated_on = today or datetime.now(UTC).date()
+        current_month = month_start(generated_on)
+        history_start = method_history_start(self.db, method) or current_month
+        if history_months is not None:
+            history_start = shift_month(current_month, 1 - history_months)
+        actual_history_months = (
+            (current_month.year - history_start.year) * 12
+            + current_month.month
+            - history_start.month
+            + 1
+        )
         recent_start = generated_on - timedelta(days=recent_days)
         baseline_start = recent_start - timedelta(days=baseline_days)
-        history_start = _shift_month(_month_start(generated_on), 1 - history_months)
         query_start = min(history_start, baseline_start)
 
         rows = (
@@ -52,56 +58,170 @@ class MethodTrendService:
                 DBPaper.date_published >= query_start,
                 DBPaper.date_published <= generated_on,
             )
+            .distinct()
             .all()
         )
-
-        recent_count = 0
-        baseline_count = 0
-        history_counts = [0] * history_months
-        first_history_month = history_start.year * 12 + history_start.month - 1
-
+        undated_count = (
+            self.db.query(func.count(func.distinct(DBPaper.id)))
+            .join(PaperMethod, PaperMethod.paper_id == DBPaper.id)
+            .filter(
+                PaperMethod.method_id == method.id,
+                DBPaper.is_latest_version,
+                DBPaper.date_published.is_(None),
+            )
+            .scalar()
+            or 0
+        )
+        counts: dict[date, int] = {}
+        recent_count = baseline_count = 0
         for _paper_id, published_on in rows:
+            bucket = month_start(published_on)
+            counts[bucket] = counts.get(bucket, 0) + 1
             if published_on > recent_start:
                 recent_count += 1
             elif published_on > baseline_start:
                 baseline_count += 1
 
-            month_index = (
-                published_on.year * 12 + published_on.month - 1 - first_history_month
+        if self.db.bind.dialect.name == "sqlite":
+            catalog = {}
+            catalog_rows = (
+                self.db.query(DBPaper.id, DBPaper.date_published)
+                .filter(
+                    DBPaper.is_latest_version,
+                    DBPaper.date_published >= history_start,
+                    DBPaper.date_published <= generated_on,
+                )
+                .all()
             )
-            if 0 <= month_index < history_months:
-                history_counts[month_index] += 1
+            for _paper_id, published_on in catalog_rows:
+                bucket = month_start(published_on)
+                catalog[bucket] = catalog.get(bucket, 0) + 1
+        else:
+            catalog = dict(
+                self.db.execute(
+                    text("""
+                        SELECT date_trunc('month', date_published)::date AS month_start,
+                               count(DISTINCT id) AS paper_count
+                        FROM papers
+                        WHERE is_latest_version
+                          AND date_published >= :history_start
+                          AND date_published <= :generated_on
+                        GROUP BY 1
+                        """),
+                    {"history_start": history_start, "generated_on": generated_on},
+                ).all()
+            )
+        coverage_available = self.db.bind.dialect.name == "postgresql" and inspect(
+            self.db.bind
+        ).has_table("method_reference_backfill_months")
+        coverage: dict[date, tuple] = {}
+        keyword_complete = False
+        if coverage_available:
+            coverage = {
+                row.month_start: row
+                for row in self.db.execute(
+                    text("""
+                        SELECT month_start, status, eligible_papers, processed_papers,
+                               unresolvable_papers, retryable_failures
+                        FROM method_reference_backfill_months
+                        WHERE method_id = :method_id
+                          AND month_start BETWEEN :history_start AND :current_month
+                        """),
+                    {
+                        "method_id": method.id,
+                        "history_start": history_start,
+                        "current_month": current_month,
+                    },
+                ).all()
+            }
+            keyword_digest, _methods = keyword_catalog_rows(self.db)
+            keyword_complete = bool(
+                self.db.execute(
+                    text(
+                        "SELECT 1 FROM method_keyword_backfill_runs "
+                        "WHERE keyword_catalog_sha256 = :digest "
+                        "AND status = 'complete' LIMIT 1"
+                    ),
+                    {"digest": keyword_digest},
+                ).first()
+            )
 
-        recent_velocity = recent_count * 30.0 / recent_days
-        baseline_velocity = baseline_count * 30.0 / baseline_days
-        history = []
-        for index, paper_count in enumerate(history_counts):
-            start = _shift_month(history_start, index)
-            next_start = _shift_month(start, 1)
+        history: list[MethodTrendPoint] = []
+        reference_complete = True
+        for index in range(actual_history_months):
+            start = shift_month(history_start, index)
+            catalog_count = int(catalog.get(start, 0))
+            paper_count = counts.get(start, 0)
+            row = coverage.get(start)
+            if method.source_paper_id and coverage_available:
+                eligible = int(row.eligible_papers) if row else 0
+                processed = (
+                    int(row.processed_papers + row.unresolvable_papers) if row else 0
+                )
+                status = str(row.status) if row else "pending"
+                complete = bool(
+                    row
+                    and row.status == "complete"
+                    and row.retryable_failures == 0
+                    and processed >= eligible
+                )
+                reference_complete = reference_complete and complete
+                ratio = (
+                    min(1.0, processed / eligible)
+                    if eligible
+                    else (1.0 if complete else 0.0)
+                )
+            else:
+                eligible = processed = 0
+                status = "not_applicable"
+                ratio = None
             history.append(
                 MethodTrendPoint(
                     start_date=start,
-                    end_date=min(generated_on, next_start - timedelta(days=1)),
+                    end_date=min(
+                        generated_on, shift_month(start, 1) - timedelta(days=1)
+                    ),
                     paper_count=paper_count,
+                    eligible_paper_count=eligible,
+                    processed_paper_count=processed,
+                    coverage_ratio=round(ratio, 4) if ratio is not None else None,
+                    coverage_status=status,
+                    catalog_paper_count=catalog_count,
+                    catalog_share=(
+                        round(100.0 * paper_count / catalog_count, 4)
+                        if catalog_count
+                        else 0.0
+                    ),
                 )
             )
 
+        history_complete = (
+            keyword_complete
+            and (reference_complete if method.source_paper_id else True)
+            if coverage_available
+            else True
+        )
+        recent_velocity = recent_count * 30.0 / recent_days
+        baseline_velocity = baseline_count * 30.0 / baseline_days
         return MethodTrend(
             method_id=method.id,
             method_slug=method.slug,
             recent_days=recent_days,
             baseline_days=baseline_days,
-            history_months=history_months,
+            history_months=actual_history_months,
             generated_on=generated_on,
             recent_paper_count=recent_count,
             baseline_paper_count=baseline_count,
-            trend_score=round(recent_velocity, 4),
+            trend_score=round(recent_velocity, 4) if history_complete else 0.0,
             rate_change=(
                 round(recent_velocity / baseline_velocity, 4)
-                if baseline_velocity
+                if history_complete and baseline_velocity
                 else None
             ),
             history=history,
+            undated_paper_count=undated_count,
+            history_complete=history_complete,
+            current_month_is_partial=True,
         )
 
     def _resolve_method(self, method_id: str) -> DBMethod:

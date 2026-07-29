@@ -159,7 +159,8 @@ systemd timer; pass `--retry-failed` only for an explicit operator retry.
 Supported token probes are `PWC_GEMINI_API_KEY`, `PWC_GITHUB_TOKEN`,
 `PWC_GITHUB_TOKEN_HOT`,
 `PWC_HF_TOKEN`, `PWC_OPENROUTER_API_KEY`, and
-`PWC_SEMANTIC_SCHOLAR_API_KEY`.
+`PWC_SEMANTIC_SCHOLAR_API_KEY`. Historical method-reference backfills use the
+separately owned `PWC_SEMANTIC_SCHOLAR_API_KEY_2` probe.
 
 ## Versioned paper embeddings
 

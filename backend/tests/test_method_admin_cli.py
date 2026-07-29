@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import BigInteger, create_engine, func, select
+from sqlalchemy import BigInteger, create_engine, event, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -68,6 +68,13 @@ def test_add_or_update_method_is_idempotent_and_links_source_paper():
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+    )
+    event.listen(
+        engine,
+        "connect",
+        lambda connection, _record: connection.create_function(
+            "jsonb_typeof", 1, lambda _value: "array"
+        ),
     )
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(bind=engine)

@@ -597,13 +597,44 @@ class HuggingFacePaperImporterMixin:
             return
 
         query = """
-            INSERT INTO paper_methods (paper_id, method_id)
-            VALUES (%s, %s)
-            ON CONFLICT (paper_id, method_id) DO NOTHING
+            WITH inserted AS (
+                INSERT INTO paper_methods (paper_id, method_id)
+                SELECT %s, %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM paper_method_exclusions
+                    WHERE paper_id = %s AND method_id = %s
+                )
+                ON CONFLICT (paper_id, method_id) DO NOTHING
+                RETURNING paper_id, method_id
+            )
+            INSERT INTO paper_method_evidence
+                (paper_id, method_id, evidence_type)
+            SELECT paper_id, method_id, 'keyword' FROM inserted
+            UNION ALL
+            SELECT %s, %s, 'keyword'
+            WHERE NOT EXISTS (SELECT 1 FROM inserted)
+              AND EXISTS (
+                SELECT 1 FROM paper_methods
+                WHERE paper_id = %s AND method_id = %s
+            )
+            ON CONFLICT (paper_id, method_id, evidence_type)
+            DO UPDATE SET last_seen_at = now()
         """
         for method_id in matching_method_ids:
             try:
-                self.execute_query(query, (paper_id, method_id))
+                self.execute_query(
+                    query,
+                    (
+                        paper_id,
+                        method_id,
+                        paper_id,
+                        method_id,
+                        paper_id,
+                        method_id,
+                        paper_id,
+                        method_id,
+                    ),
+                )
                 self.new_methods_count += 1
             except Exception as e:
                 self.logger.error(

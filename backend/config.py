@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     semantic_scholar_api_key: str = Field(
         default="", description="Semantic Scholar API key for citation data"
     )
+    semantic_scholar_api_key_2: str = Field(
+        default="",
+        description="Secondary Semantic Scholar key reserved for historical backfills",
+    )
 
     # LLM API keys
     gemini_api_key: str = Field(default="", description="Google Gemini API key")

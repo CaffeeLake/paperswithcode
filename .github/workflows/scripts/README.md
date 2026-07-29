@@ -22,6 +22,22 @@ directory with `uv run --env-file backend/keys.env ...`.
 
 The `test-database.yml` workflow is unrelated to cron scheduling.
 
+Historical method work is manual and release-pinned:
+
+```bash
+sudo pwc-cron backfill_method_keywords --resume --limit 5000
+sudo pwc-cron backfill_method_references --method-slug clip --resume --limit 1000
+```
+
+The reference backfill fails closed unless
+`PWC_SEMANTIC_SCHOLAR_API_KEY_2` is present and valid. That secondary key is
+reserved for historical scans; hourly citation updates and the weekly
+incremental linker continue to own `PWC_SEMANTIC_SCHOLAR_API_KEY`.
+After the first authorized bulk load, run `ANALYZE` only on
+`paper_method_evidence`, `paper_method_exclusions`,
+`method_reference_backfill_months`, and `method_keyword_backfill_runs`; do not
+use `VACUUM FULL`.
+
 ## Directory Layout
 
 ```text

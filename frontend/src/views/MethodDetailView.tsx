@@ -32,14 +32,6 @@ const RELATED_METHODS_BY_SLUG: Record<string, string[]> = {
   "agent-skills": ["mcp"],
 };
 
-const methodHistoryMonths = (introducedYear?: number) => {
-  if (!introducedYear) return 24;
-  const now = new Date();
-  const monthsSinceJanuary =
-    (now.getUTCFullYear() - introducedYear) * 12 + now.getUTCMonth() + 1;
-  return Math.min(120, Math.max(6, monthsSinceJanuary));
-};
-
 const MethodDetailView: React.FC = () => {
   const { methodSlug } = useParams<{ methodSlug: string }>();
   const [sortBy, setSortBy] = useState<SortKey>("trending");
@@ -58,11 +50,9 @@ const MethodDetailView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
-  const historyMonths = methodHistoryMonths(methodQ.data?.introduced_year);
   const trendQ = useQuery({
-    queryKey: ["method-trend", methodSlug, historyMonths],
-    queryFn: () =>
-      apiClient.getMethodTrend(methodSlug!, { history_months: historyMonths }),
+    queryKey: ["method-trend", methodSlug],
+    queryFn: () => apiClient.getMethodTrend(methodSlug!),
     enabled: !!methodSlug && !!methodQ.data,
     staleTime: 10 * 60 * 1000,
   });
@@ -183,7 +173,7 @@ const MethodDetailView: React.FC = () => {
           )}
           <div className="tag-hero-meta">
             <div className="stat">
-              <span className="label">Papers using</span>
+              <span className="label">Papers mentioning</span>
               <span className="value">{(m.paper_count ?? 0).toLocaleString()}</span>
             </div>
             {trendQ.data && (
@@ -208,12 +198,10 @@ const MethodDetailView: React.FC = () => {
             <section className="method-trend-panel method-trend-panel--compact">
               <div className="method-trend-header">
                 <div>
-                  <div className="method-trend-eyebrow">Usage trend</div>
+                  <div className="method-trend-eyebrow">Mention trend</div>
                   <p>
-                    {m.introduced_year &&
-                    methodHistoryMonths(m.introduced_year) < 120
-                      ? `Monthly papers since ${m.introduced_year}.`
-                      : `Monthly papers over the latest ${trendQ.data.history_months} months.`}
+                    Distinct papers citing or explicitly mentioning {m.name}, grouped
+                    by publication month.
                   </p>
                 </div>
                 <div className="method-trend-summary">
@@ -225,6 +213,15 @@ const MethodDetailView: React.FC = () => {
                 history={trendQ.data.history}
                 methodName={m.name}
               />
+              {!trendQ.data.history_complete && (
+                <p className="method-trend-note">Historical tagging in progress.</p>
+              )}
+              {(trendQ.data.undated_paper_count ?? 0) > 0 && (
+                <p className="method-trend-note">
+                  {trendQ.data.undated_paper_count!.toLocaleString()} papers without
+                  publication dates are not plotted.
+                </p>
+              )}
             </section>
           ) : null}
         </div>
@@ -259,7 +256,7 @@ const MethodDetailView: React.FC = () => {
             </button>
           ))}
         </div>
-        <div className="results-count">{cards.length} papers using {m.name}</div>
+        <div className="results-count">{cards.length} papers mentioning {m.name}</div>
       </div>
 
       {papersQ.isLoading ? (

@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Numeric,
     ForeignKey,
+    ForeignKeyConstraint,
     UniqueConstraint,
     Index,
 )
@@ -1076,6 +1077,132 @@ class PaperMethod(Base):
     __table_args__ = (
         Index("idx_paper_methods_paper_id", "paper_id"),
         Index("idx_paper_methods_method_id", "method_id"),
+    )
+
+
+class PaperMethodEvidence(Base):
+    """Auditable evidence for one paper-method association."""
+
+    __tablename__ = "paper_method_evidence"
+
+    paper_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    method_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    evidence_type: Mapped[str] = mapped_column(String(24), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["paper_id", "method_id"],
+            ["paper_methods.paper_id", "paper_methods.method_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "evidence_type IN "
+            "('source', 'keyword', 'reference', 'manual', 'legacy_unknown')",
+            name="paper_method_evidence_type_check",
+        ),
+        Index("idx_paper_method_evidence_method_type", "method_id", "evidence_type"),
+    )
+
+
+class PaperMethodExclusion(Base):
+    """Durable curator veto against automated paper-method linking."""
+
+    __tablename__ = "paper_method_exclusions"
+
+    paper_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    method_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("methods.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MethodReferenceBackfillMonth(Base):
+    """Resumable reference-scan coverage for one method and publication month."""
+
+    __tablename__ = "method_reference_backfill_months"
+
+    method_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("methods.id", ondelete="CASCADE"), primary_key=True
+    )
+    month_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    eligible_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    matched_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unresolvable_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retryable_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cursor_published_at: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    cursor_paper_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'complete', 'failed')",
+            name="method_reference_backfill_months_status_check",
+        ),
+        Index("idx_method_reference_backfill_status", "status", "updated_at"),
+    )
+
+
+class MethodKeywordBackfillRun(Base):
+    """Versioned, resumable cursor for catalog-wide keyword matching."""
+
+    __tablename__ = "method_keyword_backfill_runs"
+
+    keyword_catalog_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    eligible_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_papers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cursor_paper_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'complete', 'failed')",
+            name="method_keyword_backfill_runs_status_check",
+        ),
+        Index(
+            "uq_method_keyword_backfill_one_running",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
     )
 
 

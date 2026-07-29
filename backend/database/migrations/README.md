@@ -54,6 +54,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_paper_tasks_source.sql` | `paper_tasks.source` |
 | `add_methods_scanned_at_to_papers.sql` | `papers.methods_scanned_at` |
 | `add_method_source_paper_id.sql` | `methods.source_paper_id` |
+| `add_method_link_provenance.sql` | method-link evidence, exclusions, and resumable keyword/reference backfill state |
 | `add_paper_performance_indexes.sql` | paper query indexes |
 | `add_missing_dataset_variant_fields.sql` | dataset variant columns |
 

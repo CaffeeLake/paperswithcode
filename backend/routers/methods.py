@@ -158,10 +158,15 @@ def get_method_trend(
     method_id: str,
     recent_days: int = Query(90, ge=1, le=365),
     baseline_days: int = Query(180, ge=1, le=730),
-    history_months: int = Query(24, ge=6, le=120),
+    history_months: int | None = Query(
+        None,
+        ge=1,
+        le=600,
+        description="Optional trailing-month override; omitted returns full history",
+    ),
     db: Session = Depends(get_database_session),
 ):
-    """Return monthly paper usage and recent reporting velocity for a method."""
+    """Return complete monthly mention history and reference coverage."""
     try:
         return MethodTrendService(db).get_method_trend(
             method_id,

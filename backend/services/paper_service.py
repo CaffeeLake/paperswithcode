@@ -2022,7 +2022,8 @@ class PaperService:
             DatabaseError: If update fails
         """
         try:
-            from backend.models.database import Method as DBMethod, PaperMethod
+            from backend.models.database import Method as DBMethod
+            from backend.services.paper_method_link_service import replace_manual_links
 
             # Verify paper exists
             db_paper = self.db.query(DBPaper).filter(DBPaper.id == paper_id).first()
@@ -2038,13 +2039,7 @@ class PaperService:
             if invalid_method_ids:
                 raise DatabaseError(f"Invalid method IDs: {invalid_method_ids}")
 
-            # Delete existing paper_methods associations
-            self.db.query(PaperMethod).filter(PaperMethod.paper_id == paper_id).delete()
-
-            # Add new associations
-            for method_id in method_ids:
-                paper_method = PaperMethod(paper_id=paper_id, method_id=method_id)
-                self.db.add(paper_method)
+            replace_manual_links(self.db, paper_id=paper_id, method_ids=method_ids)
 
             if not commit:
                 self.db.flush()

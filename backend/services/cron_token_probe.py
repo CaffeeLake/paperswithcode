@@ -65,6 +65,11 @@ TOKEN_PROBES = {
         "https://api.semanticscholar.org/graph/v1/paper/DOI:10.18653/v1/N18-3011",
         lambda token: {"x-api-key": token},
     ),
+    "PWC_SEMANTIC_SCHOLAR_API_KEY_2": (
+        "Semantic Scholar",
+        "https://api.semanticscholar.org/graph/v1/paper/DOI:10.18653/v1/N18-3011",
+        lambda token: {"x-api-key": token},
+    ),
 }
 
 
