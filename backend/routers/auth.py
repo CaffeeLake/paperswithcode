@@ -57,6 +57,7 @@ STATE_TTL_SECONDS = 5 * 60  # 5 minutes
 
 
 class AuthMe(BaseModel):
+    hf_subject: str
     username: str
     name: Optional[str] = None
     avatar_url: Optional[str] = None
@@ -537,6 +538,7 @@ def me(request: Request):
 
     role = _role(payload)
     return AuthMe(
+        hf_subject=payload["sub"],
         username=payload["username"],
         name=payload.get("name"),
         avatar_url=payload.get("avatar_url"),

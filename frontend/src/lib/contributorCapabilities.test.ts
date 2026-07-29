@@ -6,6 +6,7 @@ import { paperEditSubmitMode } from "./contributorCapabilities";
 const contributor = (
   can_directly_edit_catalog: boolean,
 ): AuthUser => ({
+  hf_subject: "contributor-sub",
   username: "abidlabs",
   name: null,
   avatar_url: null,

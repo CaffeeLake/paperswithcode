@@ -15,6 +15,7 @@ import React from "react";
 import { apiUrl, authUrl, isAuthDisabled } from "./apiUrl";
 
 export interface AuthUser {
+  hf_subject: string;
   username: string;
   name: string | null;
   avatar_url: string | null;

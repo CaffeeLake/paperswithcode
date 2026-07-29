@@ -128,10 +128,23 @@ def test_me_reports_contributor_capabilities(monkeypatch):
         {"sub": "contributor-sub", "username": "renamed"},
     )
     response = auth.me(request())
+    assert response.hf_subject == "contributor-sub"
     assert response.role == "contributor"
     assert response.is_admin is False
     assert response.can_contribute is True
     assert response.can_directly_edit_catalog is True
+
+
+def test_me_reports_subject_for_unlisted_authenticated_user(monkeypatch):
+    configure(
+        monkeypatch,
+        settings(environment="staging"),
+        {"sub": "unlisted-subject", "username": "person"},
+    )
+    response = auth.me(request())
+    assert response.hf_subject == "unlisted-subject"
+    assert response.role is None
+    assert response.can_contribute is False
 
 
 def test_staging_me_never_advertises_direct_edits(monkeypatch):
