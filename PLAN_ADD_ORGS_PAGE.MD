@@ -432,11 +432,32 @@ scan recognizable labs and companies, click anywhere on a tile, and arrive
 directly at `/orgs/{slug}`, where the organization's paper feed is already
 visible without another navigation step.
 
+Use the supplied 2026-07-29 organizations-page screenshot as the visual
+direction. Match its editorial hierarchy within the existing PwC design system:
+
+- a generous hero with a small mono eyebrow, a large serif headline, an
+  italic/accent phrase, and a concise explanatory deck;
+- a section header showing the organization count on the left and the active
+  sort description on the right;
+- a spacious three-column desktop card grid rather than a compact five- or
+  six-column logo wall;
+- warm neutral surfaces, fine hairline borders, restrained blue accents, and
+  the repository's existing serif/mono typography tokens;
+- organization cards with a logo/name/slug header, a separated metric band, a
+  highlighted-paper area, and a quiet footer such as the publication-year
+  range;
+- the existing site header and navigation rather than recreating screenshot
+  header elements independently.
+
+Treat the screenshot as a layout and art-direction reference, not as trusted
+data. Every displayed number and paper title must come from a defined backend
+field; never ship the screenshot's placeholder counts, percentages, rankings,
+or titles.
+
 Each grid tile contains:
 
-- a large, centered organization logo in a fixed-ratio visual area;
-- the organization display name below the logo so discovery does not depend on
-  recognizing the mark;
+- a consistently sized organization logo aligned with the organization display
+  name and HF slug;
 - the linked-paper count as secondary text;
 - one semantic link wrapping the complete tile, with an accessible label such
   as "Browse 152 NVIDIA papers";
@@ -445,8 +466,8 @@ Each grid tile contains:
 The grid should:
 
 - show all 21 featured organizations without pagination;
-- use a dense responsive layout (approximately two columns on narrow phones,
-  three or four on tablets, and five or six on desktop);
+- use one column on narrow phones, two columns on tablets, and three columns on
+  desktop, preserving the screenshot's readable card density;
 - give logos consistent visual weight with `object-fit: contain`, internal
   padding, and a neutral tile background rather than stretching or cropping
   differently shaped marks;
@@ -465,6 +486,11 @@ The grid should:
   display name followed by slug;
 - display loading skeletons in the same grid geometry and provide retryable
   error and no-search-results states.
+
+On small screens, keep the card information order intact and allow long paper
+titles to wrap; do not create a horizontally scrolling grid. Clamp only when a
+consistent card height is necessary, and keep the full title available to
+assistive technology.
 
 Keep outbound website and Hugging Face links on the organization detail page so
 each overview tile has one unambiguous click target. Treat the organization name
@@ -561,6 +587,8 @@ Add React tests for:
 - logo-grid geometry/classes, full-tile links, accessible labels, broken-logo
   fallbacks, loading, errors, searching, all three sort modes, URL-state
   persistence, deterministic ties, and zero-paper tiles on the index;
+- one/two/three-column responsive behavior and the screenshot-inspired card
+  information hierarchy without asserting brittle pixel-perfect styling;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
 - the canonical detail route immediately loading a trending paper feed without
   an intermediate "All papers" click;
@@ -599,7 +627,9 @@ Do not run `npm run build` as a routine check.
 3. Deploy the exact pushed commit to staging.
 4. Verify `/organizations`, representative `/orgs/...` pages, a zero-paper org,
    task filtering, API pagination, old redirects, canonical metadata, Markdown,
-   the organizations sitemap, and both new daily jobs on `/admin-dashboard`.
+   the organizations sitemap, both new daily jobs on `/admin-dashboard`, and
+   the organizations grid at phone, tablet, and desktop widths against the
+   supplied visual reference.
 5. Confirm that no existing static route is intercepted by an organization
    alias.
 
@@ -630,6 +660,9 @@ route deployment before changing sitemap/canonical discovery in production.
   create rows, links, or tiles during the initial release.
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
+- The page follows the supplied editorial reference: large serif hero,
+  organization-count/sort header, and information-rich one/two/three-column
+  cards using real backend data rather than placeholder values.
 - The grid defaults to `Trending` and offers working, shareable `Most papers`
   and `A–Z` views without refetching HF.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
