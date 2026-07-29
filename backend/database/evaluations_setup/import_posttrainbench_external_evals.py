@@ -1,6 +1,6 @@
 """Import PostTrainBench leaderboard rows as external evaluations on model paper pages.
 
-Fetches aggregated scores from https://posttrainbench.com/scores.json and attaches
+Fetches aggregated scores from https://posttrainbench.com/scores.js and attaches
 each agent's weighted-average Accuracy to its introducing paper with external=true.
 
 Run:
@@ -28,7 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 POSTTRAINBENCH_SOURCE_URL = "https://posttrainbench.com/"
-SCORES_URL = "https://posttrainbench.com/scores.json"
+SCORES_URL = "https://posttrainbench.com/scores.js"
+SCORES_ASSIGNMENT = "window.SCORES_DATA = "
+RESULTS_VERSION = "v1.1"
 TASK_SLUG = "agents"
 DATASET_SLUG = "posttrainbench"
 METRIC = "Accuracy"
@@ -47,12 +49,46 @@ AGENT_SPECS: dict[str, dict] = {
         "model_name": "Claude Fable 5 (1M, Max)",
         "harness": "Claude Code",
         "is_open": False,
+        "methodology_note": (
+            "Fable 5 uses Opus 4.8 Max scores for GPQA after Fable refused "
+            "that benchmark."
+        ),
+    },
+    "gpt-5.6-sol": {
+        "paper_id": 102702,
+        "model_name": "GPT-5.6 Sol (Max)",
+        "harness": "Codex CLI",
+        "is_open": False,
+    },
+    "opus-5": {
+        "paper_id": 104561,
+        "model_name": "Claude Opus 5",
+        "harness": "Claude Code",
+        "is_open": False,
+        "methodology_note": "Single-run result; multi-seed results are pending.",
+    },
+    "grok-4.5-high": {
+        "paper_id": 102703,
+        "model_name": "Grok 4.5 (High)",
+        "harness": "Cursor CLI",
+        "is_open": False,
+    },
+    "kimi-k3": {
+        "paper_id": 104584,
+        "model_name": "Kimi K3",
+        "harness": "Claude Code",
+        "is_open": True,
+        "hf_model_url": "https://huggingface.co/moonshotai/Kimi-K3",
+        "num_parameters": 2_779_931_837_184,
+        "methodology_note": "The agent used the model's 1M context window.",
     },
     "glm-5.2": {
         "paper_id": 98456,
-        "model_name": "GLM-5.2",
+        "model_name": "GLM-5.2 (Max)",
         "harness": "Claude Code",
         "is_open": True,
+        "hf_model_url": "https://huggingface.co/zai-org/GLM-5.2",
+        "num_parameters": 753_329_940_480,
     },
     "opus-4.8": {
         "paper_id": 97913,
@@ -68,25 +104,7 @@ AGENT_SPECS: dict[str, dict] = {
     },
     "opus-4.7": {
         "paper_id": 97914,
-        "model_name": "Claude Opus 4.7",
-        "harness": "Claude Code",
-        "is_open": False,
-    },
-    "opus-4.6": {
-        "paper_id": 97916,
-        "model_name": "Claude Opus 4.6",
-        "harness": "Claude Code",
-        "is_open": False,
-    },
-    "opus-4.6-1m": {
-        "paper_id": 97916,
-        "model_name": "Claude Opus 4.6 (1M)",
-        "harness": "Claude Code",
-        "is_open": False,
-    },
-    "opus-4.5": {
-        "paper_id": 97915,
-        "model_name": "Claude Opus 4.5",
+        "model_name": "Claude Opus 4.7 (xHigh)",
         "harness": "Claude Code",
         "is_open": False,
     },
@@ -96,52 +114,10 @@ AGENT_SPECS: dict[str, dict] = {
         "harness": "Codex CLI",
         "is_open": False,
     },
-    "gpt-5.5-xhigh-reprompted": {
-        "paper_id": 97922,
-        "model_name": "GPT-5.5 (xHigh, Reprompted)",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
     "gpt-5.4-high": {
         "paper_id": 97924,
         "model_name": "GPT-5.4 (High)",
         "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gpt-5.4-high-reprompted": {
-        "paper_id": 97924,
-        "model_name": "GPT-5.4 (High, Reprompted)",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gpt-5.3-codex-high": {
-        "paper_id": 97926,
-        "model_name": "GPT-5.3-Codex (High)",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gpt-5.3-codex-med": {
-        "paper_id": 97926,
-        "model_name": "GPT-5.3-Codex (Med)",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gpt-5.2": {
-        "paper_id": 97928,
-        "model_name": "GPT-5.2",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gpt-5.2-codex": {
-        "paper_id": 98563,
-        "model_name": "GPT-5.2-Codex",
-        "harness": "Codex CLI",
-        "is_open": False,
-    },
-    "gemini-3-pro": {
-        "paper_id": 98051,
-        "model_name": "Gemini 3 Pro",
-        "harness": "Gemini CLI",
         "is_open": False,
     },
     "gemini-3.1-pro": {
@@ -149,30 +125,6 @@ AGENT_SPECS: dict[str, dict] = {
         "model_name": "Gemini 3.1 Pro",
         "harness": "OpenCode",
         "is_open": False,
-    },
-    "sonnet-4.6": {
-        "paper_id": 97925,
-        "model_name": "Claude Sonnet 4.6",
-        "harness": "Claude Code",
-        "is_open": False,
-    },
-    "glm-5": {
-        "paper_id": 56155,
-        "model_name": "GLM-5",
-        "harness": "OpenCode",
-        "is_open": True,
-    },
-    "kimi-k2.5": {
-        "paper_id": 55657,
-        "model_name": "Kimi K2.5",
-        "harness": "OpenCode",
-        "is_open": True,
-    },
-    "minimax-m2.5": {
-        "paper_id": 83031,
-        "model_name": "MiniMax-M2.5",
-        "harness": "OpenCode",
-        "is_open": True,
     },
 }
 
@@ -185,9 +137,19 @@ class LeaderboardEntry:
     n_runs: int | None
 
 
+def parse_scores_payload(source: str) -> dict:
+    _, assignment, payload = source.partition(SCORES_ASSIGNMENT)
+    if not assignment:
+        raise RuntimeError("Unexpected PostTrainBench scores.js format")
+    payload = payload.strip()
+    if payload.endswith(";"):
+        payload = payload[:-1]
+    return json.loads(payload)
+
+
 def fetch_scores_payload() -> dict:
     with urllib.request.urlopen(SCORES_URL, timeout=60) as resp:
-        return json.load(resp)
+        return parse_scores_payload(resp.read().decode())
 
 
 def calculate_weighted_average(payload: dict, agent_key: str) -> float | None:
@@ -259,13 +221,11 @@ def _delete_existing_rows(session: Session, task_id: int, dataset_id: int) -> in
             DELETE FROM evaluations
             WHERE task_id = :task_id
               AND dataset_id = :dataset_id
-              AND source_url = :source_url
             """
         ),
         {
             "task_id": task_id,
             "dataset_id": dataset_id,
-            "source_url": POSTTRAINBENCH_SOURCE_URL,
         },
     ).rowcount
     session.flush()
@@ -348,16 +308,20 @@ def import_rows(
         harness = spec["harness"]
 
         methodology = (
-            "PostTrainBench weighted average across four base LLMs "
+            f"PostTrainBench {RESULTS_VERSION} weighted average across four base LLMs "
             "(Qwen3-1.7B, Qwen3-4B, SmolLM3-3B, Gemma-3-4B) and seven downstream "
             "benchmarks (AIME 2025, Arena Hard, BFCL, GPQA Main, GSM8K, HealthBench, "
-            "HumanEval). Each agent had 10 hours on one H100 GPU."
+            "HumanEval). Each agent had 10 hours on one H100 GPU. The v1.1 results "
+            "apply independent contamination, API-usage, and benchmark-lookup audits "
+            "plus programmatic model-identity checks."
         )
         methodology += f" Agent scaffold: {harness}."
         if entry.n_runs is not None:
             methodology += f" Reported mean over {entry.n_runs} runs."
         if entry.std_dev is not None:
             methodology += f" Std dev {entry.std_dev:g}%."
+        if note := spec.get("methodology_note"):
+            methodology += f" {note}"
 
         existing = session.execute(
             text(
@@ -398,6 +362,8 @@ def import_rows(
                 source_url=POSTTRAINBENCH_SOURCE_URL,
                 external=True,
                 is_open=spec["is_open"],
+                hf_model_url=spec.get("hf_model_url"),
+                num_parameters=spec.get("num_parameters"),
             )
         )
         created += 1
