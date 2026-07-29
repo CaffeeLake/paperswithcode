@@ -273,6 +273,87 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
         relay_side.close()
 
 
+def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    monkeypatch.setenv("PWC_CHAT_GATEWAY_URL", "https://gateway.invalid")
+    request_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())
+    turn_id = str(uuid.uuid4())
+    launch = {
+        "capability": "opaque-capability",
+        "gateway_url": "https://gateway.invalid",
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "opaque-assignment",
+        "worker_generation": "generation-a",
+    }
+    run = {
+        "v": 1,
+        "type": "run_turn",
+        "request_id": request_id,
+        "chat_session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "opaque-assignment",
+        "worker_generation": "generation-a",
+    }
+    daemon_side, relay_side = socket.socketpair()
+    relay_side.sendall(
+        supervisor.SUPERVISOR_PREFIX
+        + json.dumps(launch, separators=(",", ":")).encode()
+        + b"\n"
+        + encode_frame(run)
+    )
+    read_fd, write_fd = os.pipe()
+    agent_stdout = os.fdopen(read_fd, "rb", buffering=0)
+    os.write(
+        write_fd,
+        encode_frame(
+            {
+                "v": 1,
+                "type": "worker_done",
+                "request_id": request_id,
+                "status": "complete",
+            }
+        ),
+    )
+    control_operations: list[str] = []
+
+    def broker_control(payload):
+        control_operations.append(payload["operation"])
+        if payload["operation"] == "clear":
+            raise RuntimeError("sensitive provider detail")
+        return {"ok": True}
+
+    monkeypatch.setattr(control_daemon, "_broker_control", broker_control)
+    child = SimpleNamespace(
+        poll=lambda: None,
+        stdin=BytesIO(),
+        stdout=agent_stdout,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="sensitive provider detail"):
+            control_daemon._serve_turn(
+                daemon_side,
+                broker=child,
+                agent=child,
+                assigned_session_id=None,
+            )
+        failure = decode_frame(relay_side.recv(4096))
+        assert failure == {
+            "v": 1,
+            "type": "_control_failure",
+            "request_id": request_id,
+            "stage": "broker_clear",
+        }
+        assert "sensitive" not in json.dumps(failure)
+        assert control_operations == ["install", "clear", "clear"]
+    finally:
+        os.close(write_fd)
+        agent_stdout.close()
+        daemon_side.close()
+        relay_side.close()
+
+
 def test_worker_mirror_error_preserves_bounded_diagnostic_context():
     key = {
         "project_key": "-workspace",
@@ -405,6 +486,39 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     assert calls.count(("connect", None)) == 1
     assert calls.count(("wait_for_flush",)) == 2
     assert calls.count(("flush",)) == 2
+    assert calls[-1] == ("disconnect",)
+
+
+def test_persistent_agent_preflight_keeps_initialized_client(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, options):
+            calls.append(("init", options.model, options.resume))
+
+        async def connect(self, prompt):
+            calls.append(("connect", prompt))
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+
+    async def run():
+        await worker.preflight("model-a")
+        assert worker.client is not None
+        await worker.connect(model="model-a", resume=None)
+        await worker.close()
+
+    asyncio.run(run())
+    assert [call[0] for call in calls].count("init") == 1
+    assert calls.count(("connect", None)) == 1
     assert calls[-1] == ("disconnect",)
 
 
@@ -1125,7 +1239,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-2ooo9rS0xnh0B7dbmJj5WI"
+    assert MODAL_IMAGE_ID == "im-BeRQFqg3pA1NwHmXZReTwT"
 
 
 def test_task_catalog_is_bounded_and_ranked():

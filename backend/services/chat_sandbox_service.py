@@ -1839,6 +1839,16 @@ class SandboxSessionManager:
                             item = await queue.get()
                             if isinstance(item, BaseException):
                                 raise item
+                            if item.get("type") == "_control_failure":
+                                logger.warning(
+                                    "persistent worker control failed stage=%s",
+                                    item.get("stage"),
+                                )
+                                raise SandboxError(
+                                    "sandbox_worker_failed",
+                                    "The persistent worker control failed",
+                                    uncertain=True,
+                                )
                             yield item
                             if item.get("type") == "worker_done":
                                 return

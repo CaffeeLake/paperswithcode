@@ -232,6 +232,7 @@ def _serve_turn(
     poller.register(agent.stdout, select.POLLIN | select.POLLHUP | select.POLLERR)
     buffer = b""
     worker_done: bytes | None = None
+    stage = "agent_stream"
     try:
         while worker_done is None:
             if agent.poll() is not None:
@@ -262,6 +263,7 @@ def _serve_turn(
                             worker_done = line
                             break
                         connection.sendall(line)
+        stage = "broker_clear"
         _broker_control(
             {
                 "operation": "clear",
@@ -269,9 +271,23 @@ def _serve_turn(
                 "turn_id": str(launch["turn_id"]),
             }
         )
+        stage = "worker_done_send"
         connection.sendall(worker_done)
         return session_id
     except BaseException:
+        try:
+            connection.sendall(
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "_control_failure",
+                        "request_id": str(run["request_id"]),
+                        "stage": stage,
+                    }
+                )
+            )
+        except Exception:
+            pass
         try:
             _broker_control(
                 {

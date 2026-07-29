@@ -449,13 +449,9 @@ class PersistentAgent:
         await self.client.connect(prompt=None)
 
     async def preflight(self, model: str) -> None:
-        """Prove SDK initialization performs no provider request or session resume."""
+        """Initialize the credential-free SDK client before session assignment."""
 
-        client = ClaudeSDKClient(
-            _options(self.settings, self.hooks, model=model, resume=None)
-        )
-        await client.connect(prompt=None)
-        await client.disconnect()
+        await self.connect(model=model, resume=None)
 
     async def stream(self, frame: dict[str, Any]):
         prompt, request_id, model = _validate_run_frame(frame)

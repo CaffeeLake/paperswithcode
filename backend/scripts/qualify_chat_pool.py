@@ -150,7 +150,7 @@ class PoolQualification:
             await asyncio.sleep(0.25)
         raise TimeoutError("Compatible blank worker was not replenished")
 
-    def _latency(self, request_id: str) -> PoolSample:
+    def _latency(self, request_id: str, error_code: str | None) -> PoolSample:
         with db_manager.session_local() as db:
             row = db.execute(
                 select(ChatTurnLatency).where(
@@ -170,7 +170,7 @@ class PoolQualification:
                 else None
             ),
             terminal_status=row.terminal_status,
-            error_code=None,
+            error_code=error_code,
         )
 
     async def _turn(self, index: int) -> PoolSample:
@@ -210,7 +210,7 @@ class PoolQualification:
             )
         for _ in range(40):
             try:
-                return self._latency(request_id)
+                return self._latency(request_id, error_code)
             except NoResultFound:
                 await asyncio.sleep(0.05)
         return PoolSample(
