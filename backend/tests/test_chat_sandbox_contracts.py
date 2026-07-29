@@ -648,17 +648,16 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_IMAGE_ID == "im-xYDZ7oCK2ely10XnbBA5Q8"
 
 
-def test_task_catalog_is_bounded_ranked_and_filters_hidden_tasks():
+def test_task_catalog_is_bounded_and_ranked():
     payload = {
         "results": [
             {
                 "name": "Vision",
                 "tasks": [
                     {
-                        "name": "Hidden",
-                        "slug": "hidden",
+                        "name": "Popular",
+                        "slug": "popular",
                         "paper_count": 999,
-                        "is_visible": False,
                     },
                     {"name": "Detection", "slug": "detection", "paper_count": 20},
                     {
@@ -681,9 +680,9 @@ def test_task_catalog_is_bounded_ranked_and_filters_hidden_tasks():
     catalog = render_task_catalog(payload, maximum_tasks_per_area=2)
 
     assert catalog.index("### Audio") < catalog.index("### Vision")
-    assert catalog.index("`classification`") < catalog.index("`detection`")
+    assert catalog.index("`popular`") < catalog.index("`classification`")
+    assert "`detection`" not in catalog
     assert "`segmentation`" not in catalog
-    assert "`hidden`" not in catalog
 
 
 def test_image_makes_copied_worker_readable_and_installs_skill():

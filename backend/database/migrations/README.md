@@ -48,7 +48,6 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_evaluations_source_attribution.sql` | `evaluations.source_url` and `evaluations.external` |
 | `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
 | `remove_task_datasets_featured_rank.sql` | Remove obsolete manual benchmark pinning; task pages use benchmark trends |
-| `add_tasks_is_visible.sql` | `tasks.is_visible` |
 | `add_task_sister_tasks.sql` + `run_add_task_sister_tasks.py` | `task_sister_tasks` table (explicit sister tasks) |
 | `add_task_recommended_frameworks.sql` | Ordered task-to-repository framework recommendations, with initial image-classification and object-detection data |
 | `add_framework_catalog.sql` | First-class framework domains, categories, entities, platforms, canonical papers, repositories, and task links |
@@ -58,11 +57,18 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_method_link_provenance.sql` | method-link evidence, exclusions, and resumable keyword/reference backfill state |
 | `add_paper_performance_indexes.sql` | paper query indexes |
 | `add_missing_dataset_variant_fields.sql` | dataset variant columns |
+| `cleanup_obsolete_hidden_tasks.sql` | Preconditioned removal of five obsolete tasks, six low-impact benchmarks, and their explicitly audited links/evaluations |
+| `add_entity_search_vectors.sql` + `backfill_entity_search_vectors.py` + `add_entity_search_indexes.sql` | Name-only benchmark, method, and task search vectors, triggers, and GIN/trigram indexes |
+| `remove_tasks_is_visible.sql` | Remove retired task visibility state after the production compatibility gate |
 
 Before running `remove_task_datasets_featured_rank.sql`, deploy application
 code without `featured_rank` into both the current and previous release slots
 for staging and production. This keeps the immediate rollback releases
 compatible after the column is dropped.
+
+Do not run `remove_tasks_is_visible.sql` until visibility-free source is live
+in both the production current and immediate rollback releases. The additive
+entity-search schema and bounded backfill can be applied before that gate.
 
 ## Adding new migrations
 

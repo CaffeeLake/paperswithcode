@@ -32,7 +32,11 @@ def list_methods(
         50, ge=1, le=500, description="Number of methods per page (max 500)"
     ),
     q: Optional[str] = Query(
-        None, description="Search query for method name, full name, and description"
+        None,
+        description=(
+            "Name-only method search with exact slug/name/full-name identity, "
+            "all-token prefixes, full-text relevance, and conservative typo recovery"
+        ),
     ),
     name: Optional[str] = Query(
         None, description="Filter by partial method name match"

@@ -68,8 +68,6 @@ const SearchOverlay: React.FC<SearchOverlayProps> = ({ open, onClose }) => {
       apiClient.getDatasets({
         q: debouncedQuery,
         page_size: 6,
-        ordering: "-paper_count",
-        min_eval_count: 2,
       }),
     enabled: open && debouncedQuery.length >= 2,
     staleTime: 60_000,

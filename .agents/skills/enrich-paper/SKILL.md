@@ -311,7 +311,7 @@ with get_engine().connect() as conn:
     for q in task_terms:
         rows = conn.execute(text("""
             SELECT id, name, slug, level FROM tasks
-            WHERE is_visible = TRUE AND (name ILIKE :q OR slug ILIKE :q OR keywords ILIKE :q)
+            WHERE name ILIKE :q OR slug ILIKE :q OR keywords ILIKE :q
             ORDER BY level NULLS LAST, name LIMIT 15
         """), {"q": f"%{q}%"}).fetchall()
         print(q, [(r.id, r.slug) for r in rows])
@@ -344,7 +344,7 @@ async def main():
     blob = (await get_title(arxiv_id) or "") + ". " + (await get_abstract(arxiv_id) or "")
     with get_engine().connect() as conn:
         tasks = [dict(r._mapping) for r in conn.execute(text(
-            "SELECT id, name, slug, keywords FROM tasks WHERE is_visible=TRUE AND keywords IS NOT NULL"))]
+            "SELECT id, name, slug, keywords FROM tasks WHERE keywords IS NOT NULL"))]
         methods = [dict(r._mapping) for r in conn.execute(text(
             "SELECT id, name, slug, keywords FROM methods WHERE keywords IS NOT NULL"))]
     t_cs, t_ci = create_keyword_patterns(tasks)

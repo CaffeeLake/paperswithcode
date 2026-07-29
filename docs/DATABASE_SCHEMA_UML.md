@@ -295,18 +295,18 @@ The following summarizes the live structure. See the database for full DDL.
 ### TASKS
 - id (PK), name, description, slug (UNIQUE)
 - parent_id (FK self), area_id (FK), level (default 0)
-- research_trends (JSONB), is_visible (bool)
+- research_trends (JSONB), search_vector (tsvector)
 - keywords, image_url, image_credit, useful_leaderboards
 - image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed hero image bytes; ORM defers `image_data` so list queries never load the blob; `image_mime_type` doubles as the "has DB image" flag
 - created_at, updated_at
-- Indexes: parent_id, area_id, slug
+- Indexes: parent_id, area_id, slug, search_vector (GIN), normalized name (GiST trigram)
 - **Images:** curated self-hosted heroes are stored in `image_data`/`image_mime_type` and served at `/api/v1/tasks/{slug}/image`. The API resolves `image_url` to that endpoint when `image_mime_type` is set; otherwise it falls back to the stored external `image_url`.
 - **Hierarchy:** subtasks are child rows linked through `parent_id`. `level`
   is `0` for top-level tasks, `1` for subtasks under a top-level task,
   `2` for sub-subtasks, etc. Each subtask has its own page, description,
   benchmarks, and evaluations. Example: `language-modeling` (level 0) has
   child subtasks `world-knowledge`, `long-context`, `instruction-following`,
-  `math`, `language-reasoning`, `coding`, `safety-and-grounding`, and
+  `math`, `language-reasoning`, `safety-and-grounding`, and
   `classic-language-modeling` (all level 1).
 - **Sister tasks:** the "Sister Tasks" sidebar on a task page is driven by the
   explicit `task_sister_tasks` table, not by `area_id`. `area_id` only groups
@@ -314,17 +314,17 @@ The following summarizes the live structure. See the database for full DDL.
   per-task and ordered by `display_order`.
 
 ### METHODS
-- id (PK), name, full_name, description, introduced_year
+- id (PK), name, search_vector (tsvector), full_name, description, introduced_year
 - source_paper_id (FK papers), source_url, source_title, code_snippet_url
 - collection_name, collection_description, collection_parent
 - area_id (FK), image_url, image_credit, slug (UNIQUE), keywords
 - image_data (BYTEA, NULL), image_mime_type (VARCHAR(100), NULL) — DB-backed figure bytes (deferred in ORM); served at `/api/v1/methods/{slug}/image` when populated
 - created_at, updated_at
-- Indexes: area_id, keywords (GIN, partial), image_url (partial), slug unique
+- Indexes: area_id, keywords (GIN, partial), image_url (partial), slug unique, search_vector (GIN), normalized name (GiST trigram)
 - **Images:** same DB-first / external-fallback semantics as TASKS (`entity_image_url` in `backend/utils/entity_images.py`).
 
 ### DATASETS
-- id (PK), name, full_name, description, url, hf_url
+- id (PK), name, search_vector (tsvector), full_name, description, url, hf_url
 - short_description, homepage
 - parent_dataset_id (FK self), image_url, thumbnail_url, verified_image_url
 - introducing_paper_id (FK), introducing_paper_title, paper_url
@@ -333,6 +333,7 @@ The following summarizes the live structure. See the database for full DDL.
 - modalities (JSONB), languages (JSONB), variants (JSONB)
 - num_papers (default 0), warning, pwc_url
 - slug (UNIQUE, NOT NULL)
+- Indexes: slug unique, search_vector (GIN), normalized name (GiST trigram)
 - variant_type (CHECK in [split, variant, subset, derived, augmented]), split_name
 - created_at, updated_at
 - Indexes: slug, parent_dataset_id, name, introduced_year/date, num_papers DESC, full-text over description/short_description

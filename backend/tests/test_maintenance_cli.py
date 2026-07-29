@@ -450,7 +450,7 @@ def test_add_task_is_idempotent_and_builds_hierarchy():
     assert task.parent_id == parent.id
     assert task.level == 1
     assert task.area_id == area.id
-    assert task.is_visible
+    assert not hasattr(task, "is_visible")
 
 
 def test_add_benchmark_is_idempotent_and_builds_native_source_links():

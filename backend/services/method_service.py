@@ -19,6 +19,18 @@ from backend.models.api import Method, Methods
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
+from backend.services.entity_search import (
+    DETERMINISTIC_CANDIDATE_LIMIT,
+    FUZZY_CANDIDATE_LIMIT,
+    EntitySearchCandidate,
+    EntitySearchKind,
+    choose_fuzzy_winner,
+    deterministic_match,
+    empty_page,
+    postgres_fuzzy_ordering,
+    postgres_search_expressions,
+    prepare_entity_search,
+)
 
 
 class MethodService:
@@ -104,6 +116,8 @@ class MethodService:
         recent_days: int = 90,
         baseline_days: int = 180,
         today: Optional[date] = None,
+        _method_ids: Optional[List[int]] = None,
+        _count_override: Optional[int] = None,
     ) -> Methods:
         """
         Get a paginated list of AI/ML methods with optional filtering.
@@ -111,7 +125,7 @@ class MethodService:
         Args:
             page: Page number (1-based)
             page_size: Number of methods per page
-            search: Search term for method name and description (full-text search)
+            search: Name-only navigational method search
             name: Filter by partial method name match
             full_name: Filter by partial full name match
             introduced_year: Filter by year introduced
@@ -130,6 +144,14 @@ class MethodService:
         Raises:
             DatabaseError: If database query fails
         """
+        if search is not None:
+            return self.search_methods(
+                query=search,
+                page=page,
+                page_size=page_size,
+                include_trends=include_trends,
+            )
+
         try:
             include_trends = include_trends or order_by == "trend_score"
             generated_on = today or datetime.now(UTC).date()
@@ -204,18 +226,8 @@ class MethodService:
                     activity_subq, DBMethod.id == activity_subq.c.method_id
                 )
 
-            if search:
-                query = query.filter(
-                    or_(
-                        DBMethod.name.ilike(f"%{search}%"),
-                        DBMethod.full_name.ilike(f"%{search}%")
-                        if DBMethod.full_name
-                        else False,
-                        DBMethod.description.ilike(f"%{search}%")
-                        if DBMethod.description
-                        else False,
-                    )
-                )
+            if _method_ids is not None:
+                query = query.filter(DBMethod.id.in_(_method_ids))
 
             if name:
                 query = query.filter(DBMethod.name.ilike(f"%{name}%"))
@@ -232,41 +244,29 @@ class MethodService:
             if exclude_id is not None:
                 query = query.filter(DBMethod.id != exclude_id)
 
-            # When a search query is active, rank title matches above
-            # description-only matches so e.g. searching "image" surfaces
-            # methods named "Image ..." before ones that only mention the
-            # term in their description.
-            if search:
-                search_rank = case(
-                    (DBMethod.name.ilike(f"{search}%"), 0),
-                    (DBMethod.name.ilike(f"%{search}%"), 1),
-                    (DBMethod.full_name.ilike(f"{search}%"), 2),
-                    (DBMethod.full_name.ilike(f"%{search}%"), 3),
-                    else_=4,
-                ).label("search_rank")
-                query = query.order_by(asc(search_rank), asc(DBMethod.name))
+            if order_by == "name":
+                order_field = DBMethod.name
+            elif order_by == "full_name":
+                order_field = DBMethod.full_name
+            elif order_by == "introduced_year":
+                order_field = DBMethod.introduced_year
+            elif order_by == "created_at":
+                order_field = DBMethod.created_at
+            elif order_by == "paper_count":
+                order_field = paper_count_col
+            elif order_by == "trend_score":
+                order_field = recent_count_col
             else:
-                if order_by == "name":
-                    order_field = DBMethod.name
-                elif order_by == "full_name":
-                    order_field = DBMethod.full_name
-                elif order_by == "introduced_year":
-                    order_field = DBMethod.introduced_year
-                elif order_by == "created_at":
-                    order_field = DBMethod.created_at
-                elif order_by == "paper_count":
-                    order_field = paper_count_col
-                elif order_by == "trend_score":
-                    order_field = recent_count_col
-                else:
-                    order_field = DBMethod.name
+                order_field = DBMethod.name
 
-                if order_dir == "desc":
-                    query = query.order_by(desc(order_field))
-                else:
-                    query = query.order_by(asc(order_field))
+            if order_dir == "desc":
+                query = query.order_by(desc(order_field))
+            else:
+                query = query.order_by(asc(order_field))
 
-            total_count = query.count()
+            total_count = (
+                _count_override if _count_override is not None else query.count()
+            )
 
             offset = (page - 1) * page_size
             rows = query.offset(offset).limit(page_size).all()
@@ -461,8 +461,7 @@ class MethodService:
         page_size: int = 50,
         include_trends: bool = False,
     ) -> Methods:
-        """
-        Full-text search for methods by name, full_name, or description.
+        """Search displayed method names with deterministic and typo lanes.
 
         Args:
             query: Search query string
@@ -476,12 +475,160 @@ class MethodService:
         Raises:
             DatabaseError: If database query fails
         """
-        return self.get_methods(
-            page=page,
-            page_size=page_size,
-            search=query,
-            include_trends=include_trends,
+        terms = prepare_entity_search(query, EntitySearchKind.METHOD)
+        if not terms.usable:
+            return empty_page(Methods)
+
+        candidates = self._method_search_candidates(terms)
+        if not candidates:
+            return empty_page(Methods)
+
+        trend = self._method_search_trends(
+            [candidate.entity_id for candidate in candidates]
         )
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.tier,
+                -candidate.relevance,
+                -trend.get(candidate.entity_id, (0.0, 0))[0],
+                -trend.get(candidate.entity_id, (0.0, 0))[1],
+                candidate.name.casefold(),
+                candidate.entity_id,
+            )
+        )
+
+        offset = (page - 1) * page_size
+        page_candidates = candidates[offset : offset + page_size]
+        page_ids = [candidate.entity_id for candidate in page_candidates]
+        response = self.get_methods(
+            page=1,
+            page_size=max(1, len(page_ids)),
+            include_trends=include_trends,
+            _method_ids=page_ids,
+            _count_override=len(candidates),
+        )
+        by_id = {int(method.id): method for method in response.results}
+        response.results = [
+            by_id[entity_id] for entity_id in page_ids if entity_id in by_id
+        ]
+        response.next_page = page + 1 if offset + page_size < len(candidates) else None
+        response.previous_page = page - 1 if page > 1 else None
+        return response
+
+    def _method_search_candidates(self, terms) -> List[EntitySearchCandidate]:
+        base = self.db.query(DBMethod)
+        if self.db.bind.dialect.name != "postgresql":
+            methods = base.all()
+            candidates = []
+            for method in methods:
+                match = deterministic_match(
+                    terms,
+                    name=method.name,
+                    slug=method.slug,
+                    full_name=method.full_name,
+                )
+                if match:
+                    candidates.append(
+                        EntitySearchCandidate(
+                            int(method.id), method.name, match[0], match[1]
+                        )
+                    )
+            candidates.sort(
+                key=lambda candidate: (
+                    candidate.tier,
+                    -candidate.relevance,
+                    candidate.name.casefold(),
+                    candidate.entity_id,
+                )
+            )
+            if candidates:
+                return candidates[:DETERMINISTIC_CANDIDATE_LIMIT]
+            fuzzy_rows = [(int(method.id), method.name, 0.0) for method in methods]
+        else:
+            predicate, tier, relevance = postgres_search_expressions(
+                DBMethod, terms, full_name=DBMethod.full_name
+            )
+            rows = (
+                base.with_entities(
+                    DBMethod.id,
+                    DBMethod.name,
+                    tier.label("tier"),
+                    relevance.label("relevance"),
+                )
+                .filter(predicate)
+                .order_by(
+                    asc(tier),
+                    desc(relevance),
+                    asc(DBMethod.name),
+                    asc(DBMethod.id),
+                )
+                .limit(DETERMINISTIC_CANDIDATE_LIMIT)
+                .all()
+            )
+            if rows:
+                return [
+                    EntitySearchCandidate(
+                        int(entity_id), name, int(match_tier), float(rank or 0.0)
+                    )
+                    for entity_id, name, match_tier, rank in rows
+                ]
+            if terms.identity_only or len("".join(terms.tokens)) < 4:
+                return []
+            distance, similarity = postgres_fuzzy_ordering(
+                DBMethod.name, terms.normalized
+            )
+            fuzzy_rows = (
+                base.with_entities(DBMethod.id, DBMethod.name, similarity)
+                .order_by(distance, asc(DBMethod.id))
+                .limit(FUZZY_CANDIDATE_LIMIT)
+                .all()
+            )
+
+        if terms.identity_only or len("".join(terms.tokens)) < 4:
+            return []
+        winner = choose_fuzzy_winner(terms.normalized, list(fuzzy_rows))
+        return [winner] if winner else []
+
+    def _method_search_trends(
+        self, method_ids: List[int]
+    ) -> dict[int, tuple[float, int]]:
+        if not method_ids:
+            return {}
+        today = datetime.now(UTC).date()
+        recent_start = today - timedelta(days=90)
+        recent_rows = (
+            self.db.query(
+                PaperMethod.method_id,
+                func.count(func.distinct(DBPaper.id)),
+            )
+            .join(
+                DBPaper,
+                (DBPaper.id == PaperMethod.paper_id) & DBPaper.is_latest_version,
+            )
+            .filter(
+                PaperMethod.method_id.in_(method_ids),
+                DBPaper.date_published > recent_start,
+                DBPaper.date_published <= today,
+            )
+            .group_by(PaperMethod.method_id)
+            .all()
+        )
+        all_time_rows = (
+            self.db.query(PaperMethod.method_id, func.count(PaperMethod.paper_id))
+            .filter(PaperMethod.method_id.in_(method_ids))
+            .group_by(PaperMethod.method_id)
+            .all()
+        )
+        recent = {
+            int(method_id): float(count or 0) / 3.0 for method_id, count in recent_rows
+        }
+        all_time = {
+            int(method_id): int(count or 0) for method_id, count in all_time_rows
+        }
+        return {
+            method_id: (recent.get(method_id, 0.0), all_time.get(method_id, 0))
+            for method_id in method_ids
+        }
 
     def get_method_papers(
         self,

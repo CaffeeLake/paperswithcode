@@ -321,10 +321,6 @@ export interface Task {
   paper_count?: number;
   image_url?: string;
   image_credit?: string;
-  /** Whether this task is surfaced in user-facing pickers (the /tasks
-   *  taxonomy and the paper task-tagging dropdown). Hidden tasks remain
-   *  reachable by direct slug/id. */
-  is_visible?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -1266,10 +1262,6 @@ class ApiClient {
     area_id?: number;
     parent_id?: number;
     level?: number;
-    /** When true, the backend filters out tasks with `is_visible = false`.
-     *  Used by user-facing pickers (paper task-tagging dropdown, taxonomy)
-     *  so hidden tasks like `object-counting` never appear as choices. */
-    visible_only?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Task>> {
     const searchParams = new URLSearchParams();
@@ -1281,7 +1273,6 @@ class ApiClient {
     if (params?.area_id) searchParams.append('area_id', params.area_id.toString());
     if (params?.parent_id) searchParams.append('parent_id', params.parent_id.toString());
     if (params?.level !== undefined) searchParams.append('level', params.level.toString());
-    if (params?.visible_only) searchParams.append('visible_only', 'true');
     if (params?.ordering) searchParams.append('ordering', params.ordering);
 
     const endpoint = `/tasks/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
@@ -1335,15 +1326,11 @@ class ApiClient {
   async getTaskChildren(taskId: string, params?: {
     page?: number;
     page_size?: number;
-    /** When true, the backend filters out subtasks with `is_visible = false`. */
-    visible_only?: boolean;
   }): Promise<PaginatedResponse<Task>> {
     const searchParams = new URLSearchParams();
 
     if (params?.page) searchParams.append('page', params.page.toString());
     if (params?.page_size) searchParams.append('page_size', params.page_size.toString());
-    if (params?.visible_only) searchParams.append('visible_only', 'true');
-
     const endpoint = `/tasks/${taskId}/children${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     return this.request<PaginatedResponse<Task>>(endpoint);
   }

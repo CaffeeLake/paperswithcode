@@ -269,7 +269,6 @@ class OrganizationService:
                         PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     ),
                 )
-                .filter(DBTask.is_visible)
                 .filter(eligible_paper_filter())
                 .group_by(DBTask.id)
                 .order_by(DBTask.name)

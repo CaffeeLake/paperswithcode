@@ -46,15 +46,6 @@ def list_tasks(
     area_id: Optional[int] = Query(None, description="Filter by research area ID"),
     parent_id: Optional[int] = Query(None, description="Filter by parent task ID"),
     level: Optional[int] = Query(None, ge=0, description="Filter by hierarchy level"),
-    visible_only: bool = Query(
-        False,
-        description=(
-            "If true, restrict results to tasks with `is_visible = true`. "
-            "Used by user-facing pickers (paper task-tagging dropdown, "
-            "taxonomy index) so hidden tasks like `object-counting` or "
-            "`classic-language-modeling` never appear as choices."
-        ),
-    ),
     ordering: Optional[str] = Query(
         "name",
         description="Order by field: name, created_at, level, paper_count (prefix with '-' for descending)",
@@ -65,15 +56,15 @@ def list_tasks(
     Get a paginated list of AI/ML tasks.
 
     Tasks are hierarchical and can be filtered by area, parent task, or hierarchy level.
-    Supports full-text search across task names and descriptions.
+    Search matches displayed task names with exact identity, all-token prefix,
+    full-text, and conservative typo-recovery lanes.
 
     **Example queries:**
     - `/api/v1/tasks/` - Get all tasks
     - `/api/v1/tasks/?area_id=1` - Get tasks in Vision area
     - `/api/v1/tasks/?level=0` - Get only top-level tasks
     - `/api/v1/tasks/?parent_id=5` - Get subtasks of task 5
-    - `/api/v1/tasks/?q=classification` - Search for tasks containing "classification"
-    - `/api/v1/tasks/?visible_only=true` - Hide tasks marked `is_visible = false`
+    - `/api/v1/tasks/?q=classification` - Search displayed task names
     """
     try:
         # Parse ordering
@@ -96,7 +87,6 @@ def list_tasks(
                 query=q,
                 page=page,
                 page_size=page_size,
-                visible_only=visible_only,
             )
 
         return service.get_tasks(
@@ -106,7 +96,6 @@ def list_tasks(
             area_id=area_id,
             parent_id=parent_id,
             level=level,
-            visible_only=visible_only,
             order_by=order_by,
             order_dir=order_dir,
         )
@@ -354,10 +343,6 @@ def get_task_children(
     page_size: int = Query(
         50, ge=1, le=100, description="Number of tasks per page (max 100)"
     ),
-    visible_only: bool = Query(
-        False,
-        description="If true, restrict results to subtasks with `is_visible = true`.",
-    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -375,7 +360,6 @@ def get_task_children(
             task_id,
             page=page,
             page_size=page_size,
-            visible_only=visible_only,
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

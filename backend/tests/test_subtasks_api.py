@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import BigInteger, create_engine
+from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -62,6 +62,13 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@event.listens_for(engine, "connect")
+def register_jsonb_typeof(dbapi_connection, _connection_record):
+    dbapi_connection.create_function("jsonb_typeof", 1, lambda _value: "array")
+
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -389,8 +396,8 @@ def test_get_datasets_for_child_task_only_returns_its_benchmarks(db_session):
     assert sorted(d.slug for d in result.results) == ["gpqa-diamond", "mmlu"]
 
 
-def test_search_datasets_accepts_slug_and_id(db_session):
-    """CLI-emitted benchmark identifiers must round-trip through search."""
+def test_search_datasets_accepts_slug_but_not_bare_numeric_id(db_session):
+    """Slug identity works; bare numbers remain ordinary displayed-name tokens."""
     _seed_lm_with_subtasks(db_session)
     service = DatasetService(db_session)
 
@@ -398,7 +405,7 @@ def test_search_datasets_accepts_slug_and_id(db_session):
     by_id = service.search_datasets("2")
 
     assert [(item.id, item.slug) for item in by_slug.results] == [("2", "gpqa-diamond")]
-    assert [(item.id, item.slug) for item in by_id.results] == [("2", "gpqa-diamond")]
+    assert by_id.results == []
 
 
 def test_task_benchmark_best_model_can_be_scoped_to_open_rows(client):

@@ -1,8 +1,6 @@
 """Tests for the Methods API endpoints.
 
-Focused regression coverage for `/api/v1/methods/?q=...` search ranking so
-that paper edit pickers surface methods whose name/full_name matches the
-query before methods that only mention the term in their description.
+Focused regression coverage for name-only `/api/v1/methods/?q=...` search.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -143,8 +141,8 @@ def methods_with_image_keyword():
     db.close()
 
 
-def test_methods_search_ranks_name_matches_first(client, methods_with_image_keyword):
-    """`q=image` returns name matches, then full_name matches, then description."""
+def test_methods_search_uses_displayed_name_only(client, methods_with_image_keyword):
+    """Partial queries do not retrieve full-name or description-only matches."""
     response = client.get("/api/v1/methods/?q=image&page_size=20")
 
     assert response.status_code == 200
@@ -154,11 +152,8 @@ def test_methods_search_ranks_name_matches_first(client, methods_with_image_keyw
 
     assert names[:2] == ["Image GPT", "Image Transformer"]
 
-    assert "DALL-E" in names
-    assert "Convolutional Network" in names
-    assert names.index("DALL-E") < names.index("Convolutional Network")
-    assert names.index("Image Transformer") < names.index("DALL-E")
-
+    assert "DALL-E" not in names
+    assert "Convolutional Network" not in names
     assert "Transformer" not in names
 
 

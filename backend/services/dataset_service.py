@@ -5,9 +5,10 @@ This service provides methods for retrieving and managing benchmark dataset data
 including pagination, filtering, paper associations, and evaluation data.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from sqlalchemy.orm import Session, aliased
-from sqlalchemy import func, desc, asc, or_, case, cast, String
+from sqlalchemy import func, desc, asc, case, cast, String
 
 from backend.models.database import (
     Dataset as DBDataset,
@@ -30,6 +31,18 @@ from backend.models.api import (
 from backend.utils.exceptions import DatabaseError
 from backend.utils.slug_utils import slugify
 from backend.utils.task_hierarchy import collect_descendant_task_ids
+from backend.services.entity_search import (
+    DETERMINISTIC_CANDIDATE_LIMIT,
+    FUZZY_CANDIDATE_LIMIT,
+    EntitySearchCandidate,
+    EntitySearchKind,
+    choose_fuzzy_winner,
+    deterministic_match,
+    empty_page,
+    postgres_fuzzy_ordering,
+    postgres_search_expressions,
+    prepare_entity_search,
+)
 
 # Separator unlikely to collide with real data, used to build the logical
 # leaderboard-row key (see `_leaderboard_row_count`).
@@ -350,6 +363,8 @@ class DatasetService:
         order_dir: str = "asc",
         min_eval_count: Optional[int] = None,
         is_open: Optional[bool] = None,
+        _dataset_ids: Optional[List[int]] = None,
+        _count_override: Optional[int] = None,
     ) -> Datasets:
         """
         Get a paginated list of benchmark datasets with optional filtering.
@@ -357,7 +372,7 @@ class DatasetService:
         Args:
             page: Page number (1-based)
             page_size: Number of datasets per page
-            search: Search term for dataset name and description (full-text search)
+            search: Name-only navigational benchmark search
             name: Filter by partial dataset name match
             full_name: Filter by partial full name match
             task_id: Filter by associated task ID (e.g., datasets for "Image Classification")
@@ -376,6 +391,17 @@ class DatasetService:
         Raises:
             DatabaseError: If database query fails
         """
+        if search is not None:
+            return self.search_datasets(
+                query=search,
+                page=page,
+                page_size=page_size,
+                task_id=task_id,
+                include_descendants=include_descendants,
+                min_eval_count=min_eval_count,
+                is_open=is_open,
+            )
+
         try:
             # Base query with paper count and task count.
             # `paper_count` here means leaderboard entry count: the number of
@@ -413,22 +439,8 @@ class DatasetService:
             )
 
             # Apply filters
-            if search:
-                # Stable identifiers emitted by the CLI should be accepted as
-                # lookup inputs alongside human-readable metadata.
-                query = query.filter(
-                    or_(
-                        cast(DBDataset.id, String) == str(search),
-                        DBDataset.slug.ilike(f"%{search}%"),
-                        DBDataset.name.ilike(f"%{search}%"),
-                        DBDataset.full_name.ilike(f"%{search}%")
-                        if DBDataset.full_name
-                        else False,
-                        DBDataset.description.ilike(f"%{search}%")
-                        if DBDataset.description
-                        else False,
-                    )
-                )
+            if _dataset_ids is not None:
+                query = query.filter(DBDataset.id.in_(_dataset_ids))
 
             if name:
                 query = query.filter(DBDataset.name.ilike(f"%{name}%"))
@@ -457,7 +469,9 @@ class DatasetService:
                 query = query.having(_leaderboard_row_count() >= min_eval_count)
 
             # Get total count before pagination
-            total_count = query.count()
+            total_count = (
+                _count_override if _count_override is not None else query.count()
+            )
 
             # Apply ordering
             if order_by == "name":
@@ -868,8 +882,7 @@ class DatasetService:
         min_eval_count: Optional[int] = None,
         is_open: Optional[bool] = None,
     ) -> Datasets:
-        """
-        Search datasets by ID, slug, name, full_name, or description.
+        """Search displayed benchmark names with identity, prefix, FTS, and typo lanes.
 
         Args:
             query: Search query string
@@ -887,17 +900,218 @@ class DatasetService:
         Raises:
             DatabaseError: If database query fails
         """
-        return self.get_datasets(
-            page=page,
-            page_size=page_size,
-            search=query,
+        terms = prepare_entity_search(query, EntitySearchKind.DATASET)
+        if not terms.usable:
+            return empty_page(Datasets)
+
+        allowed_ids = self._eligible_search_dataset_ids(
+            task_id=task_id,
+            include_descendants=include_descendants,
+            min_eval_count=min_eval_count,
+        )
+        candidates = self._dataset_search_candidates(terms, allowed_ids)
+        if not candidates:
+            return empty_page(Datasets)
+
+        trend = self._dataset_search_trends(
+            [candidate.entity_id for candidate in candidates]
+        )
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.tier,
+                -candidate.relevance,
+                -trend.get(candidate.entity_id, (0.0, None, 0))[0],
+                -(
+                    trend.get(candidate.entity_id, (0.0, None, 0))[1].toordinal()
+                    if trend.get(candidate.entity_id, (0.0, None, 0))[1]
+                    else 0
+                ),
+                -trend.get(candidate.entity_id, (0.0, None, 0))[2],
+                candidate.name.casefold(),
+                candidate.entity_id,
+            )
+        )
+
+        offset = (page - 1) * page_size
+        page_candidates = candidates[offset : offset + page_size]
+        page_ids = [candidate.entity_id for candidate in page_candidates]
+        response = self.get_datasets(
+            page=1,
+            page_size=max(1, len(page_ids)),
             task_id=task_id,
             include_descendants=include_descendants,
             min_eval_count=min_eval_count,
             is_open=is_open,
-            order_by="name",
-            order_dir="asc",
+            _dataset_ids=page_ids,
+            _count_override=len(candidates),
         )
+        by_id = {int(dataset.id): dataset for dataset in response.results}
+        response.results = [
+            by_id[entity_id] for entity_id in page_ids if entity_id in by_id
+        ]
+        response.next_page = page + 1 if offset + page_size < len(candidates) else None
+        response.previous_page = page - 1 if page > 1 else None
+        return response
+
+    def _eligible_search_dataset_ids(
+        self,
+        *,
+        task_id: Optional[int],
+        include_descendants: bool,
+        min_eval_count: Optional[int],
+    ) -> Optional[List[int]]:
+        if task_id is None and not min_eval_count:
+            return None
+
+        scoped_task_ids = None
+        if task_id is not None:
+            scoped_task_ids = (
+                collect_descendant_task_ids(self.db, task_id)
+                if include_descendants
+                else [task_id]
+            )
+
+        query = self.db.query(DBDataset.id)
+        if scoped_task_ids is not None:
+            query = query.join(
+                TaskDataset, TaskDataset.dataset_id == DBDataset.id
+            ).filter(TaskDataset.task_id.in_(scoped_task_ids))
+        if min_eval_count:
+            evaluation_join = DBEvaluation.dataset_id == DBDataset.id
+            if scoped_task_ids is not None:
+                evaluation_join = evaluation_join & DBEvaluation.task_id.in_(
+                    scoped_task_ids
+                )
+            query = (
+                query.outerjoin(DBEvaluation, evaluation_join)
+                .group_by(DBDataset.id)
+                .having(_leaderboard_row_count() >= min_eval_count)
+            )
+        return [int(dataset_id) for (dataset_id,) in query.distinct().all()]
+
+    def _dataset_search_candidates(
+        self, terms, allowed_ids: Optional[List[int]]
+    ) -> List[EntitySearchCandidate]:
+        base = self.db.query(DBDataset)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return []
+            base = base.filter(DBDataset.id.in_(allowed_ids))
+
+        if self.db.bind.dialect.name != "postgresql":
+            candidates = []
+            for dataset in base.all():
+                match = deterministic_match(
+                    terms,
+                    name=dataset.name,
+                    slug=dataset.slug,
+                    full_name=dataset.full_name,
+                )
+                if match:
+                    candidates.append(
+                        EntitySearchCandidate(
+                            int(dataset.id), dataset.name, match[0], match[1]
+                        )
+                    )
+            candidates.sort(
+                key=lambda candidate: (
+                    candidate.tier,
+                    -candidate.relevance,
+                    candidate.name.casefold(),
+                    candidate.entity_id,
+                )
+            )
+            if candidates:
+                return candidates[:DETERMINISTIC_CANDIDATE_LIMIT]
+            fuzzy_rows = [
+                (int(dataset.id), dataset.name, 0.0) for dataset in base.all()
+            ]
+        else:
+            predicate, tier, relevance = postgres_search_expressions(
+                DBDataset, terms, full_name=DBDataset.full_name
+            )
+            rows = (
+                base.with_entities(
+                    DBDataset.id,
+                    DBDataset.name,
+                    tier.label("tier"),
+                    relevance.label("relevance"),
+                )
+                .filter(predicate)
+                .order_by(
+                    asc(tier),
+                    desc(relevance),
+                    asc(DBDataset.name),
+                    asc(DBDataset.id),
+                )
+                .limit(DETERMINISTIC_CANDIDATE_LIMIT)
+                .all()
+            )
+            if rows:
+                return [
+                    EntitySearchCandidate(
+                        int(entity_id), name, int(match_tier), float(rank or 0.0)
+                    )
+                    for entity_id, name, match_tier, rank in rows
+                ]
+            if terms.identity_only or len("".join(terms.tokens)) < 4:
+                return []
+            distance, similarity = postgres_fuzzy_ordering(
+                DBDataset.name, terms.normalized
+            )
+            fuzzy_rows = (
+                base.with_entities(DBDataset.id, DBDataset.name, similarity)
+                .order_by(distance, asc(DBDataset.id))
+                .limit(FUZZY_CANDIDATE_LIMIT)
+                .all()
+            )
+
+        if terms.identity_only or len("".join(terms.tokens)) < 4:
+            return []
+        winner = choose_fuzzy_winner(terms.normalized, list(fuzzy_rows))
+        return [winner] if winner else []
+
+    def _dataset_search_trends(
+        self, dataset_ids: List[int]
+    ) -> dict[int, tuple[float, object, int]]:
+        if not dataset_ids:
+            return {}
+        today = datetime.now(timezone.utc).date()
+        recent_start = today - timedelta(days=90)
+        recent_papers = func.count(
+            func.distinct(
+                case(
+                    (
+                        DBPaper.date_published > recent_start,
+                        DBPaper.id,
+                    ),
+                    else_=None,
+                )
+            )
+        )
+        rows = (
+            self.db.query(
+                DBEvaluation.dataset_id,
+                recent_papers,
+                func.max(DBPaper.date_published),
+                func.count(func.distinct(DBPaper.id)),
+            )
+            .join(
+                DBPaper,
+                (DBPaper.id == DBEvaluation.paper_id) & DBPaper.is_latest_version,
+            )
+            .filter(DBEvaluation.dataset_id.in_(dataset_ids))
+            .group_by(DBEvaluation.dataset_id)
+            .all()
+        )
+        return {
+            int(dataset_id): (
+                float(recent_count or 0) / 3.0,
+                latest_date,
+                int(all_time_count or 0),
+            )
+            for dataset_id, recent_count, latest_date, all_time_count in rows
+        }
 
     def create_dataset(self, request: DatasetCreateRequest) -> Dataset:
         """

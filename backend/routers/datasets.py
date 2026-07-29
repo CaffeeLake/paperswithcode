@@ -36,7 +36,11 @@ def list_datasets(
         50, ge=1, le=100, description="Number of datasets per page (max 100)"
     ),
     q: Optional[str] = Query(
-        None, description="Search query for dataset name, full name, and description"
+        None,
+        description=(
+            "Name-only benchmark search with exact slug/name/full-name identity, "
+            "all-token prefixes, full-text relevance, and conservative typo recovery"
+        ),
     ),
     name: Optional[str] = Query(
         None, description="Filter by partial dataset name match"
@@ -79,7 +83,8 @@ def list_datasets(
     """
     Get a paginated list of benchmark datasets.
 
-    Datasets can be filtered by name, task, or searched across name and description.
+    Datasets can be filtered by name or task. `q` searches displayed names only;
+    an exact full name remains an identity lookup.
     Supports ordering and pagination.
 
     **Example queries:**

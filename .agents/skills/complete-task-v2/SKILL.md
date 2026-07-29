@@ -90,7 +90,7 @@ from backend.database.connection import get_database_session
 task_slug = "<task-slug>"
 db = next(get_database_session())
 row = db.execute(text("""
-    SELECT id, name, slug, is_visible
+    SELECT id, name, slug
     FROM tasks
     WHERE slug = :slug OR name ILIKE :name
     ORDER BY id

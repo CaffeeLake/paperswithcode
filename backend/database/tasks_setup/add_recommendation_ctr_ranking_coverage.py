@@ -133,7 +133,7 @@ def ensure_task(session, spec: dict[str, Any]) -> int:
             """
             INSERT INTO tasks (
                 name, slug, description, keywords, area_id, parent_id, level,
-                is_visible, image_url, image_credit, useful_leaderboards
+                image_url, image_credit, useful_leaderboards
             )
             VALUES (
                 :name, :slug, :description, :keywords,
@@ -142,7 +142,7 @@ def ensure_task(session, spec: dict[str, Any]) -> int:
                      ELSE (SELECT id FROM tasks WHERE slug = :parent LIMIT 1) END,
                 CASE WHEN :parent IS NULL THEN 0
                      ELSE (SELECT level + 1 FROM tasks WHERE slug = :parent LIMIT 1) END,
-                true, NULL, :image_credit, NULL
+                NULL, :image_credit, NULL
             )
             ON CONFLICT (slug) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -151,7 +151,6 @@ def ensure_task(session, spec: dict[str, Any]) -> int:
                 area_id = EXCLUDED.area_id,
                 parent_id = EXCLUDED.parent_id,
                 level = EXCLUDED.level,
-                is_visible = EXCLUDED.is_visible,
                 image_url = NULL,
                 image_credit = EXCLUDED.image_credit,
                 useful_leaderboards = EXCLUDED.useful_leaderboards,

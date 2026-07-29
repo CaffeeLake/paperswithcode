@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -64,6 +64,13 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@event.listens_for(engine, "connect")
+def register_jsonb_typeof(dbapi_connection, _connection_record):
+    dbapi_connection.create_function("jsonb_typeof", 1, lambda _value: "array")
+
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -228,7 +235,6 @@ def parent_task_with_popular_subtask():
                 slug="graph-machine-learning",
                 area_id=1,
                 level=0,
-                is_visible=True,
             ),
             DBTask(
                 id=11,
@@ -237,7 +243,6 @@ def parent_task_with_popular_subtask():
                 area_id=1,
                 parent_id=10,
                 level=1,
-                is_visible=True,
             ),
         ]
     )
@@ -287,7 +292,6 @@ def test_grouped_task_benchmarks_are_bounded_and_popular_first(client):
             slug="image-classification",
             area_id=1,
             level=0,
-            is_visible=True,
         )
     )
     db.add_all(
@@ -789,7 +793,6 @@ def test_trending_tasks_level_filter_excludes_subtasks(client, trending_dataset)
                 slug="rising-subtask",
                 parent_id=1,
                 level=1,
-                is_visible=True,
             )
         )
         db.add_all(PaperTask(paper_id=i, task_id=7) for i in range(1, 21))
@@ -836,7 +839,6 @@ def tasks_with_image_keyword():
             slug="image-classification",
             description="Categorize images into classes.",
             level=0,
-            is_visible=True,
         ),
         DBTask(
             id=2,
@@ -844,7 +846,6 @@ def tasks_with_image_keyword():
             slug="image-matching",
             description="Match correspondences across views.",
             level=0,
-            is_visible=True,
         ),
         DBTask(
             id=3,
@@ -852,7 +853,6 @@ def tasks_with_image_keyword():
             slug="image-understanding",
             description="Understand visual scene content.",
             level=0,
-            is_visible=True,
         ),
         DBTask(
             id=4,
@@ -860,7 +860,6 @@ def tasks_with_image_keyword():
             slug="scene-understanding",
             description="High-level reasoning that uses image features.",
             level=0,
-            is_visible=True,
         ),
         DBTask(
             id=5,
@@ -868,7 +867,6 @@ def tasks_with_image_keyword():
             slug="robotics",
             description="Embodied agents acting in the world.",
             level=0,
-            is_visible=True,
         ),
     ]
     db.add_all(tasks)
@@ -876,10 +874,8 @@ def tasks_with_image_keyword():
     db.close()
 
 
-def test_tasks_search_ranks_title_matches_before_description(
-    client, tasks_with_image_keyword
-):
-    """`q=image` returns title matches before description-only matches."""
+def test_tasks_search_uses_displayed_name_only(client, tasks_with_image_keyword):
+    """`q=image` excludes tasks that mention the term only in descriptions."""
     response = client.get("/api/v1/tasks/?q=image&page_size=20")
 
     assert response.status_code == 200
@@ -892,8 +888,7 @@ def test_tasks_search_ranks_title_matches_before_description(
         "Image Matching",
         "Image Understanding",
     ]
-    assert "Scene Understanding" in names
-    assert names.index("Scene Understanding") > names.index("Image Understanding")
+    assert "Scene Understanding" not in names
     assert "Robotics" not in names
 
 

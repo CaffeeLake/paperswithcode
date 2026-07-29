@@ -25,7 +25,6 @@ def register_admin_commands(commands) -> None:
     task_add.add_argument("--keywords", required=True)
     task_add.add_argument("--area", required=True)
     task_add.add_argument("--parent", help="Existing parent task slug or ID")
-    task_add.add_argument("--hidden", action="store_true")
     task_add.add_argument("--json", action="store_true")
     task_add.set_defaults(handler=add_task)
 
@@ -113,7 +112,6 @@ def add_task(args: argparse.Namespace) -> int:
             keywords=args.keywords,
             area_name=args.area,
             parent_reference=args.parent,
-            is_visible=not args.hidden,
         )
 
     if args.json:

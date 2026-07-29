@@ -36,7 +36,6 @@ Tasks are first-class taxonomy nodes. Each task gets its own page at `/tasks/<sl
 - **Top-level tasks** have `parent_id = NULL` and `level = 0`.
 - **Subtasks** are child rows with `parent_id` pointing at the parent task and `level = parent.level + 1`. Each subtask has its own page, benchmarks, and evaluations. Example: `language-modeling` (level 0) → `world-knowledge`, `math`, `coding` (level 1).
 - **`area_id`** groups tasks for area browse pages. It does **not** drive the "Sister Tasks" sidebar — that uses the explicit `task_sister_tasks` table when curated.
-- **`is_visible`**: default `true` for user-facing taxonomy pages. Set `false` only when the user wants a hidden/internal task reachable by direct slug.
 - **`keywords`**: comma-separated phrases used by the keyword matcher to tag papers. Include exact name, hyphenated variants, common abbreviations, and related phrasing researchers use in titles/abstracts. Follow casing rules in `docs/keyword-matching.md` (lowercase for phrases, preserve caps for acronyms like `ASR`, `MOT`, `VLM`).
 - **Descriptions**: one concise paragraph — what the task is, typical inputs/outputs, and why it matters. Link related on-site tasks with relative markdown, e.g. `[Object Detection](/tasks/object-detection)`, `[Image Segmentation](/tasks/image-segmentation)`. Never hard-code `paperswithcode.co` or localhost inside markdown fields.
 - **Images**: curated self-hosted heroes are stored in SQL (`image_data` / `image_mime_type`) and served at `/api/v1/tasks/{slug}/image`. Do **not** add runtime assets under `frontend/public/images/`. Legacy rows may still have external `image_url` values; new tasks should import a local PNG into the DB (see Thumbnail).
@@ -75,7 +74,6 @@ Area lookup in SQL:
 - **`keywords`**: broad coverage for paper tagging — task name, aliases, abbreviations, compound phrases (`multi-object tracking, MOT, visual object tracking`).
 - **`area_id`**: resolve by area name (see table above).
 - **`parent_id` / `level`**: set only for subtasks. Look up parent by slug; `level = parent.level + 1`.
-- **`is_visible`**: default `true`.
 - **`image_url`**: leave NULL for new self-hosted images — the API resolves `/api/v1/tasks/<slug>/image` once `image_mime_type` is set. Use an external URL only when you cannot self-host.
 - **`image_credit`**: attribution as markdown link or plain URL, e.g. `[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)` or a source paper link `[Paper title](/paper/2005.08100)`.
 - **`useful_leaderboards`**: optional comma-separated external leaderboard URLs (HF Spaces, community leaderboards) when the user provides them or you find a canonical one for the domain.
@@ -117,7 +115,7 @@ Add `backend/database/migrations/add_<slug>_task.sql` using `ON CONFLICT (slug) 
 ```sql
 INSERT INTO tasks (
     name, slug, description, keywords, area_id, level, parent_id,
-    is_visible, image_url, image_credit, useful_leaderboards
+    image_url, image_credit, useful_leaderboards
 )
 VALUES (
     '<Name>',
@@ -127,7 +125,6 @@ VALUES (
     (SELECT id FROM areas WHERE name = 'Vision' LIMIT 1),
     0,
     NULL,
-    true,
     NULL,
     '[<credit label>](<url>)',
     NULL  -- or comma-separated external leaderboard URLs
@@ -139,7 +136,6 @@ ON CONFLICT (slug) DO UPDATE SET
     area_id = EXCLUDED.area_id,
     level = EXCLUDED.level,
     parent_id = EXCLUDED.parent_id,
-    is_visible = EXCLUDED.is_visible,
     image_url = EXCLUDED.image_url,
     image_credit = EXCLUDED.image_credit,
     useful_leaderboards = EXCLUDED.useful_leaderboards,
@@ -150,7 +146,7 @@ ON CONFLICT (slug) DO UPDATE SET
 
 ```sql
 INSERT INTO tasks (
-    name, slug, description, keywords, area_id, level, parent_id, is_visible
+    name, slug, description, keywords, area_id, level, parent_id
 )
 VALUES (
     '<Subtask Name>',
@@ -159,8 +155,7 @@ VALUES (
     '<keywords>',
     (SELECT area_id FROM tasks WHERE slug = '<parent-slug>' LIMIT 1),
     (SELECT level + 1 FROM tasks WHERE slug = '<parent-slug>' LIMIT 1),
-    (SELECT id FROM tasks WHERE slug = '<parent-slug>' LIMIT 1),
-    true
+    (SELECT id FROM tasks WHERE slug = '<parent-slug>' LIMIT 1)
 )
 ON CONFLICT (slug) DO UPDATE SET
     name = EXCLUDED.name,
@@ -169,7 +164,6 @@ ON CONFLICT (slug) DO UPDATE SET
     area_id = EXCLUDED.area_id,
     level = EXCLUDED.level,
     parent_id = EXCLUDED.parent_id,
-    is_visible = EXCLUDED.is_visible,
     updated_at = CURRENT_TIMESTAMP;
 ```
 
@@ -268,7 +262,7 @@ Before reporting done:
 
 ```sql
 SELECT t.id, t.slug, t.name, t.area_id, a.name AS area,
-       t.parent_id, t.level, t.is_visible, t.image_url, t.image_mime_type
+       t.parent_id, t.level, t.image_url, t.image_mime_type
 FROM tasks t
 LEFT JOIN areas a ON a.id = t.area_id
 WHERE t.slug = '<slug>';

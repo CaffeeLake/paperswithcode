@@ -239,7 +239,6 @@ class ConferenceService:
                         PaperConference.conference_id == conference.id,
                     ),
                 )
-                .filter(DBTask.is_visible)
                 .group_by(DBTask.id)
                 .order_by(DBTask.name)
                 .all()

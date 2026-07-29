@@ -265,7 +265,6 @@ export function EditEvaluationsDialog({
   const searchTasks = async (query: string): Promise<SearchableSelectOption[]> => {
     const response = await getTasks({
       page_size: SEARCH_PAGE_SIZE,
-      visible_only: true,
       ...(query ? { q: query } : {}),
     });
     setKnownTasks((prev) => {

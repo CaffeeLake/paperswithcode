@@ -6,9 +6,10 @@ including pagination, filtering, hierarchical relationships, and paper associati
 """
 
 from datetime import date, datetime, timedelta, timezone
+import math
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, or_, case, and_, cast, Float
+from sqlalchemy import func, desc, asc, case, and_, cast, Float
 
 from backend.models.database import (
     Task as DBTask,
@@ -33,6 +34,18 @@ from backend.models.api import (
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.slug_utils import slugify
+from backend.services.entity_search import (
+    DETERMINISTIC_CANDIDATE_LIMIT,
+    FUZZY_CANDIDATE_LIMIT,
+    EntitySearchCandidate,
+    EntitySearchKind,
+    choose_fuzzy_winner,
+    deterministic_match,
+    empty_page,
+    postgres_fuzzy_ordering,
+    postgres_search_expressions,
+    prepare_entity_search,
+)
 
 
 class TaskService:
@@ -63,7 +76,6 @@ class TaskService:
                 db_task.updated_at,
             ),
             image_credit=db_task.image_credit,
-            is_visible=db_task.is_visible,
             created_at=db_task.created_at,
             updated_at=db_task.updated_at,
         )
@@ -104,9 +116,10 @@ class TaskService:
         area_id: Optional[int] = None,
         parent_id: Optional[int] = None,
         level: Optional[int] = None,
-        visible_only: bool = False,
         order_by: str = "name",
         order_dir: str = "asc",
+        _task_ids: Optional[List[int]] = None,
+        _count_override: Optional[int] = None,
     ) -> Tasks:
         """
         Get a paginated list of AI/ML tasks with optional filtering.
@@ -114,15 +127,11 @@ class TaskService:
         Args:
             page: Page number (1-based)
             page_size: Number of tasks per page
-            search: Search term for task name and description (full-text search)
+            search: Name-only navigational task search
             name: Filter by partial task name match
             area_id: Filter by research area ID
             parent_id: Filter by parent task ID
             level: Filter by hierarchy level (0=top-level, 1=subtask, etc.)
-            visible_only: If True, only return tasks with `is_visible = True`.
-                Used by user-facing pickers (paper task-tagging dropdown,
-                taxonomy index) so hidden tasks like `object-counting` or
-                `classic-language-modeling` never appear as choices.
             order_by: Field to order by (name, created_at, level, paper_count)
             order_dir: Order direction (asc, desc)
 
@@ -132,6 +141,9 @@ class TaskService:
         Raises:
             DatabaseError: If database query fails
         """
+        if search is not None:
+            return self.search_tasks(query=search, page=page, page_size=page_size)
+
         try:
             # Base query: aggregate paper count per task via outer join so tasks
             # with zero papers are still represented.
@@ -143,16 +155,8 @@ class TaskService:
             )
 
             # Apply filters
-            if search:
-                # Use ilike for case-insensitive search in name and description
-                query = query.filter(
-                    or_(
-                        DBTask.name.ilike(f"%{search}%"),
-                        DBTask.description.ilike(f"%{search}%")
-                        if DBTask.description
-                        else False,
-                    )
-                )
+            if _task_ids is not None:
+                query = query.filter(DBTask.id.in_(_task_ids))
 
             if name:
                 query = query.filter(DBTask.name.ilike(f"%{name}%"))
@@ -166,40 +170,27 @@ class TaskService:
             if level is not None:
                 query = query.filter(DBTask.level == level)
 
-            if visible_only:
-                query = query.filter(DBTask.is_visible)
-
-            # Apply ordering. When a search query is active we rank title
-            # matches above description-only matches so e.g. searching "image"
-            # surfaces "Image Classification" / "Image Matching" before tasks
-            # that only mention "image" in their description.
-            if search:
-                search_rank = case(
-                    (DBTask.name.ilike(f"{search}%"), 0),
-                    (DBTask.name.ilike(f"%{search}%"), 1),
-                    else_=2,
-                ).label("search_rank")
-                query = query.order_by(asc(search_rank), asc(DBTask.name))
+            if order_by == "name":
+                order_field = DBTask.name
+            elif order_by == "created_at":
+                order_field = DBTask.created_at
+            elif order_by == "level":
+                order_field = DBTask.level
+            elif order_by == "paper_count":
+                order_field = paper_count_col
             else:
-                if order_by == "name":
-                    order_field = DBTask.name
-                elif order_by == "created_at":
-                    order_field = DBTask.created_at
-                elif order_by == "level":
-                    order_field = DBTask.level
-                elif order_by == "paper_count":
-                    order_field = paper_count_col
-                else:
-                    order_field = DBTask.name  # Default to name
+                order_field = DBTask.name
 
-                if order_dir == "desc":
-                    query = query.order_by(desc(order_field))
-                else:
-                    query = query.order_by(asc(order_field))
+            if order_dir == "desc":
+                query = query.order_by(desc(order_field))
+            else:
+                query = query.order_by(asc(order_field))
 
             # Total count of distinct tasks matching filters (works with GROUP BY
             # because SQLAlchemy wraps it in a subquery).
-            total_count = query.count()
+            total_count = (
+                _count_override if _count_override is not None else query.count()
+            )
 
             # Apply pagination
             offset = (page - 1) * page_size
@@ -450,7 +441,6 @@ class TaskService:
         task_id: str,
         page: int = 1,
         page_size: int = 50,
-        visible_only: bool = False,
     ) -> Tasks:
         """
         Get child tasks (subtasks) of a specific task.
@@ -459,8 +449,6 @@ class TaskService:
             task_id: The parent task ID
             page: Page number (1-based)
             page_size: Number of tasks per page
-            visible_only: If True, restrict to subtasks with `is_visible = True`.
-
         Returns:
             Tasks object with child tasks
 
@@ -481,7 +469,6 @@ class TaskService:
                 page=page,
                 page_size=page_size,
                 parent_id=int(task_id),
-                visible_only=visible_only,
                 order_by="name",
                 order_dir="asc",
             )
@@ -635,9 +622,7 @@ class TaskService:
         sisters = self.get_task_sisters(task.id)
         recommended_frameworks = self.get_task_recommended_frameworks(task.id)
 
-        children = self.get_task_children(
-            task.id, page_size=50, visible_only=True
-        ).results
+        children = self.get_task_children(task.id, page_size=50).results
 
         dataset_service = DatasetService(self.db)
         benchmarks = dataset_service.get_datasets(
@@ -678,7 +663,6 @@ class TaskService:
         area_id: str,
         page: int = 1,
         page_size: int = 50,
-        visible_only: bool = False,
     ) -> Tasks:
         """
         Get all tasks associated with a specific research area.
@@ -687,8 +671,6 @@ class TaskService:
             area_id: The research area ID
             page: Page number (1-based)
             page_size: Number of tasks per page
-            visible_only: If True, restrict to tasks with `is_visible = True`.
-
         Returns:
             Tasks object with tasks in the area
 
@@ -707,7 +689,6 @@ class TaskService:
                 page=page,
                 page_size=page_size,
                 area_id=int(area_id),
-                visible_only=visible_only,
                 order_by="name",
                 order_dir="asc",
             )
@@ -722,31 +703,224 @@ class TaskService:
         query: str,
         page: int = 1,
         page_size: int = 50,
-        visible_only: bool = False,
     ) -> Tasks:
-        """
-        Search tasks by name and description with full-text search.
+        """Search displayed task names with deterministic and typo lanes.
 
         Args:
             query: Search query
             page: Page number (1-based)
             page_size: Number of tasks per page
-            visible_only: If True, restrict to tasks with `is_visible = True`.
-
         Returns:
             Tasks object with search results
 
         Raises:
             DatabaseError: If database query fails
         """
-        return self.get_tasks(
-            page=page,
-            page_size=page_size,
-            search=query,
-            visible_only=visible_only,
-            order_by="name",
-            order_dir="asc",
+        terms = prepare_entity_search(query, EntitySearchKind.TASK)
+        if not terms.usable:
+            return empty_page(Tasks)
+
+        candidates = self._task_search_candidates(terms)
+        if not candidates:
+            return empty_page(Tasks)
+        trend = self._task_search_trends(
+            [candidate.entity_id for candidate in candidates]
         )
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.tier,
+                -candidate.relevance,
+                -trend.get(candidate.entity_id, (0.0, 0))[0],
+                -trend.get(candidate.entity_id, (0.0, 0))[1],
+                candidate.name.casefold(),
+                candidate.entity_id,
+            )
+        )
+
+        offset = (page - 1) * page_size
+        page_candidates = candidates[offset : offset + page_size]
+        page_ids = [candidate.entity_id for candidate in page_candidates]
+        response = self.get_tasks(
+            page=1,
+            page_size=max(1, len(page_ids)),
+            _task_ids=page_ids,
+            _count_override=len(candidates),
+        )
+        by_id = {int(task.id): task for task in response.results}
+        response.results = [
+            by_id[entity_id] for entity_id in page_ids if entity_id in by_id
+        ]
+        response.next_page = page + 1 if offset + page_size < len(candidates) else None
+        response.previous_page = page - 1 if page > 1 else None
+        return response
+
+    def _task_search_candidates(self, terms) -> List[EntitySearchCandidate]:
+        base = self.db.query(DBTask)
+        if self.db.bind.dialect.name != "postgresql":
+            tasks = base.all()
+            candidates = []
+            for task in tasks:
+                match = deterministic_match(terms, name=task.name, slug=task.slug)
+                if match:
+                    candidates.append(
+                        EntitySearchCandidate(
+                            int(task.id), task.name, match[0], match[1]
+                        )
+                    )
+            candidates.sort(
+                key=lambda candidate: (
+                    candidate.tier,
+                    -candidate.relevance,
+                    candidate.name.casefold(),
+                    candidate.entity_id,
+                )
+            )
+            if candidates:
+                return candidates[:DETERMINISTIC_CANDIDATE_LIMIT]
+            fuzzy_rows = [(int(task.id), task.name, 0.0) for task in tasks]
+        else:
+            predicate, tier, relevance = postgres_search_expressions(DBTask, terms)
+            rows = (
+                base.with_entities(
+                    DBTask.id,
+                    DBTask.name,
+                    tier.label("tier"),
+                    relevance.label("relevance"),
+                )
+                .filter(predicate)
+                .order_by(
+                    asc(tier),
+                    desc(relevance),
+                    asc(DBTask.name),
+                    asc(DBTask.id),
+                )
+                .limit(DETERMINISTIC_CANDIDATE_LIMIT)
+                .all()
+            )
+            if rows:
+                return [
+                    EntitySearchCandidate(
+                        int(entity_id), name, int(match_tier), float(rank or 0.0)
+                    )
+                    for entity_id, name, match_tier, rank in rows
+                ]
+            if terms.identity_only or len("".join(terms.tokens)) < 4:
+                return []
+            distance, similarity = postgres_fuzzy_ordering(
+                DBTask.name, terms.normalized
+            )
+            fuzzy_rows = (
+                base.with_entities(DBTask.id, DBTask.name, similarity)
+                .order_by(distance, asc(DBTask.id))
+                .limit(FUZZY_CANDIDATE_LIMIT)
+                .all()
+            )
+
+        if terms.identity_only or len("".join(terms.tokens)) < 4:
+            return []
+        winner = choose_fuzzy_winner(terms.normalized, list(fuzzy_rows))
+        return [winner] if winner else []
+
+    def _task_search_trends(self, task_ids: List[int]) -> dict[int, tuple[float, int]]:
+        if not task_ids:
+            return {}
+        today = datetime.now(timezone.utc).date()
+        recent_start = today - timedelta(days=30)
+        baseline_start = recent_start - timedelta(days=180)
+
+        global_recent, global_baseline = (
+            self.db.query(
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                DBPaper.date_published > recent_start,
+                                DBPaper.id,
+                            ),
+                            else_=None,
+                        )
+                    )
+                ),
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                (DBPaper.date_published > baseline_start)
+                                & (DBPaper.date_published <= recent_start),
+                                DBPaper.id,
+                            ),
+                            else_=None,
+                        )
+                    )
+                ),
+            )
+            .filter(
+                DBPaper.is_latest_version,
+                DBPaper.date_published > baseline_start,
+                DBPaper.date_published <= today,
+            )
+            .one()
+        )
+        activity_rows = (
+            self.db.query(
+                PaperTask.task_id,
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                DBPaper.date_published > recent_start,
+                                DBPaper.id,
+                            ),
+                            else_=None,
+                        )
+                    )
+                ),
+                func.count(
+                    func.distinct(
+                        case(
+                            (
+                                (DBPaper.date_published > baseline_start)
+                                & (DBPaper.date_published <= recent_start),
+                                DBPaper.id,
+                            ),
+                            else_=None,
+                        )
+                    )
+                ),
+            )
+            .join(
+                DBPaper,
+                (DBPaper.id == PaperTask.paper_id) & DBPaper.is_latest_version,
+            )
+            .filter(
+                PaperTask.task_id.in_(task_ids),
+                DBPaper.date_published > baseline_start,
+                DBPaper.date_published <= today,
+            )
+            .group_by(PaperTask.task_id)
+            .all()
+        )
+        all_time_rows = (
+            self.db.query(PaperTask.task_id, func.count(PaperTask.paper_id))
+            .filter(PaperTask.task_id.in_(task_ids))
+            .group_by(PaperTask.task_id)
+            .all()
+        )
+        activity = {
+            int(task_id): (int(recent or 0), int(baseline or 0))
+            for task_id, recent, baseline in activity_rows
+        }
+        all_time = {int(task_id): int(count or 0) for task_id, count in all_time_rows}
+        result = {}
+        for task_id in task_ids:
+            recent, baseline = activity.get(task_id, (0, 0))
+            if recent and baseline and global_recent and global_baseline:
+                share_lift = (recent / global_recent) / (baseline / global_baseline)
+                trend_score = share_lift * math.log1p(recent)
+            else:
+                trend_score = 0.0
+            result[task_id] = (trend_score, all_time.get(task_id, 0))
+        return result
 
     def get_task_papers(
         self,

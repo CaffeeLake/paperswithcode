@@ -113,7 +113,7 @@ class DiscoveryPageService:
                 Task.slug, Task.name, func.count(PaperTask.paper_id).label("n")
             )
             .join(PaperTask, PaperTask.task_id == Task.id)
-            .filter(Task.slug.is_not(None), Task.is_visible)
+            .filter(Task.slug.is_not(None))
             .group_by(Task.id)
             .order_by(func.count(PaperTask.paper_id).desc(), Task.name.asc())
             .limit(8)

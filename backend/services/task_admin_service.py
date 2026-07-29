@@ -41,7 +41,6 @@ def add_or_update_task(
     keywords: str,
     area_name: str,
     parent_reference: str | None = None,
-    is_visible: bool = True,
 ) -> TaskUpsertResult:
     """Create or update one task and its optional parent relationship."""
     area = db.execute(select(Area).where(Area.name == area_name)).scalar_one_or_none()
@@ -72,7 +71,6 @@ def add_or_update_task(
     task.area_id = area.id
     task.parent_id = parent.id if parent else None
     task.level = (parent.level + 1) if parent else 0
-    task.is_visible = is_visible
     db.commit()
 
     return TaskUpsertResult(

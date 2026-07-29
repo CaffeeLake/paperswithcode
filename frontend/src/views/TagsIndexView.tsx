@@ -18,8 +18,7 @@ const taskKey = (value?: string) => value?.trim().toLowerCase().replace(/[\s_]+/
  *
  * Uses the consolidated `/api/v1/areas/with-tasks/` endpoint, which returns
  * every area populated with its tasks (and aggregated paper counts) in one
- * round-trip. The backend already filters out tasks with `is_visible = false`,
- * so this view does not duplicate the hide list.
+ * round-trip, so this view can render the returned taxonomy directly.
  */
 const TagsIndexView: React.FC = () => {
   const taxonomyQ = useQuery({

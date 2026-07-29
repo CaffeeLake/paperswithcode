@@ -232,12 +232,10 @@ class AreaService:
 
         Uses two queries:
           1. All areas, ordered by name.
-          2. All visible top-level tasks LEFT JOIN paper_tasks GROUP BY task.id,
+          2. All top-level tasks LEFT JOIN paper_tasks GROUP BY task.id,
              fetching paper_count in one aggregate pass instead of one count
-             per task. Tasks with `is_visible = false` are filtered out so the
-             public `/tasks` taxonomy mirrors the `is_visible` denylist.
-             Subtasks stay on their parent task pages rather than appearing as
-             peer domains in the top-level browse index.
+             per task. Subtasks stay on their parent task pages rather than
+             appearing as peer domains in the top-level browse index.
 
         This collapses what used to be `1 + N_areas` HTTP requests from the
         frontend (one for `/areas/`, then one `/areas/{id}/tasks` per area) into
@@ -250,7 +248,6 @@ class AreaService:
             task_rows = (
                 self.db.query(DBTask, paper_count_col)
                 .outerjoin(PaperTask, DBTask.id == PaperTask.task_id)
-                .filter(DBTask.is_visible)
                 .filter(DBTask.parent_id.is_(None))
                 .filter(DBTask.level == 0)
                 .group_by(DBTask.id)
@@ -278,7 +275,6 @@ class AreaService:
                         db_task.updated_at,
                     ),
                     image_credit=db_task.image_credit,
-                    is_visible=db_task.is_visible,
                     created_at=db_task.created_at,
                     updated_at=db_task.updated_at,
                 )

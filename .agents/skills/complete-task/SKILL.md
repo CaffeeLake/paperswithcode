@@ -75,7 +75,7 @@ from backend.database.connection import get_engine
 slug = "motion-generation"
 with get_engine().connect() as conn:
     row = conn.execute(text(
-        "SELECT id, name, slug, is_visible FROM tasks WHERE slug = :s OR name ILIKE :n"
+        "SELECT id, name, slug FROM tasks WHERE slug = :s OR name ILIKE :n"
     ), {"s": slug, "n": f"%{slug.replace('-', ' ')}%"}).mappings().first()
     print(dict(row) if row else "TASK NOT FOUND")
 PY

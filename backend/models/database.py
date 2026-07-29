@@ -315,6 +315,9 @@ class Task(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_vector: Mapped[Optional[str]] = mapped_column(
+        TSVECTOR().with_variant(Text(), "sqlite"), nullable=True
+    )
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     research_trends: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
     slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
@@ -341,12 +344,6 @@ class Task(Base):
     )
     image_mime_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     useful_leaderboards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-
-    # Visibility in user-facing pickers (the /tasks taxonomy index and the
-    # paper-tagging dropdown). Hidden tasks remain reachable by direct slug.
-    is_visible: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -394,6 +391,9 @@ class Method(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_vector: Mapped[Optional[str]] = mapped_column(
+        TSVECTOR().with_variant(Text(), "sqlite"), nullable=True
+    )
     slug: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, unique=True, index=True
     )
@@ -454,6 +454,9 @@ class Dataset(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_vector: Mapped[Optional[str]] = mapped_column(
+        TSVECTOR().with_variant(Text(), "sqlite"), nullable=True
+    )
     slug: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, unique=True, index=True
     )

@@ -1190,18 +1190,6 @@ class Task(BaseModel):
         None, description="Image source/credit information"
     )
 
-    # Visibility in user-facing pickers (the /tasks taxonomy and the paper
-    # task-tagging dropdown). Hidden tasks still exist and are reachable by
-    # direct slug, but are filtered out of the taxonomy index and selectors.
-    is_visible: bool = Field(
-        default=True,
-        description=(
-            "Whether this task is surfaced in user-facing pickers (the /tasks "
-            "taxonomy index and the paper-tagging dropdown). False hides the "
-            "task from those surfaces; it remains reachable by direct slug/id."
-        ),
-    )
-
     # Timestamps
     created_at: Optional[datetime] = Field(None, description="Task creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")

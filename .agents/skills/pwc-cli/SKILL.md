@@ -100,7 +100,7 @@ trending metrics are participating in the composite paper score.
 
 - `pwc task add SLUG` — Idempotently create/update a task. Requires `--name`, one
   of `--description` or `--description-file`, `--keywords`, and `--area`.
-  `[--parent SLUG_OR_ID --hidden --json]`
+  `[--parent SLUG_OR_ID --json]`
 - `pwc method add SLUG` — Idempotently create/update a method. Requires `--name`,
   `--full-name`, one description input, `--keywords`, `--area`,
   `--introduced-year`, one of `--source-paper` or `--source-url`, and
