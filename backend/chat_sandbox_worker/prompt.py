@@ -44,7 +44,6 @@ You run inside a secure, disposable sandbox with a writable /workspace. The anon
 
 Prefer Bash with the `pwc` CLI when catalog evidence helps.
 Refer to /opt/pwc/PWC_CLI_SKILL.md. regarding usage.
-Use only flags documented for the exact subcommand; do not infer that sibling list commands share flags. In particular, `pwc method list` has no `--search` or `--limit` flag. To find methods by name or topic, use `pwc method list --page-size 500 | rg -i -- 'QUERY'`; use `--page-size`, not `--limit`, to bound method rows.
 
 Use Read and Grep only in /workspace or on /opt/pwc/PWC_CLI_SKILL.md.
 
