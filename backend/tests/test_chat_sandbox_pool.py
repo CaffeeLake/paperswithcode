@@ -215,6 +215,26 @@ def test_claim_transfers_preopened_blank_control():
     assert manager._controls[session_id] is control
 
 
+def test_preopened_control_health_does_not_repeat_provider_poll():
+    factory = _database()
+    settings = _settings()
+    manager = SandboxSessionManager(settings, session_factory=factory)
+    sandbox = SimpleNamespace(object_id="sb-blank")
+    control = SimpleNamespace(sandbox_id="sb-blank", sandbox=sandbox)
+    manager._blank_controls["sb-blank"] = control
+
+    async def healthy(candidate, worker_generation):
+        assert candidate is control
+        assert worker_generation == "generation-a"
+        return True
+
+    manager._ping_control = healthy
+
+    assert (
+        asyncio.run(manager._pool_sandbox_health("sb-blank", "generation-a")) is sandbox
+    )
+
+
 def test_unhealthy_blank_is_destroyed_instead_of_claimed(monkeypatch):
     factory = _database()
     settings = _settings()

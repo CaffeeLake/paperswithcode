@@ -401,8 +401,6 @@ class SandboxSessionManager:
             if control is not None:
                 if control.sandbox_id != sandbox_id:
                     return None
-                if await control.sandbox.poll.aio() is not None:
-                    return None
                 if await self._ping_control(control, worker_generation):
                     return control.sandbox
                 return None
