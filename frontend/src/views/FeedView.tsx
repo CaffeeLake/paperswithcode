@@ -259,16 +259,24 @@ const FeedView: React.FC = () => {
           {isChatEnabled() && <AskAssistant />}
 
           <div className="sort-bar home-feed-sort-bar">
-            <div className="sort-options">
-              {SORT_OPTIONS.map(([k, l]) => (
-                <button
-                  key={k}
-                  className={`sort-btn ${orderBy === k ? "active" : ""}`}
-                  onClick={() => setOrderBy(k)}
-                >
-                  {l}
-                </button>
-              ))}
+            <div className="home-feed-sort-stack">
+              <div className="sort-options">
+                {SORT_OPTIONS.map(([k, l]) => (
+                  <button
+                    key={k}
+                    className={`sort-btn ${orderBy === k ? "active" : ""}`}
+                    onClick={() => setOrderBy(k)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <PaperFeedFilters
+                hasCode={hasCode}
+                hasHfArtifacts={hasHfArtifacts}
+                onHasCodeChange={setHasCode}
+                onHasHfArtifactsChange={setHasHfArtifacts}
+              />
             </div>
             <div className="sort-options sort-options-time">
               {PERIODS.map((p) => (
@@ -280,14 +288,6 @@ const FeedView: React.FC = () => {
                   {p}
                 </button>
               ))}
-            </div>
-            <div className="paper-feed-filter-row" aria-label="Paper filters">
-              <PaperFeedFilters
-                hasCode={hasCode}
-                hasHfArtifacts={hasHfArtifacts}
-                onHasCodeChange={setHasCode}
-                onHasHfArtifactsChange={setHasHfArtifacts}
-              />
             </div>
           </div>
 
