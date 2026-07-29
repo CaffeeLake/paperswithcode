@@ -102,7 +102,6 @@ describe("SharedChatView", () => {
     renderView();
 
     expect(await screen.findByText("What is new?")).toBeInTheDocument();
-    expect(screen.getByText("Shared conversation")).toBeInTheDocument();
     expect(screen.queryByText("Organization catch-all")).not.toBeInTheDocument();
     expect(screen.queryByText("Private title")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit message" })).not.toBeInTheDocument();
