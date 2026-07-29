@@ -20,13 +20,17 @@ from backend.models.database import (
     PaperMethodExclusion,
 )
 from backend.services.method_backfill_service import (
+    audit_undated_method_links,
+    keyword_catalog_rows,
     run_keyword_backfill,
     run_reference_backfill,
 )
 from backend.services.paper_method_link_service import (
     replace_manual_links,
+    sync_method_source_evidence,
     upsert_evidence_links,
 )
+from backend.services.method_trend_service import MethodTrendService
 
 
 @compiles(JSONB, "sqlite")
@@ -79,8 +83,8 @@ def test_evidence_is_idempotent_and_manual_removal_is_a_durable_veto():
     db.commit()
 
     link = [{"paper_id": 1, "method_id": 10}]
-    upsert_evidence_links(db, link, evidence_type="keyword")
-    upsert_evidence_links(db, link, evidence_type="keyword")
+    assert upsert_evidence_links(db, link, evidence_type="keyword") == 1
+    assert upsert_evidence_links(db, link, evidence_type="keyword") == 0
     db.commit()
     assert db.query(PaperMethodEvidence).count() == 1
 
@@ -98,6 +102,27 @@ def test_evidence_is_idempotent_and_manual_removal_is_a_durable_veto():
     db.commit()
     assert db.get(PaperMethodExclusion, (1, 10)) is None
     assert db.get(PaperMethodEvidence, (1, 10, "manual")) is not None
+
+
+def test_source_evidence_tracks_only_the_current_canonical_source():
+    db = _session()
+    db.add_all(
+        [
+            _paper(1, "Old source"),
+            _paper(2, "New source"),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+        ]
+    )
+    db.commit()
+    sync_method_source_evidence(db, method_id=10, source_paper_id=1)
+    db.commit()
+
+    sync_method_source_evidence(db, method_id=10, source_paper_id=2)
+    db.commit()
+
+    assert db.get(PaperMethodEvidence, (1, 10, "source")) is None
+    assert db.get(PaperMethod, (1, 10)) is None
+    assert db.get(PaperMethodEvidence, (2, 10, "source")) is not None
 
 
 def test_keyword_backfill_covers_sourced_and_sourceless_methods_and_resumes():
@@ -137,6 +162,24 @@ def test_keyword_backfill_covers_sourced_and_sourceless_methods_and_resumes():
     assert run.cursor_paper_id == 2
 
 
+def test_keyword_catalog_version_tracks_matcher_inputs_not_display_names():
+    db = _session()
+    method = Method(id=10, name="Display A", slug="a", keywords="Alpha")
+    db.add(method)
+    db.commit()
+    original, _ = keyword_catalog_rows(db)
+
+    method.name = "Display B"
+    db.commit()
+    renamed, _ = keyword_catalog_rows(db)
+    method.keywords = "Beta"
+    db.commit()
+    changed_keywords, _ = keyword_catalog_rows(db)
+
+    assert renamed == original
+    assert changed_keywords != original
+
+
 class _ReferenceClient:
     def __init__(self):
         self.api_calls = 0
@@ -164,6 +207,26 @@ class _FailingReferenceClient:
         self.api_calls += 1
         self.api_errors += 1
         return iter([])
+
+
+class _PartialFailingReferenceClient(_ReferenceClient):
+    def iter_references(self, _identifier):
+        self.api_calls += 2
+        yield SimpleNamespace(semantic_scholar_id="source-a", arxiv_id=None)
+        self.api_errors += 1
+
+
+class _RetriedReferenceClient(_ReferenceClient):
+    def __init__(self):
+        super().__init__()
+        self.failed_requests = 0
+        self.retry_attempts = 0
+
+    def iter_references(self, _identifier):
+        self.api_calls += 2
+        self.rate_limit_hits += 1
+        self.retry_attempts += 1
+        return iter([SimpleNamespace(semantic_scholar_id="source-a", arxiv_id=None)])
 
 
 def test_reference_backfill_fetches_each_paper_once_for_multiple_methods():
@@ -206,6 +269,82 @@ def test_reference_backfill_fetches_each_paper_once_for_multiple_methods():
     )
 
 
+def test_reference_backfill_links_all_methods_that_share_one_source():
+    db = _session()
+    source = _paper(1, "Shared source", date(2026, 1, 1))
+    source.semantic_scholar_id = "shared-source"
+    db.add_all(
+        [
+            source,
+            _paper(2, "Citing paper", date(2026, 1, 2)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+            Method(id=11, name="B", slug="b", source_paper_id=1),
+        ]
+    )
+    db.commit()
+
+    class Client(_ReferenceClient):
+        def iter_references(self, identifier):
+            self.api_calls += 1
+            if identifier == "arXiv:2601.00002":
+                return iter(
+                    [
+                        SimpleNamespace(
+                            semantic_scholar_id="shared-source", arxiv_id=None
+                        )
+                    ]
+                )
+            return iter([])
+
+    stats = run_reference_backfill(
+        db,
+        Client(),
+        method_ids=[10, 11],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    assert stats.matches == 2
+    assert stats.links_written == 2
+    assert db.get(PaperMethodEvidence, (2, 10, "reference")) is not None
+    assert db.get(PaperMethodEvidence, (2, 11, "reference")) is not None
+
+
+def test_reference_backfill_counts_excluded_match_as_processed_not_matched():
+    db = _session()
+    source = _paper(1, "Source", date(2026, 1, 1))
+    source.semantic_scholar_id = "source-a"
+    db.add_all(
+        [
+            source,
+            _paper(3, "Excluded citing paper", date(2026, 1, 3)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+            PaperMethodExclusion(paper_id=3, method_id=10),
+        ]
+    )
+    db.commit()
+
+    stats = run_reference_backfill(
+        db,
+        _ReferenceClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert stats.matches == 0
+    assert stats.links_written == 0
+    assert progress.processed_papers == 2
+    assert progress.matched_papers == 0
+    assert progress.status == "complete"
+    assert db.get(PaperMethod, (3, 10)) is None
+
+
 def test_failed_reference_lookup_does_not_advance_the_month_cursor():
     db = _session()
     paper = _paper(1, "Source", date(2026, 1, 1))
@@ -229,3 +368,204 @@ def test_failed_reference_lookup_does_not_advance_the_month_cursor():
     assert progress.cursor_published_at is None
     assert progress.cursor_paper_id is None
     assert progress.retryable_failures == 1
+
+
+def test_partially_fetched_reference_lookup_does_not_advance_or_write():
+    db = _session()
+    source = _paper(1, "Source", date(2026, 1, 1))
+    source.semantic_scholar_id = "source-a"
+    db.add_all([source, Method(id=10, name="A", slug="a", source_paper_id=1)])
+    db.commit()
+
+    stats = run_reference_backfill(
+        db,
+        _PartialFailingReferenceClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert stats.papers_failed == 1
+    assert stats.matches == 0
+    assert progress.processed_papers == 0
+    assert progress.cursor_published_at is None
+    assert db.get(PaperMethodEvidence, (1, 10, "reference")) is None
+
+
+def test_successful_retry_is_processed_instead_of_left_behind_cursor():
+    db = _session()
+    source = _paper(1, "Source", date(2026, 1, 1))
+    source.semantic_scholar_id = "source-a"
+    db.add_all([source, Method(id=10, name="A", slug="a", source_paper_id=1)])
+    db.commit()
+
+    stats = run_reference_backfill(
+        db,
+        _RetriedReferenceClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert stats.papers_failed == 0
+    assert progress.processed_papers == 1
+    assert progress.retryable_failures == 0
+    assert progress.status == "complete"
+    assert db.get(PaperMethodEvidence, (1, 10, "reference")) is not None
+
+
+def test_reference_resume_starts_strictly_after_stored_tuple_and_latest_only():
+    db = _session()
+    source = _paper(1, "Source", date(2026, 1, 1))
+    source.semantic_scholar_id = "source"
+    old_version = _paper(4, "Old version", date(2026, 1, 4))
+    old_version.is_latest_version = False
+    db.add_all(
+        [
+            source,
+            _paper(2, "Second", date(2026, 1, 2)),
+            _paper(3, "Third", date(2026, 1, 3)),
+            old_version,
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+        ]
+    )
+    db.commit()
+
+    class RecordingClient(_ReferenceClient):
+        def __init__(self):
+            super().__init__()
+            self.identifiers = []
+
+        def iter_references(self, identifier):
+            self.api_calls += 1
+            self.identifiers.append(identifier)
+            return iter([])
+
+    first_client = RecordingClient()
+    run_reference_backfill(
+        db,
+        first_client,
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=2,
+        dry_run=False,
+    )
+    second_client = RecordingClient()
+    run_reference_backfill(
+        db,
+        second_client,
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+        resume=True,
+    )
+
+    assert first_client.identifiers == ["source", "arXiv:2601.00002"]
+    assert second_client.identifiers == ["arXiv:2601.00003"]
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert progress.eligible_papers == 3
+    assert progress.processed_papers == 3
+    assert progress.status == "complete"
+
+    db.add(_paper(5, "Late import behind completed cursor", date(2026, 1, 1)))
+    db.commit()
+    refresh_client = RecordingClient()
+    run_reference_backfill(
+        db,
+        refresh_client,
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+        resume=True,
+    )
+    db.refresh(progress)
+    assert progress.eligible_papers == 4
+    assert progress.processed_papers == 4
+    assert progress.status == "complete"
+    assert refresh_client.identifiers == [
+        "source",
+        "arXiv:2601.00005",
+        "arXiv:2601.00002",
+        "arXiv:2601.00003",
+    ]
+
+
+def test_new_paper_behind_reference_cursor_prevents_premature_completion():
+    db = _session()
+    source = _paper(1, "Source", date(2026, 1, 2))
+    source.semantic_scholar_id = "source"
+    db.add_all(
+        [
+            source,
+            _paper(2, "Later paper", date(2026, 1, 3)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+        ]
+    )
+    db.commit()
+
+    class ImportingClient(_ReferenceClient):
+        def iter_references(self, identifier):
+            self.api_calls += 1
+            if self.api_calls == 2:
+                db.add(_paper(3, "Imported behind cursor", date(2026, 1, 1)))
+                db.flush()
+            return iter([])
+
+    run_reference_backfill(
+        db,
+        ImportingClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert progress.eligible_papers == 3
+    assert progress.status == "pending"
+    assert progress.processed_papers == 0
+    assert progress.cursor_published_at is None
+
+
+def test_undated_audit_groups_evidence_and_reports_a_sample():
+    db = _session()
+    db.add_all([_paper(1, "Undated"), Method(id=10, name="A", slug="a")])
+    db.commit()
+    upsert_evidence_links(
+        db, [{"paper_id": 1, "method_id": 10}], evidence_type="keyword"
+    )
+    db.commit()
+
+    audit = audit_undated_method_links(db, sample_size=1)
+
+    assert audit["total"] == 1
+    assert audit["grouped"] == [
+        {"source": "arxiv", "has_arxiv_id": True, "paper_count": 1}
+    ]
+    assert audit["sample"][0]["id"] == 1
+
+
+def test_method_trend_returns_more_than_ten_years_without_an_override():
+    db = _session()
+    db.add(Method(id=10, name="Long-lived", slug="long-lived", introduced_year=2000))
+    db.commit()
+
+    trend = MethodTrendService(db).get_method_trend(
+        "long-lived", today=date(2026, 7, 29)
+    )
+
+    assert trend.history_months == 319
+    assert trend.history[0].start_date == date(2000, 1, 1)
+    assert trend.history[-1].start_date == date(2026, 7, 1)

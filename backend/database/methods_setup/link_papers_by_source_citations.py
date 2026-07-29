@@ -134,6 +134,8 @@ class SemanticScholarClient:
         self.api_calls = 0
         self.rate_limit_hits = 0
         self.api_errors = 0
+        self.retry_attempts = 0
+        self.failed_requests = 0
 
     def close(self) -> None:
         if self._owns_client:
@@ -147,8 +149,10 @@ class SemanticScholarClient:
             except httpx.HTTPError as exc:
                 self.api_errors += 1
                 print(f"  ! HTTP error: {exc}", file=sys.stderr)
-                multiplier = 2**attempt if self.exponential_backoff else attempt + 1
-                self._sleep(self.request_delay * multiplier)
+                if attempt + 1 < self.max_retries:
+                    self.retry_attempts += 1
+                    multiplier = 2**attempt if self.exponential_backoff else attempt + 1
+                    self._sleep(self.request_delay * multiplier)
                 continue
 
             status = resp.status_code
@@ -160,28 +164,33 @@ class SemanticScholarClient:
                 return None
             if status == 429:
                 self.rate_limit_hits += 1
-                wait = self.request_delay * (
-                    2 ** (attempt + 1) if self.exponential_backoff else attempt + 2
-                )
-                print(
-                    f"  ! 429 rate limited; sleeping {wait:.1f}s before retry",
-                    file=sys.stderr,
-                )
-                self._sleep(wait)
+                if attempt + 1 < self.max_retries:
+                    self.retry_attempts += 1
+                    wait = self.request_delay * (
+                        2 ** (attempt + 1) if self.exponential_backoff else attempt + 2
+                    )
+                    print(
+                        f"  ! 429 rate limited; sleeping {wait:.1f}s before retry",
+                        file=sys.stderr,
+                    )
+                    self._sleep(wait)
                 continue
             if 500 <= status < 600:
                 self.api_errors += 1
-                wait = self.request_delay * (
-                    2**attempt if self.exponential_backoff else attempt + 1
-                )
-                print(
-                    f"  ! {status} server error; sleeping {wait:.1f}s before retry",
-                    file=sys.stderr,
-                )
-                self._sleep(wait)
+                if attempt + 1 < self.max_retries:
+                    self.retry_attempts += 1
+                    wait = self.request_delay * (
+                        2**attempt if self.exponential_backoff else attempt + 1
+                    )
+                    print(
+                        f"  ! {status} server error; sleeping {wait:.1f}s before retry",
+                        file=sys.stderr,
+                    )
+                    self._sleep(wait)
                 continue
 
             self.api_errors += 1
+            self.failed_requests += 1
             print(
                 f"  ! Unexpected status {status} for {url}: {resp.text[:200]}",
                 file=sys.stderr,
@@ -189,6 +198,7 @@ class SemanticScholarClient:
             return None
 
         print(f"  ! Giving up after {self.max_retries} retries: {url}", file=sys.stderr)
+        self.failed_requests += 1
         return None
 
     def lookup_paper_by_arxiv(self, arxiv_id: str) -> Optional[dict]:

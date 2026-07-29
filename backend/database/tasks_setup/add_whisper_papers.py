@@ -8,6 +8,7 @@ import sys
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from backend.models.database import Paper, Method, PaperMethod
+from backend.services.paper_method_link_service import upsert_evidence_links
 
 
 def add_whisper_papers():
@@ -97,10 +98,12 @@ def add_whisper_papers():
                 skipped_count += 1
                 continue
 
-            # Create new relationship
-            paper_method = PaperMethod(paper_id=paper.id, method_id=whisper_method.id)
-            db.add(paper_method)
-            added_count += 1
+            added_count += upsert_evidence_links(
+                db,
+                [{"paper_id": paper.id, "method_id": whisper_method.id}],
+                evidence_type="keyword",
+                details={"matcher": "legacy-whisper-case-sensitive"},
+            )
 
         # Commit the changes
         db.commit()

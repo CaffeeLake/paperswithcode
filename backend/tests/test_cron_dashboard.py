@@ -113,13 +113,20 @@ def test_multi_job_workflow_fetches_job_details():
     assert gh_json.call_count == 2
 
 
-def test_registry_includes_hf_artifacts_and_embedding_crons():
+def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     job_ids = {job.id for job in list_cron_jobs()}
     assert "update_hot_github_trending" in job_ids
     assert "update_hf_artifacts" in job_ids
     assert "refresh_paper_embeddings" in job_ids
     assert "paper_markdown_backfill" in job_ids
-    assert len(job_ids) == 15
+    assert "backfill_method_keywords" in job_ids
+    assert "backfill_method_references" in job_ids
+    assert len(job_ids) == 16
+
+    keyword_job = _job("backfill_method_keywords")
+    assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query
+    reference_job = _job("backfill_method_references")
+    assert "method_reference_backfill_months" in reference_job.db_freshness_query
 
 
 def test_hot_job_has_dedicated_lock_and_operational_metrics():

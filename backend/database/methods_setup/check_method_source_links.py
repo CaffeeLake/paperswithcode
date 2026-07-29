@@ -154,19 +154,13 @@ def build_source_link_plan(db: Session) -> SourceLinkPlan:
 
 
 def apply_source_link_plan(db: Session, plan: SourceLinkPlan) -> None:
-    from backend.services.paper_method_link_service import upsert_evidence_links
+    from backend.services.paper_method_link_service import sync_method_source_evidence
 
     for method, paper in plan.source_paper_updates:
         method.source_paper_id = paper.id
-
-    upsert_evidence_links(
-        db,
-        (
-            {"paper_id": paper_id, "method_id": method_id}
-            for paper_id, method_id in plan.paper_method_inserts
-        ),
-        evidence_type="source",
-    )
+        sync_method_source_evidence(db, method_id=method.id, source_paper_id=paper.id)
+    for paper_id, method_id in plan.paper_method_inserts:
+        sync_method_source_evidence(db, method_id=method_id, source_paper_id=paper_id)
 
     db.commit()
 

@@ -165,7 +165,7 @@ const MethodsIndexView: React.FC = () => {
                         <Flame
                           className="method-trending-icon"
                           size={15}
-                          aria-label="Top quartile by recent method usage"
+                          aria-label="Top quartile by recent method mentions"
                         />
                       )}
                     </div>

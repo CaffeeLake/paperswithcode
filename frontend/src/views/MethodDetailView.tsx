@@ -178,7 +178,7 @@ const MethodDetailView: React.FC = () => {
             </div>
             {trendQ.data && (
               <div className="stat">
-                <span className="label">Recent use</span>
+                <span className="label">Recent mentions</span>
                 <span className="value">
                   {trendQ.data.trend_score.toFixed(1)}
                   <small>/mo</small>

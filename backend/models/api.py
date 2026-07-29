@@ -1036,7 +1036,7 @@ class Method(BaseModel):
     )
     trend_score: Optional[float] = Field(
         None,
-        description="Recent method usage velocity normalized to papers per 30 days",
+        description="Recent method mention velocity normalized to papers per 30 days",
     )
     rate_change: Optional[float] = Field(
         None,
@@ -1099,7 +1099,7 @@ class MethodTrend(BaseModel):
     method_slug: Optional[str] = Field(None, description="Resolved method slug")
     signal: str = Field(
         default="paper_method_links",
-        description="Evidence source used to calculate method usage",
+        description="Association signal used to calculate method mentions",
     )
     recent_days: int = Field(..., description="Length of the recent score window")
     baseline_days: int = Field(
@@ -1110,10 +1110,10 @@ class MethodTrend(BaseModel):
     )
     generated_on: date = Field(..., description="Date used as the window endpoint")
     recent_paper_count: int = Field(
-        ..., description="Papers using the method in the recent window"
+        ..., description="Papers mentioning the method in the recent window"
     )
     baseline_paper_count: int = Field(
-        ..., description="Papers using the method in the preceding window"
+        ..., description="Papers mentioning the method in the preceding window"
     )
     trend_score: float = Field(
         ..., description="Recent usage normalized to papers per 30 days"

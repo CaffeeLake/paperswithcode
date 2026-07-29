@@ -34,6 +34,10 @@ STAGING_EXCLUDED_KEYS = {
     "PWC_OPENAI_API_KEY",
     "PWC_OPENROUTER_API_KEY",
 }
+CRON_ONLY_KEYS = {
+    "PWC_GITHUB_TOKEN_HOT",
+    "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
+}
 
 
 def read_lines(path: Path) -> dict[str, str]:
@@ -97,6 +101,33 @@ def assign(lines: dict[str, str], values: dict[str, str]) -> dict[str, str]:
     updated = dict(lines)
     updated.update({key: f"{key}={value}" for key, value in values.items()})
     return updated
+
+
+def without_cron_only_credentials(lines: dict[str, str]) -> dict[str, str]:
+    """Keep workload-owned credentials out of application environments."""
+    return {key: line for key, line in lines.items() if key not in CRON_ONLY_KEYS}
+
+
+def cron_passthrough_credentials(
+    legacy: dict[str, str], current_cron: dict[str, str]
+) -> dict[str, str]:
+    """Build the preserved credential subset for the production CRON overlay."""
+    result = {
+        key: line
+        for key, line in legacy.items()
+        if key.startswith(("PWC_POSTGRES_BACKUP_", "PWC_GITHUB_HOT_", "GITHUB_"))
+        or key == "PWC_GITHUB_RATE_LIMIT_RESERVE"
+        or key
+        in {
+            "PWC_GITHUB_TOKEN",
+            "PWC_GITHUB_TOKEN_HOT",
+            "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
+        }
+    }
+    secondary_key = "PWC_SEMANTIC_SCHOLAR_API_KEY_2"
+    if secondary_key not in result and secondary_key in current_cron:
+        result[secondary_key] = current_cron[secondary_key]
+    return result
 
 
 def write_env(path: Path, lines: dict[str, str], group: str) -> None:
@@ -240,7 +271,7 @@ def main() -> int:
     )
     # The optional hot-queue credential is automation-only. Keep it out of the
     # application environment and install it only in the CRON overlay below.
-    production.pop("PWC_GITHUB_TOKEN_HOT", None)
+    production = without_cron_only_credentials(production)
 
     staging = {
         key: line
@@ -297,19 +328,9 @@ def main() -> int:
             "WEB_CONCURRENCY": "1",
         },
     )
+    staging = without_cron_only_credentials(staging)
 
-    cron = {
-        key: line
-        for key, line in legacy.items()
-        if key.startswith(("PWC_POSTGRES_BACKUP_", "PWC_GITHUB_HOT_", "GITHUB_"))
-        or key == "PWC_GITHUB_RATE_LIMIT_RESERVE"
-        or key
-        in {
-            "PWC_GITHUB_TOKEN",
-            "PWC_GITHUB_TOKEN_HOT",
-            "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
-        }
-    }
+    cron = cron_passthrough_credentials(legacy, current_cron)
     cron.update(
         {
             key: line

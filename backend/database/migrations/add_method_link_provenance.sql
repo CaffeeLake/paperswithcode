@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS paper_method_exclusions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (paper_id, method_id)
 );
+CREATE INDEX IF NOT EXISTS idx_paper_method_exclusions_method
+    ON paper_method_exclusions(method_id, paper_id);
 
 CREATE TABLE IF NOT EXISTS method_reference_backfill_months (
     method_id BIGINT NOT NULL REFERENCES methods(id) ON DELETE CASCADE,
@@ -89,5 +91,26 @@ WHERE NOT EXISTS (
     WHERE e.paper_id = pm.paper_id AND e.method_id = pm.method_id
 )
 ON CONFLICT DO NOTHING;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON
+            paper_method_evidence,
+            paper_method_exclusions,
+            method_reference_backfill_months,
+            method_keyword_backfill_runs
+        TO paperswithcode_user;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging') THEN
+        GRANT SELECT ON
+            paper_method_evidence,
+            paper_method_exclusions,
+            method_reference_backfill_months,
+            method_keyword_backfill_runs
+        TO pwc_staging;
+    END IF;
+END
+$$;
 
 COMMIT;

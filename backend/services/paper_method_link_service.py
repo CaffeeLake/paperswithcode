@@ -83,6 +83,7 @@ def upsert_evidence_links(
                     PaperMethod(paper_id=row["paper_id"], method_id=row["method_id"])
                 )
                 db.flush()
+                written += 1
             evidence = db.get(
                 PaperMethodEvidence,
                 (row["paper_id"], row["method_id"], evidence_type),
@@ -99,9 +100,8 @@ def upsert_evidence_links(
             else:
                 evidence.last_seen_at = func.now()
                 evidence.details = row["details"]
-            written += 1
         return written
-    db.execute(
+    parent_result = db.execute(
         text("""
             INSERT INTO paper_methods (paper_id, method_id)
             SELECT v.paper_id, v.method_id
@@ -137,7 +137,54 @@ def upsert_evidence_links(
             for row in rows
         ],
     )
-    return len(rows)
+    return max(parent_result.rowcount or 0, 0)
+
+
+def sync_method_source_evidence(
+    db: Session, *, method_id: int, source_paper_id: int | None
+) -> int:
+    """Keep `source` evidence aligned with the method's one canonical source."""
+    stale_paper_ids = [
+        paper_id
+        for (paper_id,) in db.query(PaperMethodEvidence.paper_id)
+        .filter(
+            PaperMethodEvidence.method_id == method_id,
+            PaperMethodEvidence.evidence_type == "source",
+            (
+                PaperMethodEvidence.paper_id != source_paper_id
+                if source_paper_id is not None
+                else True
+            ),
+        )
+        .all()
+    ]
+    if stale_paper_ids:
+        db.query(PaperMethodEvidence).filter(
+            PaperMethodEvidence.method_id == method_id,
+            PaperMethodEvidence.evidence_type == "source",
+            PaperMethodEvidence.paper_id.in_(stale_paper_ids),
+        ).delete(synchronize_session=False)
+        db.flush()
+        for paper_id in stale_paper_ids:
+            has_evidence = (
+                db.query(PaperMethodEvidence.paper_id)
+                .filter(
+                    PaperMethodEvidence.paper_id == paper_id,
+                    PaperMethodEvidence.method_id == method_id,
+                )
+                .first()
+            )
+            if not has_evidence:
+                link = db.get(PaperMethod, (paper_id, method_id))
+                if link is not None:
+                    db.delete(link)
+    if source_paper_id is None:
+        return 0
+    return upsert_evidence_links(
+        db,
+        [{"paper_id": source_paper_id, "method_id": method_id}],
+        evidence_type="source",
+    )
 
 
 def replace_manual_links(

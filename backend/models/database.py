@@ -1130,6 +1130,10 @@ class PaperMethodExclusion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    __table_args__ = (
+        Index("idx_paper_method_exclusions_method", "method_id", "paper_id"),
+    )
+
 
 class MethodReferenceBackfillMonth(Base):
     """Resumable reference-scan coverage for one method and publication month."""

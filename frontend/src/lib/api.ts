@@ -404,7 +404,7 @@ export interface Method {
   paper_count?: number;
   recent_paper_count?: number;
   baseline_paper_count?: number;
-  /** Recent method usage velocity, normalized to papers per 30 days. */
+  /** Recent method mention velocity, normalized to papers per 30 days. */
   trend_score?: number;
   /** Recent usage velocity divided by the preceding baseline velocity. */
   rate_change?: number | null;
@@ -1396,7 +1396,7 @@ class ApiClient {
     area_id?: number | string;
     /** Exclude a specific method ID (used for "related methods" lists). */
     exclude_id?: number | string;
-    /** Include 90-day paper-usage trend scores. */
+    /** Include 90-day paper-mention trend scores. */
     include_trends?: boolean;
     ordering?: string;
   }): Promise<PaginatedResponse<Method>> {

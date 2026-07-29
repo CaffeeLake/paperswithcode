@@ -159,10 +159,10 @@ def _resolve_paper_ss_id(paper: Dict[str, Any]) -> Optional[str]:
     return f"arXiv:{arxiv_id}"
 
 
-def _flush_paper_methods(db, batch: List[dict]) -> None:
+def _flush_paper_methods(db, batch: List[dict]) -> int:
     if not batch:
-        return
-    upsert_evidence_links(db, batch, evidence_type="reference")
+        return 0
+    return upsert_evidence_links(db, batch, evidence_type="reference")
 
 
 def _mark_paper_scanned(db, paper_ids: List[int]) -> None:
@@ -243,6 +243,11 @@ def link_methods_by_references(
 
         matched_method_ids: set[int] = set()
         references_fetched = 0
+        failures_before = getattr(
+            client,
+            "failed_requests",
+            client.api_errors + client.rate_limit_hits,
+        )
         for cited in client.iter_references(ss_id):
             references_fetched += 1
             if cited.semantic_scholar_id and cited.semantic_scholar_id in by_ss:
@@ -251,14 +256,22 @@ def link_methods_by_references(
             elif cited.arxiv_id and cited.arxiv_id in by_arxiv:
                 for method_id in by_arxiv[cited.arxiv_id]:
                     matched_method_ids.add(method_id)
+        failures_after = getattr(
+            client,
+            "failed_requests",
+            client.api_errors + client.rate_limit_hits,
+        )
+        if failures_after > failures_before:
+            stats.papers_lookup_failed += 1
+            log(
+                f"  ! [{idx}/{len(papers)}] bibliography lookup failed for "
+                f"paper id={paper['id']}; leaving it unscanned for retry"
+            )
+            continue
 
         stats.papers_processed += 1
         stats.references_fetched += references_fetched
         stats.method_matches_found += len(matched_method_ids)
-
-        if references_fetched == 0:
-            # iter_references returns nothing on 404 / lookup failure.
-            stats.papers_lookup_failed += 1
 
         for method_id in matched_method_ids:
             stats.method_link_counts[method_id] += 1
@@ -271,8 +284,7 @@ def link_methods_by_references(
             pending_scanned_paper_ids.append(paper["id"])
 
         if write and len(pending_paper_methods) >= batch_size:
-            _flush_paper_methods(db, pending_paper_methods)
-            stats.links_inserted += len(pending_paper_methods)
+            stats.links_inserted += _flush_paper_methods(db, pending_paper_methods)
             pending_paper_methods.clear()
             _mark_paper_scanned(db, pending_scanned_paper_ids)
             pending_scanned_paper_ids.clear()
@@ -283,12 +295,12 @@ def link_methods_by_references(
                 f"  [{idx}/{len(papers)}] processed; "
                 f"references={stats.references_fetched:,}, "
                 f"matches={stats.method_matches_found:,}, "
-                f"inserted={stats.links_inserted + len(pending_paper_methods):,}"
+                f"inserted={stats.links_inserted:,}, "
+                f"queued={len(pending_paper_methods):,}"
             )
 
     if write:
-        _flush_paper_methods(db, pending_paper_methods)
-        stats.links_inserted += len(pending_paper_methods)
+        stats.links_inserted += _flush_paper_methods(db, pending_paper_methods)
         pending_paper_methods.clear()
         _mark_paper_scanned(db, pending_scanned_paper_ids)
         pending_scanned_paper_ids.clear()

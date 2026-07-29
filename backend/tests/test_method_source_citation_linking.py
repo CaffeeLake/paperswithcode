@@ -268,6 +268,8 @@ def test_request_retries_on_429_then_succeeds():
     data = client.lookup_paper_by_arxiv("1234.5678")
     assert data == {"paperId": "ss-x", "title": "ok"}
     assert client.rate_limit_hits == 1
+    assert client.retry_attempts == 1
+    assert client.failed_requests == 0
     assert client.api_calls == 2
 
 

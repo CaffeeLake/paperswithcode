@@ -399,6 +399,28 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
     ),
     CronJobDefinition(
+        id="backfill_method_keywords",
+        display_name="Backfill Method Keywords",
+        category="backfill",
+        schedule="manual bounded production runs",
+        script_path="backfill/backfill_method_keywords.py",
+        log_name="backfill_method_keywords",
+        process_patterns=("backfill_method_keywords",),
+        lock_file=None,
+        expected_runtime_minutes=360,
+        stale_after_minutes=720,
+        critical=False,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            SELECT max(updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE status = 'running'
+                       AND updated_at > now() - interval '12 hours'
+                   ) AS recent_writes
+            FROM method_keyword_backfill_runs
+        """,
+    ),
+    CronJobDefinition(
         id="backfill_method_references",
         display_name="Backfill Method References",
         category="backfill",

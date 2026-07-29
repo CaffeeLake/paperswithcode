@@ -21,6 +21,7 @@ from sqlalchemy import text
 from backend.database.connection import db_manager
 from backend.database.datasets_setup.add_robotics_benchmarks import ensure_arxiv_paper
 from backend.models.database import Paper
+from backend.services.paper_method_link_service import upsert_evidence_links
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -228,18 +229,20 @@ def tag_paper_task(session, paper_id: int, task_id: int) -> bool:
 
 
 def tag_paper_method(session, paper_id: int, method_slug: str) -> bool:
-    result = session.execute(
-        text(
-            """
-            INSERT INTO paper_methods (paper_id, method_id)
-            SELECT :paper_id, m.id FROM methods m WHERE m.slug = :slug
-            ON CONFLICT (paper_id, method_id) DO NOTHING
-            RETURNING method_id
-            """
-        ),
-        {"paper_id": paper_id, "slug": method_slug},
-    ).first()
-    return result is not None
+    method_id = session.execute(
+        text("SELECT id FROM methods WHERE slug = :slug"),
+        {"slug": method_slug},
+    ).scalar()
+    if method_id is None:
+        return False
+    return bool(
+        upsert_evidence_links(
+            session,
+            [{"paper_id": paper_id, "method_id": method_id}],
+            evidence_type="manual",
+            details={"curation_source": "robotics_seed_list"},
+        )
+    )
 
 
 async def index_missing_papers(session) -> list[str]:

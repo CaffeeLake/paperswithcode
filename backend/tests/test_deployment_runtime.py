@@ -1370,6 +1370,24 @@ def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
     }
 
 
+def test_historical_semantic_scholar_key_is_cron_only_and_preserved():
+    secondary = "PWC_SEMANTIC_SCHOLAR_API_KEY_2"
+    legacy = {
+        "PWC_GITHUB_TOKEN": "PWC_GITHUB_TOKEN=github",
+        secondary: f"{secondary}=new-secondary",
+    }
+    current = {secondary: f"{secondary}=old-secondary"}
+
+    cron = configure_host_env.cron_passthrough_credentials(legacy, current)
+    assert cron[secondary] == f"{secondary}=new-secondary"
+    assert secondary not in configure_host_env.without_cron_only_credentials(legacy)
+
+    preserved = configure_host_env.cron_passthrough_credentials(
+        {"PWC_GITHUB_TOKEN": "PWC_GITHUB_TOKEN=github"}, current
+    )
+    assert preserved[secondary] == f"{secondary}=old-secondary"
+
+
 def test_cron_jobs_declare_bounded_execution_contracts():
     assert cron_launcher.COMMANDS
     for spec in cron_launcher.COMMANDS.values():

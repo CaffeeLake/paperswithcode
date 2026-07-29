@@ -29,6 +29,30 @@ from backend.utils.keyword_matching import (
     find_matching_items_longest_match,
 )
 
+KEYWORD_EVIDENCE_UPSERT = """
+    WITH inserted AS (
+        INSERT INTO paper_methods (paper_id, method_id)
+        SELECT %(paper_id)s, %(method_id)s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM paper_method_exclusions
+            WHERE paper_id = %(paper_id)s AND method_id = %(method_id)s
+        )
+        ON CONFLICT (paper_id, method_id) DO NOTHING
+        RETURNING paper_id, method_id
+    )
+    INSERT INTO paper_method_evidence (paper_id, method_id, evidence_type)
+    SELECT paper_id, method_id, 'keyword' FROM inserted
+    UNION ALL
+    SELECT %(paper_id)s, %(method_id)s, 'keyword'
+    WHERE NOT EXISTS (SELECT 1 FROM inserted)
+      AND EXISTS (
+          SELECT 1 FROM paper_methods
+          WHERE paper_id = %(paper_id)s AND method_id = %(method_id)s
+      )
+    ON CONFLICT (paper_id, method_id, evidence_type)
+    DO UPDATE SET last_seen_at = now()
+"""
+
 
 def load_methods_with_keywords(conn) -> List[Dict]:
     """Load all methods that have keywords defined."""
@@ -144,11 +168,7 @@ def link_papers_by_keywords():
                 cur2 = conn.cursor()
                 execute_batch(
                     cur2,
-                    """
-                    INSERT INTO paper_methods (paper_id, method_id)
-                    VALUES (%(paper_id)s, %(method_id)s)
-                    ON CONFLICT (paper_id, method_id) DO NOTHING
-                """,
+                    KEYWORD_EVIDENCE_UPSERT,
                     batch,
                 )
                 conn.commit()
@@ -160,11 +180,7 @@ def link_papers_by_keywords():
             cur2 = conn.cursor()
             execute_batch(
                 cur2,
-                """
-                INSERT INTO paper_methods (paper_id, method_id)
-                VALUES (%(paper_id)s, %(method_id)s)
-                ON CONFLICT (paper_id, method_id) DO NOTHING
-            """,
+                KEYWORD_EVIDENCE_UPSERT,
                 batch,
             )
             conn.commit()

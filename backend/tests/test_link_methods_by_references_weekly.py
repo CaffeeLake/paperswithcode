@@ -442,6 +442,36 @@ def test_write_mode_is_idempotent_when_rerun():
     assert pm_after_first == pm_after_second
 
 
+def test_failed_or_partial_lookup_is_left_unscanned_without_links():
+    db = _build_in_memory_session()
+    _seed_corpus(db)
+
+    class PartialFailureClient(FakeReferencesClient):
+        def iter_references(self, paper_id, page_size=1000, max_references=None):
+            self.requested.append(paper_id)
+            if paper_id == "ss-citing-a":
+                yield CitedPaper(
+                    semantic_scholar_id="ss-attention",
+                    arxiv_id="1706.03762",
+                    title="Attention",
+                )
+                self.api_errors += 1
+                return
+
+    stats = link_methods_by_references(
+        db,
+        PartialFailureClient(references_by_paper={}),
+        limit=10,
+        write=True,
+        log=_no_log,
+    )
+
+    assert stats.papers_lookup_failed == 1
+    assert db.get(DBPaper, 10).methods_scanned_at is None
+    assert db.get(PaperMethod, (10, 100)) is None
+    assert db.get(PaperMethod, (10, 101)) is None
+
+
 def test_paper_with_only_arxiv_id_uses_arxiv_form_for_lookup():
     db = _build_in_memory_session()
     _seed_corpus(db)

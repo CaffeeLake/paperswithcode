@@ -148,24 +148,39 @@ class MethodTrendService:
 
         history: list[MethodTrendPoint] = []
         reference_complete = True
+        comparison_reference_complete = True
+        comparison_start = max(history_start, month_start(baseline_start))
         for index in range(actual_history_months):
             start = shift_month(history_start, index)
             catalog_count = int(catalog.get(start, 0))
             paper_count = counts.get(start, 0)
             row = coverage.get(start)
             if method.source_paper_id and coverage_available:
-                eligible = int(row.eligible_papers) if row else 0
+                eligible = catalog_count
                 processed = (
                     int(row.processed_papers + row.unresolvable_papers) if row else 0
                 )
-                status = str(row.status) if row else "pending"
                 complete = bool(
                     row
                     and row.status == "complete"
                     and row.retryable_failures == 0
+                    and row.eligible_papers == eligible
                     and processed >= eligible
                 )
+                status = (
+                    "complete"
+                    if complete
+                    else (
+                        str(row.status)
+                        if row and row.status != "complete"
+                        else "pending"
+                    )
+                )
                 reference_complete = reference_complete and complete
+                if start >= comparison_start:
+                    comparison_reference_complete = (
+                        comparison_reference_complete and complete
+                    )
                 ratio = (
                     min(1.0, processed / eligible)
                     if eligible
@@ -201,6 +216,12 @@ class MethodTrendService:
             if coverage_available
             else True
         )
+        comparison_complete = (
+            keyword_complete
+            and (comparison_reference_complete if method.source_paper_id else True)
+            if coverage_available
+            else True
+        )
         recent_velocity = recent_count * 30.0 / recent_days
         baseline_velocity = baseline_count * 30.0 / baseline_days
         return MethodTrend(
@@ -212,10 +233,10 @@ class MethodTrendService:
             generated_on=generated_on,
             recent_paper_count=recent_count,
             baseline_paper_count=baseline_count,
-            trend_score=round(recent_velocity, 4) if history_complete else 0.0,
+            trend_score=round(recent_velocity, 4) if comparison_complete else 0.0,
             rate_change=(
                 round(recent_velocity / baseline_velocity, 4)
-                if history_complete and baseline_velocity
+                if comparison_complete and baseline_velocity
                 else None
             ),
             history=history,

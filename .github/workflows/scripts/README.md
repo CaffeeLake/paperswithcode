@@ -25,6 +25,12 @@ The `test-database.yml` workflow is unrelated to cron scheduling.
 Historical method work is manual and release-pinned:
 
 ```bash
+# Non-mutating capacity and match estimates first.
+sudo pwc-cron backfill_method_keywords --dry-run --limit 5000
+sudo pwc-cron backfill_method_references --method-slug clip \
+  --month-from 2021-03-01 --month-to 2021-03-01 --dry-run --limit 1000
+
+# Authorized resumable writes.
 sudo pwc-cron backfill_method_keywords --resume --limit 5000
 sudo pwc-cron backfill_method_references --method-slug clip --resume --limit 1000
 ```
@@ -53,7 +59,9 @@ use `VACUUM FULL`.
 │   ├── update_hot_github_trending.py
 │   └── update_github_stars.py
 ├── backfill/
-│   └── backfill_hf_papers.py
+│   ├── backfill_hf_papers.py
+│   ├── backfill_method_keywords.py
+│   └── backfill_method_references.py
 ├── weekly/
 │   ├── link_methods_by_references.py
 │   └── link_papers_by_task_keywords.py

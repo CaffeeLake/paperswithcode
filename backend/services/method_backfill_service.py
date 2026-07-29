@@ -17,6 +17,7 @@ from backend.models.database import (
     MethodKeywordBackfillRun,
     MethodReferenceBackfillMonth,
     Paper,
+    PaperMethodExclusion,
 )
 from backend.services.paper_method_link_service import (
     method_history_start,
@@ -45,6 +46,13 @@ class BackfillStats:
     months_completed: int = 0
 
 
+def _request_failure_count(client) -> int:
+    """Return terminal request failures, with compatibility for test clients."""
+    if hasattr(client, "failed_requests"):
+        return client.failed_requests
+    return client.api_errors + client.rate_limit_hits
+
+
 def audit_undated_method_links(db: Session, *, sample_size: int = 20) -> dict:
     """Summarize latest-version method links omitted from monthly charts."""
     total = (
@@ -61,13 +69,11 @@ def audit_undated_method_links(db: Session, *, sample_size: int = 20) -> dict:
         dict(row._mapping)
         for row in db.execute(
             text("""
-                SELECT COALESCE(e.evidence_type, 'unrecorded') AS evidence_type,
+                SELECT p.source,
                        (p.arxiv_id IS NOT NULL) AS has_arxiv_id,
                        count(DISTINCT p.id) AS paper_count
                 FROM papers p
                 JOIN paper_methods pm ON pm.paper_id = p.id
-                LEFT JOIN paper_method_evidence e
-                  ON e.paper_id = pm.paper_id AND e.method_id = pm.method_id
                 WHERE p.is_latest_version AND p.date_published IS NULL
                 GROUP BY 1, 2 ORDER BY 1, 2
                 """)
@@ -98,7 +104,13 @@ def keyword_catalog_rows(db: Session) -> tuple[str, list[dict]]:
         .all()
     ]
     payload = json.dumps(
-        {"matcher": KEYWORD_MATCHER_VERSION, "methods": methods},
+        {
+            "matcher": KEYWORD_MATCHER_VERSION,
+            "methods": [
+                {"id": method["id"], "keywords": method["keywords"]}
+                for method in methods
+            ],
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -126,6 +138,12 @@ def run_keyword_backfill(
     log: Callable[[str], None] = print,
 ) -> BackfillStats:
     """Stream the latest-version catalog and apply the importer matcher."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    if max_runtime_seconds < 1:
+        raise ValueError("max_runtime_seconds must be positive")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     digest, methods, sensitive, insensitive = keyword_catalog(db)
     stats = BackfillStats()
     if not methods:
@@ -149,6 +167,16 @@ def run_keyword_backfill(
                 started_at=datetime.now(UTC),
             )
             db.add(run)
+            db.commit()
+        elif run is not None and not resume and after_paper_id is None:
+            raise ValueError(
+                "progress already exists for this keyword catalog; pass --resume"
+            )
+        if run is not None and not dry_run:
+            run.status = "running"
+            run.completed_at = None
+            run.last_error = None
+            run.updated_at = datetime.now(UTC)
             db.commit()
         cursor = after_paper_id or (run.cursor_paper_id if resume and run else 0) or 0
         started = time.monotonic()
@@ -266,6 +294,12 @@ def run_reference_backfill(
     log: Callable[[str], None] = print,
 ) -> BackfillStats:
     """Scan local papers oldest-first and match selected method sources locally."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    if max_runtime_seconds < 1:
+        raise ValueError("max_runtime_seconds must be positive")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     methods = select_sourced_methods(
         db, method_ids=method_ids, method_slugs=method_slugs
     )
@@ -277,21 +311,29 @@ def run_reference_backfill(
     source_rows = {
         method.id: db.get(Paper, method.source_paper_id) for method in methods
     }
-    by_ss = {
-        paper.semantic_scholar_id: method_id
-        for method_id, paper in source_rows.items()
-        if paper and paper.semantic_scholar_id
-    }
-    by_arxiv = {
-        paper.arxiv_id: method_id
-        for method_id, paper in source_rows.items()
-        if paper and paper.arxiv_id
-    }
+    by_ss: dict[str, set[int]] = {}
+    by_arxiv: dict[str, set[int]] = {}
+    for method_id, paper in source_rows.items():
+        if paper and paper.semantic_scholar_id:
+            by_ss.setdefault(paper.semantic_scholar_id, set()).add(method_id)
+        if paper and paper.arxiv_id:
+            by_arxiv.setdefault(paper.arxiv_id, set()).add(method_id)
     stats = BackfillStats()
     started = time.monotonic()
     for month in months:
         if stats.papers_processed + stats.papers_unresolvable >= limit:
             break
+        next_month = shift_month(month, 1)
+        eligible = (
+            db.query(func.count(Paper.id))
+            .filter(
+                Paper.is_latest_version,
+                Paper.date_published >= month,
+                Paper.date_published < next_month,
+            )
+            .scalar()
+            or 0
+        )
         active = [
             method
             for method in methods
@@ -306,10 +348,16 @@ def run_reference_backfill(
             }
         )
         if not dry_run:
+            stale_complete_method_ids = {
+                method_id
+                for method_id, row in rows.items()
+                if row and row.status == "complete" and row.eligible_papers != eligible
+            }
             rows = {
                 method_id: row
                 for method_id, row in rows.items()
-                if row and row.status != "complete"
+                if row
+                and (row.status != "complete" or method_id in stale_complete_method_ids)
             }
             active = [method for method in active if method.id in rows]
             if not resume and any(
@@ -329,17 +377,18 @@ def run_reference_backfill(
         ):
             log(f"reference backfill month={month} skipped: lock held")
             continue
-        next_month = shift_month(month, 1)
-        eligible = (
-            db.query(func.count(Paper.id))
-            .filter(
-                Paper.is_latest_version,
-                Paper.date_published >= month,
-                Paper.date_published < next_month,
-            )
-            .scalar()
-            or 0
-        )
+        if not dry_run:
+            for method_id in stale_complete_method_ids:
+                row = rows[method_id]
+                row.status = "pending"
+                row.processed_papers = 0
+                row.matched_papers = 0
+                row.unresolvable_papers = 0
+                row.retryable_failures = 0
+                row.cursor_published_at = None
+                row.cursor_paper_id = None
+                row.completed_at = None
+                row.last_error = None
         row_cursors = {
             method_id: (
                 row.cursor_published_at if row else None,
@@ -375,6 +424,21 @@ def run_reference_backfill(
             .limit(limit - stats.papers_processed - stats.papers_unresolvable)
             .all()
         )
+        excluded_pairs = (
+            {
+                (paper_id, method_id)
+                for paper_id, method_id in db.query(
+                    PaperMethodExclusion.paper_id, PaperMethodExclusion.method_id
+                )
+                .filter(
+                    PaperMethodExclusion.paper_id.in_([paper.id for paper in papers]),
+                    PaperMethodExclusion.method_id.in_(rows),
+                )
+                .all()
+            }
+            if papers
+            else set()
+        )
         if not dry_run:
             for row in rows.values():
                 row.status = "running"
@@ -407,20 +471,18 @@ def run_reference_backfill(
                 matched: set[int] = set()
                 failed = False
             else:
-                errors_before = client.api_errors + client.rate_limit_hits
+                failures_before = _request_failure_count(client)
                 cited = list(client.iter_references(identifier))
-                failed = (
-                    not cited
-                    and client.api_errors + client.rate_limit_hits > errors_before
-                )
+                failed = _request_failure_count(client) > failures_before
                 matched = {
                     method_id
                     for reference in cited
                     for method_id in (
-                        by_ss.get(reference.semantic_scholar_id),
-                        by_arxiv.get(reference.arxiv_id),
+                        by_ss.get(reference.semantic_scholar_id, set())
+                        | by_arxiv.get(reference.arxiv_id, set())
                     )
                     if method_id in eligible_method_ids
+                    and (paper.id, method_id) not in excluded_pairs
                 }
             if failed:
                 lookup_failed = True
@@ -533,7 +595,8 @@ def run_reference_backfill(
         log(
             f"reference backfill month={month} methods={len(active)} "
             f"processed={stats.papers_processed} api_calls={client.api_calls} "
-            f"retries={client.rate_limit_hits} matches={stats.matches} "
+            f"retries={getattr(client, 'retry_attempts', client.rate_limit_hits)} "
+            f"matches={stats.matches} "
             f"links={stats.links_written} cursor={cursor_date}/{cursor_id} "
             f"remaining={remaining_estimate} key_route=secondary"
         )

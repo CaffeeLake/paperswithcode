@@ -58,7 +58,7 @@ def list_methods(
     ),
     include_trends: bool = Query(
         False,
-        description="Include 90-day method usage scores and baseline rate changes",
+        description="Include 90-day method mention scores and baseline rate changes",
     ),
     db: Session = Depends(get_database_session),
 ):
