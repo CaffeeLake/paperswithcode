@@ -7,12 +7,15 @@ import argparse
 import os
 import re
 
-from deploy.configure_host_env import (
-    CONFIG_ROOT,
-    assign,
-    read_lines,
-    write_env,
-)
+try:
+    from deploy.configure_host_env import (
+        CONFIG_ROOT,
+        assign,
+        read_lines,
+        write_env,
+    )
+except ModuleNotFoundError:
+    from configure_host_env import CONFIG_ROOT, assign, read_lines, write_env
 
 SUBJECT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,254}")
 
