@@ -281,12 +281,14 @@ const FeedView: React.FC = () => {
                 </button>
               ))}
             </div>
-            <PaperFeedFilters
-              hasCode={hasCode}
-              hasHfArtifacts={hasHfArtifacts}
-              onHasCodeChange={setHasCode}
-              onHasHfArtifactsChange={setHasHfArtifacts}
-            />
+            <div className="paper-feed-filter-row" aria-label="Paper filters">
+              <PaperFeedFilters
+                hasCode={hasCode}
+                hasHfArtifacts={hasHfArtifacts}
+                onHasCodeChange={setHasCode}
+                onHasHfArtifactsChange={setHasHfArtifacts}
+              />
+            </div>
           </div>
 
           {error && (
