@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS organization_trending_history (
 CREATE INDEX IF NOT EXISTS idx_organization_trending_history_date
     ON organization_trending_history(snapshot_date);
 
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging') THEN
+        GRANT SELECT ON TABLE organization_trending_history TO pwc_staging;
+    END IF;
+END
+$$;
+
 COMMENT ON TABLE organization_trending_history IS
 'Daily raw paper-momentum totals used for rolling 30-day organization ranks.';
 
