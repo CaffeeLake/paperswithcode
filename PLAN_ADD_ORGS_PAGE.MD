@@ -282,17 +282,43 @@ collisions and lets the normal `*` route handle unknown paths.
 
 ### 8. Organizations overview
 
-Extend `frontend/src/views/OrganizationsIndexView.tsx` into the curated overview:
+Make a prominent logo grid the primary discovery surface in
+`frontend/src/views/OrganizationsIndexView.tsx`. A visitor should be able to
+scan recognizable labs and companies, click anywhere on a tile, and arrive
+directly at `/orgs/{slug}` to browse that organization's papers.
 
-- title and short explanation of what organization attribution means;
-- responsive cards with logo, display name, linked-paper count, and optional
-  website/HF link;
-- client-side text search by name or slug;
-- stable manifest/display order by default, with an optional “most papers”
-  sort;
-- useful loading skeletons, retryable error state, no-results state, and
-  zero-paper cards;
-- accessible images, focus states, labels, and mobile layout.
+Each grid tile contains:
+
+- a large, centered organization logo in a fixed-ratio visual area;
+- the organization display name below the logo so discovery does not depend on
+  recognizing the mark;
+- the linked-paper count as secondary text;
+- one semantic link wrapping the complete tile, with an accessible label such
+  as "Browse 152 NVIDIA papers";
+- a clear hover treatment and keyboard-visible focus ring.
+
+The grid should:
+
+- show all 21 featured organizations without pagination;
+- use a dense responsive layout (approximately two columns on narrow phones,
+  three or four on tablets, and five or six on desktop);
+- give logos consistent visual weight with `object-fit: contain`, internal
+  padding, and a neutral tile background rather than stretching or cropping
+  differently shaped marks;
+- reserve logo dimensions to avoid layout shift;
+- fall back to a styled organization initial or wordmark when `logo_url` is
+  missing or fails to load;
+- preserve a useful zero-paper tile that still links to the organization detail
+  page;
+- keep the manifest/display order by default, with client-side name search and
+  an optional “most papers” sort;
+- display loading skeletons in the same grid geometry and provide retryable
+  error and no-search-results states.
+
+Keep outbound website and Hugging Face links on the organization detail page so
+each overview tile has one unambiguous click target. Treat the organization name
+as visible text and the logo as decorative (`alt=""`) to avoid duplicate screen
+reader announcements.
 
 Use TanStack Query through `frontend/src/lib/api.ts`; do not fetch HF directly
 from the browser.
@@ -350,7 +376,8 @@ to assert:
 
 Add React tests for:
 
-- loading, errors, searching, sorting, zero-paper cards, and card links on the
+- logo-grid geometry/classes, full-tile links, accessible labels, broken-logo
+  fallbacks, loading, errors, searching, sorting, and zero-paper tiles on the
   index;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
 - detail empty state and paper pagination;
@@ -412,6 +439,8 @@ route deployment before changing sitemap/canonical discovery in production.
 
 - `/organizations` lists all 21 requested organizations in deterministic order,
   including the two that currently have zero HF papers.
+- `/organizations` presents them as a responsive logo grid whose complete tiles
+  link to the corresponding `/orgs/{slug}` paper-discovery page.
 - Every nonzero HF-attributed paper is either linked locally or reported with a
   specific import failure; the run produces a reconciliation summary.
 - Repeating the sync creates no duplicate organizations, papers, or links.
