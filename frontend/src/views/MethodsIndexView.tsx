@@ -11,8 +11,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TaxonomySuggestionTile } from "@/components/TaxonomySuggestionTile";
 
 /**
- * Methods index — methods grouped by `area_id`, sorted by paper_count desc
- * within each area (PLAN.md §4.3). v2's METHOD_CATEGORIES bucketing is
+ * Methods index — methods grouped by `area_id`, sorted by trend score desc
+ * within each area. v2's METHOD_CATEGORIES bucketing is
  * dropped; backend areas are the single source of grouping truth.
  */
 const MethodsIndexView: React.FC = () => {
@@ -23,8 +23,8 @@ const MethodsIndexView: React.FC = () => {
   });
 
   // The methods table is small (~hundreds of rows); fetch the whole list in
-  // one request ordered by paper_count desc, then group by area client-side.
-  // Backend aggregates paper_count via a single GROUP BY, so this is one DB
+  // one request ordered by trend score, then group by area client-side.
+  // Backend aggregates activity via a single GROUP BY, so this is one DB
   // round-trip rather than the previous N+1 plus page-walking waterfall.
   const methodsQ = useQuery({
     queryKey: ["methods-all"],
@@ -32,7 +32,7 @@ const MethodsIndexView: React.FC = () => {
       const res = await apiClient.getMethods({
         page: 1,
         page_size: 500,
-        ordering: "-paper_count",
+        ordering: "-trend_score",
         include_trends: true,
       });
       return res.results;
@@ -47,7 +47,14 @@ const MethodsIndexView: React.FC = () => {
       const key = m.area_id ?? "_unassigned";
       (byArea[key] ||= []).push(m);
     });
-    Object.values(byArea).forEach((arr) => arr.sort((a, b) => (b.paper_count || 0) - (a.paper_count || 0)));
+    Object.values(byArea).forEach((arr) =>
+      arr.sort(
+        (a, b) =>
+          (b.trend_score || 0) - (a.trend_score || 0) ||
+          (b.paper_count || 0) - (a.paper_count || 0) ||
+          a.name.localeCompare(b.name),
+      ),
+    );
     return byArea;
   }, [methodsQ.data, areasQ.data]);
 
