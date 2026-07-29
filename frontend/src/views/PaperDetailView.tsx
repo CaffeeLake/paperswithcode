@@ -1050,7 +1050,7 @@ const PaperDetailView: React.FC = () => {
                   <button
                     key={`framework-${framework.slug}`}
                     type="button"
-                    className="introduced-pill"
+                    className="introduced-pill introduced-pill--framework"
                     onClick={() => navigate(`/frameworks#framework-${framework.slug}`)}
                   >
                     {framework.name}
