@@ -8,8 +8,8 @@ interface MethodUsageChartProps {
 }
 
 const WIDTH = 720;
-const HEIGHT = 220;
-const MARGIN = { top: 18, right: 12, bottom: 34, left: 44 };
+const HEIGHT = 138;
+const MARGIN = { top: 8, right: 10, bottom: 25, left: 36 };
 const monthFormatter = new Intl.DateTimeFormat("en", {
   month: "short",
   year: "2-digit",
@@ -26,7 +26,8 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
   const chartHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
   const slotWidth = history.length ? chartWidth / history.length : chartWidth;
   const barWidth = Math.max(2, slotWidth * 0.68);
-  const labelEvery = history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
+  const labelEvery =
+    history.length > 48 ? 12 : history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
   const yTicks = Array.from(new Set([0, Math.ceil(maximum / 2), maximum]));
   const activePoint = activeIndex == null ? null : history[activeIndex];
 

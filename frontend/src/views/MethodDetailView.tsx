@@ -32,6 +32,14 @@ const RELATED_METHODS_BY_SLUG: Record<string, string[]> = {
   "agent-skills": ["mcp"],
 };
 
+const methodHistoryMonths = (introducedYear?: number) => {
+  if (!introducedYear) return 24;
+  const now = new Date();
+  const monthsSinceJanuary =
+    (now.getUTCFullYear() - introducedYear) * 12 + now.getUTCMonth() + 1;
+  return Math.min(120, Math.max(6, monthsSinceJanuary));
+};
+
 const MethodDetailView: React.FC = () => {
   const { methodSlug } = useParams<{ methodSlug: string }>();
   const [sortBy, setSortBy] = useState<SortKey>("trending");
@@ -50,10 +58,12 @@ const MethodDetailView: React.FC = () => {
     staleTime: 10 * 60 * 1000,
   });
 
+  const historyMonths = methodHistoryMonths(methodQ.data?.introduced_year);
   const trendQ = useQuery({
-    queryKey: ["method-trend", methodSlug],
-    queryFn: () => apiClient.getMethodTrend(methodSlug!, { history_months: 24 }),
-    enabled: !!methodSlug,
+    queryKey: ["method-trend", methodSlug, historyMonths],
+    queryFn: () =>
+      apiClient.getMethodTrend(methodSlug!, { history_months: historyMonths }),
+    enabled: !!methodSlug && !!methodQ.data,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -192,6 +202,32 @@ const MethodDetailView: React.FC = () => {
               </div>
             )}
           </div>
+          {trendQ.isLoading ? (
+            <Skeleton className="h-36 w-full method-trend-skeleton" />
+          ) : trendQ.data ? (
+            <section className="method-trend-panel method-trend-panel--compact">
+              <div className="method-trend-header">
+                <div>
+                  <div className="method-trend-eyebrow">Usage trend</div>
+                  <h2>Papers using {m.name}</h2>
+                  <p>
+                    {m.introduced_year &&
+                    methodHistoryMonths(m.introduced_year) < 120
+                      ? `Monthly papers since ${m.introduced_year}.`
+                      : `Monthly papers over the latest ${trendQ.data.history_months} months.`}
+                  </p>
+                </div>
+                <div className="method-trend-summary">
+                  <strong>{trendQ.data.recent_paper_count}</strong>
+                  <span>papers / {trendQ.data.recent_days}d</span>
+                </div>
+              </div>
+              <MethodUsageChart
+                history={trendQ.data.history}
+                methodName={m.name}
+              />
+            </section>
+          ) : null}
         </div>
         <figure className="method-figure-card">
           <MethodFigure method={m} />
@@ -202,40 +238,6 @@ const MethodDetailView: React.FC = () => {
           )}
         </figure>
       </div>
-
-      {trendQ.isLoading ? (
-        <Skeleton className="h-64 w-full method-trend-skeleton" />
-      ) : trendQ.data ? (
-        <section className="method-trend-panel">
-          <div className="method-trend-header">
-            <div>
-              <div className="method-trend-eyebrow">Usage trend</div>
-              <h2>Papers using {m.name}</h2>
-              <p>
-                Distinct papers tagged with this method by publication month,
-                over the latest {trendQ.data.history_months} months.
-              </p>
-            </div>
-            <div className="method-trend-summary">
-              <strong>{trendQ.data.recent_paper_count}</strong>
-              <span>papers / {trendQ.data.recent_days}d</span>
-              {trendQ.data.rate_change != null && (
-                <span
-                  className={
-                    trendQ.data.rate_change >= 1
-                      ? "method-trend-change is-up"
-                      : "method-trend-change is-down"
-                  }
-                >
-                  {trendQ.data.rate_change >= 1 ? "↑" : "↓"}{" "}
-                  {trendQ.data.rate_change.toFixed(1)}× vs prior period
-                </span>
-              )}
-            </div>
-          </div>
-          <MethodUsageChart history={trendQ.data.history} methodName={m.name} />
-        </section>
-      ) : null}
 
       {(relatedQ.data?.length ?? 0) > 0 && (
         <div className="filter-row">
