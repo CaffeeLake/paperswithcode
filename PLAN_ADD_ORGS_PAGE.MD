@@ -179,6 +179,10 @@ the screenshot-inspired grid:
   eligible HF-linked papers;
 - the existing `paper_count`.
 
+Build this projection with set-based aggregates/window functions (or a bounded
+number of bulk queries), not one paper/count query per organization. The index
+must not introduce an N+1 query pattern as the manifest grows.
+
 Compute `top_trending_paper` with the same active paper-score mode as the paper
 feed, falling back to the newest eligible paper when no paper has a fresh score.
 Calculate the year range from latest canonical paper versions with a known
@@ -236,6 +240,11 @@ complete successful validation; a transient HF failure or invalid replacement
 must preserve the last known-good logo and emit a per-organization diagnostic.
 Avoid rewriting identical bytes so the cache-busting version and `updated_at`
 remain stable when the logo has not changed.
+
+Treat avatar fetching as a server-side URL-fetch boundary: accept only HTTPS
+URLs on the expected Hugging Face avatar/CDN hosts, validate redirect
+destinations as well, and reject private/link-local address targets. Do not turn
+the logo cache into a general arbitrary-URL proxy.
 
 Treat `facebook` and `meta-llama`, and `bytedance` and `bytedance-seed`, as
 distinct organizations in the first release because they are distinct HF
@@ -536,6 +545,9 @@ The grid should:
 - rank by the backend-provided consolidated organization trending score by
   default, with compact `Trending`, `Most papers`, and `A–Z` controls plus
   client-side name search in the same page-local control row;
+- match organization search case-insensitively against display name, PwC slug,
+  and HF handle so queries such as `meta`, `facebook`, and `ByteDance-Seed`
+  behave predictably;
 - store nondefault selection in `?sort=papers` or `?sort=name` (and search text
   in `?q=`) so refresh, browser history, and shared links preserve the view;
 - apply deterministic secondary ordering for every mode: monthly score uses the
@@ -569,6 +581,9 @@ Retain these useful parts of `OrganizationDetailView.tsx`:
 
 - organization identity and outbound links;
 - total linked papers;
+- a `#N trending this month` label when the organization has a positive rolling
+  score and a meaningful rank; omit the label for zero-signal organizations
+  rather than presenting a misleading tied rank;
 - one searchable task dropdown derived from the existing task/area data,
   defaulting to `All tasks` and showing each option's HF-attributed paper count;
 - sort controls for trending, newest, and most cited;
@@ -653,6 +668,8 @@ Add React tests for:
   persistence, deterministic ties, and zero-paper tiles on the index;
 - exact first-version card fields and the absence of unsupported
   models/datasets/code/upvote placeholders;
+- a bounded/set-based organization-card projection with no per-organization
+  paper/count query loop;
 - PwC-served cached logos, external-HF fallback before a cache exists,
   cache-busting URLs, and missing/broken-logo fallbacks;
 - one/two/three-column responsive behavior and the screenshot-inspired card
@@ -748,6 +765,8 @@ route deployment before changing sitemap/canonical discovery in production.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
   feed with a searchable task dropdown (including counts and `All tasks`) plus
   compact sort controls; no second "All papers" click is required.
+- The detail header repeats `#N trending this month` only for organizations with
+  a positive rolling score; zero-signal organizations make no rank claim.
 - Organization counts, pages, task filters, and paper badges use only
   HF-attributed (`source='hf_org_papers'`) associations at launch.
 - The many-to-many model permits one paper to link to several organizations and
