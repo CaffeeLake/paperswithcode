@@ -1,4 +1,4 @@
-from backend.scripts.qualify_chat_pool import PoolSample, summarize
+from backend.scripts.qualify_chat_pool import PoolSample, parser, summarize
 
 
 def test_pool_qualification_summary_is_sanitized_and_reports_active_cost():
@@ -36,3 +36,22 @@ def test_pool_qualification_summary_is_sanitized_and_reports_active_cost():
         "total": 0.00003,
         "per_completed_turn": 0.000015,
     }
+
+
+def test_pool_qualification_requires_an_immutable_release_directory():
+    arguments = parser().parse_args(
+        [
+            "--samples",
+            "1",
+            "--candidate-cpu",
+            "0.125",
+            "--candidate-memory-mib",
+            "512",
+            "--release-dir",
+            "/srv/paperswithcode/environments/staging/current",
+            "--confirm",
+            "QUALIFY_STAGING_CHAT_POOL",
+        ]
+    )
+
+    assert arguments.release_dir.name == "current"

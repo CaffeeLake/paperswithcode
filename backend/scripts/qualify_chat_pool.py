@@ -12,6 +12,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ from backend.config import get_settings
 from backend.database.connection import db_manager
 from backend.models.database import ChatSandboxPool, ChatTurnLatency
 from backend.routers.auth import _encode_legacy_session
+from backend.scripts.qualify_chat_sandbox import settings_for_release
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
 
@@ -91,8 +93,8 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
 
 
 class PoolQualification:
-    def __init__(self, *, samples: int, blank_timeout: float):
-        self.settings = get_settings()
+    def __init__(self, *, settings, samples: int, blank_timeout: float):
+        self.settings = settings
         self.samples = samples
         self.blank_timeout = blank_timeout
         self.started_at = datetime.now(UTC)
@@ -249,6 +251,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--candidate-cpu", type=float, required=True)
     result.add_argument("--candidate-memory-mib", type=int, required=True)
     result.add_argument("--blank-timeout", type=float, default=90)
+    result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
     return result
 
@@ -259,8 +262,25 @@ def main() -> int:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     if not 1 <= args.samples <= 200:
         raise SystemExit("--samples must be 1-200")
+    environment_settings = get_settings()
+    release_settings = settings_for_release(args.release_dir).model_copy(
+        update={
+            "chat_persistent_worker_enabled": (
+                environment_settings.chat_persistent_worker_enabled
+            ),
+            "chat_blank_pool_enabled": environment_settings.chat_blank_pool_enabled,
+            "chat_sandbox_cpu": environment_settings.chat_sandbox_cpu,
+            "chat_sandbox_cpu_limit": environment_settings.chat_sandbox_cpu_limit,
+            "chat_sandbox_memory_mib": environment_settings.chat_sandbox_memory_mib,
+            "chat_sandbox_memory_limit_mib": (
+                environment_settings.chat_sandbox_memory_limit_mib
+            ),
+        }
+    )
     qualification = PoolQualification(
-        samples=args.samples, blank_timeout=args.blank_timeout
+        settings=release_settings,
+        samples=args.samples,
+        blank_timeout=args.blank_timeout,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())
