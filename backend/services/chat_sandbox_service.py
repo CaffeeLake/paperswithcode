@@ -1216,6 +1216,7 @@ class SandboxSessionManager:
             creation_token = secrets.token_urlsafe(24)
             now = datetime.now(UTC)
             waiting_for_owner = False
+            evict_session_id: uuid.UUID | None = None
             with self.session_factory() as db, db.begin():
                 if self.blank_pool_enabled:
                     self._lock_capacity(db)
@@ -1280,35 +1281,54 @@ class SandboxSessionManager:
                             live_assigned + live_pool
                             >= self.settings.chat_sandbox_total_live_cap
                         ):
-                            raise SandboxError(
-                                "sandbox_capacity",
-                                "Secure workspace capacity is temporarily full",
-                            )
-                    token_hash = self._token_hash(creation_token)
-                    lease = ChatSandboxLease(
-                        chat_session_id=chat_session_id,
-                        app_release_id=self.settings.release_id,
-                        image_version=self.settings.chat_modal_image_version,
-                        worker_contract_version=self.settings.chat_worker_contract_version,
-                        worker_generation=secrets.token_hex(16),
-                        state="starting",
-                        lease_token_hash=token_hash,
-                        lease_expires_at=now
-                        + timedelta(seconds=self.ready_timeout_seconds + 15),
-                        last_activity_at=now,
-                    )
-                    db.add(lease)
-                    claim = StartClaim(
-                        token_hash,
-                        None,
-                        None,
-                        lease.worker_generation or "",
-                    )
+                            evict_session_id = db.execute(
+                                select(ChatSandboxLease.chat_session_id)
+                                .where(ChatSandboxLease.state == "idle")
+                                .order_by(ChatSandboxLease.last_activity_at)
+                                .limit(1)
+                            ).scalar_one_or_none()
+                            if evict_session_id is None:
+                                raise SandboxError(
+                                    "sandbox_capacity",
+                                    "Secure workspace capacity is temporarily full",
+                                )
+                    if evict_session_id is None:
+                        token_hash = self._token_hash(creation_token)
+                        lease = ChatSandboxLease(
+                            chat_session_id=chat_session_id,
+                            app_release_id=self.settings.release_id,
+                            image_version=self.settings.chat_modal_image_version,
+                            worker_contract_version=(
+                                self.settings.chat_worker_contract_version
+                            ),
+                            worker_generation=secrets.token_hex(16),
+                            state="starting",
+                            lease_token_hash=token_hash,
+                            lease_expires_at=now
+                            + timedelta(seconds=self.ready_timeout_seconds + 15),
+                            last_activity_at=now,
+                        )
+                        db.add(lease)
+                        claim = StartClaim(
+                            token_hash,
+                            None,
+                            None,
+                            lease.worker_generation or "",
+                        )
                 else:
                     claim = self._claim_start(
                         lease, creation_token=creation_token, now=now
                     )
-            if waiting_for_owner:
+            if evict_session_id is not None:
+                if await self.snapshot_and_terminate(evict_session_id):
+                    continue
+                if time.monotonic() >= deadline:
+                    raise SandboxError(
+                        "sandbox_capacity",
+                        "Secure workspace capacity is temporarily full",
+                    )
+                await asyncio.sleep(0.05)
+            elif waiting_for_owner:
                 if time.monotonic() >= deadline:
                     raise SandboxError(
                         "sandbox_timeout", "Secure workspace startup timed out"

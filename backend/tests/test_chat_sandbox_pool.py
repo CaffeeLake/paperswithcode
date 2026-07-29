@@ -534,6 +534,71 @@ def test_reported_modal_cost_is_a_floor_for_budget_enforcement():
     assert status["within_budget"] is False
 
 
+def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
+    factory = _database()
+    settings = _settings()
+    old_id, new_id = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    starting_blank = _blank(settings)
+    starting_blank.state = "starting"
+    starting_blank.ready_at = None
+    with factory() as db, db.begin():
+        db.add_all(
+            [
+                _session(old_id),
+                _session(new_id),
+                starting_blank,
+                ChatSandboxLease(
+                    chat_session_id=old_id,
+                    modal_sandbox_id="sb-old",
+                    app_release_id=settings.release_id,
+                    image_version=settings.chat_modal_image_version,
+                    worker_contract_version=settings.chat_worker_contract_version,
+                    worker_generation="generation-old",
+                    state="idle",
+                    last_activity_at=now - timedelta(minutes=1),
+                    created_at=now - timedelta(minutes=2),
+                    updated_at=now,
+                ),
+            ]
+        )
+    manager = _manager(factory, settings)
+    manager._lock_start_claim = lambda *_args: None
+    evicted: list[uuid.UUID] = []
+
+    async def evict(session_id: uuid.UUID):
+        evicted.append(session_id)
+        with factory() as db, db.begin():
+            lease = db.get(ChatSandboxLease, session_id)
+            lease.modal_sandbox_id = None
+            lease.state = "terminated"
+        return True
+
+    manager.snapshot_and_terminate = evict
+    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+
+    class Sandbox:
+        object_id = "sb-new"
+        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
+
+    async def create(*_args, **_kwargs):
+        return Sandbox()
+
+    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+
+    result = asyncio.run(manager.ensure_ready(new_id, allow_pool=False, pool_miss=True))
+
+    assert evicted == [old_id]
+    assert result[0].object_id == "sb-new"
+    assert result[3] == "pool_miss"
+    with factory() as db:
+        old_lease = db.get(ChatSandboxLease, old_id)
+        new_lease = db.get(ChatSandboxLease, new_id)
+    assert old_lease.state == "terminated"
+    assert new_lease.state == "ready"
+    assert new_lease.modal_sandbox_id == "sb-new"
+
+
 def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
     request_id = str(uuid.uuid4())
     session_id = uuid.uuid4()
