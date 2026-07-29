@@ -1,10 +1,11 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Flame } from "lucide-react";
 
 import { apiClient } from "@/lib/api";
 import type { Method } from "@/lib/api";
+import { slugify } from "@/lib/slug";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TaxonomySuggestionTile } from "@/components/TaxonomySuggestionTile";
@@ -58,6 +59,13 @@ const MethodsIndexView: React.FC = () => {
     return new Set(ranked.slice(0, topCount).map((method) => method.id));
   }, [methodsQ.data]);
 
+  useEffect(() => {
+    if (!areasQ.data || !methodsQ.data || !window.location.hash) return;
+    document
+      .getElementById(window.location.hash.slice(1))
+      ?.scrollIntoView({ block: "start" });
+  }, [areasQ.data, methodsQ.data]);
+
   if (areasQ.error || methodsQ.error) {
     return (
       <div className="page">
@@ -102,7 +110,11 @@ const MethodsIndexView: React.FC = () => {
           if (methods.length === 0) return null;
           const totalPapers = methods.reduce((s, m) => s + (m.paper_count || 0), 0);
           return (
-            <section key={area.id} style={{ marginBottom: 48 }}>
+            <section
+              key={area.id}
+              id={`area-${slugify(area.name)}`}
+              style={{ marginBottom: 48, scrollMarginTop: 80 }}
+            >
               <div
                 style={{
                   display: "flex",

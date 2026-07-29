@@ -7,6 +7,7 @@ import { MethodFigure } from "@/components/MethodFigure";
 import MethodUsageChart from "@/components/MethodUsageChart";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
+import { slugify } from "@/lib/slug";
 import { transformPaperForCard } from "@/lib/transform";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -39,6 +40,13 @@ const MethodDetailView: React.FC = () => {
     queryKey: ["method", methodSlug],
     queryFn: () => apiClient.getMethod(methodSlug!),
     enabled: !!methodSlug,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  const areasQ = useQuery({
+    queryKey: ["areas-all"],
+    queryFn: () => apiClient.getAreas({ page_size: 50, ordering: "name" }),
+    enabled: !!methodQ.data?.area_id,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -122,11 +130,18 @@ const MethodDetailView: React.FC = () => {
   }
 
   const m = methodQ.data;
+  const area = areasQ.data?.results.find((candidate) => candidate.id === m.area_id);
 
   return (
     <div className="page">
       <div className="breadcrumb">
         <Link to="/methods">Methods</Link>
+        {area && (
+          <>
+            <span className="sep">/</span>
+            <Link to={`/methods#area-${slugify(area.name)}`}>{area.name}</Link>
+          </>
+        )}
         <span className="sep">/</span>
         <span style={{ color: "var(--ink)" }}>{m.name}</span>
       </div>
