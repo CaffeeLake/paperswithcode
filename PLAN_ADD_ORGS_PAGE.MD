@@ -134,6 +134,9 @@ Create an idempotent migration and update `Organization` in
 - `display_order INTEGER`: deterministic fallback order when trending signals
   tie or are absent;
 - `last_hf_synced_at TIMESTAMPTZ`: last successful complete sync;
+- `logo_data BYTEA` (deferred): the cached logo bytes served by PwC;
+- `logo_mime_type VARCHAR(50)`: validated MIME type and the presence flag for
+  the cached logo;
 - `trending_score DOUBLE PRECISION`: persisted rolling 30-day organization
   momentum used by the logo grid;
 - `trending_score_updated_at TIMESTAMPTZ`: when that monthly score was last
@@ -157,6 +160,13 @@ Expose `is_featured`, `display_order`, and
 or renaming existing fields. Add `featured_only: bool = false` to the list API
 so its existing “all organizations” behavior remains compatible; the index view
 requests `featured_only=true`.
+
+Keep the existing database `logo_url` as the original HF avatar URL for source
+provenance. When cached bytes exist, resolve the existing API `logo_url` field
+to `/api/v1/organizations/{slug}/logo?v={updated_at}`; fall back to the external
+HF URL only until the first valid cache is available. Extend the repository's
+existing DB-backed entity-image helpers rather than introducing a separate
+object-storage system for 21 small logos.
 
 Extend the featured organization response with the card projection needed by
 the screenshot-inspired grid:
@@ -218,6 +228,14 @@ Names, logos, websites, and HF paper counts remain fetched metadata. Apply small
 explicit name overrides only when HF metadata is visibly unsuitable (for
 example, trim the current `Mistral AI_` name) rather than maintaining a second
 full metadata catalog.
+
+During metadata refresh, download the HF `avatarUrl` server-side, enforce the
+existing image byte limit and supported-format validation, and store the valid
+bytes and MIME type in the organization row. Replace cached bytes only after a
+complete successful validation; a transient HF failure or invalid replacement
+must preserve the last known-good logo and emit a per-organization diagnostic.
+Avoid rewriting identical bytes so the cache-busting version and `updated_at`
+remain stable when the logo has not changed.
 
 Treat `facebook` and `meta-llama`, and `bytedance` and `bytedance-seed`, as
 distinct organizations in the first release because they are distinct HF
@@ -395,6 +413,11 @@ Retain these existing JSON contracts:
 Add only the compatible featured filter and metadata described above. Continue
 sorting organization papers with the existing paginated `PaperService`
 conversion path and `DBPaper.is_latest_version`.
+
+Add `GET /api/v1/organizations/{slug}/logo` to serve cached logo bytes with the
+same content-type, conditional request behavior, and week-long public cache
+headers as other DB-backed entity images. Public organization pages load this
+PwC endpoint rather than hotlinking HF whenever cached bytes are present.
 
 For the first release, organization index counts, organization detail/task
 queries, and organization badges returned on paper responses must include only
@@ -630,6 +653,8 @@ Add React tests for:
   persistence, deterministic ties, and zero-paper tiles on the index;
 - exact first-version card fields and the absence of unsupported
   models/datasets/code/upvote placeholders;
+- PwC-served cached logos, external-HF fallback before a cache exists,
+  cache-busting URLs, and missing/broken-logo fallbacks;
 - one/two/three-column responsive behavior and the screenshot-inspired card
   information hierarchy without asserting brittle pixel-perfect styling;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
@@ -707,6 +732,9 @@ route deployment before changing sitemap/canonical discovery in production.
 - The page follows the supplied editorial reference: large serif hero,
   organization-count/sort header, and information-rich one/two/three-column
   cards using real backend data rather than placeholder values.
+- Organization logos are copied from HF into validated DB-backed image storage,
+  served through a cacheable PwC endpoint, and retain the original HF avatar URL
+  as provenance; a failed refresh never destroys the last known-good logo.
 - The launch eyebrow, headline, and description match the approved copy and do
   not claim coverage beyond the curated 21 organizations.
 - First-version cards show only logo/name/slug, paper count, current
