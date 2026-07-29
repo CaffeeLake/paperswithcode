@@ -159,6 +159,55 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
           },
         ],
       },
+      {
+        id: "model-libraries",
+        name: "Model Libraries",
+        blurb:
+          "General-purpose libraries for loading, training, evaluating, and sharing language and multimodal models.",
+        frameworks: [
+          {
+            slug: "transformers",
+            name: "Transformers",
+            org: "Hugging Face",
+            description:
+              "A broad model library for text, vision, audio, video, and multimodal architectures.",
+            whenToUse:
+              "Use pretrained models or fine-tune modern architectures through a consistent PyTorch interface.",
+            platforms: ["gpu", "cpu", "apple"],
+            github: "https://github.com/huggingface/transformers",
+            url: "https://huggingface.co/docs/transformers/",
+            paperId: "1910.03771",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "computer-vision",
+    name: "Computer Vision",
+    blurb:
+      "Libraries for image encoders, visual backbones, training recipes, and reusable computer-vision models.",
+    categories: [
+      {
+        id: "vision-model-libraries",
+        name: "Model Libraries",
+        blurb:
+          "Reusable image architectures and pretrained backbones for training, evaluation, and transfer learning.",
+        frameworks: [
+          {
+            slug: "timm",
+            name: "timm",
+            org: "Hugging Face",
+            description:
+              "A large collection of PyTorch image models, pretrained weights, layers, optimizers, and training utilities.",
+            whenToUse:
+              "Start from a proven vision backbone or compare image architectures through one consistent API.",
+            platforms: ["gpu", "cpu", "apple"],
+            github: "https://github.com/huggingface/pytorch-image-models",
+            url: "https://huggingface.co/docs/timm/",
+          },
+        ],
+      },
     ],
   },
   {
@@ -240,6 +289,35 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
               "Scale large image and video diffusion transformers across multiple GPUs.",
             platforms: ["gpu"],
             github: "https://github.com/xdit-project/xDiT",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "robotics",
+    name: "Robotics",
+    blurb:
+      "Frameworks for collecting robot data, training embodied policies, evaluating behavior, and deploying models to hardware.",
+    categories: [
+      {
+        id: "robot-learning",
+        name: "Robot Learning",
+        blurb:
+          "End-to-end libraries for datasets, imitation and reinforcement learning, vision-language-action policies, and robot control.",
+        frameworks: [
+          {
+            slug: "lerobot",
+            name: "LeRobot",
+            org: "Hugging Face",
+            description:
+              "An open-source PyTorch library for real-world robotics with datasets, policies, training, evaluation, and hardware integrations.",
+            whenToUse:
+              "Build an end-to-end robot-learning workflow or reproduce modern policies across supported hardware.",
+            platforms: ["gpu", "cpu"],
+            github: "https://github.com/huggingface/lerobot",
+            url: "https://huggingface.co/docs/lerobot/",
+            paperId: "2602.22818",
           },
         ],
       },
