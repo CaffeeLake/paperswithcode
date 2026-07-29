@@ -219,6 +219,9 @@ def run_keyword_backfill(
             .filter(Paper.is_latest_version, Paper.id > cursor)
             .first()
         ):
+            run.eligible_papers = (
+                db.query(func.count(Paper.id)).filter(Paper.is_latest_version).scalar()
+            )
             run.status = "complete"
             run.completed_at = datetime.now(UTC)
             run.updated_at = datetime.now(UTC)

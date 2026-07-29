@@ -160,6 +160,19 @@ def test_keyword_backfill_covers_sourced_and_sourceless_methods_and_resumes():
     run = db.query(MethodKeywordBackfillRun).one()
     assert run.status == "complete"
     assert run.cursor_paper_id == 2
+    assert run.eligible_papers == 2
+    assert run.processed_papers == 2
+
+    db.add(_paper(3, "A new CLIP paper", date(2026, 1, 1)))
+    db.commit()
+    appended = run_keyword_backfill(db, limit=10, dry_run=False, resume=True)
+
+    db.refresh(run)
+    assert appended.papers_processed == 1
+    assert run.status == "complete"
+    assert run.cursor_paper_id == 3
+    assert run.eligible_papers == 3
+    assert run.processed_papers == 3
 
 
 def test_keyword_catalog_version_tracks_matcher_inputs_not_display_names():
