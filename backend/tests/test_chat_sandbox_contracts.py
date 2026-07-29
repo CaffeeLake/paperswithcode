@@ -139,13 +139,38 @@ def test_broker_capability_rotation_rejects_stale_and_cross_turn_clear(monkeypat
             {"capability": "new", "session_id": "session", "turn_id": "turn-2"}
         )
     with pytest.raises(RuntimeError, match="correlation"):
-        state.clear(session_id="session", turn_id="turn-2")
+        state.clear(
+            session_id="session",
+            turn_id="turn-2",
+            quiet_seconds=0,
+        )
 
-    state.clear(session_id="session", turn_id="turn-1")
+    state.clear(session_id="session", turn_id="turn-1", quiet_seconds=0)
     with pytest.raises(PermissionError):
         state.current()
     state.install({"capability": "new", "session_id": "session", "turn_id": "turn-2"})
     assert state.current()["capability"] == "new"
+
+
+def test_broker_clear_waits_for_capability_requests(monkeypatch):
+    broker = _import_broker(monkeypatch)
+    state = broker.BrokerState(
+        {"capability": "token", "session_id": "session", "turn_id": "turn"}
+    )
+
+    assert state.begin_request()["capability"] == "token"
+    with pytest.raises(RuntimeError, match="drain timed out"):
+        state.clear(
+            session_id="session",
+            turn_id="turn",
+            quiet_seconds=0,
+            timeout_seconds=0.01,
+        )
+    assert state.active()
+
+    state.finish_request()
+    state.clear(session_id="session", turn_id="turn", quiet_seconds=0)
+    assert not state.active()
 
 
 def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
@@ -1052,7 +1077,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-GEpdeOZvWbYaSEd0TdlnJH"
+    assert MODAL_IMAGE_ID == "im-9gJFTrdR03Od239Rs8W7vR"
 
 
 def test_task_catalog_is_bounded_and_ranked():

@@ -26,6 +26,7 @@ from backend.chat_sandbox_worker.supervisor import (
 CONTROL_SOCKET = Path("/run/pwc-chat/control.sock")
 BROKER_CONTROL_SOCKET = Path("/var/empty/pwc-broker/control.sock")
 MAX_PRIVATE_FRAME_BYTES = 64 * 1024
+BROKER_CONTROL_TIMEOUT_SECONDS = 25
 
 
 def _readline(connection: socket.socket, maximum: int) -> bytes:
@@ -44,7 +45,7 @@ def _readline(connection: socket.socket, maximum: int) -> bytes:
 
 def _broker_control(payload: dict) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(3)
+        connection.settimeout(BROKER_CONTROL_TIMEOUT_SECONDS)
         connection.connect(str(BROKER_CONTROL_SOCKET))
         connection.sendall(json.dumps(payload, separators=(",", ":")).encode() + b"\n")
         response = json.loads(_readline(connection, 16 * 1024))

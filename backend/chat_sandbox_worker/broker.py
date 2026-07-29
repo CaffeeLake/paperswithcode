@@ -14,7 +14,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import Condition, Lock
 from time import monotonic
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -30,6 +30,8 @@ _PAPER_LINEAGE = re.compile(r"^/api/v1/research/papers/([^/]+)/lineage$")
 _BENCHMARK_TRENDS = re.compile(r"^/api/v1/tasks/([^/]+)/trending-benchmarks$")
 _BENCHMARK_EVALUATIONS = re.compile(r"^/api/v1/datasets/([^/]+)/evaluations/$")
 CONTROL_SOCKET = Path("/var/empty/pwc-broker/control.sock")
+CAPABILITY_DRAIN_QUIET_SECONDS = 0.5
+CAPABILITY_DRAIN_TIMEOUT_SECONDS = 20.0
 
 
 def _load_config() -> dict:
@@ -55,7 +57,10 @@ PROXY_GRANTS_LOCK = Lock()
 class BrokerState:
     def __init__(self, initial: dict):
         self._lock = Lock()
+        self._condition = Condition(self._lock)
         self._active: dict[str, str] | None = None
+        self._inflight = 0
+        self._last_activity = monotonic()
         if "capability" in initial:
             self._active = {
                 key: str(initial[key])
@@ -72,9 +77,18 @@ class BrokerState:
             if self._active is not None:
                 raise RuntimeError("Broker capability already installed")
             self._active = dict(payload)
+            self._last_activity = monotonic()
 
-    def clear(self, *, session_id: str, turn_id: str) -> None:
-        with self._lock:
+    def clear(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        quiet_seconds: float = CAPABILITY_DRAIN_QUIET_SECONDS,
+        timeout_seconds: float = CAPABILITY_DRAIN_TIMEOUT_SECONDS,
+    ) -> None:
+        deadline = monotonic() + timeout_seconds
+        with self._condition:
             if self._active is None:
                 raise RuntimeError("Broker capability is not installed")
             if (
@@ -82,9 +96,38 @@ class BrokerState:
                 or self._active["turn_id"] != turn_id
             ):
                 raise RuntimeError("Broker capability correlation failed")
+            while True:
+                quiet_remaining = quiet_seconds - (monotonic() - self._last_activity)
+                if self._inflight == 0 and quiet_remaining <= 0:
+                    break
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Broker capability drain timed out")
+                self._condition.wait(
+                    timeout=min(
+                        remaining,
+                        max(quiet_remaining, 0.01),
+                    )
+                )
             self._active = None
         with PROXY_GRANTS_LOCK:
             PROXY_GRANTS.clear()
+
+    def begin_request(self) -> dict[str, str]:
+        with self._condition:
+            if self._active is None:
+                raise PermissionError("No turn capability is installed")
+            self._inflight += 1
+            self._last_activity = monotonic()
+            return dict(self._active)
+
+    def finish_request(self) -> None:
+        with self._condition:
+            if self._inflight <= 0:
+                raise RuntimeError("Broker request accounting underflow")
+            self._inflight -= 1
+            self._last_activity = monotonic()
+            self._condition.notify_all()
 
     def current(self) -> dict[str, str]:
         with self._lock:
@@ -125,8 +168,10 @@ def _connection():
     return connection(UPSTREAM.hostname, UPSTREAM.port, timeout=180)
 
 
-def _gateway_headers(*, content_type: str = "application/json") -> dict[str, str]:
-    active = STATE.current()
+def _gateway_headers(
+    *, active: dict[str, str] | None = None, content_type: str = "application/json"
+) -> dict[str, str]:
+    active = active or STATE.current()
     return {
         "Authorization": f"Bearer {active['capability']}",
         "X-PWC-Session": active["session_id"],
@@ -152,22 +197,26 @@ class Handler(BaseHTTPRequestHandler):
         content_type: str = "application/json",
         accept: str = "application/json",
     ) -> None:
+        active = STATE.begin_request()
         connection = self._connection()
-        prefix = UPSTREAM.path.rstrip("/")
-        connection.request(
-            "POST",
-            f"{prefix}/{path.lstrip('/')}",
-            body=body,
-            headers={**_gateway_headers(content_type=content_type), "Accept": accept},
-        )
-        response = connection.getresponse()
-        self.send_response(response.status)
-        upstream_type = response.getheader("Content-Type")
-        if upstream_type:
-            self.send_header("Content-Type", upstream_type)
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
         try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/{path.lstrip('/')}",
+                body=body,
+                headers={
+                    **_gateway_headers(active=active, content_type=content_type),
+                    "Accept": accept,
+                },
+            )
+            response = connection.getresponse()
+            self.send_response(response.status)
+            upstream_type = response.getheader("Content-Type")
+            if upstream_type:
+                self.send_header("Content-Type", upstream_type)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -175,6 +224,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             connection.close()
+            STATE.finish_request()
 
     def do_POST(self) -> None:
         length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
@@ -304,40 +354,44 @@ class Handler(BaseHTTPRequestHandler):
         if operation is None:
             self.send_error(404)
             return
-        connection = self._connection()
         payload = json.dumps(
             {"operation": operation, "arguments": arguments}, separators=(",", ":")
         ).encode()
-        prefix = UPSTREAM.path.rstrip("/")
-        connection.request(
-            "POST",
-            f"{prefix}/catalog",
-            body=payload,
-            headers=_gateway_headers(),
-        )
-        response = connection.getresponse()
-        raw = response.read(2 * 1024 * 1024)
-        connection.close()
-        if response.status >= 400:
-            self.send_response(response.status)
+        active = STATE.begin_request()
+        connection = self._connection()
+        try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/catalog",
+                body=payload,
+                headers=_gateway_headers(active=active),
+            )
+            response = connection.getresponse()
+            raw = response.read(2 * 1024 * 1024)
+            if response.status >= 400:
+                self.send_response(response.status)
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            result = json.loads(raw).get("result")
+            if operation == "paper_read":
+                output = str(result.get("markdown", "")).encode()
+                content_type = "text/plain; charset=utf-8"
+            else:
+                output = json.dumps(
+                    result, ensure_ascii=False, separators=(",", ":")
+                ).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(output)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(raw)
-            return
-        result = json.loads(raw).get("result")
-        if operation == "paper_read":
-            output = str(result.get("markdown", "")).encode()
-            content_type = "text/plain; charset=utf-8"
-        else:
-            output = json.dumps(
-                result, ensure_ascii=False, separators=(",", ":")
-            ).encode()
-            content_type = "application/json"
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(output)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(output)
+            self.wfile.write(output)
+        finally:
+            connection.close()
+            STATE.finish_request()
 
 
 class _CertificateAuthority:
@@ -432,26 +486,30 @@ class OriginHandler(BaseHTTPRequestHandler):
             return
         length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
         body = self.rfile.read(length)
+        active = STATE.begin_request()
         connection = _connection()
-        prefix = UPSTREAM.path.rstrip("/")
-        connection.request(
-            "POST",
-            f"{prefix}/v1/messages",
-            body=body,
-            headers={
-                **_gateway_headers(
-                    content_type=self.headers.get("Content-Type", "application/json")
-                ),
-                "Accept": self.headers.get("Accept", "application/json"),
-            },
-        )
-        response = connection.getresponse()
-        self.send_response(response.status)
-        if content_type := response.getheader("Content-Type"):
-            self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
         try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/v1/messages",
+                body=body,
+                headers={
+                    **_gateway_headers(
+                        active=active,
+                        content_type=self.headers.get(
+                            "Content-Type", "application/json"
+                        ),
+                    ),
+                    "Accept": self.headers.get("Accept", "application/json"),
+                },
+            )
+            response = connection.getresponse()
+            self.send_response(response.status)
+            if content_type := response.getheader("Content-Type"):
+                self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -459,6 +517,7 @@ class OriginHandler(BaseHTTPRequestHandler):
             pass
         finally:
             connection.close()
+            STATE.finish_request()
 
     def do_GET(self) -> None:
         if not STATE.active():
@@ -480,28 +539,30 @@ class OriginHandler(BaseHTTPRequestHandler):
         if not _consume_proxy_url(url):
             self.send_error(403)
             return
+        active = STATE.begin_request()
         connection = _connection()
-        prefix = UPSTREAM.path.rstrip("/")
-        connection.request(
-            "POST",
-            f"{prefix}/web-fetch",
-            body=body,
-            headers=_gateway_headers(),
-        )
-        response = connection.getresponse()
-        self.send_response(response.status)
-        for header in ("Content-Type", "Content-Length"):
-            if value := response.getheader(header):
-                self.send_header(header, value)
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
         try:
+            prefix = UPSTREAM.path.rstrip("/")
+            connection.request(
+                "POST",
+                f"{prefix}/web-fetch",
+                body=body,
+                headers=_gateway_headers(active=active),
+            )
+            response = connection.getresponse()
+            self.send_response(response.status)
+            for header in ("Content-Type", "Content-Length"):
+                if value := response.getheader(header):
+                    self.send_header(header, value)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
             connection.close()
+            STATE.finish_request()
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
