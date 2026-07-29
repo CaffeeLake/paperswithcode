@@ -131,7 +131,8 @@ Create an idempotent migration and update `Organization` in
 - `hf_slug VARCHAR(100)`: the HF namespace/handle used for synchronization;
 - `is_featured BOOLEAN NOT NULL DEFAULT FALSE`: whether the organization appears
   on the curated index;
-- `display_order INTEGER`: stable ordering for the initial list;
+- `display_order INTEGER`: deterministic fallback order when trending signals
+  tie or are absent;
 - `last_hf_synced_at TIMESTAMPTZ`: last successful complete sync;
 - optionally `hf_paper_count INTEGER`: last complete upstream count, useful for
   drift diagnostics without making it the public count.
@@ -140,10 +141,31 @@ Keep `slug` as the lowercase, stable PwC URL identifier. Do not derive routing
 from the mutable display name. Add a unique index on `hf_slug` when non-null and
 an index supporting `(is_featured, display_order)`.
 
-Expose `is_featured` and `display_order` in the API `Organization` model without
-removing or renaming existing fields. Add `featured_only: bool = false` to the
-list API so its existing “all organizations” behavior remains compatible; the
-index view requests `featured_only=true`.
+Expose `is_featured`, `display_order`, and a computed
+`organization_trending_score` in the API `Organization` model without removing
+or renaming existing fields. Add `featured_only: bool = false` to the list API
+so its existing “all organizations” behavior remains compatible; the index view
+requests `featured_only=true`.
+
+Rank featured organizations by a consolidated organization trending score, not
+by the manifest order or raw paper count. Reuse the active paper trending mode
+already used by the homepage and organization paper feed:
+
+- in composite mode, use each fresh `papers.trending_score`;
+- in the GitHub rollback mode, use each paper's fresh best-official-repository
+  EMA velocity;
+- treat scores older than the existing 24-hour freshness window as zero;
+- aggregate each distinct latest, eligible, HF-linked paper exactly once;
+- provisionally define the organization score as the sum of those fresh paper
+  scores;
+- break ties by highest individual paper score, then linked-paper count, then
+  `display_order`.
+
+Factor the active per-paper score expression into a reusable service helper so
+the organization aggregate and `PaperService.apply_scoped_trending_order` cannot
+silently drift. Calculate the aggregate in the organization list query; do not
+add a second independently updated organization score column unless profiling
+shows the bounded 21-organization query needs materialization.
 
 ### 2. Add a version-controlled manifest
 
@@ -374,8 +396,9 @@ The grid should:
   missing or fails to load;
 - preserve a useful zero-paper tile that still links to the organization detail
   page and says "No papers indexed yet";
-- keep the manifest/display order by default, with client-side name search and
-  an optional “most papers” sort;
+- rank by the backend-provided consolidated organization trending score by
+  default, with client-side name search and optional “most papers” and
+  alphabetical sorts;
 - display loading skeletons in the same grid geometry and provide retryable
   error and no-search-results states.
 
@@ -438,6 +461,9 @@ Add focused backend tests for:
 - later successful syncs never deleting previously linked papers that are absent
   from the latest HF payload;
 - featured filtering and stable display order;
+- consolidated organization trending aggregation using the active composite and
+  GitHub rollback modes, the 24-hour freshness cutoff, distinct-paper counting,
+  and deterministic tie-breakers;
 - organization list/detail paper counts using latest eligible papers.
 
 Mock HF and ArXiv responses; tests must not depend on live network access.
@@ -522,9 +548,10 @@ route deployment before changing sitemap/canonical discovery in production.
 
 ## Acceptance criteria
 
-- `/organizations` lists all 21 requested organizations in deterministic order,
-  including the two that currently have zero HF papers; zero-paper tiles remain
-  clickable and say "No papers indexed yet".
+- `/organizations` lists all 21 requested organizations ranked by their
+  consolidated fresh paper-trending score, with deterministic tie-breakers;
+  the two that currently have zero HF papers remain clickable and say "No
+  papers indexed yet".
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
