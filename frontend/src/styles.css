@@ -2208,6 +2208,7 @@ a.paper-resource.is-link:focus-visible {
   background: var(--bg-elevated);
   border-radius: 6px;
   padding: 18px 22px;
+  scroll-margin-top: 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;

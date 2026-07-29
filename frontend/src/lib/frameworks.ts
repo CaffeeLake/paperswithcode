@@ -324,3 +324,21 @@ export const FRAMEWORK_DOMAINS: FrameworkDomain[] = [
     ],
   },
 ];
+
+export const FRAMEWORKS: Framework[] = FRAMEWORK_DOMAINS.flatMap((domain) =>
+  domain.categories.flatMap((category) => category.frameworks),
+);
+
+function normalizePaperId(paperId: string): string {
+  return paperId.trim().replace(/^arxiv:/i, "").replace(/v\d+$/i, "");
+}
+
+export function frameworksIntroducedByPaper(paperId: string | null | undefined): Framework[] {
+  if (!paperId) return [];
+
+  const normalizedPaperId = normalizePaperId(paperId);
+  return FRAMEWORKS.filter(
+    (framework) =>
+      framework.paperId != null && normalizePaperId(framework.paperId) === normalizedPaperId,
+  );
+}

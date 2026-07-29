@@ -61,7 +61,7 @@ const PlatformChip: React.FC<{ platform: FrameworkPlatform }> = ({ platform }) =
 
 const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
   return (
-    <article className="framework-card">
+    <article id={`framework-${framework.slug}`} className="framework-card">
       <div className="framework-card-head">
         <div>
           <h3 className="framework-card-name">{framework.name}</h3>
@@ -125,6 +125,13 @@ const FrameworksIndexView: React.FC = () => {
       sum + domain.categories.reduce((catSum, category) => catSum + category.frameworks.length, 0),
     0,
   );
+
+  React.useEffect(() => {
+    const frameworkId = window.location.hash.slice(1);
+    if (frameworkId) {
+      document.getElementById(frameworkId)?.scrollIntoView();
+    }
+  }, []);
 
   return (
     <div className="page">

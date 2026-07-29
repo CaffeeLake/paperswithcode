@@ -14,6 +14,7 @@ import { summarizeRepos } from "@/lib/transform";
 import { formatPageTitle, DEFAULT_SITE_SUFFIX } from "@/lib/latexPlainText";
 import { formatMetricValue, normalizePaperRouteId } from "@/lib/utils";
 import { copyableLeaderboardRanks, leaderboardBadgeMarkdown } from "@/lib/leaderboardBadges";
+import { frameworksIntroducedByPaper } from "@/lib/frameworks";
 import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import { usePreferences } from "@/lib/preferencesContext";
@@ -672,7 +673,11 @@ const PaperDetailView: React.FC = () => {
   const abstractView = abstractExpanded || abstract.length <= ABSTRACT_PREVIEW_LEN ? abstract : abstractShort;
   const introducedMethods = (paper.methods || []).filter((method) => method.source_paper_id === paper.id);
   const introducedBenchmarks = paper.introduced_benchmarks || [];
-  const hasIntroducedItems = introducedMethods.length > 0 || introducedBenchmarks.length > 0;
+  const introducedFrameworks = frameworksIntroducedByPaper(paper.arxiv_id);
+  const hasIntroducedItems =
+    introducedMethods.length > 0 ||
+    introducedBenchmarks.length > 0 ||
+    introducedFrameworks.length > 0;
   const paperSourceLabel = paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : "External resource";
   const sourceActionLabel = paper.source === "external" ? "Source page" : "arXiv page";
   const projectPages = paper.project_pages?.filter((page) => page.url) ?? [];
@@ -683,6 +688,9 @@ const PaperDetailView: React.FC = () => {
     }
     if (introducedBenchmarks.length > 0) {
       parts.push(introducedBenchmarks.length === 1 ? "this benchmark" : "these benchmarks");
+    }
+    if (introducedFrameworks.length > 0) {
+      parts.push(introducedFrameworks.length === 1 ? "this framework" : "these frameworks");
     }
     if (parts.length === 0) return "";
     if (parts.length === 1) return parts[0];
@@ -1035,6 +1043,17 @@ const PaperDetailView: React.FC = () => {
                     onClick={() => navigate(`/benchmark/${b.slug || b.id}`)}
                   >
                     {b.name}
+                    <span className="introduced-arrow">→</span>
+                  </button>
+                ))}
+                {introducedFrameworks.map((framework) => (
+                  <button
+                    key={`framework-${framework.slug}`}
+                    type="button"
+                    className="introduced-pill"
+                    onClick={() => navigate(`/frameworks#framework-${framework.slug}`)}
+                  >
+                    {framework.name}
                     <span className="introduced-arrow">→</span>
                   </button>
                 ))}

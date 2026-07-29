@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { FRAMEWORK_DOMAINS } from "./frameworks";
+import {
+  FRAMEWORK_DOMAINS,
+  FRAMEWORKS,
+  frameworksIntroducedByPaper,
+} from "./frameworks";
 
 describe("FRAMEWORK_DOMAINS", () => {
   const frameworks = FRAMEWORK_DOMAINS.flatMap((domain) =>
@@ -29,5 +33,28 @@ describe("FRAMEWORK_DOMAINS", () => {
   it("uses unique framework slugs", () => {
     const slugs = frameworks.map((framework) => framework.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
+  it("exposes the flattened framework catalogue", () => {
+    expect(FRAMEWORKS).toEqual(frameworks);
+  });
+});
+
+describe("frameworksIntroducedByPaper", () => {
+  it("finds frameworks by their canonical paper", () => {
+    expect(frameworksIntroducedByPaper("2309.06180")).toEqual([
+      expect.objectContaining({ slug: "vllm", name: "vLLM" }),
+    ]);
+  });
+
+  it("normalizes arXiv prefixes and versions", () => {
+    expect(frameworksIntroducedByPaper("arXiv:2602.22818v2")).toEqual([
+      expect.objectContaining({ slug: "lerobot", name: "LeRobot" }),
+    ]);
+  });
+
+  it("does not infer a framework when no canonical paper is configured", () => {
+    expect(frameworksIntroducedByPaper("2504.16054")).toEqual([]);
+    expect(frameworksIntroducedByPaper(null)).toEqual([]);
   });
 });
