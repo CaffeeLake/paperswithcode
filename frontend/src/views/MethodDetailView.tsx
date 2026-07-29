@@ -198,11 +198,7 @@ const MethodDetailView: React.FC = () => {
             <section className="method-trend-panel method-trend-panel--compact">
               <div className="method-trend-header">
                 <div>
-                  <div className="method-trend-eyebrow">Mention trend</div>
-                  <p>
-                    Distinct papers citing or explicitly mentioning {m.name}, grouped
-                    by publication month.
-                  </p>
+                  <div className="method-trend-eyebrow">Usage trend</div>
                 </div>
                 <div className="method-trend-summary">
                   <strong>{trendQ.data.recent_paper_count}</strong>
@@ -213,15 +209,6 @@ const MethodDetailView: React.FC = () => {
                 history={trendQ.data.history}
                 methodName={m.name}
               />
-              {!trendQ.data.history_complete && (
-                <p className="method-trend-note">Historical tagging in progress.</p>
-              )}
-              {(trendQ.data.undated_paper_count ?? 0) > 0 && (
-                <p className="method-trend-note">
-                  {trendQ.data.undated_paper_count!.toLocaleString()} papers without
-                  publication dates are not plotted.
-                </p>
-              )}
             </section>
           ) : null}
         </div>
