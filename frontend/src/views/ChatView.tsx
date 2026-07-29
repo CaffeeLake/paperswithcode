@@ -235,13 +235,10 @@ const ChatView: React.FC = () => {
     const onFocus = () => {
       if (!user || chat.busy) return;
       void refreshSessions();
-      if (routeSessionId) {
-        void getSession(routeSessionId).then((detail) => loadChat(toUiMessages(detail)));
-      }
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [chat.busy, loadChat, refreshSessions, routeSessionId, user]);
+  }, [chat.busy, refreshSessions, user]);
 
   useEffect(() => {
     if (!sessionMenu) return;

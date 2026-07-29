@@ -220,3 +220,19 @@ describe("ChatView sharing", () => {
     }));
   });
 });
+
+describe("ChatView focus refresh", () => {
+  it("refreshes the sidebar without reloading and aborting the active transcript", async () => {
+    renderChat();
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(1));
+    mocks.getSession.mockClear();
+    mocks.load.mockClear();
+    mocks.listSessions.mockClear();
+
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.load).not.toHaveBeenCalled();
+  });
+});
