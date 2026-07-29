@@ -45,6 +45,32 @@ class ChatRequest(BaseModel):
         return self
 
 
+class ChatBrowserLatencyRequest(BaseModel):
+    """Content-free browser timing update for one admitted request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    submission_to_stream_start_ms: float | None = Field(
+        default=None, ge=0, le=3_600_000, allow_inf_nan=False
+    )
+    submission_to_first_visible_delta_ms: float | None = Field(
+        default=None, ge=0, le=3_600_000, allow_inf_nan=False
+    )
+    terminal_classification: (
+        Literal["complete", "stopped", "error", "network_error", "aborted"] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def require_measurement(self) -> "ChatBrowserLatencyRequest":
+        if (
+            self.submission_to_stream_start_ms is None
+            and self.submission_to_first_visible_delta_ms is None
+            and self.terminal_classification is None
+        ):
+            raise ValueError("At least one browser timing field is required")
+        return self
+
+
 class ChatPaperMetadata(BaseModel):
     arxiv_id: str | None
     source: Literal["arxiv", "external"]
@@ -306,6 +332,12 @@ class SandboxReadyEvent(_StrictEvent):
     cold_start_ms: int = Field(ge=0, le=600_000)
 
 
+class WorkspaceReadyEvent(_StrictEvent):
+    """Backend-neutral marker emitted immediately before model query dispatch."""
+
+    type: Literal["workspace_ready"]
+
+
 class AnswerDeltaEvent(_StrictEvent):
     type: Literal["answer_delta"]
     text: str
@@ -348,6 +380,7 @@ ChatEvent = Annotated[
         ToolResultEvent,
         SandboxStartEvent,
         SandboxReadyEvent,
+        WorkspaceReadyEvent,
         AnswerDeltaEvent,
         DoneEvent,
         ErrorEvent,

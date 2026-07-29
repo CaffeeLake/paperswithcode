@@ -1,18 +1,23 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatEvent, ChatMessage, ChatStreamRequest } from "@/lib/chat";
 import type { ChatSessionDetail } from "@/lib/chatSessions";
 import { useChat } from "@/hooks/useChat";
 
-const { streamChatMock, getSessionMock } = vi.hoisted(() => ({
+const { streamChatMock, getSessionMock, reportChatLatencyMock } = vi.hoisted(() => ({
   streamChatMock: vi.fn(),
   getSessionMock: vi.fn(),
+  reportChatLatencyMock: vi.fn(),
 }));
 
 vi.mock("@/lib/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/chat")>();
-  return { ...actual, streamChat: streamChatMock };
+  return {
+    ...actual,
+    streamChat: streamChatMock,
+    reportChatLatency: reportChatLatencyMock,
+  };
 });
 
 vi.mock("@/lib/chatSessions", async (importOriginal) => {
@@ -110,6 +115,11 @@ const renderChat = (sessionId: string | null = "session-1") => {
 beforeEach(() => {
   streamChatMock.mockReset();
   getSessionMock.mockReset();
+  reportChatLatencyMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("useChat editAndResend", () => {
@@ -315,5 +325,134 @@ describe("useChat canonical reloads", () => {
       await secondCanonical.promise;
     });
     await waitFor(() => expect(result.current.messages[0]?.id).toBe("latest-user"));
+  });
+});
+
+describe("useChat workspace status and browser timing", () => {
+  it("shows workspace preparation at exactly 750 ms and clears it on workspace_ready", async () => {
+    vi.useFakeTimers();
+    const workspaceReady = deferred<void>();
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      await workspaceReady.promise;
+      yield { type: "workspace_ready" };
+      await finish.promise;
+      yield { type: "done", finish_reason: "success" };
+    });
+    const { result, unmount } = renderChat();
+
+    act(() => {
+      expect(result.current.send("New turn")).toBe(true);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    act(() => vi.advanceTimersByTime(749));
+    expect(result.current.messages.at(-1)?.status).toBeUndefined();
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.messages.at(-1)?.status).toBe(
+      "Preparing research workspace…",
+    );
+
+    await act(async () => {
+      workspaceReady.resolve();
+      await workspaceReady.promise;
+      await Promise.resolve();
+    });
+    expect(result.current.messages.at(-1)?.status).toBeUndefined();
+
+    await act(async () => {
+      finish.resolve();
+      await finish.promise;
+      await Promise.resolve();
+    });
+    unmount();
+  });
+
+  it("does not show workspace preparation after an earlier visible event", async () => {
+    vi.useFakeTimers();
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      yield { type: "reasoning_start" };
+      await finish.promise;
+      yield { type: "done", finish_reason: "success" };
+    });
+    const { result, unmount } = renderChat();
+
+    act(() => {
+      expect(result.current.send("New turn")).toBe(true);
+    });
+    await act(async () => { await Promise.resolve(); });
+    act(() => vi.advanceTimersByTime(750));
+
+    expect(result.current.messages.at(-1)?.status).toBeUndefined();
+    expect(result.current.messages.at(-1)?.blocks?.[0]).toMatchObject({
+      kind: "reasoning",
+      active: true,
+    });
+
+    await act(async () => {
+      finish.resolve();
+      await finish.promise;
+      await Promise.resolve();
+    });
+    unmount();
+  });
+
+  it("reports stream start, rendered first-visible delta, and terminal status once", async () => {
+    vi.useFakeTimers();
+    const streamStarted = deferred<void>();
+    const answerReady = deferred<void>();
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      await streamStarted.promise;
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      await answerReady.promise;
+      yield { type: "answer_delta", text: "Visible answer" };
+      await finish.promise;
+      yield { type: "done", finish_reason: "success" };
+    });
+    const { result, unmount } = renderChat();
+
+    act(() => {
+      expect(result.current.send("New turn")).toBe(true);
+      vi.advanceTimersByTime(125);
+    });
+    await act(async () => {
+      streamStarted.resolve();
+      await streamStarted.promise;
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(75));
+    await act(async () => {
+      answerReady.resolve();
+      await answerReady.promise;
+      await Promise.resolve();
+    });
+
+    expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
+      submission_to_stream_start_ms: expect.any(Number),
+    });
+    expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
+      submission_to_first_visible_delta_ms: expect.any(Number),
+    });
+    const streamStartMs = reportChatLatencyMock.mock.calls[0][1]
+      .submission_to_stream_start_ms;
+    const firstVisibleMs = reportChatLatencyMock.mock.calls[1][1]
+      .submission_to_first_visible_delta_ms;
+    expect(streamStartMs).toBeGreaterThanOrEqual(0);
+    expect(firstVisibleMs).toBeGreaterThanOrEqual(streamStartMs);
+
+    await act(async () => {
+      finish.resolve();
+      await finish.promise;
+      await Promise.resolve();
+    });
+    expect(reportChatLatencyMock).toHaveBeenCalledWith("r1", {
+      terminal_classification: "complete",
+    });
+    expect(reportChatLatencyMock).toHaveBeenCalledTimes(3);
+    unmount();
   });
 });

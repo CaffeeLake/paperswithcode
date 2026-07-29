@@ -24,6 +24,7 @@ from claude_agent_sdk._internal.session_store import project_key_for_directory
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.services.chat_citation_service import cited_route_ids, resolve_citations
+from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxError
 from backend.services.chat_session_service import (
     ChatOwner,
@@ -333,6 +334,7 @@ async def _title_events(
     prompt: str,
     queue: asyncio.Queue,
 ) -> None:
+    started = time.perf_counter()
     await queue.put({"type": "session_title_start"})
     pieces: list[str] = []
     fallback = False
@@ -361,6 +363,13 @@ async def _title_events(
         )
     if final:
         await queue.put({"type": "session_title_done", "title": final})
+    logger.info(
+        "chat provider call complete call_class=title_generation session=%s "
+        "duration_ms=%.1f outcome=%s",
+        hashlib.sha256(str(admission.session_id).encode()).hexdigest()[:12],
+        (time.perf_counter() - started) * 1000,
+        "fallback" if fallback else "success",
+    )
     await queue.put({"type": "_title_finished"})
 
 
@@ -406,6 +415,7 @@ class ChatStreamOrchestrator:
         self.runner: ChatTurnRunner | None = None
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
         self.edit_activated = False
+        self.first_application_delta_recorded = False
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
         try:
@@ -602,6 +612,25 @@ class ChatStreamOrchestrator:
                 if self.research_task:
                     self.research_task.cancel()
                 continue
+            if kind == "_latency":
+                self._record_latency_phase(
+                    str(event["phase"]),
+                    int(event["elapsed_ms"]),
+                    acquisition_outcome=event.get("acquisition_outcome"),
+                )
+                continue
+
+            elapsed_ms = round((time.perf_counter() - self.started) * 1000)
+            if kind == "workspace_ready":
+                self._record_latency_phase("sdk_query_dispatched", elapsed_ms)
+            if not self.first_application_delta_recorded and kind in {
+                "reasoning_delta",
+                "tool_call",
+                "answer_delta",
+            }:
+                self.first_application_delta_recorded = True
+                self._record_latency_phase("first_worker_delta", elapsed_ms)
+                self._record_latency_phase("first_application_sse_delta", elapsed_ms)
 
             self.projection.apply(kind, event)
             if kind == "error":
@@ -734,4 +763,52 @@ class ChatStreamOrchestrator:
             (time.perf_counter() - self.started) * 1000,
             self.terminal,
         )
+        status = {
+            "success": "complete",
+            "max_turns": "complete",
+            "tool_limit": "complete",
+            "stopped": "stopped",
+            "error": "error",
+        }.get(self.terminal, "interrupted")
+        if self.settings.environment == "staging":
+            try:
+                with db_manager.session_local() as db:
+                    ChatLatencyService(db).finalize(
+                        self.request_id,
+                        status,
+                        round((time.perf_counter() - self.started) * 1000),
+                    )
+                    db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "chat latency finalize failed request_id=%s error=%s",
+                    self.request_id,
+                    type(exc).__name__,
+                )
         await self.release_admission()
+
+    def _record_latency_phase(
+        self,
+        phase: str,
+        elapsed_ms: int,
+        *,
+        acquisition_outcome: str | None = None,
+    ) -> None:
+        if self.settings.environment != "staging":
+            return
+        try:
+            with db_manager.session_local() as db:
+                ChatLatencyService(db).record_phase(
+                    self.request_id,
+                    phase,
+                    elapsed_ms,
+                    acquisition_outcome=acquisition_outcome,
+                )
+                db.commit()
+        except Exception as exc:
+            logger.warning(
+                "chat latency phase failed request_id=%s phase=%s error=%s",
+                self.request_id,
+                phase,
+                type(exc).__name__,
+            )

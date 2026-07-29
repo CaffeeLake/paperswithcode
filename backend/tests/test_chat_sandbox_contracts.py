@@ -685,9 +685,12 @@ def test_worker_protocol_accepts_complete_turn_after_one_terminal():
     frame = {"v": 1, "type": "run_turn", "request_id": "r"}
     assert decode_frame(encode_frame(frame)) == frame
     validator = WorkerEventValidator()
+    validator.accept({"type": "workspace_ready"})
     validator.accept({"type": "tool_call", "id": "t"})
     validator.accept({"type": "tool_result", "id": "t"})
     validator.accept({"type": "done"})
+    with pytest.raises(ProtocolError, match="followed a terminal"):
+        validator.accept({"type": "workspace_ready"})
     validator.accept({"type": "worker_done", "status": "complete"})
 
 

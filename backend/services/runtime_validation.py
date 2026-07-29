@@ -296,7 +296,8 @@ def validate_chat_schema(db) -> None:
                     ('chat_messages'),
                     ('chat_shares'),
                     ('chat_sandbox_leases'),
-                    ('chat_turn_capabilities')
+                    ('chat_turn_capabilities'),
+                    ('chat_turn_latency')
                 ) AS required(name)
                 """
             )
@@ -314,7 +315,10 @@ def validate_chat_schema(db) -> None:
                 ('chat_messages', 'prepared_fork_sdk_session_id'),
                 ('chat_messages', 'prepared_fork_sdk_project_key'),
                 ('chat_shares', 'snapshot_version'),
-                ('chat_shares', 'messages')
+                ('chat_shares', 'messages'),
+                ('chat_turn_latency', 'request_id'),
+                ('chat_turn_latency', 'terminal_status'),
+                ('chat_turn_latency', 'browser_first_visible_delta_ms')
             )
             """
         )
@@ -326,6 +330,9 @@ def validate_chat_schema(db) -> None:
         ("chat_messages", "prepared_fork_sdk_project_key"),
         ("chat_shares", "snapshot_version"),
         ("chat_shares", "messages"),
+        ("chat_turn_latency", "request_id"),
+        ("chat_turn_latency", "terminal_status"),
+        ("chat_turn_latency", "browser_first_visible_delta_ms"),
     }:
         raise RuntimeError("required chat sandbox schema is missing")
     share_snapshot_constraint = db.execute(

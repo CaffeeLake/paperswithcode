@@ -2177,6 +2177,99 @@ class ChatSandboxLease(Base):
     )
 
 
+class ChatTurnLatency(Base):
+    """Content-free latency telemetry for one admitted staging chat turn."""
+
+    __tablename__ = "chat_turn_latency"
+
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    chat_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    traffic_class: Mapped[str] = mapped_column(String(24), nullable=False)
+    execution_backend: Mapped[str] = mapped_column(String(24), nullable=False)
+    acquisition_outcome: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    model_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    sandbox_image_version: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    worker_contract_version: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    pwc_cli_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    system_prompt_sha256: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+
+    acquisition_started_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    pool_lookup_completed_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    modal_sandbox_created_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    worker_control_ready_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    session_assignment_completed_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    broker_capability_installed_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    sdk_query_dispatched_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    provider_gateway_received_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    upstream_response_headers_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    upstream_first_body_byte_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    first_worker_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    first_application_sse_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    total_ms: Mapped[Optional[int]] = mapped_column(Integer)
+
+    browser_stream_start_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    browser_first_visible_delta_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    browser_terminal_classification: Mapped[Optional[str]] = mapped_column(
+        String(24), nullable=True
+    )
+    terminal_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="running"
+    )
+    admitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "traffic_class IN ('new_chat','followup')",
+            name="chat_turn_latency_traffic_class_check",
+        ),
+        CheckConstraint(
+            "execution_backend IN ('local_mcp','modal_cli')",
+            name="chat_turn_latency_backend_check",
+        ),
+        CheckConstraint(
+            "acquisition_outcome IN "
+            "('pending','created','reused_session','pool_hit','pool_miss')",
+            name="chat_turn_latency_acquisition_check",
+        ),
+        CheckConstraint(
+            "terminal_status IN ('running','complete','stopped','error','interrupted')",
+            name="chat_turn_latency_terminal_check",
+        ),
+        CheckConstraint(
+            "browser_terminal_classification IS NULL OR "
+            "browser_terminal_classification IN "
+            "('complete','stopped','error','network_error','aborted')",
+            name="chat_turn_latency_browser_terminal_check",
+        ),
+        Index("idx_chat_turn_latency_admitted", "admitted_at", "turn_id"),
+        Index("idx_chat_turn_latency_session", "chat_session_id"),
+    )
+
+
 class ChatTurnCapability(Base):
     """Hash-only, short-lived authorization held by the isolated broker."""
 

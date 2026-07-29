@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
+import time
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import httpx
@@ -14,12 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
-from backend.database.connection import get_database_session
+from backend.database.connection import db_manager, get_database_session
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
 )
 from backend.services.chat_gateway_service import ChatGatewayService
+from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
@@ -32,8 +37,40 @@ from backend.services.chat_web_fetch_service import (
 from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+logger = logging.getLogger(__name__)
 MAX_PROVIDER_OUTPUT_TOKENS = 32_000
 MAX_PROVIDER_TURN_TOKENS = 512_000
+
+
+def _opaque_turn(turn_id: uuid.UUID) -> str:
+    return hashlib.sha256(str(turn_id).encode()).hexdigest()[:12]
+
+
+def _record_gateway_timing(
+    settings: Settings,
+    turn_id: uuid.UUID,
+    *,
+    phase: str | None = None,
+    elapsed_ms: int | None = None,
+    received_at: datetime | None = None,
+) -> None:
+    if settings.environment != "staging":
+        return
+    try:
+        with db_manager.session_local() as timing_db:
+            service = ChatLatencyService(timing_db)
+            if received_at is not None:
+                service.record_gateway_received(turn_id, received_at)
+            elif phase is not None and elapsed_ms is not None:
+                service.record_phase_for_turn(turn_id, phase, elapsed_ms)
+            timing_db.commit()
+    except Exception as error:
+        logger.warning(
+            "chat gateway latency persistence failed turn=%s phase=%s error=%s",
+            _opaque_turn(turn_id),
+            phase or "received",
+            type(error).__name__,
+        )
 
 
 class CatalogRequest(BaseModel):
@@ -190,6 +227,12 @@ async def messages(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    gateway_started = time.perf_counter()
+    received_at = datetime.now(UTC)
+    try:
+        turn_id = uuid.UUID(x_pwc_turn)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Capability rejected") from None
     token = _bearer(authorization)
     raw = await request.body()
     if len(raw) > 512 * 1024:
@@ -216,6 +259,7 @@ async def messages(
         raise HTTPException(
             status_code=429, detail="Model execution limit reached"
         ) from None
+    _record_gateway_timing(settings, turn_id, received_at=received_at)
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
     upstream_headers = {
@@ -237,14 +281,37 @@ async def messages(
         ),
         stream=True,
     )
+    _record_gateway_timing(
+        settings,
+        turn_id,
+        phase="upstream_response_headers",
+        elapsed_ms=round((time.perf_counter() - gateway_started) * 1000),
+    )
 
     async def chunks():
+        first_byte = True
         try:
             async for chunk in upstream.aiter_bytes():
+                if first_byte:
+                    first_byte = False
+                    _record_gateway_timing(
+                        settings,
+                        turn_id,
+                        phase="upstream_first_body_byte",
+                        elapsed_ms=round(
+                            (time.perf_counter() - gateway_started) * 1000
+                        ),
+                    )
                 yield chunk
         finally:
             await upstream.aclose()
             await client.aclose()
+            logger.info(
+                "chat provider stream complete call_class=research turn=%s "
+                "duration_ms=%.1f",
+                _opaque_turn(turn_id),
+                (time.perf_counter() - gateway_started) * 1000,
+            )
 
     headers = {
         key: value
@@ -256,6 +323,12 @@ async def messages(
             chunks(), status_code=upstream.status_code, headers=headers
         )
     body = await upstream.aread()
+    _record_gateway_timing(
+        settings,
+        turn_id,
+        phase="upstream_first_body_byte",
+        elapsed_ms=round((time.perf_counter() - gateway_started) * 1000),
+    )
     await upstream.aclose()
     await client.aclose()
     return Response(body, status_code=upstream.status_code, headers=headers)

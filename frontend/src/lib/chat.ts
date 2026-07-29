@@ -72,6 +72,7 @@ export interface ChatCitation {
 
 export type ChatEvent =
   | { type: "stream_start"; request_id: string; session_id: string | null }
+  | { type: "workspace_ready" }
   | { type: "reasoning_start" }
   | { type: "reasoning_delta"; text: string }
   | { type: "reasoning_end" }
@@ -167,6 +168,39 @@ export const isChatLive = (): boolean => {
 
 export interface StreamChatOptions {
   signal?: AbortSignal;
+}
+
+export interface ChatBrowserLatencyUpdate {
+  submission_to_stream_start_ms?: number;
+  submission_to_first_visible_delta_ms?: number;
+  terminal_classification?:
+    | "complete"
+    | "stopped"
+    | "error"
+    | "network_error"
+    | "aborted";
+}
+
+/**
+ * Best-effort staging telemetry. A rejected report must never affect the chat
+ * stream or surface an error to the user.
+ */
+export function reportChatLatency(
+  requestId: string,
+  update: ChatBrowserLatencyUpdate,
+): void {
+  if (!isChatLive()) return;
+  try {
+    void fetch(apiUrl(`/api/v1/chat/latency/${encodeURIComponent(requestId)}`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      keepalive: true,
+      body: JSON.stringify(update),
+    }).catch(() => undefined);
+  } catch {
+    // Telemetry must never affect the chat.
+  }
 }
 
 /**

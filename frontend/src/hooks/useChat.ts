@@ -1,13 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   type ChatBlock,
+  type ChatBrowserLatencyUpdate,
   type ChatEvent,
   type ChatMessage,
   type ChatPaperHit,
+  reportChatLatency,
   streamChat,
 } from "@/lib/chat";
 import { getSession, toUiMessages } from "@/lib/chatSessions";
+
+const WORKSPACE_STATUS = "Preparing research workspace…";
+const WORKSPACE_STATUS_DELAY_MS = 750;
+
+interface BrowserTiming {
+  controller: AbortController;
+  submittedAt: number;
+  requestId?: string;
+  firstVisibleAt?: number;
+  streamStartReported: boolean;
+  firstVisibleReported: boolean;
+  terminalReported: boolean;
+}
 
 interface UseChatOptions {
   sessionId: string | null;
@@ -24,6 +39,9 @@ export function useChat(options: UseChatOptions) {
   const [sessionError, setSessionError] = useState("");
   const busyRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const preparingTimerRef = useRef<number | null>(null);
+  const workspaceStatusStateRef = useRef<"armed" | "shown" | "cleared">("cleared");
+  const browserTimingRef = useRef<BrowserTiming | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const optionsRef = useRef(options);
   const promptRef = useRef("");
@@ -41,7 +59,12 @@ export function useChat(options: UseChatOptions) {
   optionsRef.current = options;
   messagesRef.current = messages;
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+    }
+    abortRef.current?.abort();
+  }, []);
   useEffect(() => {
     if (!busyRef.current) activeSessionIdRef.current = options.sessionId;
   }, [options.sessionId]);
@@ -71,6 +94,84 @@ export function useChat(options: UseChatOptions) {
   const isLastOfKind = (kind: ChatBlock["kind"]) => (block: ChatBlock, index: number, blocks: ChatBlock[]) =>
     block.kind === kind && blocks.findLastIndex((candidate) => candidate.kind === kind) === index;
 
+  const clearWorkspaceStatus = (controller: AbortController) => {
+    if (abortRef.current !== controller) return;
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+      preparingTimerRef.current = null;
+    }
+    if (workspaceStatusStateRef.current === "cleared") return;
+    const wasShown = workspaceStatusStateRef.current === "shown";
+    workspaceStatusStateRef.current = "cleared";
+    if (!wasShown) return;
+    patchLast((message) => {
+      if (message.status !== WORKSPACE_STATUS) return message;
+      const { status: _status, ...rest } = message;
+      return rest;
+    });
+  };
+
+  const reportTiming = (
+    timing: BrowserTiming,
+    update: ChatBrowserLatencyUpdate,
+  ) => {
+    if (timing.requestId) reportChatLatency(timing.requestId, update);
+  };
+
+  const recordStreamStart = (controller: AbortController, requestId: string) => {
+    const timing = browserTimingRef.current;
+    if (!timing || timing.controller !== controller) return;
+    timing.requestId = requestId;
+    if (!timing.streamStartReported) {
+      timing.streamStartReported = true;
+      reportTiming(timing, {
+        submission_to_stream_start_ms: Math.max(0, performance.now() - timing.submittedAt),
+      });
+    }
+    if (timing.firstVisibleAt !== undefined && !timing.firstVisibleReported) {
+      timing.firstVisibleReported = true;
+      reportTiming(timing, {
+        submission_to_first_visible_delta_ms: Math.max(
+          0,
+          timing.firstVisibleAt - timing.submittedAt,
+        ),
+      });
+    }
+  };
+
+  const recordTerminal = (
+    controller: AbortController,
+    classification: NonNullable<ChatBrowserLatencyUpdate["terminal_classification"]>,
+  ) => {
+    const timing = browserTimingRef.current;
+    if (!timing || timing.controller !== controller || timing.terminalReported) return;
+    timing.terminalReported = true;
+    reportTiming(timing, { terminal_classification: classification });
+  };
+
+  useLayoutEffect(() => {
+    const timing = browserTimingRef.current;
+    if (!timing || timing.firstVisibleAt !== undefined) return;
+    const assistant = messages.at(-1);
+    if (assistant?.role !== "assistant") return;
+    const visible = (assistant.blocks ?? []).some((block) => (
+      block.kind === "tool"
+      || (block.kind === "reasoning" && Boolean(block.text.trim()))
+      || (block.kind === "answer" && Boolean(block.text.trim()))
+    ));
+    if (!visible) return;
+    timing.firstVisibleAt = performance.now();
+    if (timing.requestId && !timing.firstVisibleReported) {
+      timing.firstVisibleReported = true;
+      reportTiming(timing, {
+        submission_to_first_visible_delta_ms: Math.max(
+          0,
+          timing.firstVisibleAt - timing.submittedAt,
+        ),
+      });
+    }
+  }, [messages]);
+
   const applyEvent = (event: ChatEvent) => {
     switch (event.type) {
       case "stream_start":
@@ -81,6 +182,7 @@ export function useChat(options: UseChatOptions) {
         break;
       case "sandbox_start":
       case "sandbox_ready":
+      case "workspace_ready":
         break;
       case "session_title_start":
         titleRef.current = "";
@@ -159,24 +261,75 @@ export function useChat(options: UseChatOptions) {
     setSessionError("");
     setMessages(optimistic);
     setBusy(true);
+    browserTimingRef.current = {
+      controller,
+      submittedAt: performance.now(),
+      streamStartReported: false,
+      firstVisibleReported: false,
+      terminalReported: false,
+    };
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+    }
+    workspaceStatusStateRef.current = "armed";
+    preparingTimerRef.current = window.setTimeout(() => {
+      preparingTimerRef.current = null;
+      if (
+        abortRef.current !== controller
+        || controller.signal.aborted
+        || messagesGenerationRef.current !== messagesGeneration
+      ) return;
+      workspaceStatusStateRef.current = "shown";
+      patchLast((message) => (
+        message.role === "assistant"
+        && message.streaming
+        && (message.blocks?.length ?? 0) === 0
+        && !message.error
+          ? { ...message, status: WORKSPACE_STATUS }
+          : message
+      ));
+    }, WORKSPACE_STATUS_DELAY_MS);
     void (async () => {
       let sawStreamStart = false;
       let sawTerminalEvent = false;
       let streamFailed = false;
       try {
         for await (const event of streamChat(request, { signal: controller.signal })) {
-          if (event.type === "stream_start") sawStreamStart = true;
+          if (event.type === "stream_start") {
+            sawStreamStart = true;
+            recordStreamStart(controller, event.request_id);
+          }
+          if (
+            event.type === "workspace_ready"
+            || event.type === "reasoning_start"
+            || event.type === "reasoning_delta"
+            || event.type === "tool_call"
+            || event.type === "answer_delta"
+            || event.type === "done"
+            || event.type === "error"
+          ) {
+            clearWorkspaceStatus(controller);
+          }
           if (event.type === "done" || event.type === "error") {
             sawTerminalEvent = true;
             streamFailed = event.type === "error";
+            recordTerminal(controller, event.type === "error" ? "error" : "complete");
           }
           if (!controller.signal.aborted) applyEvent(event);
         }
       } catch (error) {
         streamFailed = true;
-        if (!controller.signal.aborted) applyEvent({ type: "error", message: error instanceof Error ? error.message : "The assistant stream failed." });
+        if (!controller.signal.aborted) {
+          clearWorkspaceStatus(controller);
+          recordTerminal(controller, "network_error");
+          applyEvent({ type: "error", message: error instanceof Error ? error.message : "The assistant stream failed." });
+        }
       } finally {
         if (abortRef.current === controller) {
+          clearWorkspaceStatus(controller);
+          if (!sawTerminalEvent && !controller.signal.aborted) {
+            recordTerminal(controller, "network_error");
+          }
           busyRef.current = false;
           setBusy(false);
           if (!controller.signal.aborted) {
@@ -208,6 +361,9 @@ export function useChat(options: UseChatOptions) {
               patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
             }
             optionsRef.current.onSettled(canonicalId);
+          }
+          if (browserTimingRef.current?.controller === controller) {
+            browserTimingRef.current = null;
           }
         }
       }
@@ -286,8 +442,14 @@ export function useChat(options: UseChatOptions) {
 
   const stop = useCallback(() => {
     if (!abortRef.current) return;
-    abortRef.current.abort();
+    const controller = abortRef.current;
+    clearWorkspaceStatus(controller);
+    recordTerminal(controller, "stopped");
+    controller.abort();
     abortRef.current = null;
+    if (browserTimingRef.current?.controller === controller) {
+      browserTimingRef.current = null;
+    }
     busyRef.current = false;
     setBusy(false);
     setMessages((previous) => {
@@ -316,11 +478,40 @@ export function useChat(options: UseChatOptions) {
         optionsRef.current.onSettled(null);
       }
     }, 450);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleBlock = useCallback((messageId: string, blockIndex: number) => setMessages((previous) => previous.map((message) => message.id !== messageId ? message : { ...message, blocks: message.blocks?.map((block, index) => index === blockIndex && (block.kind === "reasoning" || block.kind === "tool") ? { ...block, open: !block.open } : block) })), []);
-  const reset = useCallback(() => { messagesGenerationRef.current += 1; abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; activeSessionIdRef.current = null; setMessages([]); setBusy(false); setSessionError(""); }, []);
-  const load = useCallback((restored: ChatMessage[]) => { messagesGenerationRef.current += 1; abortRef.current?.abort(); abortRef.current = null; busyRef.current = false; setMessages(restored); setBusy(false); setSessionError(""); }, []);
+  const reset = useCallback(() => {
+    messagesGenerationRef.current += 1;
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+      preparingTimerRef.current = null;
+    }
+    workspaceStatusStateRef.current = "cleared";
+    abortRef.current?.abort();
+    abortRef.current = null;
+    browserTimingRef.current = null;
+    busyRef.current = false;
+    activeSessionIdRef.current = null;
+    setMessages([]);
+    setBusy(false);
+    setSessionError("");
+  }, []);
+  const load = useCallback((restored: ChatMessage[]) => {
+    messagesGenerationRef.current += 1;
+    if (preparingTimerRef.current !== null) {
+      window.clearTimeout(preparingTimerRef.current);
+      preparingTimerRef.current = null;
+    }
+    workspaceStatusStateRef.current = "cleared";
+    abortRef.current?.abort();
+    abortRef.current = null;
+    browserTimingRef.current = null;
+    busyRef.current = false;
+    setMessages(restored);
+    setBusy(false);
+    setSessionError("");
+  }, []);
 
   return { messages, busy, papers, sessionError, send, editAndResend, stop, toggleBlock, reset, load };
 }

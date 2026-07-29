@@ -99,14 +99,15 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway`.
    The dedicated host exposes only the four capability-authenticated gateway
    routes.
-4. Apply `add_chat_sandbox_runtime.sql` as PostgreSQL superuser with
-   `search_path=staging,public`. The migration refuses any other schema, assigns
-   the new tables to `pwc_staging_owner`, grants `pwc_staging`, and revokes the
-   production application role.
-5. Keep `PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED=false` until directory snapshot
-   qualification passes. V1 uses Modal's isolated, automatically reclaimed
-   ephemeral disk; PID and memory ceilings remain hard qualification probes,
-   while disk capacity is provider-managed until bounded snapshots are enabled.
+4. Apply `add_chat_sandbox_runtime.sql`, then
+   `add_chat_turn_latency.sql`, as PostgreSQL superuser with
+   `search_path=staging,public`. Both migrations refuse any other schema,
+   assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
+   revoke the production application role.
+5. Keep `PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED=false`; snapshot activation is
+   outside the latency project and requires a separate approved plan. V1 uses
+   Modal's isolated, automatically reclaimed ephemeral disk; PID and memory
+   ceilings remain hard qualification probes.
 
 The worker system prompt embeds
 `backend/chat_sandbox_worker/PWC_CLI_SKILL.md` plus the bounded area/task
@@ -130,15 +131,16 @@ sudo systemd-run --quiet --wait --pipe --collect \
   /srv/paperswithcode/.venv/bin/python \
   -m backend.scripts.qualify_chat_sandbox \
   --release-dir /srv/paperswithcode/environments/staging/current \
-  --starts 100 --parallel 4 --snapshot-samples 3 --resource-probes \
+  --starts 100 --parallel 4 --snapshot-samples 0 --resource-probes \
   --confirm QUALIFY_STAGING_SANDBOX
 ```
 
 The runner creates only tagged disposable qualification sandboxes. It verifies
 the pinned CLI, dedicated-gateway reachability without a capability, blocked
-general egress, agent/broker UID and `/proc` isolation, cancellation by sandbox
-termination, and directory snapshot restoration. It emits timings and no
-environment values, commands, prompts, credentials, or tool output. Full model,
+general egress, agent/broker UID and `/proc` isolation, and cancellation by
+sandbox termination. Directory snapshots remain disabled for this latency
+project. It emits timings and no environment values, commands, prompts,
+credentials, or tool output. Full model,
 SDK compaction, resume, edit/retry, and citation qualification still runs
 through authenticated staging chats before increasing the rollout percentage.
 

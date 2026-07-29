@@ -551,8 +551,21 @@ class SandboxSessionManager:
         resume: str | None,
         capability: IssuedCapability,
     ) -> AsyncIterator[dict]:
+        turn_started = time.perf_counter()
         yield {"type": "sandbox_start", "session_id": str(chat_session_id)}
-        sandbox, cold_start_ms, _created = await self.ensure_ready(chat_session_id)
+        sandbox, cold_start_ms, created = await self.ensure_ready(chat_session_id)
+        yield {
+            "type": "_latency",
+            "phase": "sandbox_acquisition_ms",
+            "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
+            "acquisition_outcome": "created" if created else "reused_session",
+        }
+        if created:
+            yield {
+                "type": "_latency",
+                "phase": "modal_create_ms",
+                "elapsed_ms": cold_start_ms,
+            }
         yield {
             "type": "sandbox_ready",
             "session_id": str(chat_session_id),
@@ -563,6 +576,7 @@ class SandboxSessionManager:
         stderr_task: asyncio.Task | None = None
         buffer = b""
         terminal = False
+        first_worker_delta_recorded = False
         validator = WorkerEventValidator()
         try:
             process = await sandbox.exec.aio(
@@ -599,6 +613,11 @@ class SandboxSessionManager:
                 + encode_frame(run)
             )
             await process.stdin.drain.aio()
+            yield {
+                "type": "_latency",
+                "phase": "capability_install_ms",
+                "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
+            }
 
             async def drain_stderr() -> None:
                 async for _chunk in process.stderr:
@@ -624,6 +643,33 @@ class SandboxSessionManager:
                         if event["type"] == "worker_done":
                             terminal = True
                             continue
+                        if event["type"] == "workspace_ready":
+                            elapsed_ms = round(
+                                (time.perf_counter() - turn_started) * 1000
+                            )
+                            yield {
+                                "type": "_latency",
+                                "phase": "worker_ready_ms",
+                                "elapsed_ms": elapsed_ms,
+                            }
+                            yield {
+                                "type": "_latency",
+                                "phase": "sdk_dispatch_ms",
+                                "elapsed_ms": elapsed_ms,
+                            }
+                        if not first_worker_delta_recorded and event["type"] in {
+                            "reasoning_delta",
+                            "tool_call",
+                            "answer_delta",
+                        }:
+                            first_worker_delta_recorded = True
+                            yield {
+                                "type": "_latency",
+                                "phase": "first_worker_delta_ms",
+                                "elapsed_ms": round(
+                                    (time.perf_counter() - turn_started) * 1000
+                                ),
+                            }
                         yield {
                             key: value
                             for key, value in event.items()

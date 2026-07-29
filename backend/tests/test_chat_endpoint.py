@@ -22,7 +22,7 @@ from starlette.requests import Request
 
 from backend.config import get_settings
 from backend.main import create_app
-from backend.models.chat import ChatRequest, sse_event
+from backend.models.chat import ChatBrowserLatencyRequest, ChatRequest, sse_event
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER
 from backend.services import chat_mcp
 from backend.services.chat_agent_service import (
@@ -89,6 +89,20 @@ def test_chat_request_is_strict_and_requires_message_and_client_id():
         ChatRequest(message="hello", client_message_id="id", unknown=True)
     request = ChatRequest(message="hello", client_message_id="id")
     assert request.session_id is None
+
+
+def test_browser_latency_request_is_strict_bounded_and_nonempty():
+    with pytest.raises(ValueError):
+        ChatBrowserLatencyRequest()
+    with pytest.raises(ValueError):
+        ChatBrowserLatencyRequest(submission_to_stream_start_ms=-1)
+    with pytest.raises(ValueError):
+        ChatBrowserLatencyRequest(submission_to_stream_start_ms=1, unexpected="content")
+    payload = ChatBrowserLatencyRequest(
+        submission_to_stream_start_ms=12.5,
+        terminal_classification="complete",
+    )
+    assert payload.submission_to_stream_start_ms == 12.5
 
 
 def test_sse_serialization_preserves_unicode_and_newlines():

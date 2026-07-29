@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
 from backend.models.chat import (
+    ChatBrowserLatencyRequest,
     ChatMessageResponse,
     ChatRequest,
     ChatSessionDetail,
@@ -35,6 +36,7 @@ from backend.models.chat import (
     sse_event,
 )
 from backend.models.database import ChatMessageRecord, ChatSession
+from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import (
     ChatServiceError,
@@ -338,6 +340,7 @@ async def stream_chat(
             headers={"Retry-After": str(retry_after)},
         )
 
+    request_id = str(uuid.uuid4())
     try:
         with db_manager.session_local() as db:
             try:
@@ -361,6 +364,16 @@ async def stream_chat(
                     and not admission.replay_assistant
                     else None
                 )
+                if settings.environment == "staging" and not admission.replay_assistant:
+                    ChatLatencyService(db).admit(
+                        turn_id=admission.turn_id,
+                        session_id=admission.session_id,
+                        request_id=request_id,
+                        settings=settings,
+                        model_route=admission.model_route,
+                        execution_backend=admission.execution_backend,
+                        is_new_chat=body.session_id is None,
+                    )
                 db.commit()
             except ChatServiceError as exc:
                 if exc.commit_changes:
@@ -377,7 +390,7 @@ async def stream_chat(
         owner=owner,
         admission=admission,
         prompt=body.message,
-        request_id=str(uuid.uuid4()),
+        request_id=request_id,
         title_token=title_token,
         is_disconnected=request.is_disconnected,
         release_admission=_admission.release,
@@ -399,3 +412,25 @@ async def stream_chat(
             "Connection": "keep-alive",
         },
     )
+
+
+@router.post("/latency/{request_id}", status_code=204)
+def report_browser_latency(
+    request_id: uuid.UUID,
+    body: ChatBrowserLatencyRequest,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+):
+    owner = owner_from_user(user)
+    try:
+        found = ChatLatencyService(db).update_browser(
+            owner.hf_user_id, str(request_id), body
+        )
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    if not found:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Chat request not found")
+    db.commit()
+    return Response(status_code=204)

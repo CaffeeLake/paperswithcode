@@ -11,6 +11,7 @@ import contextlib
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -100,18 +101,33 @@ async def lifespan(app: FastAPI):
         and settings.environment == "staging"
         and settings.chat_enabled
     ):
+        from backend.database.connection import db_manager
+        from backend.services.chat_latency_service import ChatLatencyService
         from backend.services.chat_sandbox_service import SandboxSessionManager
 
         async def maintain_sandboxes() -> None:
             manager = SandboxSessionManager(settings)
+            latency_cleanup_date = None
             while True:
                 await asyncio.sleep(60)
-                for operation in (
+                operations = [
                     manager.reconcile,
                     manager.reap_idle,
                     manager.enforce_warm_cap,
                     manager.expire_inactive_snapshots,
-                ):
+                ]
+                today = datetime.now(UTC).date()
+                if latency_cleanup_date != today:
+
+                    async def cleanup_latency() -> None:
+                        nonlocal latency_cleanup_date
+                        with db_manager.session_local() as db:
+                            ChatLatencyService(db).cleanup()
+                            db.commit()
+                        latency_cleanup_date = today
+
+                    operations.append(cleanup_latency)
+                for operation in operations:
                     try:
                         await operation()
                     except Exception as error:

@@ -18,6 +18,7 @@ class WorkerEventValidator:
 
     allowed = {
         "worker_ready",
+        "workspace_ready",
         "_sdk_session",
         "_mirror_error",
         "usage",

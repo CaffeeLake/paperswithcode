@@ -420,11 +420,13 @@ class _ChatSchemaDB:
         include_edit_columns: bool = True,
         include_share_columns: bool = True,
         include_share_constraint: bool = True,
+        include_latency_columns: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
         self.include_share_columns = include_share_columns
         self.include_share_constraint = include_share_constraint
+        self.include_latency_columns = include_latency_columns
 
     def execute(self, statement):
         sql = str(statement)
@@ -437,6 +439,7 @@ class _ChatSchemaDB:
                 "chat_shares",
                 "chat_sandbox_leases",
                 "chat_turn_capabilities",
+                "chat_turn_latency",
             )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
         if "information_schema.columns" in sql:
@@ -456,6 +459,14 @@ class _ChatSchemaDB:
                     [
                         ("chat_shares", "snapshot_version"),
                         ("chat_shares", "messages"),
+                    ]
+                )
+            if self.include_latency_columns:
+                rows.extend(
+                    [
+                        ("chat_turn_latency", "request_id"),
+                        ("chat_turn_latency", "terminal_status"),
+                        ("chat_turn_latency", "browser_first_visible_delta_ms"),
                     ]
                 )
             return _ChatSchemaResult(rows=rows)
@@ -488,6 +499,11 @@ def test_chat_schema_requires_self_contained_share_snapshot_columns():
 def test_chat_schema_requires_share_snapshot_array_constraint():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
         validate_chat_schema(_ChatSchemaDB("off", include_share_constraint=False))
+
+
+def test_chat_schema_requires_latency_telemetry_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_latency_columns=False))
 
 
 def test_deployed_runtime_rejects_source_shell(tmp_path: Path):

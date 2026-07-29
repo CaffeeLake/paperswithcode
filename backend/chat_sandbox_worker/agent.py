@@ -278,6 +278,11 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         session_store_flush="eager",
         resume=frame.get("resume"),
     )
+    yield {
+        "v": 1,
+        "type": "workspace_ready",
+        "request_id": request_id,
+    }
     stream = sdk_query(prompt=prompt, options=options)
     try:
         async with asyncio.timeout(settings.chat_agent_timeout_seconds):

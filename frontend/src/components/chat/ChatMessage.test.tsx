@@ -152,6 +152,32 @@ describe("AssistantMessage", () => {
     <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
   );
 
+  it("does not show an immediate status for an empty streaming message", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [],
+    });
+
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("renders the delayed workspace status accessibly", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      status: "Preparing research workspace…",
+      blocks: [],
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Preparing research workspace…",
+    );
+  });
+
   it("shows a caret only on the active tail answer block", () => {
     const { container } = renderAssistant({
       id: "assistant-1",

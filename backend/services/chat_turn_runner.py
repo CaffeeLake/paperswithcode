@@ -46,6 +46,7 @@ class LocalChatTurnRunner:
         self.sdk_directory = settings.chat_agent_cwd
 
     async def events(self) -> AsyncIterator[dict]:
+        yield {"type": "workspace_ready"}
         async for event in stream_agent_events(
             self.prompt,
             self.settings,

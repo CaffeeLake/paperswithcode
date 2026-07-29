@@ -35,6 +35,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_chat_sessions.sql` | Authenticated chat sessions, UI messages, and opaque Agent SDK transcript storage |
 | `add_chat_edit_preparation_state.sql` | Typed durable fork identity used to recover interrupted chat edits |
 | `add_chat_sandbox_runtime.sql` | Staging-only additive immutable chat backend selection, runtime provenance, sandbox leases, and hash-only turn capabilities; run as PostgreSQL superuser with `search_path=staging,public` before activating the bridge |
+| `add_chat_turn_latency.sql` | Staging-only, content-free per-turn server/browser latency telemetry with 30-day application retention; apply after `add_chat_sandbox_runtime.sql` |
 | `add_chat_shares.sql` | Staging-only self-contained public chat capability snapshots and durable assistant finish reasons; run as PostgreSQL superuser with `search_path=staging,public` before activating chat sharing |
 | `add_paper_curation_jobs.sql` | durable admin-triggered Hugging Face paper-curation Jobs |
 | `add_curation_thumbnail_queue.sql` | transactionally queued, CRON-owned thumbnail work and accepted-submission state for paper-curation Jobs |
