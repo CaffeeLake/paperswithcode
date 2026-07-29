@@ -316,6 +316,36 @@ date, recomputes the rolling 30-day mean, and prunes history only according to a
 bounded retention rule. A retry on the same day updates that day's snapshot
 rather than inserting a duplicate.
 
+Register both new scheduled jobs in `backend/services/cron_registry.py` so they
+automatically appear in the existing `/admin-dashboard` daily supporting-jobs
+section and in `pwc cron health`:
+
+- `sync_hf_organizations` / "Sync HF Organizations";
+- `calculate_organization_trending_scores` / "Calculate Organization Trending
+  Scores".
+
+Each registry definition must include its daily schedule, script and log names,
+process pattern, dedicated production lock file, expected runtime,
+`stale_after_minutes`, and workflow metadata. Mark both as noncritical because
+stale data does not make the public site unavailable. Allow a successful
+no-work run for the append-only HF sync, but not for the trend job, which should
+write one snapshot per featured organization each day.
+
+Add database freshness queries that let the dashboard detect silent failures:
+
+- organization sync: newest `last_hf_synced_at`, featured organizations synced
+  recently, and featured organizations beyond the stale threshold;
+- organization trends: newest `trending_score_updated_at`, today's snapshot
+  count, total featured count, and featured organizations missing today's
+  snapshot.
+
+Add both commands to `deploy/cron_launcher.py` so the installed immutable
+`pwc-cron` interface can execute them. Add the corresponding scheduled GitHub
+Actions workflows, invoke only `sudo /usr/local/sbin/pwc-cron <job>`, and order
+the trend workflow after the relevant paper-trending and organization-sync
+windows. Update `docs/operations.md`, `.github/workflows/scripts/README.md`, and
+the registered-health-job inventory in `.agents/skills/pwc-cli/SKILL.md`.
+
 The job should alert/log on:
 
 - missing or unparseable `orgPapers`;
@@ -487,6 +517,12 @@ Add focused backend tests for:
   GitHub rollback modes, the 24-hour input freshness cutoff, distinct-paper
   counting, idempotent daily snapshots, a rolling 30-day mean, cold-start
   behavior, and deterministic tie-breakers;
+- cron registry definitions, dedicated locks, launcher allowlist entries, and
+  database freshness metrics for both new daily jobs;
+- `/api/v1/cron/status` returning both jobs so the generic admin dashboard
+  renders their cards without frontend hard-coding;
+- healthy/degraded/broken evaluation for fresh, missing, and stale organization
+  sync/trend writes, including the permitted no-work sync case;
 - organization list/detail paper counts using latest eligible papers.
 
 Mock HF and ArXiv responses; tests must not depend on live network access.
@@ -549,7 +585,7 @@ Do not run `npm run build` as a routine check.
 3. Deploy the exact pushed commit to staging.
 4. Verify `/organizations`, representative `/orgs/...` pages, a zero-paper org,
    task filtering, API pagination, old redirects, canonical metadata, Markdown,
-   and the organizations sitemap.
+   the organizations sitemap, and both new daily jobs on `/admin-dashboard`.
 5. Confirm that no existing static route is intercepted by an organization
    alias.
 
@@ -587,6 +623,9 @@ route deployment before changing sitemap/canonical discovery in production.
   reserves distinct provenance for a future AI affiliation extractor.
 - HF organization links are append-only: syncs add newly attributed papers and
   never remove previously attributed papers.
+- `/admin-dashboard` and `pwc cron health` expose health, last-run, lock,
+  workflow, and database-freshness status for both the HF organization sync and
+  rolling organization-trending jobs.
 - Every nonzero HF-attributed paper is either linked locally or reported with a
   specific import failure; the run produces a reconciliation summary.
 - Every missing valid ArXiv paper is imported with complete canonical metadata
