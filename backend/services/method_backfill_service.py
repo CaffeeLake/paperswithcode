@@ -321,6 +321,20 @@ def run_reference_backfill(
             by_ss.setdefault(paper.semantic_scholar_id, set()).add(method_id)
         if paper and paper.arxiv_id:
             by_arxiv.setdefault(paper.arxiv_id, set()).add(method_id)
+    provider_name = getattr(client, "provider_name", "semantic_scholar")
+    by_openalex: dict[str, set[int]] = {}
+    if provider_name == "openalex":
+        source_batch = client.fetch_works(by_arxiv)
+        if source_batch is None:
+            raise RuntimeError("OpenAlex source-paper lookup failed")
+        for arxiv_id, method_ids_for_source in by_arxiv.items():
+            work_ids = source_batch.work_ids_by_arxiv.get(arxiv_id, set())
+            if not work_ids:
+                raise ValueError(
+                    f"OpenAlex could not resolve method source arXiv:{arxiv_id}"
+                )
+            for work_id in work_ids:
+                by_openalex.setdefault(work_id, set()).update(method_ids_for_source)
     stats = BackfillStats()
     started = time.monotonic()
     for month in months:
@@ -442,6 +456,12 @@ def run_reference_backfill(
             if papers
             else set()
         )
+        openalex_batch = (
+            client.fetch_works(paper.arxiv_id for paper in papers if paper.arxiv_id)
+            if provider_name == "openalex"
+            else None
+        )
+        openalex_lookup_failed = provider_name == "openalex" and openalex_batch is None
         if not dry_run:
             for row in rows.values():
                 row.status = "running"
@@ -460,33 +480,60 @@ def run_reference_backfill(
             if time.monotonic() - started >= max_runtime_seconds:
                 runtime_reached = True
                 break
-            identifier = paper.semantic_scholar_id or (
-                f"arXiv:{paper.arxiv_id}" if paper.arxiv_id else None
-            )
             eligible_method_ids = {
                 method_id
                 for method_id, (published, paper_id) in row_cursors.items()
                 if published is None
                 or (paper.date_published, paper.id) > (published, paper_id)
             }
-            if not identifier:
-                stats.papers_unresolvable += 1
-                matched: set[int] = set()
-                failed = False
+            if provider_name == "openalex":
+                identifier = f"arXiv:{paper.arxiv_id}" if paper.arxiv_id else None
+                failed = openalex_lookup_failed
+                if failed:
+                    resolved = False
+                    matched = set()
+                elif not identifier:
+                    resolved = False
+                    stats.papers_unresolvable += 1
+                    matched = set()
+                elif not openalex_batch.work_ids_by_arxiv.get(paper.arxiv_id):
+                    resolved = False
+                    failed = True
+                    matched = set()
+                else:
+                    resolved = True
+                    matched = {
+                        method_id
+                        for reference_id in openalex_batch.references_by_arxiv.get(
+                            paper.arxiv_id, set()
+                        )
+                        for method_id in by_openalex.get(reference_id, set())
+                        if method_id in eligible_method_ids
+                        and (paper.id, method_id) not in excluded_pairs
+                    }
             else:
-                failures_before = _request_failure_count(client)
-                cited = list(client.iter_references(identifier))
-                failed = _request_failure_count(client) > failures_before
-                matched = {
-                    method_id
-                    for reference in cited
-                    for method_id in (
-                        by_ss.get(reference.semantic_scholar_id, set())
-                        | by_arxiv.get(reference.arxiv_id, set())
-                    )
-                    if method_id in eligible_method_ids
-                    and (paper.id, method_id) not in excluded_pairs
-                }
+                identifier = paper.semantic_scholar_id or (
+                    f"arXiv:{paper.arxiv_id}" if paper.arxiv_id else None
+                )
+                resolved = bool(identifier)
+                if not identifier:
+                    stats.papers_unresolvable += 1
+                    matched = set()
+                    failed = False
+                else:
+                    failures_before = _request_failure_count(client)
+                    cited = list(client.iter_references(identifier))
+                    failed = _request_failure_count(client) > failures_before
+                    matched = {
+                        method_id
+                        for reference in cited
+                        for method_id in (
+                            by_ss.get(reference.semantic_scholar_id, set())
+                            | by_arxiv.get(reference.arxiv_id, set())
+                        )
+                        if method_id in eligible_method_ids
+                        and (paper.id, method_id) not in excluded_pairs
+                    }
             if failed:
                 lookup_failed = True
                 stats.papers_failed += 1
@@ -496,12 +543,12 @@ def run_reference_backfill(
                             continue
                         row.retryable_failures += 1
                         row.last_error = (
-                            f"Semantic Scholar lookup failed for {identifier}"
+                            f"{provider_name} lookup failed for {identifier}"
                         )
                         row.updated_at = datetime.now(UTC)
                     db.commit()
                 break
-            stats.papers_processed += bool(identifier)
+            stats.papers_processed += resolved
             stats.matches += len(matched)
             if not dry_run:
                 stats.links_written += upsert_evidence_links(
@@ -511,12 +558,19 @@ def run_reference_backfill(
                         for method_id in matched
                     ),
                     evidence_type="reference",
-                    details={"workload_key": "secondary"},
+                    details={
+                        "workload_key": (
+                            "secondary"
+                            if provider_name == "semantic_scholar"
+                            else provider_name
+                        ),
+                        "provider": provider_name,
+                    },
                 )
                 for method_id, row in rows.items():
                     if method_id not in eligible_method_ids:
                         continue
-                    if identifier:
+                    if resolved:
                         row.processed_papers += 1
                     else:
                         row.unresolvable_papers += 1
@@ -601,7 +655,7 @@ def run_reference_backfill(
             f"retries={getattr(client, 'retry_attempts', client.rate_limit_hits)} "
             f"matches={stats.matches} "
             f"links={stats.links_written} cursor={cursor_date}/{cursor_id} "
-            f"remaining={remaining_estimate} key_route=secondary"
+            f"remaining={remaining_estimate} provider={provider_name}"
         )
         if db.bind.dialect.name == "postgresql":
             db.execute(

@@ -30,17 +30,22 @@ Historical method work is manual and release-pinned:
 # Non-mutating capacity and match estimates first.
 sudo pwc-cron backfill_method_keywords --dry-run --limit 5000
 sudo pwc-cron backfill_method_references --method-slug clip \
-  --month-from 2021-03-01 --month-to 2021-03-01 --dry-run --limit 1000
+  --month-from 2021-03-01 --month-to 2021-03-01 \
+  --provider openalex --dry-run --limit 1000
 
 # Authorized resumable writes.
 sudo pwc-cron backfill_method_keywords --resume --limit 5000
-sudo pwc-cron backfill_method_references --method-slug clip --resume --limit 1000
+sudo pwc-cron backfill_method_references --method-slug clip \
+  --provider openalex --resume --limit 1000
 ```
 
 The reference backfill fails closed unless
 `PWC_SEMANTIC_SCHOLAR_API_KEY_2` is present and valid. That secondary key is
 reserved for historical scans; hourly citation updates and the weekly
 incremental linker continue to own `PWC_SEMANTIC_SCHOLAR_API_KEY`.
+Alternatively, `--provider openalex` batches exact arXiv landing-page lookups
+and uses `PWC_OPENALEX_API_KEY` when configured, while retaining OpenAlex's
+smaller keyless allowance for bounded runs.
 After the first authorized bulk load, run `ANALYZE` only on
 `paper_method_evidence`, `paper_method_exclusions`,
 `method_reference_backfill_months`, and `method_keyword_backfill_runs`; do not

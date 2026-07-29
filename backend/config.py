@@ -134,6 +134,9 @@ class Settings(BaseSettings):
         default="",
         description="Secondary Semantic Scholar key reserved for historical backfills",
     )
+    openalex_api_key: str = Field(
+        default="", description="Optional OpenAlex API key for historical backfills"
+    )
 
     # LLM API keys
     gemini_api_key: str = Field(default="", description="Google Gemini API key")

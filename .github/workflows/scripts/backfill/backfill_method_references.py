@@ -14,6 +14,7 @@ from backend.database.methods_setup.link_papers_by_source_citations import (
 )
 from backend.services.cron_token_probe import probe_cron_token
 from backend.services.method_backfill_service import run_reference_backfill
+from backend.services.openalex_reference_service import OpenAlexReferenceClient
 
 
 def _date(value: str) -> date:
@@ -51,7 +52,12 @@ def main() -> int:
     parser.add_argument("--month-to", type=_date)
     parser.add_argument("--limit", type=int, default=1_000)
     parser.add_argument("--max-runtime-seconds", type=int, default=3_600)
-    parser.add_argument("--request-delay", type=float, default=1.0)
+    parser.add_argument(
+        "--provider",
+        choices=("semantic-scholar", "openalex"),
+        default="semantic-scholar",
+    )
+    parser.add_argument("--request-delay", type=float)
     parser.add_argument("--batch-size", type=int, default=250)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -59,15 +65,28 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = get_settings()
-    validate_secondary_key(
-        settings.semantic_scholar_api_key_2,
-        request_delay=args.request_delay,
-    )
-    client = SemanticScholarClient(
-        api_key=settings.semantic_scholar_api_key_2,
-        request_delay=args.request_delay,
-        exponential_backoff=True,
-    )
+    request_delay = args.request_delay
+    if args.provider == "semantic-scholar":
+        request_delay = 1.0 if request_delay is None else request_delay
+        validate_secondary_key(
+            settings.semantic_scholar_api_key_2,
+            request_delay=request_delay,
+        )
+        client = SemanticScholarClient(
+            api_key=settings.semantic_scholar_api_key_2,
+            request_delay=request_delay,
+            exponential_backoff=True,
+        )
+    else:
+        request_delay = 0.1 if request_delay is None else request_delay
+        client = OpenAlexReferenceClient(
+            api_key=settings.openalex_api_key,
+            request_delay=request_delay,
+        )
+        print(
+            "OpenAlex route: historical backfill "
+            f"({'authenticated' if settings.openalex_api_key else 'keyless allowance'})"
+        )
     try:
         with db_manager.session_local() as db:
             stats = run_reference_backfill(

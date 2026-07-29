@@ -25,6 +25,7 @@ from backend.services.method_backfill_service import (
     run_keyword_backfill,
     run_reference_backfill,
 )
+from backend.services.openalex_reference_service import OpenAlexWorkBatch
 from backend.services.paper_method_link_service import (
     replace_manual_links,
     sync_method_source_evidence,
@@ -323,6 +324,102 @@ def test_reference_backfill_links_all_methods_that_share_one_source():
     assert stats.links_written == 2
     assert db.get(PaperMethodEvidence, (2, 10, "reference")) is not None
     assert db.get(PaperMethodEvidence, (2, 11, "reference")) is not None
+
+
+def test_reference_backfill_uses_batched_openalex_ids_and_records_provider():
+    db = _session()
+    db.add_all(
+        [
+            _paper(1, "Source", date(2026, 1, 1)),
+            _paper(2, "Citing paper", date(2026, 1, 2)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+        ]
+    )
+    db.commit()
+
+    class OpenAlexClient:
+        provider_name = "openalex"
+        api_calls = 0
+        api_errors = 0
+        rate_limit_hits = 0
+        failed_requests = 0
+        retry_attempts = 0
+
+        def fetch_works(self, arxiv_ids):
+            self.api_calls += 1
+            ids = set(arxiv_ids)
+            return OpenAlexWorkBatch(
+                work_ids_by_arxiv={
+                    arxiv_id: {f"https://openalex.org/{arxiv_id}"} for arxiv_id in ids
+                },
+                references_by_arxiv={"2601.00002": {"https://openalex.org/2601.00001"}},
+            )
+
+    stats = run_reference_backfill(
+        db,
+        OpenAlexClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    evidence = db.get(PaperMethodEvidence, (2, 10, "reference"))
+    assert stats.matches == 1
+    assert stats.api_calls == 2
+    assert evidence is not None
+    assert evidence.details == {
+        "workload_key": "openalex",
+        "provider": "openalex",
+    }
+
+
+def test_openalex_missing_work_does_not_advance_coverage_cursor():
+    db = _session()
+    db.add_all(
+        [
+            _paper(1, "Source", date(2026, 1, 1)),
+            _paper(2, "Missing from OpenAlex", date(2026, 1, 2)),
+            Method(id=10, name="A", slug="a", source_paper_id=1),
+        ]
+    )
+    db.commit()
+
+    class OpenAlexClient:
+        provider_name = "openalex"
+        api_calls = 0
+        api_errors = 0
+        rate_limit_hits = 0
+        failed_requests = 0
+        retry_attempts = 0
+
+        def fetch_works(self, arxiv_ids):
+            self.api_calls += 1
+            ids = set(arxiv_ids)
+            if ids == {"2601.00001"}:
+                return OpenAlexWorkBatch(
+                    work_ids_by_arxiv={"2601.00001": {"https://openalex.org/source"}}
+                )
+            return OpenAlexWorkBatch(
+                work_ids_by_arxiv={"2601.00001": {"https://openalex.org/source"}}
+            )
+
+    stats = run_reference_backfill(
+        db,
+        OpenAlexClient(),
+        method_ids=[10],
+        month_from=date(2026, 1, 1),
+        month_to=date(2026, 1, 1),
+        limit=10,
+        dry_run=False,
+    )
+
+    progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
+    assert stats.papers_failed == 1
+    assert progress.processed_papers == 1
+    assert progress.cursor_paper_id == 1
+    assert progress.retryable_failures == 1
 
 
 def test_reference_backfill_counts_excluded_match_as_processed_not_matched():
