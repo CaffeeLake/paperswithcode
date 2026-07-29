@@ -931,6 +931,7 @@ class TaskService:
         order_by: str = "date_published",
         order_dir: str = "desc",
         include_resources: bool = False,
+        has_code: bool = False,
     ):
         """
         Get papers associated with a specific task.
@@ -975,6 +976,11 @@ class TaskService:
             # Apply latest version filter
             if latest_only:
                 query = query.filter(DBPaper.is_latest_version)
+
+            if has_code:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_code_filter(query)
 
             # Apply ordering
             if order_by == "trending":

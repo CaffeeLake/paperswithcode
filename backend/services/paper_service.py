@@ -916,6 +916,7 @@ class PaperService:
         order_dir: str = "desc",
         time_window: str = "all_time",
         include_resources: bool = False,
+        has_code: bool = False,
     ) -> Papers:
         """
         Get paginated list of papers with optional filtering.
@@ -964,6 +965,7 @@ class PaperService:
                     conference=conference,
                     latest_only=latest_only,
                     include_resources=include_resources,
+                    has_code=has_code,
                 )
 
             # Build base query
@@ -972,6 +974,9 @@ class PaperService:
             # Filter for latest versions only
             if latest_only:
                 query = query.filter(DBPaper.is_latest_version)
+
+            if has_code:
+                query = self.apply_has_code_filter(query)
 
             # Apply search filter
             if search:
@@ -1067,6 +1072,10 @@ class PaperService:
                 AND (:published_before IS NULL OR p.date_published <= :published_before)
                 AND (:conference IS NULL OR p.conference ILIKE :conference)
                 AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
+                AND (:has_code = FALSE OR EXISTS (
+                    SELECT 1 FROM paper_repositories code_pr
+                    WHERE code_pr.paper_id = p.id
+                ))
             ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC NULLS LAST
         ),
         ranked_by_repo AS (
@@ -1115,6 +1124,10 @@ class PaperService:
                 AND (:published_before IS NULL OR p.date_published <= :published_before)
                 AND (:conference IS NULL OR p.conference ILIKE :conference)
                 AND (:latest_only = FALSE OR p.is_latest_version = TRUE)
+                AND (:has_code = FALSE OR EXISTS (
+                    SELECT 1 FROM paper_repositories code_pr
+                    WHERE code_pr.paper_id = p.id
+                ))
             ORDER BY p.id, r.num_stars DESC NULLS LAST
         ),
         ranked_by_repo AS (
@@ -1148,6 +1161,7 @@ class PaperService:
         latest_only: bool,
         page: int,
         page_size: int,
+        has_code: bool = False,
     ):
         """Return ``(sql, params)`` for the requested trending ranking mode.
 
@@ -1166,6 +1180,7 @@ class PaperService:
             "published_before": published_before,
             "conference": f"%{conference}%" if conference else None,
             "latest_only": latest_only,
+            "has_code": has_code,
             "limit": page_size,
             "offset": (page - 1) * page_size,
         }
@@ -1181,6 +1196,7 @@ class PaperService:
         conference: Optional[str] = None,
         latest_only: bool = True,
         include_resources: bool = False,
+        has_code: bool = False,
     ) -> Papers:
         """
         Get papers sorted by trending score.
@@ -1206,6 +1222,7 @@ class PaperService:
                 published_before=published_before,
                 conference=conference,
                 latest_only=latest_only,
+                has_code=has_code,
                 page=page,
                 page_size=page_size,
             )
@@ -1312,6 +1329,11 @@ class PaperService:
             desc(DBPaper.date_published),
             desc(DBPaper.id),
         )
+
+    @staticmethod
+    def apply_has_code_filter(query):
+        """Keep papers with at least one linked GitHub repository."""
+        return query.filter(DBPaper.repositories.any())
 
     def get_paper_versions(self, arxiv_id: str) -> PaperVersions:
         """

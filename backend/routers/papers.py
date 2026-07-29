@@ -164,6 +164,9 @@ def get_papers(
     include_resources: bool = Query(
         False, description="Include repositories and project pages"
     ),
+    has_code: bool = Query(
+        False, description="Only include papers with a linked GitHub repository"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -191,6 +194,7 @@ def get_papers(
             order_dir=order_dir,
             time_window=time,
             include_resources=include_resources,
+            has_code=has_code,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))

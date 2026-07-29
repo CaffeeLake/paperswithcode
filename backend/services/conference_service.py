@@ -304,6 +304,7 @@ class ConferenceService:
         order_by: str = "date_published",
         order_dir: str = "desc",
         include_resources: bool = False,
+        has_code: bool = False,
     ) -> Papers:
         try:
             conference = self._get_conference_by_slug(slug)
@@ -341,6 +342,11 @@ class ConferenceService:
 
             if latest_only:
                 query = query.filter(DBPaper.is_latest_version)
+
+            if has_code:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_code_filter(query)
 
             if presentation in ("outstanding", "best_paper_finalist"):
                 if presentation == "outstanding":

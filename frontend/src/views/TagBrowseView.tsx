@@ -5,6 +5,7 @@ import { ArrowRight, Github, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
+import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Dataset, Task, TrendingBenchmark } from "@/lib/api";
@@ -58,9 +59,16 @@ const TagBrowseView: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
+  const hasCode = searchParams.get("has_code") === "true";
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
+    setSearchParams(params);
+  };
+  const setHasCode = (active: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (active) params.set("has_code", "true");
+    else params.delete("has_code");
     setSearchParams(params);
   };
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
@@ -123,6 +131,7 @@ const TagBrowseView: React.FC = () => {
     order_by: orderBy,
     order_dir: "desc",
     include_resources: true,
+    has_code: hasCode,
     enabled: !!pageQ.data?.task?.id,
   });
 
@@ -582,6 +591,7 @@ const TagBrowseView: React.FC = () => {
                 </button>
               ))}
             </div>
+            <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
             <div className="results-count">
               {cards.length} loaded in <span>{taskName}</span>
             </div>

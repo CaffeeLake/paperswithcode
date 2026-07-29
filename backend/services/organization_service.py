@@ -333,6 +333,7 @@ class OrganizationService:
         order_by: str = "date_published",
         order_dir: str = "desc",
         include_resources: bool = False,
+        has_code: bool = False,
     ) -> Papers:
         try:
             organization = self._get_organization_by_slug(slug)
@@ -358,6 +359,11 @@ class OrganizationService:
 
             if latest_only:
                 query = query.filter(DBPaper.is_latest_version)
+
+            if has_code:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_code_filter(query)
 
             if order_by == "trending":
                 # Match the home feed: rank by the active trending metric

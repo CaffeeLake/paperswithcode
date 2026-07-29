@@ -734,6 +734,12 @@ a.paper-resource.is-link:focus-visible {
 }
 .sort-btn.active { background: var(--ink); color: var(--bg); }
 .sort-btn:not(.active):hover { background: var(--bg-subtle); color: var(--ink); }
+.paper-feed-code-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-transform: none;
+}
 .results-count {
   font-family: var(--mono);
   font-size: 11px;

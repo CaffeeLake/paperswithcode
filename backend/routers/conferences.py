@@ -146,6 +146,9 @@ def get_conference_papers(
     include_resources: bool = Query(
         False, description="Include repositories and tasks on each paper"
     ),
+    has_code: bool = Query(
+        False, description="Only include papers with a linked GitHub repository"
+    ),
     db: Session = Depends(get_database_session),
 ):
     try:
@@ -160,6 +163,7 @@ def get_conference_papers(
             order_by=order_by,
             order_dir=order_dir,
             include_resources=include_resources,
+            has_code=has_code,
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

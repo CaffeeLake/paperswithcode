@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
+import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
 import { apiClient } from "@/lib/api";
@@ -127,6 +128,7 @@ const FeedView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const timeWindow = parseTime(searchParams.get("time"));
+  const hasCode = searchParams.get("has_code") === "true";
   const period = TIME_TO_PERIOD[timeWindow];
 
   const setOrderBy = (nextOrderBy: OrderBy) => {
@@ -138,6 +140,13 @@ const FeedView: React.FC = () => {
   const setTimeWindow = (nextPeriod: Period) => {
     const next = new URLSearchParams(searchParams);
     next.set("time", PERIOD_TO_TIME[nextPeriod]);
+    setSearchParams(next);
+  };
+
+  const setHasCode = (active: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (active) next.set("has_code", "true");
+    else next.delete("has_code");
     setSearchParams(next);
   };
 
@@ -163,6 +172,7 @@ const FeedView: React.FC = () => {
     order_dir: "desc",
     time: timeWindow,
     include_resources: true,
+    has_code: hasCode,
   });
 
   const cards = useMemo(() => {
@@ -262,6 +272,7 @@ const FeedView: React.FC = () => {
                 </button>
               ))}
             </div>
+            <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
           </div>
 
           {error && (

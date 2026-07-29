@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
+import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
@@ -29,9 +30,16 @@ const ConferenceTaskView: React.FC = () => {
   const { confSlug, taskSlug } = useParams<{ confSlug: string; taskSlug: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
+  const hasCode = searchParams.get("has_code") === "true";
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
+    setSearchParams(params);
+  };
+  const setHasCode = (active: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (active) params.set("has_code", "true");
+    else params.delete("has_code");
     setSearchParams(params);
   };
 
@@ -80,6 +88,7 @@ const ConferenceTaskView: React.FC = () => {
     order_by: orderBy,
     order_dir: "desc",
     include_resources: true,
+    has_code: hasCode,
     enabled: !!confSlug,
   });
 
@@ -221,8 +230,8 @@ const ConferenceTaskView: React.FC = () => {
         </div>
       </div>
 
-      {!isAwardListing && (
-        <div className="sort-bar">
+      <div className="sort-bar">
+        {!isAwardListing && (
           <div className="sort-options">
             {SORT_OPTIONS.map(([k, l]) => (
               <button
@@ -234,11 +243,14 @@ const ConferenceTaskView: React.FC = () => {
               </button>
             ))}
           </div>
+        )}
+        <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+        {!isAwardListing && (
           <div className="results-count">
             {cards.length} loaded in <span>{taskName}</span>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {papersQ.isLoading ? (
         <div className="paper-list">

@@ -6,7 +6,11 @@ from fastapi.testclient import TestClient
 from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.api import Papers
+from backend.services.conference_service import ConferenceService
+from backend.services.method_service import MethodService
+from backend.services.organization_service import OrganizationService
 from backend.services.paper_service import PaperService
+from backend.services.task_service import TaskService
 
 
 @pytest.fixture
@@ -72,6 +76,45 @@ def test_papers_endpoint_accepts_feed_order_and_time(
     assert captured["order_by"] == order_by
     assert captured["order_dir"] == "desc"
     assert captured["time_window"] == time_window
+
+
+@pytest.mark.parametrize(
+    ("path", "service_class", "method_name"),
+    [
+        ("/api/v1/papers/", PaperService, "get_papers"),
+        ("/api/v1/tasks/object-detection/papers", TaskService, "get_task_papers"),
+        ("/api/v1/methods/transformer/papers", MethodService, "get_method_papers"),
+        (
+            "/api/v1/conferences/cvpr-2026/papers",
+            ConferenceService,
+            "get_conference_papers",
+        ),
+        (
+            "/api/v1/organizations/nvidia/papers",
+            OrganizationService,
+            "get_organization_papers",
+        ),
+    ],
+)
+def test_paper_feed_endpoints_accept_has_code(
+    client,
+    monkeypatch,
+    path,
+    service_class,
+    method_name,
+):
+    captured = {}
+
+    def fake_feed(self, **kwargs):
+        captured.update(kwargs)
+        return Papers(count=0, next_page=None, previous_page=None, results=[])
+
+    monkeypatch.setattr(service_class, method_name, fake_feed)
+
+    response = client.get(path, params={"has_code": "true"})
+
+    assert response.status_code == 200
+    assert captured["has_code"] is True
 
 
 def test_papers_endpoint_rejects_unknown_order_by(client, monkeypatch):
@@ -147,3 +190,28 @@ def test_trending_feed_uses_official_repository_ema_scores():
     # same GitHub URL (e.g. older + newer paper pointing at the same repo).
     assert "PARTITION BY repository_id" in captured["sql"]
     assert "repo_paper_rank = 1" in captured["sql"]
+
+
+def test_trending_feed_filters_to_linked_repositories_when_requested():
+    captured = {}
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeDatabase:
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return EmptyResult()
+
+    response = PaperService(FakeDatabase())._get_trending_papers(
+        page=1,
+        page_size=20,
+        has_code=True,
+    )
+
+    assert response.count == 0
+    assert "EXISTS" in captured["sql"]
+    assert "code_pr.paper_id = p.id" in captured["sql"]
+    assert captured["params"]["has_code"] is True

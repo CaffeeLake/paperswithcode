@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
+import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   SearchableSelect,
@@ -34,6 +35,7 @@ export const OrganizationPaperFeed: React.FC<{
   const [searchParams, setSearchParams] = useSearchParams();
   const [logoFailed, setLogoFailed] = useState(false);
   const orderBy = parseOrderBy(searchParams.get("order_by"));
+  const hasCode = searchParams.get("has_code") === "true";
   const taxonomyQ = useQuery({
     queryKey: ["organization-areas-with-tasks", organizationSlug],
     queryFn: () => apiClient.getOrganizationAreasWithTasks(organizationSlug),
@@ -46,6 +48,7 @@ export const OrganizationPaperFeed: React.FC<{
     order_by: orderBy,
     order_dir: "desc",
     include_resources: true,
+    has_code: hasCode,
     enabled: !!organizationSlug,
   });
   const { targetRef, isIntersecting } = useIntersectionObserver({
@@ -251,6 +254,15 @@ export const OrganizationPaperFeed: React.FC<{
             </button>
           ))}
         </div>
+        <PaperFeedHasCodeFilter
+          active={hasCode}
+          onChange={(active) => {
+            const updated = new URLSearchParams(searchParams);
+            if (active) updated.set("has_code", "true");
+            else updated.delete("has_code");
+            setSearchParams(updated);
+          }}
+        />
         <div className="results-count">{totalCount.toLocaleString()} papers</div>
       </div>
 
