@@ -360,7 +360,8 @@ def validate_chat_schema(db) -> None:
                 ('chat_sandbox_pool', 'estimated_blank_cost_usd'),
                 ('chat_turn_latency', 'request_id'),
                 ('chat_turn_latency', 'terminal_status'),
-                ('chat_turn_latency', 'browser_first_visible_delta_ms')
+                ('chat_turn_latency', 'browser_first_visible_delta_ms'),
+                ('chat_turn_latency', 'estimated_active_cost_usd')
             )
             """
         )
@@ -380,6 +381,7 @@ def validate_chat_schema(db) -> None:
         ("chat_turn_latency", "request_id"),
         ("chat_turn_latency", "terminal_status"),
         ("chat_turn_latency", "browser_first_visible_delta_ms"),
+        ("chat_turn_latency", "estimated_active_cost_usd"),
     }:
         raise RuntimeError("required chat sandbox schema is missing")
     share_snapshot_constraint = db.execute(

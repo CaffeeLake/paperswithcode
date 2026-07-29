@@ -184,6 +184,37 @@ def test_incompatible_release_cannot_be_claimed():
     assert row.state == "blank_ready"
 
 
+def test_incompatible_resource_envelope_cannot_be_claimed():
+    factory = _database()
+    settings = _settings()
+    session_id = uuid.uuid4()
+    blank = _blank(settings)
+    blank.cpu_request = 0.25
+    with factory() as db, db.begin():
+        db.add_all([_session(session_id), blank])
+    manager = _manager(factory, settings)
+
+    assert asyncio.run(manager.claim_blank(session_id)) is None
+    with factory() as db:
+        row = db.execute(select(ChatSandboxPool)).scalar_one()
+    assert row.state == "blank_ready"
+
+
+def test_claim_transfers_preopened_blank_control():
+    factory = _database()
+    settings = _settings()
+    session_id = uuid.uuid4()
+    with factory() as db, db.begin():
+        db.add_all([_session(session_id), _blank(settings)])
+    manager = _manager(factory, settings)
+    control = SimpleNamespace(sandbox_id="sb-blank")
+    manager._blank_controls["sb-blank"] = control
+
+    assert asyncio.run(manager.claim_blank(session_id)) is not None
+    assert "sb-blank" not in manager._blank_controls
+    assert manager._controls[session_id] is control
+
+
 def test_unhealthy_blank_is_destroyed_instead_of_claimed(monkeypatch):
     factory = _database()
     settings = _settings()
@@ -269,6 +300,16 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
         return SimpleNamespace(object_id="sb-new")
 
     monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+    control = SimpleNamespace(sandbox_id="sb-new")
+
+    async def start_control(_sandbox):
+        return control
+
+    async def ping_control(candidate, _worker_generation):
+        return candidate is control
+
+    manager._start_persistent_control = start_control
+    manager._ping_control = ping_control
 
     async def run():
         first = asyncio.create_task(manager.replenish_pool())
@@ -297,6 +338,7 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     assert pool.modal_sandbox_id == "sb-new"
     assert pool.last_health_checked_at is not None
     assert lease_count == 0
+    assert manager._blank_controls == {"sb-new": control}
 
 
 def test_disabled_pool_drains_only_unassigned_workers(monkeypatch):

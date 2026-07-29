@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import os
+import socket
 import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -223,6 +224,53 @@ def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
             run,
             assigned_session_id=str(uuid.uuid4()),
         )
+
+
+def test_persistent_health_probe_requires_idle_children_and_empty_broker(
+    monkeypatch,
+):
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    monkeypatch.setattr(
+        control_daemon,
+        "_broker_control",
+        lambda payload: {"ok": True, "active": False}
+        if payload == {"operation": "status"}
+        else None,
+    )
+    daemon_side, relay_side = socket.socketpair()
+    request_id = f"health-{uuid.uuid4()}"
+    relay_side.sendall(
+        supervisor.SUPERVISOR_PREFIX
+        + json.dumps(
+            {
+                "operation": "ping",
+                "worker_generation": "generation-a",
+                "request_id": request_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    child = SimpleNamespace(poll=lambda: None)
+    try:
+        assert (
+            control_daemon._serve_turn(
+                daemon_side,
+                broker=child,
+                agent=child,
+                assigned_session_id=None,
+            )
+            == ""
+        )
+        assert decode_frame(relay_side.recv(4096)) == {
+            "v": 1,
+            "type": "worker_health",
+            "request_id": request_id,
+            "assigned": False,
+        }
+    finally:
+        daemon_side.close()
+        relay_side.close()
 
 
 def test_worker_mirror_error_preserves_bounded_diagnostic_context():
@@ -1077,7 +1125,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-9gJFTrdR03Od239Rs8W7vR"
+    assert MODAL_IMAGE_ID == "im-2ooo9rS0xnh0B7dbmJj5WI"
 
 
 def test_task_catalog_is_bounded_and_ranked():

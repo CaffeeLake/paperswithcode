@@ -20,6 +20,8 @@ def _settings():
         chat_worker_contract_version="worker-v2",
         chat_pwc_cli_version="0.2.0",
         chat_system_prompt_sha256="a" * 64,
+        chat_sandbox_cpu=0.125,
+        chat_sandbox_memory_mib=512,
     )
 
 
@@ -92,6 +94,8 @@ def test_admit_stores_only_required_opaque_identifiers_and_versions(db):
     assert row.worker_contract_version == "worker-v2"
     assert row.pwc_cli_version == "0.2.0"
     assert row.system_prompt_sha256 == "a" * 64
+    assert float(row.sandbox_cpu_request) == 0.125
+    assert row.sandbox_memory_request_mib == 512
     columns = set(ChatTurnLatency.__table__.columns.keys())
     assert not columns & {
         "prompt",
@@ -131,6 +135,7 @@ def test_record_phase_and_finalize_are_first_write_only(db):
     assert row.acquisition_outcome == "pool_hit"
     assert row.terminal_status == "complete"
     assert row.total_ms == 321
+    assert float(row.estimated_active_cost_usd) > 0
     assert row.completed_at is not None
     assert not service.record_phase(str(request_id), "first_worker_delta", 200)
 

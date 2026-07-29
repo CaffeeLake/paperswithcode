@@ -104,9 +104,9 @@ async def lifespan(app: FastAPI):
     ):
         from backend.database.connection import db_manager
         from backend.services.chat_latency_service import ChatLatencyService
-        from backend.services.chat_sandbox_service import SandboxSessionManager
+        from backend.services.chat_turn_runner import shared_sandbox_manager
 
-        manager = SandboxSessionManager(settings)
+        manager = shared_sandbox_manager(settings)
 
         async def replenish_pool_at_startup() -> None:
             try:

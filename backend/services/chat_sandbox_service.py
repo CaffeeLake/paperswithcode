@@ -264,6 +264,7 @@ class SandboxSessionManager:
         )
         self._processes: dict[uuid.UUID, RunningWorker] = {}
         self._controls: dict[uuid.UUID, SessionControl] = {}
+        self._blank_controls: dict[str, SessionControl] = {}
         self._background_tasks: set[asyncio.Task] = set()
         if settings.chat_workspace_snapshots_enabled and not self.snapshots.supported:
             raise SandboxError(
@@ -396,6 +397,15 @@ class SandboxSessionManager:
 
     async def _pool_sandbox_health(self, sandbox_id: str, worker_generation: str):
         try:
+            control = getattr(self, "_blank_controls", {}).get(sandbox_id)
+            if control is not None:
+                if control.sandbox_id != sandbox_id:
+                    return None
+                if await control.sandbox.poll.aio() is not None:
+                    return None
+                if await self._ping_control(control, worker_generation):
+                    return control.sandbox
+                return None
             sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
             if await sandbox.poll.aio() is not None:
                 return None
@@ -411,6 +421,67 @@ class SandboxSessionManager:
             return sandbox if probe.returncode == 0 else None
         except Exception:
             return None
+
+    async def _start_persistent_control(self, sandbox) -> SessionControl:
+        async def drain_stderr(stream) -> None:
+            async for _chunk in stream:
+                pass
+
+        process = await sandbox.exec.aio(
+            "python",
+            "-m",
+            "backend.chat_sandbox_worker.relay",
+            stdout=StreamType.PIPE,
+            stderr=StreamType.PIPE,
+            timeout=self.settings.chat_persistent_sandbox_lifetime_seconds,
+            workdir="/workspace",
+            text=False,
+        )
+        stderr_task = asyncio.create_task(drain_stderr(process.stderr))
+        control = SessionControl(
+            process=process,
+            sandbox=sandbox,
+            sandbox_id=sandbox.object_id,
+            stderr_task=stderr_task,
+            reader_task=None,
+            queues={},
+            resume_id=None,
+        )
+        control.reader_task = asyncio.create_task(self._read_control(control))
+        return control
+
+    async def _ping_control(
+        self, control: SessionControl, worker_generation: str
+    ) -> bool:
+        request_id = f"health-{uuid.uuid4()}"
+        queue: asyncio.Queue = asyncio.Queue()
+        control.queues[request_id] = queue
+        try:
+            control.process.stdin.write(
+                SUPERVISOR_PREFIX
+                + json.dumps(
+                    {
+                        "operation": "ping",
+                        "worker_generation": worker_generation,
+                        "request_id": request_id,
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                + b"\n"
+            )
+            await control.process.stdin.drain.aio()
+            async with asyncio.timeout(5):
+                response = await queue.get()
+            return bool(
+                isinstance(response, dict)
+                and response.get("type") == "worker_health"
+                and response.get("request_id") == request_id
+                and response.get("assigned") is False
+            )
+        except Exception:
+            return False
+        finally:
+            control.queues.pop(request_id, None)
 
     async def _terminate_pool_row(
         self,
@@ -441,6 +512,7 @@ class SandboxSessionManager:
             row.failure_code = failure_code
             row.updated_at = now
         if sandbox_id:
+            self._drop_blank_control(sandbox_id)
             try:
                 sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
                 await sandbox.terminate.aio(wait=False)
@@ -498,6 +570,19 @@ class SandboxSessionManager:
                         ChatSandboxPool.worker_contract_version
                         == self.settings.chat_worker_contract_version,
                         ChatSandboxPool.app_release_id == self.settings.release_id,
+                        ChatSandboxPool.cpu_request == self.settings.chat_sandbox_cpu,
+                        ChatSandboxPool.cpu_limit
+                        == (
+                            self.settings.chat_sandbox_cpu_limit
+                            or self.settings.chat_sandbox_cpu
+                        ),
+                        ChatSandboxPool.memory_request_mib
+                        == self.settings.chat_sandbox_memory_mib,
+                        ChatSandboxPool.memory_limit_mib
+                        == (
+                            self.settings.chat_sandbox_memory_limit_mib
+                            or self.settings.chat_sandbox_memory_mib
+                        ),
                         ChatSandboxPool.expires_at > minimum_expiry,
                     )
                     .order_by(ChatSandboxPool.ready_at)
@@ -532,6 +617,19 @@ class SandboxSessionManager:
                         ChatSandboxPool.worker_contract_version
                         == self.settings.chat_worker_contract_version,
                         ChatSandboxPool.app_release_id == self.settings.release_id,
+                        ChatSandboxPool.cpu_request == self.settings.chat_sandbox_cpu,
+                        ChatSandboxPool.cpu_limit
+                        == (
+                            self.settings.chat_sandbox_cpu_limit
+                            or self.settings.chat_sandbox_cpu
+                        ),
+                        ChatSandboxPool.memory_request_mib
+                        == self.settings.chat_sandbox_memory_mib,
+                        ChatSandboxPool.memory_limit_mib
+                        == (
+                            self.settings.chat_sandbox_memory_limit_mib
+                            or self.settings.chat_sandbox_memory_mib
+                        ),
                         ChatSandboxPool.expires_at
                         > now
                         + timedelta(
@@ -566,6 +664,11 @@ class SandboxSessionManager:
                     )
                     claimed = True
             if claimed:
+                blank_control = getattr(self, "_blank_controls", {}).pop(
+                    sandbox_id, None
+                )
+                if blank_control is not None:
+                    self._controls[chat_session_id] = blank_control
                 self._spawn_pool_replenishment()
                 return sandbox, round((time.perf_counter() - started) * 1000)
         return None
@@ -690,7 +793,16 @@ class SandboxSessionManager:
                 },
                 worker_generation=worker_generation,
             )
+            control = await self._start_persistent_control(sandbox)
+            if not await self._ping_control(control, worker_generation):
+                raise SandboxError(
+                    "sandbox_worker_not_ready",
+                    "Persistent blank worker health check failed",
+                )
+            self._blank_controls[sandbox.object_id] = control
         except Exception:
+            if "sandbox" in locals() and hasattr(sandbox, "terminate"):
+                await sandbox.terminate.aio(wait=False)
             await self._terminate_pool_row(
                 pool_id, None, failure_code="sandbox_start_failed"
             )
@@ -829,6 +941,18 @@ class SandboxSessionManager:
                     or row.worker_contract_version
                     != self.settings.chat_worker_contract_version
                     or row.app_release_id != self.settings.release_id
+                    or row.cpu_request != self.settings.chat_sandbox_cpu
+                    or row.cpu_limit
+                    != (
+                        self.settings.chat_sandbox_cpu_limit
+                        or self.settings.chat_sandbox_cpu
+                    )
+                    or row.memory_request_mib != self.settings.chat_sandbox_memory_mib
+                    or row.memory_limit_mib
+                    != (
+                        self.settings.chat_sandbox_memory_limit_mib
+                        or self.settings.chat_sandbox_memory_mib
+                    )
                 )
                 rotation_due = self._as_utc(row.expires_at) <= now + timedelta(
                     seconds=self.settings.chat_blank_pool_rotate_before_seconds
@@ -1437,6 +1561,13 @@ class SandboxSessionManager:
         for session_id, control in list(controls.items()):
             if control.sandbox_id == sandbox_id:
                 self._drop_control(session_id)
+
+    def _drop_blank_control(self, sandbox_id: str) -> None:
+        control = getattr(self, "_blank_controls", {}).pop(sandbox_id, None)
+        if control is not None:
+            control.stderr_task.cancel()
+            if control.reader_task is not None:
+                control.reader_task.cancel()
 
     async def _read_control(self, control: SessionControl) -> None:
         buffer = b""

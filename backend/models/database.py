@@ -2290,6 +2290,15 @@ class ChatTurnLatency(Base):
     system_prompt_sha256: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
+    sandbox_cpu_request: Mapped[Optional[float]] = mapped_column(
+        Numeric(8, 3), nullable=True
+    )
+    sandbox_memory_request_mib: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    estimated_active_cost_usd: Mapped[Optional[float]] = mapped_column(
+        Numeric(14, 8), nullable=True
+    )
 
     acquisition_started_ms: Mapped[Optional[int]] = mapped_column(Integer)
     pool_lookup_completed_ms: Mapped[Optional[int]] = mapped_column(Integer)

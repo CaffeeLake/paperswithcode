@@ -63,6 +63,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `cleanup_obsolete_hidden_tasks.sql` | Preconditioned removal of five obsolete tasks, six low-impact benchmarks, and their explicitly audited links/evaluations |
 | `add_entity_search_vectors.sql` + `backfill_entity_search_vectors.py` + `add_entity_search_indexes.sql` | Name-only benchmark, method, and task search vectors, triggers, and GIN/trigram indexes |
 | `remove_tasks_is_visible.sql` | Remove retired task visibility state after the production compatibility gate |
+| `add_chat_active_cost.sql` | Add requested-resource and estimated active-turn cost fields to staging chat latency telemetry |
 
 Before running `remove_task_datasets_featured_rank.sql`, deploy application
 code without `featured_rank` into both the current and previous release slots

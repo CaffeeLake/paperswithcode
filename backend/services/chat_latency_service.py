@@ -20,6 +20,8 @@ RETENTION_DAYS = 30
 MAX_DURATION_MS = 3_600_000
 DEFAULT_CLEANUP_BATCH_SIZE = 500
 MAX_CLEANUP_BATCH_SIZE = 5_000
+MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
+MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
 
 PHASE_COLUMNS = {
     "sandbox_acquisition_started": "acquisition_started_ms",
@@ -118,6 +120,14 @@ class ChatLatencyService:
             worker_contract_version=settings.chat_worker_contract_version or None,
             pwc_cli_version=settings.chat_pwc_cli_version or None,
             system_prompt_sha256=settings.chat_system_prompt_sha256 or None,
+            sandbox_cpu_request=(
+                settings.chat_sandbox_cpu if execution_backend == "modal_cli" else None
+            ),
+            sandbox_memory_request_mib=(
+                settings.chat_sandbox_memory_mib
+                if execution_backend == "modal_cli"
+                else None
+            ),
             acquisition_outcome="pending",
             terminal_status="running",
         )
@@ -203,6 +213,26 @@ class ChatLatencyService:
             raise ValueError("Unsupported terminal latency status")
         total_ms = _bounded_duration(total_ms, "total_ms")
         now = datetime.now(UTC)
+        row = self.db.execute(
+            select(
+                ChatTurnLatency.execution_backend,
+                ChatTurnLatency.sandbox_cpu_request,
+                ChatTurnLatency.sandbox_memory_request_mib,
+            ).where(ChatTurnLatency.request_id == uuid.UUID(request_id))
+        ).one_or_none()
+        estimated_active_cost_usd = None
+        if (
+            row is not None
+            and row.execution_backend == "modal_cli"
+            and row.sandbox_cpu_request is not None
+            and row.sandbox_memory_request_mib is not None
+        ):
+            seconds = total_ms / 1000
+            estimated_active_cost_usd = seconds * (
+                float(row.sandbox_cpu_request) * MODAL_CPU_USD_PER_CORE_SECOND
+                + (row.sandbox_memory_request_mib / 1024)
+                * MODAL_MEMORY_USD_PER_GIB_SECOND
+            )
         result = self.db.execute(
             update(ChatTurnLatency)
             .where(
@@ -213,6 +243,7 @@ class ChatLatencyService:
             .values(
                 terminal_status=status,
                 total_ms=total_ms,
+                estimated_active_cost_usd=estimated_active_cost_usd,
                 completed_at=now,
                 updated_at=now,
             )

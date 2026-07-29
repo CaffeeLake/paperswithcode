@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from backend.chat_sandbox_worker.protocol import decode_frame
+from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
 from backend.chat_sandbox_worker.supervisor import (
     SUPERVISOR_PREFIX,
     _agent_environment,
@@ -172,6 +172,7 @@ def _validate_assignment(
 def _serve_turn(
     connection: socket.socket,
     *,
+    broker: subprocess.Popen,
     agent: subprocess.Popen,
     assigned_session_id: str | None,
 ) -> str:
@@ -179,16 +180,34 @@ def _serve_turn(
     if not launch_line.startswith(SUPERVISOR_PREFIX):
         raise RuntimeError("Missing persistent control launch frame")
     launch = json.loads(launch_line[len(SUPERVISOR_PREFIX) :])
-    if (
-        set(launch) == {"operation", "worker_generation"}
-        and launch.get("operation") == "ping"
-    ):
+    if launch.get("operation") == "ping" and frozenset(launch) in {
+        frozenset({"operation", "worker_generation"}),
+        frozenset({"operation", "worker_generation", "request_id"}),
+    }:
         if not hmac.compare_digest(
             str(launch["worker_generation"]),
             os.environ["PWC_CHAT_WORKER_GENERATION"],
         ):
             raise RuntimeError("Persistent worker generation mismatch")
-        connection.sendall(b"ready\n")
+        if broker.poll() is not None or agent.poll() is not None:
+            raise RuntimeError("Persistent worker child exited")
+        broker_status = _broker_control({"operation": "status"})
+        if broker_status.get("active"):
+            raise RuntimeError("Persistent worker capability is still active")
+        request_id = launch.get("request_id")
+        if request_id is None:
+            connection.sendall(b"ready\n")
+        else:
+            connection.sendall(
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "worker_health",
+                        "request_id": str(request_id),
+                        "assigned": assigned_session_id is not None,
+                    }
+                )
+            )
         return assigned_session_id or ""
     run_line = _readline(connection, 512 * 1024)
     run = decode_frame(run_line)
@@ -284,6 +303,7 @@ def main() -> int:
                 while connection.recv(1, socket.MSG_PEEK):
                     assigned = _serve_turn(
                         connection,
+                        broker=broker,
                         agent=agent,
                         assigned_session_id=assigned_session_id,
                     )

@@ -506,6 +506,7 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "request_id"),
                         ("chat_turn_latency", "terminal_status"),
                         ("chat_turn_latency", "browser_first_visible_delta_ms"),
+                        ("chat_turn_latency", "estimated_active_cost_usd"),
                     ]
                 )
             return _ChatSchemaResult(rows=rows)
@@ -623,7 +624,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "18"
+    assert descriptor["worker_contract_version"] == "19"
     assert _chat_descriptor_from_source(source, "production") is None
 
 

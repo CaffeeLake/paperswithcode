@@ -396,7 +396,14 @@ raise SystemExit(0 if limit_observed else 2)
             expect_success=True,
             timeout=45,
         )
-        allocation_mib = self.settings.chat_sandbox_memory_mib + 512
+        allocation_mib = (
+            getattr(
+                self.settings,
+                "chat_sandbox_memory_limit_mib",
+                self.settings.chat_sandbox_memory_mib,
+            )
+            + 512
+        )
         memory_probe = (
             "import time; "
             f"value = bytearray({allocation_mib} * 1024 * 1024); "
@@ -450,7 +457,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--starts", type=int, default=100)
     result.add_argument("--parallel", type=int, default=4)
     result.add_argument("--snapshot-samples", type=int, default=0)
-    result.add_argument("--sandbox-cpu", type=float, choices=(0.5, 1.0), default=1.0)
+    result.add_argument(
+        "--sandbox-cpu", type=float, choices=(0.125, 0.25, 0.5, 1.0), default=1.0
+    )
+    result.add_argument("--sandbox-cpu-limit", type=float, default=1.0)
+    result.add_argument(
+        "--sandbox-memory-mib", type=int, choices=(512, 1024, 2048), default=2048
+    )
+    result.add_argument("--sandbox-memory-limit-mib", type=int, default=2048)
+    result.add_argument("--persistent-worker", action="store_true")
     result.add_argument("--allow-active-rollout", action="store_true")
     result.add_argument("--resource-probes", action="store_true")
     result.add_argument("--release-dir", type=Path, required=True)
@@ -468,8 +483,20 @@ def main() -> int:
         raise SystemExit("--parallel must be 1-16")
     if not 0 <= args.snapshot_samples <= args.starts:
         raise SystemExit("--snapshot-samples must be between 0 and --starts")
+    if args.sandbox_cpu_limit < args.sandbox_cpu:
+        raise SystemExit("--sandbox-cpu-limit must be at least --sandbox-cpu")
+    if args.sandbox_memory_limit_mib < args.sandbox_memory_mib:
+        raise SystemExit(
+            "--sandbox-memory-limit-mib must be at least --sandbox-memory-mib"
+        )
     settings = settings_for_release(args.release_dir).model_copy(
-        update={"chat_sandbox_cpu": args.sandbox_cpu}
+        update={
+            "chat_sandbox_cpu": args.sandbox_cpu,
+            "chat_sandbox_cpu_limit": args.sandbox_cpu_limit,
+            "chat_sandbox_memory_mib": args.sandbox_memory_mib,
+            "chat_sandbox_memory_limit_mib": args.sandbox_memory_limit_mib,
+            "chat_persistent_worker_enabled": args.persistent_worker,
+        }
     )
     validate_settings(settings, allow_active_rollout=args.allow_active_rollout)
     samples, resource_results = asyncio.run(
@@ -492,8 +519,11 @@ def main() -> int:
                     "starts": args.starts,
                     "parallel": args.parallel,
                     "snapshot_samples": args.snapshot_samples,
+                    "persistent_worker": args.persistent_worker,
                     "sandbox_cpu": args.sandbox_cpu,
+                    "sandbox_cpu_limit": args.sandbox_cpu_limit,
                     "sandbox_memory_mib": settings.chat_sandbox_memory_mib,
+                    "sandbox_memory_limit_mib": settings.chat_sandbox_memory_limit_mib,
                 },
                 "summary": summary,
                 "resource_probes": resource_results,
