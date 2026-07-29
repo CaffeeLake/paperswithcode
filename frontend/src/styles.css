@@ -752,13 +752,6 @@ a.paper-resource.is-link:focus-visible {
   height: 22px;
   background: var(--hairline);
 }
-.paper-feed-resource-label {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
 .paper-feed-filter-options {
   gap: 6px;
   flex-wrap: wrap;
@@ -785,8 +778,8 @@ a.paper-resource.is-link:focus-visible {
 }
 .paper-feed-filter.active {
   border-color: var(--ink);
-  background: var(--bg-subtle);
-  color: var(--ink);
+  background: var(--ink);
+  color: var(--bg);
 }
 .paper-feed-filter:focus-visible {
   outline: 2px solid var(--ink);
@@ -797,6 +790,9 @@ a.paper-resource.is-link:focus-visible {
   color: currentColor;
   filter: grayscale(1);
 }
+.paper-feed-filter.active .paper-feed-filter-icon {
+  filter: grayscale(1) brightness(0) invert(1);
+}
 .paper-feed-filter-check {
   display: inline-flex;
   align-items: center;
@@ -804,8 +800,8 @@ a.paper-resource.is-link:focus-visible {
   width: 17px;
   height: 17px;
   border-radius: 50%;
-  background: var(--ink);
-  color: var(--bg);
+  background: color-mix(in srgb, var(--bg) 18%, transparent);
+  color: currentColor;
   font-size: 10px;
   line-height: 1;
 }
@@ -5863,8 +5859,7 @@ html { scroll-behavior: smooth; }
 }
 
 @media (max-width: 560px) {
-  .paper-feed-resource-divider,
-  .paper-feed-resource-label {
+  .paper-feed-resource-divider {
     display: none;
   }
   .paper-feed-resource-controls {

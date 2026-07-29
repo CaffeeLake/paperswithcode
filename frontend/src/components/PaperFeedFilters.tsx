@@ -47,9 +47,6 @@ export const PaperFeedFilters: React.FC<{
     {showDivider && (
       <span className="paper-feed-resource-divider" aria-hidden="true" />
     )}
-    <span className="paper-feed-resource-label" aria-hidden="true">
-      Resources
-    </span>
     <div className="paper-feed-filter-options">
       <FeedFilterToggle
         checked={hasCode}
