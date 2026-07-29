@@ -217,6 +217,17 @@ def test_methods_expose_recent_usage_trend_score(client):
     assert rising["trend_score"] == 1.0
     assert rising["rate_change"] == 3.0
 
+    trend_response = client.get("/api/v1/methods/rising-method/trend?history_months=12")
+    assert trend_response.status_code == 200
+    trend = trend_response.json()
+    assert trend["signal"] == "paper_method_links"
+    assert trend["recent_paper_count"] == 3
+    assert trend["baseline_paper_count"] == 2
+    assert trend["trend_score"] == 1.0
+    assert trend["rate_change"] == 3.0
+    assert len(trend["history"]) == 12
+    assert sum(point["paper_count"] for point in trend["history"]) == 5
+
 
 @pytest.fixture
 def method_with_trending_papers():

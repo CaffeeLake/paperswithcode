@@ -412,6 +412,27 @@ export interface Method {
   updated_at?: string;
 }
 
+export interface MethodTrendPoint {
+  start_date: string;
+  end_date: string;
+  paper_count: number;
+}
+
+export interface MethodTrend {
+  method_id: string;
+  method_slug?: string | null;
+  signal: "paper_method_links";
+  recent_days: number;
+  baseline_days: number;
+  history_months: number;
+  generated_on: string;
+  recent_paper_count: number;
+  baseline_paper_count: number;
+  trend_score: number;
+  rate_change?: number | null;
+  history: MethodTrendPoint[];
+}
+
 export interface IntroducingPaper {
   id: string;
   arxiv_id?: string | null;
@@ -1389,6 +1410,21 @@ class ApiClient {
 
   async getMethod(id: string): Promise<Method> {
     return this.request<Method>(`/methods/${encodeURIComponent(id)}`);
+  }
+
+  async getMethodTrend(id: string, params?: {
+    recent_days?: number;
+    baseline_days?: number;
+    history_months?: number;
+  }): Promise<MethodTrend> {
+    const searchParams = new URLSearchParams();
+    if (params?.recent_days !== undefined) searchParams.append('recent_days', params.recent_days.toString());
+    if (params?.baseline_days !== undefined) searchParams.append('baseline_days', params.baseline_days.toString());
+    if (params?.history_months !== undefined) searchParams.append('history_months', params.history_months.toString());
+    const query = searchParams.toString();
+    return this.request<MethodTrend>(
+      `/methods/${encodeURIComponent(id)}/trend${query ? `?${query}` : ''}`,
+    );
   }
 
   async getMethodPapers(methodId: string, params?: {

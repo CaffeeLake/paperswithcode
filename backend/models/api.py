@@ -1076,6 +1076,53 @@ class Methods(BaseModel):
     results: List[Method] = Field(..., description="List of methods on this page")
 
 
+class MethodTrendPoint(BaseModel):
+    """One calendar-month bucket of papers using a method."""
+
+    start_date: date = Field(..., description="First day of this month")
+    end_date: date = Field(..., description="Last included day of this month")
+    paper_count: int = Field(
+        ..., description="Distinct latest-version papers using the method"
+    )
+
+
+class MethodTrend(BaseModel):
+    """Recent paper-usage history and trend metadata for one method."""
+
+    method_id: str = Field(..., description="Resolved method ID")
+    method_slug: Optional[str] = Field(None, description="Resolved method slug")
+    signal: str = Field(
+        default="paper_method_links",
+        description="Evidence source used to calculate method usage",
+    )
+    recent_days: int = Field(..., description="Length of the recent score window")
+    baseline_days: int = Field(
+        ..., description="Length of the preceding comparison window"
+    )
+    history_months: int = Field(
+        ..., description="Number of calendar-month history buckets"
+    )
+    generated_on: date = Field(..., description="Date used as the window endpoint")
+    recent_paper_count: int = Field(
+        ..., description="Papers using the method in the recent window"
+    )
+    baseline_paper_count: int = Field(
+        ..., description="Papers using the method in the preceding window"
+    )
+    trend_score: float = Field(
+        ..., description="Recent usage normalized to papers per 30 days"
+    )
+    rate_change: Optional[float] = Field(
+        None, description="Recent usage velocity divided by baseline velocity"
+    )
+    history: List[MethodTrendPoint] = Field(default_factory=list)
+
+    @field_validator("method_id", mode="before")
+    @classmethod
+    def ensure_string_method_id(cls, v):
+        return str(v)
+
+
 class Task(BaseModel):
     """
     Task object representing a specific AI/ML task.

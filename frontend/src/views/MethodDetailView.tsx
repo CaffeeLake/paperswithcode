@@ -4,6 +4,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-qu
 
 import { MethodChip, PaperCard } from "@/components";
 import { MethodFigure } from "@/components/MethodFigure";
+import MethodUsageChart from "@/components/MethodUsageChart";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import { transformPaperForCard } from "@/lib/transform";
@@ -37,6 +38,13 @@ const MethodDetailView: React.FC = () => {
   const methodQ = useQuery({
     queryKey: ["method", methodSlug],
     queryFn: () => apiClient.getMethod(methodSlug!),
+    enabled: !!methodSlug,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  const trendQ = useQuery({
+    queryKey: ["method-trend", methodSlug],
+    queryFn: () => apiClient.getMethodTrend(methodSlug!, { history_months: 24 }),
     enabled: !!methodSlug,
     staleTime: 10 * 60 * 1000,
   });
@@ -153,6 +161,15 @@ const MethodDetailView: React.FC = () => {
               <span className="label">Papers using</span>
               <span className="value">{(m.paper_count ?? 0).toLocaleString()}</span>
             </div>
+            {trendQ.data && (
+              <div className="stat">
+                <span className="label">Recent use</span>
+                <span className="value">
+                  {trendQ.data.trend_score.toFixed(1)}
+                  <small>/mo</small>
+                </span>
+              </div>
+            )}
             {m.introduced_year != null && (
               <div className="stat">
                 <span className="label">Introduced</span>
@@ -170,6 +187,40 @@ const MethodDetailView: React.FC = () => {
           )}
         </figure>
       </div>
+
+      {trendQ.isLoading ? (
+        <Skeleton className="h-64 w-full method-trend-skeleton" />
+      ) : trendQ.data ? (
+        <section className="method-trend-panel">
+          <div className="method-trend-header">
+            <div>
+              <div className="method-trend-eyebrow">Usage trend</div>
+              <h2>Papers using {m.name}</h2>
+              <p>
+                Distinct papers tagged with this method by publication month,
+                over the latest {trendQ.data.history_months} months.
+              </p>
+            </div>
+            <div className="method-trend-summary">
+              <strong>{trendQ.data.recent_paper_count}</strong>
+              <span>papers / {trendQ.data.recent_days}d</span>
+              {trendQ.data.rate_change != null && (
+                <span
+                  className={
+                    trendQ.data.rate_change >= 1
+                      ? "method-trend-change is-up"
+                      : "method-trend-change is-down"
+                  }
+                >
+                  {trendQ.data.rate_change >= 1 ? "↑" : "↓"}{" "}
+                  {trendQ.data.rate_change.toFixed(1)}× vs prior period
+                </span>
+              )}
+            </div>
+          </div>
+          <MethodUsageChart history={trendQ.data.history} methodName={m.name} />
+        </section>
+      ) : null}
 
       {(relatedQ.data?.length ?? 0) > 0 && (
         <div className="filter-row">

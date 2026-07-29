@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models.api import Method, Methods, Papers, KeywordUpdate
+from backend.models.api import KeywordUpdate, Method, Methods, MethodTrend, Papers
 from backend.models.database import Method as DBMethod
 from backend.services.method_service import MethodService
+from backend.services.method_trend_service import MethodTrendService
 from backend.database.connection import get_database_session
 from backend.utils.auth import require_admin
 from backend.utils.entity_images import (
@@ -146,6 +147,28 @@ def get_method(
 
         # Otherwise, treat as name
         return service.get_method_by_name(method_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{method_id}/trend", response_model=MethodTrend)
+def get_method_trend(
+    method_id: str,
+    recent_days: int = Query(90, ge=1, le=365),
+    baseline_days: int = Query(180, ge=1, le=730),
+    history_months: int = Query(24, ge=6, le=120),
+    db: Session = Depends(get_database_session),
+):
+    """Return monthly paper usage and recent reporting velocity for a method."""
+    try:
+        return MethodTrendService(db).get_method_trend(
+            method_id,
+            recent_days=recent_days,
+            baseline_days=baseline_days,
+            history_months=history_months,
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
