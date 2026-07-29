@@ -250,7 +250,7 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
             calls.append(("init", options.model, options.resume))
             self._query = SimpleNamespace(
                 _transcript_mirror_batcher=SimpleNamespace(
-                    _flush_task=None,
+                    _flush_task=SimpleNamespace(wait=self.wait_for_flush),
                     flush=self.flush,
                 )
             )
@@ -270,10 +270,12 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
                 num_turns=1,
                 session_id="session-a",
             )
-            yield agent.SystemMessage(subtype="session_state_changed", data={})
 
         async def flush(self):
             calls.append(("flush",))
+
+        async def wait_for_flush(self):
+            calls.append(("wait_for_flush",))
 
         async def set_model(self, model):
             calls.append(("model", model))
@@ -328,6 +330,7 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     assert [call[0] for call in calls].count("init") == 1
     assert ("model", "model-b") in calls
     assert calls.count(("connect", None)) == 1
+    assert calls.count(("wait_for_flush",)) == 2
     assert calls.count(("flush",)) == 2
     assert calls[-1] == ("disconnect",)
 
@@ -1049,7 +1052,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-wjbRtruWklMqoMaVkl01v4"
+    assert MODAL_IMAGE_ID == "im-GEpdeOZvWbYaSEd0TdlnJH"
 
 
 def test_task_catalog_is_bounded_and_ranked():

@@ -17,7 +17,6 @@ from claude_agent_sdk import (
     HookMatcher,
     MirrorErrorMessage,
     ResultMessage,
-    SystemMessage,
     ToolResultBlock,
     UserMessage,
 )
@@ -480,16 +479,9 @@ class PersistentAgent:
         """Hold terminal success until the SDK reaches its idle mirror barrier."""
 
         assert self.client is not None
-        saw_result = False
         async for message in self.client.receive_messages():
             yield message
             if isinstance(message, ResultMessage):
-                saw_result = True
-            elif (
-                saw_result
-                and isinstance(message, SystemMessage)
-                and message.subtype == "session_state_changed"
-            ):
                 query = getattr(self.client, "_query", None)
                 batcher = getattr(query, "_transcript_mirror_batcher", None)
                 if batcher is None:
