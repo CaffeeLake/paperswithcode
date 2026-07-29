@@ -236,7 +236,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
           onClick={openDialog}
         >
           <span className="copy-to-bucket-arrow" aria-hidden="true">→</span>
-          <span>Copy to bucket</span>
+          <span className="copy-to-bucket-title">Copy to bucket</span>
           <span className="copy-to-bucket-new">New</span>
         </button>
         <div className="copy-to-bucket-meta">

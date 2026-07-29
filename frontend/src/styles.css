@@ -1420,6 +1420,11 @@ a.paper-resource.is-link:focus-visible {
 .copy-to-bucket-trigger:hover {
   color: var(--accent);
 }
+.copy-to-bucket-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+}
 .copy-to-bucket-arrow {
   font-family: var(--sans);
   font-size: 20px;
