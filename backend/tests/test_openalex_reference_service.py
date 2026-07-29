@@ -66,3 +66,33 @@ def test_openalex_failed_batch_is_not_returned_as_empty_coverage():
     assert client.api_calls == 2
     assert client.rate_limit_hits == 2
     assert client.failed_requests == 1
+
+
+def test_openalex_resolves_missing_bulk_result_through_arxiv_doi():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/works":
+            return httpx.Response(200, json={"results": []})
+        assert request.url.path == ("/works/https://doi.org/10.48550/arxiv.1207.7235")
+        assert parse_qs(request.url.query.decode())["select"] == ["id,referenced_works"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "https://openalex.org/W6947578394",
+                "referenced_works": ["https://openalex.org/W1"],
+            },
+        )
+
+    client = OpenAlexReferenceClient(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        request_delay=0,
+    )
+    batch = client.fetch_works(["1207.7235"])
+
+    assert batch is not None
+    assert batch.work_ids_by_arxiv["1207.7235"] == {"https://openalex.org/W6947578394"}
+    assert batch.references_by_arxiv["1207.7235"] == {"https://openalex.org/W1"}
+    assert len(requests) == 2
+    assert client.api_calls == 2

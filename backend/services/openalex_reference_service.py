@@ -55,27 +55,14 @@ class OpenAlexReferenceClient:
         if self._owns_client:
             self._client.close()
 
-    def _request(self, arxiv_ids: list[str]) -> dict | None:
-        landing_urls = [
-            url
-            for arxiv_id in arxiv_ids
-            for url in (
-                f"http://arxiv.org/abs/{arxiv_id}",
-                f"https://arxiv.org/abs/{arxiv_id}",
-            )
-        ]
-        params = {
-            "filter": "locations.landing_page_url:" + "|".join(landing_urls),
-            "per_page": 100,
-            "select": "id,locations,referenced_works",
-        }
+    def _request(self, url: str, params: dict[str, object]) -> dict | None:
         if self.api_key:
             params["api_key"] = self.api_key
 
         for attempt in range(self.max_retries):
             self.api_calls += 1
             try:
-                response = self._client.get(OPENALEX_WORKS_URL, params=params)
+                response = self._client.get(url, params=params)
             except httpx.HTTPError as exc:
                 self.api_errors += 1
                 print(f"  ! OpenAlex HTTP error: {exc}", file=sys.stderr)
@@ -105,13 +92,37 @@ class OpenAlexReferenceClient:
         print("  ! OpenAlex request failed after retries", file=sys.stderr)
         return None
 
+    def _request_batch(self, arxiv_ids: list[str]) -> dict | None:
+        landing_urls = [
+            url
+            for arxiv_id in arxiv_ids
+            for url in (
+                f"http://arxiv.org/abs/{arxiv_id}",
+                f"https://arxiv.org/abs/{arxiv_id}",
+            )
+        ]
+        return self._request(
+            OPENALEX_WORKS_URL,
+            {
+                "filter": "locations.landing_page_url:" + "|".join(landing_urls),
+                "per_page": 100,
+                "select": "id,locations,referenced_works",
+            },
+        )
+
+    def _request_arxiv_doi(self, arxiv_id: str) -> dict | None:
+        return self._request(
+            f"{OPENALEX_WORKS_URL}/https://doi.org/10.48550/arxiv.{arxiv_id}",
+            {"select": "id,referenced_works"},
+        )
+
     def fetch_works(self, arxiv_ids: Iterable[str]) -> OpenAlexWorkBatch | None:
         """Return all OpenAlex IDs and reference IDs for each requested arXiv ID."""
         requested = list(dict.fromkeys(arxiv_id for arxiv_id in arxiv_ids if arxiv_id))
         batch = OpenAlexWorkBatch()
         for offset in range(0, len(requested), MAX_ARXIV_IDS_PER_REQUEST):
             chunk = requested[offset : offset + MAX_ARXIV_IDS_PER_REQUEST]
-            payload = self._request(chunk)
+            payload = self._request_batch(chunk)
             if payload is None:
                 return None
             chunk_set = set(chunk)
@@ -130,4 +141,14 @@ class OpenAlexReferenceClient:
                     batch.references_by_arxiv.setdefault(arxiv_id, set()).update(
                         work.get("referenced_works") or []
                     )
+            for arxiv_id in chunk:
+                if arxiv_id in batch.work_ids_by_arxiv:
+                    continue
+                work = self._request_arxiv_doi(arxiv_id)
+                if work is None:
+                    return None
+                batch.work_ids_by_arxiv.setdefault(arxiv_id, set()).add(work["id"])
+                batch.references_by_arxiv.setdefault(arxiv_id, set()).update(
+                    work.get("referenced_works") or []
+                )
         return batch
