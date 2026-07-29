@@ -22,7 +22,12 @@ from backend.chat_gateway_app import (
     _output_tokens_allowed,
     catalog,
 )
-from backend.chat_sandbox_worker import agent, publish_image, supervisor
+from backend.chat_sandbox_worker import (
+    agent,
+    control_daemon,
+    publish_image,
+    supervisor,
+)
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     IMAGE_PUBLISH_NAME,
@@ -141,6 +146,58 @@ def test_broker_capability_rotation_rejects_stale_and_cross_turn_clear(monkeypat
         state.current()
     state.install({"capability": "new", "session_id": "session", "turn_id": "turn-2"})
     assert state.current()["capability"] == "new"
+
+
+def test_persistent_assignment_rejects_generation_token_and_session_mismatch(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "PWC_CHAT_GATEWAY_URL",
+        "https://gateway.example.test/api/internal/chat-gateway",
+    )
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    session_id = str(uuid.uuid4())
+    turn_id = str(uuid.uuid4())
+    launch = {
+        "capability": "capability",
+        "gateway_url": os.environ["PWC_CHAT_GATEWAY_URL"],
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "assignment-a",
+        "worker_generation": "generation-a",
+    }
+    run = {
+        "v": 1,
+        "type": "run_turn",
+        "request_id": str(uuid.uuid4()),
+        "chat_session_id": session_id,
+        "turn_id": turn_id,
+        "assignment_token": "assignment-a",
+        "worker_generation": "generation-a",
+    }
+
+    assert (
+        control_daemon._validate_assignment(launch, run, assigned_session_id=None)
+        == session_id
+    )
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        control_daemon._validate_assignment(
+            {**launch, "worker_generation": "generation-b"},
+            run,
+            assigned_session_id=None,
+        )
+    with pytest.raises(RuntimeError, match="Invalid persistent run frame"):
+        control_daemon._validate_assignment(
+            launch,
+            {**run, "assignment_token": "assignment-b"},
+            assigned_session_id=None,
+        )
+    with pytest.raises(RuntimeError, match="session ownership mismatch"):
+        control_daemon._validate_assignment(
+            launch,
+            run,
+            assigned_session_id=str(uuid.uuid4()),
+        )
 
 
 def test_worker_mirror_error_preserves_bounded_diagnostic_context():
@@ -932,7 +989,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-Rj8d8g08HzcQW9clgUegUO"
+    assert MODAL_IMAGE_ID == "im-ECeRKPLAM2sMPpVI04bRrj"
 
 
 def test_task_catalog_is_bounded_and_ranked():

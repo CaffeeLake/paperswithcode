@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import select
 import socket
@@ -14,8 +15,19 @@ from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 def main() -> int:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.connect(str(CONTROL_SOCKET))
-        if sys.argv[1:] == ["--ping"]:
-            connection.sendall(SUPERVISOR_PREFIX + b'{"operation":"ping"}\n')
+        if sys.argv[1:2] == ["--ping"] and len(sys.argv) == 3:
+            generation = sys.argv[2]
+            connection.sendall(
+                SUPERVISOR_PREFIX
+                + json.dumps(
+                    {
+                        "operation": "ping",
+                        "worker_generation": generation,
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                + b"\n"
+            )
             return 0 if connection.recv(16) == b"ready\n" else 1
         poller = select.poll()
         poller.register(sys.stdin.buffer, select.POLLIN | select.POLLHUP)

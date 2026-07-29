@@ -10,7 +10,6 @@ from collections import defaultdict, deque
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Query,
@@ -50,19 +49,6 @@ from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
-
-
-def _prewarm_sandbox(settings: Settings, session_id: uuid.UUID) -> None:
-    try:
-        asyncio.run(SandboxSessionManager(settings).ensure_ready(session_id))
-    except Exception as exc:
-        # First-turn ensure_ready remains authoritative and retryable. Prewarm
-        # failure is an optimization miss, never a session-creation failure.
-        logger.warning(
-            "chat sandbox prewarm failed session_id=%s error=%s",
-            session_id,
-            type(exc).__name__,
-        )
 
 
 class _AdmissionControl:
@@ -168,7 +154,6 @@ def list_models(
 @router.post("/sessions", response_model=ChatSessionSummary, status_code=201)
 def create_session(
     body: CreateSessionRequest,
-    background_tasks: BackgroundTasks,
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
@@ -179,8 +164,6 @@ def create_session(
         )
         db.commit()
         db.refresh(session)
-        if session.execution_backend == "modal_cli":
-            background_tasks.add_task(_prewarm_sandbox, settings, session.id)
         return _summary(session)
     except ChatServiceError as exc:
         db.rollback()

@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI):
             raise RuntimeError("PWC_HF_TOKEN is required when chat is enabled")
 
     maintenance_task = None
+    pool_startup_task = None
     if (
         settings.is_deployed
         and settings.environment == "staging"
@@ -105,12 +106,23 @@ async def lifespan(app: FastAPI):
         from backend.services.chat_latency_service import ChatLatencyService
         from backend.services.chat_sandbox_service import SandboxSessionManager
 
+        manager = SandboxSessionManager(settings)
+
+        async def replenish_pool_at_startup() -> None:
+            try:
+                await manager.maintain_pool()
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "chat blank pool startup replenishment failed error=%s",
+                    type(error).__name__,
+                )
+
         async def maintain_sandboxes() -> None:
-            manager = SandboxSessionManager(settings)
             latency_cleanup_date = None
             while True:
                 await asyncio.sleep(60)
                 operations = [
+                    manager.maintain_pool,
                     manager.reconcile,
                     manager.reap_idle,
                     manager.enforce_warm_cap,
@@ -137,6 +149,7 @@ async def lifespan(app: FastAPI):
                             type(error).__name__,
                         )
 
+        pool_startup_task = asyncio.create_task(replenish_pool_at_startup())
         maintenance_task = asyncio.create_task(maintain_sandboxes())
 
     yield
@@ -145,6 +158,10 @@ async def lifespan(app: FastAPI):
         maintenance_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await maintenance_task
+    if pool_startup_task:
+        pool_startup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pool_startup_task
 
     # Shutdown
     print("🛑 Shutting down PapersWithCode API server")

@@ -216,6 +216,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             or settings.chat_new_chat_modal_percentage != 0
             or settings.chat_modal_image_version
             or settings.chat_persistent_worker_enabled
+            or settings.chat_blank_pool_enabled
             or settings.chat_sandbox_cpu_limit is not None
             or settings.chat_sandbox_memory_limit_mib is not None
         ):
@@ -263,6 +264,27 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             < settings.chat_sandbox_memory_mib
         ):
             raise RuntimeError("staging chat memory limit is below its request")
+        if settings.chat_blank_pool_min > settings.chat_blank_pool_max:
+            raise RuntimeError("staging blank pool minimum exceeds its maximum")
+        if settings.chat_blank_pool_max > settings.chat_sandbox_total_live_cap:
+            raise RuntimeError("staging blank pool exceeds the total live cap")
+        if settings.chat_blank_pool_enabled:
+            if not settings.chat_persistent_worker_enabled:
+                raise RuntimeError("staging blank pool requires persistent workers")
+            if settings.chat_blank_pool_min < 1:
+                raise RuntimeError("enabled staging blank pool requires a minimum")
+            if (
+                settings.chat_blank_pool_min_remaining_seconds
+                >= settings.chat_persistent_sandbox_lifetime_seconds
+            ):
+                raise RuntimeError(
+                    "staging blank pool minimum remaining lifetime is invalid"
+                )
+            if (
+                settings.chat_blank_pool_rotate_before_seconds
+                >= settings.chat_persistent_sandbox_lifetime_seconds
+            ):
+                raise RuntimeError("staging blank pool rotation window is invalid")
         from backend.chat_sandbox_worker.prompt import sha256 as prompt_sha256
 
         effective_prompt_hash = prompt_sha256(
@@ -310,6 +332,7 @@ def validate_chat_schema(db) -> None:
                     ('chat_messages'),
                     ('chat_shares'),
                     ('chat_sandbox_leases'),
+                    ('chat_sandbox_pool'),
                     ('chat_turn_capabilities'),
                     ('chat_turn_latency')
                 ) AS required(name)
@@ -330,6 +353,11 @@ def validate_chat_schema(db) -> None:
                 ('chat_messages', 'prepared_fork_sdk_project_key'),
                 ('chat_shares', 'snapshot_version'),
                 ('chat_shares', 'messages'),
+                ('chat_sandbox_leases', 'worker_generation'),
+                ('chat_sandbox_pool', 'modal_sandbox_id'),
+                ('chat_sandbox_pool', 'worker_generation'),
+                ('chat_sandbox_pool', 'billing_month'),
+                ('chat_sandbox_pool', 'estimated_blank_cost_usd'),
                 ('chat_turn_latency', 'request_id'),
                 ('chat_turn_latency', 'terminal_status'),
                 ('chat_turn_latency', 'browser_first_visible_delta_ms')
@@ -344,6 +372,11 @@ def validate_chat_schema(db) -> None:
         ("chat_messages", "prepared_fork_sdk_project_key"),
         ("chat_shares", "snapshot_version"),
         ("chat_shares", "messages"),
+        ("chat_sandbox_leases", "worker_generation"),
+        ("chat_sandbox_pool", "modal_sandbox_id"),
+        ("chat_sandbox_pool", "worker_generation"),
+        ("chat_sandbox_pool", "billing_month"),
+        ("chat_sandbox_pool", "estimated_blank_cost_usd"),
         ("chat_turn_latency", "request_id"),
         ("chat_turn_latency", "terminal_status"),
         ("chat_turn_latency", "browser_first_visible_delta_ms"),

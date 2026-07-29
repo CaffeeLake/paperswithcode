@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import select
 import secrets
@@ -123,6 +124,50 @@ def _stop(process: subprocess.Popen) -> None:
             process.kill()
 
 
+def _validate_assignment(
+    launch: dict,
+    run: dict,
+    *,
+    assigned_session_id: str | None,
+) -> str:
+    required = {
+        "capability",
+        "gateway_url",
+        "session_id",
+        "turn_id",
+        "assignment_token",
+        "worker_generation",
+    }
+    if set(launch) != required:
+        raise RuntimeError("Invalid persistent control launch frame")
+    if launch["gateway_url"] != os.environ["PWC_CHAT_GATEWAY_URL"]:
+        raise RuntimeError("Gateway changed after sandbox creation")
+    if not hmac.compare_digest(
+        str(launch["worker_generation"]),
+        os.environ["PWC_CHAT_WORKER_GENERATION"],
+    ):
+        raise RuntimeError("Persistent worker generation mismatch")
+    assignment_token = str(launch["assignment_token"])
+    if not assignment_token:
+        raise RuntimeError("Persistent worker assignment token is missing")
+    session_id = str(launch["session_id"])
+    if assigned_session_id and assigned_session_id != session_id:
+        raise RuntimeError("Persistent worker session ownership mismatch")
+    if (
+        run.get("type") != "run_turn"
+        or run.get("chat_session_id") != session_id
+        or run.get("request_id") is None
+        or run.get("turn_id") != str(launch["turn_id"])
+        or run.get("worker_generation") != str(launch["worker_generation"])
+        or not hmac.compare_digest(
+            str(run.get("assignment_token") or ""),
+            assignment_token,
+        )
+    ):
+        raise RuntimeError("Invalid persistent run frame")
+    return session_id
+
+
 def _serve_turn(
     connection: socket.socket,
     *,
@@ -133,25 +178,24 @@ def _serve_turn(
     if not launch_line.startswith(SUPERVISOR_PREFIX):
         raise RuntimeError("Missing persistent control launch frame")
     launch = json.loads(launch_line[len(SUPERVISOR_PREFIX) :])
-    if launch == {"operation": "ping"}:
+    if (
+        set(launch) == {"operation", "worker_generation"}
+        and launch.get("operation") == "ping"
+    ):
+        if not hmac.compare_digest(
+            str(launch["worker_generation"]),
+            os.environ["PWC_CHAT_WORKER_GENERATION"],
+        ):
+            raise RuntimeError("Persistent worker generation mismatch")
         connection.sendall(b"ready\n")
         return assigned_session_id or ""
-    required = {"capability", "gateway_url", "session_id", "turn_id"}
-    if set(launch) != required:
-        raise RuntimeError("Invalid persistent control launch frame")
-    if launch["gateway_url"] != os.environ["PWC_CHAT_GATEWAY_URL"]:
-        raise RuntimeError("Gateway changed after sandbox creation")
-    session_id = str(launch["session_id"])
-    if assigned_session_id and assigned_session_id != session_id:
-        raise RuntimeError("Persistent worker session ownership mismatch")
     run_line = _readline(connection, 512 * 1024)
     run = decode_frame(run_line)
-    if (
-        run.get("type") != "run_turn"
-        or run.get("chat_session_id") != session_id
-        or run.get("request_id") is None
-    ):
-        raise RuntimeError("Invalid persistent run frame")
+    session_id = _validate_assignment(
+        launch,
+        run,
+        assigned_session_id=assigned_session_id,
+    )
     _broker_control(
         {
             "operation": "install",

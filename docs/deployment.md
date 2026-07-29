@@ -99,11 +99,13 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway`.
    The dedicated host exposes only the four capability-authenticated gateway
    routes.
-4. Apply `add_chat_sandbox_runtime.sql`, then
-   `add_chat_turn_latency.sql`, as PostgreSQL superuser with
+4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`, then
+   `add_chat_sandbox_pool.sql`, as PostgreSQL superuser with
    `search_path=staging,public`. Both migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
-   revoke the production application role.
+   revoke the production application role. The pool migration remains required
+   even while `PWC_CHAT_BLANK_POOL_ENABLED=false`, because readiness validates
+   the rollback-safe audit schema before pool activation.
 5. Keep `PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED=false`; snapshot activation is
    outside the latency project and requires a separate approved plan. V1 uses
    Modal's isolated, automatically reclaimed ephemeral disk; PID and memory

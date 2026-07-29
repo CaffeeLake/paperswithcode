@@ -121,6 +121,7 @@ def _lease(*, state: str, sandbox_id: str | None):
         app_release_id="old-release",
         image_version="im-current",
         worker_contract_version="worker-v1",
+        worker_generation="generation-a",
         state=state,
         lease_token_hash=None,
         lease_expires_at=None,
@@ -375,8 +376,8 @@ def test_persistent_turns_reuse_one_control_attachment():
         )
         manager._processes = {}
         manager._controls = {}
-        manager.ensure_ready = lambda _session_id: asyncio.sleep(
-            0, result=(sandbox, 1, False)
+        manager.ensure_ready = lambda _session_id, **_kwargs: asyncio.sleep(
+            0, result=(sandbox, 1, False, "reused_session", None)
         )
         manager._claim_worker = lambda *_args: WorkerClaim(
             sandbox_id="sb-persistent", token_hash="claim"

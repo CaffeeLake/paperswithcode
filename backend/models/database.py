@@ -2138,6 +2138,7 @@ class ChatSandboxLease(Base):
     app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
     image_version: Mapped[str] = mapped_column(String(255), nullable=False)
     worker_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_generation: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     state: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="starting"
     )
@@ -2174,6 +2175,87 @@ class ChatSandboxLease(Base):
             name="chat_sandbox_leases_state_check",
         ),
         Index("idx_chat_sandbox_leases_state_activity", "state", "last_activity_at"),
+    )
+
+
+class ChatSandboxPool(Base):
+    """Auditable lifecycle for one unassigned blank chat sandbox."""
+
+    __tablename__ = "chat_sandbox_pool"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    modal_sandbox_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+    state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="starting"
+    )
+    image_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    worker_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_generation: Mapped[str] = mapped_column(String(64), nullable=False)
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    claim_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    claim_token_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ready_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    terminated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    cpu_request: Mapped[float] = mapped_column(Numeric(8, 3), nullable=False)
+    cpu_limit: Mapped[float] = mapped_column(Numeric(8, 3), nullable=False)
+    memory_request_mib: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_limit_mib: Mapped[int] = mapped_column(Integer, nullable=False)
+    blank_billable_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_blank_cost_usd: Mapped[float] = mapped_column(
+        Numeric(14, 6), nullable=False, server_default="0"
+    )
+    billing_month: Mapped[date] = mapped_column(Date, nullable=False)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_health_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN "
+            "('starting','blank_ready','claimed','draining','terminated','failed')",
+            name="chat_sandbox_pool_state_check",
+        ),
+        CheckConstraint(
+            "cpu_request > 0 AND cpu_limit >= cpu_request",
+            name="chat_sandbox_pool_cpu_check",
+        ),
+        CheckConstraint(
+            "memory_request_mib > 0 AND memory_limit_mib >= memory_request_mib",
+            name="chat_sandbox_pool_memory_check",
+        ),
+        Index(
+            "idx_chat_sandbox_pool_claim",
+            "state",
+            "image_version",
+            "worker_contract_version",
+            "app_release_id",
+            "expires_at",
+            "ready_at",
+        ),
+        Index("idx_chat_sandbox_pool_billing", "billing_month", "state"),
     )
 
 

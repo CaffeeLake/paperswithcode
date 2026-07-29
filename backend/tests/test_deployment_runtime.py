@@ -396,6 +396,32 @@ def test_staging_runtime_accepts_directory_snapshot_feature(tmp_path: Path):
     assert validate_runtime(settings) == profile_features("staging")
 
 
+def test_staging_blank_pool_requires_persistent_workers(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_blank_pool_enabled = True
+    settings.chat_persistent_worker_enabled = False
+    with pytest.raises(RuntimeError, match="requires persistent workers"):
+        validate_runtime(settings)
+
+
+def test_staging_blank_pool_rejects_inverted_capacity(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_blank_pool_min = 2
+    settings.chat_blank_pool_max = 1
+    with pytest.raises(RuntimeError, match="minimum exceeds"):
+        validate_runtime(settings)
+
+
+def test_production_rejects_blank_pool_activation(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_blank_pool_enabled = True
+    with pytest.raises(RuntimeError, match="active chat runtime descriptor"):
+        validate_runtime(settings)
+
+
 class _ChatSchemaResult:
     def __init__(self, *, scalar=None, rows=None, first=None):
         self._scalar = scalar
@@ -420,12 +446,14 @@ class _ChatSchemaDB:
         include_edit_columns: bool = True,
         include_share_columns: bool = True,
         include_share_constraint: bool = True,
+        include_pool_columns: bool = True,
         include_latency_columns: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
         self.include_share_columns = include_share_columns
         self.include_share_constraint = include_share_constraint
+        self.include_pool_columns = include_pool_columns
         self.include_latency_columns = include_latency_columns
 
     def execute(self, statement):
@@ -438,6 +466,7 @@ class _ChatSchemaDB:
                 "chat_messages",
                 "chat_shares",
                 "chat_sandbox_leases",
+                "chat_sandbox_pool",
                 "chat_turn_capabilities",
                 "chat_turn_latency",
             )
@@ -459,6 +488,16 @@ class _ChatSchemaDB:
                     [
                         ("chat_shares", "snapshot_version"),
                         ("chat_shares", "messages"),
+                    ]
+                )
+            if self.include_pool_columns:
+                rows.extend(
+                    [
+                        ("chat_sandbox_leases", "worker_generation"),
+                        ("chat_sandbox_pool", "modal_sandbox_id"),
+                        ("chat_sandbox_pool", "worker_generation"),
+                        ("chat_sandbox_pool", "billing_month"),
+                        ("chat_sandbox_pool", "estimated_blank_cost_usd"),
                     ]
                 )
             if self.include_latency_columns:
@@ -499,6 +538,11 @@ def test_chat_schema_requires_self_contained_share_snapshot_columns():
 def test_chat_schema_requires_share_snapshot_array_constraint():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
         validate_chat_schema(_ChatSchemaDB("off", include_share_constraint=False))
+
+
+def test_chat_schema_requires_blank_pool_accounting_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_pool_columns=False))
 
 
 def test_chat_schema_requires_latency_telemetry_columns():
@@ -579,7 +623,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "13"
+    assert descriptor["worker_contract_version"] == "14"
     assert _chat_descriptor_from_source(source, "production") is None
 
 

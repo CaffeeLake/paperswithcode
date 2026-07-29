@@ -283,6 +283,15 @@ class Settings(BaseSettings):
     chat_persistent_sandbox_lifetime_seconds: int = Field(
         default=86400, ge=300, le=86400
     )
+    chat_blank_pool_enabled: bool = Field(default=False)
+    chat_blank_pool_min: int = Field(default=1, ge=0, le=8)
+    chat_blank_pool_max: int = Field(default=1, ge=0, le=8)
+    chat_blank_pool_min_remaining_seconds: int = Field(default=240, ge=60, le=3600)
+    chat_blank_pool_rotate_before_seconds: int = Field(default=3600, ge=60, le=43200)
+    chat_blank_pool_refill_concurrency: int = Field(default=1, ge=1, le=4)
+    chat_blank_pool_monthly_budget_usd: float = Field(default=35, gt=0, le=1000)
+    chat_blank_pool_reported_month_to_date_usd: float = Field(default=0, ge=0, le=10000)
+    chat_sandbox_total_live_cap: int = Field(default=2, ge=1, le=16)
     chat_workspace_snapshots_enabled: bool = Field(default=False)
     chat_workspace_snapshot_inactivity_days: int = Field(default=30, ge=1, le=90)
     chat_gateway_url: str = Field(default="", max_length=1000)
