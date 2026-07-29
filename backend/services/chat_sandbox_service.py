@@ -59,6 +59,7 @@ class RunningWorker:
 @dataclass
 class SessionControl:
     process: object
+    sandbox: object
     sandbox_id: str
     stderr_task: asyncio.Task
 
@@ -431,6 +432,17 @@ class SandboxSessionManager:
         await self.enforce_warm_cap()
 
         if sandbox_id:
+            control = getattr(self, "_controls", {}).get(chat_session_id)
+            if (
+                getattr(self.settings, "chat_persistent_worker_enabled", False)
+                and control is not None
+                and control.sandbox_id == sandbox_id
+            ):
+                return (
+                    control.sandbox,
+                    round((time.perf_counter() - started) * 1000),
+                    False,
+                )
             try:
                 sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
                 if await sandbox.poll.aio() is None:
@@ -719,6 +731,7 @@ class SandboxSessionManager:
                 if persistent:
                     control = SessionControl(
                         process=process,
+                        sandbox=sandbox,
                         sandbox_id=sandbox.object_id,
                         stderr_task=stderr_task,
                     )
