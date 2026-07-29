@@ -16,7 +16,8 @@ from backend.models.database import (
     Paper as DBPaper,
     PaperTask,
     Repository as DBRepository,
-    TaskRecommendedFramework as DBTaskRecommendedFramework,
+    Framework as DBFramework,
+    TaskFramework as DBTaskFramework,
     TaskSisterTask as DBTaskSisterTask,
 )
 from backend.models.api import (
@@ -586,12 +587,16 @@ class TaskService:
             rows = (
                 self.db.query(DBRepository)
                 .join(
-                    DBTaskRecommendedFramework,
-                    DBTaskRecommendedFramework.repository_id == DBRepository.id,
+                    DBFramework,
+                    DBFramework.repository_id == DBRepository.id,
                 )
-                .filter(DBTaskRecommendedFramework.task_id == int(task_id))
+                .join(
+                    DBTaskFramework,
+                    DBTaskFramework.framework_id == DBFramework.id,
+                )
+                .filter(DBTaskFramework.task_id == int(task_id))
                 .order_by(
-                    asc(DBTaskRecommendedFramework.display_order),
+                    asc(DBTaskFramework.display_order),
                     asc(DBRepository.owner),
                     asc(DBRepository.name),
                 )

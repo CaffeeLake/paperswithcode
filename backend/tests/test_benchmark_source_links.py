@@ -9,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 from backend.models.database import (
     Base,
     Dataset as DBDataset,
+    Framework as DBFramework,
+    FrameworkCategory as DBFrameworkCategory,
+    FrameworkDomain as DBFrameworkDomain,
     Paper as DBPaper,
 )
 from backend.services.dataset_service import DatasetService
@@ -95,6 +98,53 @@ def test_paper_without_introduced_benchmarks_returns_none():
         response = PaperService(db).get_paper_by_arxiv_id("1234.5678")
 
     assert response.introduced_benchmarks is None
+
+
+def test_paper_response_includes_introduced_frameworks():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                DBPaper(
+                    id=1,
+                    title="vLLM",
+                    abstract="Introduces vLLM.",
+                    arxiv_id="2309.06180",
+                    version="v1",
+                    is_latest_version=True,
+                    date_published=date(2023, 9, 12),
+                ),
+                DBFrameworkDomain(
+                    id=2, slug="llm", name="LLMs", description="LLM tools"
+                ),
+                DBFrameworkCategory(
+                    id=3, domain_id=2, slug="inference", name="Inference"
+                ),
+                DBFramework(
+                    id=4,
+                    category_id=3,
+                    introducing_paper_id=1,
+                    slug="vllm",
+                    name="vLLM",
+                    description="Fast serving",
+                ),
+            ]
+        )
+        db.commit()
+
+        response = PaperService(db).get_paper_by_arxiv_id("2309.06180")
+
+    assert response.introduced_frameworks is not None
+    assert [(item.slug, item.name) for item in response.introduced_frameworks] == [
+        ("vllm", "vLLM")
+    ]
 
 
 def test_dataset_lookup_by_slug_is_case_insensitive():

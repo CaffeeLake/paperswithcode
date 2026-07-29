@@ -162,6 +162,7 @@ def render_paper_markdown(document: PaperSeoDocument) -> str:
         ("Methods", document.methods),
         ("Organizations", document.organizations),
         ("Introduced benchmarks", document.introduced_benchmarks),
+        ("Introduced frameworks", document.introduced_frameworks),
         ("Code repositories", document.repositories),
         ("Project pages", document.project_pages),
         ("Hugging Face models", document.hf_models),

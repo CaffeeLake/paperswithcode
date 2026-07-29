@@ -1,10 +1,11 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/components";
+import { apiClient } from "@/lib/api";
 import { chipColors, hueFromSlug } from "@/lib/colors";
 import {
-  FRAMEWORK_DOMAINS,
   PLATFORM_LABELS,
   type Framework,
   type FrameworkPlatform,
@@ -65,7 +66,9 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
       <div className="framework-card-head">
         <div>
           <h3 className="framework-card-name">{framework.name}</h3>
-          {framework.org && <div className="framework-card-org">{framework.org}</div>}
+          {framework.organization_name && (
+            <div className="framework-card-org">{framework.organization_name}</div>
+          )}
         </div>
         {framework.platforms && framework.platforms.length > 0 && (
           <div className="framework-platform-row">
@@ -78,23 +81,28 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
 
       <p className="framework-card-desc">{framework.description}</p>
 
-      {framework.whenToUse && (
+      {framework.when_to_use && (
         <div className="framework-card-when">
           <span className="framework-card-when-label">When to use</span>
-          {framework.whenToUse}
+          {framework.when_to_use}
         </div>
       )}
 
-      {(framework.github || framework.url || framework.paperId) && (
+      {(framework.github_url ||
+        framework.docs_url ||
+        framework.introducing_paper_arxiv_id) && (
         <div className="framework-card-links">
-          {framework.paperId && (
-            <Link to={`/paper/${framework.paperId}`} className="framework-link">
+          {framework.introducing_paper_arxiv_id && (
+            <Link
+              to={`/paper/${framework.introducing_paper_arxiv_id}`}
+              className="framework-link"
+            >
               Paper
             </Link>
           )}
-          {framework.github && (
+          {framework.github_url && (
             <a
-              href={framework.github}
+              href={framework.github_url}
               target="_blank"
               rel="noopener noreferrer"
               className="framework-link"
@@ -103,9 +111,9 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
               GitHub
             </a>
           )}
-          {framework.url && framework.url !== framework.github && (
+          {framework.docs_url && framework.docs_url !== framework.github_url && (
             <a
-              href={framework.url}
+              href={framework.docs_url}
               target="_blank"
               rel="noopener noreferrer"
               className="framework-link"
@@ -120,7 +128,12 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
 };
 
 const FrameworksIndexView: React.FC = () => {
-  const totalFrameworks = FRAMEWORK_DOMAINS.reduce(
+  const catalogQuery = useQuery({
+    queryKey: ["framework-catalog"],
+    queryFn: () => apiClient.getFrameworkCatalog(),
+  });
+  const domains = catalogQuery.data?.domains ?? [];
+  const totalFrameworks = domains.reduce(
     (sum, domain) =>
       sum + domain.categories.reduce((catSum, category) => catSum + category.frameworks.length, 0),
     0,
@@ -131,7 +144,7 @@ const FrameworksIndexView: React.FC = () => {
     if (frameworkId) {
       document.getElementById(frameworkId)?.scrollIntoView();
     }
-  }, []);
+  }, [catalogQuery.data]);
 
   return (
     <div className="page">
@@ -147,12 +160,15 @@ const FrameworksIndexView: React.FC = () => {
         </div>
       </div>
 
-      {FRAMEWORK_DOMAINS.map((domain) => (
-        <section key={domain.id} style={{ marginBottom: 56 }}>
+      {catalogQuery.isLoading && <div className="empty">Loading frameworks…</div>}
+      {catalogQuery.isError && <div className="empty">Could not load frameworks.</div>}
+
+      {domains.map((domain) => (
+        <section key={domain.slug} style={{ marginBottom: 56 }}>
           <div style={sectionHeaderStyle}>
             <div>
               <h2 style={sectionTitleStyle}>{domain.name}</h2>
-              <div style={sectionBlurbStyle}>{domain.blurb}</div>
+              <div style={sectionBlurbStyle}>{domain.description}</div>
             </div>
             <div
               style={{
@@ -169,19 +185,21 @@ const FrameworksIndexView: React.FC = () => {
           </div>
 
           {domain.categories.map((category) => (
-            <div key={category.id} className="framework-category">
+            <div key={category.slug} className="framework-category">
               <div className="framework-category-head">
                 <div>
                   <h3 style={categoryTitleStyle}>{category.name}</h3>
-                  {category.blurb && <p className="framework-category-blurb">{category.blurb}</p>}
-                  {category.guideUrl && (
+                  {category.description && (
+                    <p className="framework-category-blurb">{category.description}</p>
+                  )}
+                  {category.guide_url && (
                     <a
-                      href={category.guideUrl}
+                      href={category.guide_url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="framework-guide-link"
                     >
-                      {category.guideLabel ?? "Read guide"} →
+                      {category.guide_label ?? "Read guide"} →
                     </a>
                   )}
                 </div>
@@ -209,8 +227,8 @@ const FrameworksIndexView: React.FC = () => {
           marginTop: 8,
         }}
       >
-        {totalFrameworks} frameworks across {FRAMEWORK_DOMAINS.length}{" "}
-        {FRAMEWORK_DOMAINS.length === 1 ? "domain" : "domains"}. More areas coming soon.
+        {totalFrameworks} frameworks across {domains.length}{" "}
+        {domains.length === 1 ? "domain" : "domains"}. More areas coming soon.
       </div>
     </div>
   );

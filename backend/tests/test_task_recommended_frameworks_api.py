@@ -12,9 +12,12 @@ from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.database import (
     Base,
+    Framework as DBFramework,
+    FrameworkCategory as DBFrameworkCategory,
+    FrameworkDomain as DBFrameworkDomain,
     Repository as DBRepository,
     Task as DBTask,
-    TaskRecommendedFramework as DBTaskRecommendedFramework,
+    TaskFramework as DBTaskFramework,
 )
 
 
@@ -60,6 +63,8 @@ def client():
         [
             DBTask(id=1, name="Image Classification", slug="image-classification"),
             DBTask(id=2, name="Object Detection", slug="object-detection"),
+            DBFrameworkDomain(id=20, slug="llm", name="LLMs", description="LLM tools"),
+            DBFrameworkCategory(id=21, domain_id=20, slug="models", name="Models"),
             DBRepository(
                 id=10,
                 url="https://github.com/huggingface/transformers",
@@ -78,8 +83,24 @@ def client():
     )
     db.add_all(
         [
-            DBTaskRecommendedFramework(task_id=1, repository_id=11, display_order=1),
-            DBTaskRecommendedFramework(task_id=1, repository_id=10, display_order=0),
+            DBFramework(
+                id=30,
+                category_id=21,
+                repository_id=10,
+                slug="transformers",
+                name="Transformers",
+                description="Model library",
+            ),
+            DBFramework(
+                id=31,
+                category_id=21,
+                repository_id=11,
+                slug="timm",
+                name="timm",
+                description="Vision model library",
+            ),
+            DBTaskFramework(task_id=1, framework_id=31, display_order=1),
+            DBTaskFramework(task_id=1, framework_id=30, display_order=0),
         ]
     )
     db.commit()

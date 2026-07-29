@@ -14,7 +14,6 @@ import { summarizeRepos } from "@/lib/transform";
 import { formatPageTitle, DEFAULT_SITE_SUFFIX } from "@/lib/latexPlainText";
 import { formatMetricValue, normalizePaperRouteId } from "@/lib/utils";
 import { copyableLeaderboardRanks, leaderboardBadgeMarkdown } from "@/lib/leaderboardBadges";
-import { frameworksIntroducedByPaper } from "@/lib/frameworks";
 import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import { usePreferences } from "@/lib/preferencesContext";
@@ -673,7 +672,7 @@ const PaperDetailView: React.FC = () => {
   const abstractView = abstractExpanded || abstract.length <= ABSTRACT_PREVIEW_LEN ? abstract : abstractShort;
   const introducedMethods = (paper.methods || []).filter((method) => method.source_paper_id === paper.id);
   const introducedBenchmarks = paper.introduced_benchmarks || [];
-  const introducedFrameworks = frameworksIntroducedByPaper(paper.arxiv_id);
+  const introducedFrameworks = paper.introduced_frameworks || [];
   const hasIntroducedItems =
     introducedMethods.length > 0 ||
     introducedBenchmarks.length > 0 ||

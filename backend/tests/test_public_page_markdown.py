@@ -83,6 +83,7 @@ def _paper_document(**overrides) -> PaperSeoDocument:
         methods=(),
         organizations=(),
         introduced_benchmarks=(),
+        introduced_frameworks=(),
     )
     values.update(overrides)
     return PaperSeoDocument(**values)

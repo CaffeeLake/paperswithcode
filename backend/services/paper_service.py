@@ -36,6 +36,7 @@ from backend.models.database import (
     HfArtifact as DBHfArtifact,
     PaperHfArtifact as DBPaperHfArtifact,
     Evaluation as DBEvaluation,
+    Framework as DBFramework,
 )
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -63,6 +64,7 @@ from backend.models.api import (
     AuthorLink,
     OrganizationSummary,
     HfArtifactSummary,
+    FrameworkSummary,
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
@@ -177,6 +179,7 @@ class PaperService:
             "repositories": defaultdict(list),
             "project_pages": defaultdict(list),
             "introduced_benchmarks": defaultdict(list),
+            "introduced_frameworks": defaultdict(list),
             "predecessor_papers": defaultdict(list),
             "successor_papers": defaultdict(list),
             "conferences": {},
@@ -348,6 +351,23 @@ class PaperService:
                         slug=dataset.slug,
                         full_name=dataset.full_name,
                         introduced_year=dataset.introduced_year,
+                    )
+                )
+
+            introduced_framework_rows = (
+                self.db.query(DBFramework)
+                .filter(DBFramework.introducing_paper_id.in_(unique_ids))
+                .order_by(DBFramework.introducing_paper_id, DBFramework.name)
+                .all()
+            )
+            for framework in introduced_framework_rows:
+                relation_data["introduced_frameworks"][
+                    framework.introducing_paper_id
+                ].append(
+                    FrameworkSummary(
+                        id=str(framework.id),
+                        slug=framework.slug,
+                        name=framework.name,
                     )
                 )
 
@@ -624,6 +644,9 @@ class PaperService:
         introduced_benchmarks = (
             relation_data["introduced_benchmarks"].get(db_paper.id) or None
         )
+        introduced_frameworks = (
+            relation_data["introduced_frameworks"].get(db_paper.id) or None
+        )
         predecessor_papers = (
             relation_data["predecessor_papers"].get(db_paper.id) or None
         )
@@ -685,6 +708,7 @@ class PaperService:
             "tasks": tasks,
             "methods": methods,
             "introduced_benchmarks": introduced_benchmarks,
+            "introduced_frameworks": introduced_frameworks,
             "predecessor_papers": predecessor_papers,
             "successor_papers": successor_papers,
             "organizations": organizations,

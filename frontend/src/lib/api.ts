@@ -53,6 +53,12 @@ export interface BenchmarkSummary {
   introduced_year?: number;
 }
 
+export interface FrameworkSummary {
+  id: string;
+  slug: string;
+  name: string;
+}
+
 /** A top-3 leaderboard placement for a paper, used to render the SOTA/#2/#3
  *  badges on feed cards. One entry per benchmark (dataset), deduped to the
  *  paper's best rank on that benchmark. */
@@ -136,6 +142,7 @@ export interface Paper {
   tasks?: Task[];
   methods?: Method[];
   introduced_benchmarks?: BenchmarkSummary[];
+  introduced_frameworks?: FrameworkSummary[];
   /** Earlier papers that this paper is a follow-up to (e.g. DINOv2 for the
    *  DINOv3 paper). Powers the "Predecessor paper" pill in the lineage
    *  banner on the paper detail view. */
@@ -1283,6 +1290,10 @@ class ApiClient {
 
   async getTask(id: string): Promise<Task> {
     return this.request<Task>(`/tasks/${id}`);
+  }
+
+  async getFrameworkCatalog(): Promise<import("./frameworks").FrameworkCatalog> {
+    return this.request<import("./frameworks").FrameworkCatalog>("/frameworks/");
   }
 
   async getTopTasks(params?: {

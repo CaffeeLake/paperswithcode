@@ -9,6 +9,7 @@ Key capabilities:
 - Rich dataset metadata and hierarchy (parent datasets, variants, licensing, modalities, languages)
 - ArXiv versioning, citation tracking, and categories for papers
 - Normalized repositories with trending scores and star history
+- First-class framework catalogue with domains, categories, platforms, canonical papers, repositories, and task recommendations
 - Normalized project pages with updatable API view
 - Comprehensive indexing for search and filtering
 
@@ -164,6 +165,30 @@ Key capabilities:
 │ PK (task_id, sister_task_id) │
 │ CHECK task_id <> sister_task_id
 └──────────────────────────────┘
+
+┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
+│  FRAMEWORK_DOMAINS   │     │ FRAMEWORK_CATEGORIES │     │      FRAMEWORKS      │
+├──────────────────────┤     ├──────────────────────┤     ├──────────────────────┤
+│ id (PK)              │◄────┤ domain_id (FK)       │◄────┤ category_id (FK)     │
+│ slug (UNIQUE)        │     │ id (PK)              │     │ id (PK)              │
+│ name, description    │     │ slug, name           │     │ slug (UNIQUE), name  │
+│ display_order        │     │ description, guide   │     │ repository_id (FK)   │──► REPOSITORIES.id
+│ created/updated      │     │ display_order        │     │ introducing_paper_id │──► PAPERS.id
+└──────────────────────┘     │ UNIQUE(domain, slug) │     │ org, docs, guidance  │
+                             └──────────────────────┘     │ description, order   │
+                                                        │ created/updated      │
+                                                        └──────────────────────┘
+                                                                  │
+                                  ┌───────────────────────────────┼──────────────────────────┐
+                                  ▼                               ▼                          ▼
+                    ┌──────────────────────┐        ┌──────────────────────┐   ┌────────────────────────────┐
+                    │ FRAMEWORK_PLATFORMS  │        │   TASK_FRAMEWORKS    │   │ TASK_RECOMMENDED_FRAMEWORKS│
+                    ├──────────────────────┤        ├──────────────────────┤   ├────────────────────────────┤
+                    │ framework_id (FK)    │        │ task_id (FK)         │   │ legacy compatibility table │
+                    │ platform (CHECK:     │        │ framework_id (FK)    │   │ task_id, repository_id     │
+                    │ gpu|cpu|apple)       │        │ display_order        │   │ display_order              │
+                    │ PK(framework,platform)│       │ PK(task,framework)   │   └────────────────────────────┘
+                    └──────────────────────┘        └──────────────────────┘
 
 ┌─────────────────┐     ┌───────────────────────┐
 │  CONFERENCES    │     │  PAPER_CONFERENCES    │

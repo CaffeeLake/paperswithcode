@@ -59,6 +59,7 @@ class PaperSeoDocument:
     methods: tuple[NamedLink, ...]
     organizations: tuple[NamedLink, ...]
     introduced_benchmarks: tuple[NamedLink, ...]
+    introduced_frameworks: tuple[NamedLink, ...]
 
     @property
     def canonical_url(self) -> str:
@@ -179,6 +180,11 @@ def build_paper_seo_document(paper: Paper, route_identifier: str) -> PaperSeoDoc
             for benchmark in (paper.introduced_benchmarks or [])
             if benchmark.slug and benchmark.name
         ),
+        introduced_frameworks=tuple(
+            NamedLink(framework.name, f"/frameworks#framework-{framework.slug}")
+            for framework in (paper.introduced_frameworks or [])
+            if framework.slug and framework.name
+        ),
     )
 
 
@@ -287,6 +293,7 @@ def render_initial_paper_document(document: PaperSeoDocument) -> str:
             _link_group("Methods", document.methods),
             _link_group("Organizations", document.organizations),
             _link_group("Introduced benchmarks", document.introduced_benchmarks),
+            _link_group("Introduced frameworks", document.introduced_frameworks),
         )
     )
     artifacts = "".join(

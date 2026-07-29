@@ -51,6 +51,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_tasks_is_visible.sql` | `tasks.is_visible` |
 | `add_task_sister_tasks.sql` + `run_add_task_sister_tasks.py` | `task_sister_tasks` table (explicit sister tasks) |
 | `add_task_recommended_frameworks.sql` | Ordered task-to-repository framework recommendations, with initial image-classification and object-detection data |
+| `add_framework_catalog.sql` | First-class framework domains, categories, entities, platforms, canonical papers, repositories, and task links |
 | `add_paper_tasks_source.sql` | `paper_tasks.source` |
 | `add_methods_scanned_at_to_papers.sql` | `papers.methods_scanned_at` |
 | `add_method_source_paper_id.sql` | `methods.source_paper_id` |

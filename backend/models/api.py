@@ -194,6 +194,10 @@ class Paper(BaseModel):
         None,
         description="Benchmarks/datasets introduced by this paper (datasets where introducing_paper_id matches)",
     )
+    introduced_frameworks: Optional[List["FrameworkSummary"]] = Field(
+        None,
+        description="Software frameworks for which this paper is the canonical introducing source",
+    )
     predecessor_papers: Optional[List["RelatedPaperSummary"]] = Field(
         None,
         description=(
@@ -900,6 +904,21 @@ class BenchmarkSummary(BaseModel):
         if v is None:
             return v
         return str(v)
+
+
+class FrameworkSummary(BaseModel):
+    """Lightweight framework summary embedded in paper responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    slug: str
+    name: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v) if v is not None else v
 
 
 class LeaderboardRankSummary(BaseModel):
@@ -1932,6 +1951,39 @@ class RecommendedFramework(BaseModel):
     @classmethod
     def ensure_string_id(cls, v):
         return str(v) if v is not None else v
+
+
+class FrameworkCatalogItem(BaseModel):
+    id: str
+    slug: str
+    name: str
+    organization_name: Optional[str] = None
+    description: str
+    when_to_use: Optional[str] = None
+    platforms: List[str] = Field(default_factory=list)
+    github_url: Optional[str] = None
+    docs_url: Optional[str] = None
+    introducing_paper_arxiv_id: Optional[str] = None
+
+
+class FrameworkCatalogCategory(BaseModel):
+    slug: str
+    name: str
+    description: Optional[str] = None
+    guide_url: Optional[str] = None
+    guide_label: Optional[str] = None
+    frameworks: List[FrameworkCatalogItem] = Field(default_factory=list)
+
+
+class FrameworkCatalogDomain(BaseModel):
+    slug: str
+    name: str
+    description: str
+    categories: List[FrameworkCatalogCategory] = Field(default_factory=list)
+
+
+class FrameworkCatalog(BaseModel):
+    domains: List[FrameworkCatalogDomain] = Field(default_factory=list)
 
 
 class TaskPage(BaseModel):

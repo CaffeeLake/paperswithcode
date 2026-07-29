@@ -62,6 +62,7 @@ _PUBLIC_CACHEABLE_PREFIXES = (
     "/api/v1/authors/",
     "/api/v1/conferences/",
     "/api/v1/organizations/",
+    "/api/v1/frameworks/",
 )
 
 # Endpoints that must never be cached even on GET because their response
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
                 "/api/v1/metrics",
                 "/api/v1/conferences",
                 "/api/v1/organizations",
+                "/api/v1/frameworks",
                 "/api/v1/repositories",
                 "/api/v1/external-resources",
                 "/api/thumbnails",
@@ -273,6 +275,7 @@ def create_app() -> FastAPI:
         pending_edits,
         conferences,
         organizations,
+        frameworks,
         chat,
         codex_add_evals,
         codex_enrich_paper,
@@ -303,6 +306,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     app.include_router(conferences.router, prefix="/api/v1", tags=["conferences"])
     app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
+    app.include_router(frameworks.router, prefix="/api/v1", tags=["frameworks"])
     app.include_router(stats.router, prefix="/api/v1", tags=["stats"])
     if settings.chat_enabled:
         app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
