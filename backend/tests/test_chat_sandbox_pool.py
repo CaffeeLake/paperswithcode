@@ -222,11 +222,10 @@ def test_preopened_control_health_does_not_repeat_provider_poll():
     sandbox = SimpleNamespace(object_id="sb-blank")
     control = SimpleNamespace(sandbox_id="sb-blank", sandbox=sandbox)
     manager._blank_controls["sb-blank"] = control
+    manager._blank_health_at["sb-blank"] = chat_sandbox_service.time.monotonic()
 
     async def healthy(candidate, worker_generation):
-        assert candidate is control
-        assert worker_generation == "generation-a"
-        return True
+        raise AssertionError("fresh local health must not be repeated")
 
     manager._ping_control = healthy
 

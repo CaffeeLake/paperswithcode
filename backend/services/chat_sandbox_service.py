@@ -41,6 +41,7 @@ POOL_MAINTENANCE_LOCK_NAME = "chat-sandbox-pool-maintenance-v1"
 POOL_TERMINAL_RETENTION_DAYS = 35
 POOL_CLEANUP_BATCH_SIZE = 100
 POOL_ACCOUNTING_SAFETY_SECONDS = 120
+POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
 
@@ -265,6 +266,7 @@ class SandboxSessionManager:
         self._processes: dict[uuid.UUID, RunningWorker] = {}
         self._controls: dict[uuid.UUID, SessionControl] = {}
         self._blank_controls: dict[str, SessionControl] = {}
+        self._blank_health_at: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
         if settings.chat_workspace_snapshots_enabled and not self.snapshots.supported:
             raise SandboxError(
@@ -401,7 +403,15 @@ class SandboxSessionManager:
             if control is not None:
                 if control.sandbox_id != sandbox_id:
                     return None
+                checked_at = getattr(self, "_blank_health_at", {}).get(sandbox_id)
+                if (
+                    checked_at is not None
+                    and time.monotonic() - checked_at
+                    <= POOL_LOCAL_HEALTH_MAX_AGE_SECONDS
+                ):
+                    return control.sandbox
                 if await self._ping_control(control, worker_generation):
+                    self._blank_health_at[sandbox_id] = time.monotonic()
                     return control.sandbox
                 return None
             sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
@@ -665,6 +675,7 @@ class SandboxSessionManager:
                 blank_control = getattr(self, "_blank_controls", {}).pop(
                     sandbox_id, None
                 )
+                getattr(self, "_blank_health_at", {}).pop(sandbox_id, None)
                 if blank_control is not None:
                     self._controls[chat_session_id] = blank_control
                 self._spawn_pool_replenishment()
@@ -798,6 +809,7 @@ class SandboxSessionManager:
                     "Persistent blank worker health check failed",
                 )
             self._blank_controls[sandbox.object_id] = control
+            self._blank_health_at[sandbox.object_id] = time.monotonic()
         except Exception:
             if "sandbox" in locals() and hasattr(sandbox, "terminate"):
                 await sandbox.terminate.aio(wait=False)
@@ -1562,6 +1574,7 @@ class SandboxSessionManager:
 
     def _drop_blank_control(self, sandbox_id: str) -> None:
         control = getattr(self, "_blank_controls", {}).pop(sandbox_id, None)
+        getattr(self, "_blank_health_at", {}).pop(sandbox_id, None)
         if control is not None:
             control.stderr_task.cancel()
             if control.reader_task is not None:
