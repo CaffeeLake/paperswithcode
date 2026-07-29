@@ -532,6 +532,13 @@ def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
     assert '"NO_PROXY": "127.0.0.1,localhost"' in source
 
 
+def test_system_prompt_prevents_unsupported_method_search_flags():
+    prompt = render()
+
+    assert "`pwc method list` has no `--search` or `--limit` flag" in prompt
+    assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
+
+
 def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():
     text, truncated = bound_tool_output(b"\x1b[31m" + "é".encode() * 100, 64)
     assert truncated
