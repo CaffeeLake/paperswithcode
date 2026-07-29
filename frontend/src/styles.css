@@ -738,7 +738,19 @@ a.paper-resource.is-link:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  cursor: pointer;
   text-transform: none;
+}
+.paper-feed-code-filter:has(.paper-feed-code-checkbox:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.paper-feed-code-checkbox {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--ink);
+  cursor: pointer;
 }
 .home-feed-sort-bar {
   flex-wrap: wrap;
