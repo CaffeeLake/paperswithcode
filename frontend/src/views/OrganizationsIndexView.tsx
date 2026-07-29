@@ -26,8 +26,8 @@ const Logo: React.FC<{ organization: Organization }> = ({ organization }) => {
       <img
         src={organization.logo_url}
         alt=""
-        width={72}
-        height={72}
+        width={48}
+        height={48}
         onError={() => setFailed(true)}
       />
     </span>
@@ -81,16 +81,17 @@ const OrganizationsIndexView: React.FC = () => {
 
   return (
     <div className="page organizations-page">
-      <header className="organizations-hero">
-        <div className="organizations-eyebrow">PAPERS WITH CODE · ORGANIZATIONS</div>
-        <h1>
-          The labs shaping <em>the field</em>
-        </h1>
-        <p>
-          Explore papers from 21 leading AI organizations, ranked by sustained community
-          momentum over the past 30 days.
-        </p>
-      </header>
+      <div className="feed-header">
+        <div>
+          <h1 className="feed-title">
+            AI <em>Organizations</em>
+          </h1>
+          <div className="feed-subtitle">
+            Explore papers from 21 leading AI organizations, ranked by sustained
+            community momentum over the past 30 days.
+          </div>
+        </div>
+      </div>
 
       <section aria-labelledby="organizations-heading">
         <div className="organizations-section-heading">

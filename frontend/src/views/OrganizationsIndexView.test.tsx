@@ -88,11 +88,11 @@ function renderView(initialEntry = "/organizations") {
 afterEach(() => vi.restoreAllMocks());
 
 describe("OrganizationsIndexView", () => {
-  it("renders the editorial three-column card hierarchy with canonical full-tile links", async () => {
+  it("renders the shared page header and compact cards with canonical full-tile links", async () => {
     vi.spyOn(apiClient, "getOrganizations").mockResolvedValue(payload);
     renderView();
     expect(
-      await screen.findByRole("heading", { name: /The labs shaping the field/i }),
+      await screen.findByRole("heading", { name: /AI Organizations/i }),
     ).toBeInTheDocument();
     const qwen = await screen.findByRole("link", {
       name: "Browse 12 Qwen papers",
