@@ -348,7 +348,8 @@ collisions and lets the normal `*` route handle unknown paths.
 Make a prominent logo grid the primary discovery surface in
 `frontend/src/views/OrganizationsIndexView.tsx`. A visitor should be able to
 scan recognizable labs and companies, click anywhere on a tile, and arrive
-directly at `/orgs/{slug}` to browse that organization's papers.
+directly at `/orgs/{slug}`, where the organization's paper feed is already
+visible without another navigation step.
 
 Each grid tile contains:
 
@@ -388,18 +389,27 @@ from the browser.
 
 ### 9. Organization detail
 
-Retain the useful parts of `OrganizationDetailView.tsx`:
+Make `/orgs/{slug}` a paper-feed page rather than a taxonomy landing page. The
+first viewport should establish the organization identity and begin its papers;
+do not require visitors to click an intermediate "All papers" tile.
+
+Retain these useful parts of `OrganizationDetailView.tsx`:
 
 - organization identity and outbound links;
 - total linked papers;
-- “All papers” entry;
-- task/area breakdown.
+- a compact task filter derived from the existing task/area data;
+- sort controls for trending, newest, and most cited;
+- the infinitely paginated `PaperCard` feed, defaulting to trending.
 
-Change all generated paths to `/orgs/{slug}`. Keep
-`OrganizationTaskView.tsx` for a filterable, infinitely paginated paper list
-with trending/newest/most-cited sorting. Ensure the zero-paper detail page still
-renders organization metadata and a friendly message rather than disappearing
-as a 404.
+Change all generated paths to `/orgs/{slug}`. Reuse one shared organization-feed
+component between `/orgs/{slug}` and the task-specific
+`/orgs/{slug}/{task_slug}` route so pagination, sorting, empty states, and paper
+cards cannot drift between two implementations. Task filters may navigate to
+the task-specific canonical route, while an "All papers" filter returns to
+`/orgs/{slug}`.
+
+Ensure the zero-paper detail page still renders organization metadata and the
+"No papers indexed yet" message rather than disappearing as a 404.
 
 ## Tests and validation
 
@@ -453,7 +463,9 @@ Add React tests for:
   fallbacks, loading, errors, searching, sorting, and zero-paper tiles on the
   index;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
-- detail empty state and paper pagination;
+- the canonical detail route immediately loading a trending paper feed without
+  an intermediate "All papers" click;
+- shared detail/task filtering, sorting, empty state, and paper pagination;
 - paper-detail organization links;
 - the old broad catch-all no longer swallowing unknown routes.
 
@@ -515,6 +527,9 @@ route deployment before changing sitemap/canonical discovery in production.
   clickable and say "No papers indexed yet".
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
+- `/orgs/{slug}` immediately renders that organization's trending-first paper
+  feed with compact task and sort controls; no second "All papers" click is
+  required.
 - Organization counts, pages, task filters, and paper badges use only
   HF-attributed (`source='hf_org_papers'`) associations at launch.
 - The many-to-many model permits one paper to link to several organizations and
