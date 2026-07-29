@@ -29,6 +29,19 @@ const history: MethodTrendPoint[] = [
   },
 ];
 
+const monthlyHistory = (length: number): MethodTrendPoint[] =>
+  Array.from({ length }, (_, index) => {
+    const start = new Date(Date.UTC(2024, 11 + index, 1));
+    const end = new Date(Date.UTC(2024, 12 + index, 0));
+    return {
+      start_date: start.toISOString().slice(0, 10),
+      end_date: end.toISOString().slice(0, 10),
+      paper_count: index + 1,
+      catalog_paper_count: 100,
+      catalog_share: index + 1,
+    };
+  });
+
 describe("MethodUsageChart", () => {
   it("keeps partial coverage bars filled and exposes progress as metadata", () => {
     const { container } = render(
@@ -46,5 +59,25 @@ describe("MethodUsageChart", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Historical tagging in progress; 4 of 10 eligible papers processed",
     );
+  });
+
+  it("keeps the final x-axis label clear of nearby representative ticks", () => {
+    const { container } = render(
+      <MethodUsageChart history={monthlyHistory(20)} methodName="CLIP" />,
+    );
+    const labels = Array.from(
+      container.querySelectorAll<SVGTextElement>(".method-usage-x-label"),
+    );
+    const positions = labels.map((label) => Number(label.getAttribute("x")));
+
+    expect(labels[0]).toHaveTextContent("Dec 24");
+    expect(labels.at(-1)).toHaveTextContent("Jul 26");
+    expect(labels.map((label) => label.textContent)).not.toContain("Jun 26");
+    expect(
+      positions.every(
+        (position, index) =>
+          index === 0 || position - positions[index - 1] >= 56,
+      ),
+    ).toBe(true);
   });
 });

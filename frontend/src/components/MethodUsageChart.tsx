@@ -10,6 +10,7 @@ interface MethodUsageChartProps {
 const WIDTH = 720;
 const HEIGHT = 138;
 const MARGIN = { top: 8, right: 10, bottom: 25, left: 36 };
+const MIN_X_LABEL_SPACING = 56;
 const monthFormatter = new Intl.DateTimeFormat("en", {
   month: "short",
   year: "2-digit",
@@ -22,6 +23,25 @@ const yearFormatter = new Intl.DateTimeFormat("en", {
 
 const formatMonth = (date: string) =>
   monthFormatter.format(new Date(`${date}T00:00:00Z`));
+
+const selectXLabelIndices = (historyLength: number, slotWidth: number) => {
+  if (historyLength === 0) return new Set<number>();
+
+  const representativeStep =
+    historyLength > 48 ? 12 : historyLength > 36 ? 6 : historyLength > 18 ? 3 : 2;
+  const minimumStep = Math.max(1, Math.ceil(MIN_X_LABEL_SPACING / slotWidth));
+  const step = Math.max(representativeStep, minimumStep);
+  const finalIndex = historyLength - 1;
+  const indices = new Set<number>([0, finalIndex]);
+
+  for (let index = step; index < finalIndex; index += step) {
+    if ((finalIndex - index) * slotWidth >= MIN_X_LABEL_SPACING) {
+      indices.add(index);
+    }
+  }
+
+  return indices;
+};
 
 const coverageDescription = (point: MethodTrendPoint) => {
   if (
@@ -47,7 +67,7 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
   const chartHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
   const slotWidth = history.length ? chartWidth / history.length : chartWidth;
   const barWidth = Math.max(2, slotWidth * 0.68);
-  const labelEvery = history.length > 48 ? 12 : history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
+  const xLabelIndices = selectXLabelIndices(history.length, slotWidth);
   const yTicks = Array.from(new Set([0, Math.ceil(maximum / 2), maximum]));
   const activePoint = activeIndex == null ? null : history[activeIndex];
   const activeCoverage = activePoint ? coverageDescription(activePoint) : null;
@@ -126,7 +146,7 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
           );
         })}
         {history.map((point, index) =>
-          index % labelEvery === 0 || index === history.length - 1 ? (
+          xLabelIndices.has(index) ? (
             <text
               key={point.start_date}
               className="method-usage-x-label"
