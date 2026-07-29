@@ -248,6 +248,12 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     class Client:
         def __init__(self, options):
             calls.append(("init", options.model, options.resume))
+            self._query = SimpleNamespace(
+                _transcript_mirror_batcher=SimpleNamespace(
+                    _flush_task=None,
+                    flush=self.flush,
+                )
+            )
 
         async def connect(self, prompt):
             calls.append(("connect", prompt))
@@ -255,8 +261,19 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
         async def query(self, prompt):
             calls.append(("query", prompt))
 
-        def receive_response(self):
-            return object()
+        async def receive_messages(self):
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="session-a",
+            )
+            yield agent.SystemMessage(subtype="session_state_changed", data={})
+
+        async def flush(self):
+            calls.append(("flush",))
 
         async def set_model(self, model):
             calls.append(("model", model))
@@ -267,7 +284,9 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
         async def interrupt(self):
             calls.append(("interrupt",))
 
-    async def adapted(_messages, *, request_id, **_kwargs):
+    async def adapted(messages, *, request_id, **_kwargs):
+        async for _message in messages:
+            pass
         yield {"v": 1, "type": "done", "request_id": request_id}
 
     monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
@@ -309,6 +328,7 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     assert [call[0] for call in calls].count("init") == 1
     assert ("model", "model-b") in calls
     assert calls.count(("connect", None)) == 1
+    assert calls.count(("flush",)) == 2
     assert calls[-1] == ("disconnect",)
 
 
@@ -1029,7 +1049,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-HkbWcl4aEl7eTsGCicXmOD"
+    assert MODAL_IMAGE_ID == "im-wjbRtruWklMqoMaVkl01v4"
 
 
 def test_task_catalog_is_bounded_and_ranked():

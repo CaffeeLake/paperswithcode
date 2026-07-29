@@ -16,6 +16,8 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookMatcher,
     MirrorErrorMessage,
+    ResultMessage,
+    SystemMessage,
     ToolResultBlock,
     UserMessage,
 )
@@ -466,13 +468,37 @@ class PersistentAgent:
         await self.client.query(prompt)
         async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
             async for event in _adapt_messages(
-                self.client.receive_response(),
+                self._response_messages(),
                 request_id=request_id,
                 hooks=self.hooks,
                 adapter=adapter,
                 on_session_id=self._record_session_id,
             ):
                 yield event
+
+    async def _response_messages(self):
+        """Hold terminal success until the SDK reaches its idle mirror barrier."""
+
+        assert self.client is not None
+        saw_result = False
+        async for message in self.client.receive_messages():
+            yield message
+            if isinstance(message, ResultMessage):
+                saw_result = True
+            elif (
+                saw_result
+                and isinstance(message, SystemMessage)
+                and message.subtype == "session_state_changed"
+            ):
+                query = getattr(self.client, "_query", None)
+                batcher = getattr(query, "_transcript_mirror_batcher", None)
+                if batcher is None:
+                    raise RuntimeError("Transcript mirror barrier is unavailable")
+                flush_task = getattr(batcher, "_flush_task", None)
+                if flush_task is not None:
+                    await flush_task.wait()
+                await batcher.flush()
+                return
 
     def _record_session_id(self, session_id: str) -> None:
         if self.sdk_session_id is not None and self.sdk_session_id != session_id:
