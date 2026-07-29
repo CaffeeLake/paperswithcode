@@ -47,6 +47,13 @@ Guidance for agents working in this repository.
 - After completing and validating a repository source change, commit the
   intended changes directly to `main`, push `origin main`, and deploy the exact
   pushed commit to staging with `pwc-deploy`.
+- Planning documents (`PLAN*.md`), scratch notes, temporary artifacts,
+  diagnostic output, and generated reports are local working files by default.
+  Do not stage, commit, push, or deploy them unless the user explicitly asks to
+  publish that specific file.
+- A task that changes only local working files does not require a commit, push,
+  or deployment. When a task also changes publishable source, commit only the
+  intended source changes and leave local working files unstaged.
 - Read-only investigation and reporting, data-only curation, database operations,
   and other work that does not change deployed source do not require a commit or
   application deployment.
