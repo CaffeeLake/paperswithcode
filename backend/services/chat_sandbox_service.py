@@ -62,6 +62,8 @@ class SessionControl:
     sandbox: object
     sandbox_id: str
     stderr_task: asyncio.Task
+    reader_task: asyncio.Task | None
+    queues: dict[str, asyncio.Queue]
 
 
 @dataclass(frozen=True)
@@ -645,12 +647,44 @@ class SandboxSessionManager:
         control = controls.pop(chat_session_id, None)
         if control is not None:
             control.stderr_task.cancel()
+            if control.reader_task is not None:
+                control.reader_task.cancel()
 
     def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
         controls = getattr(self, "_controls", {})
         for session_id, control in list(controls.items()):
             if control.sandbox_id == sandbox_id:
                 self._drop_control(session_id)
+
+    async def _read_control(self, control: SessionControl) -> None:
+        buffer = b""
+        failure: BaseException | None = None
+        try:
+            async for chunk in control.process.stdout:
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if not line or not line.startswith(FRAME_PREFIX.encode()):
+                        continue
+                    event = decode_frame(line)
+                    request_id = str(event.get("request_id") or "")
+                    queue = control.queues.get(request_id)
+                    if queue is None:
+                        raise ProtocolError("Uncorrelated persistent worker frame")
+                    await queue.put(event)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            failure = error
+        finally:
+            if failure is None:
+                failure = SandboxError(
+                    "sandbox_worker_failed",
+                    "The persistent worker control stream ended",
+                    uncertain=True,
+                )
+            for queue in list(control.queues.values()):
+                await queue.put(failure)
 
     async def run_turn(
         self,
@@ -686,7 +720,6 @@ class SandboxSessionManager:
         claim = self._claim_worker(chat_session_id, sandbox.object_id)
         running_worker: RunningWorker | None = None
         stderr_task: asyncio.Task | None = None
-        buffer = b""
         terminal = False
         first_worker_delta_recorded = False
         validator = WorkerEventValidator()
@@ -704,8 +737,7 @@ class SandboxSessionManager:
                 controls = self._controls = {}
             control = controls.get(chat_session_id) if persistent else None
             if control is not None and control.sandbox_id != sandbox.object_id:
-                control.stderr_task.cancel()
-                self._controls.pop(chat_session_id, None)
+                self._drop_control(chat_session_id)
                 control = None
             if control is None:
                 worker_module = (
@@ -734,6 +766,11 @@ class SandboxSessionManager:
                         sandbox=sandbox,
                         sandbox_id=sandbox.object_id,
                         stderr_task=stderr_task,
+                        reader_task=None,
+                        queues={},
+                    )
+                    control.reader_task = asyncio.create_task(
+                        self._read_control(control)
                     )
                     self._controls[chat_session_id] = control
             else:
@@ -758,6 +795,13 @@ class SandboxSessionManager:
                 "model": model,
                 "resume": resume,
             }
+            queue: asyncio.Queue | None = None
+            if persistent:
+                assert control is not None
+                if request_id in control.queues:
+                    raise ProtocolError("Duplicate persistent request identifier")
+                queue = asyncio.Queue()
+                control.queues[request_id] = queue
             process.stdin.write(
                 SUPERVISOR_PREFIX
                 + json.dumps(launch, separators=(",", ":")).encode()
@@ -772,59 +816,76 @@ class SandboxSessionManager:
             }
 
             async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
-                async for chunk in process.stdout:
-                    buffer += chunk
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        if not line:
-                            continue
-                        if not line.startswith(FRAME_PREFIX.encode()):
-                            continue
-                        event = decode_frame(line)
-                        if event.get("request_id") != request_id:
-                            raise ProtocolError("Uncorrelated worker frame")
-                        validator.accept(
-                            event,
-                            allow_terminal_less_stop=running_worker.cancel_requested,
-                        )
-                        if event["type"] == "worker_done":
-                            terminal = True
-                            running_worker.done.set()
-                            break
-                        if event["type"] == "workspace_ready":
-                            elapsed_ms = round(
-                                (time.perf_counter() - turn_started) * 1000
-                            )
-                            yield {
-                                "type": "_latency",
-                                "phase": "worker_ready_ms",
-                                "elapsed_ms": elapsed_ms,
-                            }
-                            yield {
-                                "type": "_latency",
-                                "phase": "sdk_dispatch_ms",
-                                "elapsed_ms": elapsed_ms,
-                            }
-                        if not first_worker_delta_recorded and event["type"] in {
-                            "reasoning_delta",
-                            "tool_call",
-                            "answer_delta",
-                        }:
-                            first_worker_delta_recorded = True
-                            yield {
-                                "type": "_latency",
-                                "phase": "first_worker_delta",
-                                "elapsed_ms": round(
-                                    (time.perf_counter() - turn_started) * 1000
-                                ),
-                            }
-                        yield {
-                            key: value
-                            for key, value in event.items()
-                            if key not in {"v", "request_id"}
-                        }
-                    if terminal:
+                if persistent:
+                    assert queue is not None
+
+                    async def persistent_events():
+                        while True:
+                            item = await queue.get()
+                            if isinstance(item, BaseException):
+                                raise item
+                            yield item
+                            if item.get("type") == "worker_done":
+                                return
+
+                    events = persistent_events()
+                else:
+
+                    async def one_shot_events():
+                        buffer = b""
+                        async for chunk in process.stdout:
+                            buffer += chunk
+                            while b"\n" in buffer:
+                                line, buffer = buffer.split(b"\n", 1)
+                                if not line or not line.startswith(
+                                    FRAME_PREFIX.encode()
+                                ):
+                                    continue
+                                yield decode_frame(line)
+
+                    events = one_shot_events()
+
+                async for event in events:
+                    if event.get("request_id") != request_id:
+                        raise ProtocolError("Uncorrelated worker frame")
+                    validator.accept(
+                        event,
+                        allow_terminal_less_stop=running_worker.cancel_requested,
+                    )
+                    if event["type"] == "worker_done":
+                        terminal = True
+                        running_worker.done.set()
                         break
+                    if event["type"] == "workspace_ready":
+                        elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
+                        yield {
+                            "type": "_latency",
+                            "phase": "worker_ready_ms",
+                            "elapsed_ms": elapsed_ms,
+                        }
+                        yield {
+                            "type": "_latency",
+                            "phase": "sdk_dispatch_ms",
+                            "elapsed_ms": elapsed_ms,
+                        }
+                    if not first_worker_delta_recorded and event["type"] in {
+                        "reasoning_delta",
+                        "tool_call",
+                        "answer_delta",
+                    }:
+                        first_worker_delta_recorded = True
+                        yield {
+                            "type": "_latency",
+                            "phase": "first_worker_delta",
+                            "elapsed_ms": round(
+                                (time.perf_counter() - turn_started) * 1000
+                            ),
+                        }
+                    yield {
+                        key: value
+                        for key, value in event.items()
+                        if key not in {"v", "request_id"}
+                    }
                 if not persistent:
                     await process.wait.aio()
             if not terminal:
@@ -842,6 +903,8 @@ class SandboxSessionManager:
                 "sandbox_worker_failed", "The worker protocol failed", uncertain=True
             ) from error
         finally:
+            if persistent and control is not None:
+                control.queues.pop(request_id, None)
             if stderr_task and not getattr(
                 self.settings, "chat_persistent_worker_enabled", False
             ):
