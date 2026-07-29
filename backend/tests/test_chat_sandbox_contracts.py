@@ -120,6 +120,70 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
     assert request.error is None
 
 
+@pytest.mark.parametrize(
+    ("path", "operation"),
+    [
+        ("/api/v1/areas/?page_size=500", "area_list"),
+        ("/api/v1/areas/with-tasks/", "area_tasks"),
+        ("/api/v1/tasks/?page_size=10", "task_list"),
+        ("/api/v1/methods/?page_size=10", "method_list"),
+        ("/api/v1/conferences/", "conference_list"),
+    ],
+)
+def test_broker_routes_taxonomy_cli_reads_to_catalog(monkeypatch, path, operation):
+    broker = _import_broker(monkeypatch)
+
+    class Response:
+        status = 200
+
+        def read(self, _size):
+            return b'{"result":{"count":0,"results":[]}}'
+
+    class Connection:
+        requests: list[tuple[str, str, bytes]] = []
+
+        def request(self, method, request_path, body, headers):
+            del headers
+            self.requests.append((method, request_path, body))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return
+
+    monkeypatch.setattr(broker, "_connection", Connection)
+
+    class Request:
+        wfile = BytesIO()
+        status = None
+
+        def __init__(self):
+            self.path = path
+
+        def _connection(self):
+            return Connection()
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, _name, _value):
+            return
+
+        def end_headers(self):
+            return
+
+        def send_error(self, status):
+            self.status = status
+
+    request = Request()
+    broker.Handler.do_GET(request)
+
+    assert request.status == 200
+    payload = json.loads(Connection.requests[-1][2])
+    assert payload["operation"] == operation
+
+
 def test_proxy_routes_only_claude_model_posts_to_gateway(monkeypatch):
     broker = _import_broker(monkeypatch)
 
@@ -269,6 +333,43 @@ def test_gateway_paper_read_uses_bounded_diskless_reader(monkeypatch):
             "2503.19108",
             {"bucket_id": "papers", "token": "token", "max_bytes": 256 * 1024},
         )
+    ]
+
+
+def test_gateway_method_list_uses_bounded_service_arguments(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_methods(self, **options):
+            calls.append(options)
+            return {"count": 0, "results": []}
+
+    monkeypatch.setattr("backend.services.chat_gateway_service.MethodService", Service)
+
+    result = ChatGatewayService("db", SimpleNamespace()).catalog(
+        "method_list",
+        {
+            "page": "2",
+            "page_size": "500",
+            "area_id": "3",
+            "introduced_year": "2020",
+            "ordering": "-paper_count",
+        },
+    )
+
+    assert result == {"count": 0, "results": []}
+    assert calls == [
+        {
+            "page": 2,
+            "page_size": 500,
+            "area_id": 3,
+            "introduced_year": 2020,
+            "order_by": "paper_count",
+            "order_dir": "desc",
+        }
     ]
 
 

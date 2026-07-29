@@ -187,6 +187,19 @@ class Handler(BaseHTTPRequestHandler):
             operation = "paper_recent"
         elif parsed.path == "/api/v1/papers/trending":
             operation = "paper_trending"
+        elif parsed.path in {"/api/v1/areas", "/api/v1/areas/"}:
+            operation = "area_list"
+        elif parsed.path in {
+            "/api/v1/areas/with-tasks",
+            "/api/v1/areas/with-tasks/",
+        }:
+            operation = "area_tasks"
+        elif parsed.path in {"/api/v1/tasks", "/api/v1/tasks/"}:
+            operation = "task_list"
+        elif parsed.path in {"/api/v1/methods", "/api/v1/methods/"}:
+            operation = "method_list"
+        elif parsed.path in {"/api/v1/conferences", "/api/v1/conferences/"}:
+            operation = "conference_list"
         elif parsed.path in {"/api/v1/datasets", "/api/v1/datasets/"}:
             operation = "benchmark_list"
             arguments = {

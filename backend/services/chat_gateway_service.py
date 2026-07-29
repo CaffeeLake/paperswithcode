@@ -8,12 +8,16 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import Task
+from backend.services.area_service import AreaService
 from backend.services.benchmark_trend_service import BenchmarkTrendService
+from backend.services.conference_service import ConferenceService
 from backend.services.dataset_service import DatasetService
 from backend.services.evaluation_service import EvaluationService
+from backend.services.method_service import MethodService
 from backend.services.paper_lineage_service import get_paper_lineage
 from backend.services.paper_markdown_service import read_paper_markdown_bounded
 from backend.services.paper_service import PaperService
+from backend.services.task_service import TaskService
 
 CATALOG_OPERATIONS = frozenset(
     {
@@ -25,6 +29,11 @@ CATALOG_OPERATIONS = frozenset(
         "paper_trending",
         "paper_related",
         "paper_lineage_list",
+        "area_list",
+        "area_tasks",
+        "task_list",
+        "method_list",
+        "conference_list",
         "benchmark_list",
         "benchmark_trending",
         "benchmark_evaluations",
@@ -129,6 +138,50 @@ class ChatGatewayService:
             )
         if operation == "paper_lineage_list":
             return get_paper_lineage(self.db, str(arguments["paper"])[:200]).to_dict()
+        if operation == "area_list":
+            ordering = str(arguments.get("ordering") or "name")
+            return _dump(
+                AreaService(self.db).get_areas(
+                    page=max(1, min(int(arguments.get("page", 1)), 100)),
+                    page_size=max(1, min(int(arguments.get("page_size", 50)), 500)),
+                    order_by=ordering.lstrip("-"),
+                    order_dir="desc" if ordering.startswith("-") else "asc",
+                )
+            )
+        if operation == "area_tasks":
+            return _dump(AreaService(self.db).get_areas_with_tasks())
+        if operation == "task_list":
+            ordering = str(arguments.get("ordering") or "name")
+            area_id = arguments.get("area_id")
+            level = arguments.get("level")
+            return _dump(
+                TaskService(self.db).get_tasks(
+                    page=max(1, min(int(arguments.get("page", 1)), 100)),
+                    page_size=max(1, min(int(arguments.get("page_size", 50)), 100)),
+                    area_id=int(area_id) if area_id is not None else None,
+                    level=int(level) if level is not None else None,
+                    order_by=ordering.lstrip("-"),
+                    order_dir="desc" if ordering.startswith("-") else "asc",
+                )
+            )
+        if operation == "method_list":
+            ordering = str(arguments.get("ordering") or "name")
+            area_id = arguments.get("area_id")
+            introduced_year = arguments.get("introduced_year")
+            return _dump(
+                MethodService(self.db).get_methods(
+                    page=max(1, min(int(arguments.get("page", 1)), 100)),
+                    page_size=max(1, min(int(arguments.get("page_size", 50)), 500)),
+                    area_id=int(area_id) if area_id is not None else None,
+                    introduced_year=(
+                        int(introduced_year) if introduced_year is not None else None
+                    ),
+                    order_by=ordering.lstrip("-"),
+                    order_dir="desc" if ordering.startswith("-") else "asc",
+                )
+            )
+        if operation == "conference_list":
+            return _dump(ConferenceService(self.db).get_conferences())
         if operation == "benchmark_list":
             task_id = None
             task = arguments.get("task")
