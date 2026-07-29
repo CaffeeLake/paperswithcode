@@ -410,10 +410,9 @@ class PersistentAgent:
 
     async def connect(self, *, model: str, resume: str | None) -> None:
         if self.client is not None:
-            if resume is not None:
-                expected = self.sdk_session_id or self.resume
-                if expected is None or resume != expected:
-                    raise RuntimeError("Resume changed after worker connection")
+            # Resume materialization is connection-fixed. Once connected, the
+            # live SDK session is authoritative and backend resume hints are
+            # intentionally ignored.
             if model != self.model:
                 await self.client.set_model(model)
                 self.model = model
