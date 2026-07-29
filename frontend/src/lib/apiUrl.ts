@@ -67,6 +67,17 @@ export function authUrl(path: string): string {
 }
 
 /**
+ * Resolve the operational dashboard on the canonical auth authority.
+ *
+ * Staging deliberately does not run production CRON jobs or expose their
+ * monitoring routes. Its release profile points VITE_AUTH_URL at production,
+ * where the shared session is already valid.
+ */
+export function adminDashboardUrl(): string {
+  return authUrl("/admin-dashboard");
+}
+
+/**
  * Normalise a backend-provided asset URL so it always points at the API
  * origin. Backend responses include thumbnail paths like
  * `/api/thumbnails/<file>?fit=...` that the browser would otherwise resolve

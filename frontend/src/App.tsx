@@ -24,7 +24,12 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useScrollToTop } from "@/hooks/useScrollToTop";
-import { isAuthDisabled, isChatEnabled, shouldUseHashRouter } from "@/lib/apiUrl";
+import {
+  adminDashboardUrl,
+  isAuthDisabled,
+  isChatEnabled,
+  shouldUseHashRouter,
+} from "@/lib/apiUrl";
 import { AuthProvider, useAuth } from "@/lib/authContext";
 import { PreferencesProvider } from "@/lib/preferencesContext";
 
@@ -169,6 +174,32 @@ const AdminGatedRoute: React.FC<{ element: React.ReactNode }> = ({ element }) =>
   return <>{element}</>;
 };
 
+const AdminDashboardRoute: React.FC = () => {
+  const destination = adminDashboardUrl();
+  const externalDestination =
+    typeof window !== "undefined" &&
+    new URL(destination, window.location.origin).origin !== window.location.origin;
+
+  React.useEffect(() => {
+    if (externalDestination) {
+      window.location.replace(destination);
+    }
+  }, [destination, externalDestination]);
+
+  if (externalDestination) {
+    return (
+      <div className="page">
+        <div className="submission-loading">
+          <span>Opening the production admin dashboard...</span>
+          <a href={destination}>Continue</a>
+        </div>
+      </div>
+    );
+  }
+
+  return <AdminGatedRoute element={<CronDashboard />} />;
+};
+
 const Shell: React.FC = () => {
   const [searchOpen, setSearchOpen] = React.useState(false);
 
@@ -229,7 +260,7 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
-            <Route path="/admin-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
+            <Route path="/admin-dashboard" element={<AdminDashboardRoute />} />
             <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
             <Route path="*" element={<NotFound />} />
