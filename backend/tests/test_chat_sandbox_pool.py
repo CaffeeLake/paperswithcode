@@ -374,6 +374,93 @@ def test_provider_orphan_is_terminated_after_start_window():
     assert terminated == [False]
 
 
+def test_reconcile_terminates_expired_busy_and_terminating_leases(monkeypatch):
+    factory = _database()
+    settings = _settings()
+    manager = _manager(factory, settings)
+    now = datetime.now(UTC)
+    stale_busy_id, active_busy_id, terminating_id = (
+        uuid.uuid4(),
+        uuid.uuid4(),
+        uuid.uuid4(),
+    )
+    stale_busy = _session(stale_busy_id)
+    stale_busy.active_turn_id = uuid.uuid4()
+    stale_busy.active_turn_expires_at = now - timedelta(minutes=1)
+    active_busy = _session(active_busy_id)
+    active_busy.active_turn_id = uuid.uuid4()
+    active_busy.active_turn_expires_at = now + timedelta(minutes=1)
+    terminating = _session(terminating_id)
+
+    def lease(
+        session_id: uuid.UUID,
+        sandbox_id: str,
+        state: str,
+        *,
+        expires_at: datetime | None = None,
+    ) -> ChatSandboxLease:
+        return ChatSandboxLease(
+            chat_session_id=session_id,
+            modal_sandbox_id=sandbox_id,
+            app_release_id=settings.release_id,
+            image_version=settings.chat_modal_image_version,
+            worker_contract_version=settings.chat_worker_contract_version,
+            worker_generation="generation-a",
+            state=state,
+            lease_expires_at=expires_at,
+        )
+
+    with factory() as db, db.begin():
+        db.add_all(
+            [
+                stale_busy,
+                active_busy,
+                terminating,
+                lease(stale_busy_id, "sb-stale-busy", "busy"),
+                lease(active_busy_id, "sb-active-busy", "busy"),
+                lease(
+                    terminating_id,
+                    "sb-terminating",
+                    "terminating",
+                    expires_at=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+
+    terminated: list[str] = []
+
+    class ProviderSandbox:
+        def __init__(self, sandbox_id: str):
+            async def terminate(*, wait):
+                assert wait is False
+                terminated.append(sandbox_id)
+
+            self.terminate = SimpleNamespace(aio=terminate)
+
+    async def from_id(sandbox_id: str):
+        return ProviderSandbox(sandbox_id)
+
+    monkeypatch.setattr(
+        chat_sandbox_service.modal.Sandbox,
+        "from_id",
+        SimpleNamespace(aio=from_id),
+    )
+
+    assert asyncio.run(manager.reconcile()) == 2
+    with factory() as db:
+        stale_row = db.get(ChatSandboxLease, stale_busy_id)
+        active_row = db.get(ChatSandboxLease, active_busy_id)
+        terminating_row = db.get(ChatSandboxLease, terminating_id)
+    assert sorted(terminated) == ["sb-stale-busy", "sb-terminating"]
+    assert stale_row.state == "failed"
+    assert stale_row.failure_code == "sandbox_worker_failed"
+    assert stale_row.modal_sandbox_id is None
+    assert active_row.state == "busy"
+    assert active_row.modal_sandbox_id == "sb-active-busy"
+    assert terminating_row.state == "terminated"
+    assert terminating_row.modal_sandbox_id is None
+
+
 def test_reported_modal_cost_is_a_floor_for_budget_enforcement():
     factory = _database()
     settings = _settings(chat_blank_pool_reported_month_to_date_usd=40)

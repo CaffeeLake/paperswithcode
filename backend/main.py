@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
 
         async def replenish_pool_at_startup() -> None:
             try:
+                await manager.reconcile()
                 await manager.maintain_pool()
             except Exception as error:
                 logging.getLogger(__name__).warning(
@@ -122,8 +123,8 @@ async def lifespan(app: FastAPI):
             while True:
                 await asyncio.sleep(60)
                 operations = [
-                    manager.maintain_pool,
                     manager.reconcile,
+                    manager.maintain_pool,
                     manager.reap_idle,
                     manager.enforce_warm_cap,
                     manager.expire_inactive_snapshots,

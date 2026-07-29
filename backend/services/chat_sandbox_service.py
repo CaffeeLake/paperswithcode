@@ -2051,6 +2051,94 @@ class SandboxSessionManager:
     async def reconcile(self) -> int:
         """Converge expired creations and provider-lost sandbox leases."""
 
+        now = datetime.now(UTC)
+        with self.session_factory() as db:
+            stale_operations = list(
+                db.execute(
+                    select(
+                        ChatSandboxLease.chat_session_id,
+                        ChatSandboxLease.modal_sandbox_id,
+                        ChatSandboxLease.state,
+                    )
+                    .join(
+                        ChatSession,
+                        ChatSession.id == ChatSandboxLease.chat_session_id,
+                    )
+                    .where(
+                        (
+                            (ChatSandboxLease.state == "busy")
+                            & (
+                                ChatSession.active_turn_expires_at.is_(None)
+                                | (ChatSession.active_turn_expires_at <= now)
+                            )
+                        )
+                        | (
+                            (ChatSandboxLease.state == "terminating")
+                            & (
+                                ChatSandboxLease.lease_expires_at.is_(None)
+                                | (ChatSandboxLease.lease_expires_at <= now)
+                            )
+                        )
+                    )
+                ).all()
+            )
+        repaired = 0
+        for operation in stale_operations:
+            # Lightweight lifecycle test doubles return the later reconcile
+            # projection for every SELECT; only this query's three-column
+            # projection represents a stale operation.
+            if len(operation) != 3:
+                continue
+            session_id, sandbox_id, state = operation
+            token_hash = self._token_hash(secrets.token_urlsafe(24))
+            failure_code: str | None = None
+            with self.session_factory() as db, db.begin():
+                lease = self._lease(db, session_id, lock=True)
+                session = db.execute(
+                    select(ChatSession)
+                    .where(ChatSession.id == session_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if (
+                    lease is None
+                    or session is None
+                    or lease.state != state
+                    or lease.modal_sandbox_id != sandbox_id
+                ):
+                    continue
+                current = datetime.now(UTC)
+                if state == "busy":
+                    active_expiry = session.active_turn_expires_at
+                    if (
+                        active_expiry is not None
+                        and self._as_utc(active_expiry) > current
+                    ):
+                        continue
+                    failure_code = "sandbox_worker_failed"
+                else:
+                    lease_expiry = lease.lease_expires_at
+                    if (
+                        lease_expiry is not None
+                        and self._as_utc(lease_expiry) > current
+                    ):
+                        continue
+                    failure_code = lease.failure_code
+                lease.state = "terminating"
+                lease.failure_code = failure_code
+                lease.lease_token_hash = token_hash
+                lease.lease_expires_at = current + timedelta(
+                    seconds=self.ready_timeout_seconds + 15
+                )
+                lease.updated_at = current
+            self._drop_control(session_id)
+            await self._terminate_owned_sandbox(
+                session_id,
+                sandbox_id=sandbox_id,
+                token_hash=token_hash,
+                failure_code=failure_code,
+            )
+            repaired += 1
+
         with self.session_factory() as db:
             candidates = list(
                 db.execute(
@@ -2069,7 +2157,6 @@ class SandboxSessionManager:
                     )
                 ).all()
             )
-        repaired = 0
         for session_id, sandbox_id, state, token_hash in candidates:
             if state == "starting":
                 if token_hash and self._mark_start_failed(
