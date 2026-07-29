@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from threading import Lock
 from collections.abc import AsyncIterator
 from typing import Protocol
 
@@ -77,8 +78,9 @@ class ModalChatTurnRunner:
         request_id: str,
         resume_id: uuid.UUID | None,
         capability: IssuedCapability,
+        manager: SandboxSessionManager | None = None,
     ):
-        self.manager = SandboxSessionManager(settings)
+        self.manager = manager or shared_sandbox_manager(settings)
         self.admission = admission
         self.prompt = prompt
         self.request_id = request_id
@@ -111,6 +113,22 @@ class ModalChatTurnRunner:
 
     async def close(self) -> None:
         self._revoke()
+
+
+_manager_lock = Lock()
+_manager_settings: Settings | None = None
+_manager: SandboxSessionManager | None = None
+
+
+def shared_sandbox_manager(settings: Settings) -> SandboxSessionManager:
+    """Keep persistent control attachments alive across HTTP turn runners."""
+
+    global _manager, _manager_settings
+    with _manager_lock:
+        if _manager is None or _manager_settings is not settings:
+            _manager = SandboxSessionManager(settings)
+            _manager_settings = settings
+        return _manager
 
 
 def create_chat_turn_runner(

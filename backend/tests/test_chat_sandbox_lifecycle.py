@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from backend.services import chat_sandbox_service
+from backend.services import chat_turn_runner
 from backend.services.chat_sandbox_service import SandboxSessionManager, WorkerClaim
 from backend.chat_sandbox_worker.protocol import encode_frame
 
@@ -402,6 +403,28 @@ def test_persistent_turns_reuse_one_control_attachment():
         assert exec_calls == 1
 
     asyncio.run(run())
+
+
+def test_turn_runners_share_session_manager_for_one_settings_instance(monkeypatch):
+    created: list[object] = []
+
+    class Manager:
+        def __init__(self, settings):
+            self.settings = settings
+            created.append(settings)
+
+    monkeypatch.setattr(chat_turn_runner, "SandboxSessionManager", Manager)
+    monkeypatch.setattr(chat_turn_runner, "_manager", None)
+    monkeypatch.setattr(chat_turn_runner, "_manager_settings", None)
+    first_settings = object()
+    second_settings = object()
+
+    first = chat_turn_runner.shared_sandbox_manager(first_settings)
+    assert chat_turn_runner.shared_sandbox_manager(first_settings) is first
+    second = chat_turn_runner.shared_sandbox_manager(second_settings)
+
+    assert second is not first
+    assert created == [first_settings, second_settings]
 
 
 def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
