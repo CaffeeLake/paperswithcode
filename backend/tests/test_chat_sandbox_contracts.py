@@ -218,7 +218,7 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
     assert calls[-1] == ("disconnect",)
 
 
-def test_persistent_agent_ignores_resume_change_after_connection(monkeypatch):
+def test_persistent_agent_accepts_resume_hint_before_sdk_session(monkeypatch):
     monkeypatch.setattr(
         agent,
         "GUIDE",
@@ -253,7 +253,8 @@ def test_persistent_agent_keeps_sdk_session_authoritative():
     worker._record_session_id("session-a")
 
     asyncio.run(worker.connect(model="model-a", resume="session-a"))
-    asyncio.run(worker.connect(model="model-a", resume="session-b"))
+    with pytest.raises(RuntimeError, match="Resume changed"):
+        asyncio.run(worker.connect(model="model-a", resume="session-b"))
     assert worker.sdk_session_id == "session-a"
 
 
@@ -894,7 +895,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-EqHORgOI4i86VQ7ADqSFvH"
+    assert MODAL_IMAGE_ID == "im-E7Yx2TClEwkobCxyyUKmsN"
 
 
 def test_task_catalog_is_bounded_and_ranked():

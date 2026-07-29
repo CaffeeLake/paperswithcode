@@ -64,6 +64,7 @@ class SessionControl:
     stderr_task: asyncio.Task
     reader_task: asyncio.Task | None
     queues: dict[str, asyncio.Queue]
+    resume_id: str | None
 
 
 @dataclass(frozen=True)
@@ -699,6 +700,14 @@ class SandboxSessionManager:
     ) -> AsyncIterator[dict]:
         turn_started = time.perf_counter()
         yield {"type": "sandbox_start", "session_id": str(chat_session_id)}
+        existing_control = getattr(self, "_controls", {}).get(chat_session_id)
+        if (
+            existing_control is not None
+            and resume is not None
+            and existing_control.resume_id is not None
+            and existing_control.resume_id != resume
+        ):
+            await self.snapshot_and_terminate(chat_session_id)
         sandbox, cold_start_ms, created = await self.ensure_ready(chat_session_id)
         yield {
             "type": "_latency",
@@ -768,6 +777,7 @@ class SandboxSessionManager:
                         stderr_task=stderr_task,
                         reader_task=None,
                         queues={},
+                        resume_id=None,
                     )
                     control.reader_task = asyncio.create_task(
                         self._read_control(control)
@@ -858,6 +868,17 @@ class SandboxSessionManager:
                         if event.get("status") == "stopped":
                             yield {"type": "_cancelled"}
                         break
+                    if persistent and event["type"] == "_sdk_session":
+                        assert control is not None
+                        sdk_session_id = str(event.get("session_id") or "")
+                        if (
+                            control.resume_id is not None
+                            and control.resume_id != sdk_session_id
+                        ):
+                            raise ProtocolError(
+                                "SDK session changed inside persistent control"
+                            )
+                        control.resume_id = sdk_session_id
                     if running_worker.cancel_requested:
                         continue
                     if event["type"] == "workspace_ready":
