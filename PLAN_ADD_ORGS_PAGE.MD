@@ -256,8 +256,10 @@ owners, organization mentions, acknowledgements, or model names. Those signals
 belong to the later AI affiliation-extraction workflow.
 
 Organizations with zero HF papers are still upserted and featured. Their detail
-pages show an empty state and remain `noindex,follow` until they have eligible
-papers.
+pages and logo-grid tiles show the explicit message "No papers indexed yet"
+rather than a numeric zero without context. They remain clickable and
+`noindex,follow` until they have eligible papers, and recurring imports populate
+them without changing the curated grid membership or order.
 
 ### 5. Keep the catalog current
 
@@ -370,7 +372,7 @@ The grid should:
 - fall back to a styled organization initial or wordmark when `logo_url` is
   missing or fails to load;
 - preserve a useful zero-paper tile that still links to the organization detail
-  page;
+  page and says "No papers indexed yet";
 - keep the manifest/display order by default, with client-side name search and
   an optional “most papers” sort;
 - display loading skeletons in the same grid geometry and provide retryable
@@ -509,7 +511,8 @@ route deployment before changing sitemap/canonical discovery in production.
 ## Acceptance criteria
 
 - `/organizations` lists all 21 requested organizations in deterministic order,
-  including the two that currently have zero HF papers.
+  including the two that currently have zero HF papers; zero-paper tiles remain
+  clickable and say "No papers indexed yet".
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
 - Organization counts, pages, task filters, and paper badges use only
