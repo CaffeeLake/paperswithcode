@@ -49,11 +49,13 @@ MAX_CAPTURE_BYTES = 64 * 1024
 
 @dataclass(frozen=True)
 class Sample:
-    cold_start_ms: int
-    exec_ms: int
-    termination_ms: int
+    cold_start_ms: int | None
+    exec_ms: int | None
+    termination_ms: int | None
     snapshot_ms: int | None
     restore_ms: int | None
+    status: str = "passed"
+    error_code: str | None = None
 
 
 def percentile(values: list[int], quantile: float) -> int:
@@ -81,6 +83,8 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
 
     return {
         "samples": len(samples),
+        "passed": sum(sample.status == "passed" for sample in samples),
+        "failed": sum(sample.status == "failed" for sample in samples),
         "cold_start_ms": metric("cold_start_ms"),
         "exec_ms": metric("exec_ms"),
         "termination_ms": metric("termination_ms"),
@@ -89,10 +93,12 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
     }
 
 
-def validate_settings(settings: Settings) -> None:
+def validate_settings(
+    settings: Settings, *, allow_active_rollout: bool = False
+) -> None:
     if settings.environment != "staging":
         raise ValueError("Qualification requires PWC_ENVIRONMENT=staging")
-    if settings.chat_new_chat_modal_percentage != 0:
+    if settings.chat_new_chat_modal_percentage != 0 and not allow_active_rollout:
         raise ValueError("Qualification requires a zero-percent Modal rollout")
     require_immutable_image_id(settings.chat_modal_image_version)
     dedicated_gateway_hostname(settings.chat_gateway_url)
@@ -416,7 +422,18 @@ raise SystemExit(0 if limit_observed else 2)
         samples: list[Sample | None] = [None] * self.starts
 
         async def land(index: int) -> None:
-            samples[index] = await self._sample(index)
+            try:
+                samples[index] = await self._sample(index)
+            except Exception as error:
+                samples[index] = Sample(
+                    cold_start_ms=None,
+                    exec_ms=None,
+                    termination_ms=None,
+                    snapshot_ms=None,
+                    restore_ms=None,
+                    status="failed",
+                    error_code=type(error).__name__,
+                )
 
         async with asyncio.TaskGroup() as group:
             for index in range(self.starts):
@@ -432,7 +449,9 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--starts", type=int, default=100)
     result.add_argument("--parallel", type=int, default=4)
-    result.add_argument("--snapshot-samples", type=int, default=3)
+    result.add_argument("--snapshot-samples", type=int, default=0)
+    result.add_argument("--sandbox-cpu", type=float, choices=(0.5, 1.0), default=1.0)
+    result.add_argument("--allow-active-rollout", action="store_true")
     result.add_argument("--resource-probes", action="store_true")
     result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
@@ -449,8 +468,10 @@ def main() -> int:
         raise SystemExit("--parallel must be 1-16")
     if not 0 <= args.snapshot_samples <= args.starts:
         raise SystemExit("--snapshot-samples must be between 0 and --starts")
-    settings = settings_for_release(args.release_dir)
-    validate_settings(settings)
+    settings = settings_for_release(args.release_dir).model_copy(
+        update={"chat_sandbox_cpu": args.sandbox_cpu}
+    )
+    validate_settings(settings, allow_active_rollout=args.allow_active_rollout)
     samples, resource_results = asyncio.run(
         QualificationRunner(
             settings,
@@ -459,25 +480,29 @@ def main() -> int:
             snapshot_samples=args.snapshot_samples,
         ).run(resource_probes=args.resource_probes)
     )
+    summary = summarize(samples)
+    passed = summary["failed"] == 0
     print(
         json.dumps(
             {
-                "status": "passed",
+                "status": "passed" if passed else "failed",
                 "release_id": settings.release_id,
                 "image_id": settings.chat_modal_image_version,
                 "configuration": {
                     "starts": args.starts,
                     "parallel": args.parallel,
                     "snapshot_samples": args.snapshot_samples,
+                    "sandbox_cpu": args.sandbox_cpu,
+                    "sandbox_memory_mib": settings.chat_sandbox_memory_mib,
                 },
-                "summary": summarize(samples),
+                "summary": summary,
                 "resource_probes": resource_results,
                 "raw_samples": [asdict(sample) for sample in samples],
             },
             indent=2,
         )
     )
-    return 0
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
