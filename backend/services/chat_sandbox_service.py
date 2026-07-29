@@ -855,7 +855,11 @@ class SandboxSessionManager:
                     if event["type"] == "worker_done":
                         terminal = True
                         running_worker.done.set()
+                        if event.get("status") == "stopped":
+                            yield {"type": "_cancelled"}
                         break
+                    if running_worker.cancel_requested:
+                        continue
                     if event["type"] == "workspace_ready":
                         elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
                         yield {

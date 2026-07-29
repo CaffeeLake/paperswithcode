@@ -612,6 +612,20 @@ class ChatStreamOrchestrator:
                 if self.research_task:
                     self.research_task.cancel()
                 continue
+            if kind == "_cancelled":
+                _persist_failure(
+                    self.owner,
+                    self.settings,
+                    self.admission,
+                    "interrupted",
+                    True,
+                    self.projection.completed_blocks(),
+                )
+                self.terminal = "stopped"
+                yield ChatStreamFrame(
+                    "done", {"followups": [], "finish_reason": "stopped"}
+                )
+                continue
             if kind == "_latency":
                 self._record_latency_phase(
                     str(event["phase"]),
