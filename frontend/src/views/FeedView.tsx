@@ -259,7 +259,7 @@ const FeedView: React.FC = () => {
           {isChatEnabled() && <AskAssistant />}
 
           <div className="sort-bar home-feed-sort-bar">
-            <div className="home-feed-sort-stack">
+            <div className="paper-feed-toolbar-controls">
               <div className="sort-options">
                 {SORT_OPTIONS.map(([k, l]) => (
                   <button

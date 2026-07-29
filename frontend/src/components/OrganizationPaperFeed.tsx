@@ -239,39 +239,41 @@ export const OrganizationPaperFeed: React.FC<{
             className="h-[38px]"
           />
         </div>
-        <div className="sort-options">
-          {SORT_OPTIONS.map(([value, label]) => (
-            <button
-              type="button"
-              key={value}
-              className={`sort-btn ${orderBy === value ? "active" : ""}`}
-              onClick={() => {
-                const updated = new URLSearchParams(searchParams);
-                if (value === "trending") updated.delete("order_by");
-                else updated.set("order_by", value);
-                setSearchParams(updated);
-              }}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="paper-feed-toolbar-controls">
+          <div className="sort-options">
+            {SORT_OPTIONS.map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                className={`sort-btn ${orderBy === value ? "active" : ""}`}
+                onClick={() => {
+                  const updated = new URLSearchParams(searchParams);
+                  if (value === "trending") updated.delete("order_by");
+                  else updated.set("order_by", value);
+                  setSearchParams(updated);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <PaperFeedFilters
+            hasCode={hasCode}
+            hasHfArtifacts={hasHfArtifacts}
+            onHasCodeChange={(active) => {
+              const updated = new URLSearchParams(searchParams);
+              if (active) updated.set("has_code", "true");
+              else updated.delete("has_code");
+              setSearchParams(updated);
+            }}
+            onHasHfArtifactsChange={(active) => {
+              const updated = new URLSearchParams(searchParams);
+              if (active) updated.set("has_hf_artifacts", "true");
+              else updated.delete("has_hf_artifacts");
+              setSearchParams(updated);
+            }}
+          />
         </div>
-        <PaperFeedFilters
-          hasCode={hasCode}
-          hasHfArtifacts={hasHfArtifacts}
-          onHasCodeChange={(active) => {
-            const updated = new URLSearchParams(searchParams);
-            if (active) updated.set("has_code", "true");
-            else updated.delete("has_code");
-            setSearchParams(updated);
-          }}
-          onHasHfArtifactsChange={(active) => {
-            const updated = new URLSearchParams(searchParams);
-            if (active) updated.set("has_hf_artifacts", "true");
-            else updated.delete("has_hf_artifacts");
-            setSearchParams(updated);
-          }}
-        />
         <div className="results-count">{totalCount.toLocaleString()} papers</div>
       </div>
 

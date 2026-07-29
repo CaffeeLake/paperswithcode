@@ -588,23 +588,25 @@ const TagBrowseView: React.FC = () => {
           </div>
 
           <div className="sort-bar">
-            <div className="sort-options">
-              {SORT_OPTIONS.map(([k, l]) => (
-                <button
-                  key={k}
-                  className={`sort-btn ${orderBy === k ? "active" : ""}`}
-                  onClick={() => setOrderBy(k)}
-                >
-                  {l}
-                </button>
-              ))}
+            <div className="paper-feed-toolbar-controls">
+              <div className="sort-options">
+                {SORT_OPTIONS.map(([k, l]) => (
+                  <button
+                    key={k}
+                    className={`sort-btn ${orderBy === k ? "active" : ""}`}
+                    onClick={() => setOrderBy(k)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <PaperFeedFilters
+                hasCode={hasCode}
+                hasHfArtifacts={hasHfArtifacts}
+                onHasCodeChange={setHasCode}
+                onHasHfArtifactsChange={setHasHfArtifacts}
+              />
             </div>
-            <PaperFeedFilters
-              hasCode={hasCode}
-              hasHfArtifacts={hasHfArtifacts}
-              onHasCodeChange={setHasCode}
-              onHasHfArtifactsChange={setHasHfArtifacts}
-            />
             <div className="results-count">
               {cards.length} loaded in <span>{taskName}</span>
             </div>

@@ -2,24 +2,28 @@ import React from "react";
 
 import { HuggingFaceLogo, Icon } from "@/components";
 
-const FeedFilterCheckbox: React.FC<{
+const FeedFilterToggle: React.FC<{
   checked: boolean;
   icon: React.ReactNode;
   label: string;
   onChange: (checked: boolean) => void;
 }> = ({ checked, icon, label, onChange }) => (
-  <label className="sort-btn paper-feed-filter">
-    <input
-      type="checkbox"
-      className="paper-feed-filter-checkbox"
-      checked={checked}
-      onChange={(event) => onChange(event.target.checked)}
-    />
+  <button
+    type="button"
+    className={`paper-feed-filter ${checked ? "active" : ""}`}
+    aria-pressed={checked}
+    onClick={() => onChange(!checked)}
+  >
     <span className="paper-feed-filter-icon" aria-hidden="true">
       {icon}
     </span>
     {label}
-  </label>
+    {checked && (
+      <span className="paper-feed-filter-check" aria-hidden="true">
+        ✓
+      </span>
+    )}
+  </button>
 );
 
 export const PaperFeedFilters: React.FC<{
@@ -27,28 +31,38 @@ export const PaperFeedFilters: React.FC<{
   hasHfArtifacts: boolean;
   onHasCodeChange: (checked: boolean) => void;
   onHasHfArtifactsChange: (checked: boolean) => void;
+  showDivider?: boolean;
 }> = ({
   hasCode,
   hasHfArtifacts,
   onHasCodeChange,
   onHasHfArtifactsChange,
+  showDivider = true,
 }) => (
   <div
-    className="paper-feed-filter-options"
+    className="paper-feed-resource-controls"
     role="group"
-    aria-label="Paper filters"
+    aria-label="Resource filters"
   >
-    <FeedFilterCheckbox
-      checked={hasCode}
-      icon={<Icon name="github" size={13} />}
-      label="Has code"
-      onChange={onHasCodeChange}
-    />
-    <FeedFilterCheckbox
-      checked={hasHfArtifacts}
-      icon={<HuggingFaceLogo size={14} />}
-      label="Has HF artifacts"
-      onChange={onHasHfArtifactsChange}
-    />
+    {showDivider && (
+      <span className="paper-feed-resource-divider" aria-hidden="true" />
+    )}
+    <span className="paper-feed-resource-label" aria-hidden="true">
+      Resources
+    </span>
+    <div className="paper-feed-filter-options">
+      <FeedFilterToggle
+        checked={hasCode}
+        icon={<Icon name="github" size={14} />}
+        label="Has code"
+        onChange={onHasCodeChange}
+      />
+      <FeedFilterToggle
+        checked={hasHfArtifacts}
+        icon={<HuggingFaceLogo size={15} />}
+        label="Has artifacts"
+        onChange={onHasHfArtifactsChange}
+      />
+    </div>
   </div>
 );

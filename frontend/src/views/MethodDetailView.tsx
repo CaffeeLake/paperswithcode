@@ -250,23 +250,25 @@ const MethodDetailView: React.FC = () => {
       )}
 
       <div className="sort-bar">
-        <div className="sort-options">
-          {SORT_OPTIONS.map(([k, l]) => (
-            <button
-              key={k}
-              className={`sort-btn ${sortBy === k ? "active" : ""}`}
-              onClick={() => setSortBy(k)}
-            >
-              {l}
-            </button>
-          ))}
+        <div className="paper-feed-toolbar-controls">
+          <div className="sort-options">
+            {SORT_OPTIONS.map(([k, l]) => (
+              <button
+                key={k}
+                className={`sort-btn ${sortBy === k ? "active" : ""}`}
+                onClick={() => setSortBy(k)}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+          <PaperFeedFilters
+            hasCode={hasCode}
+            hasHfArtifacts={hasHfArtifacts}
+            onHasCodeChange={setHasCode}
+            onHasHfArtifactsChange={setHasHfArtifacts}
+          />
         </div>
-        <PaperFeedFilters
-          hasCode={hasCode}
-          hasHfArtifacts={hasHfArtifacts}
-          onHasCodeChange={setHasCode}
-          onHasHfArtifactsChange={setHasHfArtifacts}
-        />
         <div className="results-count">{cards.length} papers mentioning {m.name}</div>
       </div>
 

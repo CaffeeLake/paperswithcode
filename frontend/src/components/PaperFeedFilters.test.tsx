@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 
 describe("PaperFeedFilters", () => {
-  it("renders independent code and Hugging Face artifact checkboxes", async () => {
+  it("renders independent code and Hugging Face artifact toggles", async () => {
     const onHasCodeChange = vi.fn();
     const onHasHfArtifactsChange = vi.fn();
     const user = userEvent.setup();
@@ -20,13 +20,13 @@ describe("PaperFeedFilters", () => {
       />,
     );
 
-    const hasCode = screen.getByRole("checkbox", { name: "Has code" });
-    const hasHfArtifacts = screen.getByRole("checkbox", {
-      name: "Has HF artifacts",
+    const hasCode = screen.getByRole("button", { name: "Has code" });
+    const hasHfArtifacts = screen.getByRole("button", {
+      name: "Has artifacts",
     });
 
-    expect(hasCode).not.toBeChecked();
-    expect(hasHfArtifacts).toBeChecked();
+    expect(hasCode).toHaveAttribute("aria-pressed", "false");
+    expect(hasHfArtifacts).toHaveAttribute("aria-pressed", "true");
 
     await user.click(hasCode);
     await user.click(hasHfArtifacts);
