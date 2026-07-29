@@ -128,6 +128,55 @@ def test_papers_endpoint_rejects_unknown_order_by(client, monkeypatch):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("order_dir", "expected_order"),
+    [
+        ("desc", "papers.date_published DESC NULLS LAST"),
+        ("asc", "papers.date_published ASC NULLS LAST"),
+    ],
+)
+def test_date_published_feed_places_undated_papers_last(order_dir, expected_order):
+    class FakeQuery:
+        def __init__(self):
+            self.order_clause = None
+
+        def filter(self, *args):
+            return self
+
+        def order_by(self, clause):
+            self.order_clause = clause
+            return self
+
+        def count(self):
+            return 0
+
+        def offset(self, value):
+            return self
+
+        def limit(self, value):
+            return self
+
+        def all(self):
+            return []
+
+    class FakeDatabase:
+        def __init__(self):
+            self.query_result = FakeQuery()
+
+        def query(self, *args):
+            return self.query_result
+
+    database = FakeDatabase()
+
+    response = PaperService(database).get_papers(
+        order_by="date_published",
+        order_dir=order_dir,
+    )
+
+    assert response.results == []
+    assert str(database.query_result.order_clause) == expected_order
+
+
 def test_trending_endpoint_deduplicates_view_rows_by_paper():
     app = create_app()
     captured = {}

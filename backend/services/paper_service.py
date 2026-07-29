@@ -1002,9 +1002,9 @@ class PaperService:
             # Apply ordering
             order_column = allowed_order_columns[order_by]
             if order_dir.lower() == "desc":
-                query = query.order_by(desc(order_column))
+                query = query.order_by(desc(order_column).nullslast())
             else:
-                query = query.order_by(asc(order_column))
+                query = query.order_by(asc(order_column).nullslast())
 
             # Get total count
             total_count = query.count()
