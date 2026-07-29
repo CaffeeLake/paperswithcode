@@ -287,6 +287,10 @@ def main() -> int:
             "PWC_CATALOG_MUTATIONS_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": "/var/lib/paperswithcode/staging/chat-agent",
             "PWC_CHAT_ENABLED": "true",
+            "PWC_CHAT_GATEWAY_URL": (
+                "https://chat-gateway-staging.paperswithcode.co/"
+                "api/internal/chat-gateway"
+            ),
             "PWC_CHAT_HF_BILL_TO": "huggingface",
             "PWC_CHAT_RECOVERY_SPOOL_DIR": (
                 "/var/lib/paperswithcode/staging/chat-recovery-spool"
