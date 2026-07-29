@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
+    ClaudeSDKClient,
     ClaudeAgentOptions,
     HookMatcher,
     MirrorErrorMessage,
@@ -102,6 +104,16 @@ class WorkerToolHooks:
         self.budget.observe_urls(prompt)
         self.bash_timeout_ms = round(settings.chat_bash_timeout_seconds * 1000)
         self.results: dict[str, dict[str, Any]] = {}
+
+    def reset(self, settings: WorkerSettings, prompt: str) -> None:
+        self.budget = ToolBudget(
+            maximum_calls=settings.chat_max_tool_calls,
+            maximum_direct_searches=settings.chat_max_direct_search_calls,
+            maximum_result_bytes=settings.chat_tool_result_max_bytes,
+            maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
+        )
+        self.budget.observe_urls(prompt)
+        self.results.clear()
 
     async def pre(self, hook_input: dict, tool_use_id: str | None, _context: Any):
         tool_id = tool_use_id or str(hook_input.get("tool_use_id") or "")
@@ -203,23 +215,31 @@ class WorkerToolHooks:
         }
 
 
-async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
-    if frame.get("type") != "run_turn":
-        raise ValueError("Expected run_turn")
+def _validate_run_frame(frame: dict[str, Any]) -> tuple[str, str, str]:
     prompt = frame.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8_000:
         raise ValueError("Invalid prompt")
     request_id = str(frame.get("request_id") or "")
-    hooks = WorkerToolHooks(settings, prompt)
-    adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+    model = str(frame.get("model") or "")
+    if not request_id or not model:
+        raise ValueError("Invalid run frame")
+    return prompt, request_id, model
+
+
+def _options(
+    settings: WorkerSettings,
+    hooks: WorkerToolHooks,
+    *,
+    model: str,
+    resume: str | None,
+) -> ClaudeAgentOptions:
     prompt_text = render_system_prompt(
         max_turns=settings.chat_max_turns,
         max_calls=settings.chat_max_tool_calls,
         max_searches=settings.chat_max_direct_search_calls,
         guide_path=GUIDE,
     )
-    model = str(frame["model"])
-    options = ClaudeAgentOptions(
+    return ClaudeAgentOptions(
         tools=["Bash", "Read", "Grep", "WebFetch"],
         allowed_tools=["Bash", "Read", "Grep", "WebFetch"],
         disallowed_tools=[
@@ -276,6 +296,78 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         },
         session_store=RemoteSessionStore(),
         session_store_flush="eager",
+        resume=resume,
+    )
+
+
+async def _adapt_messages(
+    messages,
+    *,
+    request_id: str,
+    hooks: WorkerToolHooks,
+    adapter: SDKEventAdapter,
+):
+    async for message in messages:
+        if isinstance(message, MirrorErrorMessage):
+            yield {
+                "v": 1,
+                "type": "_mirror_error",
+                "request_id": request_id,
+            }
+            continue
+        session_id = getattr(message, "session_id", None)
+        if session_id:
+            yield {
+                "v": 1,
+                "type": "_sdk_session",
+                "request_id": request_id,
+                "session_id": session_id,
+            }
+        if isinstance(message, UserMessage):
+            for block in message.content if isinstance(message.content, list) else []:
+                if not isinstance(block, ToolResultBlock):
+                    continue
+                event = hooks.results.pop(block.tool_use_id, None)
+                if event is None:
+                    text, truncated = bound_tool_output(
+                        _response_text(block.content),
+                        hooks.budget.maximum_result_bytes,
+                    )
+                    event = {
+                        "type": "tool_result",
+                        "id": block.tool_use_id,
+                        "status": "error" if block.is_error else "success",
+                        "took_ms": 0,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": text,
+                                "truncated": truncated,
+                            }
+                        ],
+                        "metadata": {
+                            "exit_code": 1 if block.is_error else 0,
+                            "output_truncated": truncated,
+                        },
+                    }
+                yield {"v": 1, "request_id": request_id, **event}
+            continue
+        for event in adapter.feed(message):
+            yield {"v": 1, "request_id": request_id, **event}
+        if adapter.terminal:
+            return
+
+
+async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
+    if frame.get("type") != "run_turn":
+        raise ValueError("Expected run_turn")
+    prompt, request_id, model = _validate_run_frame(frame)
+    hooks = WorkerToolHooks(settings, prompt)
+    adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+    options = _options(
+        settings,
+        hooks,
+        model=model,
         resume=frame.get("resume"),
     )
     yield {
@@ -286,57 +378,10 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     stream = sdk_query(prompt=prompt, options=options)
     try:
         async with asyncio.timeout(settings.chat_agent_timeout_seconds):
-            async for message in stream:
-                if isinstance(message, MirrorErrorMessage):
-                    yield {
-                        "v": 1,
-                        "type": "_mirror_error",
-                        "request_id": request_id,
-                    }
-                    continue
-                session_id = getattr(message, "session_id", None)
-                if session_id:
-                    yield {
-                        "v": 1,
-                        "type": "_sdk_session",
-                        "request_id": request_id,
-                        "session_id": session_id,
-                    }
-                if isinstance(message, UserMessage):
-                    for block in (
-                        message.content if isinstance(message.content, list) else []
-                    ):
-                        if not isinstance(block, ToolResultBlock):
-                            continue
-                        event = hooks.results.pop(block.tool_use_id, None)
-                        if event is None:
-                            text, truncated = bound_tool_output(
-                                _response_text(block.content),
-                                settings.chat_tool_result_max_bytes,
-                            )
-                            event = {
-                                "type": "tool_result",
-                                "id": block.tool_use_id,
-                                "status": "error" if block.is_error else "success",
-                                "took_ms": 0,
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": text,
-                                        "truncated": truncated,
-                                    }
-                                ],
-                                "metadata": {
-                                    "exit_code": 1 if block.is_error else 0,
-                                    "output_truncated": truncated,
-                                },
-                            }
-                        yield {"v": 1, "request_id": request_id, **event}
-                    continue
-                for event in adapter.feed(message):
-                    yield {"v": 1, "request_id": request_id, **event}
-                if adapter.terminal:
-                    return
+            async for event in _adapt_messages(
+                stream, request_id=request_id, hooks=hooks, adapter=adapter
+            ):
+                yield event
     except TimeoutError:
         yield {
             "v": 1,
@@ -347,6 +392,72 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         }
     finally:
         await stream.aclose()
+
+
+class PersistentAgent:
+    """One session-bound SDK client reused for sequential turns."""
+
+    def __init__(self, settings: WorkerSettings):
+        self.settings = settings
+        self.client: ClaudeSDKClient | None = None
+        self.hooks = WorkerToolHooks(settings)
+        self.model: str | None = None
+        self.resume: str | None = None
+
+    async def connect(self, *, model: str, resume: str | None) -> None:
+        if self.client is not None:
+            if resume is not None and resume != self.resume:
+                raise RuntimeError("Resume changed after worker connection")
+            if model != self.model:
+                await self.client.set_model(model)
+                self.model = model
+            return
+        self.model = model
+        self.resume = resume
+        self.client = ClaudeSDKClient(
+            _options(
+                self.settings,
+                self.hooks,
+                model=model,
+                resume=resume,
+            )
+        )
+        await self.client.connect(prompt=None)
+
+    async def preflight(self, model: str) -> None:
+        """Prove SDK initialization performs no provider request or session resume."""
+
+        client = ClaudeSDKClient(
+            _options(self.settings, self.hooks, model=model, resume=None)
+        )
+        await client.connect(prompt=None)
+        await client.disconnect()
+
+    async def stream(self, frame: dict[str, Any]):
+        prompt, request_id, model = _validate_run_frame(frame)
+        await self.connect(model=model, resume=frame.get("resume"))
+        assert self.client is not None
+        self.hooks.reset(self.settings, prompt)
+        adapter = SDKEventAdapter(show_reasoning=self.settings.chat_show_reasoning)
+        yield {"v": 1, "type": "workspace_ready", "request_id": request_id}
+        await self.client.query(prompt)
+        async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
+            async for event in _adapt_messages(
+                self.client.receive_response(),
+                request_id=request_id,
+                hooks=self.hooks,
+                adapter=adapter,
+            ):
+                yield event
+
+    async def interrupt(self) -> None:
+        if self.client is not None:
+            await self.client.interrupt()
+
+    async def close(self) -> None:
+        if self.client is not None:
+            await self.client.disconnect()
+            self.client = None
 
 
 async def main_async() -> int:
@@ -404,7 +515,83 @@ async def main_async() -> int:
     return 0
 
 
+async def persistent_main_async() -> int:
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol, sys.stdin.buffer
+    )
+    settings = WorkerSettings.from_environment()
+    agent = PersistentAgent(settings)
+    try:
+        preflight_model = os.environ.get("PWC_CHAT_PREFLIGHT_MODEL", "")
+        if not preflight_model:
+            raise RuntimeError("Persistent worker preflight model is missing")
+        await agent.preflight(preflight_model)
+        sys.stdout.buffer.write(
+            encode_frame(
+                {
+                    "v": 1,
+                    "type": "worker_ready",
+                    "request_id": "startup",
+                }
+            )
+        )
+        sys.stdout.buffer.flush()
+        while line := await reader.readline():
+            frame = decode_frame(line)
+            if frame.get("type") != "run_turn":
+                raise ValueError("Expected run_turn")
+            request_id = str(frame.get("request_id") or "")
+            stopped = False
+
+            async def emit() -> None:
+                async for event in agent.stream(frame):
+                    sys.stdout.buffer.write(encode_frame(event))
+                    sys.stdout.buffer.flush()
+
+            run_task = asyncio.create_task(emit())
+            while not run_task.done():
+                read_task = asyncio.create_task(reader.readline())
+                done, _ = await asyncio.wait(
+                    {run_task, read_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if run_task in done:
+                    read_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await read_task
+                    break
+                candidate_line = read_task.result()
+                if not candidate_line:
+                    raise RuntimeError("Persistent worker control input closed")
+                candidate = decode_frame(candidate_line)
+                if (
+                    candidate.get("type") != "cancel"
+                    or candidate.get("request_id") != request_id
+                ):
+                    raise RuntimeError("Unexpected persistent worker frame")
+                stopped = True
+                await agent.interrupt()
+            await run_task
+            sys.stdout.buffer.write(
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "worker_done",
+                        "request_id": request_id,
+                        "status": "stopped" if stopped else "complete",
+                    }
+                )
+            )
+            sys.stdout.buffer.flush()
+    finally:
+        await agent.close()
+    return 0
+
+
 def main() -> int:
+    if os.environ.get("PWC_CHAT_PERSISTENT_AGENT") == "1":
+        return asyncio.run(persistent_main_async())
     return asyncio.run(main_async())
 
 

@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import re
+import socketserver
 import ssl
 import tempfile
 import threading
@@ -28,21 +29,19 @@ _PAPER_READ = re.compile(r"^/api/v1/research/papers/([^/]+)/read$")
 _PAPER_LINEAGE = re.compile(r"^/api/v1/research/papers/([^/]+)/lineage$")
 _BENCHMARK_TRENDS = re.compile(r"^/api/v1/tasks/([^/]+)/trending-benchmarks$")
 _BENCHMARK_EVALUATIONS = re.compile(r"^/api/v1/datasets/([^/]+)/evaluations/$")
+CONTROL_SOCKET = Path("/var/empty/pwc-broker/control.sock")
 
 
 def _load_config() -> dict:
     fd = int(os.environ["PWC_BROKER_CONFIG_FD"])
     with os.fdopen(fd, "rb", closefd=True) as handle:
         config = json.loads(handle.read(16 * 1024))
-    required = {
-        "capability",
-        "gateway_url",
-        "session_id",
-        "turn_id",
-        "proxy_token",
-    }
-    if set(config) != required:
+    required = {"gateway_url", "proxy_token"}
+    optional = {"capability", "session_id", "turn_id"}
+    if not required.issubset(config) or not set(config).issubset(required | optional):
         raise RuntimeError("Invalid broker configuration")
+    if set(config) & optional and not optional.issubset(config):
+        raise RuntimeError("Incomplete broker capability")
     return config
 
 
@@ -51,6 +50,54 @@ UPSTREAM = urlsplit(CONFIG["gateway_url"])
 PROXY_CA_PATH = Path("/tmp/pwc-webfetch-ca.pem")
 PROXY_GRANTS: dict[str, list[float]] = {}
 PROXY_GRANTS_LOCK = Lock()
+
+
+class BrokerState:
+    def __init__(self, initial: dict):
+        self._lock = Lock()
+        self._active: dict[str, str] | None = None
+        if "capability" in initial:
+            self._active = {
+                key: str(initial[key])
+                for key in ("capability", "session_id", "turn_id")
+            }
+
+    def install(self, payload: dict) -> None:
+        required = {"capability", "session_id", "turn_id"}
+        if set(payload) != required or not all(
+            isinstance(payload[key], str) and payload[key] for key in required
+        ):
+            raise RuntimeError("Invalid broker capability")
+        with self._lock:
+            if self._active is not None:
+                raise RuntimeError("Broker capability already installed")
+            self._active = dict(payload)
+
+    def clear(self, *, session_id: str, turn_id: str) -> None:
+        with self._lock:
+            if self._active is None:
+                raise RuntimeError("Broker capability is not installed")
+            if (
+                self._active["session_id"] != session_id
+                or self._active["turn_id"] != turn_id
+            ):
+                raise RuntimeError("Broker capability correlation failed")
+            self._active = None
+        with PROXY_GRANTS_LOCK:
+            PROXY_GRANTS.clear()
+
+    def current(self) -> dict[str, str]:
+        with self._lock:
+            if self._active is None:
+                raise PermissionError("No turn capability is installed")
+            return dict(self._active)
+
+    def active(self) -> bool:
+        with self._lock:
+            return self._active is not None
+
+
+STATE = BrokerState(CONFIG)
 
 
 def _grant_proxy_url(url: str) -> None:
@@ -79,10 +126,11 @@ def _connection():
 
 
 def _gateway_headers(*, content_type: str = "application/json") -> dict[str, str]:
+    active = STATE.current()
     return {
-        "Authorization": f"Bearer {CONFIG['capability']}",
-        "X-PWC-Session": CONFIG["session_id"],
-        "X-PWC-Turn": CONFIG["turn_id"],
+        "Authorization": f"Bearer {active['capability']}",
+        "X-PWC-Session": active["session_id"],
+        "X-PWC-Turn": active["turn_id"],
         "Content-Type": content_type,
     }
 
@@ -133,6 +181,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         path = urlsplit(self.path).path
         if path == "/proxy-authorize":
+            if not STATE.active():
+                self.send_error(403)
+                return
             supplied = self.headers.get("X-PWC-Proxy-Token", "")
             if not hmac.compare_digest(supplied, CONFIG["proxy_token"]):
                 self.send_error(403)
@@ -163,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_GET(self) -> None:
+        if not STATE.active():
+            self.send_error(403)
+            return
         parsed = urlsplit(self.path)
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
         operation: str | None = None
@@ -362,6 +416,9 @@ class OriginHandler(BaseHTTPRequestHandler):
         return
 
     def do_POST(self) -> None:
+        if not STATE.active():
+            self.send_error(403)
+            return
         host = str(getattr(self.server, "target_host", ""))
         requested_host = (self.headers.get("Host") or "").partition(":")[0].lower()
         path = urlsplit(self.path).path
@@ -404,6 +461,9 @@ class OriginHandler(BaseHTTPRequestHandler):
             connection.close()
 
     def do_GET(self) -> None:
+        if not STATE.active():
+            self.send_error(403)
+            return
         host = str(getattr(self.server, "target_host", ""))
         requested_host = (self.headers.get("Host") or "").partition(":")[0].lower()
         if (
@@ -478,13 +538,50 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
 
+class BrokerControlHandler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        try:
+            payload = json.loads(self.rfile.readline(16 * 1024))
+            operation = payload.pop("operation")
+            if operation == "install":
+                STATE.install(payload)
+            elif operation == "clear":
+                if set(payload) != {"session_id", "turn_id"}:
+                    raise RuntimeError("Invalid broker clear request")
+                STATE.clear(
+                    session_id=str(payload["session_id"]),
+                    turn_id=str(payload["turn_id"]),
+                )
+            elif operation == "status":
+                if payload:
+                    raise RuntimeError("Invalid broker status request")
+            else:
+                raise RuntimeError("Invalid broker operation")
+            response = {"ok": True, "active": STATE.active()}
+        except Exception:
+            response = {"ok": False, "code": "broker_control_rejected"}
+        self.wfile.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+
+
+class BrokerControlServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+
 def main() -> int:
     global CERTIFICATES
     CERTIFICATES = _CertificateAuthority()
     broker = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
     proxy = ThreadingHTTPServer(("127.0.0.1", 8766), ProxyHandler)
+    CONTROL_SOCKET.unlink(missing_ok=True)
+    control = BrokerControlServer(str(CONTROL_SOCKET), BrokerControlHandler)
+    CONTROL_SOCKET.chmod(0o600)
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
-    broker.serve_forever()
+    threading.Thread(target=control.serve_forever, daemon=True).start()
+    try:
+        broker.serve_forever()
+    finally:
+        control.shutdown()
+        CONTROL_SOCKET.unlink(missing_ok=True)
     return 0
 
 

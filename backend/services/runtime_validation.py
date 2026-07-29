@@ -215,6 +215,9 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             settings.chat_default_backend != "local_mcp"
             or settings.chat_new_chat_modal_percentage != 0
             or settings.chat_modal_image_version
+            or settings.chat_persistent_worker_enabled
+            or settings.chat_sandbox_cpu_limit is not None
+            or settings.chat_sandbox_memory_limit_mib is not None
         ):
             raise RuntimeError("production contains an active chat runtime descriptor")
     else:
@@ -249,6 +252,17 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError(f"staging chat runtime is invalid: {error}") from error
         if not settings.hf_token:
             raise RuntimeError("staging chat model gateway requires an HF token")
+        if (
+            settings.chat_sandbox_cpu_limit is not None
+            and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu
+        ):
+            raise RuntimeError("staging chat CPU limit is below its request")
+        if (
+            settings.chat_sandbox_memory_limit_mib is not None
+            and settings.chat_sandbox_memory_limit_mib
+            < settings.chat_sandbox_memory_mib
+        ):
+            raise RuntimeError("staging chat memory limit is below its request")
         from backend.chat_sandbox_worker.prompt import sha256 as prompt_sha256
 
         effective_prompt_hash = prompt_sha256(

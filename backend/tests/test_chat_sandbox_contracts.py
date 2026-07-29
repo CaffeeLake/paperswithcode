@@ -55,8 +55,10 @@ from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
     WorkerClaim,
     WorkspaceSnapshotProvider,
+    create_isolated_sandbox,
     resolve_modal_image,
 )
+from backend.config import Settings
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
@@ -118,6 +120,131 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
 
     assert request.forwarded == [("v1/messages", b"{}")]
     assert request.error is None
+
+
+def test_broker_capability_rotation_rejects_stale_and_cross_turn_clear(monkeypatch):
+    broker = _import_broker(monkeypatch)
+    state = broker.BrokerState(
+        {"capability": "old", "session_id": "session", "turn_id": "turn-1"}
+    )
+
+    assert state.current()["capability"] == "old"
+    with pytest.raises(RuntimeError, match="already installed"):
+        state.install(
+            {"capability": "new", "session_id": "session", "turn_id": "turn-2"}
+        )
+    with pytest.raises(RuntimeError, match="correlation"):
+        state.clear(session_id="session", turn_id="turn-2")
+
+    state.clear(session_id="session", turn_id="turn-1")
+    with pytest.raises(PermissionError):
+        state.current()
+    state.install({"capability": "new", "session_id": "session", "turn_id": "turn-2"})
+    assert state.current()["capability"] == "new"
+
+
+def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, options):
+            calls.append(("init", options.model, options.resume))
+
+        async def connect(self, prompt):
+            calls.append(("connect", prompt))
+
+        async def query(self, prompt):
+            calls.append(("query", prompt))
+
+        def receive_response(self):
+            return object()
+
+        async def set_model(self, model):
+            calls.append(("model", model))
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+        async def interrupt(self):
+            calls.append(("interrupt",))
+
+    async def adapted(_messages, *, request_id, **_kwargs):
+        yield {"v": 1, "type": "done", "request_id": request_id}
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    monkeypatch.setattr(agent, "_adapt_messages", adapted)
+    settings = agent.WorkerSettings.from_environment()
+    worker = agent.PersistentAgent(settings)
+
+    async def run():
+        first = [
+            event
+            async for event in worker.stream(
+                {
+                    "type": "run_turn",
+                    "request_id": "request-1",
+                    "prompt": "first",
+                    "model": "model-a",
+                    "resume": "session-a",
+                }
+            )
+        ]
+        second = [
+            event
+            async for event in worker.stream(
+                {
+                    "type": "run_turn",
+                    "request_id": "request-2",
+                    "prompt": "second",
+                    "model": "model-b",
+                    "resume": "session-a",
+                }
+            )
+        ]
+        await worker.close()
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert [event["type"] for event in first] == ["workspace_ready", "done"]
+    assert [event["type"] for event in second] == ["workspace_ready", "done"]
+    assert [call[0] for call in calls].count("init") == 1
+    assert ("model", "model-b") in calls
+    assert calls.count(("connect", None)) == 1
+    assert calls[-1] == ("disconnect",)
+
+
+def test_persistent_agent_rejects_resume_change(monkeypatch):
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, _options):
+            pass
+
+        async def connect(self, prompt):
+            pass
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+
+    async def run():
+        await worker.connect(model="model-a", resume="session-a")
+        with pytest.raises(RuntimeError, match="Resume changed"):
+            await worker.connect(model="model-a", resume="session-b")
+        await worker.close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize(
@@ -757,7 +884,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-hsDmteqN0IpddLngsYP8rE"
+    assert MODAL_IMAGE_ID == "im-ocFD4awu780jOVtB8OELIT"
 
 
 def test_task_catalog_is_bounded_and_ranked():
@@ -865,6 +992,75 @@ def test_immutable_modal_image_uses_supported_constructor(monkeypatch):
     )
 
     assert asyncio.run(resolve_modal_image("im-test")) is sentinel
+
+
+def test_persistent_sandbox_uses_daemon_probe_and_request_limit_pairs(monkeypatch):
+    captured: dict = {}
+
+    async def lookup(*_args, **_kwargs):
+        return object()
+
+    async def image(_reference):
+        return object()
+
+    class Created:
+        def __init__(self):
+            self.exec = SimpleNamespace(aio=self._exec)
+            self.poll = SimpleNamespace(aio=self._poll)
+
+        async def _exec(self, *_args, **_kwargs):
+            async def wait():
+                return None
+
+            return SimpleNamespace(
+                returncode=0,
+                wait=SimpleNamespace(aio=wait),
+            )
+
+        async def _poll(self):
+            return None
+
+    async def create(*command, **options):
+        captured["command"] = command
+        captured["options"] = options
+        return Created()
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.modal.App.lookup",
+        SimpleNamespace(aio=lookup),
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.resolve_modal_image",
+        image,
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.modal.Sandbox.create",
+        SimpleNamespace(aio=create),
+    )
+    settings = Settings(
+        _env_file=None,
+        chat_gateway_url="https://gateway.example.test/api/internal/chat-gateway",
+        chat_modal_image_version="im-test",
+        chat_persistent_worker_enabled=True,
+        chat_sandbox_cpu=0.125,
+        chat_sandbox_cpu_limit=1,
+        chat_sandbox_memory_mib=512,
+        chat_sandbox_memory_limit_mib=2048,
+    )
+
+    asyncio.run(
+        create_isolated_sandbox(settings, name="test", tags={"purpose": "test"})
+    )
+
+    assert captured["command"] == (
+        "python",
+        "-m",
+        "backend.chat_sandbox_worker.control_daemon",
+    )
+    assert captured["options"]["cpu"] == (0.125, 1)
+    assert captured["options"]["memory"] == (512, 2048)
+    assert captured["options"]["timeout"] == 86400
+    assert captured["options"]["idle_timeout"] == 86400
 
 
 def test_supervisor_tolerates_unsupported_proc_remount(monkeypatch):

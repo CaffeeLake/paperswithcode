@@ -273,9 +273,16 @@ class Settings(BaseSettings):
     chat_turn_tool_output_max_bytes: int = Field(default=96 * 1024, ge=4096)
     chat_sandbox_cpu: float = Field(default=1, gt=0, le=8)
     chat_sandbox_memory_mib: int = Field(default=2048, ge=512, le=16384)
+    chat_sandbox_cpu_limit: float | None = Field(default=None, gt=0, le=8)
+    chat_sandbox_memory_limit_mib: int | None = Field(default=None, ge=512, le=16384)
     chat_sandbox_pids_max: int = Field(default=64, ge=16, le=512)
     chat_sandbox_warm_seconds: int = Field(default=300, ge=0, le=3600)
     chat_sandbox_max_warm: int = Field(default=10, ge=0, le=1000)
+    chat_persistent_worker_enabled: bool = Field(default=False)
+    chat_worker_ready_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    chat_persistent_sandbox_lifetime_seconds: int = Field(
+        default=86400, ge=300, le=86400
+    )
     chat_workspace_snapshots_enabled: bool = Field(default=False)
     chat_workspace_snapshot_inactivity_days: int = Field(default=30, ge=1, le=90)
     chat_gateway_url: str = Field(default="", max_length=1000)

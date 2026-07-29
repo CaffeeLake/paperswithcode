@@ -70,6 +70,8 @@ async def resolve_modal_image(image_reference: str):
 
 def sandbox_environment(settings: Settings) -> dict[str, str]:
     return {
+        "PWC_CHAT_GATEWAY_URL": settings.chat_gateway_url,
+        "PWC_CHAT_PREFLIGHT_MODEL": getattr(settings, "chat_deepseek_route", ""),
         "PWC_CHAT_MAX_TURNS": str(settings.chat_max_turns),
         "PWC_CHAT_MAX_TOOL_CALLS": str(settings.chat_max_tool_calls),
         "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": str(settings.chat_max_direct_search_calls),
@@ -99,21 +101,47 @@ async def create_isolated_sandbox(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=False),
         resolve_modal_image(settings.chat_modal_image_version),
     )
-    return await modal.Sandbox.create.aio(
-        "sleep",
-        "infinity",
+    persistent_enabled = bool(
+        getattr(settings, "chat_persistent_worker_enabled", False)
+    )
+    command = (
+        ("python", "-m", "backend.chat_sandbox_worker.control_daemon")
+        if persistent_enabled
+        else ("sleep", "infinity")
+    )
+    cpu_limit = (
+        getattr(settings, "chat_sandbox_cpu_limit", None) or settings.chat_sandbox_cpu
+    )
+    memory_limit = (
+        getattr(settings, "chat_sandbox_memory_limit_mib", None)
+        or settings.chat_sandbox_memory_mib
+    )
+    if cpu_limit < settings.chat_sandbox_cpu:
+        raise SandboxError("sandbox_resource_invalid", "CPU limit is below request")
+    if memory_limit < settings.chat_sandbox_memory_mib:
+        raise SandboxError("sandbox_resource_invalid", "Memory limit is below request")
+    sandbox = await modal.Sandbox.create.aio(
+        *command,
         app=app,
         image=image,
         env=sandbox_environment(settings),
         name=name,
         tags=tags,
-        timeout=3600,
-        idle_timeout=max(60, settings.chat_sandbox_warm_seconds),
+        timeout=(
+            settings.chat_persistent_sandbox_lifetime_seconds
+            if persistent_enabled
+            else 3600
+        ),
+        idle_timeout=(
+            settings.chat_persistent_sandbox_lifetime_seconds
+            if persistent_enabled
+            else max(60, settings.chat_sandbox_warm_seconds)
+        ),
         workdir="/workspace",
-        cpu=(settings.chat_sandbox_cpu, settings.chat_sandbox_cpu),
+        cpu=(settings.chat_sandbox_cpu, cpu_limit),
         memory=(
             settings.chat_sandbox_memory_mib,
-            settings.chat_sandbox_memory_mib,
+            memory_limit,
         ),
         outbound_domain_allowlist=[gateway_host],
         inbound_cidr_allowlist=[],
@@ -121,8 +149,41 @@ async def create_isolated_sandbox(
         unencrypted_ports=[],
         include_oidc_identity_token=False,
         readiness_probe=modal.sandbox.Probe.with_exec(
-            "test", "-x", "/usr/local/bin/pwc"
+            *(
+                (
+                    "python",
+                    "-m",
+                    "backend.chat_sandbox_worker.relay",
+                    "--ping",
+                )
+                if persistent_enabled
+                else ("test", "-x", "/usr/local/bin/pwc")
+            )
         ),
+    )
+    if not persistent_enabled:
+        return sandbox
+    deadline = time.monotonic() + settings.chat_worker_ready_timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            probe = await sandbox.exec.aio(
+                "python",
+                "-m",
+                "backend.chat_sandbox_worker.relay",
+                "--ping",
+                timeout=5,
+            )
+            await probe.wait.aio()
+            if probe.returncode == 0:
+                return sandbox
+        except Exception:
+            pass
+        if await sandbox.poll.aio() is not None:
+            break
+        await asyncio.sleep(0.05)
+    await sandbox.terminate.aio(wait=False)
+    raise SandboxError(
+        "sandbox_worker_not_ready", "Persistent worker readiness timed out"
     )
 
 
@@ -174,6 +235,16 @@ class SandboxSessionManager:
                 "snapshot_unsupported",
                 "Configured workspace snapshots require a Directory Snapshot provider",
             )
+
+    @property
+    def ready_timeout_seconds(self) -> float:
+        if getattr(self.settings, "chat_persistent_worker_enabled", False):
+            return getattr(
+                self.settings,
+                "chat_worker_ready_timeout_seconds",
+                self.settings.chat_sandbox_ready_timeout_seconds,
+            )
+        return self.settings.chat_sandbox_ready_timeout_seconds
 
     async def validate_image_reference(self) -> None:
         try:
@@ -237,7 +308,7 @@ class SandboxSessionManager:
         lease.worker_contract_version = self.settings.chat_worker_contract_version
         lease.lease_token_hash = token_hash
         lease.lease_expires_at = now + timedelta(
-            seconds=self.settings.chat_sandbox_ready_timeout_seconds + 15
+            seconds=self.ready_timeout_seconds + 15
         )
         lease.failure_code = None
         lease.updated_at = now
@@ -285,7 +356,7 @@ class SandboxSessionManager:
         self, chat_session_id: uuid.UUID
     ) -> tuple[object, int, bool]:
         started = time.perf_counter()
-        deadline = time.monotonic() + self.settings.chat_sandbox_ready_timeout_seconds
+        deadline = time.monotonic() + self.ready_timeout_seconds
         claim: StartClaim | None = None
         sandbox_id: str | None = None
         while claim is None and sandbox_id is None:
@@ -326,10 +397,7 @@ class SandboxSessionManager:
                         state="starting",
                         lease_token_hash=token_hash,
                         lease_expires_at=now
-                        + timedelta(
-                            seconds=self.settings.chat_sandbox_ready_timeout_seconds
-                            + 15
-                        ),
+                        + timedelta(seconds=self.ready_timeout_seconds + 15),
                         last_activity_at=now,
                     )
                     db.add(lease)
@@ -358,7 +426,19 @@ class SandboxSessionManager:
                 sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
                 if await sandbox.poll.aio() is None:
                     probe = await sandbox.exec.aio(
-                        "test", "-x", "/usr/local/bin/pwc", timeout=5
+                        *(
+                            (
+                                "python",
+                                "-m",
+                                "backend.chat_sandbox_worker.relay",
+                                "--ping",
+                            )
+                            if getattr(
+                                self.settings, "chat_persistent_worker_enabled", False
+                            )
+                            else ("test", "-x", "/usr/local/bin/pwc")
+                        ),
+                        timeout=5,
                     )
                     await probe.wait.aio()
                     if probe.returncode == 0:
@@ -386,9 +466,7 @@ class SandboxSessionManager:
 
         assert claim is not None
         try:
-            async with asyncio.timeout(
-                self.settings.chat_sandbox_ready_timeout_seconds
-            ):
+            async with asyncio.timeout(self.ready_timeout_seconds):
                 sandbox = await create_isolated_sandbox(
                     self.settings,
                     name=f"chat-{chat_session_id}",
@@ -529,7 +607,7 @@ class SandboxSessionManager:
             lease.failure_code = failure_code
             lease.lease_token_hash = termination_token_hash
             lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self.settings.chat_sandbox_ready_timeout_seconds + 15
+                seconds=self.ready_timeout_seconds + 15
             )
             lease.updated_at = datetime.now(UTC)
         await self._terminate_owned_sandbox(
@@ -579,10 +657,15 @@ class SandboxSessionManager:
         first_worker_delta_recorded = False
         validator = WorkerEventValidator()
         try:
+            worker_module = (
+                "backend.chat_sandbox_worker.relay"
+                if getattr(self.settings, "chat_persistent_worker_enabled", False)
+                else "backend.chat_sandbox_worker.supervisor"
+            )
             process = await sandbox.exec.aio(
                 "python",
                 "-m",
-                "backend.chat_sandbox_worker.supervisor",
+                worker_module,
                 stdout=StreamType.PIPE,
                 stderr=StreamType.PIPE,
                 timeout=round(self.settings.chat_agent_timeout_seconds + 15),
@@ -746,7 +829,7 @@ class SandboxSessionManager:
                 lease.failure_code = failure_code
                 lease.lease_token_hash = token_hash
                 lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                    seconds=self.settings.chat_sandbox_ready_timeout_seconds + 15
+                    seconds=self.ready_timeout_seconds + 15
                 )
         if token_hash:
             await self._terminate_owned_sandbox(
@@ -834,7 +917,7 @@ class SandboxSessionManager:
             lease.state = "terminating"
             lease.lease_token_hash = token_hash
             lease.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self.settings.chat_sandbox_ready_timeout_seconds + 15
+                seconds=self.ready_timeout_seconds + 15
             )
         if should_snapshot and sandbox_id:
             try:
