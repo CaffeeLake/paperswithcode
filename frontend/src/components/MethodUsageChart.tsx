@@ -23,6 +23,23 @@ const yearFormatter = new Intl.DateTimeFormat("en", {
 const formatMonth = (date: string) =>
   monthFormatter.format(new Date(`${date}T00:00:00Z`));
 
+const coverageDescription = (point: MethodTrendPoint) => {
+  if (
+    point.coverage_status === undefined ||
+    ["complete", "not_applicable"].includes(point.coverage_status)
+  ) {
+    return null;
+  }
+  const progress =
+    point.processed_paper_count !== undefined &&
+    point.eligible_paper_count !== undefined
+      ? `; ${point.processed_paper_count.toLocaleString()} of ${point.eligible_paper_count.toLocaleString()} eligible papers processed`
+      : "";
+  return `Historical tagging ${
+    point.coverage_status === "failed" ? "needs retry" : "in progress"
+  }${progress}`;
+};
+
 const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const maximum = Math.max(1, ...history.map((point) => point.paper_count));
@@ -33,6 +50,7 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
   const labelEvery = history.length > 48 ? 12 : history.length > 36 ? 6 : history.length > 18 ? 3 : 2;
   const yTicks = Array.from(new Set([0, Math.ceil(maximum / 2), maximum]));
   const activePoint = activeIndex == null ? null : history[activeIndex];
+  const activeCoverage = activePoint ? coverageDescription(activePoint) : null;
 
   return (
     <div className="method-usage-chart-wrap">
@@ -72,20 +90,18 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
           const y = MARGIN.top + chartHeight - displayHeight;
           const isActive = activeIndex === index;
           const isCurrent = index === history.length - 1;
-          const isPartial =
-            point.coverage_status !== undefined &&
-            !["complete", "not_applicable"].includes(point.coverage_status);
+          const coverage = coverageDescription(point);
           return (
             <g
               key={point.start_date}
               className={`method-usage-bar${isActive ? " is-active" : ""}${
                 isCurrent ? " is-current" : ""
-              }${isPartial ? " is-partial" : ""}`}
+              }`}
               tabIndex={0}
               role="img"
               aria-label={`${formatMonth(point.start_date)}: ${point.paper_count} ${
                 point.paper_count === 1 ? "paper" : "papers"
-              }`}
+              }${coverage ? `. ${coverage}` : ""}`}
               onMouseEnter={() => setActiveIndex(index)}
               onMouseLeave={() => setActiveIndex(null)}
               onFocus={() => setActiveIndex(index)}
@@ -137,6 +153,7 @@ const MethodUsageChart = ({ history, methodName }: MethodUsageChartProps) => {
             {(activePoint.catalog_share ?? 0).toFixed(2)}% of{" "}
             {(activePoint.catalog_paper_count ?? 0).toLocaleString()} catalog papers
           </span>
+          {activeCoverage && <span>{activeCoverage}</span>}
         </div>
       )}
     </div>
