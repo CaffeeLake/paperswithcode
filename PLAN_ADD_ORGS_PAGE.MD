@@ -197,6 +197,13 @@ an organization to the wrong version or an unrelated paper. Normalize versioned
 IDs (`2501.12345v2` to the repository’s canonical ArXiv identifier) before
 lookup.
 
+Importing missing papers is required launch behavior, not an optional enrichment
+pass. When an HF-attributed ArXiv ID has no local paper, run it through the
+canonical ArXiv ingestion service, persist complete paper metadata and authors,
+then create the organization link. If complete metadata cannot be retrieved, do
+not create a partial paper or dangling association: record the paper-specific
+failure, continue the bounded organization run, and retry it on the next sync.
+
 ### 4. Define reconciliation semantics safely
 
 The bootstrap must be rerunnable and support:
@@ -204,7 +211,8 @@ The bootstrap must be rerunnable and support:
 - `--dry-run`: fetch and report intended org/paper/link changes without writes;
 - `--organization SLUG`: sync one manifest entry;
 - no filter: sync the full curated manifest;
-- `--skip-missing-papers`: diagnostics-only mode;
+- `--skip-missing-papers`: an explicit diagnostics-only override; normal
+  bootstrap and scheduled runs always import missing papers;
 - bounded batch size and per-organization transaction boundaries;
 - a final summary with fetched, existing, imported, linked, already linked,
   failed, and upstream/local count deltas.
@@ -480,6 +488,9 @@ route deployment before changing sitemap/canonical discovery in production.
   never remove previously attributed papers.
 - Every nonzero HF-attributed paper is either linked locally or reported with a
   specific import failure; the run produces a reconciliation summary.
+- Every missing valid ArXiv paper is imported with complete canonical metadata
+  before its organization link is created; partial paper rows and dangling
+  associations are never created.
 - Repeating the sync creates no duplicate organizations, papers, or links.
 - `/orgs/{slug}` and `/orgs/{slug}/{task}` are the only canonical public
   organization URL shapes.
