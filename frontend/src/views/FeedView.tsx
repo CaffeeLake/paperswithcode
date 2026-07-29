@@ -249,7 +249,7 @@ const FeedView: React.FC = () => {
         <div>
           {isChatEnabled() && <AskAssistant />}
 
-          <div className="sort-bar">
+          <div className="sort-bar home-feed-sort-bar">
             <div className="sort-options">
               {SORT_OPTIONS.map(([k, l]) => (
                 <button
@@ -272,7 +272,9 @@ const FeedView: React.FC = () => {
                 </button>
               ))}
             </div>
-            <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+            <div className="paper-feed-filter-row" aria-label="Paper filters">
+              <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+            </div>
           </div>
 
           {error && (

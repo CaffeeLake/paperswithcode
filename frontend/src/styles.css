@@ -740,6 +740,14 @@ a.paper-resource.is-link:focus-visible {
   gap: 5px;
   text-transform: none;
 }
+.home-feed-sort-bar {
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+.paper-feed-filter-row {
+  display: flex;
+  flex-basis: 100%;
+}
 .results-count {
   font-family: var(--mono);
   font-size: 11px;
