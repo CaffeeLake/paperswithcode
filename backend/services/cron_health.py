@@ -57,13 +57,35 @@ def to_iso8601(value: Optional[datetime | str]) -> Optional[str]:
 def is_process_running(patterns: tuple[str, ...]) -> bool:
     if not patterns:
         return False
-    result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,args="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
     if result.returncode != 0:
         return False
+    processes: list[tuple[int, int, str]] = []
     for line in result.stdout.splitlines():
-        if "python" not in line or "grep" in line:
+        fields = line.strip().split(maxsplit=2)
+        if len(fields) != 3:
             continue
-        if any(pattern in line for pattern in patterns):
+        pid, parent_pid, command = fields
+        processes.append((int(pid), int(parent_pid), command))
+    parents = {pid: parent_pid for pid, parent_pid, _command in processes}
+    diagnostic_ancestry = {os.getpid()}
+    cursor = os.getpid()
+    while (parent := parents.get(cursor)) is not None:
+        if parent in diagnostic_ancestry:
+            break
+        diagnostic_ancestry.add(parent)
+        if parent == 1:
+            break
+        cursor = parent
+    for pid, _parent_pid, command in processes:
+        if pid in diagnostic_ancestry or "python" not in command or "grep" in command:
+            continue
+        if any(pattern in command for pattern in patterns):
             return True
     return False
 
