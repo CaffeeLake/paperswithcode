@@ -92,6 +92,9 @@ As checked on 2026-07-29:
   `/api/papers` query parameters do not establish organization membership.
 - `GET /api/papers/{arxiv_id}` can enrich an individual paper after its ID is
   discovered.
+- The HF daily-papers response and per-paper response currently include an
+  `organization` object with the HF namespace name, full display name, and
+  avatar. The existing PwC daily importer does not persist or link this field.
 
 The existing HTML extraction is therefore acceptable for the initial bootstrap,
 but it is an upstream-private contract and must be isolated, validated, and
@@ -192,6 +195,29 @@ Refactor `import_hf_organization.py` into narrow reusable pieces:
     `source='hf_org_papers'`;
   - update sync metadata only after a complete successful fetch and link pass.
 
+Extend the shared HF paper-import path and
+`.github/workflows/scripts/daily/import_hf_daily_papers.py` to consume the
+paper payload's `organization` object immediately:
+
+- normalize `organization.name` to the manifest's `hf_slug`;
+- link only organizations in the curated manifest for this release;
+- upsert the organization if necessary, while treating the organization
+  overview endpoint as the authoritative metadata refresh;
+- insert the idempotent paper link with `source='hf_org_papers'`;
+- process the organization link for both newly created and already-existing
+  papers.
+
+The current daily importer returns early when an ArXiv paper already exists.
+Refactor that branch so it still resolves the local paper ID and applies the
+organization association before finishing. Otherwise an existing PwC paper
+newly attributed by HF would never appear on its organization page.
+
+Treat the organization value defensively as either one object or a future list,
+even though current sampled payloads contain one object. The HF org-page sync
+remains the historical and reconciliation backstop: it imports the full initial
+catalog, catches papers never present in the rolling daily window, and can link
+the same paper to several organizations when it appears on several org pages.
+
 Avoid matching by title when HF supplies an ArXiv ID. Title matching can attach
 an organization to the wrong version or an unrelated paper. Normalize versioned
 IDs (`2501.12345v2` to the repository’s canonical ArXiv identifier) before
@@ -237,10 +263,12 @@ papers.
 
 After the bootstrap is proven idempotent, add a bounded scheduled job under
 `.github/workflows/scripts/daily/` and register it in
-`backend/services/cron_registry.py`. Run it after the regular HF daily-paper
-import so most papers already exist locally. Process only the 21 manifest
-entries, use per-org transactions, and continue to the next organization after
-recording an isolated failure.
+`backend/services/cron_registry.py`. The existing hourly HF daily-paper importer
+provides the fast path by linking the organization included in every new paper
+payload. Run the full organization-page sync daily as a backstop after the
+regular HF paper import so most papers already exist locally. Process only the
+21 manifest entries, use per-org transactions, and continue to the next
+organization after recording an isolated failure.
 
 The job should alert/log on:
 
@@ -380,6 +408,10 @@ Add focused backend tests for:
 - balanced-array extraction with nested arrays, escaped strings, HTML entities,
   missing keys, malformed JSON, and truncated HTML;
 - overview/papers count validation;
+- daily-paper organization payload parsing for one object and a future list;
+- the daily importer linking organizations for both new and already-existing
+  papers;
+- the daily importer ignoring organizations outside the curated manifest;
 - handle normalization and manifest uniqueness;
 - idempotent organization upsert and paper linking;
 - importing a missing ArXiv paper before linking it;
@@ -491,6 +523,9 @@ route deployment before changing sitemap/canonical discovery in production.
 - Every missing valid ArXiv paper is imported with complete canonical metadata
   before its organization link is created; partial paper rows and dangling
   associations are never created.
+- The existing HF daily-paper cron links its payload's curated organization for
+  both new and pre-existing local papers, so new papers appear on organization
+  pages without waiting for the full daily org-page backfill.
 - Repeating the sync creates no duplicate organizations, papers, or links.
 - `/orgs/{slug}` and `/orgs/{slug}/{task}` are the only canonical public
   organization URL shapes.
