@@ -382,24 +382,35 @@ def test_persistent_turns_reuse_one_control_attachment():
         manager._claim_worker = lambda *_args: WorkerClaim(
             sandbox_id="sb-persistent", token_hash="claim"
         )
-        manager._release_worker = lambda *_args: True
+        released = 0
+
+        def release_worker(*_args):
+            nonlocal released
+            released += 1
+            return True
+
+        manager._release_worker = release_worker
         manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
 
         session_id = uuid.uuid4()
         for index in (1, 2):
-            events = [
-                event
-                async for event in manager.run_turn(
-                    chat_session_id=session_id,
-                    turn_id=uuid.uuid4(),
-                    request_id=f"request-{index}",
-                    prompt="prompt",
-                    model="model",
-                    resume="resume",
-                    capability=SimpleNamespace(token="capability"),
-                )
-            ]
+            events = []
+            turn_id = uuid.uuid4()
+            stream = manager.run_turn(
+                chat_session_id=session_id,
+                turn_id=turn_id,
+                request_id=f"request-{index}",
+                prompt="prompt",
+                model="model",
+                resume="resume",
+                capability=SimpleNamespace(token="capability"),
+            )
+            async for event in stream:
+                events.append(event)
+                if event["type"] == "done":
+                    assert manager._processes[turn_id].done.is_set()
             assert any(event["type"] == "workspace_ready" for event in events)
+            assert released == index
         manager._drop_control(session_id)
         assert exec_calls == 1
 

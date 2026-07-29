@@ -1720,6 +1720,7 @@ class SandboxSessionManager:
         stderr_task: asyncio.Task | None = None
         control: SessionControl | None = None
         terminal = False
+        pending_terminal_event: dict | None = None
         sdk_dispatched = False
         first_worker_delta_recorded = False
         validator = WorkerEventValidator()
@@ -1882,6 +1883,12 @@ class SandboxSessionManager:
                         running_worker.done.set()
                         if event.get("status") == "stopped":
                             yield {"type": "_cancelled"}
+                        elif pending_terminal_event is not None:
+                            yield {
+                                key: value
+                                for key, value in pending_terminal_event.items()
+                                if key not in {"v", "request_id"}
+                            }
                         break
                     if persistent and event["type"] == "_sdk_session":
                         assert control is not None
@@ -1922,6 +1929,9 @@ class SandboxSessionManager:
                                 (time.perf_counter() - turn_started) * 1000
                             ),
                         }
+                    if event["type"] in {"done", "error"}:
+                        pending_terminal_event = event
+                        continue
                     yield {
                         key: value
                         for key, value in event.items()
