@@ -61,7 +61,7 @@ class WorkerEventValidator:
             if tool_id not in self.tools or tool_id in self.results:
                 raise ProtocolError("Uncorrelated or duplicate tool result")
             self.results.add(tool_id)
-        elif kind in {"done", "error"}:
+        elif kind in {"done", "error", "_mirror_error"}:
             self.terminal = True
         elif kind == "worker_done":
             status = event.get("status")

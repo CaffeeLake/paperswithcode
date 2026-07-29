@@ -1929,7 +1929,7 @@ class SandboxSessionManager:
                                 (time.perf_counter() - turn_started) * 1000
                             ),
                         }
-                    if event["type"] in {"done", "error"}:
+                    if event["type"] in {"done", "error", "_mirror_error"}:
                         pending_terminal_event = event
                         continue
                     yield {

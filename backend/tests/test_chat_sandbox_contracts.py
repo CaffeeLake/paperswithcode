@@ -1200,6 +1200,12 @@ def test_worker_protocol_requires_terminal_before_successful_completion():
         validator.accept({"type": "worker_done", "status": "unknown"})
 
 
+def test_worker_protocol_treats_transcript_mirror_failure_as_terminal():
+    validator = WorkerEventValidator()
+    validator.accept({"type": "_mirror_error"})
+    validator.accept({"type": "worker_done", "status": "complete"})
+
+
 def test_worker_protocol_allows_terminal_less_correlated_cancellation():
     validator = WorkerEventValidator()
     with pytest.raises(ProtocolError, match="without a correlated cancellation"):
