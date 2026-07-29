@@ -757,10 +757,9 @@ a.paper-resource.is-link:focus-visible {
   flex-wrap: wrap;
 }
 .paper-feed-filter {
-  display: inline-grid;
-  grid-template-columns: 17px auto 17px;
+  display: inline-flex;
   align-items: center;
-  column-gap: 6px;
+  gap: 6px;
   min-height: 30px;
   padding: 5px 10px;
   border: 1px solid var(--hairline);
@@ -772,10 +771,6 @@ a.paper-resource.is-link:focus-visible {
   letter-spacing: 0.01em;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
-}
-.paper-feed-filter::before {
-  content: "";
-  width: 17px;
 }
 .paper-feed-filter-content {
   display: inline-flex;
@@ -833,9 +828,6 @@ a.paper-resource.is-link:focus-visible {
   color: currentColor;
   font-size: 10px;
   line-height: 1;
-}
-.paper-feed-filter-check.is-placeholder {
-  visibility: hidden;
 }
 .home-feed-sort-bar {
   flex-wrap: wrap;

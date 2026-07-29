@@ -27,12 +27,10 @@ describe("PaperFeedFilters", () => {
 
     expect(hasCode).toHaveAttribute("aria-pressed", "false");
     expect(hasHfArtifacts).toHaveAttribute("aria-pressed", "true");
-    expect(
-      hasCode.querySelector(".paper-feed-filter-check"),
-    ).toHaveClass("is-placeholder");
+    expect(hasCode.querySelector(".paper-feed-filter-check")).toBeNull();
     expect(
       hasHfArtifacts.querySelector(".paper-feed-filter-check"),
-    ).not.toHaveClass("is-placeholder");
+    ).toHaveTextContent("✓");
 
     await user.click(hasCode);
     await user.click(hasHfArtifacts);

@@ -35,12 +35,11 @@ const FeedFilterToggle: React.FC<{
       </span>
       {label}
     </span>
-    <span
-      className={`paper-feed-filter-check ${checked ? "" : "is-placeholder"}`}
-      aria-hidden="true"
-    >
-      {checked ? "✓" : ""}
-    </span>
+    {checked && (
+      <span className="paper-feed-filter-check" aria-hidden="true">
+        ✓
+      </span>
+    )}
   </button>
 );
 
