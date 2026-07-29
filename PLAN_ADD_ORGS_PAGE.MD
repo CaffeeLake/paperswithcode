@@ -158,6 +158,23 @@ or renaming existing fields. Add `featured_only: bool = false` to the list API
 so its existing “all organizations” behavior remains compatible; the index view
 requests `featured_only=true`.
 
+Extend the featured organization response with the card projection needed by
+the screenshot-inspired grid:
+
+- `trending_rank`: one-based position in the rolling 30-day organization
+  ranking;
+- `top_trending_paper`: compact paper ID/title data for the organization's
+  highest currently trending eligible paper;
+- `first_paper_year` and `latest_paper_year`: the publication-year range across
+  eligible HF-linked papers;
+- the existing `paper_count`.
+
+Compute `top_trending_paper` with the same active paper-score mode as the paper
+feed, falling back to the newest eligible paper when no paper has a fresh score.
+Calculate the year range from latest canonical paper versions with a known
+publication date. Return nulls for an empty organization instead of inventing a
+range.
+
 Rank featured organizations by a consolidated organization trending score, not
 by the manifest order, raw paper count, or the latest hourly spike. Reuse the
 active paper trending mode already used by the homepage and organization paper
@@ -458,10 +475,20 @@ Each grid tile contains:
 
 - a consistently sized organization logo aligned with the organization display
   name and HF slug;
-- the linked-paper count as secondary text;
+- the linked-paper count;
+- a subtle `#N` rolling 30-day rank in Trending mode, without exposing the raw
+  composite score;
+- the most-trending paper title, linked as part of the organization card rather
+  than as a competing nested anchor;
+- the first-to-latest publication-year range when available;
 - one semantic link wrapping the complete tile, with an accessible label such
   as "Browse 152 NVIDIA papers";
 - a clear hover treatment and keyboard-visible focus ring.
+
+Do not include Models, Datasets, Code %, or community-upvote totals in the first
+version. HF's organization-wide artifact counts do not necessarily describe the
+HF-attributed paper set, and code coverage has no agreed denominator. These
+fields may be designed later with explicit, comparable definitions.
 
 The grid should:
 
@@ -484,6 +511,8 @@ The grid should:
 - apply deterministic secondary ordering for every mode: monthly score uses the
   backend tie-breakers, paper count falls back to name, and A–Z uses the
   display name followed by slug;
+- show `#N` only in Trending mode; alternate sorts must not present the trending
+  rank as though it were the active order;
 - display loading skeletons in the same grid geometry and provide retryable
   error and no-search-results states.
 
@@ -557,6 +586,8 @@ Add focused backend tests for:
   GitHub rollback modes, the 24-hour input freshness cutoff, distinct-paper
   counting, idempotent daily snapshots, a rolling 30-day mean, cold-start
   behavior, and deterministic tie-breakers;
+- featured-card projection for paper count, one-based monthly rank,
+  highest-trending-paper fallback behavior, year ranges, and empty nulls;
 - cron registry definitions, dedicated locks, launcher allowlist entries, and
   database freshness metrics for both new daily jobs;
 - `/api/v1/cron/status` returning both jobs so the generic admin dashboard
@@ -587,6 +618,8 @@ Add React tests for:
 - logo-grid geometry/classes, full-tile links, accessible labels, broken-logo
   fallbacks, loading, errors, searching, all three sort modes, URL-state
   persistence, deterministic ties, and zero-paper tiles on the index;
+- exact first-version card fields and the absence of unsupported
+  models/datasets/code/upvote placeholders;
 - one/two/three-column responsive behavior and the screenshot-inspired card
   information hierarchy without asserting brittle pixel-perfect styling;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
@@ -663,6 +696,10 @@ route deployment before changing sitemap/canonical discovery in production.
 - The page follows the supplied editorial reference: large serif hero,
   organization-count/sort header, and information-rich one/two/three-column
   cards using real backend data rather than placeholder values.
+- First-version cards show only logo/name/slug, paper count, current
+  most-trending paper, publication-year range, and `#N` rolling 30-day rank;
+  models, datasets, code percentage, community upvotes, and raw composite scores
+  are not shown.
 - The grid defaults to `Trending` and offers working, shareable `Most papers`
   and `A–Z` views without refetching HF.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
