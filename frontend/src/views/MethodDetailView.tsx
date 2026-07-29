@@ -209,7 +209,6 @@ const MethodDetailView: React.FC = () => {
               <div className="method-trend-header">
                 <div>
                   <div className="method-trend-eyebrow">Usage trend</div>
-                  <h2>Papers using {m.name}</h2>
                   <p>
                     {m.introduced_year &&
                     methodHistoryMonths(m.introduced_year) < 120

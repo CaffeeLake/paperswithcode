@@ -1943,12 +1943,6 @@ a.paper-resource.is-link:focus-visible {
   text-transform: uppercase;
   color: var(--accent-text);
 }
-.method-trend-header h2 {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: 18px;
-  font-weight: 500;
-}
 .method-trend-header p {
   margin: 3px 0 0;
   font-family: var(--mono);
