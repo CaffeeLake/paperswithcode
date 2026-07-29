@@ -460,6 +460,9 @@ direction. Match its editorial hierarchy within the existing PwC design system:
   sustained community momentum over the past 30 days.`;
 - a section header showing the organization count on the left and the active
   sort description on the right;
+- a page-local control row immediately above the grid containing organization
+  name search and the three sort controls; keep the existing site-wide header
+  search unchanged and do not make it organization-specific on this route;
 - a spacious three-column desktop card grid rather than a compact five- or
   six-column logo wall;
 - warm neutral surfaces, fine hairline borders, restrained blue accents, and
@@ -509,7 +512,7 @@ The grid should:
   page and says "No papers indexed yet";
 - rank by the backend-provided consolidated organization trending score by
   default, with compact `Trending`, `Most papers`, and `A–Z` controls plus
-  client-side name search;
+  client-side name search in the same page-local control row;
 - store nondefault selection in `?sort=papers` or `?sort=name` (and search text
   in `?q=`) so refresh, browser history, and shared links preserve the view;
 - apply deterministic secondary ordering for every mode: monthly score uses the
@@ -707,7 +710,9 @@ route deployment before changing sitemap/canonical discovery in production.
   models, datasets, code percentage, community upvotes, and raw composite scores
   are not shown.
 - The grid defaults to `Trending` and offers working, shareable `Most papers`
-  and `A–Z` views without refetching HF.
+  and `A–Z` views without refetching HF; organization search sits beside those
+  controls above the grid while the global header search retains its normal
+  site-wide behavior.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
   feed with compact task and sort controls; no second "All papers" click is
   required.
