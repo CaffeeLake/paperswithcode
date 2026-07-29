@@ -64,8 +64,10 @@ def load_tasks_with_keywords(conn) -> List[Dict]:
     return tasks
 
 
-def link_papers_by_task_keywords(rebuild: bool = False):
-    """Main function to link papers to tasks based on keyword matching."""
+def link_papers_by_task_keywords(
+    rebuild: bool = False, paper_ids: list[int] | None = None
+):
+    """Link all papers, or a specified subset, to tasks by keyword matching."""
 
     try:
         print("=" * 80)
@@ -74,6 +76,8 @@ def link_papers_by_task_keywords(rebuild: bool = False):
             print("Mode: REBUILD (delete-then-insert for source='auto' rows)")
         else:
             print("Mode: add-only (default)")
+        if paper_ids is not None:
+            print(f"Scope: {len(paper_ids):,} selected papers")
         print("=" * 80)
 
         conn = get_db_connection()
@@ -115,12 +119,23 @@ def link_papers_by_task_keywords(rebuild: bool = False):
         print("\n4. Processing papers...")
         print("   (Streaming through papers and matching keywords...)")
 
-        cur.execute("""
-            SELECT id, title, abstract
-            FROM papers
-            WHERE is_latest_version
-            ORDER BY id
-        """)
+        if paper_ids is None:
+            cur.execute("""
+                SELECT id, title, abstract
+                FROM papers
+                WHERE is_latest_version
+                ORDER BY id
+            """)
+        else:
+            cur.execute(
+                """
+                SELECT id, title, abstract
+                FROM papers
+                WHERE is_latest_version AND id = ANY(%s)
+                ORDER BY id
+                """,
+                (paper_ids,),
+            )
 
         papers_processed = 0
         papers_matched = 0
