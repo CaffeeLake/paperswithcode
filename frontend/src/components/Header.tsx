@@ -68,13 +68,12 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
   const location = useLocation();
   const isChatPage = isChatEnabled()
     && (location.pathname === "/chat" || location.pathname.startsWith("/chat/"));
-  const isSharedChatPage = location.pathname.startsWith("/share/");
   const returnTo = `${location.pathname}${location.search}` || "/";
   const authDisabled = isAuthDisabled();
 
   return (
     <>
-      <header className={`app-header${isChatPage ? " app-header-chat" : ""}${isSharedChatPage ? " app-header-shared" : ""}`}>
+      <header className={`app-header${isChatPage ? " app-header-chat" : ""}`}>
         <div className="app-header-inner">
           <NavLink to="/" className="brand" onClick={closeMobile}>
             <span className="brand-mark"></span>
@@ -82,9 +81,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
               Papers <em>With Code</em>
             </span>
           </NavLink>
-          {isSharedChatPage && (
-            <h1 className="header-page-title">Shared conversation</h1>
-          )}
           <nav className="nav">
             {NAV_LINKS.map(({ to, label, end }) => (
               <NavLink

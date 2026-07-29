@@ -101,6 +101,9 @@ const SharedChatView: React.FC = () => {
 
   return (
     <div className="shared-chat-page">
+      <div className="shared-chat-heading">
+        <h1>Shared conversation</h1>
+      </div>
       <div className="shared-chat-content">
         <SharedTranscript key={query.data.updated_at} detail={query.data} />
         <section className="shared-chat-fresh" aria-labelledby="shared-chat-fresh-title">
