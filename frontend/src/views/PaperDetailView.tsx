@@ -41,7 +41,10 @@ import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
 import { CodexAddEvalsDialog } from "@/components/paper-detail/CodexAddEvalsDialog";
 import { CodexEnrichPaperDialog } from "@/components/paper-detail/CodexEnrichPaperDialog";
-import { CopyToBucketCard } from "@/components/paper-detail/CopyToBucketCard";
+import {
+  CopyToBucketCard,
+  paperArtifactBucketName,
+} from "@/components/paper-detail/CopyToBucketCard";
 import { isCodexAddEvalsEnabled, isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
 
 type EditSection =
@@ -1368,6 +1371,9 @@ const PaperDetailView: React.FC = () => {
             hfModelUrls={allHfArtifactUrls.models}
             hfDatasetUrls={allHfArtifactUrls.datasets}
             hfSpaceUrls={allHfArtifactUrls.spaces}
+            suggestedBucketId={
+              user ? `${user.username}/${paperArtifactBucketName(paper.title)}` : undefined
+            }
           />
 
           {relatedQ.isLoading && (

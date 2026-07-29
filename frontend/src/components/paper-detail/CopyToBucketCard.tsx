@@ -32,6 +32,7 @@ interface CopyToBucketCardProps {
   hfModelUrls: string[];
   hfDatasetUrls: string[];
   hfSpaceUrls: string[];
+  suggestedBucketId?: string;
 }
 
 const KIND_LABEL: Record<BucketArtifactKind, string> = {
@@ -159,6 +160,19 @@ export function buildBucketCopyCommands(
   return lines.join("\n");
 }
 
+export function paperArtifactBucketName(title: string): string {
+  const shortTitle = title.split(/[:|–—]/, 1)[0] || title;
+  const slug = shortTitle
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/g, "");
+  return `${slug || "paper"}-artifacts`;
+}
+
 export function CopyToBucketCard(props: CopyToBucketCardProps) {
   const { toast } = useToast();
   const artifacts = useMemo(
@@ -207,6 +221,9 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
 
   const openDialog = () => {
     setSelectedIds(new Set(artifacts.map((artifact) => artifact.id)));
+    if (!bucketId && props.suggestedBucketId) {
+      setBucketId(props.suggestedBucketId);
+    }
     setOpen(true);
   };
 
@@ -269,7 +286,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                   id="bucket-id"
                   value={bucketId}
                   onChange={(event) => setBucketId(event.target.value)}
-                  placeholder="username/paper-artifacts"
+                  placeholder={props.suggestedBucketId || "username/paper-artifacts"}
                   aria-invalid={bucketId.length > 0 && !bucketIdIsValid}
                 />
                 <p className="text-xs text-muted-foreground">
