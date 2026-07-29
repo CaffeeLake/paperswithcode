@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import time
 from datetime import date
+from typing import Callable
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
@@ -17,6 +19,28 @@ from backend.services.method_backfill_service import run_reference_backfill
 def _date(value: str) -> date:
     parsed = date.fromisoformat(value)
     return parsed.replace(day=1)
+
+
+def validate_secondary_key(
+    api_key: str,
+    *,
+    request_delay: float,
+    probe: Callable = probe_cron_token,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    if not api_key:
+        raise SystemExit(
+            "PWC_SEMANTIC_SCHOLAR_API_KEY_2 is required; "
+            "primary-key fallback is forbidden"
+        )
+    result = probe("PWC_SEMANTIC_SCHOLAR_API_KEY_2")
+    if not result.success:
+        raise SystemExit(
+            "secondary Semantic Scholar key validation failed "
+            f"(HTTP {result.http_status})"
+        )
+    print("Semantic Scholar key route: secondary (historical backfill)")
+    sleep(request_delay)
 
 
 def main() -> int:
@@ -35,18 +59,10 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = get_settings()
-    if not settings.semantic_scholar_api_key_2:
-        raise SystemExit(
-            "PWC_SEMANTIC_SCHOLAR_API_KEY_2 is required; "
-            "primary-key fallback is forbidden"
-        )
-    probe = probe_cron_token("PWC_SEMANTIC_SCHOLAR_API_KEY_2")
-    if not probe.success:
-        raise SystemExit(
-            "secondary Semantic Scholar key validation failed "
-            f"(HTTP {probe.http_status})"
-        )
-    print("Semantic Scholar key route: secondary (historical backfill)")
+    validate_secondary_key(
+        settings.semantic_scholar_api_key_2,
+        request_delay=args.request_delay,
+    )
     client = SemanticScholarClient(
         api_key=settings.semantic_scholar_api_key_2,
         request_delay=args.request_delay,
