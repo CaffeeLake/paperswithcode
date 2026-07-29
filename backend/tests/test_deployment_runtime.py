@@ -1388,6 +1388,24 @@ def test_historical_semantic_scholar_key_is_cron_only_and_preserved():
     assert preserved[secondary] == f"{secondary}=old-secondary"
 
 
+def test_staging_chat_runtime_credentials_are_preserved():
+    preserved = configure_host_env.staging_runtime_passthrough(
+        {
+            "MODAL_TOKEN_ID": "MODAL_TOKEN_ID=id",
+            "MODAL_TOKEN_SECRET": "MODAL_TOKEN_SECRET=secret",
+            "PWC_CHAT_MODAL_IMAGE_VERSION": "PWC_CHAT_MODAL_IMAGE_VERSION=im-123",
+            "PWC_CHAT_GATEWAY_URL": "PWC_CHAT_GATEWAY_URL=https://stale.example",
+            "PWC_DB_PASSWORD": "PWC_DB_PASSWORD=secret",
+        }
+    )
+
+    assert preserved == {
+        "MODAL_TOKEN_ID": "MODAL_TOKEN_ID=id",
+        "MODAL_TOKEN_SECRET": "MODAL_TOKEN_SECRET=secret",
+        "PWC_CHAT_MODAL_IMAGE_VERSION": "PWC_CHAT_MODAL_IMAGE_VERSION=im-123",
+    }
+
+
 def test_cron_jobs_declare_bounded_execution_contracts():
     assert cron_launcher.COMMANDS
     for spec in cron_launcher.COMMANDS.values():

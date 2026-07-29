@@ -38,6 +38,17 @@ CRON_ONLY_KEYS = {
     "PWC_GITHUB_TOKEN_HOT",
     "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
 }
+STAGING_RUNTIME_PASSTHROUGH_KEYS = {
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "PWC_CHAT_DEFAULT_BACKEND",
+    "PWC_CHAT_MODAL_IMAGE_VERSION",
+    "PWC_CHAT_NEW_CHAT_MODAL_PERCENTAGE",
+    "PWC_CHAT_PWC_CLI_VERSION",
+    "PWC_CHAT_SYSTEM_PROMPT_SHA256",
+    "PWC_CHAT_WORKER_CONTRACT_VERSION",
+    "PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED",
+}
 
 
 def read_lines(path: Path) -> dict[str, str]:
@@ -106,6 +117,15 @@ def assign(lines: dict[str, str], values: dict[str, str]) -> dict[str, str]:
 def without_cron_only_credentials(lines: dict[str, str]) -> dict[str, str]:
     """Keep workload-owned credentials out of application environments."""
     return {key: line for key, line in lines.items() if key not in CRON_ONLY_KEYS}
+
+
+def staging_runtime_passthrough(lines: dict[str, str]) -> dict[str, str]:
+    """Preserve provisioned staging chat credentials and immutable pins."""
+    return {
+        key: line
+        for key, line in lines.items()
+        if key in STAGING_RUNTIME_PASSTHROUGH_KEYS
+    }
 
 
 def cron_passthrough_credentials(
@@ -279,6 +299,7 @@ def main() -> int:
         if key not in STAGING_EXCLUDED_KEYS
         and not key.startswith(STAGING_EXCLUDED_PREFIXES)
     }
+    staging.update(staging_runtime_passthrough(current_staging))
     staging = assign(
         staging,
         {
