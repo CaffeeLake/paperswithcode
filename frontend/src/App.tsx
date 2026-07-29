@@ -114,19 +114,6 @@ const LegacyTaskRedirect: React.FC = () => {
   return <Navigate to={taskSlug ? `/tasks/${taskSlug}` : "/tasks"} replace />;
 };
 
-// Organization pages are canonical at the top level (e.g. `/nvidia`).
-// `/organizations/:orgSlug` is a secondary route that redirects to the alias.
-const OrganizationAliasRedirect: React.FC = () => {
-  const { orgSlug, taskSlug } = useParams();
-  if (!orgSlug) return <Navigate to="/organizations" replace />;
-  return (
-    <Navigate
-      to={taskSlug ? `/${orgSlug}/${taskSlug}` : `/${orgSlug}`}
-      replace
-    />
-  );
-};
-
 // On the Hugging Face Space mirror (`VITE_DISABLE_AUTH=1`) the HF OAuth
 // cookie can't follow visitors across origins, so any view that requires
 // sign-in (bookmarks, admin dashboard) is a dead-end. Redirect those routes
@@ -235,8 +222,8 @@ const Shell: React.FC = () => {
             <Route path="/conferences/:confSlug" element={<ConferenceDetailView />} />
             <Route path="/conferences/:confSlug/:taskSlug" element={<ConferenceTaskView />} />
             <Route path="/organizations" element={<OrganizationsIndexView />} />
-            <Route path="/organizations/:orgSlug" element={<OrganizationAliasRedirect />} />
-            <Route path="/organizations/:orgSlug/:taskSlug" element={<OrganizationAliasRedirect />} />
+            <Route path="/orgs/:orgSlug" element={<OrganizationDetailView />} />
+            <Route path="/orgs/:orgSlug/:taskSlug" element={<OrganizationTaskView />} />
             <Route path="/authors/:authorId" element={<AuthorDetailView />} />
             <Route path="/benchmark/:datasetSlug" element={<BenchmarkDetailView />} />
             <Route path="/submit" element={<SubmitView />} />
@@ -245,11 +232,6 @@ const Shell: React.FC = () => {
             <Route path="/admin-dashboard" element={<AdminGatedRoute element={<CronDashboard />} />} />
             <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
-            {/* Top-level organization aliases (e.g. /nvidia). Placed last so
-                static routes always win; unknown slugs render NotFound from
-                inside the views on a 404. */}
-            <Route path="/:orgSlug" element={<OrganizationDetailView />} />
-            <Route path="/:orgSlug/:taskSlug" element={<OrganizationTaskView />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </React.Suspense>

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -45,6 +46,17 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_jsonb_typeof(dbapi_connection, _connection_record):
+    dbapi_connection.create_function(
+        "jsonb_typeof",
+        1,
+        lambda value: "array" if str(value).lstrip().startswith("[") else "object",
+    )
+
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -80,7 +92,16 @@ def org_client():
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
 
-    org = Organization(id=1, name="Acme", slug="acme")
+    org = Organization(
+        id=1,
+        name="Acme",
+        slug="acme",
+        hf_slug="acme",
+        is_featured=True,
+        display_order=1,
+        logo_data=b"fake-png",
+        logo_mime_type="image/png",
+    )
     db.add(org)
 
     specs = {
@@ -103,7 +124,13 @@ def org_client():
                 trending_score_updated_at=stamp,
             )
         )
-        db.add(PaperOrganization(paper_id=paper_id, organization_id=1, source="test"))
+        db.add(
+            PaperOrganization(
+                paper_id=paper_id,
+                organization_id=1,
+                source="hf_org_papers",
+            )
+        )
 
     repos = [
         DBRepository(
@@ -189,6 +216,32 @@ def test_organization_papers_trending_github_ranks_by_repo_velocity(
     assert titles[:2] == ["Paper 2", "Paper 1"]
     assert set(titles[2:]) == {"Paper 3", "Paper 4"}
     assert data["count"] == 4
+
+
+def test_featured_list_uses_launch_source_and_card_projection(org_client, monkeypatch):
+    _pin_trending_mode(monkeypatch, "composite")
+    response = org_client.get("/api/v1/organizations/?featured_only=true")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    organization = data["results"][0]
+    assert organization["slug"] == "acme"
+    assert organization["paper_count"] == 4
+    assert organization["trending_rank"] == 1
+    assert organization["top_trending_paper"]["title"] == "Paper 1"
+    assert organization["logo_url"].startswith("/api/v1/organizations/acme/logo?v=")
+
+
+def test_cached_logo_supports_conditional_requests(org_client):
+    first = org_client.get("/api/v1/organizations/acme/logo")
+    assert first.status_code == 200
+    assert first.content == b"fake-png"
+    assert first.headers["cache-control"].startswith("public")
+    second = org_client.get(
+        "/api/v1/organizations/acme/logo",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
+    assert second.status_code == 304
 
 
 if __name__ == "__main__":

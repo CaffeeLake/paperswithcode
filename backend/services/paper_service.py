@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_, func, text, case
+from sqlalchemy import desc, asc, or_, func, text
 
 from backend.models.database import (
     Paper as DBPaper,
@@ -81,6 +81,7 @@ from backend.services.paper_version_refresh_service import (
     PaperVersionRefreshService,
 )
 from backend.services.semantic_scholar_service import SemanticScholarService
+from backend.services.trending_ranking_service import active_paper_score_components
 
 
 class PaperService:
@@ -409,6 +410,7 @@ class PaperService:
                     DBPaperOrganization.organization_id == DBOrganization.id,
                 )
                 .filter(DBPaperOrganization.paper_id.in_(unique_ids))
+                .filter(DBPaperOrganization.source == "hf_org_papers")
                 .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
                 .all()
             )
@@ -418,7 +420,12 @@ class PaperService:
                         id=str(organization.id),
                         name=organization.name,
                         slug=organization.slug,
-                        logo_url=organization.logo_url,
+                        logo_url=(
+                            f"/api/v1/organizations/{organization.slug}/logo"
+                            f"?v={int(organization.updated_at.timestamp()) if organization.updated_at else 0}"
+                            if organization.logo_mime_type
+                            else organization.logo_url
+                        ),
                     )
                 )
 
@@ -1257,51 +1264,24 @@ class PaperService:
         but sort after scored papers (via the ``-1`` fallbacks), so scoped pages
         never drop tagged papers. ``query`` must select ``DBPaper`` rows.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-
-        # Best official-repo stats per paper: max stars (a stable tie-breaker)
-        # and the freshest official repo velocity. Stale repo scores are
-        # ignored via the CASE so they don't outrank fresh signals.
-        repo_stats = (
-            self.db.query(
-                DBPaperRepository.paper_id.label("paper_id"),
-                func.max(DBRepository.num_stars).label("max_stars"),
-                func.max(
-                    case(
-                        (
-                            DBRepository.trending_score_updated_at >= cutoff,
-                            DBRepository.trending_score,
-                        )
-                    )
-                ).label("repo_trending_score"),
-            )
-            .join(DBRepository, DBPaperRepository.repository_id == DBRepository.id)
-            .filter(DBPaperRepository.is_official.is_(True))
-            .group_by(DBPaperRepository.paper_id)
-            .subquery()
+        repo_stats, active_score = active_paper_score_components(
+            self.db,
+            self.settings.trending_ranking_mode,
+            missing_score=-1.0,
         )
 
         query = query.outerjoin(repo_stats, repo_stats.c.paper_id == DBPaper.id)
 
         if self.settings.trending_ranking_mode == "composite":
-            paper_score = func.coalesce(
-                case(
-                    (
-                        DBPaper.trending_score_updated_at >= cutoff,
-                        DBPaper.trending_score,
-                    )
-                ),
-                -1.0,
-            )
             return query.order_by(
-                desc(paper_score),
+                desc(active_score),
                 desc(func.coalesce(repo_stats.c.max_stars, -1)),
                 desc(DBPaper.date_published),
                 desc(DBPaper.id),
             )
 
         return query.order_by(
-            desc(func.coalesce(repo_stats.c.repo_trending_score, -1.0)),
+            desc(active_score),
             desc(func.coalesce(repo_stats.c.max_stars, -1)),
             desc(DBPaper.date_published),
             desc(DBPaper.id),

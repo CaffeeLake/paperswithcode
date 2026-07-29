@@ -157,7 +157,12 @@ def test_legacy_aliases_redirect_permanently(client):
     assert client.get("/task/safe", follow_redirects=False).status_code == 301
     alias = client.get("/organizations/example", follow_redirects=False)
     assert alias.status_code == 301
-    assert alias.headers["location"] == "/example"
+    assert alias.headers["location"] == "/orgs/example"
+    task_alias = client.get(
+        "/organizations/example/safe?q=vision", follow_redirects=False
+    )
+    assert task_alias.status_code == 301
+    assert task_alias.headers["location"] == "/orgs/example/safe?q=vision"
     markdown_alias = client.get(
         "/task/safe", headers={"Accept": "text/markdown"}, follow_redirects=False
     )
@@ -173,7 +178,7 @@ def test_legacy_aliases_redirect_permanently(client):
         ("/benchmark/safe", "benchmark"),
         ("/conferences/safe", "conference"),
         ("/authors/7", "author"),
-        ("/safe-org", "organization"),
+        ("/orgs/safe-org", "organization"),
     ],
 )
 def test_discovery_page_classes_support_head(client, monkeypatch, path, method_name):

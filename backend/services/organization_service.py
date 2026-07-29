@@ -12,6 +12,7 @@ from backend.models.api import (
     Organization,
     OrganizationAreaWithTasks,
     OrganizationAreasWithTasks,
+    OrganizationTopPaper,
     Organizations,
     Papers,
 )
@@ -21,6 +22,11 @@ from backend.models.database import Paper as DBPaper
 from backend.models.database import PaperOrganization
 from backend.models.database import PaperTask
 from backend.models.database import Task as DBTask
+from backend.models.database import OrganizationTrendingHistory
+from backend.services.organization_sync_service import HF_ORG_PAPERS_SOURCE
+from backend.services.sitemap_service import eligible_paper_filter
+from backend.services.trending_ranking_service import active_paper_score_components
+from backend.config import get_settings
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 
@@ -39,12 +45,24 @@ class OrganizationService:
         return organization
 
     def _organization_to_api(
-        self, db_org: DBOrganization, paper_count: Optional[int] = None
+        self,
+        db_org: DBOrganization,
+        paper_count: Optional[int] = None,
+        *,
+        trending_rank: Optional[int] = None,
+        top_paper: Optional[DBPaper] = None,
+        first_year: Optional[int] = None,
+        latest_year: Optional[int] = None,
     ) -> Organization:
         if paper_count is None:
             paper_count = (
                 self.db.query(func.count(PaperOrganization.paper_id))
-                .filter(PaperOrganization.organization_id == db_org.id)
+                .join(DBPaper, DBPaper.id == PaperOrganization.paper_id)
+                .filter(
+                    PaperOrganization.organization_id == db_org.id,
+                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
+                    eligible_paper_filter(),
+                )
                 .scalar()
                 or 0
             )
@@ -53,35 +71,148 @@ class OrganizationService:
             id=str(db_org.id),
             name=db_org.name,
             slug=db_org.slug,
+            hf_slug=db_org.hf_slug,
             hf_url=db_org.hf_url,
-            logo_url=db_org.logo_url,
+            logo_url=self.logo_url(db_org),
             website_url=db_org.website_url,
             github_url=db_org.github_url,
             description=db_org.description,
             paper_count=paper_count,
+            is_featured=db_org.is_featured,
+            display_order=db_org.display_order,
+            organization_trending_score=(
+                float(db_org.trending_score)
+                if db_org.trending_score is not None
+                else None
+            ),
+            trending_rank=trending_rank,
+            top_trending_paper=(
+                OrganizationTopPaper(
+                    id=str(top_paper.id),
+                    arxiv_id=top_paper.arxiv_id,
+                    title=top_paper.title,
+                )
+                if top_paper is not None
+                else None
+            ),
+            first_paper_year=first_year,
+            latest_paper_year=latest_year,
             created_at=db_org.created_at,
             updated_at=db_org.updated_at,
         )
 
-    def get_organizations(self) -> Organizations:
+    def get_organizations(self, featured_only: bool = False) -> Organizations:
         try:
-            paper_count_col = func.count(PaperOrganization.paper_id).label(
-                "paper_count"
+            paper_count_col = func.count(func.distinct(DBPaper.id)).label("paper_count")
+            first_year_col = func.min(
+                func.extract("year", DBPaper.date_published)
+            ).label("first_year")
+            latest_year_col = func.max(
+                func.extract("year", DBPaper.date_published)
+            ).label("latest_year")
+            latest_snapshot_dates = (
+                self.db.query(
+                    OrganizationTrendingHistory.organization_id.label(
+                        "organization_id"
+                    ),
+                    func.max(OrganizationTrendingHistory.snapshot_date).label(
+                        "snapshot_date"
+                    ),
+                )
+                .group_by(OrganizationTrendingHistory.organization_id)
+                .subquery()
             )
             rows = (
-                self.db.query(DBOrganization, paper_count_col)
+                self.db.query(
+                    DBOrganization,
+                    paper_count_col,
+                    first_year_col,
+                    latest_year_col,
+                    OrganizationTrendingHistory.raw_score,
+                )
                 .outerjoin(
                     PaperOrganization,
-                    DBOrganization.id == PaperOrganization.organization_id,
+                    and_(
+                        DBOrganization.id == PaperOrganization.organization_id,
+                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
+                    ),
                 )
-                .group_by(DBOrganization.id)
-                .order_by(desc(paper_count_col), DBOrganization.name)
-                .all()
+                .outerjoin(
+                    DBPaper,
+                    and_(
+                        DBPaper.id == PaperOrganization.paper_id,
+                        eligible_paper_filter(),
+                    ),
+                )
+                .outerjoin(
+                    latest_snapshot_dates,
+                    latest_snapshot_dates.c.organization_id == DBOrganization.id,
+                )
+                .outerjoin(
+                    OrganizationTrendingHistory,
+                    and_(
+                        OrganizationTrendingHistory.organization_id
+                        == latest_snapshot_dates.c.organization_id,
+                        OrganizationTrendingHistory.snapshot_date
+                        == latest_snapshot_dates.c.snapshot_date,
+                    ),
+                )
+                .group_by(DBOrganization.id, OrganizationTrendingHistory.raw_score)
             )
+            if featured_only:
+                rows = rows.filter(DBOrganization.is_featured.is_(True)).order_by(
+                    desc(func.coalesce(DBOrganization.trending_score, 0.0)),
+                    desc(func.coalesce(OrganizationTrendingHistory.raw_score, 0.0)),
+                    desc(paper_count_col),
+                    DBOrganization.display_order,
+                    DBOrganization.name,
+                )
+            else:
+                rows = rows.order_by(desc(paper_count_col), DBOrganization.name)
+            rows = rows.all()
+
+            top_by_org: dict[int, DBPaper] = {}
+            if rows:
+                org_ids = [row[0].id for row in rows]
+                repo_stats, active_score = active_paper_score_components(
+                    self.db, get_settings().trending_ranking_mode
+                )
+                candidates = (
+                    self.db.query(PaperOrganization.organization_id, DBPaper)
+                    .join(DBPaper, DBPaper.id == PaperOrganization.paper_id)
+                    .outerjoin(repo_stats, repo_stats.c.paper_id == DBPaper.id)
+                    .filter(
+                        PaperOrganization.organization_id.in_(org_ids),
+                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
+                        eligible_paper_filter(),
+                    )
+                    .order_by(
+                        PaperOrganization.organization_id,
+                        desc(active_score),
+                        desc(DBPaper.date_published),
+                        desc(DBPaper.id),
+                    )
+                    .all()
+                )
+                for organization_id, paper in candidates:
+                    top_by_org.setdefault(organization_id, paper)
 
             results = [
-                self._organization_to_api(db_org, paper_count or 0)
-                for db_org, paper_count in rows
+                self._organization_to_api(
+                    db_org,
+                    paper_count or 0,
+                    trending_rank=(index if featured_only else None),
+                    top_paper=top_by_org.get(db_org.id),
+                    first_year=int(first_year) if first_year is not None else None,
+                    latest_year=int(latest_year) if latest_year is not None else None,
+                )
+                for index, (
+                    db_org,
+                    paper_count,
+                    first_year,
+                    latest_year,
+                    _,
+                ) in enumerate(rows, start=1)
             ]
             return Organizations(count=len(results), results=results)
         except Exception as e:
@@ -90,6 +221,10 @@ class OrganizationService:
     def get_organization(self, slug: str) -> Organization:
         try:
             organization = self._get_organization_by_slug(slug)
+            if organization.is_featured:
+                for projected in self.get_organizations(featured_only=True).results:
+                    if projected.slug == slug:
+                        return projected
             return self._organization_to_api(organization)
         except PaperNotFoundError:
             raise
@@ -103,8 +238,13 @@ class OrganizationService:
             organization = self._get_organization_by_slug(slug)
 
             total_paper_count = (
-                self.db.query(func.count(PaperOrganization.paper_id))
-                .filter(PaperOrganization.organization_id == organization.id)
+                self.db.query(func.count(func.distinct(DBPaper.id)))
+                .join(PaperOrganization, PaperOrganization.paper_id == DBPaper.id)
+                .filter(
+                    PaperOrganization.organization_id == organization.id,
+                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
+                    eligible_paper_filter(),
+                )
                 .scalar()
                 or 0
             )
@@ -120,14 +260,17 @@ class OrganizationService:
                     PaperTask,
                     DBTask.id == PaperTask.task_id,
                 )
+                .join(DBPaper, DBPaper.id == PaperTask.paper_id)
                 .outerjoin(
                     PaperOrganization,
                     and_(
                         PaperTask.paper_id == PaperOrganization.paper_id,
                         PaperOrganization.organization_id == organization.id,
+                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     ),
                 )
                 .filter(DBTask.is_visible)
+                .filter(eligible_paper_filter())
                 .group_by(DBTask.id)
                 .order_by(DBTask.name)
                 .all()
@@ -156,10 +299,20 @@ class OrganizationService:
                 if tasks_by_area.get(area.id)
             ]
 
+            projected_organization = self._organization_to_api(
+                organization, paper_count=total_paper_count
+            )
+            if organization.is_featured:
+                projected_organization = next(
+                    (
+                        item
+                        for item in self.get_organizations(featured_only=True).results
+                        if item.slug == slug
+                    ),
+                    projected_organization,
+                )
             return OrganizationAreasWithTasks(
-                organization=self._organization_to_api(
-                    organization, paper_count=total_paper_count
-                ),
+                organization=projected_organization,
                 total_paper_count=total_paper_count,
                 results=results,
             )
@@ -191,6 +344,7 @@ class OrganizationService:
                     DBPaper.id == PaperOrganization.paper_id,
                 )
                 .filter(PaperOrganization.organization_id == organization.id)
+                .filter(PaperOrganization.source == HF_ORG_PAPERS_SOURCE)
             )
 
             if task_slug:
@@ -261,3 +415,14 @@ class OrganizationService:
             raise
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organization papers: {str(e)}")
+
+    @staticmethod
+    def logo_url(db_org: DBOrganization) -> Optional[str]:
+        if db_org.logo_mime_type:
+            version = (
+                int(db_org.updated_at.timestamp())
+                if db_org.updated_at is not None
+                else 0
+            )
+            return f"/api/v1/organizations/{db_org.slug}/logo?v={version}"
+        return db_org.logo_url

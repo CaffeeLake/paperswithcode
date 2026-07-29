@@ -44,7 +44,10 @@ from backend.services.badge_service import (
     LeaderboardBadgePlacement,
     render_leaderboard_badge,
 )
-from backend.services.arxiv_service import ArxivService
+from backend.services.paper_ingestion_service import (
+    PaperIngestionError,
+    PaperIngestionService,
+)
 from backend.services.thumbnail_service import (
     ThumbnailService,
     build_thumbnail_filename,
@@ -686,6 +689,11 @@ def _arxiv_metadata_error(arxiv_id: str, error_type: Optional[str]) -> HTTPExcep
             status_code=502,
             detail="arXiv returned an invalid metadata response. Try again in a few minutes.",
         )
+    if error_type == "db_error":
+        return HTTPException(
+            status_code=500,
+            detail="Failed to add paper to database (may already exist)",
+        )
 
     return HTTPException(
         status_code=502,
@@ -702,71 +710,30 @@ async def _fetch_and_persist_arxiv_paper(
     row with that ArXiv ID already exists. Returns the API ``Paper`` model.
     """
     started_at = time.monotonic()
-    paper_service = PaperService(db)
-
-    arxiv_service = ArxivService()
-    metadata = await arxiv_service.get_paper_metadata(arxiv_id)
-    if not metadata.success:
+    try:
+        db_paper, _ = await PaperIngestionService(db).get_or_import_arxiv_paper(
+            arxiv_id
+        )
+    except PaperIngestionError as exc:
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
             "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=%s elapsed_ms=%d fallback_used=%s",
             arxiv_id,
             source_endpoint,
-            metadata.error_type or "upstream_error",
+            exc.error_type or "upstream_error",
             elapsed_ms,
-            metadata.fallback_used,
+            False,
         )
-        raise _arxiv_metadata_error(arxiv_id, metadata.error_type)
+        raise _arxiv_metadata_error(arxiv_id, exc.error_type)
 
-    paper_data = {
-        "arxiv_id": metadata.arxiv_id,
-        "title": metadata.title,
-        "abstract": metadata.abstract,
-        "version": metadata.version,
-        "date_published": metadata.published.date() if metadata.published else None,
-        "primary_category": metadata.primary_category,
-        "all_categories": metadata.categories,
-        "is_latest_version": True,
-    }
-
-    paper_id = paper_service.add_paper(paper_data)
-    if not paper_id:
-        elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        logger.info(
-            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=db_error elapsed_ms=%d fallback_used=false",
-            arxiv_id,
-            source_endpoint,
-            elapsed_ms,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to add paper to database (may already exist)",
-        )
-
-    db_paper = db.query(DBPaper).filter(DBPaper.id == paper_id).first()
-    if not db_paper:
-        elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        logger.info(
-            "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=db_error elapsed_ms=%d fallback_used=false",
-            arxiv_id,
-            source_endpoint,
-            elapsed_ms,
-        )
-        raise HTTPException(
-            status_code=500, detail="Paper was added but could not be retrieved"
-        )
-
-    if metadata.authors:
-        await add_authors_to_paper(db, db_paper, metadata.authors)
-
-    paper = paper_service.get_paper_by_id(paper_id, include_resources=True)
+    paper = PaperService(db).get_paper_by_id(db_paper.id, include_resources=True)
     elapsed_ms = int((time.monotonic() - started_at) * 1000)
     logger.info(
         "arxiv_indexing_result arxiv_id=%s source_endpoint=%s result=success elapsed_ms=%d fallback_used=%s",
         arxiv_id,
         source_endpoint,
         elapsed_ms,
-        metadata.fallback_used,
+        False,
     )
     return paper
 

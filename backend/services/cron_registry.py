@@ -307,6 +307,71 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
     ),
     CronJobDefinition(
+        id="sync_hf_organizations",
+        display_name="Sync HF Organizations",
+        category="daily",
+        schedule="20 2 * * * (daily)",
+        script_path="daily/sync_hf_organizations.py",
+        log_name="sync_hf_organizations",
+        process_patterns=("scripts.daily.sync_hf_organizations",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/sync_hf_organizations.lock"
+        ),
+        expected_runtime_minutes=90,
+        stale_after_minutes=1800,
+        critical=False,
+        healthy_no_work_allowed=True,
+        db_freshness_query="""
+            SELECT max(last_hf_synced_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE last_hf_synced_at > now() - interval '30 hours'
+                   ) AS recent_writes,
+                   count(*) AS featured_organizations,
+                   count(*) FILTER (
+                     WHERE last_hf_synced_at IS NULL
+                        OR last_hf_synced_at <= now() - interval '30 hours'
+                   ) AS stale_featured_organizations
+            FROM organizations
+            WHERE is_featured = TRUE
+        """,
+        workflow_file="cron-sync-hf-organizations.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
+        id="calculate_organization_trending_scores",
+        display_name="Calculate Organization Trending Scores",
+        category="daily",
+        schedule="40 3 * * * (daily)",
+        script_path="daily/calculate_organization_trending_scores.py",
+        log_name="calculate_organization_trending_scores",
+        process_patterns=("scripts.daily.calculate_organization_trending_scores",),
+        lock_file=(
+            "/var/lib/paperswithcode/production/cron-locks/"
+            "calculate_organization_trending_scores.lock"
+        ),
+        expected_runtime_minutes=20,
+        stale_after_minutes=1800,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(o.trending_score_updated_at) AS last_write,
+                   count(h.organization_id) FILTER (
+                     WHERE h.snapshot_date = CURRENT_DATE
+                   ) AS recent_writes,
+                   count(DISTINCT o.id) AS featured_organizations,
+                   count(DISTINCT o.id) FILTER (
+                     WHERE h.organization_id IS NULL
+                   ) AS missing_today_snapshots
+            FROM organizations o
+            LEFT JOIN organization_trending_history h
+              ON h.organization_id = o.id
+             AND h.snapshot_date = CURRENT_DATE
+            WHERE o.is_featured = TRUE
+        """,
+        workflow_file="cron-calculate-organization-trending-scores.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="refresh_paper_embeddings",
         display_name="Refresh Paper Embeddings",
         category="hourly",

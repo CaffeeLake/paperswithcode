@@ -14,7 +14,9 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-calculate-trending-scores.yml` | `15 * * * *` | `.github/workflows/scripts/run_trending_scores.sh` | `.github/workflows/scripts/hourly/calculate_trending_scores.py` |
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
 | `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` | `.github/workflows/scripts/hourly/extract_urls.py` |
-| `cron-import-hf-daily-papers.yml` | `0 * * * *` | direct `uv run` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-import-hf-daily-papers.yml` | `0 * * * *` | `pwc-cron import_hf_daily_papers` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-sync-hf-organizations.yml` | `20 2 * * *` | `pwc-cron sync_hf_organizations` | `.github/workflows/scripts/daily/sync_hf_organizations.py` |
+| `cron-calculate-organization-trending-scores.yml` | `40 3 * * *` | `pwc-cron calculate_organization_trending_scores` | `.github/workflows/scripts/daily/calculate_organization_trending_scores.py` |
 | `cron-refresh-paper-embeddings.yml` | `15 * * * *` | `.github/workflows/scripts/run_refresh_paper_embeddings.sh` | `.github/workflows/scripts/hourly/refresh_paper_embeddings.py` |
 | `cron-update-hf-artifacts.yml` | `30 * * * *` | `pwc-cron update_hf_artifacts` | `.github/workflows/scripts/hourly/update_hf_artifacts.py` |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
@@ -49,7 +51,9 @@ use `VACUUM FULL`.
 ```text
 .github/workflows/scripts/
 ├── daily/
-│   └── import_hf_daily_papers.py
+│   ├── import_hf_daily_papers.py
+│   ├── sync_hf_organizations.py
+│   └── calculate_organization_trending_scores.py
 ├── hourly/
 │   ├── calculate_trending_scores.py
 │   ├── extract_urls.py
@@ -102,7 +106,18 @@ pages for papers that still have `urls_extracted = false`.
 
 `import_hf_daily_papers.py` runs hourly, imports the current day's Hugging Face
 papers that are not yet in the database, and auto-tags tasks/methods using
-keyword matching.
+keyword matching. It also links curated organization payloads for both new and
+already-existing papers.
+
+`sync_hf_organizations.py` runs daily as an append-only reconciliation backstop
+for the strict 21-organization manifest. It validates HF organization pages,
+imports missing ArXiv papers, caches validated logos, and never removes an
+existing HF attribution.
+
+`calculate_organization_trending_scores.py` runs after paper trending and
+organization sync. It upserts one raw snapshot per featured organization and UTC
+date, calculates the trailing 30-day arithmetic mean, and retains 120 days of
+bounded history.
 
 `refresh_paper_embeddings.py` runs 15 minutes later and sends only missing or
 content-changed latest papers to the protected TEI endpoint. It validates and

@@ -35,6 +35,7 @@ RESERVED_TOP_LEVEL_PREFIXES = frozenset(
         "benchmark",
         "conferences",
         "organizations",
+        "orgs",
         "authors",
         "frameworks",
         "trends",
@@ -60,6 +61,7 @@ KNOWN_CLIENT_TOP_LEVEL_PREFIXES = frozenset(
         "methods",
         "conferences",
         "organizations",
+        "orgs",
         "frameworks",
         "trends",
         "chat",
@@ -199,8 +201,11 @@ def author_page(
 @router.api_route(
     "/organizations/{slug}", methods=["GET", "HEAD"], include_in_schema=False
 )
-def organization_alias(slug: str) -> RedirectResponse:
-    return RedirectResponse(f"/{slug}", status_code=301)
+def organization_alias(slug: str, request: Request) -> RedirectResponse:
+    target = f"/orgs/{slug}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=301)
 
 
 @router.api_route(
@@ -208,8 +213,34 @@ def organization_alias(slug: str) -> RedirectResponse:
     methods=["GET", "HEAD"],
     include_in_schema=False,
 )
-def organization_task_alias(slug: str, task_slug: str) -> RedirectResponse:
-    return RedirectResponse(f"/{slug}/{task_slug}", status_code=301)
+def organization_task_alias(
+    slug: str, task_slug: str, request: Request
+) -> RedirectResponse:
+    target = f"/orgs/{slug}/{task_slug}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=301)
+
+
+@router.api_route("/orgs/{slug}", methods=["GET", "HEAD"], include_in_schema=False)
+def canonical_organization_page(
+    slug: str, request: Request, db: Session = Depends(get_database_session)
+) -> Response:
+    return _render(DiscoveryPageService(db).organization(slug), request)
+
+
+@router.api_route(
+    "/orgs/{slug}/{task_slug}",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+def canonical_organization_task_page(
+    slug: str,
+    task_slug: str,
+    request: Request,
+    db: Session = Depends(get_database_session),
+) -> Response:
+    return _render(DiscoveryPageService(db).organization_task(slug, task_slug), request)
 
 
 @router.api_route("/{slug}", methods=["GET", "HEAD"], include_in_schema=False)
@@ -220,7 +251,12 @@ def organization_page(
         if slug in KNOWN_CLIENT_TOP_LEVEL_PREFIXES:
             return _spa_document()
         return _not_found()
-    return _render(DiscoveryPageService(db).organization(slug), request)
+    if DiscoveryPageService(db).organization(slug) is None:
+        return _not_found()
+    target = f"/orgs/{slug}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=301)
 
 
 @router.api_route(
@@ -236,4 +272,9 @@ def organization_task_page(
         if slug in KNOWN_CLIENT_TOP_LEVEL_PREFIXES:
             return _spa_document()
         return _not_found()
-    return _render(DiscoveryPageService(db).organization_task(slug, task_slug), request)
+    if DiscoveryPageService(db).organization_task(slug, task_slug) is None:
+        return _not_found()
+    target = f"/orgs/{slug}/{task_slug}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=301)

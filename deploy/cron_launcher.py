@@ -106,6 +106,18 @@ COMMANDS: dict[str, Job] = {
         timeout="2h",
         idempotency="upsert papers by stable source identity",
     ),
+    "sync_hf_organizations": job(
+        "-m",
+        "scripts.daily.sync_hf_organizations",
+        timeout="2h",
+        idempotency="append featured HF organization paper links",
+    ),
+    "calculate_organization_trending_scores": job(
+        "-m",
+        "scripts.daily.calculate_organization_trending_scores",
+        timeout="30m",
+        idempotency="upsert one daily snapshot and rolling mean per organization",
+    ),
     "preload_thumbnails": job(
         "-m",
         "scripts.daily.preload_thumbnails",

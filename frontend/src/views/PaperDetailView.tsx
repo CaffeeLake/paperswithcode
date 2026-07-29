@@ -955,7 +955,7 @@ const PaperDetailView: React.FC = () => {
             {(paper.organizations || []).map((o) => (
               <Link
                 key={o.id}
-                to={`/${o.slug}`}
+                to={`/orgs/${o.slug}`}
                 className="action-btn"
                 title={o.name}
                 aria-label={o.name}

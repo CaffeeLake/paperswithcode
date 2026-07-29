@@ -4,7 +4,9 @@ FastAPI router for organization endpoints.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+import hashlib
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
@@ -15,6 +17,7 @@ from backend.models.api import (
     Papers,
 )
 from backend.services.organization_service import OrganizationService
+from backend.models.database import Organization as DBOrganization
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -26,11 +29,14 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
     summary="List all organizations",
 )
 def get_organizations(
+    featured_only: bool = Query(
+        False, description="Return only the curated featured organizations"
+    ),
     db: Session = Depends(get_database_session),
 ):
     try:
         service = OrganizationService(db)
-        return service.get_organizations()
+        return service.get_organizations(featured_only=featured_only)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -51,6 +57,39 @@ def get_organization(
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{slug}/logo", summary="Serve the cached organization logo")
+def get_organization_logo(
+    request: Request,
+    slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
+    db: Session = Depends(get_database_session),
+):
+    organization = (
+        db.query(DBOrganization).filter(DBOrganization.slug == slug).one_or_none()
+    )
+    if (
+        organization is None
+        or organization.logo_mime_type is None
+        or organization.logo_data is None
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Logo not available",
+            headers={"Cache-Control": "no-store"},
+        )
+    etag = f'"{hashlib.sha256(organization.logo_data).hexdigest()}"'
+    headers = {
+        "Cache-Control": "public, s-maxage=604800, max-age=604800",
+        "ETag": etag,
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(
+        content=organization.logo_data,
+        media_type=organization.logo_mime_type,
+        headers=headers,
+    )
 
 
 @router.get(

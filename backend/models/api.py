@@ -1593,6 +1593,17 @@ class OrganizationSummary(BaseModel):
         return str(v)
 
 
+class OrganizationTopPaper(BaseModel):
+    id: str
+    arxiv_id: Optional[str] = None
+    title: str
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def ensure_string_id(cls, v):
+        return str(v)
+
+
 class Organization(BaseModel):
     """Organization object with normalized metadata."""
 
@@ -1601,6 +1612,7 @@ class Organization(BaseModel):
     id: str = Field(..., description="Organization ID")
     name: str = Field(..., description="Organization name (e.g., 'NVIDIA')")
     slug: str = Field(..., description="URL-friendly slug (e.g., 'nvidia')")
+    hf_slug: Optional[str] = Field(None, description="Hugging Face namespace")
     hf_url: Optional[str] = Field(
         None, description="Hugging Face organization URL (e.g., huggingface.co/nvidia)"
     )
@@ -1611,6 +1623,13 @@ class Organization(BaseModel):
     paper_count: Optional[int] = Field(
         0, description="Number of papers linked to this organization"
     )
+    is_featured: bool = False
+    display_order: Optional[int] = None
+    organization_trending_score: Optional[float] = None
+    trending_rank: Optional[int] = None
+    top_trending_paper: Optional[OrganizationTopPaper] = None
+    first_paper_year: Optional[int] = None
+    latest_paper_year: Optional[int] = None
     created_at: Optional[datetime] = Field(None, description="Creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
 

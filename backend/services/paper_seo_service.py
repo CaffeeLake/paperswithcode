@@ -170,7 +170,7 @@ def build_paper_seo_document(paper: Paper, route_identifier: str) -> PaperSeoDoc
             if method.slug and method.name
         ),
         organizations=tuple(
-            NamedLink(organization.name, f"/{organization.slug}")
+            NamedLink(organization.name, f"/orgs/{organization.slug}")
             for organization in (paper.organizations or [])
             if organization.slug and organization.name
         ),

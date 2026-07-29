@@ -149,7 +149,9 @@ Registered health jobs currently include `update_github_stars`,
 `update_hot_github_trending`,
 `update_citations`, `extract_urls`, `calculate_trending_scores`,
 `calculate_paper_trending_scores`, `update_hf_artifacts`,
-`import_hf_daily_papers`, `preload_thumbnails`, `mirror_thumbnails_to_disk`,
+`import_hf_daily_papers`, `sync_hf_organizations`,
+`calculate_organization_trending_scores`, `preload_thumbnails`,
+`mirror_thumbnails_to_disk`,
 `link_methods_by_references`, `backfill_method_keywords`,
 `backfill_method_references`, and `link_papers_by_task_keywords`.
 The active-generation maintenance job `refresh_paper_embeddings` is also

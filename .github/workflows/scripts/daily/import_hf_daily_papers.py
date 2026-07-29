@@ -35,6 +35,9 @@ from backend.database.paper_merge import (
 )
 from scripts.utils.cron_helpers import DatabaseCronJob
 from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
+from backend.services.organization_sync_service import (
+    link_daily_paper_organizations,
+)
 
 
 class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
@@ -65,6 +68,8 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.new_pages_count = 0
         self.new_tasks_count = 0
         self.new_methods_count = 0
+        self.new_organization_links_count = 0
+        self.unknown_organizations_seen = 0
 
         self.task_case_sensitive_patterns = {}
         self.task_case_insensitive_patterns = {}
@@ -121,6 +126,12 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.logger.info(f"  - New project pages added: {self.new_pages_count}")
         self.logger.info(f"  - New task links added: {self.new_tasks_count}")
         self.logger.info(f"  - New method links added: {self.new_methods_count}")
+        self.logger.info(
+            f"  - New organization links added: {self.new_organization_links_count}"
+        )
+        self.logger.info(
+            f"  - Unknown organizations seen: {self.unknown_organizations_seen}"
+        )
         self.logger.info(f"  - Errors: {self.error_count}")
 
         self.vacuum_analyze_table("papers")
@@ -166,8 +177,15 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
             self.logger.warning("Paper missing ArXiv ID, skipping")
             return
 
-        if self.get_paper_by_arxiv_id(arxiv_id):
-            self.logger.debug(f"Paper {arxiv_id} already exists, skipping")
+        existing = self.get_paper_by_arxiv_id(arxiv_id)
+        if existing:
+            self.logger.debug(
+                f"Paper {arxiv_id} already exists; reconciling organization link"
+            )
+            self._link_organizations(
+                existing["id"],
+                paper_data.get("organization") or paper_info.get("organization"),
+            )
             return
 
         title = (paper_info.get("title") or "").strip()
@@ -218,6 +236,24 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         if project_page:
             self.insert_project_page(paper_id, project_page)
         self.refresh_urls_extracted(paper_id)
+        self._link_organizations(
+            paper_id,
+            paper_data.get("organization") or paper_info.get("organization"),
+        )
+
+    def _link_organizations(self, paper_id: int, payload) -> None:
+        if not payload:
+            return
+        session = db_manager.session_local()
+        try:
+            stats = link_daily_paper_organizations(session, paper_id, payload)
+            self.new_organization_links_count += stats["linked"]
+            self.unknown_organizations_seen += stats["unknown_organizations_seen"]
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
 
 if __name__ == "__main__":

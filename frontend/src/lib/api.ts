@@ -262,12 +262,24 @@ export interface Organization {
   id: string;
   name: string;
   slug: string;
+  hf_slug?: string | null;
   hf_url?: string | null;
   logo_url?: string | null;
   website_url?: string | null;
   github_url?: string | null;
   description?: string | null;
   paper_count?: number;
+  is_featured: boolean;
+  display_order?: number | null;
+  organization_trending_score?: number | null;
+  trending_rank?: number | null;
+  top_trending_paper?: {
+    id: string;
+    arxiv_id?: string | null;
+    title: string;
+  } | null;
+  first_paper_year?: number | null;
+  latest_paper_year?: number | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -1185,8 +1197,10 @@ class ApiClient {
   }
 
   // Organizations API
-  async getOrganizations(): Promise<Organizations> {
-    return this.request<Organizations>(`/organizations/`);
+  async getOrganizations(featuredOnly = false): Promise<Organizations> {
+    return this.request<Organizations>(
+      `/organizations/${featuredOnly ? '?featured_only=true' : ''}`,
+    );
   }
 
   async getOrganization(slug: string): Promise<Organization> {

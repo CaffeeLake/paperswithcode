@@ -369,7 +369,10 @@ class DiscoveryPageService:
             return None
         papers = self._papers_for_relation(
             PaperOrganization,
-            PaperOrganization.organization_id == entity.id,
+            (
+                (PaperOrganization.organization_id == entity.id)
+                & (PaperOrganization.source == "hf_org_papers")
+            ),
             f"Attributed to {entity.name}",
         )
         description = entity.description or (
@@ -387,6 +390,7 @@ class DiscoveryPageService:
             )
             .filter(
                 PaperOrganization.organization_id == entity.id,
+                PaperOrganization.source == "hf_org_papers",
                 Task.slug.is_not(None),
             )
             .distinct()
@@ -396,7 +400,7 @@ class DiscoveryPageService:
         )
         links.extend(DiscoveryLink(f"/tasks/{s}", n) for s, n in tasks)
         return self._entity_page(
-            "Organization", f"/{slug}", entity.name, description, links, papers
+            "Organization", f"/orgs/{slug}", entity.name, description, links, papers
         )
 
     def organization_task(self, slug: str, task_slug: str) -> Optional[DiscoveryPage]:
@@ -414,6 +418,7 @@ class DiscoveryPageService:
                 .filter(Organization.slug == slug)
                 .scalar_subquery(),
                 PaperTask.task_id == task.id,
+                PaperOrganization.source == "hf_org_papers",
                 eligible_paper_filter(),
             )
             .order_by(
@@ -451,13 +456,16 @@ class DiscoveryPageService:
                 PaperOrganization, PaperOrganization.organization_id == Organization.id
             )
             .join(PaperAuthor, PaperAuthor.paper_id == PaperOrganization.paper_id)
-            .filter(PaperAuthor.author_id == entity.id)
+            .filter(
+                PaperAuthor.author_id == entity.id,
+                PaperOrganization.source == "hf_org_papers",
+            )
             .distinct()
             .order_by(Organization.name)
             .limit(10)
             .all()
         )
-        links = [DiscoveryLink(f"/{slug}", name) for slug, name in organizations]
+        links = [DiscoveryLink(f"/orgs/{slug}", name) for slug, name in organizations]
         if entity.hf_username:
             links.append(
                 DiscoveryLink(
