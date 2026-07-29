@@ -665,7 +665,7 @@ class SandboxSessionManager:
                             first_worker_delta_recorded = True
                             yield {
                                 "type": "_latency",
-                                "phase": "first_worker_delta_ms",
+                                "phase": "first_worker_delta",
                                 "elapsed_ms": round(
                                     (time.perf_counter() - turn_started) * 1000
                                 ),
