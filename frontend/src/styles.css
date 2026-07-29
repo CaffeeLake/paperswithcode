@@ -757,9 +757,10 @@ a.paper-resource.is-link:focus-visible {
   flex-wrap: wrap;
 }
 .paper-feed-filter {
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: 17px auto 17px;
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
   min-height: 30px;
   padding: 5px 10px;
   border: 1px solid var(--hairline);
@@ -771,6 +772,15 @@ a.paper-resource.is-link:focus-visible {
   letter-spacing: 0.01em;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.paper-feed-filter::before {
+  content: "";
+  width: 17px;
+}
+.paper-feed-filter-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .paper-feed-filter:hover {
   border-color: var(--ink-faint);

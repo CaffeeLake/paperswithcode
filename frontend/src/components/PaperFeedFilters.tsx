@@ -29,10 +29,12 @@ const FeedFilterToggle: React.FC<{
     aria-pressed={checked}
     onClick={() => onChange(!checked)}
   >
-    <span className="paper-feed-filter-icon" aria-hidden="true">
-      {icon}
+    <span className="paper-feed-filter-content">
+      <span className="paper-feed-filter-icon" aria-hidden="true">
+        {icon}
+      </span>
+      {label}
     </span>
-    {label}
     <span
       className={`paper-feed-filter-check ${checked ? "" : "is-placeholder"}`}
       aria-hidden="true"
