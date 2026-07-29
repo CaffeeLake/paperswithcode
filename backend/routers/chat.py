@@ -38,6 +38,7 @@ from backend.models.chat import (
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.chat_turn_runner import shared_sandbox_manager
 from backend.services.chat_session_service import (
     ChatServiceError,
     ChatSessionService,
@@ -289,6 +290,29 @@ def update_session(
     except ChatServiceError as exc:
         db.rollback()
         _raise(exc)
+
+
+@router.post("/sessions/{session_id}/cancel", status_code=204)
+async def cancel_active_turn(
+    session_id: uuid.UUID,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    owner = owner_from_user(user)
+    try:
+        session, _messages = ChatSessionService(db, settings).get_session(
+            owner, session_id
+        )
+    except ChatServiceError as exc:
+        _raise(exc)
+    if session.active_turn_id is None:
+        return Response(status_code=204)
+    manager = shared_sandbox_manager(settings)
+    cancelled = await manager.cancel(session_id, session.active_turn_id)
+    if not cancelled:
+        await manager.terminate(session_id, failure_code="cancel_control_missing")
+    return Response(status_code=204)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)

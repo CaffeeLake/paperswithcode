@@ -24,6 +24,7 @@ from backend.config import get_settings
 from backend.main import create_app
 from backend.models.chat import ChatBrowserLatencyRequest, ChatRequest, sse_event
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER
+from backend.routers import chat as chat_router
 from backend.services import chat_mcp
 from backend.services.chat_agent_service import (
     SDKEventAdapter,
@@ -103,6 +104,42 @@ def test_browser_latency_request_is_strict_bounded_and_nonempty():
         terminal_classification="complete",
     )
     assert payload.submission_to_stream_start_ms == 12.5
+
+
+def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    class Service:
+        def __init__(self, _db, _settings):
+            pass
+
+        def get_session(self, owner, requested_session_id):
+            assert owner.hf_user_id == "owner-1"
+            assert requested_session_id == session_id
+            return SimpleNamespace(active_turn_id=turn_id), []
+
+    class Manager:
+        async def cancel(self, requested_session_id, requested_turn_id):
+            calls.append((requested_session_id, requested_turn_id))
+            return True
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(
+        chat_router, "shared_sandbox_manager", lambda _settings: Manager()
+    )
+    response = asyncio.run(
+        chat_router.cancel_active_turn(
+            session_id,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=object(),
+            settings=object(),
+        )
+    )
+
+    assert response.status_code == 204
+    assert calls == [(session_id, turn_id)]
 
 
 def test_sse_serialization_preserves_unicode_and_newlines():

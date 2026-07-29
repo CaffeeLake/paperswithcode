@@ -125,6 +125,10 @@ export function removeSession(id: string): Promise<void> {
   return request(`/api/v1/chat/sessions/${id}`, { method: "DELETE" });
 }
 
+export function cancelSession(id: string): Promise<void> {
+  return request(`/api/v1/chat/sessions/${id}/cancel`, { method: "POST" });
+}
+
 export function createOrRefreshShare(id: string): Promise<ChatShareSummary> {
   return request(`/api/v1/chat/sessions/${id}/share`, { method: "POST" });
 }

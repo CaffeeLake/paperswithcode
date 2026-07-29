@@ -9,7 +9,7 @@ import {
   reportChatLatency,
   streamChat,
 } from "@/lib/chat";
-import { getSession, toUiMessages } from "@/lib/chatSessions";
+import { cancelSession, getSession, toUiMessages } from "@/lib/chatSessions";
 
 const WORKSPACE_STATUS = "Preparing research workspace…";
 const WORKSPACE_STATUS_DELAY_MS = 750;
@@ -468,6 +468,7 @@ export function useChat(options: UseChatOptions) {
     });
     optionsRef.current.onInterrupted(promptRef.current);
     const sessionId = activeSessionIdRef.current;
+    if (sessionId) void cancelSession(sessionId).catch(() => undefined);
     const messagesGeneration = ++messagesGenerationRef.current;
     window.setTimeout(() => {
       if (sessionId && messagesGenerationRef.current === messagesGeneration) {
