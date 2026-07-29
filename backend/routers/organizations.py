@@ -23,9 +23,13 @@ from backend.utils.organization_logos import organization_logo_extension
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
-LOGO_CACHE_HEADERS = {
-    "Cache-Control": ("public, max-age=604800, stale-while-revalidate=2592000"),
-    "CDN-Cache-Control": ("public, max-age=604800, stale-while-revalidate=2592000"),
+VERSIONED_LOGO_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "CDN-Cache-Control": "public, max-age=31536000, immutable",
+}
+COMPAT_LOGO_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=0, must-revalidate",
+    "CDN-Cache-Control": "public, max-age=0, must-revalidate",
 }
 
 
@@ -70,6 +74,7 @@ def _organization_logo_response(
     slug: str,
     db: Session,
     extension: str | None = None,
+    digest: str | None = None,
 ):
     organization = (
         db.query(DBOrganization).filter(DBOrganization.slug == slug).one_or_none()
@@ -88,8 +93,15 @@ def _organization_logo_response(
     if extension is not None and extension != expected_extension:
         raise HTTPException(status_code=404, detail="Logo format not available")
 
-    etag = f'"{hashlib.sha256(organization.logo_data).hexdigest()}"'
-    headers = {**LOGO_CACHE_HEADERS, "ETag": etag}
+    actual_digest = hashlib.sha256(organization.logo_data).hexdigest()
+    if digest is not None and digest != actual_digest:
+        raise HTTPException(status_code=404, detail="Logo version not available")
+
+    etag = f'"{actual_digest}"'
+    cache_headers = (
+        VERSIONED_LOGO_CACHE_HEADERS if digest else COMPAT_LOGO_CACHE_HEADERS
+    )
+    headers = {**cache_headers, "ETag": etag}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return Response(
@@ -110,8 +122,28 @@ def get_organization_logo(
 
 
 @router.get(
+    "/{slug}/logo/{digest}.{extension}",
+    summary="Serve an immutable version of the cached organization logo",
+)
+def get_versioned_organization_logo(
+    request: Request,
+    slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
+    digest: str = Path(..., min_length=64, max_length=64),
+    extension: str = Path(..., description="Cached logo file extension"),
+    db: Session = Depends(get_database_session),
+):
+    return _organization_logo_response(
+        request,
+        slug,
+        db,
+        extension.lower(),
+        digest.lower(),
+    )
+
+
+@router.get(
     "/{slug}/logo.{extension}",
-    summary="Serve the edge-cacheable organization logo",
+    summary="Serve a compatibility organization logo URL",
 )
 def get_organization_logo_with_extension(
     request: Request,

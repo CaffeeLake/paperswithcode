@@ -407,6 +407,7 @@ The following summarizes the live structure. See the database for full DDL.
 ### ORGANIZATIONS
 - id (PK), name, slug (UNIQUE NOT NULL)
 - hf_url, logo_url, website_url, github_url, description
+- logo_data (BYTEA, NULL), logo_mime_type (VARCHAR(50), NULL), logo_sha256 (VARCHAR(64), NULL) — cached logo bytes and content digest used for immutable URLs
 - created_at, updated_at
 - Indexes: slug
 - Normalized organization rows (NVIDIA, Google, Meta, ...), sourced primarily from Hugging Face org profiles. Used to tag papers by the lab/company behind them and to power organization pages (e.g. `/nvidia`).

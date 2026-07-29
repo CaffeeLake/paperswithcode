@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -125,6 +126,7 @@ class OrganizationSyncService:
             if data.logo_url:
                 try:
                     logo_data, logo_mime_type = self.hf_client.fetch_logo(data.logo_url)
+                    organization.logo_sha256 = hashlib.sha256(logo_data).hexdigest()
                     if organization.logo_data != logo_data:
                         organization.logo_data = logo_data
                         organization.logo_mime_type = logo_mime_type

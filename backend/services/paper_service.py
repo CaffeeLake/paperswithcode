@@ -443,7 +443,9 @@ class PaperService:
                         slug=organization.slug,
                         logo_url=(
                             organization_logo_path(
-                                organization.slug, organization.logo_mime_type
+                                organization.slug,
+                                organization.logo_mime_type,
+                                organization.logo_sha256,
                             )
                             if organization.logo_mime_type
                             else organization.logo_url

@@ -5,6 +5,7 @@ ensuring organization feeds rank by the same active trending metric as the home
 feed (composite paper-level score or official-repo velocity).
 """
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -104,6 +105,7 @@ def org_client():
         display_order=1,
         logo_data=b"fake-png",
         logo_mime_type="image/png",
+        logo_sha256=hashlib.sha256(b"fake-png").hexdigest(),
     )
     db.add(org)
     db.add(Area(id=1, name="Vision"))
@@ -238,23 +240,38 @@ def test_featured_list_uses_launch_source_and_card_projection(org_client, monkey
     assert organization["paper_count"] == 4
     assert organization["trending_rank"] == 1
     assert organization["top_trending_paper"]["title"] == "Paper 1"
-    assert organization["logo_url"] == "/api/v1/organizations/acme/logo.png"
+    digest = hashlib.sha256(b"fake-png").hexdigest()
+    assert organization["logo_url"] == (f"/api/v1/organizations/acme/logo/{digest}.png")
 
 
 def test_cached_logo_supports_edge_and_conditional_caching(org_client):
-    first = org_client.get("/api/v1/organizations/acme/logo.png")
+    digest = hashlib.sha256(b"fake-png").hexdigest()
+    first = org_client.get(f"/api/v1/organizations/acme/logo/{digest}.png")
     assert first.status_code == 200
     assert first.content == b"fake-png"
-    assert first.headers["cache-control"].startswith("public")
-    assert "stale-while-revalidate" in first.headers["cache-control"]
-    assert first.headers["cdn-cache-control"].startswith("public")
+    assert "max-age=31536000" in first.headers["cache-control"]
+    assert "immutable" in first.headers["cache-control"]
+    assert "immutable" in first.headers["cdn-cache-control"]
     second = org_client.get(
-        "/api/v1/organizations/acme/logo.png",
+        f"/api/v1/organizations/acme/logo/{digest}.png",
         headers={"If-None-Match": first.headers["etag"]},
     )
     assert second.status_code == 304
+    wrong_digest = "0" * 64
+    assert (
+        org_client.get(
+            f"/api/v1/organizations/acme/logo/{wrong_digest}.png"
+        ).status_code
+        == 404
+    )
     assert org_client.get("/api/v1/organizations/acme/logo.webp").status_code == 404
-    assert org_client.get("/api/v1/organizations/acme/logo").status_code == 200
+    for compatibility_path in (
+        "/api/v1/organizations/acme/logo.png",
+        "/api/v1/organizations/acme/logo",
+    ):
+        compatibility = org_client.get(compatibility_path)
+        assert compatibility.status_code == 200
+        assert "max-age=0" in compatibility.headers["cache-control"]
 
 
 def test_organization_task_taxonomy_and_paper_filter(org_client, monkeypatch):

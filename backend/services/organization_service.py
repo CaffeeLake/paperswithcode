@@ -426,7 +426,11 @@ class OrganizationService:
     def logo_url(db_org: DBOrganization) -> Optional[str]:
         if db_org.logo_mime_type:
             return (
-                organization_logo_path(db_org.slug, db_org.logo_mime_type)
+                organization_logo_path(
+                    db_org.slug,
+                    db_org.logo_mime_type,
+                    db_org.logo_sha256,
+                )
                 or f"/api/v1/organizations/{db_org.slug}/logo"
             )
         return db_org.logo_url

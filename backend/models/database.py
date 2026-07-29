@@ -1390,6 +1390,7 @@ class Organization(Base):
         LargeBinary, nullable=True, deferred=True
     )
     logo_mime_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    logo_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     website_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     github_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

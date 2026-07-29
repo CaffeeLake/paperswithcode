@@ -25,6 +25,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | --- | --- |
 | `add_v2_schema.sql` + `run_add_v2_schema.py` | `papers.tldr`, `papers.num_pages` |
 | `add_entity_image_data.sql` + `run_add_entity_image_data.py` | DB-backed `image_data`/`image_mime_type` on `tasks`/`methods`/`conferences` (bulk backfill from `data/entity_image_seeds/`; single-file import via `backend/database/import_entity_image.py`) |
+| `add_organization_logo_sha256.sql` | Content-addressed immutable organization logo URLs |
 | `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
 | `add_paper_redirects.sql` | Shared redirects for papers merged into canonical ArXiv rows |
 | `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
