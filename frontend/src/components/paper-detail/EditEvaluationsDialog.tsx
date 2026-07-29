@@ -9,9 +9,7 @@ import {
   getTasks,
   getDatasets,
   getLeaderboardMetrics,
-  createEvaluation,
-  updateEvaluation,
-  deleteEvaluation,
+  batchEvaluations,
   submitPendingPaperEdit,
   type Task as APITask,
   type Dataset,
@@ -20,6 +18,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 const SEARCH_PAGE_SIZE = 100;
@@ -57,6 +56,7 @@ interface EditEvaluationsDialogProps {
   /** `direct` applies immediately (admin path). `pending` submits an edit for
    *  admin review without touching live data. */
   submitMode?: "direct" | "pending";
+  isAdmin?: boolean;
   /** When `submitMode === "pending"` and the signed-in user is a linked
    *  author of the paper, the notice copy acknowledges that. */
   isAuthor?: boolean;
@@ -163,6 +163,7 @@ export function EditEvaluationsDialog({
   paperTasks,
   onSuccess,
   submitMode = "direct",
+  isAdmin = false,
   isAuthor = false,
 }: EditEvaluationsDialogProps) {
   const showHarnessColumn = paperHasCodingAgentsTask(paperTasks);
@@ -403,57 +404,69 @@ export function EditEvaluationsDialog({
         return { submitted: true };
       }
 
-      let anyDirectChange = false;
+      const directOperations: Array<{
+        operation: "create" | "update" | "delete";
+        evaluation_id?: number;
+        payload?: Record<string, unknown>;
+      }> = [];
       for (const evalItem of evaluations) {
         if (evalItem.operation === 'delete' && evalItem.id) {
-          anyDirectChange = true;
-          try {
-            await deleteEvaluation(evalItem.id);
-          } catch (error: unknown) {
-            const status = typeof error === 'object' && error !== null && 'status' in error
-              ? (error as { status?: number }).status
-              : undefined;
-            if (status !== 404) {
-              throw error;
-            }
-            console.log(`Evaluation ${evalItem.id} already deleted or not found`);
-          }
+          directOperations.push({
+            operation: "delete",
+            evaluation_id: parseInt(evalItem.id),
+          });
         } else if (evalItem.operation === 'create') {
           if (!isCompleteCreateEvaluation(evalItem)) continue;
-          anyDirectChange = true;
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
           const numParameters = parseNumParametersInput(evalItem.num_parameters);
-          await createEvaluation({
-            paper_id: parseInt(paperId),
-            task_id: parseInt(evalItem.task_id),
-            dataset_id: parseInt(evalItem.dataset_id),
-            model_name: evalItem.model_name || undefined,
-            harness: supportsHarness ? evalItem.harness || undefined : undefined,
-            metrics: { [evalItem.metric_name]: evalItem.metric_value },
-            best_metric: evalItem.metric_name,
-            best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
-            num_parameters: numParameters ?? undefined,
-            hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url) ?? undefined,
-            is_open: evalItem.is_open,
+          directOperations.push({
+            operation: "create",
+            payload: {
+              paper_id: parseInt(paperId),
+              task_id: parseInt(evalItem.task_id),
+              dataset_id: parseInt(evalItem.dataset_id),
+              model_name: evalItem.model_name || undefined,
+              harness: supportsHarness ? evalItem.harness || undefined : undefined,
+              metrics: { [evalItem.metric_name]: evalItem.metric_value },
+              best_metric: evalItem.metric_name,
+              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+              num_parameters: numParameters ?? undefined,
+              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url) ?? undefined,
+              is_open: evalItem.is_open,
+            },
           });
         } else if (evalItem.operation === 'update' && evalItem.id) {
-          anyDirectChange = true;
           const supportsHarness = selectedDatasetSupportsHarness(evalItem.task_id, evalItem.dataset_id);
-          await updateEvaluation(evalItem.id, {
-            task_id: parseInt(evalItem.task_id),
-            dataset_id: parseInt(evalItem.dataset_id),
-            model_name: evalItem.model_name || undefined,
-            harness: supportsHarness ? evalItem.harness || null : null,
-            metrics: { [evalItem.metric_name]: evalItem.metric_value },
-            best_metric: evalItem.metric_name,
-            best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
-            num_parameters: parseNumParametersInput(evalItem.num_parameters),
-            hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
-            is_open: evalItem.is_open,
+          directOperations.push({
+            operation: "update",
+            evaluation_id: parseInt(evalItem.id),
+            payload: {
+              task_id: parseInt(evalItem.task_id),
+              dataset_id: parseInt(evalItem.dataset_id),
+              model_name: evalItem.model_name || undefined,
+              harness: supportsHarness ? evalItem.harness || null : null,
+              metrics: { [evalItem.metric_name]: evalItem.metric_value },
+              best_metric: evalItem.metric_name,
+              best_rank: evalItem.best_rank ? parseInt(evalItem.best_rank) : undefined,
+              num_parameters: parseNumParametersInput(evalItem.num_parameters),
+              hf_model_url: parseHfModelUrlInput(evalItem.hf_model_url),
+              is_open: evalItem.is_open,
+              harness_set: true,
+              num_parameters_set: true,
+              hf_model_url_set: true,
+            },
           });
         }
       }
-      return { submitted: anyDirectChange };
+      if (!isAdmin && directOperations.length > 50) {
+        throw new Error(
+          "Contributor evaluation batches are limited to 50 operations; contact an admin.",
+        );
+      }
+      if (directOperations.length > 0) {
+        await batchEvaluations(parseInt(paperId), directOperations);
+      }
+      return { submitted: directOperations.length > 0 };
     },
     onSuccess: (result) => {
       if (submitMode === "pending") {
@@ -532,6 +545,13 @@ export function EditEvaluationsDialog({
     hasUserEditedRef.current = true;
     const evaluation = editedEvaluations[index];
     if (evaluation.id) {
+      if (
+        !window.confirm(
+          "Delete this evaluation? You will be asked to sign in again if your session is older than 15 minutes.",
+        )
+      ) {
+        return;
+      }
       setEditedEvaluations(
         editedEvaluations.map((e, i) =>
           i === index ? { ...e, operation: 'delete' as const } : e
@@ -826,6 +846,7 @@ export function EditEvaluationsDialog({
           </div>
         </div>
 
+        <CurationDiff before={initialEvaluations} after={editedEvaluations} />
         <DialogFooter>
           <div className="flex flex-wrap gap-2 sm:mr-auto">
             <Button variant="ghost" onClick={() => setSuggestionKind("benchmark")}>

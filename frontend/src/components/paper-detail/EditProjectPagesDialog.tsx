@@ -9,6 +9,7 @@ import { submitPendingPaperEdit, updatePaperProjectPages } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 interface ProjectPage {
   url: string;
@@ -158,6 +159,13 @@ export function EditProjectPagesDialog({
   const handleSave = () => {
     const next = getProjectPagesForSubmission();
     if (next === null) return;
+    if (
+      submitMode === "direct" &&
+      initialProjectPages.some(
+        (item) => !next.some((candidate) => candidate.url === item.url),
+      ) &&
+      !window.confirm("Remove one or more project pages from this paper?")
+    ) return;
     updateProjectPagesMutation.mutate({ paperId, projectPages: next });
   };
 
@@ -269,6 +277,7 @@ export function EditProjectPagesDialog({
           )}
         </div>
 
+        <CurationDiff before={initialProjectPages} after={editedProjectPages} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

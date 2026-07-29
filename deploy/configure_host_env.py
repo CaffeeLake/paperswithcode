@@ -77,6 +77,18 @@ def existing_or_random(lines: dict[str, str], key: str) -> str:
     return decoded_value(line) if line else secrets.token_urlsafe(48)
 
 
+def shared_role_values(*sources: dict[str, str]) -> dict[str, str]:
+    """Preserve one identical subject allowlist across both environments."""
+
+    result: dict[str, str] = {}
+    for key in ("PWC_ADMIN_HF_SUBJECTS", "PWC_CONTRIBUTOR_HF_SUBJECTS"):
+        configured = {decoded_value(source[key]) for source in sources if key in source}
+        if len(configured) > 1:
+            raise ValueError(f"{key} differs between protected environments")
+        result[key] = next(iter(configured), "")
+    return result
+
+
 def shared_session_keys(
     production: dict[str, str], staging: dict[str, str]
 ) -> tuple[str, str]:
@@ -251,12 +263,15 @@ def main() -> int:
         "PWC_SHARED_SESSION_COOKIE_NAME": "pwc_shared_session",
         "PWC_SESSION_VERIFICATION_PUBLIC_KEY": session_public_key,
     }
+    shared_roles = shared_role_values(current_production, current_staging, legacy)
 
     production = assign(
         legacy,
         {
             **shared_auth,
+            **shared_roles,
             "PWC_CATALOG_MUTATIONS_ENABLED": "true",
+            "PWC_CONTRIBUTOR_DIRECT_EDITS_ENABLED": "false",
             "PWC_CHAT_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": ("/var/lib/paperswithcode/production/chat-agent"),
             "PWC_CHAT_RECOVERY_SPOOL_DIR": (
@@ -304,8 +319,10 @@ def main() -> int:
         staging,
         {
             **shared_auth,
+            **shared_roles,
             **production_codex_values(legacy, args.codex_jobs_namespace),
             "PWC_CATALOG_MUTATIONS_ENABLED": "false",
+            "PWC_CONTRIBUTOR_DIRECT_EDITS_ENABLED": "false",
             "PWC_CHAT_AGENT_CWD": "/var/lib/paperswithcode/staging/chat-agent",
             "PWC_CHAT_ENABLED": "true",
             "PWC_CHAT_GATEWAY_URL": (

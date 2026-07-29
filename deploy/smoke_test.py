@@ -356,7 +356,7 @@ def run_http_smoke(
             return failures
         status, _, _ = request(urljoin(base_url, "/"), allow_redirects=False)
         if status not in {302, 401, 403}:
-            failures.append(f"staging / was not admin-gated: {status}")
+            failures.append(f"staging / was not role-gated: {status}")
         return failures
 
     if candidate:

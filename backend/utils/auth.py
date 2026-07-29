@@ -7,14 +7,75 @@ can mutate them; evaluation CRUD uses :func:`require_admin` so scripts can
 import rows with ``X-Admin-Token``.
 """
 
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Literal, Optional
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import APIKeyHeader
 
 from backend.config import get_settings
 
 admin_token_header = APIKeyHeader(name="X-Admin-Token", auto_error=False)
+Role = Literal["admin", "contributor"]
+
+
+def role_for_hf_subject(
+    hf_subject: object, *, username: object = None
+) -> Optional[Role]:
+    """Resolve current authorization from protected configuration.
+
+    The username fallback is deliberately admin-only and applies only while
+    the subject allowlist is empty. Contributor access is never name-based.
+    """
+
+    settings = get_settings()
+    subject = hf_subject.strip() if isinstance(hf_subject, str) else ""
+    if subject and subject in settings.admin_hf_subject_set:
+        return "admin"
+    if subject and subject in settings.contributor_hf_subject_set:
+        return "contributor"
+    if not settings.admin_hf_subject_set and isinstance(username, str):
+        if username.strip().lower() in settings.admin_hf_username_set:
+            return "admin"
+    return None
+
+
+def can_access_staging(hf_subject: object, *, username: object = None) -> bool:
+    return role_for_hf_subject(hf_subject, username=username) is not None
+
+
+def can_directly_edit_catalog(role: Optional[Role]) -> bool:
+    settings = get_settings()
+    if role == "admin":
+        return settings.catalog_mutations_enabled and settings.is_production
+    return (
+        role == "contributor"
+        and settings.is_production
+        and settings.catalog_mutations_enabled
+        and settings.contributor_direct_edits_enabled
+    )
+
+
+def _session_actor(request: Request) -> Optional[dict]:
+    from backend.routers.auth import decode_request_session
+
+    payload = decode_request_session(request)
+    if not payload:
+        return None
+    subject = payload.get("sub")
+    username = payload.get("username")
+    if not isinstance(subject, str) or not subject.strip() or not username:
+        return None
+    role = role_for_hf_subject(subject, username=username)
+    if role is None:
+        return None
+    return {
+        "source": "cookie",
+        "hf_subject": subject.strip(),
+        "username": username,
+        "role": role,
+        "session_iat": payload.get("iat"),
+    }
 
 
 def require_admin(
@@ -31,16 +92,10 @@ def require_admin(
     settings = get_settings()
 
     # 1) Session cookie set by the HF OAuth callback.
-    from backend.routers.auth import decode_request_session
 
-    payload = decode_request_session(request)
-    if payload:
-        username = payload.get("username")
-        if username and username.lower() in settings.admin_hf_username_set:
-            return {
-                "source": "cookie",
-                "username": username,
-            }
+    actor = _session_actor(request)
+    if actor and actor["role"] == "admin":
+        return actor
 
     # 2) X-Admin-Token header fallback (CLI / cron tooling).
     if (
@@ -48,7 +103,12 @@ def require_admin(
         and admin_token
         and admin_token == settings.admin_api_token
     ):
-        return {"source": "header", "username": None}
+        return {
+            "source": "header",
+            "hf_subject": "admin-api-token",
+            "username": None,
+            "role": "admin",
+        }
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,21 +119,139 @@ def require_admin(
 def require_hf_admin(request: Request) -> dict:
     """Allow the request only for an allowlisted Hugging Face session."""
 
-    from backend.routers.auth import decode_request_session
-
-    settings = get_settings()
-    payload = decode_request_session(request)
-    username = (payload or {}).get("username")
-    if username and username.lower() in settings.admin_hf_username_set:
-        return {
-            "source": "cookie",
-            "username": username,
-        }
+    actor = _session_actor(request)
+    if actor and actor["role"] == "admin":
+        return actor
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Sign in with an authorized Hugging Face account to edit this paper",
     )
+
+
+def require_contributor_role(request: Request) -> dict:
+    """Allow a currently configured contributor or admin session."""
+    actor = _session_actor(request)
+    if not actor:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in with an authorized Hugging Face account",
+        )
+    return actor
+
+
+def require_contributor(request: Request) -> dict:
+    """Require the role and the direct-edit capability for contributors."""
+
+    actor = require_contributor_role(request)
+    if actor["role"] == "contributor" and not can_directly_edit_catalog("contributor"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "direct_catalog_edits_disabled",
+                "message": "Direct contributor catalog edits are not enabled here",
+            },
+        )
+    return actor
+
+
+def require_catalog_mutator(
+    request: Request,
+    admin_token: Optional[str] = Depends(admin_token_header),
+) -> dict:
+    """Contributor cookie or existing admin cookie/API-token workflow."""
+
+    actor = _session_actor(request)
+    if actor:
+        if actor["role"] == "contributor" and not can_directly_edit_catalog(
+            "contributor"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "direct_catalog_edits_disabled",
+                    "message": "Direct contributor catalog edits are not enabled here",
+                },
+            )
+        return actor
+    settings = get_settings()
+    if (
+        settings.admin_api_token
+        and admin_token
+        and admin_token == settings.admin_api_token
+    ):
+        return {
+            "source": "header",
+            "hf_subject": "admin-api-token",
+            "username": None,
+            "role": "admin",
+        }
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def require_fresh_contributor(request: Request) -> dict:
+    actor = require_contributor(request)
+    ensure_fresh_contributor_actor(actor)
+    return actor
+
+
+def ensure_fresh_contributor_actor(actor: dict) -> None:
+    if actor["role"] == "admin":
+        return
+    issued_at = actor.get("session_iat")
+    now = datetime.now(timezone.utc).timestamp()
+    if not isinstance(issued_at, (int, float)) or now - issued_at > 15 * 60:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "fresh_auth_required",
+                "message": "Sign in again before deleting catalog data",
+            },
+        )
+
+
+def catalog_mutation_context(
+    request: Request,
+    actor: dict = Depends(require_contributor),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    expected_version: Optional[str] = Header(default=None, alias="If-Match"),
+) -> dict:
+    return {
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "expected_version": expected_version,
+        "request_id": request.headers.get("X-Request-ID") or str(id(request)),
+    }
+
+
+def fresh_catalog_mutation_context(
+    request: Request,
+    actor: dict = Depends(require_fresh_contributor),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    expected_version: Optional[str] = Header(default=None, alias="If-Match"),
+) -> dict:
+    return {
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "expected_version": expected_version,
+        "request_id": request.headers.get("X-Request-ID") or str(id(request)),
+    }
+
+
+def evaluation_mutation_context(
+    request: Request,
+    actor: dict = Depends(require_catalog_mutator),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    expected_version: Optional[str] = Header(default=None, alias="If-Match"),
+) -> dict:
+    if request.method == "DELETE" and actor["role"] == "contributor":
+        ensure_fresh_contributor_actor(actor)
+    return {
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+        "expected_version": expected_version,
+        "request_id": request.headers.get("X-Request-ID") or str(id(request)),
+    }
 
 
 def require_user(request: Request) -> dict:

@@ -87,8 +87,15 @@ def validate(production: str, staging: str) -> list[str]:
         failures.append("staging root is not its current release")
     if "8081" in staging or "proxy_set_header Upgrade" in staging:
         failures.append("staging exposes Vite/HMR")
-    if "location = /_admin_check" not in staging or "internal;" not in staging:
-        failures.append("staging admin-check is not internal")
+    access_block = location_block(staging, "location = /_staging_access_check")
+    if (
+        not access_block
+        or "internal;" not in access_block
+        or "/api/v1/auth/staging-check" not in access_block
+    ):
+        failures.append("staging access-check contract is invalid")
+    if "_staging_access_check" in production:
+        failures.append("production acquires staging-wide admission gate")
     if CURATION_CALLBACK_LOCATION not in staging:
         failures.append("staging job-token callback route is missing")
     else:

@@ -24,7 +24,7 @@ from __future__ import annotations
 import base64
 import secrets
 import time
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -61,6 +61,9 @@ class AuthMe(BaseModel):
     name: Optional[str] = None
     avatar_url: Optional[str] = None
     is_admin: bool
+    role: Optional[Literal["admin", "contributor"]] = None
+    can_contribute: bool
+    can_directly_edit_catalog: bool
 
 
 def _origin_from_request(request: Request) -> str:
@@ -104,9 +107,22 @@ def _safe_return_to(value: Optional[str]) -> str:
     return value
 
 
-def _is_admin(username: str) -> bool:
+def _role(payload: dict) -> Optional[Literal["admin", "contributor"]]:
+    from backend.utils.auth import role_for_hf_subject
+
+    return role_for_hf_subject(payload.get("sub"), username=payload.get("username"))
+
+
+def _is_admin(user: dict | str) -> bool:
+    if isinstance(user, dict):
+        return _role(user) == "admin"
+    # Session encoding has a subject; retain this compatibility helper only for
+    # legacy tests/callers that pass a username.
     settings = get_settings()
-    return username.lower() in settings.admin_hf_username_set
+    return (
+        not settings.admin_hf_subject_set
+        and user.lower() in settings.admin_hf_username_set
+    )
 
 
 def _encode_state(return_to: str, host: str) -> str:
@@ -133,7 +149,7 @@ def _encode_session(user: dict) -> str:
         "username": user["username"],
         "name": user.get("name"),
         "avatar_url": user.get("avatar_url"),
-        "is_admin": _is_admin(user["username"]),
+        "is_admin": _is_admin(user),
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
     }
@@ -155,7 +171,7 @@ def _encode_legacy_session(user: dict) -> str:
         "username": user["username"],
         "name": user.get("name"),
         "avatar_url": user.get("avatar_url"),
-        "is_admin": _is_admin(user["username"]),
+        "is_admin": _is_admin(user),
         "exp": int(time.time()) + SESSION_TTL_SECONDS,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -481,10 +497,30 @@ def admin_check(request: Request) -> Response:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
-    if not _is_admin(payload["username"]):
+    if not _is_admin(payload):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/auth/staging-check", status_code=status.HTTP_204_NO_CONTENT)
+def staging_check(request: Request) -> Response:
+    """Admission check for staging; endpoint authorization remains separate."""
+
+    from backend.utils.auth import can_access_staging
+
+    payload = decode_request_session(request)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    if not can_access_staging(payload.get("sub"), username=payload.get("username")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Staging access required",
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -497,9 +533,15 @@ def me(request: Request):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
+    from backend.utils.auth import can_directly_edit_catalog
+
+    role = _role(payload)
     return AuthMe(
         username=payload["username"],
         name=payload.get("name"),
         avatar_url=payload.get("avatar_url"),
-        is_admin=_is_admin(payload["username"]),
+        is_admin=role == "admin",
+        role=role,
+        can_contribute=role in {"admin", "contributor"},
+        can_directly_edit_catalog=can_directly_edit_catalog(role),
     )

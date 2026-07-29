@@ -7,7 +7,9 @@ task, and dataset.
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Literal, Optional
+from pydantic import BaseModel, Field, ValidationError
 
 from backend.models.api import (
     Evaluation,
@@ -16,11 +18,107 @@ from backend.models.api import (
     EvaluationUpdateRequest,
 )
 from backend.services.evaluation_service import EvaluationService
+from backend.services.evaluation_curation_service import EvaluationCurationService
 from backend.database.connection import get_database_session
-from backend.utils.auth import require_admin
+from backend.utils.auth import (
+    evaluation_mutation_context,
+    require_admin,
+    require_catalog_mutator,
+)
 from backend.utils.exceptions import DatabaseError
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
+
+
+class EvaluationBatchOperation(BaseModel):
+    operation: Literal["create", "update", "delete"]
+    evaluation_id: Optional[int] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationBatchRequest(BaseModel):
+    paper_id: int
+    operations: list[EvaluationBatchOperation] = Field(min_length=1)
+
+
+@router.post("/batch")
+def batch_evaluations(
+    request: EvaluationBatchRequest,
+    mutation: dict = Depends(evaluation_mutation_context),
+    db: Session = Depends(get_database_session),
+):
+    actor = mutation["actor"]
+    if actor["role"] == "contributor" and any(
+        operation.operation == "delete" for operation in request.operations
+    ):
+        issued_at = actor.get("session_iat")
+        if (
+            not isinstance(issued_at, (int, float))
+            or datetime.now(timezone.utc).timestamp() - issued_at > 15 * 60
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "fresh_auth_required",
+                    "message": "Sign in again before deleting catalog data",
+                },
+            )
+    try:
+        operations: list[dict] = []
+        for operation in request.operations:
+            if operation.operation == "create":
+                payload = EvaluationCreateRequest.model_validate(
+                    operation.payload
+                ).model_dump()
+            elif operation.operation == "update":
+                if operation.evaluation_id is None:
+                    raise ValueError("evaluation_id is required for update")
+                model = EvaluationUpdateRequest.model_validate(operation.payload)
+                payload = {
+                    **model.model_dump(),
+                    "harness_set": "harness" in model.model_fields_set,
+                    "source_url_set": "source_url" in model.model_fields_set,
+                    "num_parameters_set": "num_parameters" in model.model_fields_set,
+                    "hf_model_url_set": "hf_model_url" in model.model_fields_set,
+                }
+            else:
+                if operation.evaluation_id is None:
+                    raise ValueError("evaluation_id is required for delete")
+                if operation.payload:
+                    raise ValueError("delete operations do not accept a payload")
+                payload = {}
+            operations.append(
+                {
+                    "operation": operation.operation,
+                    "evaluation_id": operation.evaluation_id,
+                    "payload": payload,
+                }
+            )
+        return EvaluationCurationService(db).batch(
+            paper_id=request.paper_id,
+            operations=operations,
+            mutation=mutation,
+        )
+    except (ValueError, ValidationError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/curation-state")
+def evaluation_collection_state(
+    paper_id: int,
+    _actor: dict = Depends(require_catalog_mutator),
+    db: Session = Depends(get_database_session),
+):
+    return EvaluationCurationService(db).collection_state(paper_id)
+
+
+@router.get("/{evaluation_id}/curation-state")
+def evaluation_curation_state(
+    evaluation_id: int,
+    _actor: dict = Depends(require_catalog_mutator),
+    db: Session = Depends(get_database_session),
+):
+    return EvaluationCurationService(db).state(evaluation_id)
 
 
 @router.get("/", response_model=Evaluations)
@@ -130,6 +228,8 @@ def list_evaluations(
 
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -168,10 +268,10 @@ def get_evaluation(
     "/",
     response_model=Evaluation,
     status_code=201,
-    dependencies=[Depends(require_admin)],
 )
 def create_evaluation(
     request: EvaluationCreateRequest,
+    mutation: dict = Depends(evaluation_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -204,24 +304,8 @@ def create_evaluation(
     - 500: Internal server error
     """
     try:
-        service = EvaluationService(db)
-        return service.create_evaluation(
-            paper_id=request.paper_id,
-            task_id=request.task_id,
-            dataset_id=request.dataset_id,
-            model_name=request.model_name,
-            harness=request.harness,
-            methodology=request.methodology,
-            metrics=request.metrics,
-            uses_additional_data=request.uses_additional_data,
-            is_open=request.is_open,
-            best_rank=request.best_rank,
-            best_metric=request.best_metric,
-            evaluated_on=request.evaluated_on,
-            external_source_url=request.external_source_url,
-            source_url=request.source_url,
-            num_parameters=request.num_parameters,
-            hf_model_url=request.hf_model_url,
+        return EvaluationCurationService(db).create(
+            payload=request.model_dump(), mutation=mutation
         )
 
     except ValueError as e:
@@ -236,11 +320,11 @@ def create_evaluation(
 @router.put(
     "/{evaluation_id}",
     response_model=Evaluation,
-    dependencies=[Depends(require_admin)],
 )
 def update_evaluation(
     evaluation_id: int,
     request: EvaluationUpdateRequest,
+    mutation: dict = Depends(evaluation_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -270,28 +354,16 @@ def update_evaluation(
     - 500: Internal server error
     """
     try:
-        service = EvaluationService(db)
-        return service.update_evaluation(
+        return EvaluationCurationService(db).update(
             evaluation_id=evaluation_id,
-            task_id=request.task_id,
-            dataset_id=request.dataset_id,
-            model_name=request.model_name,
-            harness=request.harness,
-            methodology=request.methodology,
-            metrics=request.metrics,
-            uses_additional_data=request.uses_additional_data,
-            is_open=request.is_open,
-            best_rank=request.best_rank,
-            best_metric=request.best_metric,
-            evaluated_on=request.evaluated_on,
-            external_source_url=request.external_source_url,
-            source_url=request.source_url,
-            num_parameters=request.num_parameters,
-            hf_model_url=request.hf_model_url,
-            harness_set="harness" in request.model_fields_set,
-            source_url_set="source_url" in request.model_fields_set,
-            num_parameters_set="num_parameters" in request.model_fields_set,
-            hf_model_url_set="hf_model_url" in request.model_fields_set,
+            payload={
+                **request.model_dump(),
+                "harness_set": "harness" in request.model_fields_set,
+                "source_url_set": "source_url" in request.model_fields_set,
+                "num_parameters_set": "num_parameters" in request.model_fields_set,
+                "hf_model_url_set": "hf_model_url" in request.model_fields_set,
+            },
+            mutation=mutation,
         )
 
     except ValueError as e:
@@ -301,6 +373,8 @@ def update_evaluation(
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -308,10 +382,10 @@ def update_evaluation(
 @router.delete(
     "/{evaluation_id}",
     status_code=204,
-    dependencies=[Depends(require_admin)],
 )
 def delete_evaluation(
     evaluation_id: int,
+    mutation: dict = Depends(evaluation_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -326,14 +400,17 @@ def delete_evaluation(
     - 204 No Content on success
     """
     try:
-        service = EvaluationService(db)
-        service.delete_evaluation(evaluation_id)
+        EvaluationCurationService(db).delete(
+            evaluation_id=evaluation_id, mutation=mutation
+        )
         return None
 
     except DatabaseError as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 

@@ -4,6 +4,7 @@ Configuration management for the FastAPI backend.
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import List, Literal
 
 from pydantic import Field
@@ -187,6 +188,18 @@ class Settings(BaseSettings):
     admin_hf_usernames: str = Field(
         default="",
         description="Comma-separated list of HF usernames allowed to perform admin actions",
+    )
+    admin_hf_subjects: str = Field(
+        default="",
+        description="Comma-separated immutable HF OAuth subjects with admin access",
+    )
+    contributor_hf_subjects: str = Field(
+        default="",
+        description="Comma-separated immutable HF OAuth subjects with contributor access",
+    )
+    contributor_direct_edits_enabled: bool = Field(
+        default=False,
+        description="Enable audited direct contributor catalog edits in production",
     )
     session_cookie_domain: str = Field(
         default="",
@@ -408,6 +421,26 @@ class Settings(BaseSettings):
             for name in self.admin_hf_usernames.split(",")
             if name.strip()
         }
+
+    @staticmethod
+    def _subject_set(value: str) -> set[str]:
+        subjects = {subject.strip() for subject in value.split(",") if subject.strip()}
+        invalid = [
+            subject
+            for subject in subjects
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,254}", subject)
+        ]
+        if invalid:
+            raise ValueError("Malformed immutable Hugging Face subject allowlist")
+        return subjects
+
+    @property
+    def admin_hf_subject_set(self) -> set[str]:
+        return self._subject_set(self.admin_hf_subjects)
+
+    @property
+    def contributor_hf_subject_set(self) -> set[str]:
+        return self._subject_set(self.contributor_hf_subjects)
 
     @property
     def auth_return_origin_set(self) -> set[str]:

@@ -53,7 +53,12 @@ from backend.services.thumbnail_service import (
     build_thumbnail_filename,
     build_thumbnail_url,
 )
-from backend.utils.auth import require_admin, require_hf_admin
+from backend.utils.auth import (
+    catalog_mutation_context,
+    require_admin,
+    require_contributor,
+)
+from backend.services.paper_curation_service import PaperCurationService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import (
     get_paper_route_identifier,
@@ -65,6 +70,30 @@ from backend.utils.urls import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _curated_paper_update(
+    db: Session,
+    mutation: dict,
+    paper_id: int,
+    section: str,
+    payload: dict,
+):
+    return PaperCurationService(db).update(
+        paper_id=paper_id,
+        section=section,
+        payload=payload,
+        **mutation,
+    )
+
+
+@router.get("/papers/{paper_id}/curation-state")
+def get_paper_curation_state(
+    paper_id: int,
+    _actor: dict = Depends(require_contributor),
+    db: Session = Depends(get_database_session),
+):
+    return PaperCurationService(db).state(paper_id)
 
 
 @router.get(
@@ -1174,7 +1203,6 @@ def get_paper_methods(
     "/papers/{paper_id}/tasks",
     response_model=Paper,
     summary="Update tasks for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_tasks(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -1183,6 +1211,7 @@ def update_paper_tasks(
         description="List of task IDs to associate with the paper. "
         "An empty list clears all task associations.",
     ),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1204,8 +1233,9 @@ def update_paper_tasks(
     ```
     """
     try:
-        service = PaperService(db)
-        return service.update_paper_tasks(paper_id, task_ids)
+        return _curated_paper_update(
+            db, mutation, paper_id, "tasks", {"task_ids": task_ids}
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -1216,7 +1246,6 @@ def update_paper_tasks(
     "/papers/{paper_id}/methods",
     response_model=Paper,
     summary="Update methods for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_methods(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -1225,6 +1254,7 @@ def update_paper_methods(
         description="List of method IDs to associate with the paper. "
         "An empty list clears all method associations.",
     ),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1246,8 +1276,9 @@ def update_paper_methods(
     ```
     """
     try:
-        service = PaperService(db)
-        return service.update_paper_methods(paper_id, method_ids)
+        return _curated_paper_update(
+            db, mutation, paper_id, "methods", {"method_ids": method_ids}
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -1258,7 +1289,6 @@ def update_paper_methods(
     "/papers/{paper_id}/organizations",
     response_model=Paper,
     summary="Update organizations for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_organizations(
     paper_id: int = Path(..., description="Database paper ID"),
@@ -1267,6 +1297,7 @@ def update_paper_organizations(
         description="List of organization IDs to associate with the paper. "
         "An empty list clears all organization associations.",
     ),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1280,8 +1311,13 @@ def update_paper_organizations(
     ```
     """
     try:
-        service = PaperService(db)
-        return service.update_paper_organizations(paper_id, organization_ids)
+        return _curated_paper_update(
+            db,
+            mutation,
+            paper_id,
+            "organizations",
+            {"organization_ids": organization_ids},
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -1326,11 +1362,11 @@ class UpdateProjectPagesRequest(BaseModel):
     "/papers/{paper_id}/repositories",
     response_model=Paper,
     summary="Update repositories for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_repositories(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateRepositoriesRequest = Body(...),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1359,13 +1395,18 @@ def update_paper_repositories(
     ```
     """
     try:
-        service = PaperService(db)
         # Convert Pydantic models to dict for service layer
         repositories_data = [
             {"url": repo.url, "is_official": repo.is_official}
             for repo in request.repositories
         ]
-        return service.update_paper_repositories(paper_id, repositories_data)
+        return _curated_paper_update(
+            db,
+            mutation,
+            paper_id,
+            "repositories",
+            {"repositories": repositories_data},
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -1376,11 +1417,11 @@ def update_paper_repositories(
     "/papers/{paper_id}/project-pages",
     response_model=Paper,
     summary="Update project pages for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_project_pages(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateProjectPagesRequest = Body(...),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1410,13 +1451,18 @@ def update_paper_project_pages(
     ```
     """
     try:
-        service = PaperService(db)
         # Convert Pydantic models to dict for service layer
         project_pages_data = [
             {"url": page.url, "is_official": page.is_official}
             for page in request.project_pages
         ]
-        return service.update_paper_project_pages(paper_id, project_pages_data)
+        return _curated_paper_update(
+            db,
+            mutation,
+            paper_id,
+            "project_pages",
+            {"project_pages": project_pages_data},
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
@@ -1456,11 +1502,11 @@ class UpdateSourceUrlRequest(BaseModel):
     "/papers/{paper_id}/hf-artifacts",
     response_model=Paper,
     summary="Update Hugging Face artifacts for a paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_hf_artifacts(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateHfArtifactsRequest = Body(...),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1468,12 +1514,16 @@ def update_paper_hf_artifacts(
     paper. URLs are normalized and must match their declared bucket.
     """
     try:
-        service = PaperService(db)
-        return service.update_paper_hf_artifacts(
+        return _curated_paper_update(
+            db,
+            mutation,
             paper_id,
-            request.hf_models,
-            request.hf_datasets,
-            request.hf_spaces,
+            "hf_artifacts",
+            {
+                "hf_models": request.hf_models,
+                "hf_datasets": request.hf_datasets,
+                "hf_spaces": request.hf_spaces,
+            },
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1488,11 +1538,11 @@ def update_paper_hf_artifacts(
     "/papers/{paper_id}/source-url",
     response_model=Paper,
     summary="Update the canonical source URL of an external paper",
-    dependencies=[Depends(require_hf_admin)],
 )
 def update_paper_source_url(
     paper_id: int = Path(..., description="Database paper ID"),
     request: UpdateSourceUrlRequest = Body(...),
+    mutation: dict = Depends(catalog_mutation_context),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -1500,8 +1550,13 @@ def update_paper_source_url(
     because their abstract URL is derived from ``arxiv_id``.
     """
     try:
-        service = PaperService(db)
-        return service.update_paper_source_url(paper_id, request.source_url)
+        return _curated_paper_update(
+            db,
+            mutation,
+            paper_id,
+            "source_url",
+            {"source_url": request.source_url},
+        )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

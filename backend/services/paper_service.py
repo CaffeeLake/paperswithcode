@@ -1999,8 +1999,8 @@ class PaperService:
             raise DatabaseError(f"Error updating paper tasks: {str(e)}")
 
     def update_paper_organizations(
-        self, paper_id: int, organization_ids: List[int]
-    ) -> Paper:
+        self, paper_id: int, organization_ids: List[int], *, commit: bool = True
+    ) -> Paper | DBPaper:
         """
         Update the organizations associated with a paper.
 
@@ -2046,6 +2046,9 @@ class PaperService:
                     )
                 )
 
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             return self.get_paper_by_id(paper_id, include_resources=True)
@@ -2328,7 +2331,9 @@ class PaperService:
                 raise
             raise DatabaseError(f"Error updating paper project pages: {str(e)}")
 
-    def update_paper_source_url(self, paper_id: int, source_url: str) -> Paper:
+    def update_paper_source_url(
+        self, paper_id: int, source_url: str, *, commit: bool = True
+    ) -> Paper | DBPaper:
         """
         Update the canonical source URL of an external paper.
 
@@ -2374,6 +2379,9 @@ class PaperService:
                 )
 
             db_paper.source_url = normalized
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             return self.get_paper_by_id(paper_id, include_resources=True)
@@ -2390,7 +2398,9 @@ class PaperService:
         hf_models: List[str],
         hf_datasets: List[str],
         hf_spaces: List[str],
-    ) -> Paper:
+        *,
+        commit: bool = True,
+    ) -> Paper | DBPaper:
         """Replace explicit Hugging Face artifact URLs linked to a paper."""
         from backend.utils.hf_utils import normalize_hf_artifact_payload
 
@@ -2415,6 +2425,9 @@ class PaperService:
             # Explicit URL edits must invalidate the discovery checkpoint so
             # the cron can reconcile removed links and arXiv-discovered extras.
             db_paper.hf_artifacts_scanned_at = None
+            if not commit:
+                self.db.flush()
+                return db_paper
             self.db.commit()
 
             return self.get_paper_by_id(paper_id, include_resources=True)

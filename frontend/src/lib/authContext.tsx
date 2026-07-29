@@ -19,6 +19,9 @@ export interface AuthUser {
   name: string | null;
   avatar_url: string | null;
   is_admin: boolean;
+  role: "admin" | "contributor" | null;
+  can_contribute: boolean;
+  can_directly_edit_catalog: boolean;
 }
 
 interface AuthContextValue {

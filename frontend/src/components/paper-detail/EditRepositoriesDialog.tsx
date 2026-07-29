@@ -10,6 +10,7 @@ import { githubUrlsMatch, normalizeGithubUrl } from "@/lib/github";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 interface Repository {
   url: string;
@@ -181,6 +182,13 @@ export function EditRepositoriesDialog({
   const handleSave = () => {
     const next = getRepositoriesForSubmission();
     if (next === null) return;
+    if (
+      submitMode === "direct" &&
+      initialRepositories.some(
+        (item) => !next.some((candidate) => candidate.url === item.url),
+      ) &&
+      !window.confirm("Remove one or more repositories from this paper?")
+    ) return;
     updateRepositoriesMutation.mutate({ paperId, repositories: next });
   };
 
@@ -301,6 +309,7 @@ export function EditRepositoriesDialog({
           )}
         </div>
 
+        <CurationDiff before={initialRepositories} after={editedRepositories} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

@@ -60,6 +60,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
               Admin
             </span>
           )}
+          {user.role === "contributor" && (
+            <span className="mt-1 inline-flex w-fit items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-900">
+              Contributor
+            </span>
+          )}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
@@ -91,6 +96,11 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
               <Link to="/submissions">Review submissions</Link>
             </DropdownMenuItem>
           </>
+        )}
+        {user.can_contribute && (
+          <DropdownMenuItem asChild>
+            <Link to="/contributions">My contributions</Link>
+          </DropdownMenuItem>
         )}
         <DropdownMenuItem asChild>
           <Link to="/settings">Settings</Link>

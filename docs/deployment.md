@@ -22,8 +22,8 @@ environment selects one complete backend-plus-frontend release through
 `paperswithcode-backend@production` runs as `pwc-production` on `127.0.0.1:8000`.
 `paperswithcode-backend@staging` runs as `pwc-staging` on `127.0.0.1:8001`.
 Nginx serves each environment's `current/frontend-dist` and may fall back only
-to its `previous` hashed assets. Public staging is static and admin-gated; it
-never runs Vite or HMR.
+to its `previous` hashed assets. Public staging is static and gated to
+allowlisted project contributors and admins; it never runs Vite or HMR.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
 Staging connects as `pwc_staging`, can select catalog rows, and can write only

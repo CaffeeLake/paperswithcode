@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { CronJobCard } from "@/components/cron/CronJobCard";
 import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
+import { CatalogAuditPanel } from "@/components/admin/CatalogAuditPanel";
 import { apiClient } from "@/lib/api";
 import type { CronJobHealth, CronJobStatus } from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
@@ -147,9 +148,10 @@ const CronDashboard = () => {
         </Card>
 
         <Tabs defaultValue="critical-jobs">
-          <TabsList className="grid w-full grid-cols-2 sm:w-auto">
+          <TabsList className="grid w-full grid-cols-3 sm:w-auto">
             <TabsTrigger value="critical-jobs">Critical Jobs</TabsTrigger>
             <TabsTrigger value="codex-paper-jobs">Codex Paper Jobs</TabsTrigger>
+            <TabsTrigger value="catalog-audit">Catalog Audit</TabsTrigger>
           </TabsList>
 
           <TabsContent value="critical-jobs" className="mt-6">
@@ -261,6 +263,9 @@ const CronDashboard = () => {
 
           <TabsContent value="codex-paper-jobs" className="mt-6">
             <CodexJobQueue autoRefresh={autoRefresh} refreshToken={refreshToken} />
+          </TabsContent>
+          <TabsContent value="catalog-audit" className="mt-6">
+            <CatalogAuditPanel />
           </TabsContent>
         </Tabs>
       </div>

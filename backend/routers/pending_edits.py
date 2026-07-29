@@ -39,6 +39,7 @@ EditType = Literal[
     "project_pages",
     "source_url",
     "hf_artifacts",
+    "organizations",
     "new_task",
     "new_method",
     "new_benchmark",

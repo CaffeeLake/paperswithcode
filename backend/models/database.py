@@ -978,6 +978,78 @@ class Evaluation(Base):
         return f"<Evaluation(id={self.id}, paper_id={self.paper_id}, task_id={self.task_id}, dataset_id={self.dataset_id})>"
 
 
+class CatalogMutationEvent(Base):
+    """Append-only audit ledger for covered paper-page catalog mutations."""
+
+    __tablename__ = "catalog_mutation_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    actor_hf_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_username: Mapped[Optional[str]] = mapped_column(String(255))
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    before_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    after_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    request_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    rollback_of_event_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_mutation_events.id", ondelete="RESTRICT"),
+    )
+    schema_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "actor_role IN ('admin', 'contributor')",
+            name="catalog_mutation_events_actor_role_check",
+        ),
+        Index("idx_catalog_mutation_events_actor", "actor_hf_subject", "created_at"),
+        Index("idx_catalog_mutation_events_created", "created_at", "id"),
+    )
+
+
+class CatalogMutationIdempotency(Base):
+    __tablename__ = "catalog_mutation_idempotency"
+
+    actor_hf_subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_mutation_events.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CatalogAuditReadProgress(Base):
+    __tablename__ = "catalog_audit_read_progress"
+
+    admin_hf_subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    read_through_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class Metric(Base):
     """
     Metric definitions with ranking direction and scale.

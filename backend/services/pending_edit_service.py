@@ -25,12 +25,14 @@ from backend.models.database import (
     Paper as DBPaper,
     PaperAuthor,
     PaperMethod,
+    PaperOrganization,
     PaperProjectPage,
     PaperRepository,
     PaperTask,
     PendingPaperEdit,
     ProjectPage as DBProjectPage,
     Repository as DBRepository,
+    Organization as DBOrganization,
 )
 from backend.services.evaluation_service import EvaluationService
 from backend.services.paper_service import PaperService
@@ -46,6 +48,7 @@ EDIT_TYPES = frozenset(
         "project_pages",
         "source_url",
         "hf_artifacts",
+        "organizations",
         "new_task",
         "new_method",
         "new_benchmark",
@@ -179,6 +182,23 @@ class PendingEditService:
             ]
         }
 
+    def _snapshot_organizations(self, paper_id: int) -> Dict[str, Any]:
+        rows = (
+            self.db.query(DBOrganization.id, DBOrganization.name, DBOrganization.slug)
+            .join(
+                PaperOrganization,
+                PaperOrganization.organization_id == DBOrganization.id,
+            )
+            .filter(PaperOrganization.paper_id == paper_id)
+            .order_by(DBOrganization.name)
+            .all()
+        )
+        return {
+            "organizations": [
+                {"id": row[0], "name": row[1], "slug": row[2]} for row in rows
+            ]
+        }
+
     def _snapshot_source_url(self, paper_id: int) -> Dict[str, Any]:
         row = (
             self.db.query(DBPaper.source, DBPaper.source_url)
@@ -248,6 +268,8 @@ class PendingEditService:
             return self._snapshot_repositories(paper_id)
         if edit_type == "project_pages":
             return self._snapshot_project_pages(paper_id)
+        if edit_type == "organizations":
+            return self._snapshot_organizations(paper_id)
         if edit_type == "evaluations":
             return self._snapshot_evaluations(paper_id)
         if edit_type == "source_url":
@@ -416,6 +438,16 @@ class PendingEditService:
                     )
                 out.append({"url": page["url"], "is_official": page["is_official"]})
             return {"project_pages": out}
+
+        if edit_type == "organizations":
+            organization_ids = payload.get("organization_ids")
+            if not isinstance(organization_ids, list) or not all(
+                isinstance(item, int) for item in organization_ids
+            ):
+                raise PendingEditError(
+                    "Organizations payload must be {'organization_ids': [int, ...]}"
+                )
+            return {"organization_ids": sorted(set(organization_ids))}
 
         if edit_type == "source_url":
             source_url = payload.get("source_url")
@@ -666,6 +698,12 @@ class PendingEditService:
             }
             return current == proposed
 
+        if edit_type == "organizations":
+            current = {
+                int(item["id"]) for item in current_payload.get("organizations", [])
+            }
+            return current == set(normalized_payload.get("organization_ids", []))
+
         if edit_type == "source_url":
             current = (current_payload.get("source_url") or "").strip()
             proposed = (normalized_payload.get("source_url") or "").strip()
@@ -903,6 +941,11 @@ class PendingEditService:
         if edit_type == "project_pages":
             PaperService(self.db).update_paper_project_pages(
                 paper_id, list(payload.get("project_pages", []))
+            )
+            return
+        if edit_type == "organizations":
+            PaperService(self.db).update_paper_organizations(
+                paper_id, list(payload.get("organization_ids", []))
             )
             return
         if edit_type == "source_url":

@@ -74,6 +74,7 @@ _PRIVATE_GET_PREFIXES = (
     "/api/v1/me/",
     "/api/v1/cron/",
     "/api/v1/admin/",
+    "/api/v1/contributions",
 )
 
 
@@ -234,7 +235,11 @@ def create_app() -> FastAPI:
 
         # User-specific endpoints (bookmarks, session probes, cron dashboard)
         # must always reflect the current session.
-        if any(path.startswith(prefix) for prefix in _PRIVATE_GET_PREFIXES):
+        if (
+            any(path.startswith(prefix) for prefix in _PRIVATE_GET_PREFIXES)
+            or path.endswith("/curation-state")
+            or path == "/api/v1/evaluations/curation-state"
+        ):
             response.headers["Cache-Control"] = "no-store"
             return response
 
@@ -271,6 +276,7 @@ def create_app() -> FastAPI:
         cron,
         auth,
         bookmarks,
+        contributions,
         preferences,
         pending_edits,
         conferences,
@@ -287,6 +293,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_discovery.router, tags=["agent_discovery"])
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
+    app.include_router(contributions.router, prefix="/api/v1", tags=["contributions"])
     app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])
     app.include_router(pending_edits.router, prefix="/api/v1", tags=["pending_edits"])
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])

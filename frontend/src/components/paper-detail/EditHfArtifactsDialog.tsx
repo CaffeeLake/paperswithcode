@@ -15,6 +15,7 @@ import { submitPendingPaperEdit, updatePaperHfArtifacts } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 export interface HfArtifactsPayload {
   hf_models: string[];
@@ -212,6 +213,17 @@ export function EditHfArtifactsDialog({
   const handleSave = () => {
     const next = getArtifactsForSubmission();
     if (next === null) return;
+    const removes = (Object.keys(initialArtifacts) as ArtifactBucket[]).some(
+      (bucket) =>
+        initialArtifacts[bucket].some(
+          (url) => !next[bucket].includes(url),
+        ),
+    );
+    if (
+      submitMode === "direct" &&
+      removes &&
+      !window.confirm("Remove one or more Hugging Face artifact links?")
+    ) return;
     updateArtifactsMutation.mutate({ paperId, artifacts: next });
   };
 
@@ -299,6 +311,7 @@ export function EditHfArtifactsDialog({
           ))}
         </div>
 
+        <CurationDiff before={initialArtifacts} after={editedArtifacts} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

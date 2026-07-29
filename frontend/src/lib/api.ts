@@ -3,10 +3,30 @@
  */
 
 import { getStoredAdminToken } from "./adminAuth";
-import { apiUrl, getApiOrigin } from "./apiUrl";
+import { apiUrl, authUrl, getApiOrigin } from "./apiUrl";
 
 const API_BASE_URL = `${getApiOrigin()}/api/v1`;
 const LOG_API_REQUESTS = import.meta.env.DEV;
+
+export interface CatalogMutationEvent {
+  id: string;
+  actor_username: string | null;
+  actor_role: "admin" | "contributor";
+  operation: string;
+  entity_type: string;
+  entity_id: string;
+  before: unknown;
+  after: unknown;
+  created_at: string;
+  rollback_of_event_id: string | null;
+  rollback_eligible?: boolean;
+}
+
+export interface CatalogAuditPage {
+  events: CatalogMutationEvent[];
+  next_cursor: string | null;
+  unread_contributor_count?: number;
+}
 
 export interface Repository {
   id: string;
@@ -776,6 +796,7 @@ export type PendingEditType =
   | 'project_pages'
   | 'source_url'
   | 'hf_artifacts'
+  | 'organizations'
   | 'new_task'
   | 'new_method'
   | 'new_benchmark'
@@ -823,6 +844,11 @@ export interface TrendsResponse {
 
 class ApiClient {
   private baseUrl: string;
+  private paperCurationLoads = new Map<
+    string,
+    Promise<{ sections: Record<string, string> }>
+  >();
+  private evaluationCurationLoads = new Map<string, Promise<{ version: string }>>();
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -862,7 +888,43 @@ class ApiClient {
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[API] Error response:`, errorText);
-        if (response.status === 401 && typeof window !== 'undefined') {
+        let errorCode: string | undefined;
+        try {
+          errorCode = JSON.parse(errorText)?.detail?.code;
+        } catch {
+          errorCode = undefined;
+        }
+        if (
+          response.status === 401 &&
+          errorCode === "fresh_auth_required" &&
+          typeof window !== "undefined"
+        ) {
+          const segment = endpoint.match(
+            /\/(tasks|methods|organizations|repositories|project-pages|hf-artifacts|source-url|evaluations)(?:\/|$)/,
+          )?.[1];
+          const section =
+            segment === "project-pages"
+              ? "project_pages"
+              : segment === "hf-artifacts"
+                ? "hf_artifacts"
+                : segment === "source-url"
+                  ? "source_url"
+                  : segment ?? "evaluations";
+          sessionStorage.setItem("pwc:fresh-auth-edit", section);
+          const login = authUrl("/api/v1/auth/hf/login");
+          window.location.assign(
+            `${login}?return_to=${encodeURIComponent(window.location.href)}`,
+          );
+        } else if (response.status === 409 && typeof window !== "undefined") {
+          this.clearSuccessfulIdempotency(options);
+          this.paperCurationLoads.clear();
+          this.evaluationCurationLoads.clear();
+          window.dispatchEvent(
+            new CustomEvent("pwc:catalog-conflict", {
+              detail: { endpoint },
+            }),
+          );
+        } else if (response.status === 401 && typeof window !== 'undefined') {
           // The session cookie is missing or expired; let the auth context
           // (lib/authContext.tsx) clear local state so the header swaps back
           // to the "Sign in with Hugging Face" button without a reload.
@@ -876,10 +938,12 @@ class ApiClient {
       }
 
       if (response.status === 204) {
+        this.clearSuccessfulIdempotency(options);
         return undefined as T;
       }
 
       const data = await response.json();
+      this.clearSuccessfulIdempotency(options);
       if (LOG_API_REQUESTS) {
         console.log(`[API] Success:`, data);
       }
@@ -888,6 +952,37 @@ class ApiClient {
       console.error(`[API] Request to ${url} failed:`, error);
       throw error;
     }
+  }
+
+  private idempotencyHeaders(
+    scope: string,
+    payload: unknown,
+    version: string,
+  ): Record<string, string> {
+    const storageKey = `pwc:mutation:${scope}:${JSON.stringify(payload)}`;
+    const existing = sessionStorage.getItem(storageKey);
+    if (existing) {
+      const attempt = JSON.parse(existing) as { key: string; version: string };
+      return {
+        "Idempotency-Key": attempt.key,
+        "If-Match": attempt.version,
+      };
+    }
+    const key = crypto.randomUUID();
+    sessionStorage.setItem(storageKey, JSON.stringify({ key, version }));
+    sessionStorage.setItem(`pwc:mutation-key:${key}`, storageKey);
+    return { "Idempotency-Key": key, "If-Match": version };
+  }
+
+  private clearSuccessfulIdempotency(options?: RequestInit): void {
+    const headers = new Headers(options?.headers);
+    const key = headers.get("Idempotency-Key");
+    if (!key) return;
+    const storageKey = sessionStorage.getItem(`pwc:mutation-key:${key}`);
+    if (storageKey) sessionStorage.removeItem(storageKey);
+    sessionStorage.removeItem(`pwc:mutation-key:${key}`);
+    this.paperCurationLoads.clear();
+    this.evaluationCurationLoads.clear();
   }
 
   // Papers API
@@ -973,24 +1068,109 @@ class ApiClient {
     });
   }
 
+  private async paperMutationHeaders(
+    paperId: string,
+    section: string,
+    payload: unknown,
+  ): Promise<Record<string, string>> {
+    const load = this.paperCurationLoads.get(paperId);
+    if (!load) {
+      throw new Error(
+        "The catalog version was not loaded when this editor opened. Close and reopen the editor.",
+      );
+    }
+    const state = await load;
+    const version = state.sections[section];
+    if (!version) throw new Error(`Missing curation version for ${section}`);
+    return this.idempotencyHeaders(
+      `paper:${paperId}:${section}`,
+      payload,
+      version,
+    );
+  }
+
+  primePaperCurationState(
+    paperId: string,
+    force = false,
+  ): Promise<{ sections: Record<string, string> }> {
+    if (force) this.paperCurationLoads.delete(paperId);
+    let load = this.paperCurationLoads.get(paperId);
+    if (!load) {
+      load = this.request<{ sections: Record<string, string> }>(
+        `/papers/${paperId}/curation-state`,
+      ).catch((error) => {
+        this.paperCurationLoads.delete(paperId);
+        throw error;
+      });
+      this.paperCurationLoads.set(paperId, load);
+    }
+    return load;
+  }
+
+  primeEvaluationCurationState(
+    paperId: string,
+    force = false,
+  ): Promise<{ version: string }> {
+    if (force) this.evaluationCurationLoads.delete(paperId);
+    let load = this.evaluationCurationLoads.get(paperId);
+    if (!load) {
+      load = this.request<{ version: string }>(
+        `/evaluations/curation-state?paper_id=${paperId}`,
+      ).catch((error) => {
+        this.evaluationCurationLoads.delete(paperId);
+        throw error;
+      });
+      this.evaluationCurationLoads.set(paperId, load);
+    }
+    return load;
+  }
+
   async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
     const searchParams = new URLSearchParams();
     taskIds.forEach(id => searchParams.append('task_ids', id.toString()));
     const endpoint = `/papers/${paperId}/tasks?${searchParams.toString()}`;
-    return this.request<Paper>(endpoint, { method: 'PUT' });
+    return this.request<Paper>(endpoint, {
+      method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "tasks", taskIds),
+    });
   }
 
   async updatePaperMethods(paperId: string, methodIds: number[]): Promise<Paper> {
     const searchParams = new URLSearchParams();
     methodIds.forEach(id => searchParams.append('method_ids', id.toString()));
     const endpoint = `/papers/${paperId}/methods?${searchParams.toString()}`;
-    return this.request<Paper>(endpoint, { method: 'PUT' });
+    return this.request<Paper>(endpoint, {
+      method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "methods", methodIds),
+    });
+  }
+
+  async updatePaperOrganizations(
+    paperId: string,
+    organizationIds: number[],
+  ): Promise<Paper> {
+    const searchParams = new URLSearchParams();
+    organizationIds.forEach((id) =>
+      searchParams.append("organization_ids", id.toString()),
+    );
+    return this.request<Paper>(
+      `/papers/${paperId}/organizations?${searchParams.toString()}`,
+      {
+        method: "PUT",
+        headers: await this.paperMutationHeaders(
+          paperId,
+          "organizations",
+          organizationIds,
+        ),
+      },
+    );
   }
 
   async updatePaperRepositories(paperId: string, repositories: Array<{ url: string; is_official: boolean }>): Promise<Paper> {
     const endpoint = `/papers/${paperId}/repositories`;
     return this.request<Paper>(endpoint, {
       method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "repositories", repositories),
       body: JSON.stringify({ repositories }),
     });
   }
@@ -999,6 +1179,7 @@ class ApiClient {
     const endpoint = `/papers/${paperId}/project-pages`;
     return this.request<Paper>(endpoint, {
       method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "project_pages", projectPages),
       body: JSON.stringify({ project_pages: projectPages }),
     });
   }
@@ -1007,6 +1188,7 @@ class ApiClient {
     const endpoint = `/papers/${paperId}/source-url`;
     return this.request<Paper>(endpoint, {
       method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "source_url", sourceUrl),
       body: JSON.stringify({ source_url: sourceUrl }),
     });
   }
@@ -1018,6 +1200,7 @@ class ApiClient {
     const endpoint = `/papers/${paperId}/hf-artifacts`;
     return this.request<Paper>(endpoint, {
       method: 'PUT',
+      headers: await this.paperMutationHeaders(paperId, "hf_artifacts", artifacts),
       body: JSON.stringify(artifacts),
     });
   }
@@ -1730,6 +1913,32 @@ class ApiClient {
     });
   }
 
+  async batchEvaluations(
+    paperId: number,
+    operations: Array<{
+      operation: "create" | "update" | "delete";
+      evaluation_id?: number;
+      payload?: Record<string, unknown>;
+    }>,
+  ): Promise<{ event_id: string }> {
+    const load = this.evaluationCurationLoads.get(String(paperId));
+    if (!load) {
+      throw new Error(
+        "The evaluation version was not loaded when this editor opened. Close and reopen the editor.",
+      );
+    }
+    const state = await load;
+    return this.request<{ event_id: string }>('/evaluations/batch', {
+      method: 'POST',
+      headers: this.idempotencyHeaders(
+        `paper:${paperId}:evaluations`,
+        operations,
+        state.version,
+      ),
+      body: JSON.stringify({ paper_id: paperId, operations }),
+    });
+  }
+
   // Thumbnails API
   async generateThumbnail(paperId: string): Promise<{ thumbnail_url?: string; status: string; message: string }> {
     const url = apiUrl(`/api/thumbnails/generate/${paperId}`);
@@ -1880,6 +2089,29 @@ class ApiClient {
   async getResearchTrends(): Promise<TrendsResponse> {
     return this.request<TrendsResponse>('/stats/trends');
   }
+
+  async getMyContributions(cursor?: string): Promise<CatalogAuditPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<CatalogAuditPage>(`/contributions${query}`);
+  }
+
+  async getCatalogAudit(cursor?: string): Promise<CatalogAuditPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<CatalogAuditPage>(`/admin/catalog-audit${query}`);
+  }
+
+  async acknowledgeCatalogAudit(): Promise<void> {
+    await this.request<void>('/admin/catalog-audit/acknowledge', {
+      method: 'POST',
+    });
+  }
+
+  async rollbackCatalogEvent(eventId: string): Promise<CatalogMutationEvent> {
+    return this.request<CatalogMutationEvent>(
+      `/admin/catalog-audit/${eventId}/rollback`,
+      { method: 'POST' },
+    );
+  }
 }
 
 // Create and export a singleton instance
@@ -1893,10 +2125,15 @@ export const indexPaperFromArxiv = apiClient.indexPaperFromArxiv.bind(apiClient)
 export const submitPaper = apiClient.submitPaper.bind(apiClient);
 export const updatePaperTasks = apiClient.updatePaperTasks.bind(apiClient);
 export const updatePaperMethods = apiClient.updatePaperMethods.bind(apiClient);
+export const updatePaperOrganizations = apiClient.updatePaperOrganizations.bind(apiClient);
 export const updatePaperRepositories = apiClient.updatePaperRepositories.bind(apiClient);
 export const updatePaperProjectPages = apiClient.updatePaperProjectPages.bind(apiClient);
 export const updatePaperSourceUrl = apiClient.updatePaperSourceUrl.bind(apiClient);
 export const updatePaperHfArtifacts = apiClient.updatePaperHfArtifacts.bind(apiClient);
+export const primePaperCurationState =
+  apiClient.primePaperCurationState.bind(apiClient);
+export const primeEvaluationCurationState =
+  apiClient.primeEvaluationCurationState.bind(apiClient);
 export const getTrendingPapers = apiClient.getTrendingPapers.bind(apiClient);
 export const getRepositoriesForPaper = apiClient.getRepositoriesForPaper.bind(apiClient);
 export const getRepositories = apiClient.getRepositories.bind(apiClient);
@@ -1940,6 +2177,7 @@ export const getEvaluationsByDataset = apiClient.getEvaluationsByDataset.bind(ap
 export const createEvaluation = apiClient.createEvaluation.bind(apiClient);
 export const updateEvaluation = apiClient.updateEvaluation.bind(apiClient);
 export const deleteEvaluation = apiClient.deleteEvaluation.bind(apiClient);
+export const batchEvaluations = apiClient.batchEvaluations.bind(apiClient);
 export const generateThumbnail = apiClient.generateThumbnail.bind(apiClient);
 export const getThumbnailStatus = apiClient.getThumbnailStatus.bind(apiClient);
 export const getMetrics = apiClient.getMetrics.bind(apiClient);

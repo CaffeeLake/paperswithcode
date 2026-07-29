@@ -10,6 +10,7 @@ import { apiClient, indexPaperFromArxiv } from "@/lib/api";
 import type { Paper } from "@/lib/api";
 import { apiUrl, assetUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
+import { paperEditSubmitMode } from "@/lib/contributorCapabilities";
 import { summarizeRepos } from "@/lib/transform";
 import { formatPageTitle, DEFAULT_SITE_SUFFIX } from "@/lib/latexPlainText";
 import { formatMetricValue, normalizePaperRouteId } from "@/lib/utils";
@@ -36,6 +37,8 @@ import { EditRepositoriesDialog } from "@/components/paper-detail/EditRepositori
 import { EditProjectPagesDialog } from "@/components/paper-detail/EditProjectPagesDialog";
 import { EditSourceUrlDialog } from "@/components/paper-detail/EditSourceUrlDialog";
 import { EditEvaluationsDialog } from "@/components/paper-detail/EditEvaluationsDialog";
+import { EditHfArtifactsDialog } from "@/components/paper-detail/EditHfArtifactsDialog";
+import { EditOrganizationsDialog } from "@/components/paper-detail/EditOrganizationsDialog";
 import { SignInToEditDialog } from "@/components/paper-detail/SignInToEditDialog";
 import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
@@ -53,6 +56,8 @@ type EditSection =
   | "results"
   | "repositories"
   | "project-pages"
+  | "hf-artifacts"
+  | "organizations"
   | "source-url";
 
 const EDIT_SECTION_LABEL: Record<EditSection, string> = {
@@ -61,6 +66,8 @@ const EDIT_SECTION_LABEL: Record<EditSection, string> = {
   results: "evaluation results",
   repositories: "GitHub repositories",
   "project-pages": "project pages",
+  "hf-artifacts": "Hugging Face artifacts",
+  organizations: "organizations",
   "source-url": "source URL",
 };
 
@@ -155,6 +162,7 @@ const PaperDetailView: React.FC = () => {
   // through the pending-edit queue for admin review.
   const isAdmin = user?.is_admin ?? false;
   const isSignedIn = !!user;
+  const editSubmitMode = paperEditSubmitMode(user);
   // Show edit affordances to every visitor on the paper page. Signed-out users
   // are routed through a sign-in prompt before they can actually submit.
   const canEditPaper = true;
@@ -195,6 +203,35 @@ const PaperDetailView: React.FC = () => {
     paper?.id,
     secondaryQueriesEnabled && !!paper?.id,
   );
+  useEffect(() => {
+    const handleConflict = () => {
+      void refetch();
+      void refetchEvaluations();
+      if (editSubmitMode === "direct" && paper?.id) {
+        void apiClient
+          .primePaperCurationState(paper.id, true)
+          .catch(() => undefined);
+        void apiClient
+          .primeEvaluationCurationState(paper.id, true)
+          .catch(() => undefined);
+      }
+      toast({
+        title: "This section changed",
+        description:
+          "The latest state has been reloaded. Review the updated before / after diff before submitting again.",
+        variant: "destructive",
+      });
+    };
+    window.addEventListener("pwc:catalog-conflict", handleConflict);
+    return () =>
+      window.removeEventListener("pwc:catalog-conflict", handleConflict);
+  }, [
+    editSubmitMode,
+    paper?.id,
+    refetch,
+    refetchEvaluations,
+    toast,
+  ]);
   const { preferences } = usePreferences();
   // Rows shown in the read-only Results section honor the user's hide
   // closed-source preference. The admin edit dialog still receives the full
@@ -389,9 +426,75 @@ const PaperDetailView: React.FC = () => {
     setIsEditingEvaluations,
     isEditingSourceUrl,
     setIsEditingSourceUrl,
+    isEditingHfArtifacts,
+    setIsEditingHfArtifacts,
+    isEditingOrganizations,
+    setIsEditingOrganizations,
   } = usePaperEditState();
 
+  useEffect(() => {
+    if (editSubmitMode !== "direct" || !paper?.id) return;
+    if (
+      isEditingTasks ||
+      isEditingMethods ||
+      isEditingRepositories ||
+      isEditingProjectPages ||
+      isEditingSourceUrl ||
+      isEditingHfArtifacts ||
+      isEditingOrganizations
+    ) {
+      void apiClient
+        .primePaperCurationState(paper.id)
+        .catch(() => undefined);
+    }
+    if (isEditingEvaluations) {
+      void apiClient
+        .primeEvaluationCurationState(paper.id)
+        .catch(() => undefined);
+    }
+  }, [
+    editSubmitMode,
+    isEditingEvaluations,
+    isEditingHfArtifacts,
+    isEditingMethods,
+    isEditingOrganizations,
+    isEditingProjectPages,
+    isEditingRepositories,
+    isEditingSourceUrl,
+    isEditingTasks,
+    paper?.id,
+  ]);
+
   const [signInSection, setSignInSection] = useState<EditSection | null>(null);
+
+  useEffect(() => {
+    if (!user || !paper) return;
+    const section = sessionStorage.getItem("pwc:fresh-auth-edit");
+    if (!section) return;
+    sessionStorage.removeItem("pwc:fresh-auth-edit");
+    const openers: Record<string, () => void> = {
+      tasks: () => setIsEditingTasks(true),
+      methods: () => setIsEditingMethods(true),
+      repositories: () => setIsEditingRepositories(true),
+      project_pages: () => setIsEditingProjectPages(true),
+      evaluations: () => setIsEditingEvaluations(true),
+      hf_artifacts: () => setIsEditingHfArtifacts(true),
+      organizations: () => setIsEditingOrganizations(true),
+      source_url: () => setIsEditingSourceUrl(true),
+    };
+    openers[section]?.();
+  }, [
+    paper,
+    setIsEditingEvaluations,
+    setIsEditingHfArtifacts,
+    setIsEditingOrganizations,
+    setIsEditingMethods,
+    setIsEditingProjectPages,
+    setIsEditingRepositories,
+    setIsEditingSourceUrl,
+    setIsEditingTasks,
+    user,
+  ]);
 
   // Resolve whether the signed-in HF username matches one of the paper's
   // linked authors. Used to surface "you're an author" copy in the pending
@@ -405,10 +508,6 @@ const PaperDetailView: React.FC = () => {
         Boolean(a.hf_username) && a.hf_username!.toLowerCase() === me,
     );
   }, [user, paper?.author_links]);
-
-  // Admins save directly (existing behavior). Everyone else who is signed in
-  // submits an edit for admin review.
-  const editSubmitMode: "direct" | "pending" = isAdmin ? "direct" : "pending";
 
   const openEdit = (section: EditSection): void => {
     if (!isSignedIn) {
@@ -430,6 +529,12 @@ const PaperDetailView: React.FC = () => {
         return;
       case "project-pages":
         setIsEditingProjectPages(true);
+        return;
+      case "hf-artifacts":
+        setIsEditingHfArtifacts(true);
+        return;
+      case "organizations":
+        setIsEditingOrganizations(true);
         return;
       case "source-url":
         setIsEditingSourceUrl(true);
@@ -984,6 +1089,13 @@ const PaperDetailView: React.FC = () => {
                 {o.name}
               </Link>
             ))}
+            <button
+              type="button"
+              className="action-btn"
+              onClick={() => openEdit("organizations")}
+            >
+              Edit organizations
+            </button>
             {isAdmin && isCodexEnrichPaperEnabled() && (
               <CodexEnrichPaperDialog
                 paperId={paper.id}
@@ -1386,7 +1498,18 @@ const PaperDetailView: React.FC = () => {
           )}
 
           {/* Hugging Face block */}
-          <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
+          <div>
+            <div className="mb-2 flex justify-end">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => openEdit("hf-artifacts")}
+              >
+                Edit Hugging Face links
+              </Button>
+            </div>
+            <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
+          </div>
 
           <CopyToBucketCard
             githubUrls={sortedRepos.map((repository) => repository.url)}
@@ -1512,6 +1635,7 @@ const PaperDetailView: React.FC = () => {
         initialEvaluations={evaluations || []}
         paperTasks={paper.tasks || []}
         submitMode={editSubmitMode}
+        isAdmin={isAdmin}
         isAuthor={isLinkedAuthor}
       />
       <EditSourceUrlDialog
@@ -1520,6 +1644,29 @@ const PaperDetailView: React.FC = () => {
         paperId={paper.id}
         arxivId={arxivId}
         initialUrl={paper.source_url ?? paper.url_abs ?? ""}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
+      />
+      <EditHfArtifactsDialog
+        open={isEditingHfArtifacts}
+        onOpenChange={setIsEditingHfArtifacts}
+        paperId={paper.id}
+        arxivId={arxivId}
+        initialArtifacts={{
+          hf_models: explicitHfArtifacts.models,
+          hf_datasets: explicitHfArtifacts.datasets,
+          hf_spaces: explicitHfArtifacts.spaces,
+        }}
+        submitMode={editSubmitMode}
+        isAuthor={isLinkedAuthor}
+      />
+      <EditOrganizationsDialog
+        open={isEditingOrganizations}
+        onOpenChange={setIsEditingOrganizations}
+        paperId={paper.id}
+        initialOrganizationIds={(paper.organizations || []).map((item) =>
+          Number(item.id),
+        )}
         submitMode={editSubmitMode}
         isAuthor={isLinkedAuthor}
       />

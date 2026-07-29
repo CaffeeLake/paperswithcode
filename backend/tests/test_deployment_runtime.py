@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import deploy.cli as deploy_cli
 import deploy.configure_host_env as configure_host_env
+import deploy.configure_role_allowlists as configure_role_allowlists
 import deploy.cron_launcher as cron_launcher
 import deploy.run_backend as run_backend
 import deploy.smoke_test as smoke_test
@@ -1051,7 +1052,9 @@ def test_nginx_cross_environment_references_are_rejected():
         "root /srv/paperswithcode/environments/production/current/frontend-dist;"
         " upstream pwc_staging_backend { server 127.0.0.1:8001; } location / { }",
         "root /srv/paperswithcode/environments/staging/current/frontend-dist;"
-        " location = /_admin_check { internal; } location / { }"
+        " location = /_staging_access_check { internal; "
+        "proxy_pass http://pwc_staging_backend/api/v1/auth/staging-check; } "
+        "location / { }"
         " server_name chat-gateway-staging.paperswithcode.co;"
         " client_max_body_size 512k;"
         " location = /api/internal/chat-gateway/catalog { }"
@@ -1139,8 +1142,8 @@ def test_nginx_share_capability_bypasses_only_narrow_public_get_surfaces():
     owner_api = staging.split("location /api/", 1)[1].split("}", 1)[0]
     catch_all = staging.split("location / {", 1)[1].split("}", 1)[0]
     assert "auth_request" not in assets + auth_me
-    assert "auth_request /_admin_check;" in owner_api
-    assert "auth_request /_admin_check;" in catch_all
+    assert "auth_request /_staging_access_check;" in owner_api
+    assert "auth_request /_staging_access_check;" in catch_all
 
 
 def test_chat_share_migration_is_staging_owned_and_idempotent():
@@ -1512,3 +1515,35 @@ def test_immutable_release_is_world_readable(tmp_path: Path):
     assert module.stat().st_mode & 0o444 == 0o444
     assert script.stat().st_mode & 0o555 == 0o555
     assert module.stat().st_mode & 0o222 == 0
+
+
+def test_host_environment_subject_roles_are_shared_and_conflict_safe():
+    production = {
+        "PWC_ADMIN_HF_SUBJECTS": "PWC_ADMIN_HF_SUBJECTS=admin-sub",
+        "PWC_CONTRIBUTOR_HF_SUBJECTS": ("PWC_CONTRIBUTOR_HF_SUBJECTS=one-sub,two-sub"),
+    }
+    staging = dict(production)
+    assert configure_host_env.shared_role_values(production, staging) == {
+        "PWC_ADMIN_HF_SUBJECTS": "admin-sub",
+        "PWC_CONTRIBUTOR_HF_SUBJECTS": "one-sub,two-sub",
+    }
+    staging["PWC_ADMIN_HF_SUBJECTS"] = "PWC_ADMIN_HF_SUBJECTS=other-sub"
+    with pytest.raises(ValueError, match="differs"):
+        configure_host_env.shared_role_values(production, staging)
+
+
+def test_host_profiles_keep_contributor_direct_edits_default_off():
+    repository = Path(__file__).resolve().parents[2]
+    script = (repository / "deploy/configure_host_env.py").read_text()
+    assert script.count('"PWC_CONTRIBUTOR_DIRECT_EDITS_ENABLED": "false"') == 2
+
+
+def test_role_allowlist_installer_normalizes_and_rejects_usernames():
+    assert (
+        configure_role_allowlists.normalized_subjects(
+            [" subject-b ", "subject-a", "subject-a"]
+        )
+        == "subject-a,subject-b"
+    )
+    with pytest.raises(ValueError, match="Malformed"):
+        configure_role_allowlists.normalized_subjects(["not a subject"])

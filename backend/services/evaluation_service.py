@@ -792,6 +792,7 @@ class EvaluationService:
         source_url: Optional[str] = None,
         num_parameters: Optional[int] = None,
         hf_model_url: Optional[str] = None,
+        commit: bool = True,
     ) -> Evaluation:
         """
         Create a new evaluation.
@@ -864,7 +865,7 @@ class EvaluationService:
             )
 
             self.db.add(db_evaluation)
-            self.db.commit()
+            self.db.flush()
             self.db.refresh(db_evaluation)
 
             # Recalculate ranks for every metric this row carries
@@ -875,10 +876,13 @@ class EvaluationService:
                     db_evaluation.task_id,
                     db_evaluation.dataset_id,
                     metric_name=metric,
+                    commit=False,
                 )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
+            if commit:
+                self.db.commit()
 
             return self._serialize_evaluation(db_evaluation)
 
@@ -914,6 +918,7 @@ class EvaluationService:
         source_url_set: bool = False,
         num_parameters_set: bool = False,
         hf_model_url_set: bool = False,
+        commit: bool = True,
     ) -> Evaluation:
         """
         Update an existing evaluation.
@@ -1040,7 +1045,7 @@ class EvaluationService:
             if hf_model_url_set:
                 db_evaluation.hf_model_url = hf_model_url
 
-            self.db.commit()
+            self.db.flush()
             self.db.refresh(db_evaluation)
 
             metric_names = self._metric_names_for_rank_refresh(
@@ -1062,11 +1067,16 @@ class EvaluationService:
             for task_id_lb, dataset_id_lb in leaderboards:
                 for metric in metric_names:
                     self.recalculate_ranks(
-                        task_id_lb, dataset_id_lb, metric_name=metric
+                        task_id_lb,
+                        dataset_id_lb,
+                        metric_name=metric,
+                        commit=False,
                     )
 
             # Refresh to get updated rank
             self.db.refresh(db_evaluation)
+            if commit:
+                self.db.commit()
 
             return self._serialize_evaluation(db_evaluation)
 
@@ -1080,7 +1090,7 @@ class EvaluationService:
             self.db.rollback()
             raise DatabaseError(f"Failed to update evaluation: {str(e)}")
 
-    def delete_evaluation(self, evaluation_id: int) -> bool:
+    def delete_evaluation(self, evaluation_id: int, *, commit: bool = True) -> bool:
         """
         Delete an evaluation.
 
@@ -1110,16 +1120,93 @@ class EvaluationService:
             metrics = dict(db_evaluation.metrics or {})
 
             self.db.delete(db_evaluation)
-            self.db.commit()
+            self.db.flush()
 
             for metric in self._metric_names_for_rank_refresh(metrics, best_metric):
-                self.recalculate_ranks(task_id, dataset_id, metric_name=metric)
+                self.recalculate_ranks(
+                    task_id, dataset_id, metric_name=metric, commit=False
+                )
+            if commit:
+                self.db.commit()
 
             return True
 
         except Exception as e:
             self.db.rollback()
             raise DatabaseError(f"Failed to delete evaluation: {str(e)}")
+
+    def restore_evaluation_snapshot(
+        self, snapshot: Optional[dict], *, commit: bool = False
+    ) -> Optional[DBEvaluation]:
+        """Restore one exact audited row, or its audited absence."""
+
+        evaluation_id = int(snapshot["id"]) if snapshot else None
+        current = self.db.get(DBEvaluation, evaluation_id) if evaluation_id else None
+        if snapshot is None:
+            if current is not None:
+                self.db.delete(current)
+            self.db.flush()
+            if commit:
+                self.db.commit()
+            return None
+
+        is_valid, error = self._validate_dataset_task_consistency(
+            int(snapshot["task_id"]), int(snapshot["dataset_id"])
+        )
+        if not is_valid:
+            raise ValueError(error)
+        metric_service = LeaderboardMetricService(self.db)
+        is_valid, error = metric_service.validate_metrics_for_leaderboard(
+            int(snapshot["task_id"]),
+            int(snapshot["dataset_id"]),
+            list((snapshot.get("metrics") or {}).keys()),
+            snapshot.get("best_metric"),
+        )
+        if not is_valid:
+            raise ValueError(error)
+        values = {
+            key: snapshot.get(key)
+            for key in (
+                "paper_id",
+                "task_id",
+                "dataset_id",
+                "model_name",
+                "harness",
+                "methodology",
+                "metrics",
+                "uses_additional_data",
+                "is_open",
+                "best_rank",
+                "best_metric",
+                "evaluated_on",
+                "external_source_url",
+                "source_url",
+                "external",
+                "num_parameters",
+                "hf_model_url",
+                "created_at",
+                "updated_at",
+            )
+        }
+        if isinstance(values["evaluated_on"], str):
+            from datetime import date
+
+            values["evaluated_on"] = date.fromisoformat(values["evaluated_on"])
+        for key in ("created_at", "updated_at"):
+            if isinstance(values[key], str):
+                from datetime import datetime
+
+                values[key] = datetime.fromisoformat(values[key])
+        if current is None:
+            current = DBEvaluation(id=evaluation_id, **values)
+            self.db.add(current)
+        else:
+            for key, value in values.items():
+                setattr(current, key, value)
+        self.db.flush()
+        if commit:
+            self.db.commit()
+        return current
 
     @staticmethod
     def _metric_names_for_rank_refresh(
@@ -1139,6 +1226,7 @@ class EvaluationService:
         dataset_id: int,
         metric_name: Optional[str] = None,
         uses_additional_data: Optional[bool] = None,
+        commit: bool = True,
     ) -> int:
         """
         Recalculate ranks for evaluations in a specific leaderboard.
@@ -1303,7 +1391,8 @@ class EvaluationService:
                     previous_score = score
 
             # Commit all rank updates
-            self.db.commit()
+            if commit:
+                self.db.commit()
 
             return total_updated
 

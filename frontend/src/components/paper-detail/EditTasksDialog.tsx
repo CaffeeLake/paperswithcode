@@ -15,6 +15,7 @@ import {
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
+import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 interface EditTasksDialogProps {
@@ -257,6 +258,11 @@ export function EditTasksDialog({
   });
 
   const handleSave = () => {
+    if (
+      submitMode === "direct" &&
+      initialTaskIds.some((id) => !selectedTaskIds.includes(id)) &&
+      !window.confirm("Remove one or more task links from this paper?")
+    ) return;
     updateTasksMutation.mutate({ paperId, taskIds: selectedTaskIds });
   };
 
@@ -355,6 +361,7 @@ export function EditTasksDialog({
             </div>
           )}
         </div>
+        <CurationDiff before={initialTaskIds} after={selectedTaskIds} />
         <DialogFooter>
           <Button
             variant="ghost"
