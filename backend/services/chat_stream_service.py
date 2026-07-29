@@ -684,6 +684,12 @@ class ChatStreamOrchestrator:
         mirror_key = event.get("key") or {}
         mirror_session_id = mirror_key.get("session_id")
         mirror_project_key = mirror_key.get("project_key")
+        logger.warning(
+            "chat transcript mirror failed session_id=%s sdk_session_id=%s error=%s",
+            self.admission.session_id,
+            mirror_session_id,
+            str(event.get("error") or "unknown")[:500],
+        )
         if mirror_session_id and mirror_project_key:
             sdk_id = uuid.UUID(mirror_session_id)
             with db_manager.session_local() as db:

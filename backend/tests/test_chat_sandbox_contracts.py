@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from claude_agent_sdk import StreamEvent
+from claude_agent_sdk import MirrorErrorMessage, StreamEvent
 from fastapi import HTTPException
 
 from backend.chat_gateway_app import (
@@ -141,6 +141,43 @@ def test_broker_capability_rotation_rejects_stale_and_cross_turn_clear(monkeypat
         state.current()
     state.install({"capability": "new", "session_id": "session", "turn_id": "turn-2"})
     assert state.current()["capability"] == "new"
+
+
+def test_worker_mirror_error_preserves_bounded_diagnostic_context():
+    key = {
+        "project_key": "-workspace",
+        "session_id": str(uuid.uuid4()),
+    }
+
+    async def messages():
+        yield MirrorErrorMessage(
+            subtype="mirror_error",
+            data={},
+            key=key,
+            error="diagnostic-" + ("x" * 600),
+        )
+
+    async def collect():
+        settings = agent.WorkerSettings.from_environment()
+        return [
+            event
+            async for event in agent._adapt_messages(
+                messages(),
+                request_id="request-1",
+                hooks=agent.WorkerToolHooks(settings),
+                adapter=WorkerSDKAdapter(show_reasoning=False),
+            )
+        ]
+
+    assert asyncio.run(collect()) == [
+        {
+            "v": 1,
+            "type": "_mirror_error",
+            "request_id": "request-1",
+            "key": key,
+            "error": ("diagnostic-" + ("x" * 600))[:500],
+        }
+    ]
 
 
 def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):

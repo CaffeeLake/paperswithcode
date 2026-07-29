@@ -314,6 +314,8 @@ async def _adapt_messages(
                 "v": 1,
                 "type": "_mirror_error",
                 "request_id": request_id,
+                "key": message.key,
+                "error": message.error[:500],
             }
             continue
         session_id = getattr(message, "session_id", None)
