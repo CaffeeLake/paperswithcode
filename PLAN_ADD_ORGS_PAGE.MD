@@ -452,8 +452,12 @@ visible without another navigation step.
 Use the supplied 2026-07-29 organizations-page screenshot as the visual
 direction. Match its editorial hierarchy within the existing PwC design system:
 
-- a generous hero with a small mono eyebrow, a large serif headline, an
-  italic/accent phrase, and a concise explanatory deck;
+- a generous hero with the mono eyebrow
+  `PAPERS WITH CODE · ORGANIZATIONS`;
+- the large serif headline `The labs shaping the field`, rendering
+  `the field` in the screenshot's italic blue accent treatment;
+- the concise deck `Explore papers from 21 leading AI organizations, ranked by
+  sustained community momentum over the past 30 days.`;
 - a section header showing the organization count on the left and the active
   sort description on the right;
 - a spacious three-column desktop card grid rather than a compact five- or
@@ -696,6 +700,8 @@ route deployment before changing sitemap/canonical discovery in production.
 - The page follows the supplied editorial reference: large serif hero,
   organization-count/sort header, and information-rich one/two/three-column
   cards using real backend data rather than placeholder values.
+- The launch eyebrow, headline, and description match the approved copy and do
+  not claim coverage beyond the curated 21 organizations.
 - First-version cards show only logo/name/slug, paper count, current
   most-trending paper, publication-year range, and `#N` rolling 30-day rank;
   models, datasets, code percentage, community upvotes, and raw composite scores
