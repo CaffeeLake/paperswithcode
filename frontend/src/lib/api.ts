@@ -904,6 +904,7 @@ class ApiClient {
     latest_only?: boolean;
     include_resources?: boolean;
     has_code?: boolean;
+    has_hf_artifacts?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -919,6 +920,7 @@ class ApiClient {
     if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
     if (params?.has_code !== undefined) searchParams.append('has_code', params.has_code.toString());
+    if (params?.has_hf_artifacts !== undefined) searchParams.append('has_hf_artifacts', params.has_hf_artifacts.toString());
 
     const endpoint = `/papers/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     // Paper rows can gain or lose a thumbnail URL independently of the paper
@@ -1183,6 +1185,7 @@ class ApiClient {
     order_dir?: 'asc' | 'desc';
     include_resources?: boolean;
     has_code?: boolean;
+    has_hf_artifacts?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -1195,6 +1198,7 @@ class ApiClient {
     if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
     if (params?.include_resources) searchParams.append('include_resources', 'true');
     if (params?.has_code) searchParams.append('has_code', 'true');
+    if (params?.has_hf_artifacts) searchParams.append('has_hf_artifacts', 'true');
 
     const queryString = searchParams.toString();
     const endpoint = queryString
@@ -1227,6 +1231,7 @@ class ApiClient {
     order_dir?: 'asc' | 'desc';
     include_resources?: boolean;
     has_code?: boolean;
+    has_hf_artifacts?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -1238,6 +1243,7 @@ class ApiClient {
     if (params?.order_dir) searchParams.append('order_dir', params.order_dir);
     if (params?.include_resources) searchParams.append('include_resources', 'true');
     if (params?.has_code) searchParams.append('has_code', 'true');
+    if (params?.has_hf_artifacts) searchParams.append('has_hf_artifacts', 'true');
 
     const queryString = searchParams.toString();
     const endpoint = queryString
@@ -1387,6 +1393,7 @@ class ApiClient {
     latest_only?: boolean;
     include_resources?: boolean;
     has_code?: boolean;
+    has_hf_artifacts?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -1397,6 +1404,7 @@ class ApiClient {
     if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
     if (params?.has_code !== undefined) searchParams.append('has_code', params.has_code.toString());
+    if (params?.has_hf_artifacts !== undefined) searchParams.append('has_hf_artifacts', params.has_hf_artifacts.toString());
 
     const queryString = searchParams.toString();
     const endpoint = queryString ? `/tasks/${taskId}/papers?${queryString}` : `/tasks/${taskId}/papers`;
@@ -1464,6 +1472,7 @@ class ApiClient {
     latest_only?: boolean;
     include_resources?: boolean;
     has_code?: boolean;
+    has_hf_artifacts?: boolean;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -1474,6 +1483,7 @@ class ApiClient {
     if (params?.latest_only !== undefined) searchParams.append('latest_only', params.latest_only.toString());
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
     if (params?.has_code !== undefined) searchParams.append('has_code', params.has_code.toString());
+    if (params?.has_hf_artifacts !== undefined) searchParams.append('has_hf_artifacts', params.has_hf_artifacts.toString());
 
     const queryString = searchParams.toString();
     const endpoint = queryString ? `/methods/${encodeURIComponent(methodId)}/papers?${queryString}` : `/methods/${encodeURIComponent(methodId)}/papers`;

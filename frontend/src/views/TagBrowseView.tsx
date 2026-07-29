@@ -5,7 +5,7 @@ import { ArrowRight, Github, Trophy } from "lucide-react";
 
 import { MethodChip, PaperCard } from "@/components";
 import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
-import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Dataset, Task, TrendingBenchmark } from "@/lib/api";
@@ -60,6 +60,7 @@ const TagBrowseView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
@@ -69,6 +70,12 @@ const TagBrowseView: React.FC = () => {
     const params = new URLSearchParams(searchParams);
     if (active) params.set("has_code", "true");
     else params.delete("has_code");
+    setSearchParams(params);
+  };
+  const setHasHfArtifacts = (active: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (active) params.set("has_hf_artifacts", "true");
+    else params.delete("has_hf_artifacts");
     setSearchParams(params);
   };
   const [benchmarksExpanded, setBenchmarksExpanded] = useState(false);
@@ -132,6 +139,7 @@ const TagBrowseView: React.FC = () => {
     order_dir: "desc",
     include_resources: true,
     has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
     enabled: !!pageQ.data?.task?.id,
   });
 
@@ -591,7 +599,12 @@ const TagBrowseView: React.FC = () => {
                 </button>
               ))}
             </div>
-            <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+            <PaperFeedFilters
+              hasCode={hasCode}
+              hasHfArtifacts={hasHfArtifacts}
+              onHasCodeChange={setHasCode}
+              onHasHfArtifactsChange={setHasHfArtifacts}
+            />
             <div className="results-count">
               {cards.length} loaded in <span>{taskName}</span>
             </div>

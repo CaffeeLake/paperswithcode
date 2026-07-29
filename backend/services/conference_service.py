@@ -305,6 +305,7 @@ class ConferenceService:
         order_dir: str = "desc",
         include_resources: bool = False,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> Papers:
         try:
             conference = self._get_conference_by_slug(slug)
@@ -347,6 +348,11 @@ class ConferenceService:
                 from backend.services.paper_service import PaperService
 
                 query = PaperService.apply_has_code_filter(query)
+
+            if has_hf_artifacts:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_hf_artifacts_filter(query)
 
             if presentation in ("outstanding", "best_paper_finalist"):
                 if presentation == "outstanding":

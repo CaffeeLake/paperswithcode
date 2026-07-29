@@ -17,6 +17,8 @@ import { apiClient } from "@/lib/api";
 const useInfiniteOrganizationPapers = vi.fn();
 
 vi.mock("@/components", () => ({
+  HuggingFaceLogo: () => <span aria-hidden="true">HF</span>,
+  Icon: () => <span aria-hidden="true">GitHub</span>,
   PaperCard: () => <article>Paper card</article>,
 }));
 vi.mock("@/hooks/useIntersectionObserver", () => ({

@@ -640,6 +640,7 @@ class MethodService:
         order_dir: str = "desc",
         include_resources: bool = False,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ):
         """
         Get papers associated with a specific method.
@@ -704,6 +705,11 @@ class MethodService:
                 from backend.services.paper_service import PaperService
 
                 query = PaperService.apply_has_code_filter(query)
+
+            if has_hf_artifacts:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_hf_artifacts_filter(query)
 
             # Apply ordering
             if order_by == "trending":

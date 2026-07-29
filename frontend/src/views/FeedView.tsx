@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { PaperCard } from "@/components";
-import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
 import { apiClient } from "@/lib/api";
@@ -129,6 +129,7 @@ const FeedView: React.FC = () => {
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const timeWindow = parseTime(searchParams.get("time"));
   const hasCode = searchParams.get("has_code") === "true";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const period = TIME_TO_PERIOD[timeWindow];
 
   const setOrderBy = (nextOrderBy: OrderBy) => {
@@ -147,6 +148,13 @@ const FeedView: React.FC = () => {
     const next = new URLSearchParams(searchParams);
     if (active) next.set("has_code", "true");
     else next.delete("has_code");
+    setSearchParams(next);
+  };
+
+  const setHasHfArtifacts = (active: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (active) next.set("has_hf_artifacts", "true");
+    else next.delete("has_hf_artifacts");
     setSearchParams(next);
   };
 
@@ -173,6 +181,7 @@ const FeedView: React.FC = () => {
     time: timeWindow,
     include_resources: true,
     has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
   });
 
   const cards = useMemo(() => {
@@ -273,7 +282,12 @@ const FeedView: React.FC = () => {
               ))}
             </div>
             <div className="paper-feed-filter-row" aria-label="Paper filters">
-              <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+              <PaperFeedFilters
+                hasCode={hasCode}
+                hasHfArtifacts={hasHfArtifacts}
+                onHasCodeChange={setHasCode}
+                onHasHfArtifactsChange={setHasHfArtifacts}
+              />
             </div>
           </div>
 

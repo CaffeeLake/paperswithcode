@@ -14,6 +14,7 @@ interface UsePapersParams {
   latest_only?: boolean;
   include_resources?: boolean;
   has_code?: boolean;
+  has_hf_artifacts?: boolean;
   enabled?: boolean;
 }
 
@@ -31,12 +32,13 @@ export function usePapers(params: UsePapersParams = {}) {
     latest_only = true,
     include_resources = false,
     has_code = false,
+    has_hf_artifacts = false,
     enabled = true,
   } = params;
 
   return useQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code }],
-    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code }),
+    queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }],
+    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }),
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
     placeholderData: keepPreviousData,
@@ -82,6 +84,7 @@ interface UseInfinitePapersParams {
   latest_only?: boolean;
   include_resources?: boolean;
   has_code?: boolean;
+  has_hf_artifacts?: boolean;
   enabled?: boolean;
 }
 
@@ -98,11 +101,12 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     latest_only = true,
     include_resources = false,
     has_code = false,
+    has_hf_artifacts = false,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code }],
+    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getPapers({
         page: pageParam as number,
@@ -117,6 +121,7 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
         latest_only,
         include_resources,
         has_code,
+        has_hf_artifacts,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,
@@ -135,6 +140,7 @@ interface UseInfiniteTaskPapersParams {
   latest_only?: boolean;
   include_resources?: boolean;
   has_code?: boolean;
+  has_hf_artifacts?: boolean;
   enabled?: boolean;
 }
 
@@ -147,11 +153,12 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
     latest_only = true,
     include_resources = true,
     has_code = false,
+    has_hf_artifacts = false,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['task-papers-infinite', taskId, { page_size, order_by, order_dir, latest_only, include_resources, has_code }],
+    queryKey: ['task-papers-infinite', taskId, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getTaskPapers(taskId, {
         page: pageParam as number,
@@ -161,6 +168,7 @@ export function useInfiniteTaskPapers(params: UseInfiniteTaskPapersParams) {
         latest_only,
         include_resources,
         has_code,
+        has_hf_artifacts,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,
@@ -181,6 +189,7 @@ interface UseInfiniteConferencePapersParams {
   latest_only?: boolean;
   include_resources?: boolean;
   has_code?: boolean;
+  has_hf_artifacts?: boolean;
   enabled?: boolean;
 }
 
@@ -195,11 +204,12 @@ export function useInfiniteConferencePapers(params: UseInfiniteConferencePapersP
     latest_only = true,
     include_resources = true,
     has_code = false,
+    has_hf_artifacts = false,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['conference-papers-infinite', conferenceSlug, taskSlug, presentation, { page_size, order_by, order_dir, latest_only, include_resources, has_code }],
+    queryKey: ['conference-papers-infinite', conferenceSlug, taskSlug, presentation, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getConferencePapers(conferenceSlug, {
         task: taskSlug,
@@ -211,6 +221,7 @@ export function useInfiniteConferencePapers(params: UseInfiniteConferencePapersP
         latest_only,
         include_resources,
         has_code,
+        has_hf_artifacts,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,
@@ -230,6 +241,7 @@ interface UseInfiniteOrganizationPapersParams {
   latest_only?: boolean;
   include_resources?: boolean;
   has_code?: boolean;
+  has_hf_artifacts?: boolean;
   enabled?: boolean;
 }
 
@@ -243,11 +255,12 @@ export function useInfiniteOrganizationPapers(params: UseInfiniteOrganizationPap
     latest_only = true,
     include_resources = true,
     has_code = false,
+    has_hf_artifacts = false,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['organization-papers-infinite', organizationSlug, taskSlug, { page_size, order_by, order_dir, latest_only, include_resources, has_code }],
+    queryKey: ['organization-papers-infinite', organizationSlug, taskSlug, { page_size, order_by, order_dir, latest_only, include_resources, has_code, has_hf_artifacts }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getOrganizationPapers(organizationSlug, {
         task: taskSlug,
@@ -258,6 +271,7 @@ export function useInfiniteOrganizationPapers(params: UseInfiniteOrganizationPap
         latest_only,
         include_resources,
         has_code,
+        has_hf_artifacts,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,

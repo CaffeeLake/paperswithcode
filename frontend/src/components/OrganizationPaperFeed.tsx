@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
-import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   SearchableSelect,
@@ -36,6 +36,7 @@ export const OrganizationPaperFeed: React.FC<{
   const [logoFailed, setLogoFailed] = useState(false);
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const taxonomyQ = useQuery({
     queryKey: ["organization-areas-with-tasks", organizationSlug],
     queryFn: () => apiClient.getOrganizationAreasWithTasks(organizationSlug),
@@ -49,6 +50,7 @@ export const OrganizationPaperFeed: React.FC<{
     order_dir: "desc",
     include_resources: true,
     has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
     enabled: !!organizationSlug,
   });
   const { targetRef, isIntersecting } = useIntersectionObserver({
@@ -254,12 +256,19 @@ export const OrganizationPaperFeed: React.FC<{
             </button>
           ))}
         </div>
-        <PaperFeedHasCodeFilter
-          active={hasCode}
-          onChange={(active) => {
+        <PaperFeedFilters
+          hasCode={hasCode}
+          hasHfArtifacts={hasHfArtifacts}
+          onHasCodeChange={(active) => {
             const updated = new URLSearchParams(searchParams);
             if (active) updated.set("has_code", "true");
             else updated.delete("has_code");
+            setSearchParams(updated);
+          }}
+          onHasHfArtifactsChange={(active) => {
+            const updated = new URLSearchParams(searchParams);
+            if (active) updated.set("has_hf_artifacts", "true");
+            else updated.delete("has_hf_artifacts");
             setSearchParams(updated);
           }}
         />

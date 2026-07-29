@@ -4,7 +4,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-qu
 
 import { MethodChip, PaperCard } from "@/components";
 import { MethodFigure } from "@/components/MethodFigure";
-import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MethodUsageChart from "@/components/MethodUsageChart";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
@@ -38,10 +38,17 @@ const MethodDetailView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [sortBy, setSortBy] = useState<SortKey>("trending");
   const hasCode = searchParams.get("has_code") === "true";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const setHasCode = (active: boolean) => {
     const params = new URLSearchParams(searchParams);
     if (active) params.set("has_code", "true");
     else params.delete("has_code");
+    setSearchParams(params);
+  };
+  const setHasHfArtifacts = (active: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (active) params.set("has_hf_artifacts", "true");
+    else params.delete("has_hf_artifacts");
     setSearchParams(params);
   };
 
@@ -69,7 +76,7 @@ const MethodDetailView: React.FC = () => {
   const orderBy: "trending" | "citation_count" | "date_published" =
     sortBy === "trending" ? "trending" : sortBy === "cited" ? "citation_count" : "date_published";
   const papersQ = useInfiniteQuery({
-    queryKey: ["method-papers-infinite", methodSlug, orderBy, hasCode],
+    queryKey: ["method-papers-infinite", methodSlug, orderBy, hasCode, hasHfArtifacts],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getMethodPapers(methodSlug!, {
         page: pageParam as number,
@@ -78,6 +85,7 @@ const MethodDetailView: React.FC = () => {
         order_dir: "desc",
         include_resources: true,
         has_code: hasCode,
+        has_hf_artifacts: hasHfArtifacts,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,
@@ -253,7 +261,12 @@ const MethodDetailView: React.FC = () => {
             </button>
           ))}
         </div>
-        <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+        <PaperFeedFilters
+          hasCode={hasCode}
+          hasHfArtifacts={hasHfArtifacts}
+          onHasCodeChange={setHasCode}
+          onHasHfArtifactsChange={setHasHfArtifacts}
+        />
         <div className="results-count">{cards.length} papers mentioning {m.name}</div>
       </div>
 

@@ -334,6 +334,7 @@ class OrganizationService:
         order_dir: str = "desc",
         include_resources: bool = False,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> Papers:
         try:
             organization = self._get_organization_by_slug(slug)
@@ -364,6 +365,11 @@ class OrganizationService:
                 from backend.services.paper_service import PaperService
 
                 query = PaperService.apply_has_code_filter(query)
+
+            if has_hf_artifacts:
+                from backend.services.paper_service import PaperService
+
+                query = PaperService.apply_has_hf_artifacts_filter(query)
 
             if order_by == "trending":
                 # Match the home feed: rank by the active trending metric

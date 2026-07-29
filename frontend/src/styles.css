@@ -734,23 +734,34 @@ a.paper-resource.is-link:focus-visible {
 }
 .sort-btn.active { background: var(--ink); color: var(--bg); }
 .sort-btn:not(.active):hover { background: var(--bg-subtle); color: var(--ink); }
-.paper-feed-code-filter {
+.paper-feed-filter-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.paper-feed-filter {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   cursor: pointer;
   text-transform: none;
 }
-.paper-feed-code-filter:has(.paper-feed-code-checkbox:focus-visible) {
+.paper-feed-filter:has(.paper-feed-filter-checkbox:focus-visible) {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
-.paper-feed-code-checkbox {
+.paper-feed-filter-checkbox {
   width: 13px;
   height: 13px;
   margin: 0;
   accent-color: var(--ink);
   cursor: pointer;
+}
+.paper-feed-filter-icon {
+  display: inline-flex;
+  color: currentColor;
+  filter: grayscale(1);
 }
 .home-feed-sort-bar {
   flex-wrap: wrap;

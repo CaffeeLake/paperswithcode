@@ -96,12 +96,14 @@ def test_papers_endpoint_accepts_feed_order_and_time(
         ),
     ],
 )
-def test_paper_feed_endpoints_accept_has_code(
+@pytest.mark.parametrize("filter_name", ["has_code", "has_hf_artifacts"])
+def test_paper_feed_endpoints_accept_resource_filters(
     client,
     monkeypatch,
     path,
     service_class,
     method_name,
+    filter_name,
 ):
     captured = {}
 
@@ -111,10 +113,10 @@ def test_paper_feed_endpoints_accept_has_code(
 
     monkeypatch.setattr(service_class, method_name, fake_feed)
 
-    response = client.get(path, params={"has_code": "true"})
+    response = client.get(path, params={filter_name: "true"})
 
     assert response.status_code == 200
-    assert captured["has_code"] is True
+    assert captured[filter_name] is True
 
 
 def test_papers_endpoint_rejects_unknown_order_by(client, monkeypatch):
@@ -264,3 +266,28 @@ def test_trending_feed_filters_to_linked_repositories_when_requested():
     assert "EXISTS" in captured["sql"]
     assert "code_pr.paper_id = p.id" in captured["sql"]
     assert captured["params"]["has_code"] is True
+
+
+def test_trending_feed_filters_to_linked_hf_artifacts_when_requested():
+    captured = {}
+
+    class EmptyResult:
+        def fetchall(self):
+            return []
+
+    class FakeDatabase:
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return EmptyResult()
+
+    response = PaperService(FakeDatabase())._get_trending_papers(
+        page=1,
+        page_size=20,
+        has_hf_artifacts=True,
+    )
+
+    assert response.count == 0
+    assert "paper_hf_artifacts" in captured["sql"]
+    assert "artifact_link.paper_id = p.id" in captured["sql"]
+    assert captured["params"]["has_hf_artifacts"] is True

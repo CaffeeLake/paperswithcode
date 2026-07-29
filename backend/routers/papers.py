@@ -167,6 +167,9 @@ def get_papers(
     has_code: bool = Query(
         False, description="Only include papers with a linked GitHub repository"
     ),
+    has_hf_artifacts: bool = Query(
+        False, description="Only include papers with linked Hugging Face artifacts"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -195,6 +198,7 @@ def get_papers(
             time_window=time,
             include_resources=include_resources,
             has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -196,6 +196,9 @@ def get_organization_papers(
     has_code: bool = Query(
         False, description="Only include papers with a linked GitHub repository"
     ),
+    has_hf_artifacts: bool = Query(
+        False, description="Only include papers with linked Hugging Face artifacts"
+    ),
     db: Session = Depends(get_database_session),
 ):
     try:
@@ -210,6 +213,7 @@ def get_organization_papers(
             order_dir=order_dir,
             include_resources=include_resources,
             has_code=has_code,
+            has_hf_artifacts=has_hf_artifacts,
         )
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

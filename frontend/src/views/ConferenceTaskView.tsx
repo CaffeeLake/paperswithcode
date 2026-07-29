@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
-import { PaperFeedHasCodeFilter } from "@/components/PaperFeedHasCodeFilter";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
@@ -31,6 +31,7 @@ const ConferenceTaskView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
   const setOrderBy = (next: OrderBy) => {
     const params = new URLSearchParams(searchParams);
     params.set("order_by", next);
@@ -40,6 +41,12 @@ const ConferenceTaskView: React.FC = () => {
     const params = new URLSearchParams(searchParams);
     if (active) params.set("has_code", "true");
     else params.delete("has_code");
+    setSearchParams(params);
+  };
+  const setHasHfArtifacts = (active: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (active) params.set("has_hf_artifacts", "true");
+    else params.delete("has_hf_artifacts");
     setSearchParams(params);
   };
 
@@ -89,6 +96,7 @@ const ConferenceTaskView: React.FC = () => {
     order_dir: "desc",
     include_resources: true,
     has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
     enabled: !!confSlug,
   });
 
@@ -244,7 +252,12 @@ const ConferenceTaskView: React.FC = () => {
             ))}
           </div>
         )}
-        <PaperFeedHasCodeFilter active={hasCode} onChange={setHasCode} />
+        <PaperFeedFilters
+          hasCode={hasCode}
+          hasHfArtifacts={hasHfArtifacts}
+          onHasCodeChange={setHasCode}
+          onHasHfArtifactsChange={setHasHfArtifacts}
+        />
         {!isAwardListing && (
           <div className="results-count">
             {cards.length} loaded in <span>{taskName}</span>

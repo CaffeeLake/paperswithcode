@@ -919,6 +919,7 @@ class PaperService:
         time_window: str = "all_time",
         include_resources: bool = False,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> Papers:
         """
         Get paginated list of papers with optional filtering.
@@ -968,6 +969,7 @@ class PaperService:
                     latest_only=latest_only,
                     include_resources=include_resources,
                     has_code=has_code,
+                    has_hf_artifacts=has_hf_artifacts,
                 )
 
             # Build base query
@@ -979,6 +981,9 @@ class PaperService:
 
             if has_code:
                 query = self.apply_has_code_filter(query)
+
+            if has_hf_artifacts:
+                query = self.apply_has_hf_artifacts_filter(query)
 
             # Apply search filter
             if search:
@@ -1078,6 +1083,10 @@ class PaperService:
                     SELECT 1 FROM paper_repositories code_pr
                     WHERE code_pr.paper_id = p.id
                 ))
+                AND (:has_hf_artifacts = FALSE OR EXISTS (
+                    SELECT 1 FROM paper_hf_artifacts artifact_link
+                    WHERE artifact_link.paper_id = p.id
+                ))
             ORDER BY p.id, r.trending_score DESC NULLS LAST, r.num_stars DESC NULLS LAST
         ),
         ranked_by_repo AS (
@@ -1130,6 +1139,10 @@ class PaperService:
                     SELECT 1 FROM paper_repositories code_pr
                     WHERE code_pr.paper_id = p.id
                 ))
+                AND (:has_hf_artifacts = FALSE OR EXISTS (
+                    SELECT 1 FROM paper_hf_artifacts artifact_link
+                    WHERE artifact_link.paper_id = p.id
+                ))
             ORDER BY p.id, r.num_stars DESC NULLS LAST
         ),
         ranked_by_repo AS (
@@ -1164,6 +1177,7 @@ class PaperService:
         page: int,
         page_size: int,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ):
         """Return ``(sql, params)`` for the requested trending ranking mode.
 
@@ -1183,6 +1197,7 @@ class PaperService:
             "conference": f"%{conference}%" if conference else None,
             "latest_only": latest_only,
             "has_code": has_code,
+            "has_hf_artifacts": has_hf_artifacts,
             "limit": page_size,
             "offset": (page - 1) * page_size,
         }
@@ -1199,6 +1214,7 @@ class PaperService:
         latest_only: bool = True,
         include_resources: bool = False,
         has_code: bool = False,
+        has_hf_artifacts: bool = False,
     ) -> Papers:
         """
         Get papers sorted by trending score.
@@ -1225,6 +1241,7 @@ class PaperService:
                 conference=conference,
                 latest_only=latest_only,
                 has_code=has_code,
+                has_hf_artifacts=has_hf_artifacts,
                 page=page,
                 page_size=page_size,
             )
@@ -1336,6 +1353,11 @@ class PaperService:
     def apply_has_code_filter(query):
         """Keep papers with at least one linked GitHub repository."""
         return query.filter(DBPaper.repositories.any())
+
+    @staticmethod
+    def apply_has_hf_artifacts_filter(query):
+        """Keep papers with at least one linked Hugging Face artifact."""
+        return query.filter(DBPaper.hf_artifacts.any())
 
     def get_paper_versions(self, arxiv_id: str) -> PaperVersions:
         """
