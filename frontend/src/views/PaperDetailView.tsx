@@ -41,6 +41,7 @@ import { SavePaperButton } from "@/components/paper-detail/SavePaperButton";
 import { EditableActionButton } from "@/components/paper-detail/EditableActionButton";
 import { CodexAddEvalsDialog } from "@/components/paper-detail/CodexAddEvalsDialog";
 import { CodexEnrichPaperDialog } from "@/components/paper-detail/CodexEnrichPaperDialog";
+import { CopyToBucketCard } from "@/components/paper-detail/CopyToBucketCard";
 import { isCodexAddEvalsEnabled, isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
 
 type EditSection =
@@ -592,6 +593,11 @@ const PaperDetailView: React.FC = () => {
     return (b.num_stars || 0) - (a.num_stars || 0);
   });
   const visibleRepos = reposExpanded ? sortedRepos : sortedRepos.slice(0, REPO_PREVIEW_LIMIT);
+  const allHfArtifactUrls = {
+    models: [...new Set([...explicitHfArtifacts.models, ...(hfRepos?.modelUrls ?? [])])],
+    datasets: [...new Set([...explicitHfArtifacts.datasets, ...(hfRepos?.datasetUrls ?? [])])],
+    spaces: [...new Set([...explicitHfArtifacts.spaces, ...(hfRepos?.spaceUrls ?? [])])],
+  };
   const canonicalArxivId = paper.arxiv_id?.replace(/v\d+$/, "") ?? null;
   const hfArtifactViewer = paper.arxiv_id
     ? {
@@ -1357,34 +1363,12 @@ const PaperDetailView: React.FC = () => {
           {/* Hugging Face block */}
           <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
 
-          <div className="sidebar-card">
-            <div className="sidebar-card-title">
-              <span>Citation</span>
-              <button
-                type="button"
-                className="citation-copy-btn"
-                onClick={handleCopyCitation}
-                aria-label="Copy citation to clipboard"
-                title="Copy citation to clipboard"
-              >
-                <Icon name="copy" size={11} />
-                {citationCopied ? "Copied" : "Copy"}
-              </button>
-            </div>
-            <pre
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: 10.5,
-                lineHeight: 1.5,
-                color: "var(--ink-soft)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                margin: 0,
-              }}
-            >
-              {citationDisplay}
-            </pre>
-          </div>
+          <CopyToBucketCard
+            githubUrls={sortedRepos.map((repository) => repository.url)}
+            hfModelUrls={allHfArtifactUrls.models}
+            hfDatasetUrls={allHfArtifactUrls.datasets}
+            hfSpaceUrls={allHfArtifactUrls.spaces}
+          />
 
           {relatedQ.isLoading && (
             <div className="sidebar-card" aria-busy="true">
@@ -1417,6 +1401,35 @@ const PaperDetailView: React.FC = () => {
               ))}
             </div>
           )}
+
+          <div className="sidebar-card">
+            <div className="sidebar-card-title">
+              <span>Citation</span>
+              <button
+                type="button"
+                className="citation-copy-btn"
+                onClick={handleCopyCitation}
+                aria-label="Copy citation to clipboard"
+                title="Copy citation to clipboard"
+              >
+                <Icon name="copy" size={11} />
+                {citationCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <pre
+              style={{
+                fontFamily: "var(--mono)",
+                fontSize: 10.5,
+                lineHeight: 1.5,
+                color: "var(--ink-soft)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                margin: 0,
+              }}
+            >
+              {citationDisplay}
+            </pre>
+          </div>
         </aside>
       </div>
 
