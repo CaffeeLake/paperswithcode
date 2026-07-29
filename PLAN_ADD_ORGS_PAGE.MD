@@ -11,6 +11,12 @@ organization pages canonical under:
 For example, NVIDIA moves from `/nvidia` to `/orgs/nvidia`. Existing public
 organization URLs must continue to work through permanent redirects.
 
+For the first release, an "organization paper" means only a paper present on
+that organization's Hugging Face papers page. Do not supplement this coverage
+with manual curation or inferred affiliations. A later AI extraction workflow
+may add organization associations directly from paper content, including
+multiple organizations for one paper, but that is outside this release.
+
 The first release contains these 21 Hugging Face organizations, with public
 Papers with Code slugs normalized to lowercase:
 
@@ -153,6 +159,12 @@ distinct organizations in the first release because they are distinct HF
 namespaces in the requested list. The schema remains many-to-many, so the same
 paper may legitimately appear under both.
 
+Keep `paper_organizations.source` as explicit provenance. The launch source is
+`hf_org_papers`. The future AI workflow can use a separate value such as
+`ai_affiliation` and insert several organization links for one paper without a
+schema change. If AI later rediscovers an existing HF association, retain the
+higher-confidence HF provenance rather than overwriting it.
+
 ## Ingestion and synchronization
 
 ### 3. Separate HF fetching, paper ingestion, and linking
@@ -203,6 +215,10 @@ may change temporarily. A later cleanup mode may remove only links with
 `source='hf_org_papers'`, and only after repeated successful complete snapshots;
 it must never remove manual links.
 
+Do not create launch associations from author names, email domains, repository
+owners, organization mentions, acknowledgements, or model names. Those signals
+belong to the later AI affiliation-extraction workflow.
+
 Organizations with zero HF papers are still upserted and featured. Their detail
 pages show an empty state and remain `noindex,follow` until they have eligible
 papers.
@@ -241,6 +257,13 @@ Retain these existing JSON contracts:
 Add only the compatible featured filter and metadata described above. Continue
 sorting organization papers with the existing paginated `PaperService`
 conversion path and `DBPaper.is_latest_version`.
+
+For the first release, organization index counts, organization detail/task
+queries, and organization badges returned on paper responses must include only
+`paper_organizations.source='hf_org_papers'`. Define this launch-visible source
+rule once in the service layer so the future AI rollout can deliberately extend
+it to `ai_affiliation`; do not rely on the database merely happening to contain
+only HF rows.
 
 Review organization counts to ensure the index counts only eligible latest
 papers, matching what a visitor can actually open. Avoid an index card count
@@ -351,6 +374,10 @@ Add focused backend tests for:
 - idempotent organization upsert and paper linking;
 - importing a missing ArXiv paper before linking it;
 - a paper linked to multiple organizations;
+- launch queries excluding non-HF organization links while retaining those rows
+  for future/manual workflows;
+- preserving `hf_org_papers` provenance when another source rediscovers the same
+  paper-organization pair;
 - rerunning a sync without duplicate rows;
 - zero-paper organizations;
 - failed/incomplete fetches not updating `last_hf_synced_at` or deleting links;
@@ -441,6 +468,10 @@ route deployment before changing sitemap/canonical discovery in production.
   including the two that currently have zero HF papers.
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
+- Organization counts, pages, task filters, and paper badges use only
+  HF-attributed (`source='hf_org_papers'`) associations at launch.
+- The many-to-many model permits one paper to link to several organizations and
+  reserves distinct provenance for a future AI affiliation extractor.
 - Every nonzero HF-attributed paper is either linked locally or reported with a
   specific import failure; the run produces a reconciliation summary.
 - Repeating the sync creates no duplicate organizations, papers, or links.
