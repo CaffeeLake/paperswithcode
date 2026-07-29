@@ -456,8 +456,13 @@ The grid should:
 - preserve a useful zero-paper tile that still links to the organization detail
   page and says "No papers indexed yet";
 - rank by the backend-provided consolidated organization trending score by
-  default, with client-side name search and optional “most papers” and
-  alphabetical sorts;
+  default, with compact `Trending`, `Most papers`, and `A–Z` controls plus
+  client-side name search;
+- store nondefault selection in `?sort=papers` or `?sort=name` (and search text
+  in `?q=`) so refresh, browser history, and shared links preserve the view;
+- apply deterministic secondary ordering for every mode: monthly score uses the
+  backend tie-breakers, paper count falls back to name, and A–Z uses the
+  display name followed by slug;
 - display loading skeletons in the same grid geometry and provide retryable
   error and no-search-results states.
 
@@ -554,8 +559,8 @@ to assert:
 Add React tests for:
 
 - logo-grid geometry/classes, full-tile links, accessible labels, broken-logo
-  fallbacks, loading, errors, searching, sorting, and zero-paper tiles on the
-  index;
+  fallbacks, loading, errors, searching, all three sort modes, URL-state
+  persistence, deterministic ties, and zero-paper tiles on the index;
 - `/orgs/:orgSlug` and `/orgs/:orgSlug/:taskSlug` routing;
 - the canonical detail route immediately loading a trending paper feed without
   an intermediate "All papers" click;
@@ -625,6 +630,8 @@ route deployment before changing sitemap/canonical discovery in production.
   create rows, links, or tiles during the initial release.
 - `/organizations` presents them as a responsive logo grid whose complete tiles
   link to the corresponding `/orgs/{slug}` paper-discovery page.
+- The grid defaults to `Trending` and offers working, shareable `Most papers`
+  and `A–Z` views without refetching HF.
 - `/orgs/{slug}` immediately renders that organization's trending-first paper
   feed with compact task and sort controls; no second "All papers" click is
   required.
