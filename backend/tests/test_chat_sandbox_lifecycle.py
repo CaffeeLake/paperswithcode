@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from backend.services import chat_sandbox_service
 from backend.services.chat_sandbox_service import SandboxSessionManager, WorkerClaim
+from backend.chat_sandbox_worker.protocol import encode_frame
 
 
 class _Context:
@@ -283,6 +284,122 @@ def test_stale_termination_cannot_clear_a_successor_lease(monkeypatch):
 
         assert lease.state == "ready"
         assert lease.modal_sandbox_id == "sb-new"
+
+    asyncio.run(run())
+
+
+def test_persistent_turns_reuse_one_control_attachment():
+    class Output:
+        def __init__(self):
+            self.chunks: asyncio.Queue[bytes] = asyncio.Queue()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.chunks.get()
+
+    class Input:
+        def __init__(self, output):
+            self.output = output
+            self.writes = 0
+            self.drain = _AsyncCall(self._drain)
+
+        def write(self, _payload):
+            self.writes += 1
+
+        async def _drain(self):
+            request_id = f"request-{self.writes}"
+            await self.output.chunks.put(
+                b"".join(
+                    [
+                        encode_frame(
+                            {
+                                "v": 1,
+                                "type": "workspace_ready",
+                                "request_id": request_id,
+                            }
+                        ),
+                        encode_frame(
+                            {
+                                "v": 1,
+                                "type": "done",
+                                "request_id": request_id,
+                            }
+                        ),
+                        encode_frame(
+                            {
+                                "v": 1,
+                                "type": "worker_done",
+                                "request_id": request_id,
+                                "status": "complete",
+                            }
+                        ),
+                    ]
+                )
+            )
+
+    class Stderr:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Future()
+
+    class Process:
+        def __init__(self):
+            self.stdout = Output()
+            self.stderr = Stderr()
+            self.stdin = Input(self.stdout)
+
+    async def run():
+        process = Process()
+        exec_calls = 0
+
+        async def execute(*_args, **_kwargs):
+            nonlocal exec_calls
+            exec_calls += 1
+            return process
+
+        sandbox = SimpleNamespace(
+            object_id="sb-persistent",
+            exec=_AsyncCall(execute),
+        )
+        manager = SandboxSessionManager.__new__(SandboxSessionManager)
+        manager.settings = SimpleNamespace(
+            chat_persistent_worker_enabled=True,
+            chat_persistent_sandbox_lifetime_seconds=86400,
+            chat_agent_timeout_seconds=2,
+            chat_gateway_url="https://gateway.example.test",
+        )
+        manager._processes = {}
+        manager._controls = {}
+        manager.ensure_ready = lambda _session_id: asyncio.sleep(
+            0, result=(sandbox, 1, False)
+        )
+        manager._claim_worker = lambda *_args: WorkerClaim(
+            sandbox_id="sb-persistent", token_hash="claim"
+        )
+        manager._release_worker = lambda *_args: True
+        manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+
+        session_id = uuid.uuid4()
+        for index in (1, 2):
+            events = [
+                event
+                async for event in manager.run_turn(
+                    chat_session_id=session_id,
+                    turn_id=uuid.uuid4(),
+                    request_id=f"request-{index}",
+                    prompt="prompt",
+                    model="model",
+                    resume="resume",
+                    capability=SimpleNamespace(token="capability"),
+                )
+            ]
+            assert any(event["type"] == "workspace_ready" for event in events)
+        manager._drop_control(session_id)
+        assert exec_calls == 1
 
     asyncio.run(run())
 

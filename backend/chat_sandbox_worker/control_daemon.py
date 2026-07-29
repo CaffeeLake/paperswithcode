@@ -236,13 +236,14 @@ def main() -> int:
         while broker.poll() is None and agent.poll() is None:
             connection, _ = server.accept()
             with connection:
-                assigned = _serve_turn(
-                    connection,
-                    agent=agent,
-                    assigned_session_id=assigned_session_id,
-                )
-                if assigned:
-                    assigned_session_id = assigned
+                while connection.recv(1, socket.MSG_PEEK):
+                    assigned = _serve_turn(
+                        connection,
+                        agent=agent,
+                        assigned_session_id=assigned_session_id,
+                    )
+                    if assigned:
+                        assigned_session_id = assigned
         raise RuntimeError("Persistent worker child exited")
     finally:
         server.close()

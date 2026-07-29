@@ -53,6 +53,14 @@ class RunningWorker:
     request_id: str
     claim: WorkerClaim
     cancel_requested: bool = False
+    done: asyncio.Event | None = None
+
+
+@dataclass
+class SessionControl:
+    process: object
+    sandbox_id: str
+    stderr_task: asyncio.Task
 
 
 @dataclass(frozen=True)
@@ -230,6 +238,7 @@ class SandboxSessionManager:
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
         )
         self._processes: dict[uuid.UUID, RunningWorker] = {}
+        self._controls: dict[uuid.UUID, SessionControl] = {}
         if settings.chat_workspace_snapshots_enabled and not self.snapshots.supported:
             raise SandboxError(
                 "snapshot_unsupported",
@@ -610,6 +619,7 @@ class SandboxSessionManager:
                 seconds=self.ready_timeout_seconds + 15
             )
             lease.updated_at = datetime.now(UTC)
+        self._drop_control(chat_session_id)
         await self._terminate_owned_sandbox(
             chat_session_id,
             sandbox_id=claim.sandbox_id,
@@ -617,6 +627,18 @@ class SandboxSessionManager:
             failure_code=failure_code,
         )
         return True
+
+    def _drop_control(self, chat_session_id: uuid.UUID) -> None:
+        controls = getattr(self, "_controls", {})
+        control = controls.pop(chat_session_id, None)
+        if control is not None:
+            control.stderr_task.cancel()
+
+    def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
+        controls = getattr(self, "_controls", {})
+        for session_id, control in list(controls.items()):
+            if control.sandbox_id == sandbox_id:
+                self._drop_control(session_id)
 
     async def run_turn(
         self,
@@ -657,22 +679,56 @@ class SandboxSessionManager:
         first_worker_delta_recorded = False
         validator = WorkerEventValidator()
         try:
-            worker_module = (
-                "backend.chat_sandbox_worker.relay"
-                if getattr(self.settings, "chat_persistent_worker_enabled", False)
-                else "backend.chat_sandbox_worker.supervisor"
+            persistent = bool(
+                getattr(self.settings, "chat_persistent_worker_enabled", False)
             )
-            process = await sandbox.exec.aio(
-                "python",
-                "-m",
-                worker_module,
-                stdout=StreamType.PIPE,
-                stderr=StreamType.PIPE,
-                timeout=round(self.settings.chat_agent_timeout_seconds + 15),
-                workdir="/workspace",
-                text=False,
+
+            async def drain_stderr(stream) -> None:
+                async for _chunk in stream:
+                    pass
+
+            controls = getattr(self, "_controls", None)
+            if controls is None:
+                controls = self._controls = {}
+            control = controls.get(chat_session_id) if persistent else None
+            if control is not None and control.sandbox_id != sandbox.object_id:
+                control.stderr_task.cancel()
+                self._controls.pop(chat_session_id, None)
+                control = None
+            if control is None:
+                worker_module = (
+                    "backend.chat_sandbox_worker.relay"
+                    if persistent
+                    else "backend.chat_sandbox_worker.supervisor"
+                )
+                process = await sandbox.exec.aio(
+                    "python",
+                    "-m",
+                    worker_module,
+                    stdout=StreamType.PIPE,
+                    stderr=StreamType.PIPE,
+                    timeout=(
+                        self.settings.chat_persistent_sandbox_lifetime_seconds
+                        if persistent
+                        else round(self.settings.chat_agent_timeout_seconds + 15)
+                    ),
+                    workdir="/workspace",
+                    text=False,
+                )
+                stderr_task = asyncio.create_task(drain_stderr(process.stderr))
+                if persistent:
+                    control = SessionControl(
+                        process=process,
+                        sandbox_id=sandbox.object_id,
+                        stderr_task=stderr_task,
+                    )
+                    self._controls[chat_session_id] = control
+            else:
+                process = control.process
+                stderr_task = control.stderr_task
+            running_worker = RunningWorker(
+                process, request_id, claim, done=asyncio.Event()
             )
-            running_worker = RunningWorker(process, request_id, claim)
             self._processes[turn_id] = running_worker
             launch = {
                 "capability": capability.token,
@@ -702,11 +758,6 @@ class SandboxSessionManager:
                 "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
             }
 
-            async def drain_stderr() -> None:
-                async for _chunk in process.stderr:
-                    pass
-
-            stderr_task = asyncio.create_task(drain_stderr())
             async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
                 async for chunk in process.stdout:
                     buffer += chunk
@@ -725,7 +776,8 @@ class SandboxSessionManager:
                         )
                         if event["type"] == "worker_done":
                             terminal = True
-                            continue
+                            running_worker.done.set()
+                            break
                         if event["type"] == "workspace_ready":
                             elapsed_ms = round(
                                 (time.perf_counter() - turn_started) * 1000
@@ -758,7 +810,10 @@ class SandboxSessionManager:
                             for key, value in event.items()
                             if key not in {"v", "request_id"}
                         }
-                await process.wait.aio()
+                    if terminal:
+                        break
+                if not persistent:
+                    await process.wait.aio()
             if not terminal:
                 raise SandboxError(
                     "sandbox_worker_failed",
@@ -774,7 +829,9 @@ class SandboxSessionManager:
                 "sandbox_worker_failed", "The worker protocol failed", uncertain=True
             ) from error
         finally:
-            if stderr_task:
+            if stderr_task and not getattr(
+                self.settings, "chat_persistent_worker_enabled", False
+            ):
                 stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await stderr_task
@@ -806,7 +863,10 @@ class SandboxSessionManager:
         await process.stdin.drain.aio()
         try:
             async with asyncio.timeout(self.settings.chat_cancel_grace_seconds):
-                await process.wait.aio()
+                if running.done is not None:
+                    await running.done.wait()
+                else:
+                    await process.wait.aio()
         except TimeoutError:
             await self._terminate_worker(
                 chat_session_id,
@@ -832,6 +892,7 @@ class SandboxSessionManager:
                     seconds=self.ready_timeout_seconds + 15
                 )
         if token_hash:
+            self._drop_control(chat_session_id)
             await self._terminate_owned_sandbox(
                 chat_session_id,
                 sandbox_id=sandbox_id,
@@ -867,6 +928,7 @@ class SandboxSessionManager:
         self, sandbox_id: str | None, snapshot_id: str | None
     ) -> None:
         if sandbox_id:
+            self._drop_control_by_sandbox(sandbox_id)
             try:
                 sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
                 await sandbox.terminate.aio(wait=False)
@@ -942,6 +1004,7 @@ class SandboxSessionManager:
                 # authoritative and the next sandbox safely starts empty.
                 pass
         try:
+            self._drop_control(chat_session_id)
             sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
             await sandbox.terminate.aio(wait=False)
         except Exception:
