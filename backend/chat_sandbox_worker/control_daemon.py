@@ -301,6 +301,45 @@ def _serve_turn(
         raise
 
 
+def _serve_connections(
+    server: socket.socket,
+    *,
+    broker: subprocess.Popen,
+    agent: subprocess.Popen,
+) -> None:
+    """Serve one active relay and let a new backend replace it only while idle."""
+
+    assigned_session_id: str | None = None
+    connection: socket.socket | None = None
+    try:
+        while broker.poll() is None and agent.poll() is None:
+            if connection is None:
+                connection, _ = server.accept()
+            readable, _, _ = select.select([connection, server], [], [], 1)
+            if connection in readable:
+                if not connection.recv(1, socket.MSG_PEEK):
+                    connection.close()
+                    connection = None
+                    continue
+                assigned = _serve_turn(
+                    connection,
+                    broker=broker,
+                    agent=agent,
+                    assigned_session_id=assigned_session_id,
+                )
+                if assigned:
+                    assigned_session_id = assigned
+                continue
+            if server in readable:
+                replacement, _ = server.accept()
+                connection.close()
+                connection = replacement
+        raise RuntimeError("Persistent worker child exited")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def main() -> int:
     _not_dumpable()
     _harden_proc()
@@ -310,22 +349,9 @@ def main() -> int:
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(CONTROL_SOCKET))
     CONTROL_SOCKET.chmod(0o600)
-    server.listen(1)
-    assigned_session_id: str | None = None
+    server.listen(2)
     try:
-        while broker.poll() is None and agent.poll() is None:
-            connection, _ = server.accept()
-            with connection:
-                while connection.recv(1, socket.MSG_PEEK):
-                    assigned = _serve_turn(
-                        connection,
-                        broker=broker,
-                        agent=agent,
-                        assigned_session_id=assigned_session_id,
-                    )
-                    if assigned:
-                        assigned_session_id = assigned
-        raise RuntimeError("Persistent worker child exited")
+        _serve_connections(server, broker=broker, agent=agent)
     finally:
         server.close()
         CONTROL_SOCKET.unlink(missing_ok=True)

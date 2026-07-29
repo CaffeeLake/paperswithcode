@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
@@ -271,6 +272,68 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
     finally:
         daemon_side.close()
         relay_side.close()
+
+
+def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path):
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+    monkeypatch.setattr(
+        control_daemon,
+        "_broker_control",
+        lambda payload: {"ok": True, "active": False}
+        if payload == {"operation": "status"}
+        else None,
+    )
+    stopped = threading.Event()
+    child = SimpleNamespace(poll=lambda: 1 if stopped.is_set() else None)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(tmp_path / "control.sock"))
+    server.listen(2)
+    errors: list[BaseException] = []
+
+    def serve():
+        try:
+            control_daemon._serve_connections(server, broker=child, agent=child)
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    second = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        first.connect(str(tmp_path / "control.sock"))
+        second.connect(str(tmp_path / "control.sock"))
+        request_id = f"health-{uuid.uuid4()}"
+        second.sendall(
+            supervisor.SUPERVISOR_PREFIX
+            + json.dumps(
+                {
+                    "operation": "ping",
+                    "worker_generation": "generation-a",
+                    "request_id": request_id,
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        second.settimeout(2)
+        assert decode_frame(second.recv(4096)) == {
+            "v": 1,
+            "type": "worker_health",
+            "request_id": request_id,
+            "assigned": False,
+        }
+        first.settimeout(2)
+        assert first.recv(1) == b""
+    finally:
+        stopped.set()
+        first.close()
+        second.close()
+        thread.join(timeout=3)
+        server.close()
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
 
 
 def test_persistent_control_reports_content_free_failure_stage(monkeypatch):
@@ -1245,7 +1308,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-BeRQFqg3pA1NwHmXZReTwT"
+    assert MODAL_IMAGE_ID == "im-4OeAJaecYcTGaVvI4Fm8bv"
 
 
 def test_task_catalog_is_bounded_and_ranked():
