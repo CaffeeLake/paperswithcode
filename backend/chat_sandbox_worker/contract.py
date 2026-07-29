@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "5"
+WORKER_CONTRACT_VERSION = "6"
 SDK_VERSION = "0.2.115"
 PWC_CLI_VERSION = "0.1.3"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"

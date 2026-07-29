@@ -535,6 +535,7 @@ def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
 def test_system_prompt_prevents_unsupported_method_search_flags():
     prompt = render()
 
+    assert "use `--page-size`, never `--limit`" in prompt
     assert "This subcommand has no `--search` or `--limit` flag" in prompt
     assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
 
