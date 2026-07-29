@@ -1,6 +1,21 @@
 import React from "react";
 
-import { HuggingFaceLogo, Icon } from "@/components";
+import { Icon } from "@/components";
+
+const HfMonochromeLogo = () => (
+  <span className="hf-resource-logo">
+    <img
+      className="hf-resource-logo-black"
+      src="/hf-logo-monochrome-black.svg?v=20260729"
+      alt=""
+    />
+    <img
+      className="hf-resource-logo-white"
+      src="/hf-logo-monochrome-white.svg?v=20260729"
+      alt=""
+    />
+  </span>
+);
 
 const FeedFilterToggle: React.FC<{
   checked: boolean;
@@ -18,11 +33,12 @@ const FeedFilterToggle: React.FC<{
       {icon}
     </span>
     {label}
-    {checked && (
-      <span className="paper-feed-filter-check" aria-hidden="true">
-        ✓
-      </span>
-    )}
+    <span
+      className={`paper-feed-filter-check ${checked ? "" : "is-placeholder"}`}
+      aria-hidden="true"
+    >
+      {checked ? "✓" : ""}
+    </span>
   </button>
 );
 
@@ -56,7 +72,7 @@ export const PaperFeedFilters: React.FC<{
       />
       <FeedFilterToggle
         checked={hasHfArtifacts}
-        icon={<HuggingFaceLogo size={15} />}
+        icon={<HfMonochromeLogo />}
         label="Has artifacts"
         onChange={onHasHfArtifactsChange}
       />

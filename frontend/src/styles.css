@@ -790,8 +790,27 @@ a.paper-resource.is-link:focus-visible {
   color: currentColor;
   filter: grayscale(1);
 }
-.paper-feed-filter.active .paper-feed-filter-icon {
-  filter: grayscale(1) brightness(0) invert(1);
+.hf-resource-logo {
+  position: relative;
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+}
+.hf-resource-logo img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.hf-resource-logo-white {
+  visibility: hidden;
+}
+.paper-feed-filter.active .hf-resource-logo-black {
+  visibility: hidden;
+}
+.paper-feed-filter.active .hf-resource-logo-white {
+  visibility: visible;
 }
 .paper-feed-filter-check {
   display: inline-flex;
@@ -804,6 +823,9 @@ a.paper-resource.is-link:focus-visible {
   color: currentColor;
   font-size: 10px;
   line-height: 1;
+}
+.paper-feed-filter-check.is-placeholder {
+  visibility: hidden;
 }
 .home-feed-sort-bar {
   flex-wrap: wrap;
