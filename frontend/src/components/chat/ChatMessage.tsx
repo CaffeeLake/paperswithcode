@@ -21,6 +21,15 @@ import type {
 
 const Caret: React.FC = () => <span className="chat-caret" />;
 
+const isWaitingForAssistant = (msg: ChatMessageType): boolean => {
+  if (!msg.streaming) return false;
+  const last = msg.blocks?.at(-1);
+  if (!last) return true;
+  if (last.kind === "reasoning") return !last.active;
+  if (last.kind === "tool") return last.status !== "running";
+  return false;
+};
+
 const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
   if (event.button !== 0 || event.detail !== 2) return;
   event.preventDefault();
@@ -354,11 +363,6 @@ export const AssistantMessage: React.FC<{
 }> = ({ msg, papers, onToggleBlock }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
-      {msg.streaming && (msg.blocks?.length ?? 0) === 0 && (
-        <div className="chat-waiting" role="status" aria-live="polite">
-          <span className="chat-thinking">{msg.status ?? "Thinking…"}</span>
-        </div>
-      )}
       {msg.blocks?.map((b, i) => {
         const key = `${msg.id}-${i}`;
         const citationSnapshot =
@@ -394,6 +398,11 @@ export const AssistantMessage: React.FC<{
           />
         );
       })}
+      {isWaitingForAssistant(msg) && (
+        <div className="chat-waiting" role="status" aria-live="polite">
+          <span className="chat-thinking">{msg.status ?? "Thinking…"}</span>
+        </div>
+      )}
       {msg.error && <div className="chat-error">The assistant hit an error: {msg.error}</div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (
         <div className="chat-finish-note">

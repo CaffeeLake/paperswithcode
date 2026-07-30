@@ -178,6 +178,64 @@ describe("AssistantMessage", () => {
     );
   });
 
+  it.each([
+    {
+      name: "completed reasoning",
+      block: { kind: "reasoning", text: "Checked the evidence.", active: false, open: false } as const,
+    },
+    {
+      name: "completed tool call",
+      block: {
+        kind: "tool",
+        id: "tool-1",
+        name: "search_papers",
+        args: {},
+        status: "success",
+        open: false,
+      } as const,
+    },
+  ])("shows thinking after a $name while waiting for the next step", ({ block }) => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [block],
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+  });
+
+  it.each([
+    {
+      name: "active reasoning",
+      block: { kind: "reasoning", text: "Still checking.", active: true, open: true } as const,
+    },
+    {
+      name: "running tool call",
+      block: {
+        kind: "tool",
+        id: "tool-1",
+        name: "search_papers",
+        args: {},
+        status: "running",
+        open: false,
+      } as const,
+    },
+    {
+      name: "streaming answer",
+      block: { kind: "answer", text: "The result is", done: false } as const,
+    },
+  ])("does not add a waiting status during $name", ({ block }) => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      blocks: [block],
+    });
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("shows a caret only on the active tail answer block", () => {
     const { container } = renderAssistant({
       id: "assistant-1",
