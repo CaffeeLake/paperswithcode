@@ -207,6 +207,32 @@ def test_organization_papers_trending_composite_ranks_by_paper_score(
     assert data["count"] == 4
 
 
+def test_paper_detail_includes_manually_curated_organization(org_client):
+    db = TestingSessionLocal()
+    try:
+        link = (
+            db.query(PaperOrganization)
+            .filter(
+                PaperOrganization.paper_id == 1,
+                PaperOrganization.organization_id == 1,
+            )
+            .one()
+        )
+        link.source = "manual"
+        db.commit()
+    finally:
+        db.close()
+
+    response = org_client.get("/api/v1/papers/2025.20001")
+
+    assert response.status_code == 200
+    organizations = response.json()["organizations"]
+    assert len(organizations) == 1
+    assert organizations[0]["id"] == "1"
+    assert organizations[0]["name"] == "Acme"
+    assert organizations[0]["slug"] == "acme"
+
+
 def test_organization_papers_trending_github_ranks_by_repo_velocity(
     org_client, monkeypatch
 ):

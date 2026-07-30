@@ -431,7 +431,6 @@ class PaperService:
                     DBPaperOrganization.organization_id == DBOrganization.id,
                 )
                 .filter(DBPaperOrganization.paper_id.in_(unique_ids))
-                .filter(DBPaperOrganization.source == "hf_org_papers")
                 .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
                 .all()
             )
