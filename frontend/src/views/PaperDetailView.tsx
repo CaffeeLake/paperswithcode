@@ -250,8 +250,8 @@ const PaperDetailView: React.FC = () => {
     [paper?.hf_models, paper?.hf_datasets, paper?.hf_spaces],
   );
   // Combine explicitly linked HF artifacts with those discovered via the Hub
-  // arXiv endpoint (deduped), then cap each category to the top few links. The
-  // full count stays reachable via the clickable count on each row.
+  // arXiv endpoint. HfRow keeps the initial display compact while retaining the
+  // full deduplicated list for its inline "View all" control.
   const hfArtifactLinks = useMemo(() => {
     const buildLinks = (
       explicit: string[],
@@ -264,7 +264,6 @@ const PaperDetailView: React.FC = () => {
         if (seen.has(href)) continue;
         seen.add(href);
         links.push({ href, label: formatResourceLinkLabel(href, fallbackLabel) });
-        if (links.length >= HF_LINK_PREVIEW_LIMIT) break;
       }
       return links;
     };
@@ -1735,7 +1734,10 @@ const HuggingFaceArtifactsCard: React.FC<{
 );
 
 const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) => {
+  const [expanded, setExpanded] = useState(false);
   const hasLinks = (links?.length ?? 0) > 0;
+  const canExpand = (links?.length ?? 0) > HF_LINK_PREVIEW_LIMIT;
+  const visibleLinks = expanded ? links : links?.slice(0, HF_LINK_PREVIEW_LIMIT);
   const countLabel = count != null ? `${count}${isLimited ? "+" : ""}` : "—";
   // Prefer an explicit repo URL when we have one. Otherwise the count links to
   // the aggregate listing on Hugging Face (e.g. models?other=arxiv:<id>) so the
@@ -1762,11 +1764,21 @@ const HfRow: React.FC<HfRowProps> = ({ label, href, count, isLimited, links }) =
       </div>
       {hasLinks && (
         <div className="hf-artifact-links">
-          {links!.map((link) => (
+          {visibleLinks!.map((link) => (
             <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer">
               {link.label}
             </a>
           ))}
+          {canExpand && (
+            <button
+              type="button"
+              className="hf-artifact-toggle"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "Show fewer" : `View all ${links!.length}`}
+            </button>
+          )}
         </div>
       )}
     </div>

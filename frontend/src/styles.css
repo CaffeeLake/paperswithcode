@@ -1627,6 +1627,19 @@ a.paper-resource.is-link:focus-visible {
 .hf-artifact-links a:hover {
   text-decoration: underline;
 }
+.hf-artifact-toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font: inherit;
+  cursor: pointer;
+}
+.hf-artifact-toggle:hover {
+  color: var(--accent-text);
+}
 .sidebar-card-title .badge {
   font-family: var(--mono);
   font-size: 10px;
