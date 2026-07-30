@@ -1370,6 +1370,10 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert "The current UTC date is 2026-07-28." in prompt
     assert "Judge publication recency relative to this date." in prompt
     assert "at most 8 tool-use round trips" in prompt
+    assert "hard failure ceilings, not retrieval targets" in prompt
+    assert "within 6 round trips and 3 searches" in prompt
+    assert "title-based `pwc paper info` lookup can consume a search" in prompt
+    assert "If any tool reports a 429" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
@@ -1388,7 +1392,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-RwYV9XoNy5CEYFQBpSsUN1"
+    assert MODAL_IMAGE_ID == "im-sMvDRom178SPLvwYplhjZV"
 
 
 def test_task_catalog_is_bounded_and_ranked():

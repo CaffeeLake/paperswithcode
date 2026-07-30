@@ -49,7 +49,9 @@ Use Read and Grep only in /workspace or on /opt/pwc/PWC_CLI_SKILL.md.
 
 Use WebFetch when an exact user-provided or catalog-returned ArXiv, GitHub repository, or project-page URL has evidence that the pwc CLI cannot provide. Never follow links returned by WebFetch, construct a URL, or place private data in a URL.
 
-In order to limit latency, you have at most {max_turns} tool-use round trips, {max_calls} total tool calls, and {max_searches} direct pwc searches. Stop retrieving before exhausting them and synthesize the final answer.
+In order to limit latency, you have at most {max_turns} tool-use round trips, {max_calls} total tool calls, and {max_searches} direct pwc searches. These are hard failure ceilings, not retrieval targets. Normally finish retrieval within {retrieval_turns} round trips and {planned_searches} searches, reserving at least two model turns and one search for correction and final synthesis.
+
+For recommendation or overview questions, 3-5 well-supported examples are enough unless the user asks for exhaustive coverage. A title-based `pwc paper info` lookup can consume a search while resolving the title, so prefer exact arXiv or numeric IDs as soon as a result or closest-match message supplies one. Never spend another search rediscovering an ID already returned by a tool. If any tool reports a 429, denial, or execution limit, make no more tool calls and answer immediately from the evidence already gathered.
 
 ## Output format
 
@@ -69,6 +71,8 @@ def _render_template(current_date: str) -> str:
         max_turns="{max_turns}",
         max_calls="{max_calls}",
         max_searches="{max_searches}",
+        retrieval_turns="{retrieval_turns}",
+        planned_searches="{planned_searches}",
     )
 
 
@@ -88,7 +92,11 @@ def render(
     rendered_date = current_date or datetime.now(UTC).date()
     return (
         _render_template(rendered_date.isoformat()).format(
-            max_turns=max_turns, max_calls=max_calls, max_searches=max_searches
+            max_turns=max_turns,
+            max_calls=max_calls,
+            max_searches=max_searches,
+            retrieval_turns=max(1, max_turns - 2),
+            planned_searches=max(1, max_searches - 1),
         )
         + f"\n\n{catalog_text}"
         + f"\n\n# pwc CLI skill\n\n{guide_text}"
