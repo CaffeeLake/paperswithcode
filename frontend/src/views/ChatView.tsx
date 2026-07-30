@@ -79,6 +79,7 @@ const ChatView: React.FC = () => {
   const manualTitleLockRef = useRef<Set<string>>(new Set());
   const sessionsLoadedRef = useRef(false);
   const routeSessionIdRef = useRef(routeSessionId);
+  const activeStreamSessionIdRef = useRef<string | null>(null);
   const loadedRouteSessionIdRef = useRef<string | null>(null);
   routeSessionIdRef.current = routeSessionId;
 
@@ -87,7 +88,15 @@ const ChatView: React.FC = () => {
     const showLoading = !sessionsLoadedRef.current;
     if (showLoading) setSessionsLoading(true);
     try {
-      setSessions(await listSessions());
+      const fetched = await listSessions();
+      setSessions((previous) => {
+        const activeId = activeStreamSessionIdRef.current;
+        const active = activeId ? previous.find((session) => session.id === activeId) : undefined;
+        if (!active) return fetched;
+        const saved = fetched.find((session) => session.id === activeId);
+        const inProgress = saved ? { ...saved, title: active.title, is_busy: true } : active;
+        return [inProgress, ...fetched.filter((session) => session.id !== activeId)];
+      });
       sessionsLoadedRef.current = true;
       setSessionError("");
     } catch (error) {
@@ -101,19 +110,41 @@ const ChatView: React.FC = () => {
     sessionId: routeSessionId ?? null,
     initialModel: selectedModel,
     onSessionId: (id) => {
-      // A newly created session is already present in local state; do not hide
-      // its in-progress response behind the saved-session loading screen.
+      activeStreamSessionIdRef.current = id;
+      const isNewSession = id !== routeSessionIdRef.current;
+      const now = new Date().toISOString();
+      setSessions((previous) => previous.some((session) => session.id === id)
+        ? previous.map((session) => session.id === id ? { ...session, is_busy: true } : session)
+        : [{
+            id,
+            title: "New chat",
+            selected_model: selectedModel,
+            created_at: now,
+            updated_at: now,
+            message_count: 1,
+            is_busy: true,
+          }, ...previous]);
+      if (isNewSession) setLiveTitle("New chat");
+      // Keep the in-progress response visible while the route catches up with
+      // the newly persisted session announced by the SSE stream.
       loadedRouteSessionIdRef.current = id;
       setRouteSessionState({ id, status: "loaded" });
       navigate(`/chat/${id}`, { replace: true });
     },
     onTitle: (title) => {
-      if (routeSessionId && !manualTitleLockRef.current.has(routeSessionId)) {
+      const sessionId = activeStreamSessionIdRef.current ?? routeSessionIdRef.current;
+      if (sessionId && !manualTitleLockRef.current.has(sessionId)) {
         setLiveTitle(title);
-        setSessions((previous) => previous.map((session) => session.id === routeSessionId ? { ...session, title } : session));
+        setSessions((previous) => previous.map((session) => session.id === sessionId ? { ...session, title } : session));
       }
     },
-    onSettled: () => {
+    onSettled: (sessionId) => {
+      if (sessionId) {
+        setSessions((previous) => previous.map((session) => session.id === sessionId
+          ? { ...session, is_busy: false }
+          : session));
+      }
+      activeStreamSessionIdRef.current = null;
       void refreshSessions();
     },
     onInterrupted: (text) => {
@@ -249,7 +280,13 @@ const ChatView: React.FC = () => {
     return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", onKey); };
   }, [sessionMenu]);
 
-  const newChat = () => { chat.reset(); setDraft(""); setLiveTitle(""); navigate("/chat"); };
+  const newChat = () => {
+    activeStreamSessionIdRef.current = null;
+    chat.reset();
+    setDraft("");
+    setLiveTitle("");
+    navigate("/chat");
+  };
   const saveRename = async (id: string) => {
     const title = editingTitle.trim();
     if (!title) return;

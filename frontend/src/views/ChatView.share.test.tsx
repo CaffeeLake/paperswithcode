@@ -1,11 +1,12 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   busy: false,
+  authUser: { username: "owner", hf_user_id: "hf-owner" },
   messages: [{
     id: "user-1",
     role: "user" as const,
@@ -25,25 +26,33 @@ const mocks = vi.hoisted(() => ({
   createShare: vi.fn(),
   toast: vi.fn(),
   clipboardWrite: vi.fn(),
+  chatOptions: null as {
+    onSessionId: (id: string) => void;
+    onTitle: (title: string) => void;
+    onSettled: (id: string | null) => void;
+  } | null,
 }));
 
 vi.mock("@/hooks/useChat", () => ({
-  useChat: () => ({
-    busy: mocks.busy,
-    messages: mocks.messages,
-    papers: {},
-    sessionError: "",
-    load: mocks.load,
-    reset: mocks.reset,
-    send: mocks.send,
-    stop: mocks.stop,
-    toggleBlock: mocks.toggleBlock,
-    editAndResend: mocks.editAndResend,
-  }),
+  useChat: (options: NonNullable<typeof mocks.chatOptions>) => {
+    mocks.chatOptions = options;
+    return {
+      busy: mocks.busy,
+      messages: mocks.messages,
+      papers: {},
+      sessionError: "",
+      load: mocks.load,
+      reset: mocks.reset,
+      send: mocks.send,
+      stop: mocks.stop,
+      toggleBlock: mocks.toggleBlock,
+      editAndResend: mocks.editAndResend,
+    };
+  },
 }));
 vi.mock("@/lib/authContext", () => ({
   useAuth: () => ({
-    user: { username: "owner", hf_user_id: "hf-owner" },
+    user: mocks.authUser,
     isLoading: false,
   }),
 }));
@@ -91,6 +100,7 @@ function renderChat(path = `/chat/${sessionId}`) {
 
 beforeEach(() => {
   mocks.busy = false;
+  mocks.chatOptions = null;
   mocks.load.mockReset();
   mocks.getSession.mockReset().mockResolvedValue({
     ...session,
@@ -234,5 +244,19 @@ describe("ChatView focus refresh", () => {
     await waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
     expect(mocks.getSession).not.toHaveBeenCalled();
     expect(mocks.load).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatView new-session sidebar", () => {
+  it("inserts the session at stream start and applies streamed title deltas", async () => {
+    mocks.listSessions.mockResolvedValue([]);
+    renderChat("/chat");
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+
+    act(() => mocks.chatOptions?.onSessionId(sessionId));
+    expect(await screen.findByText("New chat", { selector: ".chat-session-title" })).toBeInTheDocument();
+
+    act(() => mocks.chatOptions?.onTitle("Good OCR Models"));
+    expect(screen.getByText("Good OCR Models", { selector: ".chat-session-title" })).toBeInTheDocument();
   });
 });
