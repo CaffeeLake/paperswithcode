@@ -118,7 +118,15 @@ def operator_socket_allowed(scope: dict) -> bool:
 
     if os.environ.get("PWC_DEPLOY_TESTING") == "1":
         return True
-    if not os.environ.get("PWC_BACKEND_SOCKET"):
+    socket_path = os.environ.get("PWC_BACKEND_SOCKET")
+    if not socket_path:
         return False
     server = scope.get("server")
-    return server is None or isinstance(server, str)
+    if isinstance(server, str):
+        return server == socket_path
+    return (
+        isinstance(server, (list, tuple))
+        and len(server) == 2
+        and server[0] == socket_path
+        and server[1] is None
+    )

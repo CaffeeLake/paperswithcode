@@ -116,6 +116,25 @@ def test_unix_operator_endpoints_have_request_injected(
     assert undrained.status_code == 200
 
 
+def test_operator_endpoints_require_exact_unix_listener(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("PWC_DEPLOY_TESTING", raising=False)
+    monkeypatch.setenv("PWC_BACKEND_SOCKET", "/run/paperswithcode/staging-blue.sock")
+
+    assert lifecycle_module.operator_socket_allowed(
+        {"server": ("/run/paperswithcode/staging-blue.sock", None)}
+    )
+    assert lifecycle_module.operator_socket_allowed(
+        {"server": "/run/paperswithcode/staging-blue.sock"}
+    )
+    assert not lifecycle_module.operator_socket_allowed({"server": ("127.0.0.1", 8001)})
+    assert not lifecycle_module.operator_socket_allowed(
+        {"server": ("/run/paperswithcode/staging-green.sock", None)}
+    )
+    assert not lifecycle_module.operator_socket_allowed({"server": None})
+
+
 def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
     release = tmp_path / "release"
     release.mkdir()
