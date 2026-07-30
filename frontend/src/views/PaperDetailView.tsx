@@ -1497,18 +1497,10 @@ const PaperDetailView: React.FC = () => {
           )}
 
           {/* Hugging Face block */}
-          <div>
-            <div className="mb-2 flex justify-end">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => openEdit("hf-artifacts")}
-              >
-                Edit Hugging Face links
-              </Button>
-            </div>
-            <HuggingFaceArtifactsCard viewer={hfArtifactViewer} />
-          </div>
+          <HuggingFaceArtifactsCard
+            viewer={hfArtifactViewer}
+            onEdit={() => openEdit("hf-artifacts")}
+          />
 
           <CopyToBucketCard
             githubUrls={sortedRepos.map((repository) => repository.url)}
@@ -1700,7 +1692,8 @@ interface HuggingFaceArtifactsViewer {
 
 const HuggingFaceArtifactsCard: React.FC<{
   viewer: HuggingFaceArtifactsViewer;
-}> = ({ viewer }) => (
+  onEdit: () => void;
+}> = ({ viewer, onEdit }) => (
   <div className="sidebar-card">
     <div className="sidebar-card-title">
       {viewer.paperHref ? (
@@ -1715,6 +1708,9 @@ const HuggingFaceArtifactsCard: React.FC<{
       ) : (
         <span>🤗 Hugging Face</span>
       )}
+      <button type="button" onClick={onEdit} className="edit-link">
+        edit
+      </button>
     </div>
     {viewer.isLoading ? (
       <Skeleton className="h-16 w-full" />
