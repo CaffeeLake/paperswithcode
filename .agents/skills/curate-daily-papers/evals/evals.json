@@ -1,0 +1,30 @@
+{
+  "skill_name": "curate-daily-papers",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Dry-run yesterday's Papers With Code daily-paper curation. Do not write to the database; report the exact cohort and proposed tag/eval changes.",
+      "expected_output": "A read-only proposal based on the exact Hugging Face daily list, with explicit eligibility and duplicate checks.",
+      "files": [],
+      "expectations": [
+        "Uses the Hugging Face daily-paper list rather than a publication-date database query",
+        "Makes no database writes because the prompt requests a dry run",
+        "Rejects comparator or external evaluations",
+        "Checks that benchmark, task association, and metric already exist",
+        "Checks for paper-plus-leaderboard duplicates"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Curate the daily imports for 2026-07-17 and 2026-07-18. Clean false-positive tags and add only safe evals, then report every change.",
+      "expected_output": "A scoped two-day curation with conservative tags, paper-native non-duplicate evals, verification, and a per-paper report.",
+      "files": [],
+      "expectations": [
+        "Builds the cohort as the de-duplicated union of both requested HF daily lists",
+        "Uses only existing taxonomy and leaderboard entities",
+        "Preserves valid existing tags while reporting every removal",
+        "Verifies non-external source URLs, ranks, and duplicates after writes"
+      ]
+    }
+  ]
+}
