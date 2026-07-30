@@ -52,10 +52,11 @@ async def _turn(
     session_id: str | None = None,
     initial_model: str | None = None,
     cancel_mode: str | None = None,
+    message: str | None = None,
 ) -> TurnResult:
     token = _token(settings, subject)
     payload: dict[str, Any] = {
-        "message": LONG_PROMPT if cancel_mode is not None else PROMPT,
+        "message": message or (LONG_PROMPT if cancel_mode is not None else PROMPT),
         "client_message_id": str(uuid.uuid4()),
     }
     if session_id is not None:
@@ -70,7 +71,7 @@ async def _turn(
     cancel_sent = False
     forced_termination = False
     started = time.perf_counter()
-    async with staging_client(
+    async with staging_client(  # noqa: SIM117
         timeout=240,
         cookies={settings.session_cookie_name: token},
     ) as client:

@@ -57,5 +57,9 @@ def test_staging_qualification_client_uses_active_slot_socket(tmp_path, monkeypa
 
 def test_qualification_scripts_do_not_reference_retired_fixed_port():
     scripts = Path(__file__).resolve().parents[1] / "scripts"
-    for name in ("qualify_chat_soak.py", "qualify_chat_pool.py"):
+    for name in (
+        "qualify_chat_soak.py",
+        "qualify_chat_pool.py",
+        "qualify_chat_cutover.py",
+    ):
         assert "127.0.0.1:8001" not in (scripts / name).read_text()
