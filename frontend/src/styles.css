@@ -5990,7 +5990,7 @@ html { scroll-behavior: smooth; }
 
 /* Hugging Face repository hover preview */
 .hf-preview-pop.hf-preview-pop {
-  width: min(512px, calc(100vw - 24px));
+  width: min(172px, calc(100vw - 24px));
   padding: 0;
   border: 1px solid var(--hairline);
   border-radius: 12px;
@@ -6004,7 +6004,7 @@ html { scroll-behavior: smooth; }
 .hf-preview-fallback {
   display: block;
   width: 100%;
-  height: 144px;
+  aspect-ratio: 2 / 1;
   object-fit: cover;
   background: var(--bg-subtle);
 }
