@@ -152,7 +152,7 @@ describe("AssistantMessage", () => {
     <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
   );
 
-  it("does not show an immediate status for an empty streaming message", () => {
+  it("shows a thinking status while waiting for the first streamed block", () => {
     renderAssistant({
       id: "assistant-1",
       role: "assistant",
@@ -160,8 +160,8 @@ describe("AssistantMessage", () => {
       blocks: [],
     });
 
-    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+    expect(screen.getByText("Thinking…")).toHaveClass("chat-thinking");
   });
 
   it("renders the delayed workspace status accessibly", () => {

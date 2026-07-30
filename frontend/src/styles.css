@@ -5506,6 +5506,38 @@ html { scroll-behavior: smooth; }
 }
 .chat-msg-blocks { display: flex; flex-direction: column; gap: 14px; }
 
+.chat-waiting {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+.chat-thinking {
+  color: transparent;
+  background: linear-gradient(
+    100deg,
+    var(--ink-faint) 30%,
+    var(--accent-text) 50%,
+    var(--ink-faint) 70%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: chat-thinking-glow 1.8s ease-in-out infinite;
+}
+@keyframes chat-thinking-glow {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-thinking {
+    color: var(--accent-text);
+    background: none;
+    animation: none;
+  }
+}
+
 /* reasoning blocks */
 .chat-reason-live {
   border: 1px solid var(--hairline);

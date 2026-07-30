@@ -354,9 +354,9 @@ export const AssistantMessage: React.FC<{
 }> = ({ msg, papers, onToggleBlock }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
-      {msg.streaming && (msg.blocks?.length ?? 0) === 0 && msg.status && (
-        <div className="chat-reason-live-head" role="status" aria-live="polite">
-          <Spinner /> <span>{msg.status}</span>
+      {msg.streaming && (msg.blocks?.length ?? 0) === 0 && (
+        <div className="chat-waiting" role="status" aria-live="polite">
+          <span className="chat-thinking">{msg.status ?? "Thinking…"}</span>
         </div>
       )}
       {msg.blocks?.map((b, i) => {
