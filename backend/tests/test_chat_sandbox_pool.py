@@ -599,6 +599,152 @@ def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
     assert new_lease.modal_sandbox_id == "sb-new"
 
 
+def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity(monkeypatch):
+    factory = _database()
+    settings = _settings()
+    old_id, resumed_id = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    with factory() as db, db.begin():
+        db.add_all(
+            [
+                _session(old_id),
+                _session(resumed_id),
+                _blank(settings),
+                ChatSandboxLease(
+                    chat_session_id=old_id,
+                    modal_sandbox_id="sb-old",
+                    app_release_id=settings.release_id,
+                    image_version=settings.chat_modal_image_version,
+                    worker_contract_version=settings.chat_worker_contract_version,
+                    worker_generation="generation-old",
+                    state="idle",
+                    last_activity_at=now - timedelta(minutes=1),
+                    created_at=now - timedelta(minutes=2),
+                    updated_at=now,
+                ),
+                ChatSandboxLease(
+                    chat_session_id=resumed_id,
+                    modal_sandbox_id=None,
+                    app_release_id=settings.release_id,
+                    image_version=settings.chat_modal_image_version,
+                    worker_contract_version=settings.chat_worker_contract_version,
+                    worker_generation="generation-terminated",
+                    state="terminated",
+                    last_activity_at=now - timedelta(seconds=30),
+                    created_at=now - timedelta(minutes=1),
+                    updated_at=now,
+                ),
+            ]
+        )
+    manager = _manager(factory, settings)
+    manager._lock_start_claim = lambda *_args: None
+    evicted: list[uuid.UUID] = []
+
+    async def evict(session_id: uuid.UUID):
+        evicted.append(session_id)
+        with factory() as db, db.begin():
+            lease = db.get(ChatSandboxLease, session_id)
+            lease.modal_sandbox_id = None
+            lease.state = "terminated"
+        return True
+
+    manager.snapshot_and_terminate = evict
+    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+
+    class Sandbox:
+        object_id = "sb-resumed"
+        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
+
+    async def create(*_args, **_kwargs):
+        return Sandbox()
+
+    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+
+    result = asyncio.run(manager.ensure_ready(resumed_id, allow_pool=False))
+
+    assert evicted == [old_id]
+    assert result[0].object_id == "sb-resumed"
+    assert result[3] == "created"
+    with factory() as db:
+        old_lease = db.get(ChatSandboxLease, old_id)
+        resumed_lease = db.get(ChatSandboxLease, resumed_id)
+        live_leases = (
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxLease)
+                .where(
+                    ChatSandboxLease.state.in_(
+                        ["starting", "ready", "busy", "idle", "terminating"]
+                    )
+                )
+            )
+            or 0
+        )
+        live_pool = (
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.state.in_(["starting", "blank_ready", "draining"])
+                )
+            )
+            or 0
+        )
+    assert old_lease.state == "terminated"
+    assert resumed_lease.state == "ready"
+    assert resumed_lease.modal_sandbox_id == "sb-resumed"
+    assert live_leases + live_pool == settings.chat_sandbox_total_live_cap
+
+
+def test_terminated_session_resume_rejects_capacity_without_idle_worker():
+    factory = _database()
+    settings = _settings()
+    busy_id, resumed_id = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    with factory() as db, db.begin():
+        db.add_all(
+            [
+                _session(busy_id),
+                _session(resumed_id),
+                _blank(settings),
+                ChatSandboxLease(
+                    chat_session_id=busy_id,
+                    modal_sandbox_id="sb-busy",
+                    app_release_id=settings.release_id,
+                    image_version=settings.chat_modal_image_version,
+                    worker_contract_version=settings.chat_worker_contract_version,
+                    worker_generation="generation-busy",
+                    state="busy",
+                    last_activity_at=now,
+                    created_at=now - timedelta(minutes=1),
+                    updated_at=now,
+                ),
+                ChatSandboxLease(
+                    chat_session_id=resumed_id,
+                    modal_sandbox_id=None,
+                    app_release_id=settings.release_id,
+                    image_version=settings.chat_modal_image_version,
+                    worker_contract_version=settings.chat_worker_contract_version,
+                    worker_generation="generation-terminated",
+                    state="terminated",
+                    last_activity_at=now - timedelta(seconds=30),
+                    created_at=now - timedelta(minutes=1),
+                    updated_at=now,
+                ),
+            ]
+        )
+    manager = _manager(factory, settings)
+    manager._lock_start_claim = lambda *_args: None
+
+    with pytest.raises(SandboxError, match="capacity"):
+        asyncio.run(manager.ensure_ready(resumed_id, allow_pool=False))
+
+    with factory() as db:
+        resumed_lease = db.get(ChatSandboxLease, resumed_id)
+    assert resumed_lease.state == "terminated"
+    assert resumed_lease.modal_sandbox_id is None
+
+
 def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
     request_id = str(uuid.uuid4())
     session_id = uuid.uuid4()

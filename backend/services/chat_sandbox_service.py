@@ -1245,7 +1245,13 @@ class SandboxSessionManager:
                     and self._unexpired(lease, now)
                 ):
                     waiting_for_owner = True
-                elif lease is None:
+                elif lease is None or lease.state not in {
+                    "starting",
+                    "ready",
+                    "busy",
+                    "idle",
+                    "terminating",
+                }:
                     if self.blank_pool_enabled:
                         live_assigned = (
                             db.scalar(
@@ -1293,28 +1299,35 @@ class SandboxSessionManager:
                                     "Secure workspace capacity is temporarily full",
                                 )
                     if evict_session_id is None:
-                        token_hash = self._token_hash(creation_token)
-                        lease = ChatSandboxLease(
-                            chat_session_id=chat_session_id,
-                            app_release_id=self.settings.release_id,
-                            image_version=self.settings.chat_modal_image_version,
-                            worker_contract_version=(
-                                self.settings.chat_worker_contract_version
-                            ),
-                            worker_generation=secrets.token_hex(16),
-                            state="starting",
-                            lease_token_hash=token_hash,
-                            lease_expires_at=now
-                            + timedelta(seconds=self.ready_timeout_seconds + 15),
-                            last_activity_at=now,
-                        )
-                        db.add(lease)
-                        claim = StartClaim(
-                            token_hash,
-                            None,
-                            None,
-                            lease.worker_generation or "",
-                        )
+                        if lease is None:
+                            token_hash = self._token_hash(creation_token)
+                            lease = ChatSandboxLease(
+                                chat_session_id=chat_session_id,
+                                app_release_id=self.settings.release_id,
+                                image_version=self.settings.chat_modal_image_version,
+                                worker_contract_version=(
+                                    self.settings.chat_worker_contract_version
+                                ),
+                                worker_generation=secrets.token_hex(16),
+                                state="starting",
+                                lease_token_hash=token_hash,
+                                lease_expires_at=now
+                                + timedelta(seconds=self.ready_timeout_seconds + 15),
+                                last_activity_at=now,
+                            )
+                            db.add(lease)
+                            claim = StartClaim(
+                                token_hash,
+                                None,
+                                None,
+                                lease.worker_generation or "",
+                            )
+                        else:
+                            claim = self._claim_start(
+                                lease,
+                                creation_token=creation_token,
+                                now=now,
+                            )
                 else:
                     claim = self._claim_start(
                         lease, creation_token=creation_token, now=now
