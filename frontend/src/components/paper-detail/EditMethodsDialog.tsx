@@ -14,7 +14,6 @@ import {
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 interface EditMethodsDialogProps {
@@ -308,7 +307,6 @@ export function EditMethodsDialog({
             </div>
           )}
         </div>
-        <CurationDiff before={initialMethodIds} after={selectedMethodIds} />
         <DialogFooter>
           <Button
             variant="ghost"

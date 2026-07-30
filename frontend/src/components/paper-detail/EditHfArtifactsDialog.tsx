@@ -15,7 +15,6 @@ import { submitPendingPaperEdit, updatePaperHfArtifacts } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 export interface HfArtifactsPayload {
   hf_models: string[];
@@ -311,7 +310,6 @@ export function EditHfArtifactsDialog({
           ))}
         </div>
 
-        <CurationDiff before={initialArtifacts} after={editedArtifacts} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

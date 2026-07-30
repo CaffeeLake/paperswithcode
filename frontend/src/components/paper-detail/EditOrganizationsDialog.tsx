@@ -16,7 +16,6 @@ import {
   updatePaperOrganizations,
 } from "@/lib/api";
 import { PendingEditNotice } from "./PendingEditNotice";
-import { CurationDiff } from "./CurationDiff";
 
 interface Props {
   open: boolean;
@@ -102,7 +101,6 @@ export const EditOrganizationsDialog = ({
             );
           })}
         </div>
-        <CurationDiff before={initialOrganizationIds} after={selected} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

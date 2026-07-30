@@ -218,7 +218,7 @@ const PaperDetailView: React.FC = () => {
       toast({
         title: "This section changed",
         description:
-          "The latest state has been reloaded. Review the updated before / after diff before submitting again.",
+          "The latest state has been reloaded. Review your changes before submitting again.",
         variant: "destructive",
       });
     };

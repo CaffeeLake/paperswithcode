@@ -10,7 +10,6 @@ import { githubUrlsMatch, normalizeGithubUrl } from "@/lib/github";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 interface Repository {
   url: string;
@@ -309,7 +308,6 @@ export function EditRepositoriesDialog({
           )}
         </div>
 
-        <CurationDiff before={initialRepositories} after={editedRepositories} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

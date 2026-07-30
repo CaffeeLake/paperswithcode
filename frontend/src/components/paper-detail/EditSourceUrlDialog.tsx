@@ -8,7 +8,6 @@ import { submitPendingPaperEdit, updatePaperSourceUrl } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 interface EditSourceUrlDialogProps {
   open: boolean;
@@ -152,7 +151,6 @@ export function EditSourceUrlDialog({
           )}
         </div>
 
-        <CurationDiff before={initialUrl} after={editedUrl} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

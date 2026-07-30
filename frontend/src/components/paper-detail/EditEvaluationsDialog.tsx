@@ -18,7 +18,6 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 import { SuggestTaxonomyDialog } from "@/components/paper-detail/SuggestTaxonomyDialog";
 
 const SEARCH_PAGE_SIZE = 100;
@@ -846,7 +845,6 @@ export function EditEvaluationsDialog({
           </div>
         </div>
 
-        <CurationDiff before={initialEvaluations} after={editedEvaluations} />
         <DialogFooter>
           <div className="flex flex-wrap gap-2 sm:mr-auto">
             <Button variant="ghost" onClick={() => setSuggestionKind("benchmark")}>

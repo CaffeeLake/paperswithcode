@@ -9,7 +9,6 @@ import { submitPendingPaperEdit, updatePaperProjectPages } from "@/lib/api";
 import { refreshPaperQueries } from "@/lib/queryInvalidation";
 import { useToast } from "@/hooks/use-toast";
 import { PendingEditNotice } from "@/components/paper-detail/PendingEditNotice";
-import { CurationDiff } from "@/components/paper-detail/CurationDiff";
 
 interface ProjectPage {
   url: string;
@@ -277,7 +276,6 @@ export function EditProjectPagesDialog({
           )}
         </div>
 
-        <CurationDiff before={initialProjectPages} after={editedProjectPages} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
