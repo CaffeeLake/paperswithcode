@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
 import modal
 from sqlalchemy import select
 
@@ -22,6 +21,7 @@ from backend.database.connection import db_manager
 from backend.models.database import ChatSandboxLease, ChatTurnLatency
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
+from backend.scripts.staging_qualification_http import client as staging_client
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_SOAK"
 PROMPT = "Reply with one concise acknowledgement."
@@ -70,13 +70,13 @@ async def _turn(
     cancel_sent = False
     forced_termination = False
     started = time.perf_counter()
-    async with httpx.AsyncClient(
+    async with staging_client(
         timeout=240,
         cookies={settings.session_cookie_name: token},
     ) as client:
         async with client.stream(
             "POST",
-            "http://127.0.0.1:8001/api/v1/chat/stream",
+            "/api/v1/chat/stream",
             json=payload,
         ) as response:
             response.raise_for_status()
@@ -108,8 +108,7 @@ async def _turn(
                             await sandbox.terminate.aio(wait=False)
                             forced_termination = True
                     cancel = await client.post(
-                        "http://127.0.0.1:8001/api/v1/chat/sessions/"
-                        f"{landed_session_id}/cancel"
+                        f"/api/v1/chat/sessions/{landed_session_id}/cancel"
                     )
                     cancel.raise_for_status()
                 if kind == "error":
@@ -176,13 +175,12 @@ async def _run(
         for followup_index in range(followups):
             if index == 0 and followup_index == 1 and len(model_choices) > 1:
                 token = _token(settings, subject)
-                async with httpx.AsyncClient(
+                async with staging_client(
                     timeout=30,
                     cookies={settings.session_cookie_name: token},
                 ) as client:
                     changed = await client.patch(
-                        "http://127.0.0.1:8001/api/v1/chat/sessions/"
-                        f"{first.session_id}",
+                        f"/api/v1/chat/sessions/{first.session_id}",
                         json={"selected_model": model_choices[1]["id"]},
                     )
                     changed.raise_for_status()
@@ -198,13 +196,11 @@ async def _run(
             normal_turns.append(followup_result)
         if index == 0:
             other_subject = f"soak-cross-owner-{run_id}"
-            async with httpx.AsyncClient(
+            async with staging_client(
                 timeout=30,
                 cookies={settings.session_cookie_name: _token(settings, other_subject)},
             ) as client:
-                denied = await client.get(
-                    f"http://127.0.0.1:8001/api/v1/chat/sessions/{first.session_id}"
-                )
+                denied = await client.get(f"/api/v1/chat/sessions/{first.session_id}")
                 cross_owner_rejected = denied.status_code == 404
 
     cancellations_landed: list[TurnResult] = []

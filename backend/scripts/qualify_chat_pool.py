@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.exc import NoResultFound
 
@@ -24,6 +23,7 @@ from backend.database.connection import db_manager
 from backend.models.database import ChatSandboxPool, ChatTurnLatency
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
+from backend.scripts.staging_qualification_http import client as staging_client
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
 
@@ -183,13 +183,13 @@ class PoolQualification:
         request_id: str | None = None
         terminal = "error"
         error_code: str | None = None
-        async with httpx.AsyncClient(
+        async with staging_client(
             timeout=240,
             cookies={self.settings.session_cookie_name: token},
         ) as client:
             async with client.stream(
                 "POST",
-                "http://127.0.0.1:8001/api/v1/chat/stream",
+                "/api/v1/chat/stream",
                 json=payload,
             ) as response:
                 response.raise_for_status()
