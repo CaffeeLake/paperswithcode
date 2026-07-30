@@ -583,6 +583,9 @@ def test_agent_options_expose_only_search(tmp_path):
     assert options.env["HF_BILL_TO"] == "huggingface"
     assert options.env["ANTHROPIC_CUSTOM_HEADERS"] == "X-HF-Bill-To: huggingface"
     assert "at most 2 times" in options.system_prompt
+    assert (
+        "[repo_id](https://huggingface.co/datasets/<repo_id>)" in options.system_prompt
+    )
 
 
 def test_failed_turn_keeps_partial_tool_projection():

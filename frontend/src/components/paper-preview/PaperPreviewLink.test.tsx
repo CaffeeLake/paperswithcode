@@ -237,4 +237,61 @@ describe("Markdown and chat policy", () => {
     expect(screen.queryByRole("link", { name: "Unknown" })).not.toBeInTheDocument();
     expect(mockedGetPaper).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "microsoft/Mage-VL",
+      href: "https://huggingface.co/microsoft/Mage-VL",
+      kind: "Hugging Face model",
+      thumbnail:
+        "https://cdn-thumbnails.huggingface.co/social-thumbnails/models/microsoft/Mage-VL.png",
+    },
+    {
+      label: "openai/gsm8k",
+      href: "https://huggingface.co/datasets/openai/gsm8k",
+      kind: "Hugging Face dataset",
+      thumbnail:
+        "https://cdn-thumbnails.huggingface.co/social-thumbnails/datasets/openai/gsm8k.png",
+    },
+  ])("renders and previews a canonical $kind link", async ({
+    label,
+    href,
+    kind,
+    thumbnail,
+  }) => {
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[${label}](${href})`}
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: label });
+    expect(link).toHaveAttribute("href", href);
+    expect(link).toHaveAttribute("target", "_blank");
+    await hoverLink(label);
+    expect(await screen.findByText(kind)).toBeInTheDocument();
+    expect(screen.getByTestId("hf-preview-image")).toHaveAttribute(
+      "src",
+      thumbnail,
+    );
+  });
+
+  it("continues to suppress non-repository external chat links", () => {
+    renderWithProviders(
+      <ChatMarkdown
+        text={
+          "[settings](https://huggingface.co/settings/profile) " +
+          "[external](https://example.com)"
+        }
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByText("settings")).toBeInTheDocument();
+    expect(screen.getByText("external")).toBeInTheDocument();
+  });
 });

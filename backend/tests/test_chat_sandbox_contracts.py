@@ -1222,6 +1222,7 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
     assert "use `--page-size`, never `--limit`" in prompt
     assert "This subcommand has no `--search` or `--limit` flag" in prompt
     assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
+    assert "[repo_id](https://huggingface.co/datasets/<repo_id>)" in prompt
 
 
 def test_tool_output_is_utf8_bounded_and_terminal_controls_are_inert():
@@ -1346,7 +1347,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-UuQTkPHoGnlDHvYqShNJwq"
+    assert MODAL_IMAGE_ID == "im-RwYV9XoNy5CEYFQBpSsUN1"
 
 
 def test_task_catalog_is_bounded_and_ranked():

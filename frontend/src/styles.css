@@ -5727,6 +5727,11 @@ html { scroll-behavior: smooth; }
   white-space: normal;
 }
 .chat-paper-link:hover { border-bottom-color: var(--accent-text); }
+.chat-hf-link::after {
+  content: " 🤗";
+  font-size: 0.85em;
+  white-space: nowrap;
+}
 .chat-error {
   border: 1px solid var(--negative-border);
   background: var(--negative-bg);
@@ -5900,6 +5905,49 @@ html { scroll-behavior: smooth; }
   background: var(--bg-subtle);
   border: 1px solid var(--hairline);
   border-radius: 2px;
+}
+
+/* Hugging Face repository hover preview */
+.hf-preview-pop.hf-preview-pop {
+  width: min(420px, calc(100vw - 24px));
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  color: var(--ink);
+  box-shadow: 0 14px 44px -12px rgba(30, 28, 20, 0.4);
+  overflow: hidden;
+}
+.hf-preview-card { display: grid; }
+.hf-preview-image,
+.hf-preview-fallback {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  object-fit: cover;
+  background: var(--bg-subtle);
+}
+.hf-preview-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 48px;
+  background:
+    radial-gradient(circle at 70% 35%, rgba(84, 104, 255, 0.4), transparent 45%),
+    linear-gradient(135deg, #0f6d79, #d18a48);
+}
+.hf-preview-meta {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px 14px;
+}
+.hf-preview-meta strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.hf-preview-kind,
+.hf-preview-meta > span:last-child {
+  color: var(--ink-faint);
+  font-size: 11.5px;
 }
 
 /* shared chat widgets */

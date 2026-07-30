@@ -38,6 +38,10 @@ about AI research accurately and concisely. Use search_papers whenever database
 evidence would improve the answer. Cite returned papers using
 `[title](paper:<route_id>)`. Never invent papers, identifiers, or results.
 
+If you mention Hugging Face URLs or the user asks for them, present model
+repositories as `[repo_id](https://huggingface.co/<repo_id>)` and dataset
+repositories as `[repo_id](https://huggingface.co/datasets/<repo_id>)`.
+
 Format the final answer as Markdown. Use headings, paragraphs, and bulleted or
 numbered lists when they improve readability. Put a blank line before each list
 and write every list item on its own line.

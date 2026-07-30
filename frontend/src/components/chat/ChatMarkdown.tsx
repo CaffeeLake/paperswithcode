@@ -19,6 +19,10 @@ import type {
   ChatCitation,
   ChatPaperHit,
 } from "@/lib/chat";
+import {
+  HuggingFacePreviewLink,
+  parseHuggingFaceRepoUrl,
+} from "@/components/chat/HuggingFacePreviewLink";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
 
@@ -120,6 +124,16 @@ export const ChatMarkdown: React.FC<{
               >
                 {children}
               </PaperCitation>
+            );
+          }
+          const huggingFaceRepo = href
+            ? parseHuggingFaceRepoUrl(href)
+            : null;
+          if (huggingFaceRepo) {
+            return (
+              <HuggingFacePreviewLink repo={huggingFaceRepo}>
+                {children}
+              </HuggingFacePreviewLink>
             );
           }
           return <span>{children}</span>;
