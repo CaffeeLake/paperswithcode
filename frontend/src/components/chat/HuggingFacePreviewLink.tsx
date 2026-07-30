@@ -5,6 +5,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { preloadImage } from "@/lib/imagePreloader";
 
 export interface HuggingFaceRepo {
   type: "model" | "dataset";
@@ -91,7 +92,7 @@ const HuggingFaceRepoCard: React.FC<{ repo: HuggingFaceRepo }> = ({ repo }) => {
           data-testid="hf-preview-image"
           src={repo.thumbnailUrl}
           alt=""
-          loading="lazy"
+          loading="eager"
           decoding="async"
           onError={() => setImageFailed(true)}
         />
@@ -112,6 +113,26 @@ export const HuggingFacePreviewLink: React.FC<{
   children: React.ReactNode;
 }> = ({ repo, children }) => {
   const [open, setOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLAnchorElement>(null);
+  const warmThumbnail = React.useCallback(() => {
+    void preloadImage(repo.thumbnailUrl);
+  }, [repo.thumbnailUrl]);
+
+  React.useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        warmThumbnail();
+        observer.disconnect();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(trigger);
+    return () => observer.disconnect();
+  }, [warmThumbnail]);
 
   return (
     <HoverCard
@@ -124,10 +145,13 @@ export const HuggingFacePreviewLink: React.FC<{
     >
       <HoverCardTrigger asChild>
         <a
+          ref={triggerRef}
           className="chat-paper-link chat-hf-link"
           href={repo.url}
           target="_blank"
           rel="noopener noreferrer"
+          onPointerEnter={warmThumbnail}
+          onFocus={warmThumbnail}
         >
           {children}
         </a>

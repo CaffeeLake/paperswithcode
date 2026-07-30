@@ -18,13 +18,18 @@ import MarkdownText from "@/components/MarkdownText";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
 import { getPaper, type Paper } from "@/lib/api";
+import { preloadImage } from "@/lib/imagePreloader";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, getPaper: vi.fn() };
 });
+vi.mock("@/lib/imagePreloader", () => ({
+  preloadImage: vi.fn().mockResolvedValue(undefined),
+}));
 
 const mockedGetPaper = vi.mocked(getPaper);
+const mockedPreloadImage = vi.mocked(preloadImage);
 
 const paper: Paper = {
   id: "42",
@@ -82,6 +87,7 @@ async function hoverLink(name: string) {
 beforeEach(() => {
   vi.restoreAllMocks();
   mockedGetPaper.mockReset();
+  mockedPreloadImage.mockClear();
 });
 
 describe("PaperPreviewLink", () => {
@@ -271,6 +277,7 @@ describe("Markdown and chat policy", () => {
     expect(link).toHaveAttribute("href", href);
     expect(link).toHaveAttribute("target", "_blank");
     await hoverLink(label);
+    expect(mockedPreloadImage).toHaveBeenCalledWith(thumbnail);
     expect(await screen.findByText(kind)).toBeInTheDocument();
     expect(screen.getByTestId("hf-preview-image")).toHaveAttribute(
       "src",

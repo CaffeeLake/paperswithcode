@@ -3,36 +3,35 @@
  * Preloads images to ensure they're cached before rendering
  */
 
+const pendingPreloads = new Map<string, Promise<void>>();
+
 /**
  * Preloads an image and returns a Promise that resolves when the image is loaded
  * @param imageUrl - The URL of the image to preload
  * @returns Promise that resolves when the image is loaded (or fails gracefully)
  */
 export const preloadImage = (imageUrl: string): Promise<void> => {
-  return new Promise((resolve) => {
-    // If no URL provided, resolve immediately
-    if (!imageUrl) {
-      resolve();
-      return;
-    }
+  if (!imageUrl) return Promise.resolve();
 
+  const pending = pendingPreloads.get(imageUrl);
+  if (pending) return pending;
+
+  const preload = new Promise<void>((resolve) => {
     const img = new Image();
 
-    // Resolve when image loads successfully
     img.onload = () => {
-      console.log(`[ImagePreloader] Successfully preloaded: ${imageUrl}`);
       resolve();
     };
 
-    // Also resolve on error to avoid blocking the UI
-    img.onerror = (error) => {
-      console.warn(`[ImagePreloader] Failed to preload image: ${imageUrl}`, error);
-      resolve(); // Still resolve to avoid blocking
+    img.onerror = () => {
+      pendingPreloads.delete(imageUrl);
+      resolve();
     };
 
-    // Start loading the image
     img.src = imageUrl;
   });
+  pendingPreloads.set(imageUrl, preload);
+  return preload;
 };
 
 /**
@@ -47,7 +46,5 @@ export const preloadImages = (imageUrls: string[]): Promise<void> => {
     return Promise.resolve();
   }
 
-  return Promise.all(validUrls.map(preloadImage)).then(() => {
-    console.log(`[ImagePreloader] Preloaded ${validUrls.length} images`);
-  });
+  return Promise.all(validUrls.map(preloadImage)).then(() => undefined);
 };
