@@ -77,7 +77,7 @@ const sessionId = "11111111-1111-4111-8111-111111111111";
 const session = {
   id: sessionId,
   title: "Private title",
-  selected_model: "openai/gpt-oss-120b",
+  selected_model: "google/gemma-4-31B-it",
   created_at: "2026-07-28T20:00:00Z",
   updated_at: "2026-07-28T20:00:00Z",
   message_count: 1,

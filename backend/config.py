@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     # Research chat (disabled until the isolated live qualification passes).
     chat_enabled: bool = Field(default=False)
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
-    chat_gpt_oss_route: str = Field(default="openai/gpt-oss-120b:cerebras")
+    chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
@@ -316,9 +316,9 @@ class Settings(BaseSettings):
     def chat_model_choices(self) -> tuple[dict[str, str], ...]:
         return (
             {
-                "id": "openai/gpt-oss-120b",
-                "label": "GPT-OSS 120B",
-                "route": self.chat_gpt_oss_route,
+                "id": "google/gemma-4-31B-it",
+                "label": "Gemma 4 31B",
+                "route": self.chat_gemma_route,
             },
             {
                 "id": "zai-org/GLM-5.2",
@@ -337,7 +337,8 @@ class Settings(BaseSettings):
         routes = {choice["id"]: choice["route"] for choice in self.chat_model_choices}
         # Existing staging sessions keep their stable selected-model ID while
         # following the replacement route.
-        routes["deepseek-ai/DeepSeek-V4-Flash"] = self.chat_gpt_oss_route
+        routes["openai/gpt-oss-120b"] = self.chat_gemma_route
+        routes["deepseek-ai/DeepSeek-V4-Flash"] = self.chat_gemma_route
         return routes
 
     # GitHub API configuration

@@ -67,7 +67,7 @@ def _session(session_id: uuid.UUID) -> ChatSession:
         id=session_id,
         hf_user_id=f"owner-{session_id}",
         hf_username=f"owner-{session_id}",
-        selected_model="openai/gpt-oss-120b",
+        selected_model="google/gemma-4-31B-it",
         execution_backend="modal_cli",
     )
 

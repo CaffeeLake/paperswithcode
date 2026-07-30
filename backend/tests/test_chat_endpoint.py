@@ -200,14 +200,18 @@ def test_chat_projection_preserves_sse_block_order():
 def test_model_registry_exposes_stable_ids_not_provider_routes():
     settings = get_settings()
     assert [choice["id"] for choice in settings.chat_model_choices] == [
-        "openai/gpt-oss-120b",
+        "google/gemma-4-31B-it",
         "zai-org/GLM-5.2",
         "moonshotai/Kimi-K3",
     ]
-    assert settings.chat_model_routes["openai/gpt-oss-120b"].endswith(":cerebras")
+    assert settings.chat_model_routes["google/gemma-4-31B-it"].endswith(":cerebras")
+    assert (
+        settings.chat_model_routes["openai/gpt-oss-120b"]
+        == settings.chat_model_routes["google/gemma-4-31B-it"]
+    )
     assert (
         settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash"]
-        == settings.chat_model_routes["openai/gpt-oss-120b"]
+        == settings.chat_model_routes["google/gemma-4-31B-it"]
     )
     assert settings.chat_model_routes["zai-org/GLM-5.2"].endswith(":together")
     assert settings.chat_model_routes["moonshotai/Kimi-K3"].endswith(":fastest")

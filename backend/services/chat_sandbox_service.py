@@ -98,7 +98,7 @@ async def resolve_modal_image(image_reference: str):
 def sandbox_environment(settings: Settings) -> dict[str, str]:
     return {
         "PWC_CHAT_GATEWAY_URL": settings.chat_gateway_url,
-        "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_gpt_oss_route,
+        "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_gemma_route,
         "PWC_CHAT_MAX_TURNS": str(settings.chat_max_turns),
         "PWC_CHAT_MAX_TOOL_CALLS": str(settings.chat_max_tool_calls),
         "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": str(settings.chat_max_direct_search_calls),
