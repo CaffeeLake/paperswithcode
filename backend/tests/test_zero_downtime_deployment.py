@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import backend.services.deployment_lifecycle as lifecycle_module
 import backend.services.postgres_sdk_session_store as postgres_store_module
 import deploy.cli as deploy_cli
+import deploy.nginx_tool as nginx_tool_module
 import deploy.runtime as runtime_module
 import deploy.topology_audit as topology_audit_module
 from backend.chat_sandbox_worker import agent
@@ -462,6 +463,18 @@ def test_checked_in_nginx_uses_matching_active_roots_and_denies_operators():
         )
         == []
     )
+
+
+def test_nginx_transition_smoke_pins_release_and_dedicated_gateway():
+    command = nginx_tool_module.smoke_command("staging", "release-staging")
+
+    assert command[0] == "/usr/bin/python3"
+    assert command[command.index("--expected-release") + 1] == "release-staging"
+    assert command[command.index("--gateway-url") + 1] == (
+        "https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway"
+    )
+    production = nginx_tool_module.smoke_command("production", "release-production")
+    assert "--gateway-url" not in production
 
 
 def _activation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
