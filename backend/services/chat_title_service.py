@@ -28,7 +28,7 @@ def fallback_title(prompt: str) -> str:
 async def stream_title(prompt: str, settings: Settings) -> AsyncIterator[str]:
     client = AsyncInferenceClient(
         model=settings.chat_title_model,
-        provider="auto",
+        provider=settings.chat_title_provider,
         token=settings.hf_token,
         timeout=settings.chat_title_timeout_seconds,
         bill_to=settings.chat_hf_bill_to or None,
@@ -41,7 +41,7 @@ async def stream_title(prompt: str, settings: Settings) -> AsyncIterator[str]:
         stream=True,
         temperature=0.2,
         max_tokens=settings.chat_title_max_tokens,
-        extra_body={"reasoning_effort": "none"},
+        extra_body={"reasoning_effort": "low"},
     )
     async with asyncio.timeout(settings.chat_title_timeout_seconds):
         async for chunk in response:
