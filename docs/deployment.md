@@ -66,15 +66,20 @@ blocking transcript callbacks; if streams remain at the reporting deadline the
 result is `success-with-draining` and `pwc-reap` finishes cleanup later.
 
 For the one-time migration from a legacy service, install the committed tools
-and slot units, then qualify the unchanged current release in the blue slot:
+and slot units. A source-only compatibility landing may use the explicit
+staging-only bridge mode before any slot exists, but only when `uv.lock`
+matches the installed shared runtime:
 
 ```bash
 sudo python deploy/install_deploy_tools.py <exact-sha>
 sudo python deploy/install_host_layout.py
+sudo pwc-deploy staging <exact-sha> --legacy-bridge
 sudo pwc-deploy staging <current-sha> --qualify-only
 ```
 
-This creates `active -> slots/blue` but leaves live nginx and the legacy service
+`--legacy-bridge` is rejected after nginx or an active slot is present and can
+never mutate the shared dependency set. Qualification creates
+`active -> slots/blue` but leaves live nginx and the legacy service
 unchanged. Applying the checked-in active-slot nginx template is a separately
 authorized `pwc-nginx` operation. After that one-time cutover, verify both
 staging hosts, retire only the legacy staging service, and use ordinary slot

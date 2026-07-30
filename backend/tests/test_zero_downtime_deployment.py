@@ -170,6 +170,13 @@ def test_runtime_builder_uses_stable_absolute_uv_path(
     assert command_seen[0] == str(uv)
 
 
+def test_legacy_bridge_flag_is_explicit_on_deploy_parser():
+    parser = deploy_cli.parser_for("pwc-deploy")
+    args = parser.parse_args(["staging", "a" * 40, "--legacy-bridge"])
+    assert args.legacy_bridge is True
+    assert args.qualify_only is False
+
+
 def _contract(emits: int, accepts: int, database: int = 1) -> dict:
     return {
         "chat_runtime": {

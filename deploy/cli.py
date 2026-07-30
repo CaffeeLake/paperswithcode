@@ -1155,6 +1155,46 @@ def deploy(args: argparse.Namespace) -> int:
         _recover_interrupted_activation(args.environment)
         sha = resolve_sha(args.source, args.environment)
         release = prepare_release(sha, args.environment)
+        if args.legacy_bridge:
+            if args.qualify_only:
+                raise DeployError(
+                    "--legacy-bridge and --qualify-only are mutually exclusive"
+                )
+            if args.environment != "staging":
+                raise DeployError("--legacy-bridge is staging-only")
+            if _active_slot(args.environment) is not None or _nginx_uses_active_slot(
+                args.environment
+            ):
+                raise DeployError(
+                    "--legacy-bridge is forbidden after active-slot migration"
+                )
+            installed_lock = (
+                RUNTIME_LOCK.read_text().strip() if RUNTIME_LOCK.is_file() else ""
+            )
+            candidate_lock = sha256_file(release / "uv.lock")
+            if (
+                not installed_lock
+                or installed_lock != candidate_lock
+                or not (VENV / "bin" / "python").is_file()
+            ):
+                raise DeployError(
+                    "--legacy-bridge cannot change the shared Python runtime"
+                )
+            qualify(release, args.environment)
+            activate(release, args.environment)
+            cleanup_releases()
+            log_event(
+                "deploy-legacy-bridge",
+                args.environment,
+                "success",
+                git_sha=sha,
+                source=args.source,
+                runtime_id=f"legacy-shared:{installed_lock}",
+            )
+            print(
+                f"deployed {args.source} ({sha}) to {args.environment}: legacy-bridge"
+            )
+            return 0
         runtime, runtime_built = prepare_runtime(release, RUNTIMES)
         current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
         print(
@@ -1415,6 +1455,7 @@ def parser_for(program: str) -> argparse.ArgumentParser:
         parser.add_argument("--confirm")
         parser.add_argument("--defer-public-smoke", action="store_true")
         parser.add_argument("--qualify-only", action="store_true")
+        parser.add_argument("--legacy-bridge", action="store_true")
         parser.set_defaults(handler=deploy)
     elif program.endswith("pwc-rollback"):
         parser.add_argument("environment", choices=ENVIRONMENTS)
