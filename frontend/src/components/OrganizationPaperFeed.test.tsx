@@ -208,5 +208,10 @@ describe("OrganizationPaperFeed task filtering", () => {
         name: "NVIDIA published 3 papers in the last year",
       }),
     ).toBeVisible();
+    expect(heading.closest("header")).toContainElement(
+      screen.getByRole("img", {
+        name: "NVIDIA published 3 papers in the last year",
+      }),
+    );
   });
 });

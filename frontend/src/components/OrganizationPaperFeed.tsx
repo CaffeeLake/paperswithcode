@@ -154,67 +154,78 @@ export const OrganizationPaperFeed: React.FC<{
         )}
       </nav>
 
-      <header style={{ marginTop: 24, marginBottom: 36 }}>
-        <div className="organizations-eyebrow">ORGANIZATION</div>
-        <h1 className="feed-title" style={{ display: "flex", gap: 14, alignItems: "center" }}>
-          {organization?.logo_url && !logoFailed ? (
-            <img
-              src={organization.logo_url}
-              alt=""
-              width={58}
-              height={58}
-              style={{ objectFit: "contain" }}
-              onError={() => setLogoFailed(true)}
+      <header className="organization-hero">
+        <div className="organization-hero-profile">
+          <div className="organizations-eyebrow">ORGANIZATION</div>
+          <h1 className="feed-title organization-hero-title">
+            {organization?.logo_url && !logoFailed ? (
+              <img
+                src={organization.logo_url}
+                alt=""
+                width={58}
+                height={58}
+                onError={() => setLogoFailed(true)}
+              />
+            ) : organization ? (
+              <span
+                className="organization-logo organization-logo--fallback"
+                aria-hidden="true"
+              >
+                {organization.name.slice(0, 1).toUpperCase()}
+              </span>
+            ) : null}
+            {organization?.name ?? <Skeleton className="h-12 w-64" />}
+          </h1>
+          {organization && (
+            <div className="feed-subtitle">
+              {organization.paper_count?.toLocaleString() ?? 0} papers
+              {(organization.organization_trending_score ?? 0) > 0 &&
+                organization.trending_rank && (
+                  <> · #{organization.trending_rank} trending this month</>
+                )}
+            </div>
+          )}
+          {organization?.description && (
+            <MarkdownText
+              className="method-description"
+              text={organization.description}
             />
-          ) : organization ? (
-            <span className="organization-logo organization-logo--fallback" aria-hidden="true">
-              {organization.name.slice(0, 1).toUpperCase()}
-            </span>
-          ) : null}
-          {organization?.name ?? <Skeleton className="h-12 w-64" />}
-        </h1>
-        {organization && (
-          <div className="feed-subtitle">
-            {organization.paper_count?.toLocaleString() ?? 0} papers
-            {(organization.organization_trending_score ?? 0) > 0 &&
-              organization.trending_rank && (
-                <> · #{organization.trending_rank} trending this month</>
+          )}
+          {organization && (
+            <div className="organization-hero-links">
+              {organization.website_url && (
+                <a
+                  href={organization.website_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Website ↗
+                </a>
               )}
-          </div>
-        )}
-        {organization?.description && (
-          <MarkdownText
-            className="method-description"
-            text={organization.description}
+              {organization.hf_url && (
+                <a href={organization.hf_url} target="_blank" rel="noreferrer">
+                  Hugging Face ↗
+                </a>
+              )}
+              {organization.github_url && (
+                <a
+                  href={organization.github_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  GitHub ↗
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+        {organization && (
+          <OrganizationContributionGraph
+            organizationSlug={organizationSlug}
+            organizationName={organization.name}
           />
         )}
-        {organization && (
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 12 }}>
-            {organization.website_url && (
-              <a href={organization.website_url} target="_blank" rel="noreferrer">
-                Website ↗
-              </a>
-            )}
-            {organization.hf_url && (
-              <a href={organization.hf_url} target="_blank" rel="noreferrer">
-                Hugging Face ↗
-              </a>
-            )}
-            {organization.github_url && (
-              <a href={organization.github_url} target="_blank" rel="noreferrer">
-                GitHub ↗
-              </a>
-            )}
-          </div>
-        )}
       </header>
-
-      {organization && (
-        <OrganizationContributionGraph
-          organizationSlug={organizationSlug}
-          organizationName={organization.name}
-        />
-      )}
 
       <div className="sort-bar" style={{ alignItems: "center", gap: 16 }}>
         <div style={{ minWidth: 260 }}>

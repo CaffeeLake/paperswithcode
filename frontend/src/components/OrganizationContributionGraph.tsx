@@ -113,29 +113,17 @@ const ContributionGraphContent: React.FC<{
       aria-labelledby="organization-contributions-title"
     >
       <div className="organization-contributions-header">
-        <div>
-          <h2
-            id="organization-contributions-title"
-            className="organization-contributions-title"
-          >
-            Paper contributions
-          </h2>
-          <p className="organization-contributions-summary">
-            {data.total_count.toLocaleString()}{" "}
-            {data.total_count === 1 ? "paper" : "papers"} published in the last
-            year
-          </p>
-        </div>
-        <div className="organization-contributions-legend" aria-hidden="true">
-          <span>Fewer</span>
-          {[0, 1, 2, 3, 4].map((level) => (
-            <span
-              key={level}
-              className={`organization-contribution-cell level-${level}`}
-            />
-          ))}
-          <span>More</span>
-        </div>
+        <h2
+          id="organization-contributions-title"
+          className="organization-contributions-title"
+        >
+          Paper contributions
+        </h2>
+        <p className="organization-contributions-summary">
+          {data.total_count.toLocaleString()}{" "}
+          {data.total_count === 1 ? "paper" : "papers"} published in the last
+          year
+        </p>
       </div>
 
       <div className="organization-contributions-scroll" ref={scrollRef}>
@@ -192,6 +180,16 @@ const ContributionGraphContent: React.FC<{
             </div>
           </div>
         </div>
+      </div>
+      <div className="organization-contributions-legend" aria-hidden="true">
+        <span>Fewer</span>
+        {[0, 1, 2, 3, 4].map((level) => (
+          <span
+            key={level}
+            className={`organization-contribution-cell level-${level}`}
+          />
+        ))}
+        <span>More</span>
       </div>
     </section>
   );
