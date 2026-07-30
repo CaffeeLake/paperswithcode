@@ -21,7 +21,7 @@ VALUES (
     'ACT',
     'Action Chunking with Transformers (ACT)',
     'ACT is an [Imitation learning](/methods/imitation-learning) architecture that predicts short action chunks with a conditional VAE transformer, enabling precise bimanual manipulation on ALOHA-style platforms. By modeling temporally extended action sequences instead of single-step commands, ACT reduces compounding errors on contact-rich tasks and became a standard baseline for sim and real-robot teleoperation benchmarks.',
-    'ACT, Action Chunking with Transformers, action chunking transformer, action chunking',
+    'Action Chunking with Transformers, action chunking transformer, action chunking',
     (SELECT id FROM areas WHERE name = 'General' LIMIT 1),
     2023,
     (

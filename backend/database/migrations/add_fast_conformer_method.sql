@@ -21,7 +21,7 @@ VALUES (
     'Fast Conformer',
     'Fast Conformer (FC)',
     'Fast Conformer is a redesigned [Conformer](/methods/conformer) encoder for efficient speech recognition that keeps the same block structure while changing the front-end subsampling to 8× depthwise-separable convolutions and smaller kernels. That cuts encoder compute by about 2.8× versus the original Conformer while matching or improving ASR accuracy. The same architecture can also switch to linearly scalable limited-context attention with an optional global token, enabling long-form transcription without quadratic attention cost.',
-    'Fast Conformer, FastConformer, fast conformer, FC, fast-conformer',
+    'Fast Conformer, FastConformer, fast conformer, fast-conformer',
     (
         SELECT id
         FROM areas
