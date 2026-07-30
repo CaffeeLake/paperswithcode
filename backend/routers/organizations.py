@@ -13,6 +13,7 @@ from backend.database.connection import get_database_session
 from backend.models.api import (
     Organization,
     OrganizationAreasWithTasks,
+    OrganizationContributions,
     Organizations,
     Papers,
 )
@@ -63,6 +64,23 @@ def get_organization(
     try:
         service = OrganizationService(db)
         return service.get_organization(slug)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/{slug}/contributions",
+    response_model=OrganizationContributions,
+    summary="Get daily paper contributions for an organization",
+)
+def get_organization_contributions(
+    slug: str = Path(..., description="Organization slug (e.g., nvidia)"),
+    db: Session = Depends(get_database_session),
+):
+    try:
+        return OrganizationService(db).get_organization_contributions(slug)
     except PaperNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:

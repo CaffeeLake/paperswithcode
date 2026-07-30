@@ -6,7 +6,7 @@ feed (composite paper-level score or official-repo velocity).
 """
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -328,6 +328,39 @@ def test_organization_task_taxonomy_and_paper_filter(org_client, monkeypatch):
         org_client.get("/api/v1/organizations/acme/papers?task=missing").status_code
         == 404
     )
+
+
+def test_organization_contributions_groups_recent_papers_by_date(org_client):
+    today = date.today()
+    db = TestingSessionLocal()
+    try:
+        dates = {
+            1: today,
+            2: today,
+            3: today - timedelta(days=1),
+            4: today - timedelta(days=365),
+        }
+        for paper_id, published_date in dates.items():
+            db.get(DBPaper, paper_id).date_published = published_date
+        db.commit()
+    finally:
+        db.close()
+
+    response = org_client.get("/api/v1/organizations/acme/contributions")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "start_date": (today - timedelta(days=364)).isoformat(),
+        "end_date": today.isoformat(),
+        "total_count": 3,
+        "results": [
+            {
+                "date": (today - timedelta(days=1)).isoformat(),
+                "paper_count": 1,
+            },
+            {"date": today.isoformat(), "paper_count": 2},
+        ],
+    }
 
 
 if __name__ == "__main__":

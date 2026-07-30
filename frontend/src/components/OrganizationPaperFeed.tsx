@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { PaperCard } from "@/components";
 import MarkdownText from "@/components/MarkdownText";
+import { OrganizationContributionGraph } from "@/components/OrganizationContributionGraph";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -207,6 +208,13 @@ export const OrganizationPaperFeed: React.FC<{
           </div>
         )}
       </header>
+
+      {organization && (
+        <OrganizationContributionGraph
+          organizationSlug={organizationSlug}
+          organizationName={organization.name}
+        />
+      )}
 
       <div className="sort-bar" style={{ alignItems: "center", gap: 16 }}>
         <div style={{ minWidth: 260 }}>

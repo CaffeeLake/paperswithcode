@@ -9,7 +9,7 @@ import {
   useLocation,
   useParams,
 } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OrganizationPaperFeed } from "@/components/OrganizationPaperFeed";
 import { apiClient } from "@/lib/api";
@@ -102,6 +102,18 @@ const renderFeed = () => {
   );
 };
 
+beforeEach(() => {
+  vi.spyOn(apiClient, "getOrganizationContributions").mockResolvedValue({
+    start_date: "2025-07-31",
+    end_date: "2026-07-30",
+    total_count: 3,
+    results: [
+      { date: "2026-07-29", paper_count: 1 },
+      { date: "2026-07-30", paper_count: 2 },
+    ],
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   useInfiniteOrganizationPapers.mockReset();
@@ -188,5 +200,13 @@ describe("OrganizationPaperFeed task filtering", () => {
       "src",
       "/api/v1/organizations/nvidia/logo.webp",
     );
+    expect(
+      await screen.findByText("3 papers published in the last year"),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("img", {
+        name: "NVIDIA published 3 papers in the last year",
+      }),
+    ).toBeVisible();
   });
 });

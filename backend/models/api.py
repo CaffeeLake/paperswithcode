@@ -1655,6 +1655,26 @@ class Organizations(BaseModel):
     results: List[Organization] = Field(..., description="Organization list")
 
 
+class OrganizationContributionDay(BaseModel):
+    """Paper contributions attributed to an organization on one day."""
+
+    published_date: date = Field(
+        ...,
+        alias="date",
+        description="Paper publication date",
+    )
+    paper_count: int = Field(..., ge=1, description="Papers published on this date")
+
+
+class OrganizationContributions(BaseModel):
+    """Daily organization paper contributions over a fixed date range."""
+
+    start_date: date
+    end_date: date
+    total_count: int = Field(..., ge=0)
+    results: List[OrganizationContributionDay] = Field(default_factory=list)
+
+
 class OrganizationAreaWithTasks(BaseModel):
     """Research area with organization-scoped task paper counts."""
 

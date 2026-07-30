@@ -316,6 +316,18 @@ export interface Organizations {
   results: Organization[];
 }
 
+export interface OrganizationContributionDay {
+  date: string;
+  paper_count: number;
+}
+
+export interface OrganizationContributions {
+  start_date: string;
+  end_date: string;
+  total_count: number;
+  results: OrganizationContributionDay[];
+}
+
 export interface OrganizationAreaWithTasks {
   id: string;
   name: string;
@@ -1401,6 +1413,10 @@ class ApiClient {
     return this.request<Organization>(`/organizations/${slug}`);
   }
 
+  async getOrganizationContributions(slug: string): Promise<OrganizationContributions> {
+    return this.request<OrganizationContributions>(`/organizations/${slug}/contributions`);
+  }
+
   async getOrganizationAreasWithTasks(slug: string): Promise<OrganizationAreasWithTasks> {
     return this.request<OrganizationAreasWithTasks>(`/organizations/${slug}/areas-with-tasks`);
   }
@@ -2151,6 +2167,7 @@ export const getConferenceAreasWithTasks = apiClient.getConferenceAreasWithTasks
 export const getConferencePapers = apiClient.getConferencePapers.bind(apiClient);
 export const getOrganizations = apiClient.getOrganizations.bind(apiClient);
 export const getOrganization = apiClient.getOrganization.bind(apiClient);
+export const getOrganizationContributions = apiClient.getOrganizationContributions.bind(apiClient);
 export const getOrganizationAreasWithTasks = apiClient.getOrganizationAreasWithTasks.bind(apiClient);
 export const getOrganizationPapers = apiClient.getOrganizationPapers.bind(apiClient);
 export const getAreaTasks = apiClient.getAreaTasks.bind(apiClient);

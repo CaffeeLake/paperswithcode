@@ -2,6 +2,7 @@
 Organization service for listing organizations and organization-scoped taxonomy.
 """
 
+from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy import and_, asc, desc, func
@@ -12,6 +13,8 @@ from backend.models.api import (
     Organization,
     OrganizationAreaWithTasks,
     OrganizationAreasWithTasks,
+    OrganizationContributionDay,
+    OrganizationContributions,
     OrganizationTopPaper,
     Organizations,
     Papers,
@@ -231,6 +234,51 @@ class OrganizationService:
             raise
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve organization: {str(e)}")
+
+    def get_organization_contributions(self, slug: str) -> OrganizationContributions:
+        """Return daily eligible-paper counts for the trailing 365 days."""
+        try:
+            organization = self._get_organization_by_slug(slug)
+            end_date = date.today()
+            start_date = end_date - timedelta(days=364)
+            rows = (
+                self.db.query(
+                    DBPaper.date_published,
+                    func.count(func.distinct(DBPaper.id)).label("paper_count"),
+                )
+                .join(
+                    PaperOrganization,
+                    DBPaper.id == PaperOrganization.paper_id,
+                )
+                .filter(
+                    PaperOrganization.organization_id == organization.id,
+                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
+                    DBPaper.date_published.between(start_date, end_date),
+                    eligible_paper_filter(),
+                )
+                .group_by(DBPaper.date_published)
+                .order_by(DBPaper.date_published)
+                .all()
+            )
+            results = [
+                OrganizationContributionDay(
+                    date=published_date,
+                    paper_count=paper_count,
+                )
+                for published_date, paper_count in rows
+            ]
+            return OrganizationContributions(
+                start_date=start_date,
+                end_date=end_date,
+                total_count=sum(item.paper_count for item in results),
+                results=results,
+            )
+        except PaperNotFoundError:
+            raise
+        except Exception as e:
+            raise DatabaseError(
+                f"Failed to retrieve organization contributions: {str(e)}"
+            )
 
     def get_organization_areas_with_tasks(
         self, slug: str
