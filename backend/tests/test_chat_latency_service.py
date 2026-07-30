@@ -207,6 +207,71 @@ def test_cleanup_deletes_only_one_bounded_thirty_day_batch(db):
     )
 
 
+def test_active_spend_status_is_zero_without_costed_turns(db):
+    status = ChatLatencyService(db).active_spend_status(
+        now=datetime(2026, 7, 30, 12, tzinfo=UTC)
+    )
+
+    assert status == {
+        "month_to_date_cost_usd": 0.0,
+        "completed_turns": 0,
+        "cost_per_completed_turn_usd": 0.0,
+        "projected_monthly_cost_usd": 0.0,
+        "trailing_seven_day_cost_usd": 0.0,
+        "trailing_daily_average_usd": 0.0,
+        "trailing_30_day_projection_usd": 0.0,
+        "alert_threshold_usd": 50.0,
+        "should_alert": False,
+    }
+
+
+def test_active_spend_status_amortizes_all_compute_over_completed_turns(db):
+    session_id = _session(db)
+    completed = _admit(db, session_id=session_id)
+    failed = _admit(db, session_id=session_id)
+    now = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    for row, status, cost in (
+        (completed, "complete", 0.7),
+        (failed, "error", 0.3),
+    ):
+        row.terminal_status = status
+        row.estimated_active_cost_usd = cost
+        row.completed_at = now - timedelta(days=7)
+    db.flush()
+
+    status = ChatLatencyService(db).active_spend_status(now=now)
+
+    assert status["month_to_date_cost_usd"] == pytest.approx(1)
+    assert status["completed_turns"] == 1
+    assert status["cost_per_completed_turn_usd"] == pytest.approx(1)
+    assert status["projected_monthly_cost_usd"] == pytest.approx(31 / 7)
+    assert status["trailing_30_day_projection_usd"] == pytest.approx(30 / 7)
+    assert status["alert_threshold_usd"] == 50
+    assert status["should_alert"] is False
+
+
+def test_active_spend_status_alerts_on_current_run_rate_above_dynamic_threshold(db):
+    session_id = _session(db)
+    row = _admit(db, session_id=session_id)
+    now = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    row.terminal_status = "complete"
+    row.estimated_active_cost_usd = 100
+    row.completed_at = now - timedelta(days=1)
+    db.flush()
+
+    status = ChatLatencyService(db).active_spend_status(now=now)
+
+    assert status["projected_monthly_cost_usd"] == pytest.approx(3_100)
+    assert status["trailing_30_day_projection_usd"] == pytest.approx(3_000 / 7)
+    assert status["alert_threshold_usd"] == pytest.approx(6_000 / 7)
+    assert status["should_alert"] is True
+
+
+def test_active_spend_status_requires_timezone_aware_now(db):
+    with pytest.raises(ValueError, match="timezone-aware"):
+        ChatLatencyService(db).active_spend_status(now=datetime(2026, 7, 30))
+
+
 def test_latency_migration_is_staging_scoped_and_least_privilege():
     migration = (
         Path(__file__).parents[1]

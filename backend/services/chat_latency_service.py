@@ -22,6 +22,11 @@ DEFAULT_CLEANUP_BATCH_SIZE = 500
 MAX_CLEANUP_BATCH_SIZE = 5_000
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
+ACTIVE_SPEND_ALERT_FLOOR_USD = 50.0
+ACTIVE_SPEND_LOOKBACK_DAYS = 7
+ACTIVE_SPEND_BASELINE_DAYS = 30
+ACTIVE_SPEND_ALERT_MULTIPLIER = 2.0
+MIN_ACTIVE_SPEND_OBSERVATION_SECONDS = 60.0
 
 PHASE_COLUMNS = {
     "sandbox_acquisition_started": "acquisition_started_ms",
@@ -310,6 +315,96 @@ class ChatLatencyService:
         # An authenticated duplicate is still a successful idempotent update;
         # COALESCE above preserves the first value for each timing class.
         return True
+
+    def active_spend_status(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Return content-free active-compute spend and alert projections."""
+        observed_at = now or datetime.now(UTC)
+        if observed_at.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        observed_at = observed_at.astimezone(UTC)
+        month_start = observed_at.replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        next_month = (
+            month_start.replace(year=month_start.year + 1, month=1)
+            if month_start.month == 12
+            else month_start.replace(month=month_start.month + 1)
+        )
+        cost = ChatTurnLatency.estimated_active_cost_usd
+        cost_recorded = cost.is_not(None)
+        in_month = (ChatTurnLatency.completed_at >= month_start) & (
+            ChatTurnLatency.completed_at <= observed_at
+        )
+        trailing_start = observed_at - timedelta(days=ACTIVE_SPEND_LOOKBACK_DAYS)
+
+        month_cost, first_observation = self.db.execute(
+            select(
+                func.coalesce(func.sum(cost), 0),
+                func.min(ChatTurnLatency.completed_at),
+            ).where(cost_recorded, in_month)
+        ).one()
+        completed_turns = int(
+            self.db.scalar(
+                select(func.count())
+                .select_from(ChatTurnLatency)
+                .where(
+                    cost_recorded,
+                    in_month,
+                    ChatTurnLatency.terminal_status == "complete",
+                )
+            )
+            or 0
+        )
+        trailing_cost = float(
+            self.db.scalar(
+                select(func.coalesce(func.sum(cost), 0)).where(
+                    cost_recorded,
+                    ChatTurnLatency.completed_at >= trailing_start,
+                    ChatTurnLatency.completed_at <= observed_at,
+                )
+            )
+            or 0
+        )
+        month_cost = float(month_cost or 0)
+        cost_per_completed_turn = (
+            month_cost / completed_turns if completed_turns else 0.0
+        )
+
+        projected_monthly_cost = 0.0
+        if first_observation is not None and month_cost:
+            if first_observation.tzinfo is None:
+                first_observation = first_observation.replace(tzinfo=UTC)
+            observation_seconds = max(
+                (observed_at - first_observation).total_seconds(),
+                MIN_ACTIVE_SPEND_OBSERVATION_SECONDS,
+            )
+            projected_monthly_cost = (
+                month_cost
+                / observation_seconds
+                * (next_month - month_start).total_seconds()
+            )
+
+        trailing_daily_average = trailing_cost / ACTIVE_SPEND_LOOKBACK_DAYS
+        trailing_30_day_projection = trailing_daily_average * ACTIVE_SPEND_BASELINE_DAYS
+        alert_threshold = max(
+            ACTIVE_SPEND_ALERT_FLOOR_USD,
+            ACTIVE_SPEND_ALERT_MULTIPLIER * trailing_30_day_projection,
+        )
+        return {
+            "month_to_date_cost_usd": month_cost,
+            "completed_turns": completed_turns,
+            "cost_per_completed_turn_usd": cost_per_completed_turn,
+            "projected_monthly_cost_usd": projected_monthly_cost,
+            "trailing_seven_day_cost_usd": trailing_cost,
+            "trailing_daily_average_usd": trailing_daily_average,
+            "trailing_30_day_projection_usd": trailing_30_day_projection,
+            "alert_threshold_usd": alert_threshold,
+            "should_alert": projected_monthly_cost > alert_threshold,
+        }
 
     def cleanup(
         self,
