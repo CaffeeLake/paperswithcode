@@ -62,7 +62,24 @@ def show_paper_info(args: argparse.Namespace) -> int:
         print(f"URL: {paper.url_abs or paper.source_url or '-'}")
         if paper.abstract:
             print(f"\n{paper.abstract}")
+        print("\n## Paper lineage")
+        _print_lineage_section("Predecessors", paper.predecessor_papers)
+        _print_lineage_section("Successors", paper.successor_papers)
     return 0
+
+
+def _print_lineage_section(title: str, papers) -> None:
+    print(f"\n### {title}")
+    if not papers:
+        print("- None")
+        return
+    for paper in papers:
+        paper_title = (
+            paper.title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        )
+        url = f"https://paperswithcode.co/paper/{paper.route_identifier}"
+        published = f" ({paper.published})" if paper.published else ""
+        print(f"- [{paper_title}]({url}){published}")
 
 
 def list_papers(args: argparse.Namespace) -> int:

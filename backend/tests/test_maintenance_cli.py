@@ -108,6 +108,107 @@ def test_paper_read_commands_and_benchmark_list_parse():
     assert benchmarks.handler is cli_admin.list_benchmarks
 
 
+def test_paper_info_prints_markdown_lineage_section(monkeypatch, capsys):
+    paper = SimpleNamespace(
+        title="A Paper",
+        arxiv_id="2601.12345",
+        id="42",
+        published="2026-01-20",
+        authors=["Ada Lovelace"],
+        citation_count=7,
+        url_abs="https://arxiv.org/abs/2601.12345",
+        source_url=None,
+        abstract="Paper abstract.",
+        predecessor_papers=[
+            SimpleNamespace(
+                title="Earlier [Paper]",
+                route_identifier="2501.00001",
+                published="2025-01-01",
+            )
+        ],
+        successor_papers=[
+            SimpleNamespace(
+                title="Later Paper",
+                route_identifier="2701.00001",
+                published=None,
+            )
+        ],
+    )
+
+    class FakeSessionContext:
+        def __enter__(self):
+            return "database-session"
+
+        def __exit__(self, *_args):
+            return None
+
+    class FakePaperService:
+        def __init__(self, db):
+            assert db == "database-session"
+
+        def get_paper_by_id_or_arxiv(self, reference, include_resources):
+            assert reference == "2601.12345"
+            assert not include_resources
+            return paper
+
+    fake_manager = SimpleNamespace(session_local=FakeSessionContext)
+    monkeypatch.setattr(cli_papers, "db_manager", fake_manager)
+    monkeypatch.setattr(cli_papers, "PaperService", FakePaperService)
+    args = cli.build_parser().parse_args(["paper", "info", "2601.12345"])
+
+    assert args.handler(args) == 0
+    output = capsys.readouterr().out
+    assert "\n## Paper lineage\n" in output
+    assert "\n### Predecessors\n" in output
+    assert (
+        "- [Earlier \\[Paper\\]](https://paperswithcode.co/paper/2501.00001)"
+        " (2025-01-01)"
+    ) in output
+    assert "\n### Successors\n" in output
+    assert "- [Later Paper](https://paperswithcode.co/paper/2701.00001)" in output
+
+
+def test_paper_info_prints_empty_lineage_groups(monkeypatch, capsys):
+    paper = SimpleNamespace(
+        title="An Unrelated Paper",
+        arxiv_id="2601.12345",
+        id="42",
+        published=None,
+        authors=[],
+        citation_count=0,
+        url_abs=None,
+        source_url=None,
+        abstract="",
+        predecessor_papers=None,
+        successor_papers=None,
+    )
+
+    class FakeSessionContext:
+        def __enter__(self):
+            return "database-session"
+
+        def __exit__(self, *_args):
+            return None
+
+    class FakePaperService:
+        def __init__(self, _db):
+            pass
+
+        def get_paper_by_id_or_arxiv(self, _reference, include_resources):
+            assert not include_resources
+            return paper
+
+    fake_manager = SimpleNamespace(session_local=FakeSessionContext)
+    monkeypatch.setattr(cli_papers, "db_manager", fake_manager)
+    monkeypatch.setattr(cli_papers, "PaperService", FakePaperService)
+    args = cli.build_parser().parse_args(["paper", "info", "2601.12345"])
+
+    assert args.handler(args) == 0
+    output = capsys.readouterr().out
+    assert "### Predecessors\n- None" in output
+    assert "### Successors\n- None" in output
+
+
 def test_paper_list_passes_api_filters_to_service(monkeypatch, capsys):
     calls = []
     page = SimpleNamespace(model_dump=lambda **_kwargs: {"count": 0, "results": []})

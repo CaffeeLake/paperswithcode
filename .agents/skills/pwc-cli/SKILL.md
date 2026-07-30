@@ -43,7 +43,9 @@ output is intended for terminal inspection.
 - `pwc search QUERY` — Hybrid lexical + semantic paper search. Defaults to 10
   results and hybrid mode. `[--limit 1-100 --mode hybrid|keyword|semantic --json]`
 - `pwc paper info PAPER` — Show full metadata for a PwC URL, ArXiv ID, or numeric
-  external-paper ID. `[--include-resources --json]`
+  external-paper ID. Human-readable output includes a Markdown paper-lineage
+  section; JSON includes `predecessor_papers` and `successor_papers`.
+  `[--include-resources --json]`
 - `pwc paper read PAPER` — Print stored paper Markdown for a modern ArXiv ID or
   PwC paper URL.
 - `pwc paper list` — Paginate and filter the paper catalog.

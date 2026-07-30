@@ -141,7 +141,10 @@ bucket configured by `PWC_PAPER_MARKDOWN_HF_BUCKET_ID` (default:
 `paperswithcode.co/paper/...` URL.
 
 Inspect and browse the paper catalog directly through the same services as the
-API. Search uses hybrid lexical and semantic retrieval by default:
+API. Search uses hybrid lexical and semantic retrieval by default. Human-readable
+`paper info` output includes a Markdown paper-lineage section with linked
+predecessor and successor papers; `--json` exposes the same relations as
+`predecessor_papers` and `successor_papers`:
 
 ```bash
 uv run --env-file backend/keys.env pwc search "vision-language models"
