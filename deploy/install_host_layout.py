@@ -15,6 +15,7 @@ STATE_ROOT = Path("/var/lib/paperswithcode")
 LOG_ROOT = Path("/var/log/paperswithcode")
 CONFIG_ROOT = Path("/etc/paperswithcode")
 REPO = Path(__file__).resolve().parents[1]
+UV_DESTINATION = Path("/usr/local/bin/uv")
 
 
 def ensure_user(name: str) -> None:
@@ -42,9 +43,39 @@ def ensure_dir(path: Path, user: str, group: str, mode: int) -> None:
     path.chmod(mode)
 
 
+def install_uv() -> None:
+    """Provision the existing uv binary on root's stable deployment PATH."""
+
+    if UV_DESTINATION.is_file() and os.access(UV_DESTINATION, os.X_OK):
+        return
+    candidates = [
+        Path(found) if (found := shutil.which("uv")) else None,
+        Path("/root/.local/bin/uv"),
+        Path("/root/.cargo/bin/uv"),
+        Path("/usr/bin/uv"),
+    ]
+    source = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate is not None
+            and candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ),
+        None,
+    )
+    if source is None:
+        raise RuntimeError("uv is required to build immutable runtimes")
+    temporary = UV_DESTINATION.with_name(f".uv.new-{os.getpid()}")
+    shutil.copy2(source, temporary)
+    temporary.chmod(0o755)
+    os.replace(temporary, UV_DESTINATION)
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("run through sudo")
+    install_uv()
     for user in ("pwc-production", "pwc-staging", "pwc-cron"):
         ensure_user(user)
     for path in (

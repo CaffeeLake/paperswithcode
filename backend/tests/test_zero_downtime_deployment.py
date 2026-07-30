@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import backend.services.deployment_lifecycle as lifecycle_module
 import backend.services.postgres_sdk_session_store as postgres_store_module
 import deploy.cli as deploy_cli
+import deploy.runtime as runtime_module
 from backend.chat_sandbox_worker import agent
 from backend.chat_sandbox_worker.remote_store import RemoteSessionStore, RetryPolicy
 from backend.config import get_settings
@@ -138,6 +139,35 @@ def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
     with pytest.raises(OSError, match="build failed"):
         prepare_runtime(other, runtimes, runner=fail, version_runner=version)
     assert not any(path.name.startswith(".") for path in runtimes.iterdir())
+
+
+def test_runtime_builder_uses_stable_absolute_uv_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "uv.lock").write_text("lock")
+    uv = tmp_path / "uv"
+    uv.write_text("binary")
+    monkeypatch.setattr(runtime_module, "UV_BINARY", uv)
+    command_seen: list[str] = []
+
+    def build(command, *, env, check):
+        command_seen.extend(command)
+        target = Path(env["UV_PROJECT_ENVIRONMENT"])
+        (target / "bin").mkdir()
+        (target / "bin" / "python").write_text("#!/bin/sh\n")
+
+    def version(*args, **kwargs):
+        return SimpleNamespace(stdout="Python 3.12.11\n")
+
+    prepare_runtime(
+        release,
+        tmp_path / "runtimes",
+        runner=build,
+        version_runner=version,
+    )
+    assert command_seen[0] == str(uv)
 
 
 def _contract(emits: int, accepts: int, database: int = 1) -> dict:

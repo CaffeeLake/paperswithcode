@@ -14,6 +14,8 @@ try:
 except ModuleNotFoundError:
     from release import sha256_file  # type: ignore[no-redef]
 
+UV_BINARY = Path(os.environ.get("PWC_DEPLOY_UV", "/usr/local/bin/uv"))
+
 
 def runtime_id(release: Path) -> str:
     return sha256_file(release / "uv.lock")
@@ -60,7 +62,7 @@ def prepare_runtime(
         environment["UV_PROJECT_ENVIRONMENT"] = str(temporary)
         runner(
             [
-                "uv",
+                str(UV_BINARY),
                 "sync",
                 "--frozen",
                 "--no-install-project",
