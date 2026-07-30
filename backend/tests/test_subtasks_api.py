@@ -347,6 +347,34 @@ def test_create_evaluation_on_child_task_validates_against_child_leaderboard(
     assert created.best_metric == "Accuracy"
 
 
+def test_created_and_updated_evaluation_persist_their_recalculated_rank(db_session):
+    """Refreshing the mutated row must not discard its recalculated rank."""
+    _seed_lm_with_subtasks(db_session)
+    service = EvaluationService(db_session)
+
+    created = service.create_evaluation(
+        paper_id=1,
+        task_id=2,
+        dataset_id=2,
+        metrics={"Accuracy": "70.0"},
+        best_metric="Accuracy",
+        model_name="ModelZ",
+    )
+
+    assert created.best_rank == 1
+    assert db_session.get(DBEvaluation, int(created.id)).best_rank == 1
+    assert db_session.get(DBEvaluation, 12).best_rank == 2
+
+    updated = service.update_evaluation(
+        int(created.id),
+        metrics={"Accuracy": "50,0"},
+    )
+
+    assert updated.best_rank == 2
+    assert db_session.get(DBEvaluation, int(created.id)).best_rank == 2
+    assert db_session.get(DBEvaluation, 12).best_rank == 1
+
+
 def test_create_evaluation_on_parent_task_without_triple_fails(db_session):
     """The parent Language Modeling task no longer owns benchmarks, so
     creating an evaluation pointing at the parent must fail validation."""

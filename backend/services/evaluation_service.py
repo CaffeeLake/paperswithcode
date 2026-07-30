@@ -39,6 +39,18 @@ _CVF_OPENACCESS_PATH = re.compile(
 )
 
 
+def _parse_metric_value(raw_value) -> Optional[float]:
+    """Parse stored metric values, including uncertainty and decimal commas."""
+    if isinstance(raw_value, str):
+        raw_value = raw_value.split("±", 1)[0].strip()
+        if raw_value.count(",") == 1 and "." not in raw_value:
+            raw_value = raw_value.replace(",", ".")
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _looks_like_paper_slug(segment: str) -> bool:
     base = segment.rsplit(".", 1)[0] if "." in segment else segment
     return "_" in base or len(base) >= 20
@@ -879,7 +891,10 @@ class EvaluationService:
                     commit=False,
                 )
 
-            # Refresh to get updated rank
+            # Persist the recalculated rank before refresh reloads this row.
+            # Without this flush, refresh discards the new evaluation's in-memory
+            # best_rank while ranks on older rows remain pending and are committed.
+            self.db.flush()
             self.db.refresh(db_evaluation)
             if commit:
                 self.db.commit()
@@ -1073,7 +1088,8 @@ class EvaluationService:
                         commit=False,
                     )
 
-            # Refresh to get updated rank
+            # Persist rank changes before refresh reloads the updated row.
+            self.db.flush()
             self.db.refresh(db_evaluation)
             if commit:
                 self.db.commit()
@@ -1334,20 +1350,9 @@ class EvaluationService:
 
                 eval_scores = []
                 for eval_obj in evaluations:
-                    metric_value = None
-                    if eval_obj.metrics:
-                        raw_value = eval_obj.metrics.get(current_metric)
-                        if raw_value is not None:
-                            try:
-                                if isinstance(raw_value, str) and "±" in raw_value:
-                                    metric_value = float(
-                                        raw_value.split("±")[0].strip()
-                                    )
-                                else:
-                                    metric_value = float(raw_value)
-                            except (ValueError, TypeError):
-                                pass
-
+                    metric_value = _parse_metric_value(
+                        (eval_obj.metrics or {}).get(current_metric)
+                    )
                     eval_scores.append((eval_obj, metric_value))
 
                 # Sort by metric value based on direction
