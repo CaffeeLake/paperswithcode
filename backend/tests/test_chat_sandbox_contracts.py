@@ -50,6 +50,7 @@ from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDK
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, sse_event
 from backend.models.database import ChatTurnCapability
+from backend.scripts import qualify_chat_sandbox
 from backend.scripts.qualify_chat_sandbox import QualificationRunner, Sample, summarize
 from backend.services.chat_capability_service import (
     CapabilityError,
@@ -1584,6 +1585,46 @@ def test_resource_probe_treats_ephemeral_disk_as_provider_managed(monkeypatch):
         "memory": "enforced",
     }
     assert probes == ["pids", "memory"]
+
+
+def test_resource_probe_accepts_provider_kill_as_expected_limit(monkeypatch):
+    settings = type(
+        "Settings",
+        (),
+        {"chat_sandbox_pids_max": 64, "chat_sandbox_memory_mib": 2048},
+    )()
+    runner = QualificationRunner(settings, starts=1, parallel=1, snapshot_samples=0)
+    terminated = False
+
+    class Sandbox:
+        class Terminate:
+            async def aio(self, **_options):
+                nonlocal terminated
+                terminated = True
+                raise qualify_chat_sandbox.NotFoundError("gone")
+
+        terminate = Terminate()
+
+    async def create(_name):
+        return Sandbox()
+
+    async def provider_killed(*_args, **_options):
+        raise qualify_chat_sandbox.NotFoundError("gone")
+
+    monkeypatch.setattr(runner, "_create", create)
+    monkeypatch.setattr(qualify_chat_sandbox, "_exec", provider_killed)
+
+    asyncio.run(
+        runner._resource_probe(
+            "memory",
+            "python",
+            "-c",
+            "raise SystemExit(1)",
+            expect_success=False,
+            timeout=30,
+        )
+    )
+    assert terminated
 
 
 def test_capability_is_exactly_scoped_and_metered():

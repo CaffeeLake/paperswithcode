@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from modal.exception import NotFoundError
 from modal.stream_type import StreamType
 
 from backend.config import Settings
@@ -338,15 +339,20 @@ fi
     ) -> None:
         sandbox = await self._create(f"resource-{name}")
         try:
-            returncode, _stdout, _stderr = await _exec(
-                sandbox,
-                "setpriv",
-                "--reuid=pwc-chat",
-                "--regid=pwc-chat",
-                "--clear-groups",
-                *command,
-                timeout=timeout,
-            )
+            try:
+                returncode, _stdout, _stderr = await _exec(
+                    sandbox,
+                    "setpriv",
+                    "--reuid=pwc-chat",
+                    "--regid=pwc-chat",
+                    "--clear-groups",
+                    *command,
+                    timeout=timeout,
+                )
+            except NotFoundError:
+                if expect_success:
+                    raise
+                return
             succeeded = returncode == 0
             if succeeded != expect_success:
                 expectation = "success" if expect_success else "limit failure"
@@ -354,7 +360,10 @@ fi
                     f"{name} resource probe did not produce expected {expectation}"
                 )
         finally:
-            await sandbox.terminate.aio(wait=False)
+            try:
+                await sandbox.terminate.aio(wait=False)
+            except NotFoundError:
+                pass
 
     async def run_resource_probes(self) -> dict[str, str]:
         pid_probe = """
