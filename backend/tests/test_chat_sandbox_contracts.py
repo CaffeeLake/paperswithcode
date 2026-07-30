@@ -919,6 +919,47 @@ def test_gateway_paper_read_uses_bounded_diskless_reader(monkeypatch):
     ]
 
 
+def test_gateway_paper_info_includes_normalized_hf_artifacts(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_paper_by_id_or_arxiv(self, paper, include_resources):
+            calls.append((paper, include_resources))
+            return {
+                "id": "7",
+                "hf_models": ["https://huggingface.co/org/model-a"],
+                "hf_datasets": [],
+                "hf_spaces": [],
+            }
+
+        def get_linked_hf_artifact_urls(self, paper_id):
+            assert paper_id == 7
+            return {
+                "hf_models": [
+                    "https://huggingface.co/org/model-a",
+                    "https://huggingface.co/org/model-b",
+                ],
+                "hf_datasets": ["https://huggingface.co/datasets/org/data"],
+                "hf_spaces": [],
+            }
+
+    monkeypatch.setattr("backend.services.chat_gateway_service.PaperService", Service)
+
+    result = ChatGatewayService("db", SimpleNamespace()).catalog(
+        "paper_info", {"paper": "2605.20613", "include_resources": True}
+    )
+
+    assert calls == [("2605.20613", True)]
+    assert result["hf_models"] == [
+        "https://huggingface.co/org/model-a",
+        "https://huggingface.co/org/model-b",
+    ]
+    assert result["hf_datasets"] == ["https://huggingface.co/datasets/org/data"]
+
+
 def test_gateway_method_list_uses_bounded_service_arguments(monkeypatch):
     calls = []
 

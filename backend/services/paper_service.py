@@ -582,6 +582,35 @@ class PaperService:
             best_url=best_url,
         )
 
+    def get_linked_hf_artifact_urls(self, paper_id: int) -> dict[str, list[str]]:
+        """Return normalized Hub links ordered by kind and popularity."""
+
+        rows = (
+            self.db.query(DBHfArtifact.kind, DBHfArtifact.url)
+            .join(
+                DBPaperHfArtifact,
+                DBPaperHfArtifact.hf_artifact_id == DBHfArtifact.id,
+            )
+            .filter(DBPaperHfArtifact.paper_id == paper_id)
+            .order_by(
+                DBHfArtifact.kind,
+                DBHfArtifact.trending_score.desc().nullslast(),
+                DBHfArtifact.downloads.desc().nullslast(),
+                DBHfArtifact.likes.desc().nullslast(),
+                DBHfArtifact.repo_id,
+            )
+            .all()
+        )
+        fields = {
+            "model": "hf_models",
+            "dataset": "hf_datasets",
+            "space": "hf_spaces",
+        }
+        result: dict[str, list[str]] = {field: [] for field in fields.values()}
+        for kind, url in rows:
+            result[fields[kind]].append(url)
+        return result
+
     @staticmethod
     def _get_published_after_for_time_window(
         time_window: str,

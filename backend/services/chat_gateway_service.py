@@ -82,12 +82,20 @@ class ChatGatewayService:
                 )
             )
         if operation == "paper_info":
-            return _dump(
+            include_resources = _boolean(arguments.get("include_resources"))
+            result = _dump(
                 paper.get_paper_by_id_or_arxiv(
                     str(arguments["paper"])[:200],
-                    include_resources=_boolean(arguments.get("include_resources")),
+                    include_resources=include_resources,
                 )
             )
+            if include_resources:
+                normalized = paper.get_linked_hf_artifact_urls(int(result["id"]))
+                for field, urls in normalized.items():
+                    result[field] = list(
+                        dict.fromkeys([*(result.get(field) or []), *urls])
+                    )
+            return result
         if operation == "paper_read":
             markdown, truncated = read_paper_markdown_bounded(
                 str(arguments["paper"])[:64],
