@@ -651,6 +651,32 @@ def _wait_slot(
     )
 
 
+def _smoke_slot_candidate(
+    environment: str,
+    slot: str,
+    release: Path,
+    runtime: Path,
+    manifest: dict,
+) -> None:
+    run(
+        [
+            str(runtime / "bin" / "python"),
+            str(Path(__file__).resolve().parent / "smoke_test.py"),
+            "--environment",
+            environment,
+            "--base-url",
+            "http://localhost",
+            "--expected-release",
+            manifest["release_id"],
+            "--release-dir",
+            str(release),
+            "--candidate",
+            "--unix-socket",
+            str(_slot_socket(environment, slot)),
+        ]
+    )
+
+
 def _write_journal(environment: str, phase: str, **values: object) -> None:
     root = ENVIRONMENTS_ROOT / environment
     root.mkdir(parents=True, exist_ok=True)
@@ -772,23 +798,7 @@ def _prepare_slot(environment: str, slot: str, release: Path, runtime: Path) -> 
         run(["systemctl", "start", _slot_unit(environment, slot)])
         manifest = validate_manifest(release, environment)
         status_value = _wait_slot(environment, slot, manifest, runtime)
-        run(
-            [
-                str(runtime / "bin" / "python"),
-                str(Path(__file__).resolve().parent / "smoke_test.py"),
-                "--environment",
-                environment,
-                "--base-url",
-                "http://localhost",
-                "--expected-release",
-                manifest["release_id"],
-                "--release-dir",
-                str(release),
-                "--candidate",
-                "--unix-socket",
-                str(_slot_socket(environment, slot)),
-            ]
-        )
+        _smoke_slot_candidate(environment, slot, release, runtime, manifest)
         return status_value
     except (DeployError, subprocess.CalledProcessError, OSError):
         subprocess.run(
@@ -807,6 +817,37 @@ def _prepare_slot(environment: str, slot: str, release: Path, runtime: Path) -> 
             check=False,
         )
         raise
+
+
+def _prepare_or_reuse_slot(
+    environment: str,
+    slot: str,
+    release: Path,
+    runtime: Path,
+) -> dict:
+    """Reuse an exact draining rollback target; rebuild any stale idle slot."""
+
+    manifest = validate_manifest(release, environment)
+    existing = _unix_json(
+        environment,
+        slot,
+        "/internal/deployment-status",
+        check=False,
+    )
+    exact = bool(
+        existing
+        and _slot_release(environment, slot) == release
+        and existing.get("release_id") == manifest["release_id"]
+        and existing.get("runtime_id") == runtime.name
+        and existing.get("slot") == slot
+    )
+    if not exact:
+        return _prepare_slot(environment, slot, release, runtime)
+    if not existing.get("accepting_chat_turns"):
+        _unix_json(environment, slot, "/internal/undrain", method="POST")
+    status_value = _wait_slot(environment, slot, manifest, runtime)
+    _smoke_slot_candidate(environment, slot, release, runtime, manifest)
+    return status_value
 
 
 def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> None:
@@ -884,6 +925,22 @@ def _stop_drained_slot(environment: str, slot: str) -> bool:
     return True
 
 
+def _retire_legacy_service(environment: str) -> bool:
+    """Stop the fixed-port owner only after nginx selects the active slot."""
+
+    if not _nginx_uses_active_slot(environment):
+        return False
+    unit = _unit(environment)
+    if _systemctl_state(unit) != "active":
+        return False
+    run(["systemctl", "stop", unit])
+    state = _systemctl_state(unit)
+    if state != "inactive":
+        raise DeployError(f"legacy service {unit} did not stop cleanly: {state}")
+    log_event("legacy-retire", environment, "success", unit=unit)
+    return True
+
+
 def activate_slot(release: Path, environment: str, runtime: Path) -> str:
     root = ENVIRONMENTS_ROOT / environment
     active = _active_slot(environment)
@@ -904,6 +961,16 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
             runtime,
         )
         smoke_public(release, environment, validate_manifest(release)["release_id"])
+        _write_journal(
+            environment,
+            "settled",
+            active_slot=active,
+            active_release=release.name,
+            previous_release=(
+                pointers.previous.name if pointers.previous is not None else None
+            ),
+            forced_termination_count=0,
+        )
         return "success"
     inactive = "green" if active == "blue" else "blue"
     original_previous = pointers.previous
@@ -918,7 +985,7 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         active_release=old_release.name,
         candidate_release=release.name,
     )
-    _prepare_slot(environment, inactive, release, runtime)
+    _prepare_or_reuse_slot(environment, inactive, release, runtime)
     _write_journal(
         environment,
         "candidate-prepared",
@@ -964,6 +1031,20 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
             original_previous.name if original_previous is not None else None
         ),
     )
+    old_status = (
+        _unix_json(
+            environment,
+            active,
+            "/internal/deployment-status",
+            check=False,
+        )
+        or {}
+    )
+    streams_surviving_cutover = {
+        "active_http_requests": int(old_status.get("active_http_requests", 0)),
+        "active_chat_streams": int(old_status.get("active_chat_streams", 0)),
+        "active_gateway_streams": int(old_status.get("active_gateway_streams", 0)),
+    }
     atomic_symlink(_slot_root(environment, inactive), root / "active")
     _write_journal(
         environment,
@@ -977,6 +1058,8 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         original_previous=(
             original_previous.name if original_previous is not None else None
         ),
+        streams_surviving_cutover=streams_surviving_cutover,
+        forced_termination_count=0,
     )
     try:
         smoke_public(release, environment, candidate_manifest["release_id"])
@@ -1006,6 +1089,7 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
             failed_release=release.name,
         )
         raise DeployError("live smoke failed; prior activation was restored") from exc
+    drain_started = time.monotonic()
     drained = _unix_json(environment, active, "/internal/drain", method="POST")
     drain_deadline = _drain_deadline_seconds(environment)
     _write_journal(
@@ -1017,6 +1101,8 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         draining_release=old_release.name,
         drain_deadline_seconds=drain_deadline,
         drain_started_at=drained.get("drain_started_at") if drained else None,
+        streams_surviving_cutover=streams_surviving_cutover,
+        forced_termination_count=0,
     )
     reporting_deadline = time.monotonic() + _drain_report_seconds(environment)
     while time.monotonic() < reporting_deadline:
@@ -1027,6 +1113,9 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
                 active_slot=inactive,
                 active_release=release.name,
                 previous_release=old_release.name,
+                drain_duration_seconds=round(time.monotonic() - drain_started, 3),
+                streams_surviving_cutover=streams_surviving_cutover,
+                forced_termination_count=0,
             )
             return "success"
         time.sleep(0.5)
@@ -1280,6 +1369,22 @@ def deploy(args: argparse.Namespace) -> int:
                 "migration boundary"
             )
         result = activate_slot(release, args.environment, runtime)
+        try:
+            _retire_legacy_service(args.environment)
+        except (DeployError, subprocess.CalledProcessError, OSError):
+            active = _active_slot(args.environment)
+            _write_journal(
+                args.environment,
+                "legacy-retirement-pending",
+                active_slot=active,
+                active_release=(
+                    _slot_release(args.environment, active).name
+                    if active and _slot_release(args.environment, active)
+                    else None
+                ),
+                prior_activation=_journal(args.environment),
+            )
+            raise
         if result == "success":
             cleanup_releases()
             cleanup_runtimes(RUNTIMES, protected_runtime_ids())

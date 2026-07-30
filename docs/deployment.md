@@ -82,8 +82,11 @@ never mutate the shared dependency set. Qualification creates
 `active -> slots/blue` but leaves live nginx and the legacy service
 unchanged. Applying the checked-in active-slot nginx template is a separately
 authorized `pwc-nginx` operation. After that one-time cutover, verify both
-staging hosts, retire only the legacy staging service, and use ordinary slot
-deployments. `--defer-public-smoke` is retired.
+staging hosts and run the ordinary exact-SHA slot deployment. After its live
+smoke succeeds, that deployment gracefully retires only the legacy staging
+service; a failure to stop it is recorded as `legacy-retirement-pending`
+without rolling back an otherwise healthy slot activation.
+`--defer-public-smoke` is retired.
 
 Rollback:
 

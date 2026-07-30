@@ -27,7 +27,7 @@ from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
 from backend.utils.auth import require_user
 from deploy.nginx_validate import validate as validate_nginx
 from deploy.release import atomic_symlink, validate_rolling_compatibility
-from deploy.runtime import prepare_runtime, runtime_manifest
+from deploy.runtime import prepare_runtime, runtime_id, runtime_manifest
 
 
 def test_accounting_covers_complete_streaming_body(
@@ -171,6 +171,8 @@ def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
         target = Path(env["UV_PROJECT_ENVIRONMENT"])
         (target / "bin").mkdir()
         (target / "bin" / "python").symlink_to("/usr/bin/python3")
+        (target / "lib").mkdir()
+        (target / "lib" / "module.py").write_text("value = 1\n")
 
     def version(*args, **kwargs):
         return SimpleNamespace(stdout="Python 3.12.11\n")
@@ -180,6 +182,9 @@ def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
     )
     assert created
     assert runtime_manifest(first)["lock_sha256"] == first.name
+    assert first.stat().st_mode & 0o222 == 0
+    assert (first / "runtime.json").stat().st_mode & 0o222 == 0
+    assert (first / "lib" / "module.py").stat().st_mode & 0o222 == 0
     second, created = prepare_runtime(
         release, runtimes, runner=build, version_runner=version
     )
@@ -214,6 +219,7 @@ def test_runtime_builder_uses_stable_absolute_uv_path(
         command_seen.extend(command)
         assert env["UV_PYTHON"] == "/usr/bin/python3"
         assert env["UV_PYTHON_PREFERENCE"] == "only-system"
+        assert env["UV_LINK_MODE"] == "copy"
         target = Path(env["UV_PROJECT_ENVIRONMENT"])
         (target / "bin").mkdir()
         (target / "bin" / "python").symlink_to("/usr/bin/python3")
@@ -528,10 +534,151 @@ def test_live_smoke_failure_restores_complete_activation(
     assert smokes == [candidate, old]
 
 
+def test_candidate_failure_leaves_live_activation_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_prepare_slot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("candidate failed")),
+    )
+
+    with pytest.raises(OSError, match="candidate failed"):
+        deploy_cli.activate_slot(candidate, "staging", tmp_path / "runtime")
+
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+    assert (root / "previous").resolve() == older
+
+
+def test_slot_rollback_qualifies_previous_as_one_complete_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, _candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_cli, "smoke_public", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {
+            "drain_started_at": "now",
+            "active_http_requests": 0,
+            "active_chat_streams": 0,
+            "active_gateway_streams": 0,
+        },
+    )
+    monkeypatch.setattr(deploy_cli, "_stop_drained_slot", lambda *_args: True)
+    monkeypatch.setattr(deploy_cli, "_drain_report_seconds", lambda _environment: 1)
+
+    result = deploy_cli.activate_slot(older, "staging", tmp_path / "runtime")
+
+    assert result == "success"
+    assert (root / "active").resolve() == (root / "slots" / "green").resolve()
+    assert (root / "current").resolve() == older
+    assert (root / "previous").resolve() == old
+
+
+def test_draining_previous_slot_is_undrained_and_reused_for_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, _old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    atomic_symlink(candidate, root / "slots" / "green" / "release")
+    runtime = tmp_path / "runtime"
+    calls: list[tuple[str, str]] = []
+    existing = {
+        "release_id": "candidate",
+        "runtime_id": "runtime",
+        "slot": "green",
+        "accepting_chat_turns": False,
+        "active_http_requests": 1,
+    }
+
+    def unix(_environment, _slot, path, *, method="GET", **_kwargs):
+        calls.append((method, path))
+        return existing
+
+    monkeypatch.setattr(deploy_cli, "_unix_json", unix)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_wait_slot",
+        lambda *_args, **_kwargs: {**existing, "accepting_chat_turns": True},
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "_smoke_slot_candidate",
+        lambda *_args, **_kwargs: calls.append(("SMOKE", "candidate")),
+    )
+    monkeypatch.setattr(
+        deploy_cli,
+        "_prepare_slot",
+        lambda *_args, **_kwargs: pytest.fail("exact rollback slot was restarted"),
+    )
+
+    status = deploy_cli._prepare_or_reuse_slot("staging", "green", candidate, runtime)
+
+    assert status["accepting_chat_turns"] is True
+    assert calls == [
+        ("GET", "/internal/deployment-status"),
+        ("POST", "/internal/undrain"),
+        ("SMOKE", "candidate"),
+    ]
+
+
+def test_cleanup_retains_every_pointer_and_slot_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    releases = tmp_path / "releases"
+    runtimes = tmp_path / "runtimes"
+    environments = tmp_path / "environments"
+    releases.mkdir()
+    runtimes.mkdir()
+    protected = {}
+    for name in ("current", "previous", "candidate"):
+        release = releases / name
+        release.mkdir()
+        (release / "uv.lock").write_text(f"{name}-lock")
+        protected[name] = release
+        (runtimes / runtime_id(release)).mkdir()
+    stale = releases / "stale"
+    stale.mkdir()
+    (stale / "uv.lock").write_text("stale-lock")
+    stale_runtime = runtimes / runtime_id(stale)
+    stale_runtime.mkdir()
+
+    for environment in ("production", "staging"):
+        root = environments / environment
+        (root / "slots" / "blue").mkdir(parents=True)
+        (root / "slots" / "green").mkdir()
+        atomic_symlink(protected["current"], root / "current")
+        atomic_symlink(protected["previous"], root / "previous")
+    atomic_symlink(
+        protected["candidate"],
+        environments / "staging" / "slots" / "green" / "release",
+    )
+    monkeypatch.setattr(deploy_cli, "RELEASES", releases)
+    monkeypatch.setattr(deploy_cli, "RUNTIMES", runtimes)
+    monkeypatch.setattr(deploy_cli, "ENVIRONMENTS_ROOT", environments)
+
+    deploy_cli.cleanup_releases()
+    runtime_module.cleanup_runtimes(runtimes, deploy_cli.protected_runtime_ids())
+
+    assert {path.name for path in releases.iterdir()} == set(protected)
+    assert {path.name for path in runtimes.iterdir()} == {
+        runtime_id(release) for release in protected.values()
+    }
+    assert not stale_runtime.exists()
+
+
 def test_busy_old_slot_is_retained_after_successful_cutover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root, old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    journals: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **values: journals.append((phase, values)),
+    )
     monkeypatch.setattr(deploy_cli, "smoke_public", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         deploy_cli,
@@ -551,22 +698,108 @@ def test_busy_old_slot_is_retained_after_successful_cutover(
     assert (root / "active").resolve() == (root / "slots" / "green").resolve()
     assert (root / "current").resolve() == candidate
     assert (root / "previous").resolve() == old
+    phase, values = journals[-1]
+    assert phase == "live-with-old-slot-draining"
+    assert values["streams_surviving_cutover"] == {
+        "active_http_requests": 1,
+        "active_chat_streams": 1,
+        "active_gateway_streams": 0,
+    }
+    assert values["forced_termination_count"] == 0
 
 
-def test_interrupted_cutover_recovers_from_journal(
+def test_same_release_finalizes_bridge_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, _candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+    journals: list[tuple[str, dict]] = []
+    monkeypatch.setattr(deploy_cli, "_wait_slot", lambda *args, **kwargs: {})
+    monkeypatch.setattr(deploy_cli, "smoke_public", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_write_journal",
+        lambda _environment, phase, **values: journals.append((phase, values)),
+    )
+
+    result = deploy_cli.activate_slot(old, "staging", tmp_path / "runtime")
+
+    assert result == "success"
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert journals[-1] == (
+        "settled",
+        {
+            "active_slot": "blue",
+            "active_release": "old",
+            "previous_release": "older",
+            "forced_termination_count": 0,
+        },
+    )
+
+
+def test_legacy_service_retires_only_after_nginx_slot_migration(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    commands: list[list[str]] = []
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        deploy_cli, "run", lambda command, **_kwargs: commands.append(command)
+    )
+    monkeypatch.setattr(
+        deploy_cli, "log_event", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        deploy_cli, "_nginx_uses_active_slot", lambda _environment: False
+    )
+
+    assert not deploy_cli._retire_legacy_service("staging")
+    assert commands == []
+
+    states = iter(["active", "inactive"])
+    monkeypatch.setattr(
+        deploy_cli, "_nginx_uses_active_slot", lambda _environment: True
+    )
+    monkeypatch.setattr(deploy_cli, "_systemctl_state", lambda _unit: next(states))
+
+    assert deploy_cli._retire_legacy_service("staging")
+    assert commands == [["systemctl", "stop", "paperswithcode-backend@staging.service"]]
+    assert events == [
+        (
+            ("legacy-retire", "staging", "success"),
+            {"unit": "paperswithcode-backend@staging.service"},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("phase", "current_switched", "active_switched"),
+    [
+        ("previous-update-pending", False, False),
+        ("current-update-pending", False, False),
+        ("active-switch-pending", True, False),
+        ("active-switched-smoke-pending", True, True),
+        ("automatic-rollback-in-progress", True, True),
+    ],
+)
+def test_interrupted_cutover_recovers_from_every_mutation_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    current_switched: bool,
+    active_switched: bool,
 ):
     root, old, candidate, older = _activation_fixture(tmp_path, monkeypatch)
     atomic_symlink(candidate, root / "slots" / "green" / "release")
-    atomic_symlink(candidate, root / "current")
-    atomic_symlink(old, root / "previous")
-    atomic_symlink(root / "slots" / "green", root / "active")
+    if current_switched:
+        atomic_symlink(candidate, root / "current")
+        atomic_symlink(old, root / "previous")
+    if active_switched:
+        atomic_symlink(root / "slots" / "green", root / "active")
     monkeypatch.setattr(deploy_cli, "RELEASES", tmp_path)
     monkeypatch.setattr(
         deploy_cli,
         "_journal",
         lambda _environment: {
-            "phase": "active-switched-smoke-pending",
+            "phase": phase,
             "old_slot": "blue",
             "old_release": old.name,
             "original_previous": older.name,

@@ -43,8 +43,9 @@ def make_tree_readonly(root: Path) -> None:
         if path.is_symlink():
             continue
         mode = path.stat().st_mode
-        path.chmod(mode | (0o555 if path.is_dir() else 0o444))
-    root.chmod(root.stat().st_mode | 0o555)
+        readable_mode = 0o555 if path.is_dir() else 0o444
+        path.chmod((mode & ~0o222) | readable_mode)
+    root.chmod((root.stat().st_mode & ~0o222) | 0o555)
 
 
 def prepare_runtime(
@@ -68,6 +69,10 @@ def prepare_runtime(
         environment["UV_PROJECT_ENVIRONMENT"] = str(temporary)
         environment["UV_PYTHON"] = "/usr/bin/python3"
         environment["UV_PYTHON_PREFERENCE"] = "only-system"
+        # uv may otherwise hard-link files from its shared cache. Chmodding a
+        # hard-linked runtime read-only would also mutate the cache inode and
+        # any other environment linked to it.
+        environment["UV_LINK_MODE"] = "copy"
         runner(
             [
                 str(UV_BINARY),
