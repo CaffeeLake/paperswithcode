@@ -1,0 +1,26 @@
+[Unit]
+Description=Papers With Code production backend slot (%i)
+Requires=paperswithcode-production-backend@%i.socket
+After=network-online.target postgresql.service postgresql@16-main.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pwc-production
+Group=pwc-production
+WorkingDirectory=/srv/paperswithcode/environments/production/slots/%i/release
+EnvironmentFile=/etc/paperswithcode/production.env
+ExecStart=/usr/bin/python3 /usr/local/lib/paperswithcode-deploy/slot_launcher.py production %i
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=660
+KillSignal=SIGTERM
+SyslogIdentifier=paperswithcode-production-%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/paperswithcode
+ReadWritePaths=/var/lib/paperswithcode/production /var/log/paperswithcode/production

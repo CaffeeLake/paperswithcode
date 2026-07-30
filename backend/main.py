@@ -9,6 +9,7 @@ PostgreSQL database and provides compatible API responses.
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -18,14 +19,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import get_settings
+from backend.services.deployment_lifecycle import (
+    DeploymentAccountingMiddleware,
+    deployment_lifecycle,
+    operator_socket_allowed,
+)
 from backend.services.runtime_validation import validate_runtime
-from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 # Requests slower than this (in milliseconds) are logged so production slow
 # pages can be correlated without ad-hoc instrumentation. Tune via the
 # `PWC_SLOW_REQUEST_MS` env var.
-import os
-
 _SLOW_REQUEST_MS = float(os.getenv("PWC_SLOW_REQUEST_MS", "1000"))
 _timing_logger = logging.getLogger("backend.timing")
 
@@ -207,6 +211,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.environment == "development" else None,
         lifespan=lifespan,
     )
+    app.add_middleware(DeploymentAccountingMiddleware)
 
     # Add CORS middleware. `allow_origin_regex` is used to permit the Hugging
     # Face Space mirror (e.g. `https://<owner>-<name>.hf.space`) when the
@@ -409,6 +414,15 @@ def create_app() -> FastAPI:
 
     @app.get("/internal/ready", include_in_schema=False)
     async def internal_ready():
+        lifecycle = deployment_lifecycle.status()
+        if not lifecycle.accepting_chat_turns:
+            return JSONResponse(
+                {
+                    **deployment_lifecycle.as_dict(),
+                    "status": "draining",
+                },
+                status_code=503,
+            )
         try:
             features = validate_runtime(settings)
             if settings.environment == "staging" and settings.chat_enabled:
@@ -440,10 +454,30 @@ def create_app() -> FastAPI:
             "status": "ready",
             "environment": settings.environment,
             "release_id": settings.release_id,
+            "slot": lifecycle.slot,
+            "runtime_id": lifecycle.runtime_id,
             "features": features,
             "frontend_assets_valid": True,
             "thumbnail_store_valid": True,
         }
+
+    @app.get("/internal/deployment-status", include_in_schema=False)
+    async def internal_deployment_status(request):
+        if not operator_socket_allowed(request.scope):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return {"status": "ready", **deployment_lifecycle.as_dict()}
+
+    @app.post("/internal/drain", include_in_schema=False)
+    async def internal_drain(request):
+        if not operator_socket_allowed(request.scope):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return {"status": "draining", **deployment_lifecycle.drain().__dict__}
+
+    @app.post("/internal/undrain", include_in_schema=False)
+    async def internal_undrain(request):
+        if not operator_socket_allowed(request.scope):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return {"status": "ready", **deployment_lifecycle.undrain().__dict__}
 
     # Must remain last: it owns the public homepage/entity HTML routes and the
     # narrow top-level organization fallback.

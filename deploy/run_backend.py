@@ -56,8 +56,10 @@ def configure_release_environment(release: Path) -> dict:
 
 def main() -> None:
     configure_release_environment(RELEASE_ROOT)
-    python = Path("/srv/paperswithcode/.venv/bin/python")
-    os.execv(python, [str(python), "-m", "uvicorn", "backend.main:app"])
+    arguments = [sys.executable, "-m", "uvicorn", "backend.main:app"]
+    if inherited_fd := os.environ.get("UVICORN_FD"):
+        arguments.extend(["--fd", inherited_fd])
+    os.execv(sys.executable, arguments)
 
 
 if __name__ == "__main__":

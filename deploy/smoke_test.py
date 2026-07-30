@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import mimetypes
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -14,6 +16,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
+
+_UNIX_SOCKET: Path | None = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -267,6 +271,23 @@ def request(
     allow_redirects: bool = True,
     headers: dict[str, str] | None = None,
 ) -> tuple[int, dict, bytes]:
+    if _UNIX_SOCKET is not None:
+        parsed = urlsplit(url)
+        connection = http.client.HTTPConnection("localhost", timeout=20)
+        connection.sock = unix_socket = socket.socket(socket.AF_UNIX)
+        unix_socket.settimeout(20)
+        unix_socket.connect(str(_UNIX_SOCKET))
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        connection.request(
+            "GET",
+            path,
+            headers={"User-Agent": "pwc-smoke/1", **(headers or {})},
+        )
+        response = connection.getresponse()
+        result = response.status, dict(response.headers), response.read()
+        connection.close()
+        return result
+
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
@@ -418,6 +439,28 @@ def run_http_smoke(
     return failures
 
 
+def run_gateway_smoke(base_url: str) -> list[str]:
+    """Prove the dedicated host routes to FastAPI but rejects no capability."""
+
+    target = urljoin(base_url.rstrip("/") + "/", "catalog")
+    raw = b"{}"
+    request_value = urllib.request.Request(
+        target,
+        data=raw,
+        headers={"Content-Type": "application/json", "User-Agent": "pwc-smoke/1"},
+    )
+    try:
+        with urllib.request.urlopen(request_value, timeout=20) as response:
+            status = response.status
+    except urllib.error.HTTPError as error:
+        status = error.code
+    except urllib.error.URLError:
+        return ["dedicated chat gateway is unreachable"]
+    if status not in {401, 403, 422}:
+        return [f"dedicated chat gateway auth boundary returned {status}"]
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -428,7 +471,11 @@ def main() -> int:
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--monitor-subset", action="store_true")
     parser.add_argument("--candidate", action="store_true")
+    parser.add_argument("--unix-socket", type=Path)
+    parser.add_argument("--gateway-url")
     args = parser.parse_args()
+    global _UNIX_SOCKET
+    _UNIX_SOCKET = args.unix_socket
     failures = []
     if args.release_dir:
         failures.extend(
@@ -443,6 +490,8 @@ def main() -> int:
             candidate=args.candidate,
         )
     )
+    if args.gateway_url:
+        failures.extend(run_gateway_smoke(args.gateway_url))
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)

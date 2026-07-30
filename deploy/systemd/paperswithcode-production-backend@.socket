@@ -1,0 +1,12 @@
+[Unit]
+Description=Papers With Code production backend socket (%i)
+
+[Socket]
+ListenStream=/run/paperswithcode/production-%i.sock
+SocketUser=pwc-production
+SocketGroup=www-data
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

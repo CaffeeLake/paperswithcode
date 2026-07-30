@@ -57,11 +57,26 @@ def main() -> int:
     ensure_dir(CONFIG_ROOT, "root", "root", 0o711)
     for path in (
         APP_ROOT / "releases",
+        APP_ROOT / "runtimes",
         APP_ROOT / "environments" / "production",
         APP_ROOT / "environments" / "staging",
     ):
         ensure_dir(path, "root", "root", 0o755)
     for environment in ("production", "staging"):
+        slots = APP_ROOT / "environments" / environment / "slots"
+        ensure_dir(slots, "root", "root", 0o755)
+        for slot in ("blue", "green"):
+            slot_root = slots / slot
+            ensure_dir(slot_root, "root", "root", 0o755)
+            socket_link = slot_root / "backend.sock"
+            expected_socket = Path(f"/run/paperswithcode/{environment}-{slot}.sock")
+            if socket_link.is_symlink():
+                if socket_link.resolve(strict=False) != expected_socket:
+                    raise RuntimeError(f"{socket_link} points to the wrong socket")
+            elif socket_link.exists():
+                raise RuntimeError(f"{socket_link} must be a symlink")
+            else:
+                socket_link.symlink_to(expected_socket)
         ensure_dir(
             STATE_ROOT / environment,
             f"pwc-{environment}",
@@ -143,6 +158,10 @@ def main() -> int:
     systemd = Path(__file__).resolve().parent / "systemd"
     for name in (
         "paperswithcode-backend@.service",
+        "paperswithcode-staging-backend@.service",
+        "paperswithcode-staging-backend@.socket",
+        "paperswithcode-production-backend@.service",
+        "paperswithcode-production-backend@.socket",
         "pwc-postgres-backup.service",
         "pwc-postgres-backup.timer",
         "pwc-curation-thumbnails.service",

@@ -12,15 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
-    ClaudeSDKClient,
     ClaudeAgentOptions,
+    ClaudeSDKClient,
     HookMatcher,
     MirrorErrorMessage,
     ResultMessage,
     ToolResultBlock,
     UserMessage,
-)
-from claude_agent_sdk import (
     query as sdk_query,
 )
 
@@ -312,13 +310,17 @@ async def _adapt_messages(
     terminal_events: list[dict[str, Any]] = []
     async for message in messages:
         if isinstance(message, MirrorErrorMessage):
-            yield {
+            failure: dict[str, Any] = {
                 "v": 1,
                 "type": "_mirror_error",
                 "request_id": request_id,
                 "key": message.key,
                 "error": message.error[:500],
             }
+            if terminal_events:
+                failure["result_available"] = True
+                failure["terminal"] = terminal_events[-1]
+            yield failure
             return
         session_id = getattr(message, "session_id", None)
         if session_id:

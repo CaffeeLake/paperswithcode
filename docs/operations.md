@@ -63,6 +63,15 @@ developer checkout. CRON logs live in
 Environment deployment, rollback, nginx, backup, and release layout are
 documented in [deployment.md](deployment.md).
 
+Blue/green deployments record every pointer mutation in
+`environments/<environment>/activation-journal.json`. If `pwc-status` reports
+`live-with-old-slot-draining`, do not restart or kill the old service; run
+`sudo pwc-reap <environment>` later. It stops a slot only after both chat and
+gateway stream counts are zero and then removes only unreferenced releases and
+runtimes. A journal phase ending in `smoke-pending` or
+`automatic-rollback-in-progress` is an incident requiring pointer and public
+smoke inspection before another deployment.
+
 ## Trending Pipeline
 
 Once production activation is separately authorized, queue ownership is

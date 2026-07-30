@@ -1,8 +1,9 @@
 # Deployment
 
 Production and staging use the same immutable-release mechanism. Each
-environment selects one complete backend-plus-frontend release through
-`current`; `previous` is its only rollback target.
+environment selects one complete backend-plus-frontend release through an
+atomic `active` slot; `current` records that release and `previous` is its only
+rollback target.
 
 ## Topology
 
@@ -11,18 +12,28 @@ environment selects one complete backend-plus-frontend release through
   repository.git
   .venv
   runtime-lock.sha256
+  runtimes/<uv-lock-sha256>/
   releases/<sha12>-<environment>/
-  environments/{production,staging}/{current,previous}
+  environments/{production,staging}/
+    current
+    previous
+    active -> slots/{blue,green}
+    slots/{blue,green}/
+      release -> ../../../releases/<release-id>
+      backend.sock -> /run/paperswithcode/<environment>-<slot>.sock
 
 /etc/paperswithcode/{production,staging}.env
 /etc/paperswithcode/production-cron.env
 /var/lib/paperswithcode/{shared,production,staging}
 ```
 
-`paperswithcode-backend@production` runs as `pwc-production` on `127.0.0.1:8000`.
-`paperswithcode-backend@staging` runs as `pwc-staging` on `127.0.0.1:8001`.
-Nginx serves each environment's `current/frontend-dist` and may fall back only
-to its `previous` hashed assets. Public staging is static and gated to
+Nginx resolves backend requests through `active/backend.sock` and static files
+through `active/release/frontend-dist`. New connections therefore move
+together when `active` is replaced, while established SSE connections remain
+attached to the old Unix socket. Each slot runs from the immutable runtime
+whose ID is the release's `uv.lock` SHA-256. The legacy shared `.venv` and
+fixed-port services remain a migration fallback until both environments have
+passed a slot rollback window. Public staging is static and gated to
 allowlisted project contributors and admins; it never runs Vite or HMR.
 
 Both environments read the live `public` catalog and shared thumbnail mirror.
@@ -45,28 +56,36 @@ sudo pwc-deploy staging <commit-or-ref>
 sudo pwc-deploy production <commit-or-ref> --confirm DEPLOY_PRODUCTION
 ```
 
-Production accepts only commits reachable from `origin/main`. Every deploy
-builds the selected frontend profile, validates manifests and paths, starts a
-candidate on `8100-8199`, runs smoke checks, moves only the selected pointer,
-restarts only that backend, and rolls back automatically on a failed live
-check.
+Production accepts only commits reachable from `origin/main`. Every slot deploy
+builds the selected frontend profile and immutable runtime, starts the inactive
+slot, checks its exact release/runtime/slot identity, validates rolling gateway
+and database compatibility, and runs direct-socket checks before atomically
+switching `previous`, `current`, and `active`. A failed live smoke restores all
+three pointers. A successful activation drains the displaced slot without
+blocking transcript callbacks; if streams remain at the reporting deadline the
+result is `success-with-draining` and `pwc-reap` finishes cleanup later.
 
-For the one-time migration from a legacy service, qualify without moving the
-pointer, then stop the legacy owner and activate the already-qualified release:
+For the one-time migration from a legacy service, install the committed tools
+and slot units, then qualify the unchanged current release in the blue slot:
 
 ```bash
-sudo pwc-deploy production <main-sha> \
-  --qualify-only --confirm DEPLOY_PRODUCTION
+sudo python deploy/install_deploy_tools.py <exact-sha>
+sudo python deploy/install_host_layout.py
+sudo pwc-deploy staging <current-sha> --qualify-only
 ```
 
-`--defer-public-smoke` exists only for the initial bootstrap before nginx points
-at the immutable root. It is not a normal release option.
+This creates `active -> slots/blue` but leaves live nginx and the legacy service
+unchanged. Applying the checked-in active-slot nginx template is a separately
+authorized `pwc-nginx` operation. After that one-time cutover, verify both
+staging hosts, retire only the legacy staging service, and use ordinary slot
+deployments. `--defer-public-smoke` is retired.
 
 Rollback:
 
 ```bash
 sudo pwc-rollback staging
 sudo pwc-rollback production --confirm ROLLBACK_PRODUCTION
+sudo pwc-reap staging
 ```
 
 Nginx has a separate lifecycle:
@@ -148,20 +167,21 @@ through authenticated staging chats before increasing the rollout percentage.
 
 ## Release cleanup
 
-Remove releases not referenced by either environment's `current` or `previous`
-pointer:
+Remove releases and runtimes not referenced by either environment's
+`current`/`previous` pointers or either running/draining slot:
 
 ```bash
 sudo pwc-cleanup --confirm CLEAN_RELEASES
 ```
 
-The union of those four pointers is the complete retention set. Never remove a
-release directory by hand.
+The cleanup command takes the same host mutation lock as deploy, rollback, and
+reaping. Never remove a release or runtime directory by hand.
 
 ## Invariants
 
 `release.json` stores the full SHA, build profile, build time, frontend
-entrypoint, and backend/frontend feature manifests. `features.json` lives
+entrypoint, backend/frontend feature manifests, and rolling gateway/database
+contracts. `features.json` lives
 beside built `index.html`. Startup fails if a deployed shell references
 `/src/main.tsx`, assets are missing, paths are relative or inside a release,
 or feature manifests disagree.
@@ -184,6 +204,12 @@ disabled because its catalog role is read-only and it has no job credentials.
 Each release launcher derives the non-secret capability flags from that
 release's validated manifest, so rolling back also restores the matching
 frontend/backend feature state.
+
+Slot processes expose deployment status, drain, and undrain operators only
+through their Unix socket. Checked-in nginx templates return 404 for those
+paths. `pwc-status` shows each slot's service/socket state, immutable
+release/runtime identity, drain counts, and the activation journal. A deploy
+never edits or reloads nginx.
 
 ## Scheduled work and backup
 

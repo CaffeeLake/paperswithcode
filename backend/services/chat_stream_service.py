@@ -703,16 +703,65 @@ class ChatStreamOrchestrator:
                 )
                 db.commit()
             self.mirror_recovery = (mirror_project_key, sdk_id)
+        terminal = event.get("terminal")
+        completed_result = (
+            event.get("result_available") is True
+            and isinstance(terminal, dict)
+            and terminal.get("type") == "done"
+        )
         with db_manager.session_local() as db:
             service = ChatSessionService(db, self.settings)
             service.mark_transcript_degraded(
                 self.owner, self.admission.session_id, self.admission.turn_id
             )
-            service.fail_turn(
-                self.owner, self.admission, "transcript_mirror_error", False
-            )
+            if completed_result:
+                terminal_payload = {
+                    key: value
+                    for key, value in terminal.items()
+                    if key not in {"v", "type", "request_id"}
+                }
+                answer, citations = self.projection.finalize(db)
+                service.complete_turn(
+                    self.owner,
+                    self.admission,
+                    answer,
+                    citations,
+                    terminal_payload.get("followups", []),
+                    self.projection.blocks,
+                    terminal_payload.get("finish_reason", "success"),
+                )
+            else:
+                service.fail_turn(
+                    self.owner,
+                    self.admission,
+                    "transcript_mirror_error",
+                    False,
+                    self.projection.completed_blocks(),
+                )
             db.commit()
+        if completed_result:
+            self.terminal = terminal_payload.get("finish_reason", "success")
+            logger.warning(
+                "chat transcript mirror failed after model result session_id=%s",
+                self.admission.session_id,
+            )
+            return ChatStreamFrame(
+                "done",
+                {
+                    **terminal_payload,
+                    "citations": self.projection.citations,
+                    "transcript_status": "degraded",
+                    "warning": (
+                        "The answer was saved, but its research transcript is "
+                        "temporarily unavailable. Follow-up actions are disabled."
+                    ),
+                },
+            )
         self.terminal = "error"
+        logger.warning(
+            "chat transcript mirror failed before model result session_id=%s",
+            self.admission.session_id,
+        )
         return ChatStreamFrame(
             "error",
             {

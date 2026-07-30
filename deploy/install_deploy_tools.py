@@ -15,7 +15,13 @@ from pathlib import Path
 INSTALL_ROOT = Path("/usr/local/lib/paperswithcode-deploy")
 BIN_ROOT = Path("/usr/local/sbin")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
-COMMANDS = ("pwc-deploy", "pwc-rollback", "pwc-status", "pwc-cleanup")
+COMMANDS = (
+    "pwc-deploy",
+    "pwc-rollback",
+    "pwc-status",
+    "pwc-cleanup",
+    "pwc-reap",
+)
 RUNTIME_CONTRACT_PATHS = (
     "backend/__init__.py",
     "backend/chat_sandbox_worker/__init__.py",
@@ -117,6 +123,10 @@ def main() -> int:
         )
         wrapper.chmod(0o755)
         for unit in (
+            "paperswithcode-staging-backend@.service",
+            "paperswithcode-staging-backend@.socket",
+            "paperswithcode-production-backend@.service",
+            "paperswithcode-production-backend@.socket",
             "pwc-curation-thumbnails.service",
             "pwc-curation-thumbnails.timer",
         ):

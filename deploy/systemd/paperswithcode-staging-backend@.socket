@@ -1,0 +1,12 @@
+[Unit]
+Description=Papers With Code staging backend socket (%i)
+
+[Socket]
+ListenStream=/run/paperswithcode/staging-%i.sock
+SocketUser=pwc-staging
+SocketGroup=www-data
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

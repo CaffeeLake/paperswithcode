@@ -1,6 +1,11 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "26"
+WORKER_CONTRACT_VERSION = "27"
+# A release emits this gateway protocol and accepts workers back to the
+# compatible-from floor while an old slot drains or a rollback is qualified.
+GATEWAY_CONTRACT_VERSION = 26
+GATEWAY_COMPATIBLE_FROM = 26
+DATABASE_CONTRACT_VERSION = 1
 SDK_VERSION = "0.2.115"
 PWC_CLI_VERSION = "0.1.4"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"

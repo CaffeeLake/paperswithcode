@@ -78,14 +78,36 @@ def location_block(config: str, location: str) -> str:
 
 def validate(production: str, staging: str) -> list[str]:
     failures: list[str] = []
-    if "pwc_staging_backend" in production or "127.0.0.1:8001" in production:
+    if (
+        "pwc_staging_backend" in production
+        or "/environments/staging/active" in production
+    ):
         failures.append("production references staging backend")
-    if "pwc_production_backend" in staging or "127.0.0.1:8000" in staging:
+    if (
+        "pwc_production_backend" in staging
+        or "/environments/production/active" in staging
+    ):
         failures.append("staging references production backend")
-    if "/environments/production/current/frontend-dist" not in production:
-        failures.append("production root is not its current release")
-    if "/environments/staging/current/frontend-dist" not in staging:
-        failures.append("staging root is not its current release")
+    for config, environment in (
+        (production, "production"),
+        (staging, "staging"),
+    ):
+        active = f"/environments/{environment}/active"
+        if f"{active}/release/frontend-dist" not in config:
+            failures.append(f"{environment} root is not its active slot release")
+        if f"server unix:/srv/paperswithcode{active}/backend.sock;" not in config:
+            failures.append(f"{environment} backend is not its active slot socket")
+        if "keepalive " in config.split("server {", 1)[0]:
+            failures.append(
+                f"{environment} upstream keepalive can reuse the displaced slot"
+            )
+        if "127.0.0.1:8000" in config or "127.0.0.1:8001" in config:
+            failures.append(f"{environment} retains a fixed application upstream")
+        operator_block = location_block(
+            config, 'location ~ "^/internal/(deployment-status|drain|undrain)$"'
+        )
+        if not operator_block or "return 404;" not in operator_block:
+            failures.append(f"{environment} does not deny public deployment operators")
     if "8081" in staging or "proxy_set_header Upgrade" in staging:
         failures.append("staging exposes Vite/HMR")
     access_block = location_block(staging, "location = /_staging_access_check")

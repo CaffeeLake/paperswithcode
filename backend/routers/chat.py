@@ -45,6 +45,7 @@ from backend.services.chat_session_service import (
 from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_runner import shared_sandbox_manager
+from backend.services.deployment_lifecycle import deployment_lifecycle
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -327,6 +328,12 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled or not settings.hf_token:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    if not deployment_lifecycle.status().accepting_chat_turns:
+        raise HTTPException(
+            status_code=503,
+            detail="A deployment is activating; retry this turn shortly",
+            headers={"Retry-After": "3"},
+        )
     if not await _admission.try_acquire(settings.chat_max_concurrency):
         raise HTTPException(
             status_code=429,

@@ -309,7 +309,15 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         "worker_contract_version": settings.chat_worker_contract_version,
         "system_prompt_sha256": settings.chat_system_prompt_sha256,
     }
-    if runtime != expected_runtime or manifest.get("release_id") != settings.release_id:
+    projected_runtime = (
+        {key: runtime.get(key) for key in expected_runtime}
+        if isinstance(runtime, dict)
+        else runtime
+    )
+    if (
+        projected_runtime != expected_runtime
+        or manifest.get("release_id") != settings.release_id
+    ):
         raise RuntimeError("running chat runtime differs from the release manifest")
 
     if settings.thumbnail_mutations_enabled:

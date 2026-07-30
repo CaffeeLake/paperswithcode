@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +30,12 @@ try:
         release_id,
         sha256_file,
         validate_manifest,
+        validate_rolling_compatibility,
+    )
+    from deploy.runtime import (
+        cleanup_runtimes,
+        prepare_runtime,
+        runtime_id,
     )
 except ModuleNotFoundError:
     from release import (  # type: ignore[no-redef]
@@ -39,11 +47,18 @@ except ModuleNotFoundError:
         release_id,
         sha256_file,
         validate_manifest,
+        validate_rolling_compatibility,
+    )
+    from runtime import (  # type: ignore[no-redef]
+        cleanup_runtimes,
+        prepare_runtime,
+        runtime_id,
     )
 
 APP_ROOT = Path(os.environ.get("PWC_DEPLOY_APP_ROOT", "/srv/paperswithcode"))
 REPOSITORY = Path(os.environ.get("PWC_DEPLOY_REPOSITORY", APP_ROOT / "repository.git"))
 RELEASES = APP_ROOT / "releases"
+RUNTIMES = APP_ROOT / "runtimes"
 ENVIRONMENTS_ROOT = APP_ROOT / "environments"
 VENV = APP_ROOT / ".venv"
 PYTHON_RUNTIME = APP_ROOT / "python-runtime"
@@ -51,6 +66,7 @@ RUNTIME_LOCK = APP_ROOT / "runtime-lock.sha256"
 CONFIG_ROOT = Path(os.environ.get("PWC_DEPLOY_CONFIG_ROOT", "/etc/paperswithcode"))
 LOG_ROOT = Path(os.environ.get("PWC_DEPLOY_LOG_ROOT", "/var/log/paperswithcode/deploy"))
 MIN_FREE_BYTES = int(os.environ.get("PWC_DEPLOY_MIN_FREE_BYTES", str(1536 * 1024**2)))
+DEPLOY_LOCK = APP_ROOT / "deployment.lock"
 PORTS = {"production": 8000, "staging": 8001}
 PUBLIC_URLS = {
     "production": "https://paperswithcode.co",
@@ -169,7 +185,8 @@ def _chat_descriptor_from_source(source: Path, environment: str) -> dict | None:
     script = """
 import json
 from backend.chat_sandbox_worker.contract import (
-    DEFAULT_BACKEND, MODAL_IMAGE_ID, NEW_CHAT_MODAL_PERCENTAGE,
+    DATABASE_CONTRACT_VERSION, DEFAULT_BACKEND, GATEWAY_COMPATIBLE_FROM,
+    GATEWAY_CONTRACT_VERSION, MODAL_IMAGE_ID, NEW_CHAT_MODAL_PERCENTAGE,
     PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
 )
 from backend.chat_sandbox_worker.prompt import sha256
@@ -180,6 +197,9 @@ print(json.dumps({
     "modal_image_version": MODAL_IMAGE_ID,
     "pwc_cli_version": PWC_CLI_VERSION,
     "worker_contract_version": WORKER_CONTRACT_VERSION,
+    "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
+    "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
+    "database_contract_version": DATABASE_CONTRACT_VERSION,
     "system_prompt_sha256": sha256(),
 }, sort_keys=True))
 """
@@ -477,10 +497,16 @@ def wait_for_release(environment: str, expected_release: str) -> bool:
 
 
 def smoke_public(release: Path, environment: str, expected_release: str) -> None:
+    immutable_python = (
+        RUNTIMES / runtime_id(release) / "bin" / "python"
+        if (release / "uv.lock").is_file()
+        else Path()
+    )
+    python = immutable_python if immutable_python.is_file() else VENV / "bin" / "python"
     run(
         [
-            str(VENV / "bin" / "python"),
-            str(release / "deploy" / "smoke_test.py"),
+            str(python),
+            str(Path(__file__).resolve().parent / "smoke_test.py"),
             "--environment",
             environment,
             "--base-url",
@@ -489,8 +515,497 @@ def smoke_public(release: Path, environment: str, expected_release: str) -> None
             expected_release,
             "--release-dir",
             str(release),
+            *(
+                [
+                    "--gateway-url",
+                    "https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway",
+                ]
+                if environment == "staging"
+                else []
+            ),
         ]
     )
+
+
+@contextmanager
+def deployment_lock():
+    APP_ROOT.mkdir(parents=True, exist_ok=True)
+    with DEPLOY_LOCK.open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def _slots_root(environment: str) -> Path:
+    return ENVIRONMENTS_ROOT / environment / "slots"
+
+
+def _slot_root(environment: str, slot: str) -> Path:
+    return _slots_root(environment) / slot
+
+
+def _slot_socket(environment: str, slot: str) -> Path:
+    return Path(f"/run/paperswithcode/{environment}-{slot}.sock")
+
+
+def _slot_unit(environment: str, slot: str, kind: str = "service") -> str:
+    return f"paperswithcode-{environment}-backend@{slot}.{kind}"
+
+
+def _active_slot(environment: str) -> str | None:
+    link = ENVIRONMENTS_ROOT / environment / "active"
+    if not link.is_symlink():
+        return None
+    target = link.resolve(strict=False)
+    for slot in ("blue", "green"):
+        if target == _slot_root(environment, slot).resolve(strict=False):
+            return slot
+    raise DeployError(f"{environment} active pointer has an invalid target")
+
+
+def _nginx_uses_active_slot(environment: str) -> bool:
+    result = subprocess.run(
+        ["nginx", "-T"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    expected = (
+        "server unix:/srv/paperswithcode/environments/"
+        f"{environment}/active/backend.sock;"
+    )
+    return result.returncode == 0 and expected in result.stdout
+
+
+def _slot_release(environment: str, slot: str) -> Path | None:
+    link = _slot_root(environment, slot) / "release"
+    return link.resolve(strict=False) if link.is_symlink() else None
+
+
+def _unix_json(
+    environment: str,
+    slot: str,
+    path: str,
+    *,
+    method: str = "GET",
+    timeout: int = 5,
+    check: bool = True,
+) -> dict | None:
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        str(timeout),
+        "--unix-socket",
+        str(_slot_socket(environment, slot)),
+        "--request",
+        method,
+        "http://localhost" + path,
+    ]
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode:
+        if check:
+            raise DeployError(
+                f"{environment}/{slot} socket request failed: {result.stderr.strip()}"
+            )
+        return None
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        if check:
+            raise DeployError(f"{environment}/{slot} returned invalid JSON") from exc
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _wait_slot(
+    environment: str,
+    slot: str,
+    manifest: dict,
+    runtime: Path,
+    *,
+    accepting: bool = True,
+) -> dict:
+    deadline = time.monotonic() + 60
+    last = None
+    while time.monotonic() < deadline:
+        last = _unix_json(
+            environment,
+            slot,
+            "/internal/deployment-status",
+            check=False,
+        )
+        if (
+            last
+            and last.get("release_id") == manifest["release_id"]
+            and last.get("runtime_id") == runtime.name
+            and last.get("slot") == slot
+            and bool(last.get("accepting_chat_turns")) is accepting
+        ):
+            health = _unix_json(environment, slot, "/health", check=False)
+            if health and health.get("release_id") == manifest["release_id"]:
+                return last
+        time.sleep(0.25)
+    raise DeployError(
+        f"{environment}/{slot} failed exact release/runtime/slot readiness: {last!r}"
+    )
+
+
+def _write_journal(environment: str, phase: str, **values: object) -> None:
+    root = ENVIRONMENTS_ROOT / environment
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "activation-journal.json"
+    temporary = target.with_name(f".{target.name}.new-{os.getpid()}")
+    temporary.write_text(
+        json.dumps(
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "environment": environment,
+                "phase": phase,
+                **values,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
+
+
+def _journal(environment: str) -> dict | None:
+    path = ENVIRONMENTS_ROOT / environment / "activation-journal.json"
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    return value if isinstance(value, dict) else None
+
+
+def _recover_interrupted_activation(environment: str) -> None:
+    """Conservatively restore the old slot if cutover smoke was interrupted."""
+
+    journal = _journal(environment)
+    if not journal or journal.get("phase") not in {
+        "previous-update-pending",
+        "current-update-pending",
+        "active-switch-pending",
+        "active-switched-smoke-pending",
+        "automatic-rollback-in-progress",
+    }:
+        return
+    root = ENVIRONMENTS_ROOT / environment
+    old_slot = journal.get("old_slot")
+    old_release_name = journal.get("old_release")
+    if old_slot not in {"blue", "green"} or not isinstance(old_release_name, str):
+        raise DeployError("activation journal cannot identify its rollback target")
+    old_release = RELEASES / old_release_name
+    validate_manifest(old_release, environment)
+    original_previous_name = journal.get("original_previous")
+    original_previous = (
+        RELEASES / original_previous_name
+        if isinstance(original_previous_name, str)
+        else None
+    )
+    _write_journal(
+        environment,
+        "automatic-rollback-in-progress",
+        old_slot=old_slot,
+        old_release=old_release.name,
+        original_previous=(
+            original_previous.name if original_previous is not None else None
+        ),
+        interrupted_phase=journal["phase"],
+    )
+    atomic_symlink(_slot_root(environment, old_slot), root / "active")
+    atomic_symlink(old_release, root / "current")
+    if original_previous:
+        atomic_symlink(original_previous, root / "previous")
+    else:
+        (root / "previous").unlink(missing_ok=True)
+    _unix_json(environment, old_slot, "/internal/undrain", method="POST")
+    smoke_public(
+        old_release,
+        environment,
+        validate_manifest(old_release, environment)["release_id"],
+    )
+    _write_journal(
+        environment,
+        "automatic-rollback-complete",
+        active_slot=old_slot,
+        restored_release=old_release.name,
+        interrupted_phase=journal["phase"],
+    )
+
+
+def _prepare_slot(environment: str, slot: str, release: Path, runtime: Path) -> dict:
+    existing = _unix_json(environment, slot, "/internal/deployment-status", check=False)
+    if existing:
+        busy = (
+            int(existing.get("active_http_requests", 0))
+            + int(existing.get("active_chat_streams", 0))
+            + int(existing.get("active_gateway_streams", 0))
+        )
+        if busy:
+            raise DeployError(
+                f"inactive slot {slot} is still draining with {busy} streams"
+            )
+    subprocess.run(["systemctl", "stop", _slot_unit(environment, slot)], check=False)
+    subprocess.run(
+        ["systemctl", "stop", _slot_unit(environment, slot, "socket")], check=False
+    )
+    slot_root = _slot_root(environment, slot)
+    slot_root.mkdir(parents=True, exist_ok=True)
+    socket_link = slot_root / "backend.sock"
+    if not socket_link.is_symlink():
+        socket_link.unlink(missing_ok=True)
+        socket_link.symlink_to(_slot_socket(environment, slot))
+    atomic_symlink(release, slot_root / "release")
+    run(["systemctl", "start", _slot_unit(environment, slot, "socket")])
+    run(["systemctl", "start", _slot_unit(environment, slot)])
+    manifest = validate_manifest(release, environment)
+    status_value = _wait_slot(environment, slot, manifest, runtime)
+    run(
+        [
+            str(runtime / "bin" / "python"),
+            str(Path(__file__).resolve().parent / "smoke_test.py"),
+            "--environment",
+            environment,
+            "--base-url",
+            "http://localhost",
+            "--expected-release",
+            manifest["release_id"],
+            "--release-dir",
+            str(release),
+            "--candidate",
+            "--unix-socket",
+            str(_slot_socket(environment, slot)),
+        ]
+    )
+    return status_value
+
+
+def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> None:
+    pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
+    if pointers.current != release:
+        raise DeployError(
+            "the one-time slot bridge must qualify the unchanged current release"
+        )
+    if _active_slot(environment) is not None:
+        raise DeployError("the slot bridge is already prepared")
+    slot = "blue"
+    _write_journal(
+        environment,
+        "candidate-preparing",
+        candidate_slot=slot,
+        candidate_release=release.name,
+        legacy_current=release.name,
+    )
+    _prepare_slot(environment, slot, release, runtime)
+    _write_journal(
+        environment,
+        "candidate-prepared",
+        candidate_slot=slot,
+        candidate_release=release.name,
+        rollback_topology="legacy fixed-port service and current/previous pointers",
+    )
+    atomic_symlink(
+        _slot_root(environment, slot), ENVIRONMENTS_ROOT / environment / "active"
+    )
+    _write_journal(
+        environment,
+        "bridge-awaiting-nginx",
+        active_slot=slot,
+        candidate_release=release.name,
+        rollback_topology="nginx still routes to the unchanged legacy fixed port",
+    )
+
+
+def _drain_report_seconds(environment: str) -> float:
+    configured = os.environ.get("PWC_DEPLOY_DRAIN_REPORT_SECONDS", "15")
+    return max(0.0, min(float(configured), 60.0))
+
+
+def _drain_deadline_seconds(environment: str) -> float:
+    values = {
+        "PWC_CHAT_TIMEOUT_SECONDS": 180.0,
+        "PWC_CHAT_AGENT_TIMEOUT_SECONDS": 180.0,
+    }
+    config = CONFIG_ROOT / f"{environment}.env"
+    if config.is_file():
+        for line in config.read_text(encoding="utf-8").splitlines():
+            key, separator, raw = line.partition("=")
+            if separator and key in values:
+                try:
+                    values[key] = float(raw.strip().strip("\"'"))
+                except ValueError:
+                    raise DeployError(f"{key} must be numeric for drain calculation")
+    return max(values.values()) + 60
+
+
+def _stop_drained_slot(environment: str, slot: str) -> bool:
+    status = _unix_json(environment, slot, "/internal/deployment-status", check=False)
+    if not status:
+        return True
+    if status.get("accepting_chat_turns"):
+        return False
+    if (
+        int(status.get("active_http_requests", 0))
+        or int(status.get("active_chat_streams", 0))
+        or int(status.get("active_gateway_streams", 0))
+    ):
+        return False
+    run(["systemctl", "stop", _slot_unit(environment, slot)])
+    run(["systemctl", "stop", _slot_unit(environment, slot, "socket")])
+    return True
+
+
+def activate_slot(release: Path, environment: str, runtime: Path) -> str:
+    root = ENVIRONMENTS_ROOT / environment
+    active = _active_slot(environment)
+    if active is None:
+        raise DeployError(
+            "slot topology is not active; qualify the current bridge release and "
+            "apply the separately authorized nginx migration first"
+        )
+    old_release = _slot_release(environment, active)
+    pointers = read_pointers(root)
+    if not old_release or pointers.current != old_release:
+        raise DeployError("active slot and current release pointer disagree")
+    if old_release == release:
+        _wait_slot(
+            environment,
+            active,
+            validate_manifest(release, environment),
+            runtime,
+        )
+        smoke_public(release, environment, validate_manifest(release)["release_id"])
+        return "success"
+    inactive = "green" if active == "blue" else "blue"
+    original_previous = pointers.previous
+    candidate_manifest = validate_manifest(release, environment)
+    active_manifest = validate_manifest(old_release, environment)
+    validate_rolling_compatibility(active_manifest, candidate_manifest)
+    _write_journal(
+        environment,
+        "candidate-preparing",
+        active_slot=active,
+        candidate_slot=inactive,
+        active_release=old_release.name,
+        candidate_release=release.name,
+    )
+    _prepare_slot(environment, inactive, release, runtime)
+    _write_journal(
+        environment,
+        "candidate-prepared",
+        active_slot=active,
+        candidate_slot=inactive,
+        active_release=old_release.name,
+        candidate_release=release.name,
+    )
+    _write_journal(
+        environment,
+        "previous-update-pending",
+        active_slot=active,
+        candidate_slot=inactive,
+        previous_release=old_release.name,
+        old_slot=active,
+        old_release=old_release.name,
+        original_previous=(
+            original_previous.name if original_previous is not None else None
+        ),
+    )
+    atomic_symlink(old_release, root / "previous")
+    _write_journal(
+        environment,
+        "current-update-pending",
+        active_slot=active,
+        candidate_slot=inactive,
+        current_release=release.name,
+        old_slot=active,
+        old_release=old_release.name,
+        original_previous=(
+            original_previous.name if original_previous is not None else None
+        ),
+    )
+    atomic_symlink(release, root / "current")
+    _write_journal(
+        environment,
+        "active-switch-pending",
+        active_slot=active,
+        candidate_slot=inactive,
+        old_slot=active,
+        old_release=old_release.name,
+        original_previous=(
+            original_previous.name if original_previous is not None else None
+        ),
+    )
+    atomic_symlink(_slot_root(environment, inactive), root / "active")
+    _write_journal(
+        environment,
+        "active-switched-smoke-pending",
+        active_slot=inactive,
+        draining_slot=active,
+        active_release=release.name,
+        previous_release=old_release.name,
+        old_slot=active,
+        old_release=old_release.name,
+        original_previous=(
+            original_previous.name if original_previous is not None else None
+        ),
+    )
+    try:
+        smoke_public(release, environment, candidate_manifest["release_id"])
+    except (DeployError, subprocess.CalledProcessError, OSError) as exc:
+        _write_journal(
+            environment,
+            "automatic-rollback-in-progress",
+            old_slot=active,
+            old_release=old_release.name,
+            original_previous=(
+                original_previous.name if original_previous is not None else None
+            ),
+        )
+        atomic_symlink(_slot_root(environment, active), root / "active")
+        atomic_symlink(old_release, root / "current")
+        if original_previous:
+            atomic_symlink(original_previous, root / "previous")
+        else:
+            (root / "previous").unlink(missing_ok=True)
+        _unix_json(environment, active, "/internal/undrain", method="POST")
+        smoke_public(old_release, environment, active_manifest["release_id"])
+        _write_journal(
+            environment,
+            "automatic-rollback-complete",
+            active_slot=active,
+            restored_release=old_release.name,
+            failed_release=release.name,
+        )
+        raise DeployError("live smoke failed; prior activation was restored") from exc
+    drained = _unix_json(environment, active, "/internal/drain", method="POST")
+    drain_deadline = _drain_deadline_seconds(environment)
+    _write_journal(
+        environment,
+        "live-with-old-slot-draining",
+        active_slot=inactive,
+        draining_slot=active,
+        active_release=release.name,
+        draining_release=old_release.name,
+        drain_deadline_seconds=drain_deadline,
+        drain_started_at=drained.get("drain_started_at") if drained else None,
+    )
+    reporting_deadline = time.monotonic() + _drain_report_seconds(environment)
+    while time.monotonic() < reporting_deadline:
+        if _stop_drained_slot(environment, active):
+            _write_journal(
+                environment,
+                "settled",
+                active_slot=inactive,
+                active_release=release.name,
+                previous_release=old_release.name,
+            )
+            return "success"
+        time.sleep(0.5)
+    return "success-with-draining"
 
 
 def activate(
@@ -568,6 +1083,19 @@ def protected_release_paths() -> set[Path]:
     for environment in ENVIRONMENTS:
         pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
         protected.update(path for path in (pointers.current, pointers.previous) if path)
+        for slot in ("blue", "green"):
+            release = _slot_release(environment, slot)
+            if release:
+                protected.add(release)
+    return protected
+
+
+def protected_runtime_ids() -> set[str]:
+    protected: set[str] = set()
+    for release in protected_release_paths():
+        lock = release / "uv.lock"
+        if lock.is_file():
+            protected.add(sha256_file(lock))
     return protected
 
 
@@ -582,15 +1110,36 @@ def cleanup_command(args: argparse.Namespace) -> int:
     require_root()
     if args.confirm != "CLEAN_RELEASES":
         raise DeployError("cleanup requires --confirm CLEAN_RELEASES")
-    protected = protected_release_paths()
-    targets = [
-        path
-        for path in RELEASES.iterdir()
-        if path.is_dir() and path.resolve() not in protected
-    ]
-    print(json.dumps({"remove": [path.name for path in targets]}, indent=2))
-    for path in targets:
-        shutil.rmtree(path)
+    with deployment_lock():
+        protected = protected_release_paths()
+        targets = [
+            path
+            for path in RELEASES.iterdir()
+            if path.is_dir() and path.resolve() not in protected
+        ]
+        runtime_targets = (
+            [
+                path.name
+                for path in RUNTIMES.iterdir()
+                if path.is_dir()
+                and not path.name.startswith(".")
+                and path.name not in protected_runtime_ids()
+            ]
+            if RUNTIMES.is_dir()
+            else []
+        )
+        print(
+            json.dumps(
+                {
+                    "remove_releases": [path.name for path in targets],
+                    "remove_runtimes": runtime_targets,
+                },
+                indent=2,
+            )
+        )
+        for path in targets:
+            shutil.rmtree(path)
+        cleanup_runtimes(RUNTIMES, protected_runtime_ids())
     return 0
 
 
@@ -598,77 +1147,86 @@ def deploy(args: argparse.Namespace) -> int:
     require_root()
     if args.environment == "production" and args.confirm != "DEPLOY_PRODUCTION":
         raise DeployError("production requires --confirm DEPLOY_PRODUCTION")
-    sha = resolve_sha(args.source, args.environment)
-    release = prepare_release(sha, args.environment)
-    old_runtime_lock = (
-        RUNTIME_LOCK.read_text().strip() if RUNTIME_LOCK.is_file() else ""
-    )
-    dependency_change = sync_runtime_with_recovery(release, old_runtime_lock)
-    current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
-    if args.defer_public_smoke and current is not None:
-        raise DeployError(
-            "--defer-public-smoke is only valid for initial environment bootstrap"
-        )
-    print(
-        json.dumps(
-            {
-                "environment": args.environment,
-                "source": args.source,
-                "current_sha": (
-                    validate_manifest(current)["git_sha"] if current else None
-                ),
-                "candidate_sha": sha,
-                "features": profile_features(args.environment),
-                "dependencies_changed": dependency_change,
-            },
-            indent=2,
-        )
-    )
-    try:
-        qualify(release, args.environment)
-        if dependency_change:
-            for other in ENVIRONMENTS:
-                if other == args.environment:
-                    continue
-                other_current = read_pointers(ENVIRONMENTS_ROOT / other).current
-                if other_current:
-                    qualify(other_current, other)
-    except (DeployError, subprocess.CalledProcessError, OSError, ValueError):
-        if dependency_change and old_runtime_lock:
-            restore_runtime(old_runtime_lock)
-        raise
-    if args.qualify_only:
-        log_event(
-            "qualify",
-            args.environment,
-            "success",
-            git_sha=sha,
-            source=args.source,
-        )
-        print(f"qualified {args.source} ({sha}) for {args.environment}")
-        return 0
-    activate(
-        release,
-        args.environment,
-        previous_runtime_lock=old_runtime_lock if dependency_change else "",
-        defer_public_smoke=args.defer_public_smoke,
-    )
     if args.defer_public_smoke:
+        raise DeployError(
+            "--defer-public-smoke is retired; slot activation has no listener gap"
+        )
+    with deployment_lock():
+        _recover_interrupted_activation(args.environment)
+        sha = resolve_sha(args.source, args.environment)
+        release = prepare_release(sha, args.environment)
+        runtime, runtime_built = prepare_runtime(release, RUNTIMES)
+        current = read_pointers(ENVIRONMENTS_ROOT / args.environment).current
+        print(
+            json.dumps(
+                {
+                    "environment": args.environment,
+                    "source": args.source,
+                    "current_sha": (
+                        validate_manifest(current)["git_sha"] if current else None
+                    ),
+                    "candidate_sha": sha,
+                    "candidate_runtime": runtime.name,
+                    "runtime_built": runtime_built,
+                    "features": profile_features(args.environment),
+                    "active_slot": _active_slot(args.environment),
+                },
+                indent=2,
+            )
+        )
+        if args.qualify_only:
+            if _active_slot(args.environment) is None:
+                _bridge_qualify_current(release, args.environment, runtime)
+                result = "bridge-awaiting-nginx"
+            else:
+                active = _active_slot(args.environment)
+                assert active is not None
+                inactive = "green" if active == "blue" else "blue"
+                active_release = _slot_release(args.environment, active)
+                if not active_release:
+                    raise DeployError("active slot has no release")
+                validate_rolling_compatibility(
+                    validate_manifest(active_release, args.environment),
+                    validate_manifest(release, args.environment),
+                )
+                _prepare_slot(args.environment, inactive, release, runtime)
+                _write_journal(
+                    args.environment,
+                    "candidate-prepared",
+                    active_slot=active,
+                    candidate_slot=inactive,
+                    active_release=active_release.name,
+                    candidate_release=release.name,
+                )
+                result = "candidate-prepared"
+            log_event(
+                "qualify",
+                args.environment,
+                result,
+                git_sha=sha,
+                source=args.source,
+                runtime_id=runtime.name,
+            )
+            print(f"qualified {args.source} ({sha}) for {args.environment}: {result}")
+            return 0
+        if not _nginx_uses_active_slot(args.environment):
+            raise DeployError(
+                f"{args.environment} nginx has not crossed the explicit active-slot "
+                "migration boundary"
+            )
+        result = activate_slot(release, args.environment, runtime)
+        if result == "success":
+            cleanup_releases()
+            cleanup_runtimes(RUNTIMES, protected_runtime_ids())
         log_event(
-            "deploy-bootstrap",
+            "deploy",
             args.environment,
-            "awaiting-public-smoke",
+            result,
             git_sha=sha,
             source=args.source,
+            runtime_id=runtime.name,
         )
-        print(
-            f"{args.environment} activated locally; "
-            "apply nginx, then re-run this deploy"
-        )
-        return 0
-    cleanup_releases()
-    log_event("deploy", args.environment, "success", git_sha=sha, source=args.source)
-    print(f"deployed {args.source} ({sha}) to {args.environment}")
+    print(f"deployed {args.source} ({sha}) to {args.environment}: {result}")
     return 0
 
 
@@ -676,44 +1234,91 @@ def rollback(args: argparse.Namespace) -> int:
     require_root()
     if args.environment == "production" and args.confirm != "ROLLBACK_PRODUCTION":
         raise DeployError("production requires --confirm ROLLBACK_PRODUCTION")
-    root = ENVIRONMENTS_ROOT / args.environment
-    pointers = read_pointers(root)
-    if not pointers.previous or not pointers.current:
-        raise DeployError("current and previous releases are required for rollback")
-    validate_manifest(pointers.previous, args.environment)
-    old_current = pointers.current
-    old_runtime_lock = (
-        RUNTIME_LOCK.read_text().strip() if RUNTIME_LOCK.is_file() else ""
-    )
-    dependency_change = sync_runtime_with_recovery(pointers.previous, old_runtime_lock)
-    atomic_symlink(pointers.previous, root / "current")
-    atomic_symlink(old_current, root / "previous")
-    run(["systemctl", "restart", _unit(args.environment)])
-    expected = validate_manifest(pointers.previous)["release_id"]
-    try:
-        if not wait_for_release(args.environment, expected):
-            raise DeployError("rollback target failed readiness")
-        smoke_public(pointers.previous, args.environment, expected)
-    except (DeployError, subprocess.CalledProcessError, OSError) as exc:
-        atomic_symlink(old_current, root / "current")
-        atomic_symlink(pointers.previous, root / "previous")
-        if dependency_change and old_runtime_lock:
-            restore_runtime(old_runtime_lock)
-        run(["systemctl", "restart", _unit(args.environment)])
-        original = validate_manifest(old_current, args.environment)
-        if not wait_for_release(args.environment, original["release_id"]):
-            raise DeployError("rollback failed and original release did not recover")
-        smoke_public(old_current, args.environment, original["release_id"])
-        raise DeployError(
-            "rollback target failed smoke; restored original release"
-        ) from exc
-    log_event(
-        "rollback",
-        args.environment,
-        "success",
-        restored_release=pointers.previous.name,
-    )
-    print(f"rolled {args.environment} back to {pointers.previous.name}")
+    with deployment_lock():
+        _recover_interrupted_activation(args.environment)
+        root = ENVIRONMENTS_ROOT / args.environment
+        pointers = read_pointers(root)
+        if not pointers.previous or not pointers.current:
+            raise DeployError("current and previous releases are required for rollback")
+        if _active_slot(args.environment) is None:
+            target = pointers.previous
+            old_current = pointers.current
+            sync_runtime(target)
+            atomic_symlink(target, root / "current")
+            atomic_symlink(old_current, root / "previous")
+            run(["systemctl", "restart", _unit(args.environment)])
+            expected = validate_manifest(target, args.environment)["release_id"]
+            if not wait_for_release(args.environment, expected):
+                raise DeployError("legacy rollback target failed readiness")
+            smoke_public(target, args.environment, expected)
+            log_event(
+                "rollback",
+                args.environment,
+                "legacy-success",
+                restored_release=target.name,
+            )
+            print(f"rolled {args.environment} back to {target.name}: legacy-success")
+            return 0
+        validate_manifest(pointers.previous, args.environment)
+        target = pointers.previous
+        runtime, _ = prepare_runtime(target, RUNTIMES)
+        result = activate_slot(target, args.environment, runtime)
+        log_event(
+            "rollback",
+            args.environment,
+            result,
+            restored_release=target.name,
+            runtime_id=runtime.name,
+        )
+    print(f"rolled {args.environment} back to {target.name}: {result}")
+    return 0
+
+
+def reap(args: argparse.Namespace) -> int:
+    require_root()
+    with deployment_lock():
+        active = _active_slot(args.environment)
+        if active is None:
+            raise DeployError("slot topology is not active")
+        draining = "green" if active == "blue" else "blue"
+        status_value = _unix_json(
+            args.environment,
+            draining,
+            "/internal/deployment-status",
+            check=False,
+        )
+        if status_value is None:
+            print(f"{args.environment}/{draining} is already stopped")
+            return 0
+        if not _stop_drained_slot(args.environment, draining):
+            print(
+                json.dumps(
+                    {
+                        "result": "still-draining",
+                        "environment": args.environment,
+                        "slot": draining,
+                        "active_chat_streams": status_value.get(
+                            "active_chat_streams", 0
+                        ),
+                        "active_gateway_streams": status_value.get(
+                            "active_gateway_streams", 0
+                        ),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        pointers = read_pointers(ENVIRONMENTS_ROOT / args.environment)
+        _write_journal(
+            args.environment,
+            "settled",
+            active_slot=active,
+            active_release=pointers.current.name if pointers.current else None,
+            previous_release=pointers.previous.name if pointers.previous else None,
+        )
+        cleanup_releases()
+        cleanup_runtimes(RUNTIMES, protected_runtime_ids())
+    print(f"reaped drained {args.environment}/{draining} slot")
     return 0
 
 
@@ -743,7 +1348,10 @@ def status(_: argparse.Namespace) -> int:
         pointers = read_pointers(ENVIRONMENTS_ROOT / environment)
         item = {
             "port": PORTS[environment],
-            "service": _systemctl_state(_unit(environment)),
+            "legacy_service": _systemctl_state(_unit(environment)),
+            "active_slot": _active_slot(environment),
+            "nginx_active_slot": _nginx_uses_active_slot(environment),
+            "slots": {},
         }
         for name, path in (
             ("current", pointers.current),
@@ -753,6 +1361,31 @@ def status(_: argparse.Namespace) -> int:
                 item[name] = validate_manifest(path, environment) if path else None
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 item[name] = {"invalid": str(exc), "path": str(path)}
+        for slot in ("blue", "green"):
+            release = _slot_release(environment, slot)
+            slot_item: dict[str, object] = {
+                "release": release.name if release else None,
+                "runtime_id": runtime_id(release)
+                if release and (release / "uv.lock").is_file()
+                else None,
+                "service": _systemctl_state(_slot_unit(environment, slot)),
+                "socket": _systemctl_state(_slot_unit(environment, slot, "socket")),
+            }
+            live = _unix_json(
+                environment,
+                slot,
+                "/internal/deployment-status",
+                check=False,
+            )
+            if live:
+                slot_item["deployment"] = live
+            item["slots"][slot] = slot_item
+        journal = ENVIRONMENTS_ROOT / environment / "activation-journal.json"
+        item["activation_journal"] = (
+            json.loads(journal.read_text(encoding="utf-8"))
+            if journal.is_file()
+            else None
+        )
         result["environments"][environment] = item
     for name, path in {
         "journal": Path("/var/log/journal"),
@@ -790,6 +1423,9 @@ def parser_for(program: str) -> argparse.ArgumentParser:
     elif program.endswith("pwc-cleanup"):
         parser.add_argument("--confirm")
         parser.set_defaults(handler=cleanup_command)
+    elif program.endswith("pwc-reap"):
+        parser.add_argument("environment", choices=ENVIRONMENTS)
+        parser.set_defaults(handler=reap)
     else:
         parser.set_defaults(handler=status)
     return parser

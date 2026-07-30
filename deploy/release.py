@@ -10,7 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.chat_sandbox_worker.contract import (
+    DATABASE_CONTRACT_VERSION,
     DEFAULT_BACKEND,
+    GATEWAY_COMPATIBLE_FROM,
+    GATEWAY_CONTRACT_VERSION,
     MODAL_IMAGE_ID,
     NEW_CHAT_MODAL_PERCENTAGE,
     PWC_CLI_VERSION,
@@ -85,6 +88,9 @@ def chat_runtime(
             "modal_image_version": "",
             "pwc_cli_version": "",
             "worker_contract_version": "",
+            "gateway_contract_version": 1,
+            "gateway_compatible_from": 1,
+            "database_contract_version": DATABASE_CONTRACT_VERSION,
             "system_prompt_sha256": "",
         }
     if descriptor is not None:
@@ -98,6 +104,9 @@ def chat_runtime(
         "modal_image_version": MODAL_IMAGE_ID,
         "pwc_cli_version": PWC_CLI_VERSION,
         "worker_contract_version": WORKER_CONTRACT_VERSION,
+        "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
+        "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
+        "database_contract_version": DATABASE_CONTRACT_VERSION,
         "system_prompt_sha256": sha256(),
     }
 
@@ -171,7 +180,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
     runtime = manifest.get("chat_runtime")
     if runtime is None:
         return _validate_release_files(release_dir, manifest, expected)
-    if not isinstance(runtime, dict) or set(runtime) != {
+    legacy_runtime_keys = {
         "enabled",
         "new_chat_modal_percentage",
         "default_backend",
@@ -179,10 +188,27 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         "pwc_cli_version",
         "worker_contract_version",
         "system_prompt_sha256",
+    }
+    rolling_runtime_keys = legacy_runtime_keys | {
+        "gateway_contract_version",
+        "gateway_compatible_from",
+        "database_contract_version",
+    }
+    runtime_keys = frozenset(runtime) if isinstance(runtime, dict) else frozenset()
+    if not isinstance(runtime, dict) or runtime_keys not in {
+        frozenset(legacy_runtime_keys),
+        frozenset(rolling_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
     if profile == "production":
-        if runtime != chat_runtime("production"):
+        expected_production = chat_runtime("production")
+        if set(runtime) == legacy_runtime_keys:
+            expected_production = {
+                key: value
+                for key, value in expected_production.items()
+                if key in legacy_runtime_keys
+            }
+        if runtime != expected_production:
             raise ValueError("production release contains an active chat runtime")
     else:
         percentage = runtime["new_chat_modal_percentage"]
@@ -210,7 +236,47 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             raise ValueError("chat runtime system prompt hash is invalid")
         if runtime["enabled"] is not True:
             raise ValueError("staging chat runtime must be enabled")
+    if set(runtime) == rolling_runtime_keys and runtime["enabled"]:
+        gateway_version = runtime["gateway_contract_version"]
+        compatible_from = runtime["gateway_compatible_from"]
+        database_version = runtime["database_contract_version"]
+        if (
+            not isinstance(gateway_version, int)
+            or not isinstance(compatible_from, int)
+            or gateway_version < 1
+            or compatible_from < 1
+            or compatible_from > gateway_version
+        ):
+            raise ValueError("chat gateway rolling contract is invalid")
+        if not isinstance(database_version, int) or database_version < 1:
+            raise ValueError("chat database contract is invalid")
     return _validate_release_files(release_dir, manifest, expected)
+
+
+def rolling_contract(manifest: dict) -> tuple[int, int, int]:
+    """Return gateway emitted/accepted and database contracts for bridges."""
+
+    runtime = manifest.get("chat_runtime") or {}
+    worker = runtime.get("worker_contract_version")
+    fallback = int(worker) if str(worker).isdigit() else 1
+    return (
+        int(runtime.get("gateway_contract_version", fallback)),
+        int(runtime.get("gateway_compatible_from", fallback)),
+        int(runtime.get("database_contract_version", 1)),
+    )
+
+
+def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
+    """Prove forward drain and reverse automatic-rollback compatibility."""
+
+    active_emits, active_accepts, active_database = rolling_contract(active)
+    candidate_emits, candidate_accepts, candidate_database = rolling_contract(candidate)
+    if not candidate_accepts <= active_emits <= candidate_emits:
+        raise ValueError("candidate cannot accept the active worker contract")
+    if not active_accepts <= candidate_emits <= active_emits:
+        raise ValueError("active release cannot serve candidate workers on rollback")
+    if active_database != candidate_database:
+        raise ValueError("release database contracts are incompatible")
 
 
 def _validate_release_files(
