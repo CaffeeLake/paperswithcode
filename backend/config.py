@@ -247,7 +247,7 @@ class Settings(BaseSettings):
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
-    chat_title_max_tokens: int = Field(default=32, ge=8, le=64)
+    chat_title_max_tokens: int = Field(default=64, ge=8, le=64)
     chat_session_limit: int = Field(default=100, ge=1, le=1000)
     chat_session_message_limit: int = Field(default=200, ge=2, le=2000)
     chat_session_byte_limit: int = Field(default=25 * 1024 * 1024, ge=1024)

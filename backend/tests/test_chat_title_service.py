@@ -73,5 +73,5 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
         "bill_to": "test-org",
     }
     assert completion_args["stream"] is True
-    assert completion_args["max_tokens"] == 32
+    assert completion_args["max_tokens"] == 64
     assert completion_args["extra_body"] == {"reasoning_effort": "low"}
