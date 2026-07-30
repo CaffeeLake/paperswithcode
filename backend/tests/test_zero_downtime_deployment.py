@@ -100,6 +100,22 @@ def test_draining_chat_endpoint_returns_retry_after(
         lifecycle_module.deployment_lifecycle.undrain()
 
 
+def test_unix_operator_endpoints_have_request_injected(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("PWC_DEPLOY_TESTING", "1")
+    app = create_app()
+    with TestClient(app) as client:
+        status = client.get("/internal/deployment-status")
+        drained = client.post("/internal/drain")
+        not_ready = client.get("/internal/ready")
+        undrained = client.post("/internal/undrain")
+    assert status.status_code == 200
+    assert drained.status_code == 200
+    assert not_ready.status_code == 503
+    assert undrained.status_code == 200
+
+
 def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
     release = tmp_path / "release"
     release.mkdir()

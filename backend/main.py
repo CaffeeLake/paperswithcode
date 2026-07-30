@@ -14,7 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -462,19 +462,19 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/internal/deployment-status", include_in_schema=False)
-    async def internal_deployment_status(request):
+    async def internal_deployment_status(request: Request):
         if not operator_socket_allowed(request.scope):
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return {"status": "ready", **deployment_lifecycle.as_dict()}
 
     @app.post("/internal/drain", include_in_schema=False)
-    async def internal_drain(request):
+    async def internal_drain(request: Request):
         if not operator_socket_allowed(request.scope):
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return {"status": "draining", **deployment_lifecycle.drain().__dict__}
 
     @app.post("/internal/undrain", include_in_schema=False)
-    async def internal_undrain(request):
+    async def internal_undrain(request: Request):
         if not operator_socket_allowed(request.scope):
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return {"status": "ready", **deployment_lifecycle.undrain().__dict__}
