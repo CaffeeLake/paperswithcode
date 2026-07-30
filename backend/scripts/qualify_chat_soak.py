@@ -317,7 +317,7 @@ def main() -> int:
     settings = settings_for_release(args.release_dir).model_copy(
         update={
             "session_cookie_name": environment.session_cookie_name,
-            "chat_deepseek_route": environment.chat_deepseek_route,
+            "chat_gpt_oss_route": environment.chat_gpt_oss_route,
             "chat_glm_route": environment.chat_glm_route,
             "chat_kimi_route": environment.chat_kimi_route,
         }

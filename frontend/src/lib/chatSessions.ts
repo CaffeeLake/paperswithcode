@@ -56,9 +56,9 @@ export interface ChatShareDetail {
 
 export interface ChatModelChoice { id: string; label: string }
 
-export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash";
+export const DEFAULT_CHAT_MODEL = "openai/gpt-oss-120b";
 export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
-  { id: DEFAULT_CHAT_MODEL, label: "DeepSeek V4 Flash" },
+  { id: DEFAULT_CHAT_MODEL, label: "GPT-OSS 120B" },
   { id: "zai-org/GLM-5.2", label: "GLM 5.2" },
   { id: "moonshotai/Kimi-K3", label: "Kimi K3" },
 ];
