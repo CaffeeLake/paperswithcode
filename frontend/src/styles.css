@@ -5990,7 +5990,7 @@ html { scroll-behavior: smooth; }
 
 /* Hugging Face repository hover preview */
 .hf-preview-pop.hf-preview-pop {
-  width: min(420px, calc(100vw - 24px));
+  width: min(344px, calc(100vw - 24px));
   padding: 0;
   border: 1px solid var(--hairline);
   border-radius: 12px;
