@@ -23,12 +23,18 @@ def runtime_id(release: Path) -> str:
 
 def runtime_manifest(runtime: Path) -> dict:
     value = json.loads((runtime / "runtime.json").read_text(encoding="utf-8"))
-    if set(value) != {"lock_sha256", "python_version"}:
+    if set(value) != {"lock_sha256", "python_version", "python_base"}:
         raise ValueError("runtime manifest has an unexpected schema")
     if value["lock_sha256"] != runtime.name:
         raise ValueError("runtime manifest lock hash does not match its path")
-    if not (runtime / "bin" / "python").is_file():
+    launcher = runtime / "bin" / "python"
+    if not launcher.is_file():
         raise ValueError("runtime Python launcher is missing")
+    resolved = launcher.resolve()
+    if str(resolved) != value["python_base"]:
+        raise ValueError("runtime Python base does not match its manifest")
+    if resolved == Path("/root") or Path("/root") in resolved.parents:
+        raise ValueError("runtime Python base is inside root's private home")
     return value
 
 
@@ -60,6 +66,8 @@ def prepare_runtime(
     try:
         environment = os.environ.copy()
         environment["UV_PROJECT_ENVIRONMENT"] = str(temporary)
+        environment["UV_PYTHON"] = "/usr/bin/python3"
+        environment["UV_PYTHON_PREFERENCE"] = "only-system"
         runner(
             [
                 str(UV_BINARY),
@@ -80,7 +88,11 @@ def prepare_runtime(
         ).stdout.strip()
         (temporary / "runtime.json").write_text(
             json.dumps(
-                {"lock_sha256": identifier, "python_version": version},
+                {
+                    "lock_sha256": identifier,
+                    "python_version": version,
+                    "python_base": str((temporary / "bin" / "python").resolve()),
+                },
                 indent=2,
             )
             + "\n",

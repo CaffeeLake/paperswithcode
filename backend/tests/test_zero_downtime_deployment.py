@@ -112,7 +112,7 @@ def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
         builds += 1
         target = Path(env["UV_PROJECT_ENVIRONMENT"])
         (target / "bin").mkdir()
-        (target / "bin" / "python").write_text("#!/bin/sh\n")
+        (target / "bin" / "python").symlink_to("/usr/bin/python3")
 
     def version(*args, **kwargs):
         return SimpleNamespace(stdout="Python 3.12.11\n")
@@ -154,9 +154,11 @@ def test_runtime_builder_uses_stable_absolute_uv_path(
 
     def build(command, *, env, check):
         command_seen.extend(command)
+        assert env["UV_PYTHON"] == "/usr/bin/python3"
+        assert env["UV_PYTHON_PREFERENCE"] == "only-system"
         target = Path(env["UV_PROJECT_ENVIRONMENT"])
         (target / "bin").mkdir()
-        (target / "bin" / "python").write_text("#!/bin/sh\n")
+        (target / "bin" / "python").symlink_to("/usr/bin/python3")
 
     def version(*args, **kwargs):
         return SimpleNamespace(stdout="Python 3.12.11\n")

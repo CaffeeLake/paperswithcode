@@ -753,6 +753,13 @@ def _prepare_slot(environment: str, slot: str, release: Path, runtime: Path) -> 
     subprocess.run(
         ["systemctl", "stop", _slot_unit(environment, slot, "socket")], check=False
     )
+    subprocess.run(
+        ["systemctl", "reset-failed", _slot_unit(environment, slot)], check=False
+    )
+    subprocess.run(
+        ["systemctl", "reset-failed", _slot_unit(environment, slot, "socket")],
+        check=False,
+    )
     slot_root = _slot_root(environment, slot)
     slot_root.mkdir(parents=True, exist_ok=True)
     socket_link = slot_root / "backend.sock"
@@ -760,28 +767,46 @@ def _prepare_slot(environment: str, slot: str, release: Path, runtime: Path) -> 
         socket_link.unlink(missing_ok=True)
         socket_link.symlink_to(_slot_socket(environment, slot))
     atomic_symlink(release, slot_root / "release")
-    run(["systemctl", "start", _slot_unit(environment, slot, "socket")])
-    run(["systemctl", "start", _slot_unit(environment, slot)])
-    manifest = validate_manifest(release, environment)
-    status_value = _wait_slot(environment, slot, manifest, runtime)
-    run(
-        [
-            str(runtime / "bin" / "python"),
-            str(Path(__file__).resolve().parent / "smoke_test.py"),
-            "--environment",
-            environment,
-            "--base-url",
-            "http://localhost",
-            "--expected-release",
-            manifest["release_id"],
-            "--release-dir",
-            str(release),
-            "--candidate",
-            "--unix-socket",
-            str(_slot_socket(environment, slot)),
-        ]
-    )
-    return status_value
+    try:
+        run(["systemctl", "start", _slot_unit(environment, slot, "socket")])
+        run(["systemctl", "start", _slot_unit(environment, slot)])
+        manifest = validate_manifest(release, environment)
+        status_value = _wait_slot(environment, slot, manifest, runtime)
+        run(
+            [
+                str(runtime / "bin" / "python"),
+                str(Path(__file__).resolve().parent / "smoke_test.py"),
+                "--environment",
+                environment,
+                "--base-url",
+                "http://localhost",
+                "--expected-release",
+                manifest["release_id"],
+                "--release-dir",
+                str(release),
+                "--candidate",
+                "--unix-socket",
+                str(_slot_socket(environment, slot)),
+            ]
+        )
+        return status_value
+    except (DeployError, subprocess.CalledProcessError, OSError):
+        subprocess.run(
+            ["systemctl", "stop", _slot_unit(environment, slot)], check=False
+        )
+        subprocess.run(
+            ["systemctl", "stop", _slot_unit(environment, slot, "socket")],
+            check=False,
+        )
+        subprocess.run(
+            ["systemctl", "reset-failed", _slot_unit(environment, slot)],
+            check=False,
+        )
+        subprocess.run(
+            ["systemctl", "reset-failed", _slot_unit(environment, slot, "socket")],
+            check=False,
+        )
+        raise
 
 
 def _bridge_qualify_current(release: Path, environment: str, runtime: Path) -> None:
