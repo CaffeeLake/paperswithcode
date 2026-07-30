@@ -21,6 +21,9 @@ from backend.scripts.qualify_chat_soak import TurnResult, _turn
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_CUTOVER"
 MAX_TURNS = 2
+DEFAULT_TURNS = 1
+MAX_ROUNDS = 5
+DEFAULT_ROUNDS = 3
 PROMPT = (
     "Research and compare eight recent machine-learning papers across distinct "
     "topics. Cite the source for each paper, then summarize common research trends."
@@ -37,6 +40,11 @@ class SessionState:
 def validate_turns(turns: int) -> None:
     if not 1 <= turns <= MAX_TURNS:
         raise SystemExit(f"--turns must be 1-{MAX_TURNS}")
+
+
+def validate_rounds(rounds: int) -> None:
+    if not 1 <= rounds <= MAX_ROUNDS:
+        raise SystemExit(f"--rounds must be 1-{MAX_ROUNDS}")
 
 
 def _session_states(session_ids: list[str]) -> list[SessionState]:
@@ -72,27 +80,31 @@ async def _settled_session_states(
         await asyncio.sleep(0.5)
 
 
-async def _run(settings, *, turns: int) -> tuple[dict[str, object], bool]:
+async def _run(settings, *, turns: int, rounds: int) -> tuple[dict[str, object], bool]:
     run_id = uuid.uuid4().hex[:12]
     model = settings.chat_model_choices[0]["id"]
-    results: list[TurnResult] = list(
-        await asyncio.gather(
-            *(
-                _turn(
-                    settings,
-                    subject=f"cutover-soak-{run_id}-{index}",
-                    initial_model=model,
-                    message=PROMPT,
+    results: list[TurnResult] = []
+    for round_index in range(rounds):
+        results.extend(
+            await asyncio.gather(
+                *(
+                    _turn(
+                        settings,
+                        subject=(f"cutover-soak-{run_id}-{round_index}-{turn_index}"),
+                        initial_model=model,
+                        message=PROMPT,
+                    )
+                    for turn_index in range(turns)
                 )
-                for index in range(turns)
             )
         )
-    )
     session_ids = [
         result.session_id for result in results if result.session_id is not None
     ]
     states = (
-        await _settled_session_states(session_ids) if len(session_ids) == turns else []
+        await _settled_session_states(session_ids)
+        if len(session_ids) == turns * rounds
+        else []
     )
     passed = (
         all(
@@ -101,7 +113,7 @@ async def _run(settings, *, turns: int) -> tuple[dict[str, object], bool]:
             and not result.forced_termination
             for result in results
         )
-        and len(states) == turns
+        and len(states) == turns * rounds
         and all(
             state.transcript_status == "ready" and not state.active_turn
             for state in states
@@ -112,7 +124,11 @@ async def _run(settings, *, turns: int) -> tuple[dict[str, object], bool]:
         "release_id": settings.release_id,
         "worker_contract_version": settings.chat_worker_contract_version,
         "run_id": run_id,
-        "requested_turns": turns,
+        "requested": {
+            "parallel_turns": turns,
+            "rounds": rounds,
+            "total_turns": turns * rounds,
+        },
         "turns": [asdict(result) for result in results],
         "sessions": [asdict(state) for state in states],
     }, passed
@@ -122,7 +138,8 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Hold synthetic staging chat streams open across a cutover"
     )
-    result.add_argument("--turns", type=int, default=MAX_TURNS)
+    result.add_argument("--turns", type=int, default=DEFAULT_TURNS)
+    result.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     result.add_argument("--release-dir", type=Path, required=True)
     result.add_argument("--confirm", required=True)
     return result
@@ -133,6 +150,7 @@ def main() -> int:
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     validate_turns(args.turns)
+    validate_rounds(args.rounds)
     environment = get_settings()
     settings = settings_for_release(args.release_dir).model_copy(
         update={
@@ -144,7 +162,7 @@ def main() -> int:
     )
     if settings.environment != "staging":
         raise SystemExit("Cutover qualification requires staging")
-    report, passed = asyncio.run(_run(settings, turns=args.turns))
+    report, passed = asyncio.run(_run(settings, turns=args.turns, rounds=args.rounds))
     print(json.dumps(report, indent=2))
     return 0 if passed else 1
 
