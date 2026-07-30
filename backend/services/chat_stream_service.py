@@ -506,6 +506,7 @@ class ChatStreamOrchestrator:
                         self.projection.completed_blocks(),
                     )
                 )
+            self.terminal = "interrupted"
             raise
         except Exception as exc:
             logger.warning(
@@ -765,6 +766,34 @@ class ChatStreamOrchestrator:
                 await asyncio.shield(self.runner.cancel())
 
     async def _close(self) -> None:
+        # Starlette may close an async response generator with GeneratorExit
+        # instead of delivering CancelledError. Persist the interruption here
+        # as a last resort so a disconnected browser cannot leave the turn
+        # generating until its lease expires.
+        if self.terminal == "disconnect":
+            if self.admission.is_replacement and not self.edit_activated:
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        _persist_preparation_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                    )
+                )
+            else:
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        _persist_failure,
+                        self.owner,
+                        self.settings,
+                        self.admission,
+                        "interrupted",
+                        True,
+                        self.projection.completed_blocks(),
+                    )
+                )
+            self.terminal = "interrupted"
         await self._cancel_runner()
         if self.runner:
             with contextlib.suppress(Exception):

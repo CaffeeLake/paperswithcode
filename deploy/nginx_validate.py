@@ -29,6 +29,7 @@ SHARE_API_LOCATION = (
     r'location ~ "^/api/v1/chat/shares/[0-9a-f]{8}-[0-9a-f]{4}-'
     r'[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"'
 )
+CHAT_STREAM_LOCATION = "location = /api/v1/chat/stream"
 
 
 def _validate_seo_routes(config: str, backend: str, environment: str) -> list[str]:
@@ -106,6 +107,24 @@ def validate(production: str, staging: str) -> list[str]:
             failures.append("staging job-token callback route uses browser auth")
         if "proxy_pass http://pwc_staging_backend;" not in callback_block:
             failures.append("staging job-token callback route misses staging backend")
+    stream_block = location_block(staging, CHAT_STREAM_LOCATION)
+    stream_requirements = (
+        "limit_except POST",
+        "auth_request /_staging_access_check;",
+        "proxy_pass http://pwc_staging_backend;",
+        "proxy_http_version 1.1;",
+        'proxy_set_header Connection "";',
+        "proxy_buffering off;",
+        "proxy_cache off;",
+        "gzip off;",
+        "proxy_read_timeout 190s;",
+    )
+    if not stream_block:
+        failures.append("staging chat stream route is missing")
+    else:
+        for requirement in stream_requirements:
+            if requirement not in stream_block:
+                failures.append(f"staging chat stream route misses: {requirement}")
     gateway_host = "server_name chat-gateway-staging.paperswithcode.co;"
     if gateway_host not in staging:
         failures.append("staging chat gateway hostname is missing")

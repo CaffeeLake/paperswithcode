@@ -37,7 +37,6 @@ from backend.models.chat import (
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
-from backend.services.chat_turn_runner import shared_sandbox_manager
 from backend.services.chat_session_service import (
     ChatServiceError,
     ChatSessionService,
@@ -45,6 +44,7 @@ from backend.services.chat_session_service import (
 )
 from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
+from backend.services.chat_turn_runner import shared_sandbox_manager
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -414,7 +414,7 @@ async def stream_chat(
         event_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache, no-store",
+            "Cache-Control": "no-cache, no-store, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },

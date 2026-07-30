@@ -1140,6 +1140,22 @@ def test_staging_nginx_requires_bearer_authenticated_curation_callback_route():
     assert "staging job-token callback route is missing" in failures
 
 
+def test_staging_nginx_requires_an_unbuffered_chat_stream_route():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    for directive in (
+        "proxy_buffering off;",
+        "proxy_cache off;",
+        "gzip off;",
+        "proxy_read_timeout 190s;",
+    ):
+        failures = validate_nginx(production, staging.replace(directive, "", 1))
+        assert f"staging chat stream route misses: {directive}" in failures
+
+
 def test_nginx_requires_backend_routes_for_seo_surfaces():
     repository = Path(__file__).resolve().parents[2]
     production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()

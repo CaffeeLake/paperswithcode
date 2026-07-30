@@ -22,13 +22,17 @@ from starlette.requests import Request
 
 from backend.config import get_settings
 from backend.main import create_app
-from backend.models.chat import ChatBrowserLatencyRequest, ChatRequest, sse_event
-from backend.models.chat import DISPLAY_BLOCKS_ADAPTER
+from backend.models.chat import (
+    DISPLAY_BLOCKS_ADAPTER,
+    ChatBrowserLatencyRequest,
+    ChatRequest,
+    sse_event,
+)
 from backend.routers import chat as chat_router
 from backend.services import chat_mcp
 from backend.services.chat_agent_service import (
-    SDKEventAdapter,
     SEARCH_TOOL_NAME,
+    SDKEventAdapter,
     SearchCallLimiter,
     build_agent_options,
     stream_agent_events,
@@ -38,7 +42,10 @@ from backend.services.chat_session_service import (
     ChatSessionService,
     TurnAdmission,
 )
-from backend.services.chat_stream_service import ChatTurnProjection
+from backend.services.chat_stream_service import (
+    ChatStreamOrchestrator,
+    ChatTurnProjection,
+)
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.utils.auth import require_user
@@ -852,7 +859,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["cache-control"] == "no-cache, no-store"
+    assert response.headers["cache-control"] == "no-cache, no-store, no-transform"
     events = [
         json.loads(line.removeprefix("data: "))
         for line in response.text.splitlines()
@@ -866,6 +873,52 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         "session_title_delta",
         "session_title_done",
     ]
+
+
+def test_closing_stream_persists_interrupted_turn(monkeypatch):
+    from backend.services import chat_stream_service
+
+    admission = TurnAdmission(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        user_message_id=uuid.uuid4(),
+        selected_model="smoke-model",
+        model_route="smoke-route",
+        sdk_session_id=None,
+        sdk_project_key=None,
+        is_first_turn=True,
+    )
+    persisted = []
+    released = []
+    monkeypatch.setattr(
+        chat_stream_service,
+        "_persist_failure",
+        lambda *args: persisted.append(args),
+    )
+
+    async def scenario():
+        orchestrator = ChatStreamOrchestrator(
+            settings=get_settings().model_copy(update={"environment": "development"}),
+            owner=ChatOwner(hf_user_id="hf-user", hf_username="tester"),
+            admission=admission,
+            prompt="hello",
+            request_id=str(uuid.uuid4()),
+            title_token=None,
+            is_disconnected=lambda: asyncio.sleep(0, result=False),
+            release_admission=lambda: asyncio.sleep(0, result=released.append(True)),
+        )
+        stream = orchestrator.events()
+        first = await anext(stream)
+        await stream.aclose()
+        return first, orchestrator
+
+    first, orchestrator = asyncio.run(scenario())
+
+    assert first.event == "stream_start"
+    assert persisted[0][2] == admission
+    assert persisted[0][3:] == ("interrupted", True, [])
+    assert orchestrator.terminal == "interrupted"
+    assert released == [True]
 
 
 def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
