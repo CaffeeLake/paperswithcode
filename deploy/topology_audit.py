@@ -23,7 +23,12 @@ def audit(root: Path = Path("/srv/paperswithcode")) -> dict[str, object]:
     nginx = output(["nginx", "-T"])
     checkout = "/root/python_projects/paperswithcode"
     findings = []
-    if checkout in processes:
+    checkout_processes = [
+        line
+        for line in processes.splitlines()
+        if checkout in line and "topology_audit.py" not in line
+    ]
+    if checkout_processes:
         findings.append("running process references developer checkout")
     if "localhost:8081" in nginx or "127.0.0.1:8081" in nginx:
         findings.append("nginx exposes a Vite staging upstream")

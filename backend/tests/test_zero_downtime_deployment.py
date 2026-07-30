@@ -14,6 +14,7 @@ import backend.services.deployment_lifecycle as lifecycle_module
 import backend.services.postgres_sdk_session_store as postgres_store_module
 import deploy.cli as deploy_cli
 import deploy.runtime as runtime_module
+import deploy.topology_audit as topology_audit_module
 from backend.chat_sandbox_worker import agent
 from backend.chat_sandbox_worker.remote_store import RemoteSessionStore, RetryPolicy
 from backend.config import get_settings
@@ -136,6 +137,25 @@ def test_operator_endpoints_require_exact_unix_listener(
         {"server": (str(tmp_path / "staging-green.sock"), None)}
     )
     assert not lifecycle_module.operator_socket_allowed({"server": None})
+
+
+def test_topology_audit_ignores_its_own_checkout_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fake_output(command: list[str]) -> str:
+        if command[:3] == ["ps", "-eo", "user,pid,args"]:
+            return (
+                "root 123 /root/python_projects/paperswithcode/.venv/bin/python "
+                "deploy/topology_audit.py --json\n"
+            )
+        return ""
+
+    monkeypatch.setattr(topology_audit_module, "output", fake_output)
+
+    result = topology_audit_module.audit(tmp_path)
+
+    assert "running process references developer checkout" not in result["findings"]
 
 
 def test_immutable_runtime_build_reuse_and_failed_cleanup(tmp_path: Path):
