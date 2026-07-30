@@ -424,18 +424,26 @@ class PersistentAgent:
 
     async def connect(self, *, model: str, resume: str | None) -> None:
         if self.client is not None:
-            # Resume materialization is connection-fixed. Once connected, the
-            # live SDK session is authoritative.
             if (
                 resume is not None
-                and self.sdk_session_id is not None
-                and resume != self.sdk_session_id
+                and self.sdk_session_id is None
+                and resume != self.resume
             ):
-                raise RuntimeError("Resume changed after worker connection")
-            if model != self.model:
-                await self.client.set_model(model)
-                self.model = model
-            return
+                await self.client.disconnect()
+                self.client = None
+            else:
+                # Resume materialization is connection-fixed. Once connected, the
+                # live SDK session is authoritative.
+                if (
+                    resume is not None
+                    and self.sdk_session_id is not None
+                    and resume != self.sdk_session_id
+                ):
+                    raise RuntimeError("Resume changed after worker connection")
+                if model != self.model:
+                    await self.client.set_model(model)
+                    self.model = model
+                return
         self.model = model
         self.resume = resume
         self.client = ClaudeSDKClient(

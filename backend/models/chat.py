@@ -346,7 +346,7 @@ class AnswerDeltaEvent(_StrictEvent):
 class DoneEvent(_StrictEvent):
     type: Literal["done"]
     followups: list[str] = Field(default_factory=list)
-    finish_reason: FinishReason = "success"
+    finish_reason: FinishReason | Literal["stopped"] = "success"
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
 
 

@@ -585,6 +585,43 @@ def test_persistent_agent_preflight_keeps_initialized_client(monkeypatch):
     assert calls[-1] == ("disconnect",)
 
 
+def test_persistent_agent_preflight_reconnects_to_resume_session(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    class Client:
+        def __init__(self, options):
+            calls.append(("init", options.model, options.resume))
+
+        async def connect(self, prompt):
+            calls.append(("connect", prompt))
+
+        async def disconnect(self):
+            calls.append(("disconnect",))
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+
+    async def run():
+        await worker.preflight("model-a")
+        await worker.connect(model="model-a", resume="session-a")
+        await worker.close()
+
+    asyncio.run(run())
+    assert calls == [
+        ("init", "model-a", None),
+        ("connect", None),
+        ("disconnect",),
+        ("init", "model-a", "session-a"),
+        ("connect", None),
+        ("disconnect",),
+    ]
+
+
 def test_adapter_waits_for_late_mirror_before_terminal():
     async def messages():
         yield ResultMessage(
@@ -1308,7 +1345,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-Y0t7MA1D587bBUeJ60uKN7"
+    assert MODAL_IMAGE_ID == "im-hQV7ShqF9JPxFg1g1lYqFJ"
 
 
 def test_task_catalog_is_bounded_and_ranked():
