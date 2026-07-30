@@ -37,6 +37,11 @@ export const OrganizationPaperFeed: React.FC<{
   const orderBy = parseOrderBy(searchParams.get("order_by"));
   const hasCode = searchParams.get("has_code") === "true";
   const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const organizationQ = useQuery({
+    queryKey: ["organization", organizationSlug],
+    queryFn: () => apiClient.getOrganization(organizationSlug),
+    staleTime: 10 * 60 * 1000,
+  });
   const taxonomyQ = useQuery({
     queryKey: ["organization-areas-with-tasks", organizationSlug],
     queryFn: () => apiClient.getOrganizationAreasWithTasks(organizationSlug),
@@ -86,10 +91,11 @@ export const OrganizationPaperFeed: React.FC<{
       ),
     [papersQ.data],
   );
-  const organization = taxonomyQ.data?.organization;
+  const organization = organizationQ.data ?? taxonomyQ.data?.organization;
   const totalCount = papersQ.data?.pages[0]?.count ?? 0;
 
   if (
+    (organizationQ.error as { status?: number } | null)?.status === 404 ||
     (taxonomyQ.error as { status?: number } | null)?.status === 404 ||
     (papersQ.error as { status?: number } | null)?.status === 404
   ) {

@@ -109,6 +109,9 @@ afterEach(() => {
 
 describe("OrganizationPaperFeed task filtering", () => {
   it("selects a task, scopes the route, and preserves the paper sort", async () => {
+    vi.spyOn(apiClient, "getOrganization").mockResolvedValue(
+      taxonomy.organization,
+    );
     vi.spyOn(apiClient, "getOrganizationAreasWithTasks").mockResolvedValue(
       taxonomy,
     );
@@ -154,6 +157,36 @@ describe("OrganizationPaperFeed task filtering", () => {
         taskSlug: "image-classification",
         order_by: "date_published",
       }),
+    );
+  });
+
+  it("renders organization metadata without waiting for taxonomy", async () => {
+    vi.spyOn(apiClient, "getOrganization").mockResolvedValue(
+      taxonomy.organization,
+    );
+    vi.spyOn(apiClient, "getOrganizationAreasWithTasks").mockReturnValue(
+      new Promise(() => {}),
+    );
+    useInfiniteOrganizationPapers.mockReturnValue({
+      data: {
+        pages: [
+          { count: 3, next_page: null, previous_page: null, results: [] },
+        ],
+      },
+      error: null,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderFeed();
+
+    const heading = await screen.findByRole("heading", { name: "NVIDIA" });
+    expect(heading).toBeVisible();
+    expect(heading.querySelector("img")).toHaveAttribute(
+      "src",
+      "/api/v1/organizations/nvidia/logo.webp",
     );
   });
 });
