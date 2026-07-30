@@ -123,10 +123,14 @@ def operator_socket_allowed(scope: dict) -> bool:
         return False
     server = scope.get("server")
     if isinstance(server, str):
-        return server == socket_path
-    return (
+        server_path = server
+    elif (
         isinstance(server, (list, tuple))
         and len(server) == 2
-        and server[0] == socket_path
+        and isinstance(server[0], str)
         and server[1] is None
-    )
+    ):
+        server_path = server[0]
+    else:
+        return False
+    return os.path.realpath(server_path) == os.path.realpath(socket_path)

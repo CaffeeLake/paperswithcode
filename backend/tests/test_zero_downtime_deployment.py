@@ -117,20 +117,23 @@ def test_unix_operator_endpoints_have_request_injected(
 
 
 def test_operator_endpoints_require_exact_unix_listener(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.delenv("PWC_DEPLOY_TESTING", raising=False)
-    monkeypatch.setenv("PWC_BACKEND_SOCKET", "/run/paperswithcode/staging-blue.sock")
+    socket_path = tmp_path / "staging-blue.sock"
+    socket_alias = tmp_path / "slot" / "backend.sock"
+    socket_alias.parent.mkdir()
+    socket_alias.symlink_to(socket_path)
+    monkeypatch.setenv("PWC_BACKEND_SOCKET", str(socket_alias))
 
     assert lifecycle_module.operator_socket_allowed(
-        {"server": ("/run/paperswithcode/staging-blue.sock", None)}
+        {"server": (str(socket_path), None)}
     )
-    assert lifecycle_module.operator_socket_allowed(
-        {"server": "/run/paperswithcode/staging-blue.sock"}
-    )
+    assert lifecycle_module.operator_socket_allowed({"server": str(socket_alias)})
     assert not lifecycle_module.operator_socket_allowed({"server": ("127.0.0.1", 8001)})
     assert not lifecycle_module.operator_socket_allowed(
-        {"server": ("/run/paperswithcode/staging-green.sock", None)}
+        {"server": (str(tmp_path / "staging-green.sock"), None)}
     )
     assert not lifecycle_module.operator_socket_allowed({"server": None})
 
