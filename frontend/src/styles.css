@@ -886,9 +886,10 @@ a.paper-resource.is-link:focus-visible {
 .organization-contributions-legend {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
+  width: min(100%, 826px);
   gap: 4px;
-  margin-top: 8px;
+  margin: 8px auto 0;
   color: var(--ink-faint);
   font-family: var(--mono);
   font-size: 10px;
