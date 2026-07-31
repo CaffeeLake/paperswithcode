@@ -155,6 +155,7 @@ export interface ChatMessage {
   finishReason?: string;
   citations?: ChatCitation[];
   error?: string;
+  errorCode?: string;
   revision?: number;
   status?: string;
 }

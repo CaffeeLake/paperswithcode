@@ -145,7 +145,7 @@ const SettingsView: React.FC = () => {
                 <div className="settings-row-label">Hugging Face {billing.account_type}</div>
                 <div className="settings-row-desc">
                   ${billing.monthly_credits_usd?.toFixed(2)} included each month,
-                  then pay as you go through your HF account.
+                  then pay as you go through your HF account when enabled.
                 </div>
               </div>
               <span className="settings-connected-badge">Connected</span>

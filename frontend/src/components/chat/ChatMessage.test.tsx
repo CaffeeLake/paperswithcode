@@ -152,6 +152,21 @@ describe("AssistantMessage", () => {
     <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
   );
 
+  it("links billing failures to the per-user settings page", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "Review pay-as-you-go billing.",
+      errorCode: "hf_inference_billing_exhausted",
+    });
+
+    expect(screen.getByText(/Review pay-as-you-go billing/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Review billing settings" })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
+  });
+
   it("shows a thinking status while waiting for the first streamed block", () => {
     renderAssistant({
       id: "assistant-1",

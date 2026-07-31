@@ -415,6 +415,25 @@ def test_sdk_adapter_complete_messages_do_not_need_partial_events():
     ]
 
 
+def test_sdk_adapter_surfaces_hugging_face_billing_errors():
+    adapter = SDKEventAdapter(show_reasoning=False)
+
+    events = adapter.feed(
+        AssistantMessage(model="test", content=[], error="billing_error")
+    )
+
+    assert events == [
+        {
+            "type": "error",
+            "code": "hf_inference_billing_exhausted",
+            "message": (
+                "Hugging Face could not bill this request. Your included credits "
+                "may be exhausted; enable or review pay-as-you-go billing in Settings."
+            ),
+        }
+    ]
+
+
 def test_sdk_adapter_hides_leading_whitespace_and_over_budget_searches():
     adapter = SDKEventAdapter(show_reasoning=True, maximum_search_calls=2)
     events = []

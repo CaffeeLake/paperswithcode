@@ -14,7 +14,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from claude_agent_sdk import MirrorErrorMessage, ResultMessage, StreamEvent
+from claude_agent_sdk import (
+    AssistantMessage,
+    MirrorErrorMessage,
+    ResultMessage,
+    StreamEvent,
+)
 from fastapi import HTTPException
 
 from backend.chat_gateway_app import (
@@ -661,6 +666,25 @@ def test_adapter_waits_for_late_mirror_before_terminal():
         "_mirror_error",
     ]
     assert events[-1]["error"] == "late mirror failure"
+
+
+def test_worker_adapter_surfaces_hugging_face_billing_errors():
+    adapter = WorkerSDKAdapter(show_reasoning=False)
+
+    events = adapter.feed(
+        AssistantMessage(model="test", content=[], error="billing_error")
+    )
+
+    assert events == [
+        {
+            "type": "error",
+            "code": "hf_inference_billing_exhausted",
+            "message": (
+                "Hugging Face could not bill this request. Your included credits "
+                "may be exhausted; enable or review pay-as-you-go billing in Settings."
+            ),
+        }
+    ]
 
 
 def test_persistent_agent_accepts_resume_hint_before_sdk_session(monkeypatch):

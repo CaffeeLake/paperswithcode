@@ -33,6 +33,20 @@ import {
   updateSession,
 } from "@/lib/chatSessions";
 
+const HF_INFERENCE_USAGE_URL = "https://huggingface.co/settings/inference-providers";
+
+const BillingNotice: React.FC = () => !isChatLive() ? null : (
+  <div className="chat-billing-notice" role="note">
+    <span>
+      Hugging Face applies your included monthly credits first. After they run
+      out, further chats use pay-as-you-go billing when enabled.
+    </span>
+    <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">
+      Review usage
+    </a>
+  </div>
+);
+
 type RouteSessionState = {
   id: string;
   status: "loading" | "loaded" | "error";
@@ -489,6 +503,7 @@ const ChatView: React.FC = () => {
           <div className="chat-empty-eyebrow">AI research assistant · Staging preview</div>
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
+          <BillingNotice />
           <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
           <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
         </div></div> : <>
@@ -520,6 +535,7 @@ const ChatView: React.FC = () => {
               : <AssistantMessage key={message.id} msg={message} papers={chat.papers} onToggleBlock={toggleBlock} />)}
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">
+            <BillingNotice />
             <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               <span className="chat-provider-attribution">Powered by 🤗 <a href="https://huggingface.co/docs/inference-providers/en/index" target="_blank" rel="noreferrer">Inference Providers</a>.</span>

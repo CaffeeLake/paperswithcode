@@ -152,6 +152,9 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
         }
       : { ...block, done: true as const });
   const failureMessage = (code: string | null): string => {
+    if (code === "hf_inference_billing_exhausted") {
+      return "Hugging Face could not bill this request. Your included credits may be exhausted; enable or review pay-as-you-go billing in Settings.";
+    }
     if (code === "provider_error") return "The model provider failed before completing the response. You can edit and retry your question.";
     if (code === "persistence_error") return "The response could not be saved. You can edit and retry your question.";
     if (code === "transcript_mirror_error") return "The conversation could not be saved. Please try again in a new chat.";
@@ -187,6 +190,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
       streaming: false,
       finishReason: interrupted ? "stopped" : undefined,
       error: interrupted ? undefined : failureMessage(message.error_code),
+      errorCode: interrupted ? undefined : message.error_code ?? undefined,
     }];
   });
 }

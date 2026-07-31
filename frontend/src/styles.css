@@ -5972,6 +5972,10 @@ html { scroll-behavior: smooth; }
   white-space: nowrap;
 }
 .chat-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   border: 1px solid var(--negative-border);
   background: var(--negative-bg);
   color: var(--negative-text);
@@ -5993,6 +5997,30 @@ html { scroll-behavior: smooth; }
   padding: 14px 28px 16px;
 }
 .chat-composer-inner { max-width: 820px; margin: 0 auto; }
+.chat-billing-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--hairline));
+  border-radius: 9px;
+  color: var(--ink-soft);
+  background: color-mix(in oklch, var(--accent) 5%, var(--bg-elevated));
+  font-size: 12px;
+  line-height: 1.4;
+}
+.chat-billing-notice a,
+.chat-error a {
+  flex: none;
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.chat-billing-notice a:hover,
+.chat-error a:hover { text-decoration: underline; }
 .chat-composer {
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);

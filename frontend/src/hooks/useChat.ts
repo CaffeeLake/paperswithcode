@@ -226,7 +226,12 @@ export function useChat(options: UseChatOptions) {
         patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block) }));
         break;
       case "error":
-        patchLast((message) => ({ ...message, streaming: false, error: event.message }));
+        patchLast((message) => ({
+          ...message,
+          streaming: false,
+          error: event.message,
+          errorCode: event.code,
+        }));
         break;
     }
   };

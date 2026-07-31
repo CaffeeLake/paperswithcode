@@ -403,7 +403,12 @@ export const AssistantMessage: React.FC<{
           <span className="chat-thinking">{msg.status ?? "Thinking…"}</span>
         </div>
       )}
-      {msg.error && <div className="chat-error">The assistant hit an error: {msg.error}</div>}
+      {msg.error && <div className="chat-error">
+        <span>The assistant hit an error: {msg.error}</span>
+        {msg.errorCode === "hf_inference_billing_exhausted" && (
+          <a href="/settings">Review billing settings</a>
+        )}
+      </div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (
         <div className="chat-finish-note">
           {["tool_limit", "max_turns"].includes(msg.finishReason)

@@ -122,6 +122,30 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("useChat billing failures", () => {
+  it("preserves the billing error code for an actionable message", async () => {
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: "session-1" },
+      {
+        type: "error",
+        code: "hf_inference_billing_exhausted",
+        message: "Review pay-as-you-go billing.",
+      },
+    )());
+    getSessionMock.mockRejectedValue(new Error("not persisted yet"));
+    const { result } = renderChat();
+
+    act(() => result.current.send("What changed?"));
+
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      error: "Review pay-as-you-go billing.",
+      errorCode: "hf_inference_billing_exhausted",
+    });
+  });
+});
+
 describe("useChat editAndResend", () => {
   it("edits the first prompt through the new-session path, including unchanged text", async () => {
     let request: ChatStreamRequest | undefined;

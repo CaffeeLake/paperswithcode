@@ -235,6 +235,18 @@ class SDKEventAdapter:
         if isinstance(message, AssistantMessage):
             if message.error:
                 self.terminal = True
+                if message.error == "billing_error":
+                    return [
+                        {
+                            "type": "error",
+                            "code": "hf_inference_billing_exhausted",
+                            "message": (
+                                "Hugging Face could not bill this request. Your included "
+                                "credits may be exhausted; enable or review pay-as-you-go "
+                                "billing in Settings."
+                            ),
+                        }
+                    ]
                 return [{"type": "error", "message": "The model provider failed."}]
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
