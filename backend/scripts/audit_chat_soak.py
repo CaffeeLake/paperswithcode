@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,10 @@ from backend.models.database import (
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.openrouter_budget_service import (
+    OpenRouterBudgetUnavailable,
+    openrouter_budget_status,
+)
 
 CONFIRMATION = "AUDIT_STAGING_CHAT_SOAK"
 SOAK_DURATION = timedelta(days=7)
@@ -323,6 +328,16 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
         for row in live_rows
     )
     pool_budget = SandboxSessionManager(environment).pool_budget_status()
+    try:
+        openrouter_budget = asyncio.run(
+            openrouter_budget_status(environment)
+        ).sanitized()
+    except OpenRouterBudgetUnavailable:
+        openrouter_budget = {
+            "enabled": environment.chat_openrouter_server_funded_enabled,
+            "within_budget": False,
+            "status": "unavailable",
+        }
     sample_gates = {
         "new_chat_acquisitions": new_total >= 100,
         "pool_hits_and_misses": pool_hits > 0 and pool_misses > 0,
@@ -368,6 +383,7 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             or followup_pre_provider["p95"] < 500
         ),
         "blank_pool_within_budget": bool(pool_budget["within_budget"]),
+        "openrouter_within_budget": bool(openrouter_budget["within_budget"]),
     }
     status = _status(
         now=now,
@@ -404,7 +420,11 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             "reused_followup_pre_provider": followup_pre_provider,
         },
         "journal": {**journal, "critical_total": journal_critical},
-        "cost": {"active": active_spend, "blank_pool": pool_budget},
+        "cost": {
+            "active": active_spend,
+            "blank_pool": pool_budget,
+            "openrouter": openrouter_budget,
+        },
         "capacity": {
             "live_count": live_count,
             "live_cap": environment.chat_sandbox_total_live_cap,

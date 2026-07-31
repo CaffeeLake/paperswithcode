@@ -95,6 +95,7 @@ def test_gateway_routes_luna_to_server_funded_openrouter():
     settings = Settings(
         _env_file=None,
         chat_openrouter_api_key="openrouter-token",
+        chat_openrouter_server_funded_enabled=True,
     )
     row = SimpleNamespace(
         model=settings.chat_luna_route,
@@ -107,6 +108,24 @@ def test_gateway_routes_luna_to_server_funded_openrouter():
         "openrouter-token",
         None,
     )
+
+
+def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_api_key="openrouter-token",
+        chat_openrouter_server_funded_enabled=False,
+    )
+    row = SimpleNamespace(
+        model=settings.chat_luna_route,
+        owner_hash="a" * 64,
+        provider_token_encrypted=None,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        _provider_target(row, settings)
+
+    assert error.value.status_code == 503
 
 
 def test_gateway_keeps_hugging_face_models_on_user_billing():

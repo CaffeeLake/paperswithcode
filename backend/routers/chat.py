@@ -48,6 +48,11 @@ from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_runner import shared_sandbox_manager
 from backend.services.deployment_lifecycle import deployment_lifecycle
+from backend.services.openrouter_budget_service import (
+    OpenRouterBudgetExceeded,
+    OpenRouterBudgetUnavailable,
+    require_openrouter_budget,
+)
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -86,6 +91,7 @@ class _PrincipalRateLimiter:
 
 _admission = _AdmissionControl()
 _rate_limiter = _PrincipalRateLimiter()
+_openrouter_rate_limiter = _PrincipalRateLimiter()
 
 
 def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None:
@@ -97,6 +103,40 @@ def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None
         detail={"code": exc.code, "message": str(exc)},
         headers=response_headers or None,
     )
+
+
+async def _authorize_openrouter(settings: Settings, principal: str) -> None:
+    if not settings.chat_openrouter_server_funded_enabled:
+        raise ChatServiceError(
+            "provider_unavailable",
+            503,
+            "The shared OpenRouter preview is not enabled.",
+        )
+    retry_after = await _openrouter_rate_limiter.check(
+        principal,
+        settings.chat_openrouter_requests_per_minute,
+        settings.chat_openrouter_requests_per_day,
+    )
+    if retry_after is not None:
+        raise ChatServiceError(
+            "provider_rate_limit",
+            429,
+            "The shared OpenRouter preview rate limit was reached.",
+        )
+    try:
+        await require_openrouter_budget(settings)
+    except OpenRouterBudgetExceeded:
+        raise ChatServiceError(
+            "provider_budget_exhausted",
+            503,
+            "The shared OpenRouter preview budget was reached.",
+        ) from None
+    except OpenRouterBudgetUnavailable:
+        raise ChatServiceError(
+            "provider_budget_unavailable",
+            503,
+            "The shared OpenRouter preview budget could not be verified.",
+        ) from None
 
 
 def _busy(session: ChatSession) -> bool:
@@ -405,12 +445,8 @@ async def stream_chat(
                         402,
                         "Connect Hugging Face billing in Settings to use this model.",
                     )
-                if provider == "openrouter" and not settings.chat_openrouter_api_key:
-                    raise ChatServiceError(
-                        "provider_unavailable",
-                        503,
-                        "OpenRouter is not configured.",
-                    )
+                if provider == "openrouter":
+                    await _authorize_openrouter(settings, owner.hf_user_id)
                 title_token = (
                     service.begin_title(
                         owner,

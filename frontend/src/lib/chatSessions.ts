@@ -65,7 +65,6 @@ export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   { id: DEFAULT_CHAT_MODEL, label: "Gemma 4 31B", provider: "huggingface" },
   { id: "zai-org/GLM-5.2", label: "GLM 5.2", provider: "huggingface" },
   { id: "moonshotai/Kimi-K3", label: "Kimi K3", provider: "huggingface" },
-  { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", provider: "openrouter" },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

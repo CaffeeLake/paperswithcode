@@ -249,6 +249,11 @@ class Settings(BaseSettings):
         default="",
         description="OpenRouter API key reserved for server-funded research chat",
     )
+    chat_openrouter_server_funded_enabled: bool = Field(default=False)
+    chat_openrouter_monthly_budget_usd: float = Field(default=5, gt=0, le=1000)
+    chat_openrouter_budget_reserve_usd: float = Field(default=0.5, ge=0, le=100)
+    chat_openrouter_requests_per_minute: int = Field(default=2, ge=1, le=60)
+    chat_openrouter_requests_per_day: int = Field(default=5, ge=1, le=100)
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
@@ -314,7 +319,7 @@ class Settings(BaseSettings):
     cron_enabled: bool = Field(default=True)
 
     @property
-    def chat_model_choices(self) -> tuple[dict[str, str], ...]:
+    def chat_model_registry(self) -> tuple[dict[str, str], ...]:
         return (
             {
                 "id": "google/gemma-4-31B-it",
@@ -343,6 +348,16 @@ class Settings(BaseSettings):
         )
 
     @property
+    def chat_model_choices(self) -> tuple[dict[str, str], ...]:
+        if not self.is_deployed or self.chat_openrouter_server_funded_enabled:
+            return self.chat_model_registry
+        return tuple(
+            choice
+            for choice in self.chat_model_registry
+            if choice["provider"] != "openrouter"
+        )
+
+    @property
     def chat_model_routes(self) -> dict[str, str]:
         routes = {choice["id"]: choice["route"] for choice in self.chat_model_choices}
         # Existing staging sessions keep their stable selected-model ID while
@@ -354,7 +369,7 @@ class Settings(BaseSettings):
     @property
     def chat_model_providers(self) -> dict[str, str]:
         providers = {
-            choice["id"]: choice["provider"] for choice in self.chat_model_choices
+            choice["id"]: choice["provider"] for choice in self.chat_model_registry
         }
         providers["openai/gpt-oss-120b"] = "huggingface"
         providers["deepseek-ai/DeepSeek-V4-Flash"] = "huggingface"
@@ -363,8 +378,7 @@ class Settings(BaseSettings):
     @property
     def chat_route_providers(self) -> dict[str, str]:
         return {
-            self.chat_model_routes[model]: provider
-            for model, provider in self.chat_model_providers.items()
+            choice["route"]: choice["provider"] for choice in self.chat_model_registry
         }
 
     # GitHub API configuration

@@ -342,6 +342,39 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     assert validate_runtime(settings) == profile_features(environment)
 
 
+def test_staging_shared_openrouter_requires_bounded_explicit_opt_in(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_openrouter_server_funded_enabled = True
+
+    assert validate_runtime(settings) == profile_features("staging")
+
+    settings.chat_openrouter_api_key = ""
+    with pytest.raises(RuntimeError, match="requires an OpenRouter key"):
+        validate_runtime(settings)
+
+
+def test_staging_shared_openrouter_rejects_exhausted_reserve_config(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_openrouter_server_funded_enabled = True
+    settings.chat_openrouter_budget_reserve_usd = (
+        settings.chat_openrouter_monthly_budget_usd
+    )
+
+    with pytest.raises(RuntimeError, match="reserve must be below"):
+        validate_runtime(settings)
+
+
+def test_production_rejects_server_funded_openrouter(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_openrouter_server_funded_enabled = True
+
+    with pytest.raises(RuntimeError, match="staging-only"):
+        validate_runtime(settings)
+
+
 def test_staging_runtime_rejects_shared_session_signer(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")

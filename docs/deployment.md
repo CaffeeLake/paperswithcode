@@ -214,6 +214,10 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
+It also fails closed when an explicitly enabled shared OpenRouter preview cannot
+prove its provider-reported monthly usage remains above the configured reserve.
+Shared OpenRouter is disabled by default and prohibited in production; ordinary
+chat models continue to require the signed-in user's Hugging Face billing.
 
 ## Release cleanup
 
