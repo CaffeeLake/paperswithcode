@@ -198,7 +198,7 @@ function SubmissionCard({
     [paper?.arxiv_id, queryClient],
   );
 
-  const approveMutation = useMutation({
+  const approveMutation = useMutation<PendingPaperEdit, unknown, void>({
     mutationFn: () =>
       approvePendingPaperEdit(submission.id, {
         admin_note: adminNote.trim() || undefined,
@@ -219,7 +219,7 @@ function SubmissionCard({
     },
   });
 
-  const rejectMutation = useMutation({
+  const rejectMutation = useMutation<PendingPaperEdit, unknown, void>({
     mutationFn: () =>
       rejectPendingPaperEdit(submission.id, {
         admin_note: adminNote.trim() || undefined,

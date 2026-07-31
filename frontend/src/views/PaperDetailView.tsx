@@ -19,7 +19,11 @@ import { usePaper } from "@/hooks/usePapers";
 import { useEvaluationsByPaper } from "@/hooks/useEvaluations";
 import { usePreferences } from "@/lib/preferencesContext";
 import { useHuggingFaceRepos } from "@/hooks/useHuggingFaceRepos";
-import { usePaperEditState } from "@/hooks/usePaperEditState";
+import {
+  parseFreshAuthEditSection,
+  usePaperEditState,
+} from "@/hooks/usePaperEditState";
+import type { PaperEditSection } from "@/hooks/usePaperEditState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -50,17 +54,7 @@ import {
 } from "@/components/paper-detail/CopyToBucketCard";
 import { isCodexAddEvalsEnabled, isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
 
-type EditSection =
-  | "tasks"
-  | "methods"
-  | "results"
-  | "repositories"
-  | "project-pages"
-  | "hf-artifacts"
-  | "organizations"
-  | "source-url";
-
-const EDIT_SECTION_LABEL: Record<EditSection, string> = {
+const EDIT_SECTION_LABEL: Record<PaperEditSection, string> = {
   tasks: "tasks",
   methods: "methods",
   results: "evaluation results",
@@ -412,88 +406,32 @@ const PaperDetailView: React.FC = () => {
     evaluationsByTask,
   ]);
 
-  const {
-    isEditingTasks,
-    setIsEditingTasks,
-    isEditingMethods,
-    setIsEditingMethods,
-    isEditingRepositories,
-    setIsEditingRepositories,
-    isEditingProjectPages,
-    setIsEditingProjectPages,
-    isEditingEvaluations,
-    setIsEditingEvaluations,
-    isEditingSourceUrl,
-    setIsEditingSourceUrl,
-    isEditingHfArtifacts,
-    setIsEditingHfArtifacts,
-    isEditingOrganizations,
-    setIsEditingOrganizations,
-  } = usePaperEditState();
+  const { activeEditor, openEditor, setEditorOpen } = usePaperEditState();
 
   useEffect(() => {
     if (editSubmitMode !== "direct" || !paper?.id) return;
-    if (
-      isEditingTasks ||
-      isEditingMethods ||
-      isEditingRepositories ||
-      isEditingProjectPages ||
-      isEditingSourceUrl ||
-      isEditingHfArtifacts ||
-      isEditingOrganizations
-    ) {
+    if (activeEditor && activeEditor !== "results") {
       void apiClient
         .primePaperCurationState(paper.id)
         .catch(() => undefined);
     }
-    if (isEditingEvaluations) {
+    if (activeEditor === "results") {
       void apiClient
         .primeEvaluationCurationState(paper.id)
         .catch(() => undefined);
     }
-  }, [
-    editSubmitMode,
-    isEditingEvaluations,
-    isEditingHfArtifacts,
-    isEditingMethods,
-    isEditingOrganizations,
-    isEditingProjectPages,
-    isEditingRepositories,
-    isEditingSourceUrl,
-    isEditingTasks,
-    paper?.id,
-  ]);
+  }, [activeEditor, editSubmitMode, paper?.id]);
 
-  const [signInSection, setSignInSection] = useState<EditSection | null>(null);
+  const [signInSection, setSignInSection] = useState<PaperEditSection | null>(null);
 
   useEffect(() => {
     if (!user || !paper) return;
     const section = sessionStorage.getItem("pwc:fresh-auth-edit");
     if (!section) return;
     sessionStorage.removeItem("pwc:fresh-auth-edit");
-    const openers: Record<string, () => void> = {
-      tasks: () => setIsEditingTasks(true),
-      methods: () => setIsEditingMethods(true),
-      repositories: () => setIsEditingRepositories(true),
-      project_pages: () => setIsEditingProjectPages(true),
-      evaluations: () => setIsEditingEvaluations(true),
-      hf_artifacts: () => setIsEditingHfArtifacts(true),
-      organizations: () => setIsEditingOrganizations(true),
-      source_url: () => setIsEditingSourceUrl(true),
-    };
-    openers[section]?.();
-  }, [
-    paper,
-    setIsEditingEvaluations,
-    setIsEditingHfArtifacts,
-    setIsEditingOrganizations,
-    setIsEditingMethods,
-    setIsEditingProjectPages,
-    setIsEditingRepositories,
-    setIsEditingSourceUrl,
-    setIsEditingTasks,
-    user,
-  ]);
+    const editor = parseFreshAuthEditSection(section);
+    if (editor) openEditor(editor);
+  }, [openEditor, paper, user]);
 
   // Resolve whether the signed-in HF username matches one of the paper's
   // linked authors. Used to surface "you're an author" copy in the pending
@@ -508,37 +446,12 @@ const PaperDetailView: React.FC = () => {
     );
   }, [user, paper?.author_links]);
 
-  const openEdit = (section: EditSection): void => {
+  const openEdit = (section: PaperEditSection): void => {
     if (!isSignedIn) {
       setSignInSection(section);
       return;
     }
-    switch (section) {
-      case "tasks":
-        setIsEditingTasks(true);
-        return;
-      case "methods":
-        setIsEditingMethods(true);
-        return;
-      case "results":
-        setIsEditingEvaluations(true);
-        return;
-      case "repositories":
-        setIsEditingRepositories(true);
-        return;
-      case "project-pages":
-        setIsEditingProjectPages(true);
-        return;
-      case "hf-artifacts":
-        setIsEditingHfArtifacts(true);
-        return;
-      case "organizations":
-        setIsEditingOrganizations(true);
-        return;
-      case "source-url":
-        setIsEditingSourceUrl(true);
-        return;
-    }
+    openEditor(section);
   };
 
   // Auto-index if missing.
@@ -1097,7 +1010,7 @@ const PaperDetailView: React.FC = () => {
             </button>
             {isAdmin && isCodexEnrichPaperEnabled() && (
               <CodexEnrichPaperDialog
-                paperId={paper.id}
+                paperId={Number(paper.id)}
                 paperTitle={paper.title}
                 onComplete={() => void refetch()}
               />
@@ -1306,7 +1219,7 @@ const PaperDetailView: React.FC = () => {
                 )}
                 {isAdmin && isCodexAddEvalsEnabled() && (
                   <CodexAddEvalsDialog
-                    paperId={paper.id}
+                    paperId={Number(paper.id)}
                     paperTitle={paper.title}
                     onComplete={() => void refetchEvaluations()}
                   />
@@ -1577,8 +1490,8 @@ const PaperDetailView: React.FC = () => {
 
       {/* Edit dialogs (direct save for admins, pending submission for everyone else) */}
       <EditTasksDialog
-        open={isEditingTasks}
-        onOpenChange={setIsEditingTasks}
+        open={activeEditor === "tasks"}
+        onOpenChange={(open) => setEditorOpen("tasks", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialTaskIds={paper.tasks?.map((t) => parseInt(t.id)) || []}
@@ -1587,8 +1500,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditMethodsDialog
-        open={isEditingMethods}
-        onOpenChange={setIsEditingMethods}
+        open={activeEditor === "methods"}
+        onOpenChange={(open) => setEditorOpen("methods", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialMethodIds={paper.methods?.map((m) => parseInt(m.id)) || []}
@@ -1597,8 +1510,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditRepositoriesDialog
-        open={isEditingRepositories}
-        onOpenChange={setIsEditingRepositories}
+        open={activeEditor === "repositories"}
+        onOpenChange={(open) => setEditorOpen("repositories", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialRepositories={
@@ -1608,8 +1521,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditProjectPagesDialog
-        open={isEditingProjectPages}
-        onOpenChange={setIsEditingProjectPages}
+        open={activeEditor === "project-pages"}
+        onOpenChange={(open) => setEditorOpen("project-pages", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialProjectPages={
@@ -1619,8 +1532,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditEvaluationsDialog
-        open={isEditingEvaluations}
-        onOpenChange={setIsEditingEvaluations}
+        open={activeEditor === "results"}
+        onOpenChange={(open) => setEditorOpen("results", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialEvaluations={evaluations || []}
@@ -1630,8 +1543,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditSourceUrlDialog
-        open={isEditingSourceUrl}
-        onOpenChange={setIsEditingSourceUrl}
+        open={activeEditor === "source-url"}
+        onOpenChange={(open) => setEditorOpen("source-url", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialUrl={paper.source_url ?? paper.url_abs ?? ""}
@@ -1639,8 +1552,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditHfArtifactsDialog
-        open={isEditingHfArtifacts}
-        onOpenChange={setIsEditingHfArtifacts}
+        open={activeEditor === "hf-artifacts"}
+        onOpenChange={(open) => setEditorOpen("hf-artifacts", open)}
         paperId={paper.id}
         arxivId={arxivId}
         initialArtifacts={{
@@ -1652,8 +1565,8 @@ const PaperDetailView: React.FC = () => {
         isAuthor={isLinkedAuthor}
       />
       <EditOrganizationsDialog
-        open={isEditingOrganizations}
-        onOpenChange={setIsEditingOrganizations}
+        open={activeEditor === "organizations"}
+        onOpenChange={(open) => setEditorOpen("organizations", open)}
         paperId={paper.id}
         initialOrganizationIds={(paper.organizations || []).map((item) =>
           Number(item.id),

@@ -1,55 +1,48 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
+
+export type PaperEditSection =
+  | "tasks"
+  | "methods"
+  | "results"
+  | "repositories"
+  | "project-pages"
+  | "hf-artifacts"
+  | "organizations"
+  | "source-url";
+
+const FRESH_AUTH_EDIT_SECTIONS: Record<string, PaperEditSection> = {
+  tasks: "tasks",
+  methods: "methods",
+  evaluations: "results",
+  repositories: "repositories",
+  project_pages: "project-pages",
+  hf_artifacts: "hf-artifacts",
+  organizations: "organizations",
+  source_url: "source-url",
+};
+
+export function parseFreshAuthEditSection(
+  value: string,
+): PaperEditSection | null {
+  return FRESH_AUTH_EDIT_SECTIONS[value] ?? null;
+}
 
 export function usePaperEditState() {
-  const [isEditingTasks, setIsEditingTasks] = useState(false);
-  const [isEditingMethods, setIsEditingMethods] = useState(false);
-  const [isEditingRepositories, setIsEditingRepositories] = useState(false);
-  const [isEditingProjectPages, setIsEditingProjectPages] = useState(false);
-  const [isEditingEvaluations, setIsEditingEvaluations] = useState(false);
-  const [isEditingSourceUrl, setIsEditingSourceUrl] = useState(false);
-  const [isEditingHfArtifacts, setIsEditingHfArtifacts] = useState(false);
-  const [isEditingOrganizations, setIsEditingOrganizations] = useState(false);
+  const [activeEditor, setActiveEditor] = useState<PaperEditSection | null>(null);
 
-  return {
-    // Tasks
-    isEditingTasks,
-    openTasksDialog: () => setIsEditingTasks(true),
-    closeTasksDialog: () => setIsEditingTasks(false),
-    setIsEditingTasks,
+  const openEditor = useCallback((section: PaperEditSection) => {
+    setActiveEditor(section);
+  }, []);
 
-    // Methods
-    isEditingMethods,
-    openMethodsDialog: () => setIsEditingMethods(true),
-    closeMethodsDialog: () => setIsEditingMethods(false),
-    setIsEditingMethods,
+  const setEditorOpen = useCallback(
+    (section: PaperEditSection, open: boolean) => {
+      setActiveEditor((current) => {
+        if (open) return section;
+        return current === section ? null : current;
+      });
+    },
+    [],
+  );
 
-    // Repositories
-    isEditingRepositories,
-    openRepositoriesDialog: () => setIsEditingRepositories(true),
-    closeRepositoriesDialog: () => setIsEditingRepositories(false),
-    setIsEditingRepositories,
-
-    // Project pages
-    isEditingProjectPages,
-    openProjectPagesDialog: () => setIsEditingProjectPages(true),
-    closeProjectPagesDialog: () => setIsEditingProjectPages(false),
-    setIsEditingProjectPages,
-
-    // Evaluations
-    isEditingEvaluations,
-    openEvaluationsDialog: () => setIsEditingEvaluations(true),
-    closeEvaluationsDialog: () => setIsEditingEvaluations(false),
-    setIsEditingEvaluations,
-
-    // Source URL (external papers only)
-    isEditingSourceUrl,
-    openSourceUrlDialog: () => setIsEditingSourceUrl(true),
-    closeSourceUrlDialog: () => setIsEditingSourceUrl(false),
-    setIsEditingSourceUrl,
-
-    isEditingHfArtifacts,
-    setIsEditingHfArtifacts,
-    isEditingOrganizations,
-    setIsEditingOrganizations,
-  };
+  return { activeEditor, openEditor, setEditorOpen };
 }

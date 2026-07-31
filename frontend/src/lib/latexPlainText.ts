@@ -50,19 +50,23 @@ const DISPLAY_MATH_RE = /\$\$([^$]+)\$\$/g;
 const INLINE_MATH_RE = /\$([^$]+)\$/g;
 const MATH_COMMAND_RE = /\\([A-Za-z]+)/g;
 
+function replaceAllLiteral(text: string, search: string, replacement: string): string {
+  return text.split(search).join(replacement);
+}
+
 function mathSegmentToPlain(segment: string): string {
   let plain = segment.trim();
   for (const [name, char] of LATEX_MATH_SYMBOLS) {
-    plain = plain.replaceAll(`\\${name}`, char);
+    plain = replaceAllLiteral(plain, `\\${name}`, char);
   }
   plain = plain.replace(MATH_COMMAND_RE, (_, cmd: string) => cmd);
-  return plain.replaceAll('$', '');
+  return replaceAllLiteral(plain, '$', '');
 }
 
 function unwrapMathDelimiters(text: string): string {
   let plain = text.replace(DISPLAY_MATH_RE, (_, inner: string) => mathSegmentToPlain(inner));
   plain = plain.replace(INLINE_MATH_RE, (_, inner: string) => mathSegmentToPlain(inner));
-  return plain.replaceAll('$', '');
+  return replaceAllLiteral(plain, '$', '');
 }
 
 export function latexToPlainText(text: string): string {
@@ -75,7 +79,7 @@ export function latexToPlainText(text: string): string {
   });
   plain = plain.replace(STANDALONE_RE, (_, cmd: string) => LATEX_STANDALONE_COMMANDS[cmd] ?? _);
   plain = unwrapMathDelimiters(plain);
-  return plain.replaceAll('~', '\u00a0');
+  return replaceAllLiteral(plain, '~', '\u00a0');
 }
 
 const DEFAULT_SITE_SUFFIX = 'Papers with Code';

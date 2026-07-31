@@ -10,6 +10,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import "@/styles/evaluation-badges.css";
 
 type Props = {
   sourceUrl?: string | null;

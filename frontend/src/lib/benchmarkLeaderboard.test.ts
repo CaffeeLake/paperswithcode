@@ -1,0 +1,73 @@
+import { describe, expect, it } from "vitest";
+
+import type { Evaluation } from "./api";
+import {
+  computeSeries,
+  mergeLeaderboardEvaluations,
+  parseMetricValue,
+} from "./benchmarkLeaderboard";
+
+function evaluation(overrides: Partial<Evaluation> = {}): Evaluation {
+  return {
+    id: "eval-1",
+    paper_id: "paper-1",
+    task_id: "task-1",
+    dataset_id: "dataset-1",
+    model_name: "Model One",
+    metrics: { Accuracy: 80 },
+    uses_additional_data: false,
+    is_open: true,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    paper_published_date: "2025-01-15",
+    ...overrides,
+  };
+}
+
+describe("benchmark leaderboard model", () => {
+  it("parses central metric values without accepting unusable input", () => {
+    expect(parseMetricValue("88.55 ± 0.04")).toBe(88.55);
+    expect(parseMetricValue(42)).toBe(42);
+    expect(parseMetricValue("not reported")).toBeNull();
+    expect(parseMetricValue(null)).toBeNull();
+  });
+
+  it("merges metric-specific rows for the same model and harness", () => {
+    const merged = mergeLeaderboardEvaluations([
+      evaluation({ id: "accuracy", best_metric: "Accuracy", best_rank: 1 }),
+      evaluation({
+        id: "f1",
+        best_metric: "F1",
+        best_rank: 2,
+        metrics: { F1: 75 },
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].metrics).toEqual({ Accuracy: 80, F1: 75 });
+    expect(merged[0].sourceEvaluationIds).toEqual(["accuracy", "f1"]);
+    expect(merged[0].ranksByMetric).toEqual({ Accuracy: 1, F1: 2 });
+  });
+
+  it("marks only improving values as SOTA for lower-is-better metrics", () => {
+    const result = computeSeries([
+      evaluation({ id: "first", model_name: "First", metrics: { Error: 20 } }),
+      evaluation({
+        id: "worse",
+        model_name: "Worse",
+        metrics: { Error: 25 },
+        paper_published_date: "2025-02-15",
+      }),
+      evaluation({
+        id: "best",
+        model_name: "Best",
+        metrics: { Error: 10 },
+        paper_published_date: "2025-03-15",
+      }),
+    ], "Error", "↓");
+
+    expect(result.points.map((point) => point.isSota)).toEqual([true, false, true]);
+    expect(result.sota).toBe(10);
+    expect(result.sotaModel).toBe("Best");
+  });
+});

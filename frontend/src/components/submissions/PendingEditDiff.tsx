@@ -62,7 +62,7 @@ const asRecord = (value: unknown): JsonRecord =>
 const asNamedItems = (value: unknown): NamedItem[] => {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map<NamedItem | null>((item) => {
       const record = asRecord(item);
       const id = Number(record.id);
       if (!Number.isFinite(id)) return null;
@@ -72,7 +72,7 @@ const asNamedItems = (value: unknown): NamedItem[] => {
         slug: typeof record.slug === "string" ? record.slug : undefined,
       };
     })
-    .filter((item): item is NamedItem => Boolean(item));
+    .filter((item): item is NamedItem => item !== null);
 };
 
 const asNumberArray = (value: unknown): number[] => {

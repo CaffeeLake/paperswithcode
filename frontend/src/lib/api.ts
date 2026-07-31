@@ -2,11 +2,14 @@
  * API client for PapersWithCode backend
  */
 
-import { getStoredAdminToken } from "./adminAuth";
-import { apiUrl, authUrl, getApiOrigin } from "./apiUrl";
+import { apiUrl, getApiOrigin } from "./apiUrl";
+import { withStaleAuthNotification } from "./apiAuth";
+import { requestJson } from "./apiTransport";
+import { PaperCurationCoordinator } from "./paperCuration";
+
+export { ApiError } from "./apiTransport";
 
 const API_BASE_URL = `${getApiOrigin()}/api/v1`;
-const LOG_API_REQUESTS = import.meta.env.DEV;
 
 export interface CatalogMutationEvent {
   id: string;
@@ -856,145 +859,19 @@ export interface TrendsResponse {
 
 class ApiClient {
   private baseUrl: string;
-  private paperCurationLoads = new Map<
-    string,
-    Promise<{ sections: Record<string, string> }>
-  >();
-  private evaluationCurationLoads = new Map<string, Promise<{ version: string }>>();
+  private curation: PaperCurationCoordinator;
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
+    this.curation = new PaperCurationCoordinator(
+      <T>(endpoint: string, options?: RequestInit) => this.request<T>(endpoint, options),
+    );
   }
 
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`;
-
-    if (LOG_API_REQUESTS) {
-      console.log(`[API] Requesting: ${url}`);
-    }
-
-    try {
-      const { headers, ...requestOptions } = options ?? {};
-      const adminToken = getStoredAdminToken();
-      const method = (requestOptions.method ?? 'GET').toUpperCase();
-      // Default GETs to browser caching (so server-sent `Cache-Control`
-      // headers can actually take effect). Non-GET requests stay
-      // `no-store` defensively so we never hand stale state to a mutation.
-      // Callers may still pass their own `cache` value to override either.
-      const defaultCache: RequestCache = method === 'GET' ? 'default' : 'no-store';
-      const response = await fetch(url, {
-        ...requestOptions,
-        cache: requestOptions.cache ?? defaultCache,
-        credentials: requestOptions.credentials ?? 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(adminToken ? { 'X-Admin-Token': adminToken } : {}),
-          ...headers,
-        },
-      });
-
-      if (LOG_API_REQUESTS) {
-        console.log(`[API] Response from ${url}:`, response.status, response.statusText);
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[API] Error response:`, errorText);
-        let errorCode: string | undefined;
-        try {
-          errorCode = JSON.parse(errorText)?.detail?.code;
-        } catch {
-          errorCode = undefined;
-        }
-        if (
-          response.status === 401 &&
-          errorCode === "fresh_auth_required" &&
-          typeof window !== "undefined"
-        ) {
-          const segment = endpoint.match(
-            /\/(tasks|methods|organizations|repositories|project-pages|hf-artifacts|source-url|evaluations)(?:\/|$)/,
-          )?.[1];
-          const section =
-            segment === "project-pages"
-              ? "project_pages"
-              : segment === "hf-artifacts"
-                ? "hf_artifacts"
-                : segment === "source-url"
-                  ? "source_url"
-                  : segment ?? "evaluations";
-          sessionStorage.setItem("pwc:fresh-auth-edit", section);
-          const login = authUrl("/api/v1/auth/hf/login");
-          window.location.assign(
-            `${login}?return_to=${encodeURIComponent(window.location.href)}`,
-          );
-        } else if (response.status === 409 && typeof window !== "undefined") {
-          this.clearSuccessfulIdempotency(options);
-          this.paperCurationLoads.clear();
-          this.evaluationCurationLoads.clear();
-          window.dispatchEvent(
-            new CustomEvent("pwc:catalog-conflict", {
-              detail: { endpoint },
-            }),
-          );
-        } else if (response.status === 401 && typeof window !== 'undefined') {
-          // The session cookie is missing or expired; let the auth context
-          // (lib/authContext.tsx) clear local state so the header swaps back
-          // to the "Sign in with Hugging Face" button without a reload.
-          window.dispatchEvent(new CustomEvent('pwc:auth-stale'));
-        }
-        const error: any = new Error(`API request failed: ${response.status} ${response.statusText}`);
-        error.status = response.status;
-        error.statusText = response.statusText;
-        error.response = errorText;
-        throw error;
-      }
-
-      if (response.status === 204) {
-        this.clearSuccessfulIdempotency(options);
-        return undefined as T;
-      }
-
-      const data = await response.json();
-      this.clearSuccessfulIdempotency(options);
-      if (LOG_API_REQUESTS) {
-        console.log(`[API] Success:`, data);
-      }
-      return data;
-    } catch (error) {
-      console.error(`[API] Request to ${url} failed:`, error);
-      throw error;
-    }
-  }
-
-  private idempotencyHeaders(
-    scope: string,
-    payload: unknown,
-    version: string,
-  ): Record<string, string> {
-    const storageKey = `pwc:mutation:${scope}:${JSON.stringify(payload)}`;
-    const existing = sessionStorage.getItem(storageKey);
-    if (existing) {
-      const attempt = JSON.parse(existing) as { key: string; version: string };
-      return {
-        "Idempotency-Key": attempt.key,
-        "If-Match": attempt.version,
-      };
-    }
-    const key = crypto.randomUUID();
-    sessionStorage.setItem(storageKey, JSON.stringify({ key, version }));
-    sessionStorage.setItem(`pwc:mutation-key:${key}`, storageKey);
-    return { "Idempotency-Key": key, "If-Match": version };
-  }
-
-  private clearSuccessfulIdempotency(options?: RequestInit): void {
-    const headers = new Headers(options?.headers);
-    const key = headers.get("Idempotency-Key");
-    if (!key) return;
-    const storageKey = sessionStorage.getItem(`pwc:mutation-key:${key}`);
-    if (storageKey) sessionStorage.removeItem(storageKey);
-    sessionStorage.removeItem(`pwc:mutation-key:${key}`);
-    this.paperCurationLoads.clear();
-    this.evaluationCurationLoads.clear();
+    return withStaleAuthNotification(() =>
+      requestJson<T>(this.baseUrl, endpoint, options),
+    );
   }
 
   // Papers API
@@ -1080,70 +957,26 @@ class ApiClient {
     });
   }
 
-  private async paperMutationHeaders(
-    paperId: string,
-    section: string,
-    payload: unknown,
-  ): Promise<Record<string, string>> {
-    const load = this.paperCurationLoads.get(paperId);
-    if (!load) {
-      throw new Error(
-        "The catalog version was not loaded when this editor opened. Close and reopen the editor.",
-      );
-    }
-    const state = await load;
-    const version = state.sections[section];
-    if (!version) throw new Error(`Missing curation version for ${section}`);
-    return this.idempotencyHeaders(
-      `paper:${paperId}:${section}`,
-      payload,
-      version,
-    );
-  }
-
   primePaperCurationState(
     paperId: string,
     force = false,
   ): Promise<{ sections: Record<string, string> }> {
-    if (force) this.paperCurationLoads.delete(paperId);
-    let load = this.paperCurationLoads.get(paperId);
-    if (!load) {
-      load = this.request<{ sections: Record<string, string> }>(
-        `/papers/${paperId}/curation-state`,
-      ).catch((error) => {
-        this.paperCurationLoads.delete(paperId);
-        throw error;
-      });
-      this.paperCurationLoads.set(paperId, load);
-    }
-    return load;
+    return this.curation.primePaper(paperId, force);
   }
 
   primeEvaluationCurationState(
     paperId: string,
     force = false,
   ): Promise<{ version: string }> {
-    if (force) this.evaluationCurationLoads.delete(paperId);
-    let load = this.evaluationCurationLoads.get(paperId);
-    if (!load) {
-      load = this.request<{ version: string }>(
-        `/evaluations/curation-state?paper_id=${paperId}`,
-      ).catch((error) => {
-        this.evaluationCurationLoads.delete(paperId);
-        throw error;
-      });
-      this.evaluationCurationLoads.set(paperId, load);
-    }
-    return load;
+    return this.curation.primeEvaluations(paperId, force);
   }
 
   async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
     const searchParams = new URLSearchParams();
     taskIds.forEach(id => searchParams.append('task_ids', id.toString()));
     const endpoint = `/papers/${paperId}/tasks?${searchParams.toString()}`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "tasks", taskIds, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "tasks", taskIds),
     });
   }
 
@@ -1151,9 +984,8 @@ class ApiClient {
     const searchParams = new URLSearchParams();
     methodIds.forEach(id => searchParams.append('method_ids', id.toString()));
     const endpoint = `/papers/${paperId}/methods?${searchParams.toString()}`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "methods", methodIds, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "methods", methodIds),
     });
   }
 
@@ -1165,42 +997,36 @@ class ApiClient {
     organizationIds.forEach((id) =>
       searchParams.append("organization_ids", id.toString()),
     );
-    return this.request<Paper>(
-      `/papers/${paperId}/organizations?${searchParams.toString()}`,
-      {
-        method: "PUT",
-        headers: await this.paperMutationHeaders(
-          paperId,
-          "organizations",
-          organizationIds,
-        ),
-      },
+    const endpoint = `/papers/${paperId}/organizations?${searchParams.toString()}`;
+    return this.curation.mutatePaper<Paper>(
+      paperId,
+      "organizations",
+      organizationIds,
+      endpoint,
+      { method: "PUT" },
     );
   }
 
   async updatePaperRepositories(paperId: string, repositories: Array<{ url: string; is_official: boolean }>): Promise<Paper> {
     const endpoint = `/papers/${paperId}/repositories`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "repositories", repositories, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "repositories", repositories),
       body: JSON.stringify({ repositories }),
     });
   }
 
   async updatePaperProjectPages(paperId: string, projectPages: Array<{ url: string; is_official: boolean }>): Promise<Paper> {
     const endpoint = `/papers/${paperId}/project-pages`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "project_pages", projectPages, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "project_pages", projectPages),
       body: JSON.stringify({ project_pages: projectPages }),
     });
   }
 
   async updatePaperSourceUrl(paperId: string, sourceUrl: string): Promise<Paper> {
     const endpoint = `/papers/${paperId}/source-url`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "source_url", sourceUrl, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "source_url", sourceUrl),
       body: JSON.stringify({ source_url: sourceUrl }),
     });
   }
@@ -1210,9 +1036,8 @@ class ApiClient {
     artifacts: { hf_models: string[]; hf_datasets: string[]; hf_spaces: string[] },
   ): Promise<Paper> {
     const endpoint = `/papers/${paperId}/hf-artifacts`;
-    return this.request<Paper>(endpoint, {
+    return this.curation.mutatePaper<Paper>(paperId, "hf_artifacts", artifacts, endpoint, {
       method: 'PUT',
-      headers: await this.paperMutationHeaders(paperId, "hf_artifacts", artifacts),
       body: JSON.stringify(artifacts),
     });
   }
@@ -1937,22 +1762,15 @@ class ApiClient {
       payload?: Record<string, unknown>;
     }>,
   ): Promise<{ event_id: string }> {
-    const load = this.evaluationCurationLoads.get(String(paperId));
-    if (!load) {
-      throw new Error(
-        "The evaluation version was not loaded when this editor opened. Close and reopen the editor.",
-      );
-    }
-    const state = await load;
-    return this.request<{ event_id: string }>('/evaluations/batch', {
-      method: 'POST',
-      headers: this.idempotencyHeaders(
-        `paper:${paperId}:evaluations`,
-        operations,
-        state.version,
-      ),
-      body: JSON.stringify({ paper_id: paperId, operations }),
-    });
+    return this.curation.mutateEvaluations<{ event_id: string }>(
+      paperId,
+      operations,
+      "/evaluations/batch",
+      {
+        method: "POST",
+        body: JSON.stringify({ paper_id: paperId, operations }),
+      },
+    );
   }
 
   // Thumbnails API

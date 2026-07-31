@@ -1,0 +1,36 @@
+/* Evaluation-source badges are shared by benchmark leaderboards and paper
+ * result tables, so their styles must load with the badge components rather
+ * than with either route. */
+.bm-closed-source-tag,
+.bm-external-source-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  cursor: help;
+  line-height: 1.4;
+}
+
+.bm-closed-source-tag {
+  color: var(--ink-soft);
+  background: var(--surface-2, oklch(0.95 0.01 250));
+  border: 1px solid var(--border, oklch(0.88 0.01 250));
+}
+
+.bm-external-source-tag {
+  color: var(--info-text);
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+}
+
+.bm-closed-source-tag:focus-visible,
+.bm-external-source-tag:focus-visible {
+  outline: 2px solid var(--hairline-strong);
+  outline-offset: 2px;
+}

@@ -14,6 +14,13 @@ import { cancelSession, getSession, toUiMessages } from "@/lib/chatSessions";
 const WORKSPACE_STATUS = "Preparing research workspace…";
 const WORKSPACE_STATUS_DELAY_MS = 750;
 
+function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) return index;
+  }
+  return -1;
+}
+
 interface BrowserTiming {
   controller: AbortController;
   submittedAt: number;
@@ -92,7 +99,7 @@ export function useChat(options: UseChatOptions) {
   const patchBlock = (match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean, patch: (block: ChatBlock) => ChatBlock) =>
     patchLast((message) => ({ ...message, blocks: (message.blocks ?? []).map((block, index, all) => match(block, index, all) ? patch(block) : block) }));
   const isLastOfKind = (kind: ChatBlock["kind"]) => (block: ChatBlock, index: number, blocks: ChatBlock[]) =>
-    block.kind === kind && blocks.findLastIndex((candidate) => candidate.kind === kind) === index;
+    block.kind === kind && findLastMatchingIndex(blocks, (candidate) => candidate.kind === kind) === index;
 
   const clearWorkspaceStatus = (controller: AbortController) => {
     if (abortRef.current !== controller) return;
@@ -387,7 +394,7 @@ export function useChat(options: UseChatOptions) {
     const nextUser: ChatMessage = { id: nextId(), role: "user", text: question };
     const nextAssistant: ChatMessage = { id: nextId(), role: "assistant", streaming: true, blocks: [] };
     const replaceIndex = replacement && latestUser
-      ? current.findLastIndex((message) => message.id === latestUser.id)
+      ? findLastMatchingIndex(current, (message) => message.id === latestUser.id)
       : -1;
     const optimistic = replaceIndex < 0
       ? [...current, nextUser, nextAssistant]
