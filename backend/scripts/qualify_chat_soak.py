@@ -47,6 +47,10 @@ def _token(settings, subject: str) -> str:
     return _encode_legacy_session({"sub": subject, "username": subject})
 
 
+def _requests_user_cancel(cancel_mode: str) -> bool:
+    return cancel_mode == "clean"
+
+
 async def _turn(
     settings,
     *,
@@ -111,10 +115,11 @@ async def _turn(
                             sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
                             await sandbox.terminate.aio(wait=False)
                             forced_termination = True
-                    cancel = await client.post(
-                        f"/api/v1/chat/sessions/{landed_session_id}/cancel"
-                    )
-                    cancel.raise_for_status()
+                    if _requests_user_cancel(cancel_mode):
+                        cancel = await client.post(
+                            f"/api/v1/chat/sessions/{landed_session_id}/cancel"
+                        )
+                        cancel.raise_for_status()
                 if kind == "error":
                     terminal = "error"
                     error_code = str(event.get("code")) if event.get("code") else None

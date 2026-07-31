@@ -57,7 +57,7 @@ from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDK
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, sse_event
 from backend.models.database import ChatTurnCapability
-from backend.scripts import qualify_chat_sandbox
+from backend.scripts import qualify_chat_sandbox, qualify_chat_soak
 from backend.scripts.qualify_chat_sandbox import QualificationRunner, Sample, summarize
 from backend.services.chat_capability_service import (
     CapabilityError,
@@ -1987,6 +1987,11 @@ def test_accepted_cancel_wins_over_concurrent_worker_exit():
 
     running.cancel_requested = False
     assert _cancelled_terminal_event(running) is None
+
+
+def test_forced_failure_probe_does_not_record_user_cancellation():
+    assert qualify_chat_soak._requests_user_cancel("clean")
+    assert not qualify_chat_soak._requests_user_cancel("forced")
 
 
 def test_session_store_rejects_bad_shape_before_touching_database():
