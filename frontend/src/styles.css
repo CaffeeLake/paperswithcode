@@ -4922,11 +4922,9 @@ html { scroll-behavior: smooth; }
 .action-btn.is-saved:hover { background: color-mix(in oklch, var(--ink) 88%, var(--accent)); }
 
 /* === HOME ASK BOX (assistant entry point) === */
-.ask-home-wrap {
+.ask-home {
   max-width: 640px;
   margin: 0 auto 36px;
-}
-.ask-home {
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
   border-radius: 14px;
@@ -4974,23 +4972,6 @@ html { scroll-behavior: smooth; }
   border-radius: 5px;
   padding: 1px 6px;
 }
-.ask-home-examples {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 4px 14px;
-  margin-top: 8px;
-  padding: 0 10px;
-}
-.ask-home-examples button {
-  font-family: var(--serif);
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--ink-faint);
-  transition: color 0.15s;
-}
-.ask-home-examples button:hover { color: var(--ink); }
-
 /* Time filter shares the sort-pill look so both filter rows read as one system */
 .sort-options-time { margin-left: auto; }
 .sort-btn-time { text-transform: none; }

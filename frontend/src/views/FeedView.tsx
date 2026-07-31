@@ -41,6 +41,61 @@ const TIME_TO_PERIOD: Record<TimeWindow, Period> = {
   all_time: "All Time",
 };
 
+const PLACEHOLDER_TYPE_MS = 45;
+const PLACEHOLDER_HOLD_MS = 1_800;
+const PLACEHOLDER_ERASE_MS = 25;
+const PLACEHOLDER_GAP_MS = 350;
+
+const useRotatingChatPlaceholder = (active: boolean) => {
+  const [placeholder, setPlaceholder] = useState(SUGGESTED_CHAT_PROMPTS[0].slice(0, 1));
+
+  useEffect(() => {
+    if (!active) return;
+
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setPlaceholder(SUGGESTED_CHAT_PROMPTS[0]);
+      return;
+    }
+
+    let promptIndex = 0;
+    let characterIndex = 1;
+    let erasing = false;
+    let timer: number;
+    setPlaceholder(SUGGESTED_CHAT_PROMPTS[0].slice(0, characterIndex));
+
+    const tick = () => {
+      const prompt = SUGGESTED_CHAT_PROMPTS[promptIndex];
+
+      if (!erasing) {
+        characterIndex += 1;
+        setPlaceholder(prompt.slice(0, characterIndex));
+        if (characterIndex === prompt.length) {
+          erasing = true;
+          timer = window.setTimeout(tick, PLACEHOLDER_HOLD_MS);
+          return;
+        }
+        timer = window.setTimeout(tick, PLACEHOLDER_TYPE_MS);
+        return;
+      }
+
+      characterIndex -= 1;
+      setPlaceholder(prompt.slice(0, characterIndex));
+      if (characterIndex === 0) {
+        erasing = false;
+        promptIndex = (promptIndex + 1) % SUGGESTED_CHAT_PROMPTS.length;
+        timer = window.setTimeout(tick, PLACEHOLDER_GAP_MS);
+        return;
+      }
+      timer = window.setTimeout(tick, PLACEHOLDER_ERASE_MS);
+    };
+
+    timer = window.setTimeout(tick, PLACEHOLDER_TYPE_MS);
+    return () => window.clearTimeout(timer);
+  }, [active]);
+
+  return placeholder;
+};
+
 const parseOrderBy = (value: string | null): OrderBy => {
   if (value === "trending" || value === "date_published" || value === "citation_count") {
     return value;
@@ -61,6 +116,7 @@ export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const placeholder = useRotatingChatPlaceholder(!question);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -79,56 +135,48 @@ export const AskAssistant: React.FC = () => {
   };
 
   return (
-    <div className="ask-home-wrap">
-      <div className="ask-home">
-        <textarea
-          ref={ref}
-          rows={1}
-          value={question}
-          placeholder="Ask the assistant about papers, tasks, methods, or benchmarks…"
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="ask-home-foot">
-          <div className="ask-home-provider-tools">
-            <ModelPicker
-              models={FALLBACK_CHAT_MODELS}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-            />
-            <span className="ask-home-hint">
-              Via 🤗{" "}
-              <a
-                href="https://huggingface.co/docs/inference-providers/en/index"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Inference Providers
-              </a>
-            </span>
-          </div>
-          <button
-            type="button"
-            className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-            onClick={() => submit()}
-            disabled={!question.trim()}
-            aria-label="Ask the assistant"
-          >
-            <ArrowUpIcon />
-          </button>
+    <div className="ask-home">
+      <textarea
+        ref={ref}
+        rows={1}
+        value={question}
+        placeholder={placeholder}
+        aria-label="Ask the assistant"
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="ask-home-foot">
+        <div className="ask-home-provider-tools">
+          <ModelPicker
+            models={FALLBACK_CHAT_MODELS}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+          />
+          <span className="ask-home-hint">
+            Via 🤗{" "}
+            <a
+              href="https://huggingface.co/docs/inference-providers/en/index"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Inference Providers
+            </a>
+          </span>
         </div>
-      </div>
-      <div className="ask-home-examples" aria-label="Example questions">
-        {SUGGESTED_CHAT_PROMPTS.map((example) => (
-          <button type="button" key={example} onClick={() => submit(example)}>
-            {example}
-          </button>
-        ))}
+        <button
+          type="button"
+          className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+          onClick={() => submit()}
+          disabled={!question.trim()}
+          aria-label="Ask the assistant"
+        >
+          <ArrowUpIcon />
+        </button>
       </div>
     </div>
   );
