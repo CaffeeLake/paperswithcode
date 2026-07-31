@@ -35,6 +35,19 @@ class HfInferenceAccount:
     subject: str
     username: str
     is_pro: bool
+    organizations: tuple[HfInferenceOrganization, ...]
+
+
+@dataclass(frozen=True)
+class HfInferenceOrganization:
+    name: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class HfInferenceCredential:
+    token: str
+    bill_to: str | None = None
 
 
 def _fernet(settings: Settings) -> Fernet:
@@ -46,15 +59,27 @@ def _fernet(settings: Settings) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
-def encrypt_token(token: str, subject: str, settings: Settings) -> str:
+def encrypt_credential(
+    credential: HfInferenceCredential, subject: str, settings: Settings
+) -> str:
     payload = json.dumps(
-        {"token": token, "sub": subject},
+        {
+            "token": credential.token,
+            "sub": subject,
+            "bill_to": credential.bill_to,
+        },
         separators=(",", ":"),
     ).encode()
     return _fernet(settings).encrypt(payload).decode()
 
 
-def decrypt_token(value: str, subject: str, settings: Settings) -> str | None:
+def encrypt_token(token: str, subject: str, settings: Settings) -> str:
+    return encrypt_credential(HfInferenceCredential(token), subject, settings)
+
+
+def decrypt_credential(
+    value: str, subject: str, settings: Settings
+) -> HfInferenceCredential | None:
     try:
         payload = json.loads(_fernet(settings).decrypt(value.encode()))
     except (InvalidToken, ValueError, TypeError, json.JSONDecodeError):
@@ -62,7 +87,33 @@ def decrypt_token(value: str, subject: str, settings: Settings) -> str | None:
     token = payload.get("token")
     if payload.get("sub") != subject or not isinstance(token, str) or not token:
         return None
-    return token
+    bill_to = payload.get("bill_to")
+    if bill_to is not None and (not isinstance(bill_to, str) or not bill_to):
+        return None
+    return HfInferenceCredential(token=token, bill_to=bill_to)
+
+
+def decrypt_token(value: str, subject: str, settings: Settings) -> str | None:
+    credential = decrypt_credential(value, subject, settings)
+    return credential.token if credential else None
+
+
+def _organizations(payload: dict) -> tuple[HfInferenceOrganization, ...]:
+    organizations: dict[str, HfInferenceOrganization] = {}
+    for raw in payload.get("orgs") or []:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        display_name = raw.get("fullname")
+        organizations[name] = HfInferenceOrganization(
+            name=name,
+            display_name=(
+                display_name if isinstance(display_name, str) and display_name else name
+            ),
+        )
+    return tuple(sorted(organizations.values(), key=lambda org: org.name.lower()))
 
 
 async def verify_token(token: str, expected_subject: str) -> HfInferenceAccount:
@@ -89,4 +140,14 @@ async def verify_token(token: str, expected_subject: str) -> HfInferenceAccount:
         subject=subject,
         username=username,
         is_pro=payload.get("isPro") is True,
+        organizations=_organizations(payload),
     )
+
+
+def validate_bill_to(account: HfInferenceAccount, bill_to: str | None) -> None:
+    if bill_to is None:
+        return
+    if bill_to not in {organization.name for organization in account.organizations}:
+        raise HfInferenceCredentialError(
+            "Choose an organization associated with this Hugging Face token."
+        )

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -34,6 +34,7 @@ from backend.services.chat_web_fetch_service import (
     ChatWebFetchError,
     fetch_catalog_url,
 )
+from backend.services.hf_inference_billing_service import HfInferenceCredential
 from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -103,14 +104,25 @@ def _output_tokens_allowed(value: int) -> bool:
     return 1 <= value <= MAX_PROVIDER_OUTPUT_TOKENS
 
 
-def _user_provider_token(row, settings: Settings) -> str:
-    token = ChatCapabilityService.provider_token(row, row.owner_hash, settings)
-    if not token:
+def _user_provider_credential(row, settings: Settings) -> HfInferenceCredential:
+    credential = ChatCapabilityService.provider_credential(
+        row, row.owner_hash, settings
+    )
+    if not credential:
         raise HTTPException(status_code=402, detail="Connect Hugging Face billing")
-    return token
+    return credential
 
 
-def _provider_headers(provider_token: str, request: Request) -> dict[str, str]:
+def _user_provider_token(row, settings: Settings) -> str:
+    return _user_provider_credential(row, settings).token
+
+
+def _provider_headers(
+    provider_token: str,
+    request: Request,
+    *,
+    bill_to: str | None = None,
+) -> dict[str, str]:
     headers = {
         "Authorization": f"Bearer {provider_token}",
         "Content-Type": "application/json",
@@ -119,6 +131,8 @@ def _provider_headers(provider_token: str, request: Request) -> dict[str, str]:
     }
     if request.headers.get("anthropic-beta"):
         headers["Anthropic-Beta"] = request.headers["anthropic-beta"]
+    if bill_to:
+        headers["X-HF-Bill-To"] = bill_to
     return headers
 
 
@@ -265,7 +279,7 @@ async def messages(
     if not _output_tokens_allowed(maximum_tokens):
         raise HTTPException(status_code=422, detail="max_tokens is out of range")
     row = _scope(token, "model", x_pwc_session, x_pwc_turn, db, model=model)
-    provider_token = _user_provider_token(row, settings)
+    provider_credential = _user_provider_credential(row, settings)
     try:
         ChatCapabilityService(db).meter_provider(
             row,
@@ -282,7 +296,11 @@ async def messages(
     _record_gateway_timing(settings, turn_id, received_at=received_at)
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
-    upstream_headers = _provider_headers(provider_token, request)
+    upstream_headers = _provider_headers(
+        provider_credential.token,
+        request,
+        bill_to=provider_credential.bill_to,
+    )
     upstream = await client.send(
         client.build_request(
             "POST",

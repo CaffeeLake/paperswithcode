@@ -27,6 +27,8 @@ interface InferenceBillingStatus {
   requests_per_day: number;
   usage_url: string;
   token_url: string;
+  bill_to: string | null;
+  organizations: Array<{ name: string; display_name: string }>;
 }
 
 const SettingsView: React.FC = () => {
@@ -90,8 +92,39 @@ const SettingsView: React.FC = () => {
     },
     onError: () => setBillingError("Could not disconnect billing."),
   });
+  const selectBillingAccountMutation = useMutation({
+    mutationFn: async (billTo: string | null) => {
+      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bill_to: billTo }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.detail === "string"
+            ? payload.detail
+            : "Could not change the billing account.",
+        );
+      }
+      return payload as InferenceBillingStatus;
+    },
+    onSuccess: (status) => {
+      queryClient.setQueryData(["inference-billing", user?.hf_subject], status);
+      setBillingError("");
+    },
+    onError: (error) => {
+      setBillingError(
+        error instanceof Error ? error.message : "Could not change the billing account.",
+      );
+    },
+  });
   const billingLoading =
-    billingQuery.isLoading || connectMutation.isPending || disconnectMutation.isPending;
+    billingQuery.isLoading ||
+    connectMutation.isPending ||
+    disconnectMutation.isPending ||
+    selectBillingAccountMutation.isPending;
 
   const connectBilling = (event: React.FormEvent) => {
     event.preventDefault();
@@ -142,25 +175,54 @@ const SettingsView: React.FC = () => {
           <div className="settings-billing">
             <div className="settings-plan-row">
               <div>
-                <div className="settings-row-label">Hugging Face {billing.account_type}</div>
+                <div className="settings-row-label">
+                  {billing.bill_to
+                    ? `Hugging Face organization · ${billing.bill_to}`
+                    : `Hugging Face ${billing.account_type}`}
+                </div>
                 <div className="settings-row-desc">
-                  ${billing.monthly_credits_usd?.toFixed(2)} included each month,
-                  then pay as you go through your HF account when enabled.
+                  {billing.bill_to
+                    ? "Chat requests use this organization’s shared credits and billing."
+                    : `$${billing.monthly_credits_usd?.toFixed(2)} included each month, then pay as you go through your personal HF account when enabled.`}
                 </div>
               </div>
               <span className="settings-connected-badge">Connected</span>
             </div>
-            <div
-              className="settings-usage-track"
-              role="img"
-              aria-label={`$${billing.monthly_credits_usd?.toFixed(2)} monthly Hugging Face inference credit`}
+            <label className="settings-token-label" htmlFor="hf-billing-account">
+              Bill chat usage to
+            </label>
+            <select
+              id="hf-billing-account"
+              className="settings-billing-select"
+              value={billing.bill_to ?? ""}
+              onChange={(event) => {
+                setBillingError("");
+                selectBillingAccountMutation.mutate(event.target.value || null);
+              }}
+              disabled={billingLoading}
             >
-              <span />
-            </div>
-            <div className="settings-usage-scale">
-              <span>Monthly included credit</span>
-              <strong>${billing.monthly_credits_usd?.toFixed(2)}</strong>
-            </div>
+              <option value="">Personal account (@{user.username})</option>
+              {billing.organizations.map((organization) => (
+                <option key={organization.name} value={organization.name}>
+                  {organization.display_name} ({organization.name})
+                </option>
+              ))}
+            </select>
+            {billing.monthly_credits_usd !== null && (
+              <>
+                <div
+                  className="settings-usage-track"
+                  role="img"
+                  aria-label={`$${billing.monthly_credits_usd.toFixed(2)} monthly Hugging Face inference credit`}
+                >
+                  <span />
+                </div>
+                <div className="settings-usage-scale">
+                  <span>Monthly included credit</span>
+                  <strong>${billing.monthly_credits_usd.toFixed(2)}</strong>
+                </div>
+              </>
+            )}
             <div className="settings-limit-grid">
               <div>
                 <strong>{billing.requests_per_minute}</strong>
@@ -173,8 +235,10 @@ const SettingsView: React.FC = () => {
             </div>
             <p className="settings-billing-help">
               Hugging Face maintains the authoritative spend and provider breakdown.
-              Credits and paid usage can vary by model and provider.
+              Organization billing requires a Team or Enterprise plan and token permission
+              for the selected organization.
             </p>
+            {billingError && <div className="settings-token-error">{billingError}</div>}
             <div className="settings-billing-actions">
               <a
                 className="button button-primary"
@@ -199,8 +263,8 @@ const SettingsView: React.FC = () => {
             <p className="settings-row-desc">
               Connect a fine-grained token with <strong>Inference Providers</strong>{" "}
               permission. The token must belong to @{user.username}. It is encrypted
-              in an HTTP-only cookie and model requests are billed directly to this
-              HF account.
+              in an HTTP-only cookie. After connecting, choose your personal account
+              or one of the organizations associated with the token.
             </p>
             <label htmlFor="hf-inference-token" className="settings-token-label">
               Hugging Face token

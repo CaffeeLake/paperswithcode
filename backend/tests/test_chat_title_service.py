@@ -62,6 +62,7 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
                 "What is a good OCR model?",
                 settings,
                 provider_token="connected-user-token",
+                bill_to="huggingface",
             )
         ]
 
@@ -71,7 +72,7 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
         "provider": "cerebras",
         "token": "connected-user-token",
         "timeout": 5,
-        "bill_to": None,
+        "bill_to": "huggingface",
     }
     assert completion_args["stream"] is True
     assert completion_args["max_tokens"] == 64

@@ -3912,6 +3912,27 @@ html { scroll-behavior: smooth; }
   background: var(--bg-elevated);
   font: inherit;
 }
+
+.settings-billing-select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 34px 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elevated);
+  color: var(--ink);
+  font: inherit;
+}
+
+.settings-billing-select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-billing-select:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
 .settings-billing-connect input:focus {
   border-color: var(--accent);
   outline: 2px solid var(--accent-soft);

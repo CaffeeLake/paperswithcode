@@ -786,8 +786,8 @@ def test_chat_endpoint_requires_authentication(monkeypatch):
     monkeypatch.setattr(settings, "hf_token", "test-token")
     monkeypatch.setattr(
         chat_router,
-        "inference_token_for_request",
-        lambda *_args: "user-inference-token",
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
     )
     with TestClient(create_app()) as client:
         response = client.post(
@@ -857,8 +857,8 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     monkeypatch.setattr(settings, "hf_token", "test-token")
     monkeypatch.setattr(
         chat_router,
-        "inference_token_for_request",
-        lambda *_args: "user-inference-token",
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
     )
 
     class FakeRunner:
@@ -976,8 +976,8 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
     monkeypatch.setattr(settings, "hf_token", "test-token")
     monkeypatch.setattr(
         chat_router,
-        "inference_token_for_request",
-        lambda *_args: "user-inference-token",
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
     )
     monkeypatch.setattr(chat_router, "_admission", NoCapacity())
     app = create_app()

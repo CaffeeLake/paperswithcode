@@ -6,10 +6,18 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from backend.chat_gateway_app import _provider_headers, _user_provider_token
+from backend.chat_gateway_app import (
+    _provider_headers,
+    _user_provider_credential,
+    _user_provider_token,
+)
 from backend.config import Settings
 from backend.services.chat_gateway_service import ChatGatewayService
-from backend.services.hf_inference_billing_service import encrypt_token
+from backend.services.hf_inference_billing_service import (
+    HfInferenceCredential,
+    encrypt_credential,
+    encrypt_token,
+)
 
 
 def _request(*headers: tuple[bytes, bytes]) -> Request:
@@ -47,6 +55,28 @@ def test_gateway_uses_connected_user_token_without_bill_to_header():
     assert headers["Anthropic-Beta"] == "test-beta"
     assert "nielsr-token" not in headers.values()
     assert "X-HF-Bill-To" not in headers
+
+
+def test_gateway_forwards_validated_organization_billing_target():
+    settings = Settings(_env_file=None, jwt_secret="x" * 32)
+    owner_hash = "a" * 64
+    row = SimpleNamespace(
+        owner_hash=owner_hash,
+        provider_token_encrypted=encrypt_credential(
+            HfInferenceCredential("connected-user-token", "huggingface"),
+            owner_hash,
+            settings,
+        ),
+    )
+
+    credential = _user_provider_credential(row, settings)
+    headers = _provider_headers(
+        credential.token,
+        _request((b"accept", b"text/event-stream")),
+        bill_to=credential.bill_to,
+    )
+
+    assert headers["X-HF-Bill-To"] == "huggingface"
 
 
 def test_gateway_fails_closed_instead_of_using_shared_token():

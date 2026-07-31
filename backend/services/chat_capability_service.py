@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import ChatTurnCapability
-from backend.services.hf_inference_billing_service import decrypt_token, encrypt_token
+from backend.services.hf_inference_billing_service import (
+    HfInferenceCredential,
+    decrypt_credential,
+    encrypt_credential,
+)
 
 
 class CapabilityError(RuntimeError):
@@ -42,6 +46,7 @@ class ChatCapabilityService:
         turn_id: uuid.UUID,
         owner_id: str,
         provider_token: str | None = None,
+        provider_bill_to: str | None = None,
         settings: Settings | None = None,
         model: str,
         scopes: set[str],
@@ -61,7 +66,11 @@ class ChatCapabilityService:
             sdk_session_id=sdk_session_id,
             owner_hash=_digest(owner_id),
             provider_token_encrypted=(
-                encrypt_token(provider_token, _digest(owner_id), settings)
+                encrypt_credential(
+                    HfInferenceCredential(provider_token, provider_bill_to),
+                    _digest(owner_id),
+                    settings,
+                )
                 if provider_token and settings
                 else None
             ),
@@ -80,7 +89,16 @@ class ChatCapabilityService:
     ) -> str | None:
         if not row.provider_token_encrypted:
             return None
-        return decrypt_token(row.provider_token_encrypted, owner_id, settings)
+        credential = ChatCapabilityService.provider_credential(row, owner_id, settings)
+        return credential.token if credential else None
+
+    @staticmethod
+    def provider_credential(
+        row: ChatTurnCapability, owner_id: str, settings: Settings
+    ) -> HfInferenceCredential | None:
+        if not row.provider_token_encrypted:
+            return None
+        return decrypt_credential(row.provider_token_encrypted, owner_id, settings)
 
     def validate(
         self,

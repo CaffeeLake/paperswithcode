@@ -26,14 +26,18 @@ def fallback_title(prompt: str) -> str:
 
 
 async def stream_title(
-    prompt: str, settings: Settings, *, provider_token: str
+    prompt: str,
+    settings: Settings,
+    *,
+    provider_token: str,
+    bill_to: str | None = None,
 ) -> AsyncIterator[str]:
     client = AsyncInferenceClient(
         model=settings.chat_title_model,
         provider=settings.chat_title_provider,
         token=provider_token,
         timeout=settings.chat_title_timeout_seconds,
-        bill_to=None,
+        bill_to=bill_to,
     )
     response = await client.chat_completion(
         messages=[

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from threading import Lock
 from collections.abc import AsyncIterator
+from threading import Lock
 from typing import Protocol
 
 from backend.config import Settings
@@ -165,6 +165,7 @@ def create_chat_turn_runner(
             turn_id=admission.turn_id,
             owner_id=owner.hf_user_id,
             provider_token=owner.hf_inference_token,
+            provider_bill_to=owner.hf_inference_bill_to,
             settings=settings,
             model=admission.model_route,
             scopes={"model", "catalog", "session_store", "web_fetch"},

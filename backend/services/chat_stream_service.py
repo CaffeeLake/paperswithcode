@@ -348,7 +348,10 @@ async def _title_events(
         if not owner.hf_inference_token:
             raise RuntimeError("Hugging Face user billing is not connected")
         async for delta in stream_title(
-            prompt, settings, provider_token=owner.hf_inference_token
+            prompt,
+            settings,
+            provider_token=owner.hf_inference_token,
+            bill_to=owner.hf_inference_bill_to,
         ):
             pieces.append(delta)
             await queue.put({"type": "session_title_delta", "text": delta})
