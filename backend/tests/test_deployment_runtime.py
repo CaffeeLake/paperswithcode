@@ -342,27 +342,12 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     assert validate_runtime(settings) == profile_features(environment)
 
 
-def test_staging_shared_openrouter_requires_bounded_explicit_opt_in(tmp_path: Path):
+def test_staging_rejects_server_funded_openrouter(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_openrouter_server_funded_enabled = True
 
-    assert validate_runtime(settings) == profile_features("staging")
-
-    settings.chat_openrouter_api_key = ""
-    with pytest.raises(RuntimeError, match="requires an OpenRouter key"):
-        validate_runtime(settings)
-
-
-def test_staging_shared_openrouter_rejects_exhausted_reserve_config(tmp_path: Path):
-    release = make_bundle(tmp_path, chat=True)
-    settings = deployed_settings(tmp_path, release, "staging")
-    settings.chat_openrouter_server_funded_enabled = True
-    settings.chat_openrouter_budget_reserve_usd = (
-        settings.chat_openrouter_monthly_budget_usd
-    )
-
-    with pytest.raises(RuntimeError, match="reserve must be below"):
+    with pytest.raises(RuntimeError, match="user-funded providers"):
         validate_runtime(settings)
 
 
@@ -371,7 +356,7 @@ def test_production_rejects_server_funded_openrouter(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "production")
     settings.chat_openrouter_server_funded_enabled = True
 
-    with pytest.raises(RuntimeError, match="staging-only"):
+    with pytest.raises(RuntimeError, match="user-funded providers"):
         validate_runtime(settings)
 
 
@@ -1574,6 +1559,23 @@ def test_staging_openrouter_credential_gets_a_chat_only_name():
 
     with pytest.raises(ValueError, match="PWC_OPENROUTER_API_KEY"):
         configure_host_env.staging_openrouter_values({})
+
+
+def test_staging_openrouter_disable_removes_key_and_pins_flag_off():
+    assert configure_host_env.without_staging_openrouter(
+        {
+            "PWC_CHAT_OPENROUTER_API_KEY": "PWC_CHAT_OPENROUTER_API_KEY=secret",
+            "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": (
+                "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED=true"
+            ),
+            "PWC_CHAT_LANGFUSE_ENABLED": "PWC_CHAT_LANGFUSE_ENABLED=true",
+        }
+    ) == {
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": (
+            "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED=false"
+        ),
+        "PWC_CHAT_LANGFUSE_ENABLED": "PWC_CHAT_LANGFUSE_ENABLED=true",
+    }
 
 
 def test_staging_chat_latency_rollout_settings_are_preserved():

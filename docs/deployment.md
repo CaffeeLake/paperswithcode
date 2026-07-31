@@ -214,10 +214,21 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-It also fails closed when an explicitly enabled shared OpenRouter preview cannot
-prove its provider-reported monthly usage remains above the configured reserve.
-Shared OpenRouter is disabled by default and prohibited in production; ordinary
-chat models continue to require the signed-in user's Hugging Face billing.
+Deployed chat prohibits server-funded OpenRouter in both environments; ordinary
+chat models require the signed-in user's Hugging Face billing. If a legacy
+staging preview credential is still present, remove it atomically before the
+next deployment:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env backend/keys.env \
+  --staging-openrouter-disable-only
+```
+
+The command removes the shared chat credential without printing it and pins the
+preview flag off. The auditor continues to fail closed if an older release has
+the preview enabled and cannot prove its provider-reported usage remains above
+the configured reserve.
 
 ## Release cleanup
 

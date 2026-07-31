@@ -184,6 +184,16 @@ def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
     return {"PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key])}
 
 
+def without_staging_openrouter(lines: dict[str, str]) -> dict[str, str]:
+    """Remove shared-provider credentials and explicitly keep the preview off."""
+    updated = dict(lines)
+    updated.pop("PWC_CHAT_OPENROUTER_API_KEY", None)
+    return assign(
+        updated,
+        {"PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "false"},
+    )
+
+
 def cron_passthrough_credentials(
     legacy: dict[str, str], current_cron: dict[str, str]
 ) -> dict[str, str]:
@@ -242,10 +252,25 @@ def main() -> int:
     parser.add_argument("--staging-codex-too", action="store_true")
     parser.add_argument("--staging-langfuse-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
+    parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_openrouter_disable_only:
+        if (
+            args.production_codex_only
+            or args.staging_codex_too
+            or args.staging_langfuse_only
+            or args.staging_openrouter_only
+        ):
+            parser.error(
+                "--staging-openrouter-disable-only cannot be combined with other modes"
+            )
+        staging = without_staging_openrouter(read_lines(CONFIG_ROOT / "staging.env"))
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("disabled server-funded staging OpenRouter chat")
+        return 0
     if args.staging_openrouter_only:
         if (
             args.production_codex_only

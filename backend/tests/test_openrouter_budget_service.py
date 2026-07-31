@@ -37,8 +37,9 @@ def _client(payload: dict, *, status_code: int = 200) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def test_deployed_model_registry_hides_shared_provider_without_opt_in():
-    settings = _settings(chat_openrouter_server_funded_enabled=False)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_deployed_model_registry_always_hides_shared_provider(enabled):
+    settings = _settings(chat_openrouter_server_funded_enabled=enabled)
 
     assert "openai/gpt-5.6-luna" not in {
         choice["id"] for choice in settings.chat_model_choices

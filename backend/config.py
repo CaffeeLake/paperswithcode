@@ -349,7 +349,7 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_choices(self) -> tuple[dict[str, str], ...]:
-        if not self.is_deployed or self.chat_openrouter_server_funded_enabled:
+        if not self.is_deployed:
             return self.chat_model_registry
         return tuple(
             choice

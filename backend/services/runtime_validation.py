@@ -184,9 +184,13 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 f"{settings.environment} Codex jobs must target {expected_api_url}"
             )
 
+    if settings.chat_openrouter_server_funded_enabled:
+        raise RuntimeError(
+            "server-funded OpenRouter chat is prohibited; deployed chat must use "
+            "user-funded providers"
+        )
+
     if settings.environment == "production":
-        if settings.chat_openrouter_server_funded_enabled:
-            raise RuntimeError("server-funded OpenRouter chat is staging-only")
         if not settings.session_signing_private_key:
             raise RuntimeError("production requires PWC_SESSION_SIGNING_PRIVATE_KEY")
         try:
@@ -255,25 +259,6 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError(f"staging chat runtime is invalid: {error}") from error
         if not settings.hf_token:
             raise RuntimeError("staging chat model gateway requires an HF token")
-        if settings.chat_openrouter_server_funded_enabled:
-            if not settings.chat_openrouter_api_key:
-                raise RuntimeError(
-                    "server-funded OpenRouter chat requires an OpenRouter key"
-                )
-            if (
-                settings.chat_openrouter_budget_reserve_usd
-                >= settings.chat_openrouter_monthly_budget_usd
-            ):
-                raise RuntimeError(
-                    "OpenRouter budget reserve must be below the monthly budget"
-                )
-            if (
-                settings.chat_openrouter_requests_per_day
-                < settings.chat_openrouter_requests_per_minute
-            ):
-                raise RuntimeError(
-                    "OpenRouter daily request limit must cover the minute limit"
-                )
         if (
             settings.chat_sandbox_cpu_limit is not None
             and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu
