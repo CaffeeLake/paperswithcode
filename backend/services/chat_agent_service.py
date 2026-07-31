@@ -173,7 +173,10 @@ class SDKEventAdapter:
         raw = message.event
         event_type = raw.get("type")
         events: list[dict[str, Any]] = []
-        if event_type == "content_block_start":
+        if event_type == "message_start":
+            self.saw_text_delta = False
+            self.saw_thinking_delta = False
+        elif event_type == "content_block_start":
             index = int(raw.get("index", 0))
             block = raw.get("content_block") or {}
             kind = block.get("type", "")
@@ -268,8 +271,6 @@ class SDKEventAdapter:
                     if block.text and (self.answer_started or block.text.strip()):
                         self.answer_started = True
                         events.append({"type": "answer_delta", "text": block.text})
-            self.saw_text_delta = False
-            self.saw_thinking_delta = False
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
             for block in message.content:
                 if not isinstance(block, ToolResultBlock):

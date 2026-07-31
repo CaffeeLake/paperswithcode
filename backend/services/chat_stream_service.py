@@ -87,7 +87,15 @@ class ChatTurnProjection:
         elif kind == "reasoning_delta" and self.reasoning is not None:
             self.reasoning["text"] += event["text"]
         elif kind == "reasoning_end" and self.reasoning is not None:
+            current = self.reasoning
             self.reasoning = None
+            if (
+                len(self.blocks) >= 2
+                and self.blocks[-1] is current
+                and self.blocks[-2].get("kind") == "reasoning"
+                and self.blocks[-2].get("text") == current.get("text")
+            ):
+                self.blocks.pop()
         elif kind == "tool_call":
             self._start_tool(event)
         elif kind == "tool_result":

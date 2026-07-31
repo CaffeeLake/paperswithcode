@@ -5134,7 +5134,6 @@ html { scroll-behavior: smooth; }
   font-size: 14.5px;
   line-height: 1.6;
   color: var(--ink-soft);
-  white-space: pre-wrap;
 }
 .chat-reason-done {
   border: 1px solid var(--hairline);
@@ -5162,7 +5161,15 @@ html { scroll-behavior: smooth; }
   font-size: 14px;
   line-height: 1.65;
   color: var(--ink-soft);
-  white-space: pre-wrap;
+}
+.chat-reason-markdown {
+  padding-top: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  white-space: normal;
 }
 
 /* tool call accordion */

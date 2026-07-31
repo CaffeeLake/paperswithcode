@@ -61,38 +61,6 @@ const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
   selection.addRange(range);
 };
 
-const RestrictedReasoning: React.FC<{
-  text: string;
-  papers: Record<string, ChatPaperHit>;
-  citations: Record<string, ChatCitation>;
-}> = ({ text, papers, citations }) => {
-  const parts: React.ReactNode[] = [];
-  const pattern = /\[([^\]\n]+)\]\(paper:([^) \t\n]+)\)/g;
-  let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    parts.push(text.slice(cursor, index));
-    const [, label, routeId] = match;
-    parts.push(
-      citations[routeId] || papers[routeId]
-        ? (
-            <PaperCitation
-              key={`${index}-${routeId}`}
-              routeId={routeId}
-              paper={papers[routeId]}
-              citation={citations[routeId]}
-            >
-              {label}
-            </PaperCitation>
-          )
-        : <span key={`${index}-${routeId}`}>{label}</span>,
-    );
-    cursor = index + match[0].length;
-  }
-  parts.push(text.slice(cursor));
-  return <>{parts}</>;
-};
-
 const ReasoningBlockView: React.FC<{
   block: ReasoningBlock;
   papers: Record<string, ChatPaperHit>;
@@ -105,8 +73,13 @@ const ReasoningBlockView: React.FC<{
         <div className="chat-reason-live-head">
           <Spinner /> <span>Thinking…</span>
         </div>
-        <div className="chat-reason-live-body">
-          {block.text}
+        <div className="chat-reason-live-body chat-answer chat-reason-markdown">
+          <ChatMarkdown
+            text={block.text}
+            streaming
+            papers={papers}
+            citations={citations}
+          />
           <Caret />
         </div>
       </div>
@@ -125,8 +98,12 @@ const ReasoningBlockView: React.FC<{
         <Chevron open={block.open} />
       </button>
       {block.open && (
-        <div className="chat-reason-done-body">
-          <RestrictedReasoning text={block.text} papers={papers} citations={citations} />
+        <div className="chat-reason-done-body chat-answer chat-reason-markdown">
+          <ChatMarkdown
+            text={block.text}
+            papers={papers}
+            citations={citations}
+          />
         </div>
       )}
     </div>

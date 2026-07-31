@@ -61,7 +61,10 @@ class SDKEventAdapter:
         kind = raw.get("type")
         events: list[dict[str, Any]] = []
         index = int(raw.get("index", 0))
-        if kind == "content_block_start":
+        if kind == "message_start":
+            self.saw_text_delta = False
+            self.saw_thinking_delta = False
+        elif kind == "content_block_start":
             block = raw.get("content_block") or {}
             block_kind = block.get("type", "")
             self.block_kinds[index] = block_kind
@@ -155,8 +158,6 @@ class SDKEventAdapter:
                     if block.text and (self.answer_started or block.text.strip()):
                         self.answer_started = True
                         events.append({"type": "answer_delta", "text": block.text})
-            self.saw_text_delta = False
-            self.saw_thinking_delta = False
         elif isinstance(message, ResultMessage):
             events.extend(self._close_reasoning())
             self.terminal = True

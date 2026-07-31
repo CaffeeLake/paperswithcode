@@ -152,6 +152,23 @@ describe("AssistantMessage", () => {
     <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
   );
 
+  it("renders completed reasoning as Markdown", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      blocks: [{
+        kind: "reasoning",
+        text: "**Researching object detection**\n\n- Check benchmarks\n- Read papers",
+        active: false,
+        open: true,
+      }],
+    });
+
+    expect(screen.getByText("Researching object detection").tagName).toBe("STRONG");
+    expect(screen.getByRole("list")).toBeVisible();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
   it("links billing failures to the per-user settings page", () => {
     renderAssistant({
       id: "assistant-1",

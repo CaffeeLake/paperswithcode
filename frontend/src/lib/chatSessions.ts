@@ -146,16 +146,28 @@ export async function getChatModels(): Promise<{ items: ChatModelChoice[]; defau
   return request("/api/v1/chat/models");
 }
 
-export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
-  const restoreBlocks = (blocks: ChatBlock[]): ChatBlock[] => blocks.map((block) => block.kind === "reasoning"
+function restoreBlocks(blocks: ChatBlock[], expandFailedTools: boolean): ChatBlock[] {
+  const restored = blocks.map((block): ChatBlock => block.kind === "reasoning"
     ? { ...block, active: false, open: false }
     : block.kind === "tool"
       ? {
           ...block,
           status: block.status === "running" ? "error" as const : block.status,
-          open: block.status === "error" || block.status === "denied" || block.status === "running",
+          open: expandFailedTools
+            && (block.status === "error" || block.status === "denied" || block.status === "running"),
         }
       : { ...block, done: true as const });
+  return restored.filter((block, index) => {
+    const previous = restored[index - 1];
+    return !(
+      block.kind === "reasoning"
+      && previous?.kind === "reasoning"
+      && block.text === previous.text
+    );
+  });
+}
+
+export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
   const failureMessage = (code: string | null): string => {
     if (code === "hf_inference_billing_exhausted") {
       return "Hugging Face could not bill this request. Your included credits may be exhausted; enable or review pay-as-you-go billing in Settings.";
@@ -171,7 +183,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
       return [{
         id: message.id,
         role: "assistant",
-        blocks: restoreBlocks(message.display_blocks),
+        blocks: restoreBlocks(message.display_blocks, true),
         followups: message.followups,
         citations: message.citations,
         finishReason: message.finish_reason ?? undefined,
@@ -191,7 +203,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
     return [userMessage, {
       id: `${message.id}-${interrupted ? "interrupted" : "error"}`,
       role: "assistant",
-      blocks: restoreBlocks(message.display_blocks),
+      blocks: restoreBlocks(message.display_blocks, true),
       streaming: false,
       finishReason: interrupted ? "stopped" : undefined,
       error: interrupted ? undefined : failureMessage(message.error_code),
@@ -201,17 +213,12 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
 }
 
 export function publicShareToUiMessages(detail: ChatShareDetail): ChatMessage[] {
-  const restoreBlocks = (blocks: ChatBlock[]): ChatBlock[] => blocks.map((block) => block.kind === "reasoning"
-    ? { ...block, active: false, open: false }
-    : block.kind === "tool"
-      ? { ...block, status: block.status === "running" ? "error" as const : block.status, open: false }
-      : { ...block, done: true as const });
   return detail.messages.map((message): ChatMessage => message.role === "user"
     ? { id: message.id, role: "user", text: message.content }
     : {
         id: message.id,
         role: "assistant",
-        blocks: restoreBlocks(message.display_blocks),
+        blocks: restoreBlocks(message.display_blocks, false),
         citations: message.citations,
         finishReason: message.finish_reason ?? undefined,
         error: message.error ?? undefined,

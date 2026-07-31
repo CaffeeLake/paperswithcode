@@ -146,6 +146,32 @@ describe("useChat billing failures", () => {
   });
 });
 
+describe("useChat reasoning projection", () => {
+  it("collapses consecutive identical completed reasoning blocks", async () => {
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: "session-1" },
+      { type: "reasoning_start" },
+      { type: "reasoning_delta", text: "**Same plan**" },
+      { type: "reasoning_end" },
+      { type: "reasoning_start" },
+      { type: "reasoning_delta", text: "**Same plan**" },
+      { type: "reasoning_end" },
+      { type: "done", followups: [], finish_reason: "success" },
+    )());
+    const { result } = renderChat();
+
+    act(() => result.current.send("What changed?"));
+
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([{
+      kind: "reasoning",
+      text: "**Same plan**",
+      active: false,
+      open: false,
+    }]);
+  });
+});
+
 describe("useChat editAndResend", () => {
   it("edits the first prompt through the new-session path, including unchanged text", async () => {
     let request: ChatStreamRequest | undefined;

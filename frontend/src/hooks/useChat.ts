@@ -209,7 +209,19 @@ export function useChat(options: UseChatOptions) {
         patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block);
         break;
       case "reasoning_end":
-        patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, active: false, open: false } : block);
+        patchLast((message) => {
+          const blocks = message.blocks ?? [];
+          const current = blocks.at(-1);
+          if (current?.kind !== "reasoning") return message;
+          const previous = blocks.at(-2);
+          if (previous?.kind === "reasoning" && previous.text === current.text) {
+            return { ...message, blocks: blocks.slice(0, -1) };
+          }
+          return {
+            ...message,
+            blocks: [...blocks.slice(0, -1), { ...current, active: false, open: false }],
+          };
+        });
         break;
       case "tool_call":
         addBlock({ kind: "tool", id: event.id, name: event.name, args: event.args, status: "running", open: false });

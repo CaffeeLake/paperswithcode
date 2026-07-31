@@ -197,6 +197,18 @@ def test_chat_projection_preserves_sse_block_order():
     ]
 
 
+def test_chat_projection_collapses_consecutive_duplicate_reasoning():
+    projection = ChatTurnProjection()
+    for _ in range(2):
+        projection.apply("reasoning_start", {})
+        projection.apply("reasoning_delta", {"text": "**Same plan**"})
+        projection.apply("reasoning_end", {})
+
+    assert projection.completed_blocks() == [
+        {"kind": "reasoning", "text": "**Same plan**"}
+    ]
+
+
 def test_model_registry_exposes_stable_ids_not_provider_routes():
     settings = get_settings()
     assert [choice["id"] for choice in settings.chat_model_choices] == [
@@ -417,6 +429,53 @@ def test_sdk_adapter_complete_messages_do_not_need_partial_events():
         "reasoning_end",
         "tool_call",
         "answer_delta",
+    ]
+
+
+def test_sdk_adapter_does_not_reset_partial_flags_on_intermediate_snapshots():
+    adapter = SDKEventAdapter(show_reasoning=True)
+    messages = [
+        StreamEvent(
+            uuid="1",
+            session_id="s",
+            event={"type": "message_start", "message": {}},
+        ),
+        StreamEvent(
+            uuid="2",
+            session_id="s",
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking"},
+            },
+        ),
+        StreamEvent(
+            uuid="3",
+            session_id="s",
+            event={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "Same plan"},
+            },
+        ),
+        AssistantMessage(model="test", content=[]),
+        AssistantMessage(
+            model="test",
+            content=[ThinkingBlock(thinking="Same plan", signature="sig")],
+        ),
+        StreamEvent(
+            uuid="4",
+            session_id="s",
+            event={"type": "content_block_stop", "index": 0},
+        ),
+    ]
+
+    events = [event for message in messages for event in adapter.feed(message)]
+
+    assert events == [
+        {"type": "reasoning_start"},
+        {"type": "reasoning_delta", "text": "Same plan"},
+        {"type": "reasoning_end"},
     ]
 
 
