@@ -39,9 +39,13 @@ CRON_ONLY_KEYS = {
     "PWC_SEMANTIC_SCHOLAR_API_KEY_2",
 }
 STAGING_RUNTIME_PASSTHROUGH_KEYS = {
+    "LANGFUSE_BASE_URL",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "PWC_CHAT_DEFAULT_BACKEND",
+    "PWC_CHAT_LANGFUSE_ENABLED",
     "PWC_CHAT_BLANK_POOL_ENABLED",
     "PWC_CHAT_BLANK_POOL_MAX",
     "PWC_CHAT_BLANK_POOL_MIN",
@@ -65,6 +69,12 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_WORKER_CONTRACT_VERSION",
     "PWC_CHAT_WORKER_READY_TIMEOUT_SECONDS",
     "PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED",
+}
+
+STAGING_LANGFUSE_KEYS = {
+    "LANGFUSE_BASE_URL",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
 }
 
 
@@ -157,6 +167,16 @@ def staging_runtime_passthrough(lines: dict[str, str]) -> dict[str, str]:
     }
 
 
+def staging_langfuse_values(legacy: dict[str, str]) -> dict[str, str]:
+    missing = sorted(STAGING_LANGFUSE_KEYS - legacy.keys())
+    if missing:
+        raise ValueError("legacy environment is missing: " + ", ".join(missing))
+    return {
+        **{key: decoded_value(legacy[key]) for key in STAGING_LANGFUSE_KEYS},
+        "PWC_CHAT_LANGFUSE_ENABLED": "true",
+    }
+
+
 def cron_passthrough_credentials(
     legacy: dict[str, str], current_cron: dict[str, str]
 ) -> dict[str, str]:
@@ -210,13 +230,27 @@ def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--legacy-env", type=Path, required=True)
-    parser.add_argument("--codex-jobs-namespace", required=True)
+    parser.add_argument("--codex-jobs-namespace")
     parser.add_argument("--production-codex-only", action="store_true")
     parser.add_argument("--staging-codex-too", action="store_true")
+    parser.add_argument("--staging-langfuse-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_langfuse_only:
+        if args.production_codex_only or args.staging_codex_too:
+            parser.error("--staging-langfuse-only cannot be combined with Codex modes")
+        try:
+            values = staging_langfuse_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed staging Langfuse credentials")
+        return 0
+    if not args.codex_jobs_namespace:
+        parser.error("--codex-jobs-namespace is required")
     required = {
         "PWC_DB_HOST",
         "PWC_DB_NAME",

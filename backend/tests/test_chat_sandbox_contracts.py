@@ -40,6 +40,7 @@ from backend.chat_sandbox_worker.contract import (
     IMAGE_PUBLISH_NAME,
     MODAL_APP_NAME,
     MODAL_IMAGE_ID,
+    WORKER_CONTRACT_VERSION,
 )
 from backend.chat_sandbox_worker.prompt import render, sha256
 from backend.chat_sandbox_worker.protocol import (
@@ -1417,6 +1418,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-MhTgnyYWYT3dSp9S4FDOj8"
+    assert WORKER_CONTRACT_VERSION == "29"
 
 
 def test_task_catalog_is_bounded_and_ranked():

@@ -301,6 +301,7 @@ class Settings(BaseSettings):
     chat_gateway_url: str = Field(default="", max_length=1000)
     chat_require_auth: bool = Field(default=True)
     chat_show_reasoning: bool = Field(default=True)
+    chat_langfuse_enabled: bool = Field(default=False)
     chat_requests_per_minute: int = Field(default=5, ge=1, le=1000)
     chat_requests_per_day: int = Field(default=50, ge=1, le=10000)
     catalog_mutations_enabled: bool = Field(default=True)

@@ -388,6 +388,7 @@ def test_sdk_adapter_streams_reasoning_tool_result_and_answer():
         "tool_call",
         "tool_result",
         "answer_delta",
+        "usage",
         "done",
     ]
     assert events[3]["args"] == {"query": "VLMs", "top_k": 3}

@@ -289,6 +289,14 @@ class SDKEventAdapter:
         elif isinstance(message, ResultMessage):
             events.extend(self._close_reasoning())
             self.terminal = True
+            events.append(
+                {
+                    "type": "usage",
+                    "usage": message.usage or {},
+                    "model_usage": message.model_usage or {},
+                    "total_cost_usd": message.total_cost_usd,
+                }
+            )
             if message.is_error and "max_turn" not in message.subtype:
                 events.append({"type": "error", "message": "The chat request failed."})
             else:

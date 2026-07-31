@@ -1,0 +1,337 @@
+"""Langfuse tracing for the trusted side of sandboxed chat turns."""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from functools import lru_cache
+from typing import Any
+
+from langfuse import Langfuse, propagate_attributes
+from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanPatch
+
+from backend.config import Settings
+
+logger = logging.getLogger(__name__)
+
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
+_PHONE = re.compile(r"\b(?:\+?\d{1,3}[-. ]?)?\d{3}[-. ]\d{3}[-. ]\d{4}\b")
+_SECRET = re.compile(
+    r"(?i)\b(?:sk|pk)-[a-z0-9_-]{12,}|\bhf_[a-z0-9]{12,}|"
+    r"\bbearer\s+[a-z0-9._~+/=-]{12,}"
+)
+
+
+def _redact(value: str) -> str:
+    value = _EMAIL.sub("[REDACTED EMAIL]", value)
+    value = _PHONE.sub("[REDACTED PHONE]", value)
+    return _SECRET.sub("[REDACTED SECRET]", value)
+
+
+def _mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
+    """Redact common PII and credentials immediately before export."""
+
+    patches = {}
+    for identifier, span in params.spans.items():
+        replacements = {
+            key: masked
+            for key, value in span.attributes.items()
+            if isinstance(value, str) and (masked := _redact(value)) != value
+        }
+        if replacements:
+            patches[identifier] = OtelSpanPatch(set_attributes=replacements)
+    return MaskOtelSpansResult(span_patches=patches) if patches else None
+
+
+@lru_cache(maxsize=4)
+def _client(
+    environment: str,
+    release: str,
+    public_key: str,
+    secret_key: str,
+    base_url: str,
+) -> Langfuse:
+    return Langfuse(
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=base_url,
+        environment=environment,
+        release=release,
+        mask_otel_spans=_mask_otel_spans,
+    )
+
+
+def _configured_client(settings: Settings) -> Langfuse | None:
+    if not settings.chat_langfuse_enabled or settings.environment != "staging":
+        return None
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY", "")
+    base_url = os.environ.get("LANGFUSE_BASE_URL", "")
+    if not public_key or not secret_key or not base_url:
+        logger.warning(
+            "chat Langfuse tracing disabled because credentials are incomplete"
+        )
+        return None
+    return _client(
+        settings.environment,
+        settings.release_id,
+        public_key,
+        secret_key,
+        base_url,
+    )
+
+
+def _usage_details(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    aliases = {
+        "input": ("input_tokens", "inputTokens"),
+        "output": ("output_tokens", "outputTokens"),
+        "cache_read_input": (
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+        ),
+        "cache_creation_input": (
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+        ),
+    }
+    details: dict[str, int] = {}
+    for target, sources in aliases.items():
+        count = next(
+            (
+                candidate
+                for source in sources
+                if isinstance((candidate := value.get(source)), int) and candidate >= 0
+            ),
+            None,
+        )
+        if count is not None:
+            details[target] = count
+    return details
+
+
+class ChatTurnTrace:
+    """Best-effort observation lifecycle for one research-chat turn."""
+
+    def __init__(
+        self,
+        root: Any,
+        *,
+        prompt: str,
+        model: str,
+    ) -> None:
+        self.root = root
+        self.prompt = prompt
+        self.generation = root.start_observation(
+            name="generate-research-response",
+            as_type="generation",
+            input=[{"role": "user", "content": prompt}],
+            model=model,
+            metadata={"aggregation": "agent-run"},
+        )
+        self.title_generation: Any | None = None
+        self.tools: dict[str, Any] = {}
+        self.usage: dict[str, int] = {}
+        self.cost: dict[str, float] = {}
+        self.answer = ""
+        self.status = "interrupted"
+        self.closed = False
+
+    @property
+    def trace_id(self) -> str:
+        return self.root.trace_id
+
+    def start_title(self, model: str) -> None:
+        if self.title_generation is None:
+            self.title_generation = self.root.start_observation(
+                name="generate-session-title",
+                as_type="generation",
+                input=[{"role": "user", "content": self.prompt}],
+                model=model,
+            )
+
+    def finish_title(self, title: str, *, fallback: bool) -> None:
+        if self.title_generation is None:
+            return
+        self.title_generation.update(
+            output=title,
+            level="WARNING" if fallback else "DEFAULT",
+            status_message="deterministic fallback used" if fallback else None,
+        ).end()
+        self.title_generation = None
+
+    def record_usage(self, event: dict[str, Any]) -> None:
+        self.usage = _usage_details(event.get("usage"))
+        cost = event.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and cost >= 0:
+            self.cost = {"total": float(cost)}
+
+    def start_tool(self, event: dict[str, Any]) -> None:
+        tool_id = str(event.get("id") or "")
+        if not tool_id or tool_id in self.tools:
+            return
+        names = {
+            "search_papers": "search-papers",
+            "Bash": "run-bash-command",
+            "Read": "read-file",
+            "Grep": "search-files",
+            "WebFetch": "fetch-web-page",
+        }
+        tool_name = str(event.get("name") or "tool")
+        observation_type = "retriever" if tool_name == "search_papers" else "tool"
+        self.tools[tool_id] = self.root.start_observation(
+            name=names.get(tool_name, "use-tool"),
+            as_type=observation_type,
+            input=event.get("args") or {},
+            metadata={"tool_name": tool_name},
+        )
+
+    def finish_tool(self, event: dict[str, Any]) -> None:
+        tool = self.tools.pop(str(event.get("id") or ""), None)
+        if tool is None:
+            return
+        status = str(event.get("status") or "success")
+        output = event.get("results")
+        if output is None:
+            output = event.get("content") or []
+        tool.update(
+            output=output,
+            metadata={"duration_ms": event.get("took_ms", 0)},
+            level="ERROR" if status == "error" else "DEFAULT",
+            status_message=status,
+        ).end()
+
+    def finish(self, answer: str, status: str) -> None:
+        self.answer = answer
+        self.status = status
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        level = "ERROR" if self.status in {"error", "interrupted"} else "DEFAULT"
+        for tool in self.tools.values():
+            tool.update(
+                level="WARNING", status_message="turn ended before tool result"
+            ).end()
+        self.tools.clear()
+        if self.title_generation is not None:
+            self.title_generation.update(
+                level="WARNING", status_message="title generation did not finish"
+            ).end()
+            self.title_generation = None
+        output = [{"role": "assistant", "content": self.answer}]
+        self.generation.update(
+            output=output,
+            usage_details=self.usage or None,
+            cost_details=self.cost or None,
+            level=level,
+            status_message=self.status,
+        ).end()
+        self.root.update(output=output, level=level, status_message=self.status).end()
+
+
+class NullChatTurnTrace:
+    trace_id = ""
+
+    def start_title(self, _model: str) -> None:
+        return
+
+    def finish_title(self, _title: str, *, fallback: bool) -> None:
+        del fallback
+
+    def record_usage(self, _event: dict[str, Any]) -> None:
+        return
+
+    def start_tool(self, _event: dict[str, Any]) -> None:
+        return
+
+    def finish_tool(self, _event: dict[str, Any]) -> None:
+        return
+
+    def finish(self, _answer: str, _status: str) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+@contextmanager
+def trace_chat_turn(
+    *,
+    settings: Settings,
+    request_id: str,
+    session_id: str,
+    user_id: str,
+    prompt: str,
+    model: str,
+    execution_backend: str,
+    is_replacement: bool,
+) -> Iterator[ChatTurnTrace | NullChatTurnTrace]:
+    """Create one trace per turn and one Langfuse session per conversation."""
+
+    try:
+        client = _configured_client(settings)
+    except Exception:
+        logger.exception("chat Langfuse client initialization failed")
+        client = None
+    if client is None:
+        yield NullChatTurnTrace()
+        return
+    pseudonymous_user = hashlib.sha256(user_id.encode()).hexdigest()
+    trace_id = client.create_trace_id(seed=request_id)
+    trace: ChatTurnTrace | None = None
+    try:
+        with propagate_attributes(
+            user_id=pseudonymous_user,
+            session_id=session_id,
+            metadata={
+                "request_id": request_id,
+                "execution_backend": execution_backend,
+                "is_replacement": str(is_replacement).lower(),
+            },
+            version=settings.release_id,
+            tags=["chat", "research-assistant", execution_backend],
+            trace_name="answer-research-question",
+            environment=settings.environment,
+        ):
+            root = client.start_observation(
+                trace_context={"trace_id": trace_id},
+                name="answer-research-question",
+                as_type="agent",
+                input=[{"role": "user", "content": prompt}],
+                metadata={"request_id": request_id},
+            )
+            trace = ChatTurnTrace(root, prompt=prompt, model=model)
+            try:
+                yield trace
+            except BaseException as exc:
+                trace.finish(
+                    trace.answer,
+                    "interrupted" if not isinstance(exc, Exception) else "error",
+                )
+                raise
+            finally:
+                try:
+                    trace.close()
+                except Exception:
+                    logger.exception(
+                        "chat Langfuse trace finalization failed request_id=%s",
+                        request_id,
+                    )
+                logger.info(
+                    "chat Langfuse trace complete request_id=%s trace_id=%s",
+                    request_id,
+                    trace.trace_id,
+                )
+    except BaseException:
+        if trace is None:
+            logger.exception("chat Langfuse trace initialization failed")
+            yield NullChatTurnTrace()
+            return
+        raise

@@ -624,7 +624,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "28"
+    assert descriptor["worker_contract_version"] == "29"
     assert _chat_descriptor_from_source(source, "production") is None
 
 
@@ -1484,6 +1484,26 @@ def test_staging_chat_runtime_credentials_are_preserved():
         "MODAL_TOKEN_SECRET": "MODAL_TOKEN_SECRET=secret",
         "PWC_CHAT_MODAL_IMAGE_VERSION": "PWC_CHAT_MODAL_IMAGE_VERSION=im-123",
     }
+
+
+def test_staging_langfuse_credentials_are_bounded_and_preserved():
+    legacy = {
+        "LANGFUSE_BASE_URL": "LANGFUSE_BASE_URL=https://cloud.langfuse.com",
+        "LANGFUSE_PUBLIC_KEY": "LANGFUSE_PUBLIC_KEY=pk-test",
+        "LANGFUSE_SECRET_KEY": "LANGFUSE_SECRET_KEY=sk-test",
+    }
+
+    assert configure_host_env.staging_langfuse_values(legacy) == {
+        "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
+        "LANGFUSE_PUBLIC_KEY": "pk-test",
+        "LANGFUSE_SECRET_KEY": "sk-test",
+        "PWC_CHAT_LANGFUSE_ENABLED": "true",
+    }
+    lines = {
+        **legacy,
+        "PWC_CHAT_LANGFUSE_ENABLED": "PWC_CHAT_LANGFUSE_ENABLED=true",
+    }
+    assert configure_host_env.staging_runtime_passthrough(lines) == lines
 
 
 def test_staging_chat_latency_rollout_settings_are_preserved():

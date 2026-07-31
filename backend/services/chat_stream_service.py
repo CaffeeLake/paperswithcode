@@ -37,6 +37,11 @@ from backend.services.chat_title_service import (
     normalize_title,
     stream_title,
 )
+from backend.services.chat_tracing_service import (
+    ChatTurnTrace,
+    NullChatTurnTrace,
+    trace_chat_turn,
+)
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
 from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
@@ -333,6 +338,7 @@ async def _title_events(
     token: uuid.UUID,
     prompt: str,
     queue: asyncio.Queue,
+    trace: ChatTurnTrace | NullChatTurnTrace,
 ) -> None:
     started = time.perf_counter()
     await queue.put({"type": "session_title_start"})
@@ -367,6 +373,7 @@ async def _title_events(
         )
     if final:
         await queue.put({"type": "session_title_done", "title": final})
+    trace.finish_title(final or title, fallback=fallback)
     logger.info(
         "chat provider call complete call_class=title_generation session=%s "
         "duration_ms=%.1f outcome=%s",
@@ -420,8 +427,28 @@ class ChatStreamOrchestrator:
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
         self.edit_activated = False
         self.first_application_delta_recorded = False
+        self.trace: ChatTurnTrace | NullChatTurnTrace = NullChatTurnTrace()
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
+        if self.admission.replay_assistant:
+            async for frame in self._events():
+                yield frame
+            return
+        with trace_chat_turn(
+            settings=self.settings,
+            request_id=self.request_id,
+            session_id=str(self.admission.session_id),
+            user_id=self.owner.hf_user_id,
+            prompt=self.prompt,
+            model=self.admission.model_route,
+            execution_backend=self.admission.execution_backend,
+            is_replacement=self.admission.is_replacement,
+        ) as trace:
+            self.trace = trace
+            async for frame in self._events():
+                yield frame
+
+    async def _events(self) -> AsyncIterator[ChatStreamFrame]:
         try:
             yield ChatStreamFrame(
                 "stream_start",
@@ -446,6 +473,7 @@ class ChatStreamOrchestrator:
 
             replacement_ready, resume_id = await self._replacement_or_error()
             if not replacement_ready:
+                self.trace.finish("", "error")
                 yield ChatStreamFrame(
                     "error",
                     {
@@ -466,8 +494,9 @@ class ChatStreamOrchestrator:
                 store=self.store,
             )
             self.research_task = asyncio.create_task(self._produce_research(queue))
-            self.title_task = (
-                asyncio.create_task(
+            if self.title_token:
+                self.trace.start_title(self.settings.chat_title_model)
+                self.title_task = asyncio.create_task(
                     _title_events(
                         self.owner,
                         self.settings,
@@ -475,11 +504,9 @@ class ChatStreamOrchestrator:
                         self.title_token,
                         self.prompt,
                         queue,
+                        self.trace,
                     )
                 )
-                if self.title_token
-                else None
-            )
             async for frame in self._consume(queue):
                 yield frame
             await self._reconcile_mirror()
@@ -526,6 +553,7 @@ class ChatStreamOrchestrator:
                 False,
             )
             self.terminal = "error"
+            self.trace.finish("".join(self.projection.answer_parts), "error")
             yield ChatStreamFrame(
                 "error",
                 {
@@ -613,7 +641,9 @@ class ChatStreamOrchestrator:
                 self._bind_sdk_session(event)
                 continue
             if kind == "_mirror_error":
-                yield self._fail_mirror(event)
+                frame = self._fail_mirror(event)
+                self.trace.finish("".join(self.projection.answer_parts), self.terminal)
+                yield frame
                 if self.research_task:
                     self.research_task.cancel()
                 continue
@@ -627,6 +657,7 @@ class ChatStreamOrchestrator:
                     self.projection.completed_blocks(),
                 )
                 self.terminal = "stopped"
+                self.trace.finish("".join(self.projection.answer_parts), "stopped")
                 yield ChatStreamFrame(
                     "done", {"followups": [], "finish_reason": "stopped"}
                 )
@@ -637,6 +668,9 @@ class ChatStreamOrchestrator:
                     int(event["elapsed_ms"]),
                     acquisition_outcome=event.get("acquisition_outcome"),
                 )
+                continue
+            if kind == "usage":
+                self.trace.record_usage(event)
                 continue
 
             elapsed_ms = round((time.perf_counter() - self.started) * 1000)
@@ -652,6 +686,10 @@ class ChatStreamOrchestrator:
                 self._record_latency_phase("first_application_sse_delta", elapsed_ms)
 
             self.projection.apply(kind, event)
+            if kind == "tool_call":
+                self.trace.start_tool(event)
+            elif kind == "tool_result":
+                self.trace.finish_tool(event)
             if kind == "error":
                 _persist_failure(
                     self.owner,
@@ -662,10 +700,12 @@ class ChatStreamOrchestrator:
                     self.projection.completed_blocks(),
                 )
                 self.terminal = "error"
+                self.trace.finish("".join(self.projection.answer_parts), "error")
             elif kind == "done":
                 self._complete_turn(event)
                 event["citations"] = self.projection.citations
                 self.terminal = event.get("finish_reason", "success")
+                self.trace.finish("".join(self.projection.answer_parts), self.terminal)
             yield ChatStreamFrame(kind, event)
             last_write = time.monotonic()
         if self.research_task:
