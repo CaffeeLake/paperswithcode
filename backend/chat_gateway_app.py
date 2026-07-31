@@ -136,6 +136,26 @@ def _provider_headers(
     return headers
 
 
+def _provider_target(row, settings: Settings) -> tuple[str, str, str | None]:
+    provider = settings.chat_route_providers.get(row.model)
+    if provider == "openrouter":
+        if not settings.chat_openrouter_api_key:
+            raise HTTPException(status_code=503, detail="OpenRouter is not configured")
+        return (
+            "https://openrouter.ai/api/v1/messages",
+            settings.chat_openrouter_api_key,
+            None,
+        )
+    if provider == "huggingface":
+        credential = _user_provider_credential(row, settings)
+        return (
+            "https://router.huggingface.co/v1/messages",
+            credential.token,
+            credential.bill_to,
+        )
+    raise HTTPException(status_code=422, detail="Unsupported model provider")
+
+
 def _scope(
     token: str,
     scope: str,
@@ -279,7 +299,7 @@ async def messages(
     if not _output_tokens_allowed(maximum_tokens):
         raise HTTPException(status_code=422, detail="max_tokens is out of range")
     row = _scope(token, "model", x_pwc_session, x_pwc_turn, db, model=model)
-    provider_credential = _user_provider_credential(row, settings)
+    provider_url, provider_token, provider_bill_to = _provider_target(row, settings)
     try:
         ChatCapabilityService(db).meter_provider(
             row,
@@ -297,14 +317,14 @@ async def messages(
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
     upstream_headers = _provider_headers(
-        provider_credential.token,
+        provider_token,
         request,
-        bill_to=provider_credential.bill_to,
+        bill_to=provider_bill_to,
     )
     upstream = await client.send(
         client.build_request(
             "POST",
-            "https://router.huggingface.co/v1/messages",
+            provider_url,
             content=raw,
             headers=upstream_headers,
         ),

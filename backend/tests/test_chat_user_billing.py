@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from backend.chat_gateway_app import (
     _provider_headers,
+    _provider_target,
     _user_provider_credential,
     _user_provider_token,
 )
@@ -88,6 +89,44 @@ def test_gateway_fails_closed_instead_of_using_shared_token():
 
     assert error.value.status_code == 402
     assert error.value.detail == "Connect Hugging Face billing"
+
+
+def test_gateway_routes_luna_to_server_funded_openrouter():
+    settings = Settings(
+        _env_file=None,
+        chat_openrouter_api_key="openrouter-token",
+    )
+    row = SimpleNamespace(
+        model=settings.chat_luna_route,
+        owner_hash="a" * 64,
+        provider_token_encrypted=None,
+    )
+
+    assert _provider_target(row, settings) == (
+        "https://openrouter.ai/api/v1/messages",
+        "openrouter-token",
+        None,
+    )
+
+
+def test_gateway_keeps_hugging_face_models_on_user_billing():
+    settings = Settings(_env_file=None, jwt_secret="x" * 32)
+    owner_hash = "a" * 64
+    row = SimpleNamespace(
+        model=settings.chat_glm_route,
+        owner_hash=owner_hash,
+        provider_token_encrypted=encrypt_credential(
+            HfInferenceCredential("connected-user-token", "huggingface"),
+            owner_hash,
+            settings,
+        ),
+    )
+
+    assert _provider_target(row, settings) == (
+        "https://router.huggingface.co/v1/messages",
+        "connected-user-token",
+        "huggingface",
+    )
 
 
 def test_chat_search_never_calls_shared_query_embedding_endpoint(monkeypatch):

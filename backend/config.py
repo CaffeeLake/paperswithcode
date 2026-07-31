@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
+    chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
+    chat_openrouter_api_key: str = Field(
+        default="",
+        description="OpenRouter API key reserved for server-funded research chat",
+    )
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
@@ -315,16 +320,25 @@ class Settings(BaseSettings):
                 "id": "google/gemma-4-31B-it",
                 "label": "Gemma 4 31B",
                 "route": self.chat_gemma_route,
+                "provider": "huggingface",
             },
             {
                 "id": "zai-org/GLM-5.2",
                 "label": "GLM 5.2",
                 "route": self.chat_glm_route,
+                "provider": "huggingface",
             },
             {
                 "id": "moonshotai/Kimi-K3",
                 "label": "Kimi K3",
                 "route": self.chat_kimi_route,
+                "provider": "huggingface",
+            },
+            {
+                "id": "openai/gpt-5.6-luna",
+                "label": "GPT-5.6 Luna",
+                "route": self.chat_luna_route,
+                "provider": "openrouter",
             },
         )
 
@@ -336,6 +350,22 @@ class Settings(BaseSettings):
         routes["openai/gpt-oss-120b"] = self.chat_gemma_route
         routes["deepseek-ai/DeepSeek-V4-Flash"] = self.chat_gemma_route
         return routes
+
+    @property
+    def chat_model_providers(self) -> dict[str, str]:
+        providers = {
+            choice["id"]: choice["provider"] for choice in self.chat_model_choices
+        }
+        providers["openai/gpt-oss-120b"] = "huggingface"
+        providers["deepseek-ai/DeepSeek-V4-Flash"] = "huggingface"
+        return providers
+
+    @property
+    def chat_route_providers(self) -> dict[str, str]:
+        return {
+            self.chat_model_routes[model]: provider
+            for model, provider in self.chat_model_providers.items()
+        }
 
     # GitHub API configuration
     github_token: str = Field(

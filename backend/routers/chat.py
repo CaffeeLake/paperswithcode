@@ -146,7 +146,11 @@ def list_models(
     del user
     return {
         "items": [
-            {"id": choice["id"], "label": choice["label"]}
+            {
+                "id": choice["id"],
+                "label": choice["label"],
+                "provider": choice["provider"],
+            }
             for choice in settings.chat_model_choices
         ],
         "default_model": settings.chat_model_choices[0]["id"],
@@ -330,14 +334,6 @@ async def stream_chat(
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
     inference_credential = inference_credential_for_request(request, user, settings)
-    if not inference_credential:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "code": "hf_inference_billing_required",
-                "message": "Connect Hugging Face billing in Settings to use chat.",
-            },
-        )
     if not deployment_lifecycle.status().accepting_chat_turns:
         raise HTTPException(
             status_code=503,
@@ -352,8 +348,10 @@ async def stream_chat(
         )
     owner = owner_from_user(
         user,
-        inference_token=inference_credential.token,
-        inference_bill_to=inference_credential.bill_to,
+        inference_token=inference_credential.token if inference_credential else None,
+        inference_bill_to=(
+            inference_credential.bill_to if inference_credential else None
+        ),
     )
     retry_after = await _rate_limiter.check(
         owner.hf_user_id,
@@ -382,6 +380,19 @@ async def stream_chat(
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,
                 )
+                provider = settings.chat_model_providers[admission.selected_model]
+                if provider == "huggingface" and not inference_credential:
+                    raise ChatServiceError(
+                        "hf_inference_billing_required",
+                        402,
+                        "Connect Hugging Face billing in Settings to use this model.",
+                    )
+                if provider == "openrouter" and not settings.chat_openrouter_api_key:
+                    raise ChatServiceError(
+                        "provider_unavailable",
+                        503,
+                        "OpenRouter is not configured.",
+                    )
                 title_token = (
                     service.begin_title(
                         owner,

@@ -203,6 +203,7 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
         "google/gemma-4-31B-it",
         "zai-org/GLM-5.2",
         "moonshotai/Kimi-K3",
+        "openai/gpt-5.6-luna",
     ]
     assert settings.chat_model_routes["google/gemma-4-31B-it"].endswith(":cerebras")
     assert (
@@ -215,6 +216,9 @@ def test_model_registry_exposes_stable_ids_not_provider_routes():
     )
     assert settings.chat_model_routes["zai-org/GLM-5.2"].endswith(":together")
     assert settings.chat_model_routes["moonshotai/Kimi-K3"].endswith(":fastest")
+    assert settings.chat_model_routes["openai/gpt-5.6-luna"] == ("openai/gpt-5.6-luna")
+    assert settings.chat_model_providers["openai/gpt-5.6-luna"] == "openrouter"
+    assert settings.chat_route_providers[settings.chat_luna_route] == "openrouter"
 
 
 def test_title_and_display_projection_bounds():
@@ -615,6 +619,7 @@ def test_agent_options_expose_only_search(tmp_path):
     assert options.fallback_model is None
     assert options.env["ANTHROPIC_API_KEY"] == "connected-user-token"
     assert options.env["ANTHROPIC_AUTH_TOKEN"] == "connected-user-token"
+    assert options.env["ANTHROPIC_BASE_URL"] == "https://router.huggingface.co"
     assert "shared-nielsr-token" not in options.env.values()
     assert "HF_BILL_TO" not in options.env
     assert "ANTHROPIC_CUSTOM_HEADERS" not in options.env
@@ -622,6 +627,17 @@ def test_agent_options_expose_only_search(tmp_path):
     assert (
         "[repo_id](https://huggingface.co/datasets/<repo_id>)" in options.system_prompt
     )
+
+    openrouter, _ = build_agent_options(
+        settings,
+        tmp_path,
+        provider_token="openrouter-token",
+        provider_base_url="https://openrouter.ai/api",
+        model_route=settings.chat_luna_route,
+    )
+    assert openrouter.model == "openai/gpt-5.6-luna"
+    assert openrouter.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+    assert openrouter.env["ANTHROPIC_AUTH_TOKEN"] == "openrouter-token"
 
 
 def test_failed_turn_keeps_partial_tool_projection():

@@ -381,6 +381,9 @@ def main() -> int:
                 "api/internal/chat-gateway"
             ),
             "PWC_CHAT_HF_BILL_TO": "huggingface",
+            "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(
+                legacy["PWC_OPENROUTER_API_KEY"]
+            ),
             "PWC_CHAT_RECOVERY_SPOOL_DIR": (
                 "/var/lib/paperswithcode/staging/chat-recovery-spool"
             ),

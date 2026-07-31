@@ -314,6 +314,7 @@ def build_agent_options(
     config_dir: Path,
     *,
     provider_token: str,
+    provider_base_url: str = "https://router.huggingface.co",
     model_route: str | None = None,
     session_store: object | None = None,
     resume: str | None = None,
@@ -321,7 +322,7 @@ def build_agent_options(
     limiter = SearchCallLimiter(settings.chat_max_search_calls)
     model = model_route or settings.chat_glm_route
     env = {
-        "ANTHROPIC_BASE_URL": "https://router.huggingface.co",
+        "ANTHROPIC_BASE_URL": provider_base_url,
         "ANTHROPIC_AUTH_TOKEN": provider_token,
         "ANTHROPIC_API_KEY": provider_token,
         "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
@@ -377,6 +378,7 @@ async def stream_agent_events(
     settings: Settings,
     *,
     provider_token: str,
+    provider_base_url: str = "https://router.huggingface.co",
     model_route: str,
     session_store: object,
     resume: str | None,
@@ -396,6 +398,7 @@ async def stream_agent_events(
             settings,
             Path(temp_dir),
             provider_token=provider_token,
+            provider_base_url=provider_base_url,
             model_route=model_route,
             session_store=session_store,
             resume=resume,

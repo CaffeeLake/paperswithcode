@@ -54,13 +54,18 @@ export interface ChatShareDetail {
   messages: PublicChatMessage[];
 }
 
-export interface ChatModelChoice { id: string; label: string }
+export interface ChatModelChoice {
+  id: string;
+  label: string;
+  provider: "huggingface" | "openrouter";
+}
 
 export const DEFAULT_CHAT_MODEL = "google/gemma-4-31B-it";
 export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
-  { id: DEFAULT_CHAT_MODEL, label: "Gemma 4 31B" },
-  { id: "zai-org/GLM-5.2", label: "GLM 5.2" },
-  { id: "moonshotai/Kimi-K3", label: "Kimi K3" },
+  { id: DEFAULT_CHAT_MODEL, label: "Gemma 4 31B", provider: "huggingface" },
+  { id: "zai-org/GLM-5.2", label: "GLM 5.2", provider: "huggingface" },
+  { id: "moonshotai/Kimi-K3", label: "Kimi K3", provider: "huggingface" },
+  { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", provider: "openrouter" },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

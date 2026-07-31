@@ -50,12 +50,20 @@ class LocalChatTurnRunner:
 
     async def events(self) -> AsyncIterator[dict]:
         yield {"type": "workspace_ready"}
-        if not self.owner.hf_inference_token:
-            raise RuntimeError("Hugging Face user billing is not connected")
+        provider = self.settings.chat_route_providers[self.admission.model_route]
+        if provider == "openrouter":
+            provider_token = self.settings.chat_openrouter_api_key
+            provider_base_url = "https://openrouter.ai/api"
+        else:
+            provider_token = self.owner.hf_inference_token or ""
+            provider_base_url = "https://router.huggingface.co"
+        if not provider_token:
+            raise RuntimeError(f"{provider} chat credentials are not configured")
         async for event in stream_agent_events(
             self.prompt,
             self.settings,
-            provider_token=self.owner.hf_inference_token,
+            provider_token=provider_token,
+            provider_base_url=provider_base_url,
             model_route=self.admission.model_route,
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,
@@ -160,12 +168,17 @@ def create_chat_turn_runner(
             f"Unsupported chat execution backend: {admission.execution_backend}"
         )
     with db_manager.session_local() as db:
+        provider = settings.chat_route_providers[admission.model_route]
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,
             owner_id=owner.hf_user_id,
-            provider_token=owner.hf_inference_token,
-            provider_bill_to=owner.hf_inference_bill_to,
+            provider_token=(
+                owner.hf_inference_token if provider == "huggingface" else None
+            ),
+            provider_bill_to=(
+                owner.hf_inference_bill_to if provider == "huggingface" else None
+            ),
             settings=settings,
             model=admission.model_route,
             scopes={"model", "catalog", "session_store", "web_fetch"},

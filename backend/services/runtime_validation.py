@@ -253,6 +253,8 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError(f"staging chat runtime is invalid: {error}") from error
         if not settings.hf_token:
             raise RuntimeError("staging chat model gateway requires an HF token")
+        if not settings.chat_openrouter_api_key:
+            raise RuntimeError("staging chat model gateway requires an OpenRouter key")
         if (
             settings.chat_sandbox_cpu_limit is not None
             and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu

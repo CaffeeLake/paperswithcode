@@ -305,6 +305,9 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         ),
         github_token="test-only",
         hf_token="test-only-hf-token" if environment == "staging" else "",
+        chat_openrouter_api_key=(
+            "test-only-openrouter-token" if environment == "staging" else ""
+        ),
         catalog_mutations_enabled=environment == "production",
         thumbnail_mutations_enabled=False,
         cron_enabled=environment == "production",
