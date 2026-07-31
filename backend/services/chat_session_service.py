@@ -155,7 +155,10 @@ class ChatSessionService:
             self.db.scalar(
                 select(func.count())
                 .select_from(ChatSession)
-                .where(ChatSession.hf_user_id == owner.hf_user_id)
+                .where(
+                    ChatSession.hf_user_id == owner.hf_user_id,
+                    ChatSession.archived_at.is_(None),
+                )
             )
             or 0
         )
@@ -163,7 +166,8 @@ class ChatSessionService:
             raise ChatServiceError(
                 "chat_session_quota_exceeded",
                 409,
-                "Delete a chat before creating another",
+                f"You can have at most {self.settings.chat_session_limit} chats. "
+                "Archive chats older than 30 days or delete a chat to create another.",
             )
         session_id = uuid.uuid4()
         allocation_bucket = (
@@ -194,7 +198,10 @@ class ChatSessionService:
     def list_sessions(
         self, owner: ChatOwner, cursor: str | None, limit: int
     ) -> tuple[list[ChatSession], str | None]:
-        query = select(ChatSession).where(ChatSession.hf_user_id == owner.hf_user_id)
+        query = select(ChatSession).where(
+            ChatSession.hf_user_id == owner.hf_user_id,
+            ChatSession.archived_at.is_(None),
+        )
         if cursor:
             try:
                 raw = base64.urlsafe_b64decode(
@@ -227,6 +234,35 @@ class ChatSessionService:
             token = f"{rows[-1].updated_at.isoformat()}|{rows[-1].id}".encode()
             next_cursor = base64.urlsafe_b64encode(token).decode().rstrip("=")
         return rows, next_cursor
+
+    def archive_old_sessions(self, owner: ChatOwner, *, days: int = 30) -> int:
+        """Hide inactive old chats from history and the active-session quota."""
+        self.db.execute(
+            select(
+                func.pg_advisory_xact_lock(func.hashtextextended(owner.hf_user_id, 0))
+            )
+        )
+        now = _now()
+        rows = list(
+            self.db.execute(
+                select(ChatSession)
+                .where(
+                    ChatSession.hf_user_id == owner.hf_user_id,
+                    ChatSession.archived_at.is_(None),
+                    ChatSession.updated_at < now - timedelta(days=days),
+                    or_(
+                        ChatSession.active_turn_id.is_(None),
+                        ChatSession.active_turn_expires_at.is_(None),
+                        ChatSession.active_turn_expires_at <= now,
+                    ),
+                )
+                .with_for_update()
+            ).scalars()
+        )
+        for session in rows:
+            session.archived_at = now
+        self.db.flush()
+        return len(rows)
 
     def get_session(
         self, owner: ChatOwner, session_id: uuid.UUID

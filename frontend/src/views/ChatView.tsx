@@ -23,6 +23,7 @@ import {
   FALLBACK_CHAT_MODELS,
   type ChatModelChoice,
   type ChatSession,
+  archiveOldChats,
   createOrRefreshShare,
   getChatModels,
   getSession,
@@ -111,6 +112,7 @@ const ChatView: React.FC = () => {
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 900);
   const [sharePending, setSharePending] = useState(false);
+  const [archivePending, setArchivePending] = useState(false);
   const [manualShareUrl, setManualShareUrl] = useState("");
   const manualTitleLockRef = useRef<Set<string>>(new Set());
   const sessionsLoadedRef = useRef(false);
@@ -352,6 +354,37 @@ const ChatView: React.FC = () => {
     }
     catch (error) { setSessionError(error instanceof Error ? error.message : "Delete failed"); }
   };
+  const archiveOld = async () => {
+    if (archivePending) return;
+    setArchivePending(true);
+    try {
+      const result = await archiveOldChats();
+      await refreshSessions();
+      if (result.archived_count === 0) {
+        toast({
+          title: "No chats were archived",
+          description: "There are no inactive chats older than 30 days.",
+        });
+        return;
+      }
+      const failedPrompt = [...chat.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+      chat.reset();
+      setDraft(failedPrompt);
+      setLiveTitle("");
+      toast({
+        title: `${result.archived_count} ${result.archived_count === 1 ? "chat" : "chats"} archived`,
+        description: "Your question is ready to send again.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Could not archive old chats",
+        description: error instanceof Error ? error.message : "Try again.",
+      });
+    } finally {
+      setArchivePending(false);
+    }
+  };
   const changeModel = async (model: string) => {
     const previousModel = selectedModel;
     setSelectedModel(model);
@@ -559,7 +592,14 @@ const ChatView: React.FC = () => {
                     return accepted;
                   }}
                 />
-              : <AssistantMessage key={message.id} msg={message} papers={chat.papers} onToggleBlock={toggleBlock} />)}
+              : <AssistantMessage
+                  key={message.id}
+                  msg={message}
+                  papers={chat.papers}
+                  onToggleBlock={toggleBlock}
+                  onArchiveOldChats={() => void archiveOld()}
+                  archivePending={archivePending}
+                />)}
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">
             <BillingNotice provider={selectedProvider} />

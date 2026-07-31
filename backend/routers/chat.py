@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
 from backend.models.chat import (
+    ArchiveOldChatsResponse,
     ChatBrowserLatencyRequest,
     ChatMessageResponse,
     ChatRequest,
@@ -192,6 +193,23 @@ def list_sessions(
             items=[_summary(row) for row in rows], next_cursor=next_cursor
         )
     except ChatServiceError as exc:
+        _raise(exc)
+
+
+@router.post("/sessions/archive-old", response_model=ArchiveOldChatsResponse)
+def archive_old_sessions(
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        archived_count = ChatSessionService(db, settings).archive_old_sessions(
+            owner_from_user(user), days=30
+        )
+        db.commit()
+        return ArchiveOldChatsResponse(archived_count=archived_count)
+    except ChatServiceError as exc:
+        db.rollback()
         _raise(exc)
 
 

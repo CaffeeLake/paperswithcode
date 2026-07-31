@@ -5436,14 +5436,27 @@ html { scroll-behavior: smooth; }
   line-height: 1.4;
 }
 .chat-billing-notice a,
-.chat-error a {
+.chat-error a,
+.chat-error button {
   flex: none;
   color: var(--accent-text);
   font-weight: 600;
   text-decoration: none;
 }
+.chat-error button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.chat-error button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .chat-billing-notice a:hover,
-.chat-error a:hover { text-decoration: underline; }
+.chat-error a:hover,
+.chat-error button:hover:not(:disabled) { text-decoration: underline; }
 .chat-composer {
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);

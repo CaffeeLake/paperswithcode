@@ -337,7 +337,9 @@ export const AssistantMessage: React.FC<{
   msg: ChatMessageType;
   papers: Record<string, ChatPaperHit>;
   onToggleBlock: (messageId: string, blockIndex: number) => void;
-}> = ({ msg, papers, onToggleBlock }) => (
+  onArchiveOldChats?: () => void;
+  archivePending?: boolean;
+}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, archivePending = false }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
       {msg.blocks?.map((b, i) => {
@@ -381,9 +383,16 @@ export const AssistantMessage: React.FC<{
         </div>
       )}
       {msg.error && <div className="chat-error">
-        <span>The assistant hit an error: {msg.error}</span>
+        <span>{msg.errorCode === "chat_session_quota_exceeded"
+          ? msg.error
+          : `The assistant hit an error: ${msg.error}`}</span>
         {msg.errorCode === "hf_inference_billing_exhausted" && (
           <a href="/settings">Review billing settings</a>
+        )}
+        {msg.errorCode === "chat_session_quota_exceeded" && onArchiveOldChats && (
+          <button type="button" disabled={archivePending} onClick={onArchiveOldChats}>
+            {archivePending ? "Archiving…" : "Archive chats older than 30 days"}
+          </button>
         )}
       </div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (

@@ -130,6 +130,10 @@ export function removeSession(id: string): Promise<void> {
   return request(`/api/v1/chat/sessions/${id}`, { method: "DELETE" });
 }
 
+export function archiveOldChats(): Promise<{ archived_count: number }> {
+  return request("/api/v1/chat/sessions/archive-old", { method: "POST" });
+}
+
 export function cancelSession(id: string): Promise<void> {
   return request(`/api/v1/chat/sessions/${id}/cancel`, { method: "POST" });
 }

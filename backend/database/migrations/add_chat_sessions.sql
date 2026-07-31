@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     selected_model VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archived_at TIMESTAMPTZ,
     last_sequence INTEGER NOT NULL DEFAULT 0,
     message_count INTEGER NOT NULL DEFAULT 0,
     active_turn_id UUID,
@@ -25,6 +26,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     projection_bytes BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner_updated ON chat_sessions (hf_user_id, updated_at DESC, id DESC);
+ALTER TABLE chat_sessions
+    ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner_active_updated
+    ON chat_sessions (hf_user_id, updated_at DESC, id DESC)
+    WHERE archived_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY,

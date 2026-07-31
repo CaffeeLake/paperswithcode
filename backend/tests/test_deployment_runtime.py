@@ -1291,6 +1291,17 @@ def test_chat_edit_preparation_migration_is_staging_only_and_typed():
     assert "chat_messages_prepared_fork_pair_check" in migration
 
 
+def test_chat_archiving_migration_is_additive_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_session_archiving.sql"
+    ).read_text()
+
+    assert "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ" in migration
+    assert "WHERE archived_at IS NULL" in migration
+    assert "DROP " not in migration
+
+
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):
     first = tmp_path / "first"
     second = tmp_path / "second"

@@ -249,6 +249,10 @@ class ChatSessionList(BaseModel):
     next_cursor: str | None = None
 
 
+class ArchiveOldChatsResponse(BaseModel):
+    archived_count: int = Field(ge=0)
+
+
 class CreateSessionRequest(BaseModel):
     selected_model: str | None = None
 

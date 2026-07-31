@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import type { ChatMessage as ChatMessageType } from "@/lib/chat";
@@ -182,6 +182,28 @@ describe("AssistantMessage", () => {
       "href",
       "/settings",
     );
+  });
+
+  it("explains the chat limit and offers bulk archiving", async () => {
+    const onArchive = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AssistantMessage
+        msg={{
+          id: "assistant-1",
+          role: "assistant",
+          error: "You can have at most 100 chats. Archive chats older than 30 days or delete a chat to create another.",
+          errorCode: "chat_session_quota_exceeded",
+        }}
+        papers={{}}
+        onToggleBlock={() => undefined}
+        onArchiveOldChats={onArchive}
+      />,
+    );
+
+    expect(screen.getByText(/at most 100 chats/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Archive chats older than 30 days" }));
+    expect(onArchive).toHaveBeenCalledOnce();
   });
 
   it("shows a thinking status while waiting for the first streamed block", () => {

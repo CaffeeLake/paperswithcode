@@ -1942,6 +1942,9 @@ class ChatSession(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_sequence: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
@@ -1993,6 +1996,13 @@ class ChatSession(Base):
             "hf_user_id",
             text("updated_at DESC"),
             text("id DESC"),
+        ),
+        Index(
+            "idx_chat_sessions_owner_active_updated",
+            "hf_user_id",
+            text("updated_at DESC"),
+            text("id DESC"),
+            postgresql_where=text("archived_at IS NULL"),
         ),
     )
 

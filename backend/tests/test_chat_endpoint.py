@@ -39,6 +39,7 @@ from backend.services.chat_agent_service import (
 )
 from backend.services.chat_session_service import (
     ChatOwner,
+    ChatServiceError,
     ChatSessionService,
     TurnAdmission,
 )
@@ -147,6 +148,90 @@ def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
 
     assert response.status_code == 204
     assert calls == [(session_id, turn_id)]
+
+
+def test_archive_old_sessions_endpoint_commits_owner_scoped_archive(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, _db, _settings):
+            pass
+
+        def archive_old_sessions(self, owner, *, days):
+            calls.append((owner.hf_user_id, days))
+            return 7
+
+    db = SimpleNamespace(commit=lambda: calls.append("commit"), rollback=lambda: None)
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+
+    response = chat_router.archive_old_sessions(
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=db,
+        settings=object(),
+    )
+
+    assert response.archived_count == 7
+    assert calls == [("owner-1", 30), "commit"]
+
+
+def test_archive_old_sessions_marks_selected_rows_without_deleting():
+    rows = [SimpleNamespace(archived_at=None), SimpleNamespace(archived_at=None)]
+
+    class Result:
+        def scalars(self):
+            return rows
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = 0
+            self.flushed = False
+
+        def execute(self, _query):
+            self.calls += 1
+            return None if self.calls == 1 else Result()
+
+        def flush(self):
+            self.flushed = True
+
+    db = FakeDB()
+    archived = ChatSessionService(db, object()).archive_old_sessions(
+        ChatOwner(hf_user_id="owner-1", hf_username="owner")
+    )
+
+    assert archived == 2
+    assert db.flushed
+    assert all(row.archived_at is not None for row in rows)
+
+
+def test_chat_session_quota_error_states_the_exact_limit():
+    class FakeDB:
+        scalar_query = ""
+
+        def execute(self, _query):
+            return None
+
+        def scalar(self, query):
+            self.scalar_query = str(query)
+            return 100
+
+    db = FakeDB()
+    settings = SimpleNamespace(
+        chat_model_choices=[{"id": "model"}],
+        chat_model_routes={"model": "route"},
+        chat_session_limit=100,
+    )
+
+    with pytest.raises(ChatServiceError) as exc_info:
+        ChatSessionService(db, settings).create_session(
+            ChatOwner(hf_user_id="owner-1", hf_username="owner")
+        )
+
+    assert exc_info.value.code == "chat_session_quota_exceeded"
+    assert "chat_sessions.archived_at IS NULL" in db.scalar_query
+    assert str(exc_info.value) == (
+        "You can have at most 100 chats. Archive chats older than 30 days or "
+        "delete a chat to create another."
+    )
 
 
 def test_sse_serialization_preserves_unicode_and_newlines():
