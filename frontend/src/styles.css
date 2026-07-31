@@ -101,6 +101,26 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   gap: 24px;
   min-width: 0;
 }
+.site-announcement {
+  min-height: 28px;
+  padding: 5px 32px 6px;
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-subtle);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+.site-announcement a {
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.site-announcement a:hover {
+  color: var(--ink);
+}
 /* The desktop chat sidebar is anchored to the viewport rather than the
  * centered site container. Give the chat header the same 280px first column
  * so the brand sits directly above the sidebar without affecting other
