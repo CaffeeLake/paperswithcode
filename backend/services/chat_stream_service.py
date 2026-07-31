@@ -62,6 +62,27 @@ class ChatStreamFrame:
         return cls(event=None)
 
 
+async def sequential_reasoning_events(events: AsyncIterator[dict[str, Any]]):
+    """Repair delayed Luna reasoning boundaries before projection and SSE."""
+    reasoning_open = False
+    async for event in events:
+        kind = event.get("type")
+        if kind == "reasoning_start":
+            if reasoning_open:
+                yield {"type": "reasoning_end"}
+            reasoning_open = True
+        elif kind == "reasoning_end":
+            if not reasoning_open:
+                continue
+            reasoning_open = False
+        elif kind in {"done", "error"} and reasoning_open:
+            yield {"type": "reasoning_end"}
+            reasoning_open = False
+        yield event
+    if reasoning_open:
+        yield {"type": "reasoning_end"}
+
+
 @dataclass
 class ChatTurnProjection:
     """Typed mutable projection of provider events into display state."""
@@ -602,7 +623,7 @@ class ChatStreamOrchestrator:
     async def _produce_research(self, queue: asyncio.Queue) -> None:
         try:
             assert self.runner is not None
-            async for event in self.runner.events():
+            async for event in sequential_reasoning_events(self.runner.events()):
                 await queue.put(event)
         except asyncio.CancelledError:
             raise

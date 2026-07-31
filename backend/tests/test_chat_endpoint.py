@@ -46,6 +46,7 @@ from backend.services.chat_session_service import (
 from backend.services.chat_stream_service import (
     ChatStreamOrchestrator,
     ChatTurnProjection,
+    sequential_reasoning_events,
 )
 from backend.services.chat_title_service import fallback_title, normalize_title
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
@@ -291,6 +292,33 @@ def test_chat_projection_collapses_consecutive_duplicate_reasoning():
 
     assert projection.completed_blocks() == [
         {"kind": "reasoning", "text": "**Same plan**"}
+    ]
+
+
+def test_stream_boundary_normalizer_repairs_nested_and_extra_reasoning_events():
+    async def source():
+        for event in [
+            {"type": "reasoning_start"},
+            {"type": "reasoning_delta", "text": "First"},
+            {"type": "reasoning_start"},
+            {"type": "reasoning_delta", "text": "Second"},
+            {"type": "reasoning_end"},
+            {"type": "reasoning_end"},
+            {"type": "done"},
+        ]:
+            yield event
+
+    async def collect():
+        return [event async for event in sequential_reasoning_events(source())]
+
+    assert [event["type"] for event in asyncio.run(collect())] == [
+        "reasoning_start",
+        "reasoning_delta",
+        "reasoning_end",
+        "reasoning_start",
+        "reasoning_delta",
+        "reasoning_end",
+        "done",
     ]
 
 
