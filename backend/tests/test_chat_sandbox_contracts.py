@@ -70,6 +70,7 @@ from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
     WorkerClaim,
     WorkspaceSnapshotProvider,
+    _cancelled_terminal_event,
     create_isolated_sandbox,
     resolve_modal_image,
 )
@@ -1969,6 +1970,23 @@ def test_sandbox_cancel_correlates_to_original_run_request():
     assert asyncio.run(manager.cancel(uuid.uuid4(), turn_id))
     assert running.cancel_requested
     assert decode_frame(writes[0].rstrip(b"\n"))["request_id"] == ("original-request")
+
+
+def test_accepted_cancel_wins_over_concurrent_worker_exit():
+    done = asyncio.Event()
+    running = RunningWorker(
+        object(),
+        "request-id",
+        WorkerClaim("sandbox-id", "worker-token"),
+        cancel_requested=True,
+        done=done,
+    )
+
+    assert _cancelled_terminal_event(running) == {"type": "_cancelled"}
+    assert done.is_set()
+
+    running.cancel_requested = False
+    assert _cancelled_terminal_event(running) is None
 
 
 def test_session_store_rejects_bad_shape_before_touching_database():

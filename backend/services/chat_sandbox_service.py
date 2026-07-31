@@ -70,6 +70,15 @@ class RunningWorker:
     done: asyncio.Event | None = None
 
 
+def _cancelled_terminal_event(running: RunningWorker) -> dict[str, str] | None:
+    """Let an accepted user cancellation win over a concurrent worker exit."""
+    if not running.cancel_requested:
+        return None
+    if running.done is not None:
+        running.done.set()
+    return {"type": "_cancelled"}
+
+
 @dataclass
 class SessionControl:
     process: object
@@ -1979,6 +1988,9 @@ class SandboxSessionManager:
                     uncertain=True,
                 )
         except (TimeoutError, ProtocolError, SandboxError) as error:
+            if cancelled := _cancelled_terminal_event(running_worker):
+                yield cancelled
+                return
             if acquisition_outcome == "pool_hit" and not sdk_dispatched:
                 raise SandboxError(
                     "pool_assignment_failed",
@@ -1997,6 +2009,9 @@ class SandboxSessionManager:
                 ) from error
             raise
         except Exception as error:
+            if cancelled := _cancelled_terminal_event(running_worker):
+                yield cancelled
+                return
             if acquisition_outcome == "pool_hit" and not sdk_dispatched:
                 raise SandboxError(
                     "pool_assignment_failed",
@@ -2019,7 +2034,11 @@ class SandboxSessionManager:
                     await self._terminate_worker(
                         chat_session_id,
                         claim,
-                        failure_code="sandbox_worker_failed",
+                        failure_code=(
+                            "cancelled"
+                            if running_worker.cancel_requested
+                            else "sandbox_worker_failed"
+                        ),
                     )
                 elif acquisition_outcome == "pool_hit":
                     await self.terminate(
