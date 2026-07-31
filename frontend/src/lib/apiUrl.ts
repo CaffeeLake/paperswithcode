@@ -130,6 +130,13 @@ export function isChatEnabled(): boolean {
   return lowered === "1" || lowered === "true" || lowered === "yes";
 }
 
+/** `true` for the staging bundle and its canonical deployed hostname. */
+export function isStagingEnvironment(): boolean {
+  if (import.meta.env.MODE === "staging") return true;
+  return typeof window !== "undefined"
+    && window.location.hostname === "staging.paperswithcode.co";
+}
+
 /**
  * `true` when the bundle should route under the URL fragment.
  * Hugging Face Static Spaces:

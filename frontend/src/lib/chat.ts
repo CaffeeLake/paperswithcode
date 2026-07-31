@@ -171,6 +171,13 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
 }
 
+export class ChatStreamError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(message);
+    this.name = "ChatStreamError";
+  }
+}
+
 export interface ChatBrowserLatencyUpdate {
   submission_to_stream_start_ms?: number;
   submission_to_first_visible_delta_ms?: number;
@@ -236,7 +243,13 @@ async function* streamChatOverSSE(
   if (!res.ok || !res.body) {
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail;
-    throw new Error(detail?.message || detail || `Chat stream failed (${res.status})`);
+    const stagingDenied = res.status === 403 && !detail;
+    throw new ChatStreamError(
+      stagingDenied
+        ? "Chat on staging is limited to approved Hugging Face users. Sign in with an approved account and try again."
+        : detail?.message || detail || `Chat stream failed (${res.status})`,
+      detail?.code || (stagingDenied ? "staging_access_required" : undefined),
+    );
   }
 
   const reader = res.body.getReader();

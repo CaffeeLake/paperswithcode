@@ -11,11 +11,16 @@ export interface QueuedChatLaunch {
  * Preserve a prompt while the chat route lazy-loads or completes OAuth.
  * The chat page clears it only after handing it to the streaming client.
  */
-export function queueChatLaunch(prompt: string, model?: string): void {
+export function queueChatLaunch(
+  prompt: string,
+  model?: string,
+  options: { autoSend?: boolean } = {},
+): void {
   const question = prompt.trim();
   if (!question) return;
   sessionStorage.setItem(CHAT_DRAFT_KEY, question);
-  sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
+  if (options.autoSend === false) sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
+  else sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
   if (model) sessionStorage.setItem(CHAT_MODEL_KEY, model);
   else sessionStorage.removeItem(CHAT_MODEL_KEY);
 }

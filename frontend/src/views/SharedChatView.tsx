@@ -5,6 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import Composer from "@/components/chat/Composer";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import { Spinner } from "@/components/chat/icons";
+import { isStagingEnvironment } from "@/lib/apiUrl";
 import type { ChatMessage, ChatPaperHit } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import {
@@ -54,6 +55,7 @@ const SharedTranscript: React.FC<{ detail: ChatShareDetail }> = ({ detail }) => 
 const SharedChatView: React.FC = () => {
   const { shareId = "" } = useParams<{ shareId: string }>();
   const navigate = useNavigate();
+  const staging = isStagingEnvironment();
   const query = useQuery({
     queryKey: ["shared-chat", shareId],
     queryFn: () => getSharedChat(shareId),
@@ -77,7 +79,9 @@ const SharedChatView: React.FC = () => {
   }, []);
 
   const launchFreshChat = (prompt: string) => {
-    queueChatLaunch(prompt);
+    // Keep the prompt as a draft so the chat page can show access and token
+    // requirements before making a request.
+    queueChatLaunch(prompt, undefined, { autoSend: false });
     navigate("/chat");
   };
   const missing = query.error instanceof ChatRequestError && query.error.status === 404;
@@ -103,12 +107,18 @@ const SharedChatView: React.FC = () => {
     <div className="shared-chat-page">
       <div className="shared-chat-heading">
         <h1>Shared conversation</h1>
+        {staging && <span className="chat-staging-badge">Staging</span>}
       </div>
       <div className="shared-chat-content">
         <SharedTranscript key={query.data.updated_at} detail={query.data} />
         <section className="shared-chat-fresh" aria-labelledby="shared-chat-fresh-title">
           <h2 id="shared-chat-fresh-title">Start a new conversation</h2>
           <p>Your new question starts with an empty context.</p>
+          {staging && <div className="shared-chat-access-note" role="note">
+            <strong>Limited staging preview.</strong> Starting a chat is available only to
+            approved Hugging Face users. Hugging Face models also require your own HF token
+            in <a href="/settings">Settings</a>; included monthly credits are used first.
+          </div>}
           <Composer onSend={launchFreshChat} placeholder="Ask a new research question…" />
         </section>
       </div>

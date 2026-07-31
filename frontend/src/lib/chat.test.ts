@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { reportChatLatency } from "@/lib/chat";
+import { ChatStreamError, reportChatLatency, streamChat } from "@/lib/chat";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -39,5 +39,27 @@ describe("reportChatLatency", () => {
       { terminal_classification: "network_error" },
     )).not.toThrow();
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("streamChat access failures", () => {
+  it("turns an unstructured staging 403 into an actionable error", async () => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Forbidden", {
+      status: 403,
+      headers: { "Content-Type": "text/plain" },
+    })));
+
+    const events = streamChat({
+      message: "Continue from a shared chat",
+      session_id: null,
+      client_message_id: "message-1",
+    });
+
+    await expect(events.next()).rejects.toMatchObject({
+      name: "ChatStreamError",
+      code: "staging_access_required",
+      message: expect.stringContaining("limited to approved Hugging Face users"),
+    } satisfies Partial<ChatStreamError>);
   });
 });

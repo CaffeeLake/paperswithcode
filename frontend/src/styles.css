@@ -4917,6 +4917,27 @@ html { scroll-behavior: smooth; }
   margin: 0 auto 26px;
   text-wrap: pretty;
 }
+.chat-staging-access-note {
+  max-width: 560px;
+  margin: -12px auto 18px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.chat-staging-badge {
+  flex: none;
+  border: 1px solid color-mix(in oklch, var(--accent) 36%, var(--hairline));
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--accent-text);
+  background: color-mix(in oklch, var(--accent) 7%, var(--bg-elevated));
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
 .chat-empty .chat-composer { text-align: left; }
 .chat-examples {
   display: flex;
@@ -5688,6 +5709,9 @@ html { scroll-behavior: smooth; }
 .shared-chat-page { min-height: calc(100dvh - 60px); background: var(--bg); }
 .shared-chat-heading {
   border-bottom: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .shared-chat-heading h1 {
   max-width: calc(50vw + 640px);
@@ -5748,6 +5772,17 @@ html { scroll-behavior: smooth; }
   color: var(--ink-soft);
   font-family: var(--serif);
 }
+.shared-chat-access-note {
+  margin: -6px 0 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--hairline));
+  border-radius: 9px;
+  color: var(--ink-soft);
+  background: color-mix(in oklch, var(--accent) 5%, var(--bg-elevated));
+  font-size: 13px;
+  line-height: 1.45;
+}
+.shared-chat-access-note a { color: var(--accent-text); font-weight: 600; }
 .shared-chat-state {
   min-height: 55vh;
   display: flex;

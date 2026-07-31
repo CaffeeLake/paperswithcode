@@ -184,6 +184,20 @@ describe("AssistantMessage", () => {
     );
   });
 
+  it("links a missing HF token directly to Settings", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "Connect Hugging Face billing in Settings to use this model.",
+      errorCode: "hf_inference_billing_required",
+    });
+
+    expect(screen.getByRole("link", { name: "Add HF token in Settings" })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
+  });
+
   it("explains the chat limit and offers bulk archiving", async () => {
     const onArchive = vi.fn();
     const user = userEvent.setup();

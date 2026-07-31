@@ -6,6 +6,7 @@ import {
   type ChatEvent,
   type ChatMessage,
   type ChatPaperHit,
+  ChatStreamError,
   reportChatLatency,
   streamChat,
 } from "@/lib/chat";
@@ -367,7 +368,11 @@ export function useChat(options: UseChatOptions) {
         if (!controller.signal.aborted) {
           clearWorkspaceStatus(controller);
           recordTerminal(controller, "network_error");
-          applyEvent({ type: "error", message: error instanceof Error ? error.message : "The assistant stream failed." });
+          applyEvent({
+            type: "error",
+            message: error instanceof Error ? error.message : "The assistant stream failed.",
+            code: error instanceof ChatStreamError ? error.code : undefined,
+          });
         }
       } finally {
         if (abortRef.current === controller) {

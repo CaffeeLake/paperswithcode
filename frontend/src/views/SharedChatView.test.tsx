@@ -121,7 +121,7 @@ describe("SharedChatView", () => {
     );
   });
 
-  it("launches a fresh chat with only the new prompt and no model or transcript", async () => {
+  it("opens a fresh chat with the prompt as a draft so setup is shown before sending", async () => {
     const user = userEvent.setup();
     sessionStorage.setItem(CHAT_MODEL_KEY, "stale-model");
     renderView();
@@ -135,9 +135,19 @@ describe("SharedChatView", () => {
 
     expect(await screen.findByText("Fresh private chat")).toBeInTheDocument();
     expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe("A completely new question");
-    expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
+    expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBeNull();
     expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBeNull();
     expect(JSON.stringify({ ...sessionStorage })).not.toContain("What is new?");
+  });
+
+  it("explains staging access and HF token requirements before continuing", async () => {
+    vi.stubEnv("MODE", "staging");
+    renderView();
+
+    await screen.findByText("What is new?");
+    expect(screen.getByText("Staging")).toBeVisible();
+    expect(screen.getByText(/available only to approved Hugging Face users/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
   });
 
   it("renders the same non-enumerating not-found state for a missing capability", async () => {

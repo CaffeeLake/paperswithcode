@@ -261,6 +261,7 @@ const SettingsView: React.FC = () => {
         ) : (
           <form className="settings-billing-connect" onSubmit={(event) => void connectBilling(event)}>
             <p className="settings-row-desc">
+              Even included monthly credits require a Hugging Face access token.
               Connect a fine-grained token with <strong>Inference Providers</strong>{" "}
               permission. The token must belong to @{user.username}. It is encrypted
               in an HTTP-only cookie. After connecting, choose your personal account
@@ -285,7 +286,7 @@ const SettingsView: React.FC = () => {
                 className="button button-primary"
                 disabled={billingLoading || !billingToken.trim()}
               >
-                {billingLoading ? "Connecting…" : "Connect billing"}
+                {billingLoading ? "Connecting…" : "Connect token"}
               </button>
               <a
                 className="button"

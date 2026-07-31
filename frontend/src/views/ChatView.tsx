@@ -16,7 +16,7 @@ import {
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
-import { apiUrl } from "@/lib/apiUrl";
+import { apiUrl, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
   DEFAULT_CHAT_MODEL,
@@ -49,13 +49,13 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   return (
     <div className="chat-billing-notice" role="note">
       <span>
-        Hugging Face applies your included monthly credits first. After they run
-        out, further chats use pay-as-you-go billing when enabled.
+        Hugging Face models require your own HF token. Add it in Settings;
+        included monthly credits are used first, then extra usage requires
+        purchased credits.
       </span>
       <div className="chat-billing-notice-actions">
-        <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">
-          Review usage
-        </a>
+        <a href="/settings">Add HF token</a>
+        <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">Review usage</a>
         <button
           type="button"
           className="chat-billing-notice-dismiss"
@@ -100,6 +100,7 @@ const ChatView: React.FC = () => {
   );
   const selectedProvider = models.find((model) => model.id === selectedModel)?.provider
     ?? "huggingface";
+  const staging = isStagingEnvironment();
   const [liveTitle, setLiveTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [pendingAutoPrompt, setPendingAutoPrompt] = useState(
@@ -536,6 +537,7 @@ const ChatView: React.FC = () => {
           <span className="chat-topbar-title">{isRouteSessionLoading
             ? current?.title || ""
             : liveTitle || current?.title || (isEmpty ? "" : "New chat")}</span>
+          {staging && <span className="chat-staging-badge">Staging</span>}
           {routeSessionId && routeStateMatches && routeSessionState?.status === "loaded" && !isEmpty && (
             <button
               type="button"
@@ -563,6 +565,9 @@ const ChatView: React.FC = () => {
           <div className="chat-empty-eyebrow">AI research assistant · Staging preview</div>
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
+          {staging && <p className="chat-staging-access-note">
+            This is a limited staging preview. Only approved Hugging Face users can start chats.
+          </p>}
           <BillingNotice provider={selectedProvider} />
           <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
           <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
