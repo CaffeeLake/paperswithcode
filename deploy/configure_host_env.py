@@ -177,6 +177,13 @@ def staging_langfuse_values(legacy: dict[str, str]) -> dict[str, str]:
     }
 
 
+def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
+    key = "PWC_OPENROUTER_API_KEY"
+    if key not in legacy:
+        raise ValueError(f"legacy environment is missing: {key}")
+    return {"PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key])}
+
+
 def cron_passthrough_credentials(
     legacy: dict[str, str], current_cron: dict[str, str]
 ) -> dict[str, str]:
@@ -234,12 +241,34 @@ def main() -> int:
     parser.add_argument("--production-codex-only", action="store_true")
     parser.add_argument("--staging-codex-too", action="store_true")
     parser.add_argument("--staging-langfuse-only", action="store_true")
+    parser.add_argument("--staging-openrouter-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_openrouter_only:
+        if (
+            args.production_codex_only
+            or args.staging_codex_too
+            or args.staging_langfuse_only
+        ):
+            parser.error(
+                "--staging-openrouter-only cannot be combined with Codex modes"
+            )
+        try:
+            values = staging_openrouter_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed staging OpenRouter chat credential")
+        return 0
     if args.staging_langfuse_only:
-        if args.production_codex_only or args.staging_codex_too:
+        if (
+            args.production_codex_only
+            or args.staging_codex_too
+            or args.staging_openrouter_only
+        ):
             parser.error("--staging-langfuse-only cannot be combined with Codex modes")
         try:
             values = staging_langfuse_values(legacy)
@@ -262,6 +291,7 @@ def main() -> int:
         "PWC_HF_TOKEN",
         "PWC_JWT_SECRET",
         "PWC_GITHUB_TOKEN",
+        "PWC_OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
     }
     missing = sorted(required - legacy.keys())

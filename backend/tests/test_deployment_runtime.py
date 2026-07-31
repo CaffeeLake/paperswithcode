@@ -1523,6 +1523,15 @@ def test_staging_langfuse_credentials_are_bounded_and_preserved():
     assert configure_host_env.staging_runtime_passthrough(lines) == lines
 
 
+def test_staging_openrouter_credential_gets_a_chat_only_name():
+    assert configure_host_env.staging_openrouter_values(
+        {"PWC_OPENROUTER_API_KEY": "PWC_OPENROUTER_API_KEY=secret"}
+    ) == {"PWC_CHAT_OPENROUTER_API_KEY": "secret"}
+
+    with pytest.raises(ValueError, match="PWC_OPENROUTER_API_KEY"):
+        configure_host_env.staging_openrouter_values({})
+
+
 def test_staging_chat_latency_rollout_settings_are_preserved():
     rollout_keys = {
         "PWC_CHAT_BLANK_POOL_ENABLED",
