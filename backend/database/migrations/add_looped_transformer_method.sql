@@ -19,7 +19,7 @@ VALUES (
     'Looped Transformer',
     'Looped Transformer',
     'Looped Transformers reuse one or more [Transformer](/methods/transformer) blocks across recurrent depth, decoupling effective computation depth from parameter count and enabling iterative refinement, adaptive computation, and test-time depth scaling. The family spans recurrent-depth language models, reasoning systems, diffusion and visual generators, and world models.',
-    'looped transformer, looped transformers, looping transformer, recurrent-depth transformer, recurrent transformer, recursive transformer, universal transformer, latent reasoning',
+    'looped transformer, looping transformer, looped language model, recurrent-depth transformer, depth-recurrent transformer',
     (SELECT id FROM areas WHERE name = 'General' LIMIT 1),
     2018,
     (
