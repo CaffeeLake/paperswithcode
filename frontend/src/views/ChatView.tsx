@@ -15,6 +15,7 @@ import {
   clearQueuedChatLaunch,
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
+import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { apiUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
@@ -31,12 +32,6 @@ import {
   toUiMessages,
   updateSession,
 } from "@/lib/chatSessions";
-
-const EXAMPLES = [
-  "What's the state of the art for real-time object detection?",
-  "Recommend recent papers on retrieval-augmented generation",
-  "Which open LLMs are best for on-device inference?",
-];
 
 type RouteSessionState = {
   id: string;
@@ -495,7 +490,7 @@ const ChatView: React.FC = () => {
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
           <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
-          <div className="chat-examples">{EXAMPLES.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
+          <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
           <div className="chat-conversation" ref={scrollRef}><div className="chat-conversation-inner">

@@ -8,6 +8,7 @@ import ModelPicker from "@/components/chat/ModelPicker";
 import { apiClient } from "@/lib/api";
 import { isChatEnabled } from "@/lib/apiUrl";
 import { queueChatLaunch } from "@/lib/chatLaunch";
+import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
@@ -56,7 +57,7 @@ const parseTime = (value: string | null): TimeWindow => {
 
 // Inline "ask the assistant" box between the feed title and the paper list.
 // Submitting hands the question off to the dedicated chat page.
-const AskAssistant: React.FC = () => {
+export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
@@ -70,55 +71,64 @@ const AskAssistant: React.FC = () => {
     }
   }, [question]);
 
-  const submit = () => {
-    const q = question.trim();
+  const submit = (prompt = question) => {
+    const q = prompt.trim();
     if (!q) return;
     queueChatLaunch(q, selectedModel);
     navigate("/chat");
   };
 
   return (
-    <div className="ask-home">
-      <textarea
-        ref={ref}
-        rows={1}
-        value={question}
-        placeholder="Ask the assistant about papers, tasks, methods, or benchmarks…"
-        onChange={(e) => setQuestion(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
-      <div className="ask-home-foot">
-        <div className="ask-home-provider-tools">
-          <ModelPicker
-            models={FALLBACK_CHAT_MODELS}
-            selectedModel={selectedModel}
-            onModelChange={setSelectedModel}
-          />
-          <span className="ask-home-hint">
-            Via 🤗{" "}
-            <a
-              href="https://huggingface.co/docs/inference-providers/en/index"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Inference Providers
-            </a>
-          </span>
+    <div className="ask-home-wrap">
+      <div className="ask-home">
+        <textarea
+          ref={ref}
+          rows={1}
+          value={question}
+          placeholder="Ask the assistant about papers, tasks, methods, or benchmarks…"
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="ask-home-foot">
+          <div className="ask-home-provider-tools">
+            <ModelPicker
+              models={FALLBACK_CHAT_MODELS}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+            />
+            <span className="ask-home-hint">
+              Via 🤗{" "}
+              <a
+                href="https://huggingface.co/docs/inference-providers/en/index"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Inference Providers
+              </a>
+            </span>
+          </div>
+          <button
+            type="button"
+            className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+            onClick={() => submit()}
+            disabled={!question.trim()}
+            aria-label="Ask the assistant"
+          >
+            <ArrowUpIcon />
+          </button>
         </div>
-        <button
-          type="button"
-          className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-          onClick={submit}
-          disabled={!question.trim()}
-          aria-label="Ask the assistant"
-        >
-          <ArrowUpIcon />
-        </button>
+      </div>
+      <div className="ask-home-examples" aria-label="Example questions">
+        {SUGGESTED_CHAT_PROMPTS.map((example) => (
+          <button type="button" key={example} onClick={() => submit(example)}>
+            {example}
+          </button>
+        ))}
       </div>
     </div>
   );
