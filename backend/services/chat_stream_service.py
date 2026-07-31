@@ -631,6 +631,7 @@ class ChatStreamOrchestrator:
                 raise asyncio.CancelledError
             event = dict(event)
             kind = event.pop("type")
+            self.trace.record_event(kind, event)
             if kind == "_research_finished":
                 research_finished = True
                 continue

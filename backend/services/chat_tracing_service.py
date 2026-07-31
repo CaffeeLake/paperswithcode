@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -124,18 +125,27 @@ class ChatTurnTrace:
         *,
         prompt: str,
         model: str,
+        execution_backend: str,
     ) -> None:
         self.root = root
         self.prompt = prompt
+        self.execution_backend = execution_backend
         self.generation = root.start_observation(
             name="generate-research-response",
             as_type="generation",
             input=[{"role": "user", "content": prompt}],
             model=model,
-            metadata={"aggregation": "agent-run"},
+            metadata={
+                "aggregation": "agent-run",
+                "ttft_semantics": "first-worker-delta",
+            },
         )
         self.title_generation: Any | None = None
         self.tools: dict[str, Any] = {}
+        self.sandbox_acquisition: Any | None = None
+        self.capability_installation: Any | None = None
+        self.model_dispatch: Any | None = None
+        self.first_worker_delta_recorded = False
         self.usage: dict[str, int] = {}
         self.cost: dict[str, float] = {}
         self.answer = ""
@@ -170,6 +180,80 @@ class ChatTurnTrace:
         cost = event.get("total_cost_usd")
         if isinstance(cost, (int, float)) and cost >= 0:
             self.cost = {"total": float(cost)}
+
+    def record_event(self, kind: str, event: dict[str, Any]) -> None:
+        """Advance operational spans from sanitized worker lifecycle events."""
+
+        if kind == "sandbox_start" and self.sandbox_acquisition is None:
+            self.sandbox_acquisition = self.root.start_observation(
+                name="acquire-sandbox",
+                as_type="span",
+                metadata={"execution_backend": self.execution_backend},
+            )
+            return
+        if kind == "sandbox_ready":
+            self._finish_sandbox_acquisition(event)
+            if self.capability_installation is None:
+                self.capability_installation = self.root.start_observation(
+                    name="install-sandbox-capability",
+                    as_type="span",
+                )
+            return
+        if kind == "workspace_ready":
+            self._finish_model_dispatch()
+            return
+        if kind in {"reasoning_delta", "tool_call", "answer_delta"}:
+            self._record_first_worker_delta()
+            return
+        if kind != "_latency":
+            return
+
+        phase = str(event.get("phase") or "")
+        if phase in {"sandbox_acquisition_ms", "sandbox_acquisition_started"}:
+            self._finish_sandbox_acquisition(event)
+        elif phase in {"capability_install_ms", "broker_capability_installed"}:
+            self._finish_capability_installation(event)
+        elif phase in {"sdk_dispatch_ms", "sdk_query_dispatched"}:
+            self._finish_model_dispatch(event)
+        elif phase == "first_worker_delta":
+            self._record_first_worker_delta()
+
+    def _finish_sandbox_acquisition(self, event: dict[str, Any]) -> None:
+        if self.sandbox_acquisition is None:
+            return
+        self.sandbox_acquisition.update(
+            output={
+                "acquisition_outcome": event.get("acquisition_outcome"),
+                "elapsed_ms": event.get("elapsed_ms"),
+            }
+        ).end()
+        self.sandbox_acquisition = None
+
+    def _finish_capability_installation(self, event: dict[str, Any]) -> None:
+        if self.capability_installation is not None:
+            self.capability_installation.update(
+                output={"elapsed_ms": event.get("elapsed_ms")}
+            ).end()
+            self.capability_installation = None
+        if self.model_dispatch is None:
+            self.model_dispatch = self.root.start_observation(
+                name="dispatch-model-request",
+                as_type="span",
+            )
+
+    def _finish_model_dispatch(self, event: dict[str, Any] | None = None) -> None:
+        if self.model_dispatch is None:
+            return
+        self.model_dispatch.update(
+            output={"elapsed_ms": (event or {}).get("elapsed_ms")}
+        ).end()
+        self.model_dispatch = None
+
+    def _record_first_worker_delta(self) -> None:
+        if self.first_worker_delta_recorded:
+            return
+        self.first_worker_delta_recorded = True
+        self.generation.update(completion_start_time=datetime.now(UTC))
 
     def start_tool(self, event: dict[str, Any]) -> None:
         tool_id = str(event.get("id") or "")
@@ -215,6 +299,18 @@ class ChatTurnTrace:
             return
         self.closed = True
         level = "ERROR" if self.status in {"error", "interrupted"} else "DEFAULT"
+        for observation in (
+            self.sandbox_acquisition,
+            self.capability_installation,
+            self.model_dispatch,
+        ):
+            if observation is not None:
+                observation.update(
+                    level="WARNING", status_message="turn ended before phase completed"
+                ).end()
+        self.sandbox_acquisition = None
+        self.capability_installation = None
+        self.model_dispatch = None
         for tool in self.tools.values():
             tool.update(
                 level="WARNING", status_message="turn ended before tool result"
@@ -246,6 +342,9 @@ class NullChatTurnTrace:
         del fallback
 
     def record_usage(self, _event: dict[str, Any]) -> None:
+        return
+
+    def record_event(self, _kind: str, _event: dict[str, Any]) -> None:
         return
 
     def start_tool(self, _event: dict[str, Any]) -> None:
@@ -307,7 +406,12 @@ def trace_chat_turn(
                 input=[{"role": "user", "content": prompt}],
                 metadata={"request_id": request_id},
             )
-            trace = ChatTurnTrace(root, prompt=prompt, model=model)
+            trace = ChatTurnTrace(
+                root,
+                prompt=prompt,
+                model=model,
+                execution_backend=execution_backend,
+            )
             try:
                 yield trace
             except BaseException as exc:
