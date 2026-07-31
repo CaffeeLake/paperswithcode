@@ -5162,7 +5162,7 @@ html { scroll-behavior: smooth; }
   line-height: 1.65;
   color: var(--ink-soft);
 }
-.chat-reason-markdown {
+.chat-answer.chat-reason-markdown {
   padding-top: 0;
   padding-right: 0;
   padding-bottom: 0;
@@ -5171,6 +5171,8 @@ html { scroll-behavior: smooth; }
   color: inherit;
   white-space: normal;
 }
+.chat-answer.chat-reason-live-body { padding-left: 23px; }
+.chat-answer.chat-reason-done-body { padding: 2px 16px 16px 39px; }
 
 /* tool call accordion */
 .chat-tool {
