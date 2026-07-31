@@ -24,6 +24,8 @@ from backend.models.database import ChatSandboxPool, ChatTurnLatency
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.scripts.staging_qualification_http import client as staging_client
+from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
 
@@ -93,8 +95,16 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
 
 
 class PoolQualification:
-    def __init__(self, *, settings, samples: int, blank_timeout: float):
+    def __init__(
+        self,
+        *,
+        settings,
+        billing_settings,
+        samples: int,
+        blank_timeout: float,
+    ):
         self.settings = settings
+        self.billing_settings = billing_settings
         self.samples = samples
         self.blank_timeout = blank_timeout
         self.started_at = datetime.now(UTC)
@@ -176,6 +186,11 @@ class PoolQualification:
     async def _turn(self, index: int) -> PoolSample:
         subject = f"pool-qualification-{self.run_id}-{index}"
         token = _encode_legacy_session({"sub": subject, "username": subject})
+        billing = encrypt_token(
+            self.billing_settings.hf_token,
+            subject,
+            self.billing_settings,
+        )
         payload = {
             "message": "Reply with a concise acknowledgement.",
             "client_message_id": str(uuid.uuid4()),
@@ -183,27 +198,30 @@ class PoolQualification:
         request_id: str | None = None
         terminal = "error"
         error_code: str | None = None
-        async with staging_client(
-            timeout=240,
-            cookies={self.settings.session_cookie_name: token},
-        ) as client:
-            async with client.stream(
+        async with (
+            staging_client(
+                timeout=240,
+                cookies={
+                    self.settings.session_cookie_name: token,
+                    COOKIE_NAME: billing,
+                },
+            ) as client,
+            client.stream(
                 "POST",
                 "/api/v1/chat/stream",
                 json=payload,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    event = json.loads(line[6:])
-                    if event.get("type") == "stream_start":
-                        request_id = str(event["request_id"])
-                    if event.get("type") in {"done", "cancelled", "error"}:
-                        terminal = str(event["type"])
-                        error_code = (
-                            str(event.get("code")) if event.get("code") else None
-                        )
+            ) as response,
+        ):
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                if event.get("type") == "stream_start":
+                    request_id = str(event["request_id"])
+                if event.get("type") in {"done", "cancelled", "error"}:
+                    terminal = str(event["type"])
+                    error_code = str(event.get("code")) if event.get("code") else None
         if request_id is None:
             return PoolSample(
                 None, None, None, None, None, None, None, terminal, error_code
@@ -242,6 +260,21 @@ class PoolQualification:
         await self._wait_for_blank()
         return landed, self._blank_starts()
 
+    def mark_samples(self, samples: list[PoolSample]) -> int:
+        request_ids = [sample.request_id for sample in samples if sample.request_id]
+        with db_manager.session_local() as db:
+            service = ChatLatencyService(db)
+            marked = sum(
+                service.mark_qualification(
+                    request_id,
+                    run_id=self.run_id,
+                    scenario="focused_latency",
+                )
+                for request_id in request_ids
+            )
+            db.commit()
+        return marked
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
@@ -279,16 +312,19 @@ def main() -> int:
     )
     qualification = PoolQualification(
         settings=release_settings,
+        billing_settings=environment_settings,
         samples=args.samples,
         blank_timeout=args.blank_timeout,
     )
     qualification.validate(cpu=args.candidate_cpu, memory_mib=args.candidate_memory_mib)
     samples, blank_starts = asyncio.run(qualification.run())
+    marked = qualification.mark_samples(samples)
     summary = summarize(samples)
     passed = (
         summary["complete"] == args.samples
         and summary["pool_hits"] == args.samples
         and blank_starts >= args.samples
+        and marked == args.samples
     )
     print(
         json.dumps(
@@ -311,6 +347,7 @@ def main() -> int:
                     ),
                 },
                 "blank_starts": blank_starts,
+                "marked": marked,
                 "summary": summary,
                 "raw_samples": [asdict(sample) for sample in samples],
             },
