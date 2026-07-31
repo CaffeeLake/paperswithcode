@@ -978,6 +978,39 @@ class Evaluation(Base):
         return f"<Evaluation(id={self.id}, paper_id={self.paper_id}, task_id={self.task_id}, dataset_id={self.dataset_id})>"
 
 
+class EvaluationBadgeTombstone(Base):
+    """Durable lookup data for leaderboard badges after an evaluation is deleted."""
+
+    __tablename__ = "evaluation_badge_tombstones"
+
+    evaluation_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    paper_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    task_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    dataset_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    task_slug: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    dataset_slug: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    dataset_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_evaluation_badge_tombstones_paper_id", "paper_id"),
+        Index(
+            "idx_evaluation_badge_tombstones_target",
+            "paper_id",
+            "task_id",
+            "dataset_id",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "<EvaluationBadgeTombstone("
+            f"evaluation_id={self.evaluation_id}, paper_id={self.paper_id})>"
+        )
+
+
 class CatalogMutationEvent(Base):
     """Append-only audit ledger for covered paper-page catalog mutations."""
 

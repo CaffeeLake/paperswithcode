@@ -274,12 +274,12 @@ def render_badge_markdown(
             f"{SITE_ORIGIN}/api/v1/papers/{paper_id}/leaderboard-badge.svg"
             f"?eval={placement.evaluation_id}&live=1"
         )
-        leaderboard_url = (
-            f"{SITE_ORIGIN}/benchmark/{placement.dataset_slug}"
-            f"?task={placement.task_slug}&eval={placement.evaluation_id}"
+        badge_link_url = (
+            f"{SITE_ORIGIN}/api/v1/papers/{paper_id}/leaderboard-badge-link"
+            f"?eval={placement.evaluation_id}"
         )
         alt = f"Papers with Code: {placement_label} on {placement.dataset_name}"
-        badges.append(f"[![{alt}]({badge_url})]({leaderboard_url})")
+        badges.append(f"[![{alt}]({badge_url})]({badge_link_url})")
         if len(badges) == max_badges:
             break
     return badges

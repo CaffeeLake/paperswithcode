@@ -50,6 +50,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_evaluations_harness.sql` | `evaluations.harness` |
 | `add_evaluations_hf_model_url.sql` | `evaluations.hf_model_url` |
 | `add_evaluations_source_attribution.sql` | `evaluations.source_url` and `evaluations.external` |
+| `add_evaluation_badge_tombstones.sql` | Durable public badge targets for deleted evaluation rows |
 | `add_task_datasets_supports_harness.sql` | `task_datasets.supports_harness` |
 | `remove_task_datasets_featured_rank.sql` | Remove obsolete manual benchmark pinning; task pages use benchmark trends |
 | `add_task_sister_tasks.sql` + `run_add_task_sister_tasks.py` | `task_sister_tasks` table (explicit sister tasks) |

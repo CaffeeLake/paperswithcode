@@ -22,11 +22,10 @@ export function leaderboardBadgeMarkdown(
     .map((rank) => {
       const evaluationId = encodeURIComponent(rank.evaluation_id);
       const badgeUrl = `${siteOrigin}/api/v1/papers/${encodeURIComponent(paperId)}/leaderboard-badge.svg?eval=${evaluationId}&live=1`;
-      const query = new URLSearchParams({ task: rank.task_slug, eval: rank.evaluation_id });
-      const leaderboardUrl = `${siteOrigin}/benchmark/${encodeURIComponent(rank.dataset_slug)}?${query.toString()}`;
+      const badgeLinkUrl = `${siteOrigin}/api/v1/papers/${encodeURIComponent(paperId)}/leaderboard-badge-link?eval=${evaluationId}`;
       const placement = rank.best_rank === 1 ? "SOTA" : `#${rank.best_rank}`;
       const alt = `Papers with Code: ${placement} on ${rank.dataset_name}`;
-      return `[![${alt}](${badgeUrl})](${leaderboardUrl})`;
+      return `[![${alt}](${badgeUrl})](${badgeLinkUrl})`;
     })
     .join("\n");
 }

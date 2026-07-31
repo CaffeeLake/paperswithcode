@@ -10,7 +10,10 @@ import re
 import time
 from datetime import date
 from typing import Optional, List, Dict, Any, Literal
+from urllib.parse import quote, urlencode
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -29,8 +32,6 @@ from backend.models.database import (
     Paper as DBPaper,
     Author,
     PaperAuthor,
-    Evaluation as DBEvaluation,
-    Dataset as DBDataset,
 )
 from backend.services.external_resource_service import (
     ExternalResourceError,
@@ -41,8 +42,8 @@ from backend.services.author_service import normalize_arxiv_author_name
 from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
 from backend.services.badge_service import (
-    LeaderboardBadgePlacement,
     render_leaderboard_badge,
+    resolve_leaderboard_badge_target,
 )
 from backend.services.paper_ingestion_service import (
     PaperIngestionError,
@@ -70,6 +71,11 @@ from backend.utils.urls import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+BADGE_CACHE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Cloudflare-CDN-Cache-Control": "no-store",
+}
 
 
 def _curated_paper_update(
@@ -125,39 +131,72 @@ def get_paper_leaderboard_badge(
 
     ranks = paper.leaderboard_ranks or []
     if evaluation_id is not None:
-        live_placement = (
-            db.query(DBEvaluation.best_rank, DBDataset.name)
-            .join(DBDataset, DBEvaluation.dataset_id == DBDataset.id)
-            .filter(
-                DBEvaluation.id == evaluation_id,
-                DBEvaluation.paper_id == int(paper.id),
-            )
-            .first()
+        target = resolve_leaderboard_badge_target(
+            db,
+            paper_id=int(paper.id),
+            evaluation_id=evaluation_id,
         )
-        if not live_placement:
+        if target is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Evaluation {evaluation_id} not found for this paper",
             )
-        best_rank, dataset_name = live_placement
-        ranks = [
-            LeaderboardBadgePlacement(
-                dataset_name=dataset_name,
-                best_rank=best_rank,
-            )
-        ]
+        ranks = [target.placement]
 
     return Response(
         content=render_leaderboard_badge(ranks),
         media_type="image/svg+xml",
         headers={
-            # This is a live view of a mutable leaderboard row. Require image
-            # proxies such as GitHub Camo to revalidate rather than treating it
-            # as a versioned static SVG.
-            "Cache-Control": "no-store, max-age=0",
-            "Cloudflare-CDN-Cache-Control": "no-store",
+            **BADGE_CACHE_HEADERS,
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.get(
+    "/papers/{paper_id}/leaderboard-badge-link",
+    response_class=RedirectResponse,
+    include_in_schema=False,
+)
+def get_paper_leaderboard_badge_link(
+    paper_id: str = Path(..., description="ArXiv ID or internal database ID"),
+    evaluation_id: int = Query(..., alias="eval"),
+    db: Session = Depends(get_database_session),
+):
+    """Redirect a durable badge link to its live row or paper results."""
+    try:
+        paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    target = resolve_leaderboard_badge_target(
+        db,
+        paper_id=int(paper.id),
+        evaluation_id=evaluation_id,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Evaluation {evaluation_id} not found for this paper",
+        )
+
+    if target.evaluation_id is not None and target.dataset_slug and target.task_slug:
+        query = urlencode({"task": target.task_slug, "eval": str(target.evaluation_id)})
+        location = f"/benchmark/{quote(target.dataset_slug, safe='')}?{query}"
+    else:
+        route_id = get_paper_route_identifier(
+            paper.source,
+            paper.arxiv_id,
+            int(paper.id),
+        )
+        location = f"/paper/{quote(route_id, safe='')}#results"
+
+    return RedirectResponse(
+        url=location,
+        status_code=307,
+        headers=BADGE_CACHE_HEADERS,
     )
 
 

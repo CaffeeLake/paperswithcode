@@ -131,7 +131,7 @@ def test_badge_markdown_matches_readme_copy_format_and_deduplicates_datasets():
     assert badges == [
         "[![Papers with Code: #2 on Benchmark A]"
         "(https://paperswithcode.co/api/v1/papers/2601.21998/leaderboard-badge.svg?eval=7&live=1)]"
-        "(https://paperswithcode.co/benchmark/benchmark-a?task=task&eval=7)"
+        "(https://paperswithcode.co/api/v1/papers/2601.21998/leaderboard-badge-link?eval=7)"
     ]
 
 
@@ -160,7 +160,8 @@ def test_render_issue_body_is_compact_and_verification_is_explicit():
     assert "[![Papers with Code: #2 on LIBERO-Long]" in verified
     assert "**" not in verified
     assert "rank #" not in verified
-    assert verified.count("https://paperswithcode.co/benchmark/") == 2
+    assert verified.count("https://paperswithcode.co/benchmark/") == 1
+    assert "/leaderboard-badge-link?eval=9926" in verified
 
 
 def test_normalize_paper_reference_accepts_url_arxiv_and_external_id():

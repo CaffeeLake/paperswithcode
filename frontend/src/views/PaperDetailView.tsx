@@ -546,7 +546,7 @@ const PaperDetailView: React.FC = () => {
       await navigator.clipboard.writeText(markdown);
       toast({
         title: "PwC badges copied",
-        description: "Each badge links to its highlighted leaderboard row.",
+        description: "Each badge follows its current leaderboard result.",
       });
     } catch {
       toast({
