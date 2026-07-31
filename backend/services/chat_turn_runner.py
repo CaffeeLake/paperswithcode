@@ -50,15 +50,12 @@ class LocalChatTurnRunner:
 
     async def events(self) -> AsyncIterator[dict]:
         yield {"type": "workspace_ready"}
-        provider_settings = self.settings.model_copy(
-            update={
-                "hf_token": self.owner.hf_inference_token,
-                "chat_hf_bill_to": "",
-            }
-        )
+        if not self.owner.hf_inference_token:
+            raise RuntimeError("Hugging Face user billing is not connected")
         async for event in stream_agent_events(
             self.prompt,
-            provider_settings,
+            self.settings,
+            provider_token=self.owner.hf_inference_token,
             model_route=self.admission.model_route,
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,

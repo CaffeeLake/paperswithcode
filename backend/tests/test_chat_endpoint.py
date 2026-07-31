@@ -519,7 +519,7 @@ def test_search_payload_supports_external_rows_and_bounds_content(monkeypatch):
         def search_papers(self, query, limit, mode):
             assert query == "model"
             assert limit == 3
-            assert mode == "hybrid"
+            assert mode == "keyword"
             return [SimpleNamespace(id="9")]
 
         def _get_paper_relation_data(self, ids, include_resources, card_view):
@@ -580,21 +580,24 @@ def test_result_byte_cap_handles_multibyte_content():
 def test_agent_options_expose_only_search(tmp_path):
     settings = get_settings().model_copy(
         update={
-            "hf_token": "test-token",
+            "hf_token": "shared-nielsr-token",
             "chat_max_search_calls": 2,
-            "chat_hf_bill_to": "huggingface",
         }
     )
-    options, _ = build_agent_options(settings, tmp_path)
+    options, _ = build_agent_options(
+        settings, tmp_path, provider_token="connected-user-token"
+    )
     assert options.tools == []
     assert options.allowed_tools == [SEARCH_TOOL_NAME]
     assert options.setting_sources == []
     assert options.skills == []
     assert options.plugins == []
     assert options.fallback_model is None
-    assert options.env["ANTHROPIC_API_KEY"] == "test-token"
-    assert options.env["HF_BILL_TO"] == "huggingface"
-    assert options.env["ANTHROPIC_CUSTOM_HEADERS"] == "X-HF-Bill-To: huggingface"
+    assert options.env["ANTHROPIC_API_KEY"] == "connected-user-token"
+    assert options.env["ANTHROPIC_AUTH_TOKEN"] == "connected-user-token"
+    assert "shared-nielsr-token" not in options.env.values()
+    assert "HF_BILL_TO" not in options.env
+    assert "ANTHROPIC_CUSTOM_HEADERS" not in options.env
     assert "at most 2 times" in options.system_prompt
     assert (
         "[repo_id](https://huggingface.co/datasets/<repo_id>)" in options.system_prompt
@@ -744,6 +747,7 @@ def test_agent_timeout_emits_typed_error_and_closes_sdk_stream(monkeypatch):
             async for event in stream_agent_events(
                 "hello",
                 settings,
+                provider_token="connected-user-token",
                 model_route=settings.chat_glm_route,
                 session_store=None,
                 resume=None,
@@ -781,7 +785,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         yield {"type": "answer_delta", "text": "hello"}
         yield {"type": "done", "followups": [], "finish_reason": "success"}
 
-    async def fake_title(_prompt, _settings):
+    async def fake_title(_prompt, _settings, **_kwargs):
         # Let research finish first: title events must still reach the client.
         await asyncio.sleep(0.01)
         yield "Research chat"

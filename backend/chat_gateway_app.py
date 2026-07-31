@@ -103,6 +103,25 @@ def _output_tokens_allowed(value: int) -> bool:
     return 1 <= value <= MAX_PROVIDER_OUTPUT_TOKENS
 
 
+def _user_provider_token(row, settings: Settings) -> str:
+    token = ChatCapabilityService.provider_token(row, row.owner_hash, settings)
+    if not token:
+        raise HTTPException(status_code=402, detail="Connect Hugging Face billing")
+    return token
+
+
+def _provider_headers(provider_token: str, request: Request) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {provider_token}",
+        "Content-Type": "application/json",
+        "Accept": request.headers.get("accept", "application/json"),
+        "Anthropic-Version": request.headers.get("anthropic-version", "2023-06-01"),
+    }
+    if request.headers.get("anthropic-beta"):
+        headers["Anthropic-Beta"] = request.headers["anthropic-beta"]
+    return headers
+
+
 def _scope(
     token: str,
     scope: str,
@@ -246,9 +265,7 @@ async def messages(
     if not _output_tokens_allowed(maximum_tokens):
         raise HTTPException(status_code=422, detail="max_tokens is out of range")
     row = _scope(token, "model", x_pwc_session, x_pwc_turn, db, model=model)
-    provider_token = ChatCapabilityService.provider_token(row, row.owner_hash, settings)
-    if not provider_token:
-        raise HTTPException(status_code=402, detail="Connect Hugging Face billing")
+    provider_token = _user_provider_token(row, settings)
     try:
         ChatCapabilityService(db).meter_provider(
             row,
@@ -265,14 +282,7 @@ async def messages(
     _record_gateway_timing(settings, turn_id, received_at=received_at)
 
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
-    upstream_headers = {
-        "Authorization": f"Bearer {provider_token}",
-        "Content-Type": "application/json",
-        "Accept": request.headers.get("accept", "application/json"),
-        "Anthropic-Version": request.headers.get("anthropic-version", "2023-06-01"),
-    }
-    if request.headers.get("anthropic-beta"):
-        upstream_headers["Anthropic-Beta"] = request.headers["anthropic-beta"]
+    upstream_headers = _provider_headers(provider_token, request)
     upstream = await client.send(
         client.build_request(
             "POST",

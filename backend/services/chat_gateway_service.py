@@ -78,7 +78,7 @@ class ChatGatewayService:
                     str(arguments["query"])[:300],
                     max(1, min(int(arguments.get("page", 1)), 100)),
                     max(1, min(int(arguments.get("limit", 10)), 100)),
-                    mode=arguments.get("mode"),
+                    mode="keyword",
                 )
             )
         if operation == "paper_info":

@@ -339,10 +339,11 @@ async def _title_events(
     pieces: list[str] = []
     fallback = False
     try:
-        provider_settings = settings.model_copy(
-            update={"hf_token": owner.hf_inference_token, "chat_hf_bill_to": ""}
-        )
-        async for delta in stream_title(prompt, provider_settings):
+        if not owner.hf_inference_token:
+            raise RuntimeError("Hugging Face user billing is not connected")
+        async for delta in stream_title(
+            prompt, settings, provider_token=owner.hf_inference_token
+        ):
             pieces.append(delta)
             await queue.put({"type": "session_title_delta", "text": delta})
         title = normalize_title("".join(pieces))

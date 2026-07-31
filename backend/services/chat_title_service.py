@@ -25,13 +25,15 @@ def fallback_title(prompt: str) -> str:
     return normalize_title(normalized[:80]) or "New chat"
 
 
-async def stream_title(prompt: str, settings: Settings) -> AsyncIterator[str]:
+async def stream_title(
+    prompt: str, settings: Settings, *, provider_token: str
+) -> AsyncIterator[str]:
     client = AsyncInferenceClient(
         model=settings.chat_title_model,
         provider=settings.chat_title_provider,
-        token=settings.hf_token,
+        token=provider_token,
         timeout=settings.chat_title_timeout_seconds,
-        bill_to=settings.chat_hf_bill_to or None,
+        bill_to=None,
     )
     response = await client.chat_completion(
         messages=[

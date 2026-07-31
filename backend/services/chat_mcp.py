@@ -102,7 +102,7 @@ def search_papers_payload(
     *,
     session_factory: Callable[[], Session] | None = None,
 ) -> dict[str, Any]:
-    """Run hybrid retrieval and build the exact bounded frontend/tool payload."""
+    """Run local keyword retrieval and build the bounded frontend/tool payload."""
 
     query = query.strip()
     if not query or len(query) > 1_000:
@@ -115,7 +115,7 @@ def search_papers_payload(
     db = factory()
     try:
         service = PaperService(db)
-        summaries = service.search_papers(query, limit=top_k, mode="hybrid")
+        summaries = service.search_papers(query, limit=top_k, mode="keyword")
         paper_ids = [int(summary.id) for summary in summaries]
         rows = (
             db.query(DBPaper).filter(DBPaper.id.in_(paper_ids)).all()

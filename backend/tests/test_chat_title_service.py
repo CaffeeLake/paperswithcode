@@ -52,15 +52,16 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
     monkeypatch.setattr(chat_title_service, "AsyncInferenceClient", FakeClient)
     settings = Settings(
         _env_file=None,
-        hf_token="test-token",
-        chat_hf_bill_to="test-org",
+        hf_token="shared-nielsr-token",
     )
 
     async def collect():
         return [
             chunk
             async for chunk in chat_title_service.stream_title(
-                "What is a good OCR model?", settings
+                "What is a good OCR model?",
+                settings,
+                provider_token="connected-user-token",
             )
         ]
 
@@ -68,9 +69,9 @@ def test_stream_title_pins_provider_and_uses_low_reasoning(monkeypatch):
     assert client_args == {
         "model": "openai/gpt-oss-120b",
         "provider": "cerebras",
-        "token": "test-token",
+        "token": "connected-user-token",
         "timeout": 5,
-        "bill_to": "test-org",
+        "bill_to": None,
     }
     assert completion_args["stream"] is True
     assert completion_args["max_tokens"] == 64

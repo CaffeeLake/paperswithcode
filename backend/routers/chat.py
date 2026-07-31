@@ -327,7 +327,7 @@ async def stream_chat(
     body: ChatRequest, request: Request, user: dict = Depends(require_user)
 ):
     settings = get_settings()
-    if not settings.chat_enabled or not settings.hf_token:
+    if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
     inference_token = inference_token_for_request(request, user, settings)
     if not inference_token:

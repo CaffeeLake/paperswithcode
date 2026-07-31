@@ -293,6 +293,7 @@ def build_agent_options(
     settings: Settings,
     config_dir: Path,
     *,
+    provider_token: str,
     model_route: str | None = None,
     session_store: object | None = None,
     resume: str | None = None,
@@ -301,8 +302,8 @@ def build_agent_options(
     model = model_route or settings.chat_glm_route
     env = {
         "ANTHROPIC_BASE_URL": "https://router.huggingface.co",
-        "ANTHROPIC_AUTH_TOKEN": settings.hf_token,
-        "ANTHROPIC_API_KEY": settings.hf_token,
+        "ANTHROPIC_AUTH_TOKEN": provider_token,
+        "ANTHROPIC_API_KEY": provider_token,
         "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
         "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
@@ -310,9 +311,6 @@ def build_agent_options(
         "CLAUDE_CONFIG_DIR": str(config_dir),
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     }
-    if settings.chat_hf_bill_to:
-        env["HF_BILL_TO"] = settings.chat_hf_bill_to
-        env["ANTHROPIC_CUSTOM_HEADERS"] = f"X-HF-Bill-To: {settings.chat_hf_bill_to}"
     options = ClaudeAgentOptions(
         tools=[],
         allowed_tools=[SEARCH_TOOL_NAME],
@@ -358,6 +356,7 @@ async def stream_agent_events(
     prompt: str,
     settings: Settings,
     *,
+    provider_token: str,
     model_route: str,
     session_store: object,
     resume: str | None,
@@ -376,6 +375,7 @@ async def stream_agent_events(
         options, _limiter = build_agent_options(
             settings,
             Path(temp_dir),
+            provider_token=provider_token,
             model_route=model_route,
             session_store=session_store,
             resume=resume,
