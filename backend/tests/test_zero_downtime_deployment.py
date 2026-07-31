@@ -237,9 +237,10 @@ def test_runtime_builder_uses_stable_absolute_uv_path(
     assert command_seen[0] == str(uv)
 
 
-def test_legacy_bridge_flag_is_explicit_on_deploy_parser():
+@pytest.mark.parametrize("environment", ["production", "staging"])
+def test_legacy_bridge_flag_is_explicit_on_deploy_parser(environment: str):
     parser = deploy_cli.parser_for("pwc-deploy")
-    args = parser.parse_args(["staging", "a" * 40, "--legacy-bridge"])
+    args = parser.parse_args([environment, "a" * 40, "--legacy-bridge"])
     assert args.legacy_bridge is True
     assert args.qualify_only is False
 

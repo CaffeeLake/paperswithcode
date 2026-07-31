@@ -1274,8 +1274,6 @@ def deploy(args: argparse.Namespace) -> int:
                 raise DeployError(
                     "--legacy-bridge and --qualify-only are mutually exclusive"
                 )
-            if args.environment != "staging":
-                raise DeployError("--legacy-bridge is staging-only")
             if _active_slot(args.environment) is not None or _nginx_uses_active_slot(
                 args.environment
             ):

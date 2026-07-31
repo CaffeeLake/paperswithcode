@@ -77,8 +77,20 @@ sudo pwc-deploy staging <exact-sha> --legacy-bridge
 sudo pwc-deploy staging <current-sha> --qualify-only
 ```
 
+Production may use the same bridge only with the explicit production
+confirmation when its current legacy release predates the slot operator
+endpoints:
+
+```bash
+sudo pwc-deploy production <exact-main-sha> \
+  --legacy-bridge --confirm DEPLOY_PRODUCTION
+sudo pwc-deploy production <exact-main-sha> \
+  --qualify-only --confirm DEPLOY_PRODUCTION
+```
+
 `--legacy-bridge` is rejected after nginx or an active slot is present and can
-never mutate the shared dependency set. Qualification creates
+never mutate the shared dependency set. Production additionally requires the
+candidate to be reachable from `origin/main`. Qualification creates
 `active -> slots/blue` but leaves live nginx and the legacy service
 unchanged. Applying the checked-in active-slot nginx template is a separately
 authorized `pwc-nginx` operation. After that one-time cutover, verify both
