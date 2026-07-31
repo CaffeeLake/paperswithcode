@@ -5694,6 +5694,33 @@ html { scroll-behavior: smooth; }
   font-size: 21px;
   font-weight: 600;
 }
+.chat-billing-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.chat-billing-notice-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  background: transparent;
+  cursor: pointer;
+}
+.chat-billing-notice-dismiss:hover {
+  color: var(--ink);
+  background: color-mix(in oklch, var(--ink) 7%, transparent);
+}
+.chat-billing-notice-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .shared-chat-fresh > p {
   margin: 0 0 16px;
   color: var(--ink-soft);

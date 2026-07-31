@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Share2 } from "lucide-react";
+import { Share2, X as XIcon } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import Composer from "@/components/chat/Composer";
@@ -34,18 +34,41 @@ import {
 } from "@/lib/chatSessions";
 
 const HF_INFERENCE_USAGE_URL = "https://huggingface.co/settings/inference-providers";
+const BILLING_NOTICE_DISMISSED_KEY = "pwc.chat.billing-notice-dismissed.v1";
 
-const BillingNotice: React.FC = () => !isChatLive() ? null : (
-  <div className="chat-billing-notice" role="note">
-    <span>
-      Hugging Face applies your included monthly credits first. After they run
-      out, further chats use pay-as-you-go billing when enabled.
-    </span>
-    <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">
-      Review usage
-    </a>
-  </div>
-);
+const BillingNotice: React.FC = () => {
+  const [dismissed, setDismissed] = useState(
+    () => localStorage.getItem(BILLING_NOTICE_DISMISSED_KEY) === "1",
+  );
+
+  if (!isChatLive() || dismissed) return null;
+
+  return (
+    <div className="chat-billing-notice" role="note">
+      <span>
+        Hugging Face applies your included monthly credits first. After they run
+        out, further chats use pay-as-you-go billing when enabled.
+      </span>
+      <div className="chat-billing-notice-actions">
+        <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">
+          Review usage
+        </a>
+        <button
+          type="button"
+          className="chat-billing-notice-dismiss"
+          aria-label="Dismiss billing notice"
+          title="Dismiss"
+          onClick={() => {
+            localStorage.setItem(BILLING_NOTICE_DISMISSED_KEY, "1");
+            setDismissed(true);
+          }}
+        >
+          <XIcon size={15} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 type RouteSessionState = {
   id: string;

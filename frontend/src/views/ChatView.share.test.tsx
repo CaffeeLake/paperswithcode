@@ -99,6 +99,8 @@ function renderChat(path = `/chat/${sessionId}`) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  vi.unstubAllEnvs();
   mocks.busy = false;
   mocks.chatOptions = null;
   mocks.load.mockReset();
@@ -123,6 +125,29 @@ beforeEach(() => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: mocks.clipboardWrite },
+  });
+});
+
+describe("ChatView billing notice", () => {
+  it("can be dismissed permanently in this browser", async () => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    const user = userEvent.setup();
+    const rendered = renderChat();
+
+    const dismiss = await screen.findByRole("button", {
+      name: "Dismiss billing notice",
+    });
+    expect(screen.getByRole("link", { name: "Review usage" })).toBeVisible();
+
+    await user.click(dismiss);
+
+    expect(screen.queryByRole("link", { name: "Review usage" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("pwc.chat.billing-notice-dismissed.v1")).toBe("1");
+
+    rendered.unmount();
+    renderChat();
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: "Review usage" })).not.toBeInTheDocument();
   });
 });
 
