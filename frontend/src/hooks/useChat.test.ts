@@ -331,6 +331,40 @@ describe("useChat editAndResend", () => {
 });
 
 describe("useChat canonical reloads", () => {
+  it("keeps a stream running without projecting it into a conversation loaded during navigation", async () => {
+    const continueStream = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      await continueStream.promise;
+      yield { type: "answer_delta", text: "Background answer" };
+      throw new Error("Background connection failed");
+    });
+    getSessionMock.mockResolvedValue(sessionDetail("session-1", [
+      persistedUser("active-user", 1, "Active conversation"),
+      persistedAssistant("active-answer", 2, "Background answer"),
+    ]));
+    const { result, onSettled } = renderChat();
+
+    act(() => {
+      expect(result.current.send("Active conversation")).toBe(true);
+    });
+    await waitFor(() => expect(result.current.busy).toBe(true));
+
+    const earlierConversation = uiTurn("earlier-user", "Earlier conversation");
+    act(() => result.current.load(earlierConversation));
+    expect(result.current.messages).toEqual(earlierConversation);
+    expect(result.current.busy).toBe(true);
+
+    await act(async () => {
+      continueStream.resolve();
+      await continueStream.promise;
+    });
+
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages).toEqual(earlierConversation);
+    expect(onSettled).toHaveBeenCalledWith("session-1");
+  });
+
   it("does not overwrite a conversation loaded while a canonical reload is pending", async () => {
     const canonical = deferred<ChatSessionDetail>();
     streamChatMock.mockImplementation(() => stream(

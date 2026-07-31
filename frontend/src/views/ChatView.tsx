@@ -119,6 +119,7 @@ const ChatView: React.FC = () => {
   const sessionsLoadedRef = useRef(false);
   const routeSessionIdRef = useRef(routeSessionId);
   const activeStreamSessionIdRef = useRef<string | null>(null);
+  const activeStreamRouteSessionIdRef = useRef<string | null>(null);
   const loadedRouteSessionIdRef = useRef<string | null>(null);
   routeSessionIdRef.current = routeSessionId;
 
@@ -151,6 +152,7 @@ const ChatView: React.FC = () => {
     onSessionId: (id) => {
       activeStreamSessionIdRef.current = id;
       const isNewSession = id !== routeSessionIdRef.current;
+      const shouldFollowStream = routeSessionIdRef.current === activeStreamRouteSessionIdRef.current;
       const now = new Date().toISOString();
       setSessions((previous) => previous.some((session) => session.id === id)
         ? previous.map((session) => session.id === id ? { ...session, is_busy: true } : session)
@@ -163,17 +165,21 @@ const ChatView: React.FC = () => {
             message_count: 1,
             is_busy: true,
           }, ...previous]);
-      if (isNewSession) setLiveTitle("New chat");
-      // Keep the in-progress response visible while the route catches up with
-      // the newly persisted session announced by the SSE stream.
-      loadedRouteSessionIdRef.current = id;
-      setRouteSessionState({ id, status: "loaded" });
-      navigate(`/chat/${id}`, { replace: true });
+      if (isNewSession && shouldFollowStream) {
+        setLiveTitle("New chat");
+      }
+      if (shouldFollowStream) {
+        // Keep the in-progress response visible while the route catches up with
+        // the newly persisted session announced by the SSE stream.
+        loadedRouteSessionIdRef.current = id;
+        setRouteSessionState({ id, status: "loaded" });
+        if (isNewSession) navigate(`/chat/${id}`, { replace: true });
+      }
     },
     onTitle: (title) => {
       const sessionId = activeStreamSessionIdRef.current ?? routeSessionIdRef.current;
       if (sessionId && !manualTitleLockRef.current.has(sessionId)) {
-        setLiveTitle(title);
+        if (sessionId === routeSessionIdRef.current) setLiveTitle(title);
         setSessions((previous) => previous.map((session) => session.id === sessionId ? { ...session, title } : session));
       }
     },
@@ -184,6 +190,7 @@ const ChatView: React.FC = () => {
           : session));
       }
       activeStreamSessionIdRef.current = null;
+      activeStreamRouteSessionIdRef.current = null;
       void refreshSessions();
     },
     onInterrupted: (text) => {
@@ -205,7 +212,10 @@ const ChatView: React.FC = () => {
       window.location.href = apiUrl(`/api/v1/auth/hf/login?return_to=${encodeURIComponent("/chat")}`);
       return;
     }
+    const streamRouteSessionId = routeSessionIdRef.current ?? null;
     if (!sendChat(text)) return;
+    activeStreamRouteSessionIdRef.current = streamRouteSessionId;
+    activeStreamSessionIdRef.current = streamRouteSessionId;
     clearQueuedChatLaunch();
     setDraft("");
   }, [selectedModel, sendChat, user]);
@@ -251,7 +261,7 @@ const ChatView: React.FC = () => {
     setRouteSessionState((previous) => previous?.id === routeSessionId && previous.status === "loading"
       ? previous
       : { id: routeSessionId, status: "loading" });
-    if (authLoading || !user || chat.busy) return;
+    if (authLoading || !user) return;
 
     let cancelled = false;
     setSessionError("");
@@ -270,7 +280,8 @@ const ChatView: React.FC = () => {
       setRouteSessionState({ id: routeSessionId, status: "error", error: message });
     });
     return () => { cancelled = true; };
-    // Loading is intentionally keyed to the route, not streaming state.
+    // Loading is intentionally keyed to the route. `chat.load` detaches the
+    // visible transcript without cancelling an active stream.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, routeSessionId, user, chat.busy, routeLoadAttempt]);
 

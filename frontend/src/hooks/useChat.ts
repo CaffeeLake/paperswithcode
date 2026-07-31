@@ -62,6 +62,7 @@ export function useChat(options: UseChatOptions) {
     renderedSessionIdRef.current = options.sessionId;
     if (activeSessionIdRef.current !== options.sessionId) {
       messagesGenerationRef.current += 1;
+      browserTimingRef.current = null;
     }
   }
   optionsRef.current = options;
@@ -361,18 +362,30 @@ export function useChat(options: UseChatOptions) {
             streamFailed = event.type === "error";
             recordTerminal(controller, event.type === "error" ? "error" : "complete");
           }
-          if (!controller.signal.aborted) applyEvent(event);
+          const projectsToVisibleConversation = messagesGenerationRef.current === messagesGeneration;
+          if (
+            !controller.signal.aborted
+            && (projectsToVisibleConversation
+              || event.type === "stream_start"
+              || event.type === "session_title_start"
+              || event.type === "session_title_delta"
+              || event.type === "session_title_done")
+          ) {
+            applyEvent(event);
+          }
         }
       } catch (error) {
         streamFailed = true;
         if (!controller.signal.aborted) {
           clearWorkspaceStatus(controller);
           recordTerminal(controller, "network_error");
-          applyEvent({
-            type: "error",
-            message: error instanceof Error ? error.message : "The assistant stream failed.",
-            code: error instanceof ChatStreamError ? error.code : undefined,
-          });
+          if (messagesGenerationRef.current === messagesGeneration) {
+            applyEvent({
+              type: "error",
+              message: error instanceof Error ? error.message : "The assistant stream failed.",
+              code: error instanceof ChatStreamError ? error.code : undefined,
+            });
+          }
         }
       } finally {
         if (abortRef.current === controller) {
@@ -385,11 +398,16 @@ export function useChat(options: UseChatOptions) {
           if (!controller.signal.aborted) {
             const canonicalId = activeSessionIdRef.current;
             if (edit && !sawStreamStart) {
-              setMessages(edit.snapshot);
-              messagesRef.current = edit.snapshot;
-              setSessionError("Couldn’t resend this message. Your original conversation was restored.");
+              if (messagesGenerationRef.current === messagesGeneration) {
+                setMessages(edit.snapshot);
+                messagesRef.current = edit.snapshot;
+                setSessionError("Couldn’t resend this message. Your original conversation was restored.");
+              }
             } else if (canonicalId) {
-              if (edit && !edit.first && (streamFailed || !sawTerminalEvent)) {
+              if (
+                messagesGenerationRef.current === messagesGeneration
+                && edit && !edit.first && (streamFailed || !sawTerminalEvent)
+              ) {
                 setMessages(edit.snapshot);
                 messagesRef.current = edit.snapshot;
               }
@@ -407,7 +425,7 @@ export function useChat(options: UseChatOptions) {
                   patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
                 }
               }
-            } else {
+            } else if (messagesGenerationRef.current === messagesGeneration) {
               patchLast((message) => message.streaming ? { ...message, streaming: false } : message);
             }
             optionsRef.current.onSettled(canonicalId);
@@ -555,12 +573,16 @@ export function useChat(options: UseChatOptions) {
       preparingTimerRef.current = null;
     }
     workspaceStatusStateRef.current = "cleared";
-    abortRef.current?.abort();
-    abortRef.current = null;
     browserTimingRef.current = null;
-    busyRef.current = false;
+    // A route change may replace the visible transcript while another chat is
+    // still generating. Keep that stream alive, but its generation token above
+    // prevents subsequent events from being projected into this transcript.
+    if (!busyRef.current) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    }
     setMessages(restored);
-    setBusy(false);
+    if (!busyRef.current) setBusy(false);
     setSessionError("");
   }, []);
 

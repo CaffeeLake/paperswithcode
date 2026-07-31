@@ -272,6 +272,34 @@ describe("ChatView focus refresh", () => {
   });
 });
 
+describe("ChatView navigation", () => {
+  it("loads an earlier conversation while another response is generating", async () => {
+    const earlierSession = {
+      ...session,
+      id: "33333333-3333-4333-8333-333333333333",
+      title: "Earlier chat",
+      updated_at: "2026-07-27T20:00:00Z",
+    };
+    mocks.busy = true;
+    mocks.listSessions.mockResolvedValue([session, earlierSession]);
+    mocks.getSession.mockImplementation(async (id: string) => ({
+      ...(id === earlierSession.id ? earlierSession : session),
+      transcript_status: "ready",
+      messages: [],
+    }));
+    const user = userEvent.setup();
+    renderChat();
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(1));
+    mocks.load.mockClear();
+
+    await user.click(await screen.findByText("Earlier chat", { selector: ".chat-session-title" }));
+
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(earlierSession.id));
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatView new-session sidebar", () => {
   it("inserts the session at stream start and applies streamed title deltas", async () => {
     mocks.listSessions.mockResolvedValue([]);
