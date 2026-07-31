@@ -35,6 +35,7 @@ from backend.models.chat import (
     sse_event,
 )
 from backend.models.database import ChatMessageRecord, ChatSession
+from backend.routers.inference_billing import inference_token_for_request
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import (
@@ -328,6 +329,15 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled or not settings.hf_token:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    inference_token = inference_token_for_request(request, user, settings)
+    if not inference_token:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "hf_inference_billing_required",
+                "message": "Connect Hugging Face billing in Settings to use chat.",
+            },
+        )
     if not deployment_lifecycle.status().accepting_chat_turns:
         raise HTTPException(
             status_code=503,
@@ -340,7 +350,7 @@ async def stream_chat(
             detail="Chat capacity is currently occupied",
             headers={"Retry-After": "5"},
         )
-    owner = owner_from_user(user)
+    owner = owner_from_user(user, inference_token=inference_token)
     retry_after = await _rate_limiter.check(
         owner.hf_user_id,
         settings.chat_requests_per_minute,

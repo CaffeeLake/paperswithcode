@@ -1,28 +1,108 @@
 /**
  * Account settings view (`/settings`).
  *
- * Houses display preferences that used to live in the avatar dropdown. The
- * first (and currently only) preference is `hide_closed_source_evals`, wired to
- * the shared `usePreferences()` context. Signed-in users have their choice
- * persisted server-side; guests can still toggle it for the current session but
- * are nudged to sign in so it sticks.
+ * Houses display preferences and the user-funded Hugging Face Inference
+ * Providers connection used by research chat. Display preferences persist
+ * server-side for signed-in users and remain session-local for guests.
  */
 
 import React from "react";
-import { Monitor, Moon, Sun } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
+import { apiUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
-import { usePreferences } from "@/lib/preferencesContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
+import { usePreferences } from "@/lib/preferencesContext";
+
+interface InferenceBillingStatus {
+  connected: boolean;
+  account_type: string | null;
+  monthly_credits_usd: number | null;
+  pay_as_you_go: boolean;
+  requests_per_minute: number;
+  requests_per_day: number;
+  usage_url: string;
+  token_url: string;
+}
 
 const SettingsView: React.FC = () => {
   const { user } = useAuth();
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
+  const [billingToken, setBillingToken] = React.useState("");
+  const [billingError, setBillingError] = React.useState("");
+  const queryClient = useQueryClient();
+  const billingQuery = useQuery({
+    queryKey: ["inference-billing", user?.hf_subject],
+    enabled: Boolean(user),
+    queryFn: async () => {
+      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("Could not load billing status.");
+      return (await response.json()) as InferenceBillingStatus;
+    },
+  });
+  const billing = billingQuery.data ?? null;
+  const connectMutation = useMutation({
+    mutationFn: async (token: string) => {
+      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.detail === "string" ? payload.detail : "Could not connect this token.",
+        );
+      }
+      return payload as InferenceBillingStatus;
+    },
+    onSuccess: (status) => {
+      queryClient.setQueryData(["inference-billing", user?.hf_subject], status);
+      setBillingToken("");
+      setBillingError("");
+    },
+    onError: (error) => {
+      setBillingError(error instanceof Error ? error.message : "Could not connect this token.");
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Could not disconnect billing.");
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["inference-billing", user?.hf_subject],
+      });
+    },
+    onError: () => setBillingError("Could not disconnect billing."),
+  });
+  const billingLoading =
+    billingQuery.isLoading || connectMutation.isPending || disconnectMutation.isPending;
+
+  const connectBilling = (event: React.FormEvent) => {
+    event.preventDefault();
+    setBillingError("");
+    connectMutation.mutate(billingToken);
+  };
+
+  const disconnectBilling = () => {
+    setBillingError("");
+    disconnectMutation.mutate();
+  };
 
   React.useEffect(() => {
     document.title = formatPageTitle("Settings");
@@ -43,6 +123,121 @@ const SettingsView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <section className="settings-section">
+        <h2 className="settings-section-title">Chat usage &amp; billing</h2>
+        {!user ? (
+          <div className="settings-note settings-note-flush">
+            <span>
+              Sign in to connect your Hugging Face account for research chat.
+              Model usage is billed by Hugging Face, not Papers With Code.
+            </span>
+            <div className="settings-note-action">
+              <HfSignInButton returnTo="/settings" />
+            </div>
+          </div>
+        ) : billingLoading && !billing ? (
+          <div className="settings-billing-loading">Checking Hugging Face billing…</div>
+        ) : billing?.connected ? (
+          <div className="settings-billing">
+            <div className="settings-plan-row">
+              <div>
+                <div className="settings-row-label">Hugging Face {billing.account_type}</div>
+                <div className="settings-row-desc">
+                  ${billing.monthly_credits_usd?.toFixed(2)} included each month,
+                  then pay as you go through your HF account.
+                </div>
+              </div>
+              <span className="settings-connected-badge">Connected</span>
+            </div>
+            <div
+              className="settings-usage-track"
+              role="img"
+              aria-label={`$${billing.monthly_credits_usd?.toFixed(2)} monthly Hugging Face inference credit`}
+            >
+              <span />
+            </div>
+            <div className="settings-usage-scale">
+              <span>Monthly included credit</span>
+              <strong>${billing.monthly_credits_usd?.toFixed(2)}</strong>
+            </div>
+            <div className="settings-limit-grid">
+              <div>
+                <strong>{billing.requests_per_minute}</strong>
+                <span>chat starts / minute</span>
+              </div>
+              <div>
+                <strong>{billing.requests_per_day}</strong>
+                <span>chat starts / day</span>
+              </div>
+            </div>
+            <p className="settings-billing-help">
+              Hugging Face maintains the authoritative spend and provider breakdown.
+              Credits and paid usage can vary by model and provider.
+            </p>
+            <div className="settings-billing-actions">
+              <a
+                className="button button-primary"
+                href={billing.usage_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                View live usage <ExternalLink aria-hidden="true" />
+              </a>
+              <button
+                type="button"
+                className="button"
+                onClick={() => void disconnectBilling()}
+                disabled={billingLoading}
+              >
+                Disconnect
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form className="settings-billing-connect" onSubmit={(event) => void connectBilling(event)}>
+            <p className="settings-row-desc">
+              Connect a fine-grained token with <strong>Inference Providers</strong>{" "}
+              permission. The token must belong to @{user.username}. It is encrypted
+              in an HTTP-only cookie and model requests are billed directly to this
+              HF account.
+            </p>
+            <label htmlFor="hf-inference-token" className="settings-token-label">
+              Hugging Face token
+            </label>
+            <input
+              id="hf-inference-token"
+              type="password"
+              autoComplete="off"
+              value={billingToken}
+              onChange={(event) => setBillingToken(event.target.value)}
+              placeholder="hf_…"
+              required
+            />
+            {billingError && <div className="settings-token-error">{billingError}</div>}
+            <div className="settings-billing-actions">
+              <button
+                type="submit"
+                className="button button-primary"
+                disabled={billingLoading || !billingToken.trim()}
+              >
+                {billingLoading ? "Connecting…" : "Connect billing"}
+              </button>
+              <a
+                className="button"
+                href={
+                  billing?.token_url ??
+                  "https://huggingface.co/settings/tokens/new?tokenType=fineGrained"
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
+                Create token <ExternalLink aria-hidden="true" />
+              </a>
+            </div>
+          </form>
+        )}
+      </section>
 
       <section className="settings-section">
         <h2 className="settings-section-title">Appearance</h2>

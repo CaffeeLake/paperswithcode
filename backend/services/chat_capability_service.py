@@ -11,7 +11,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.config import Settings
 from backend.models.database import ChatTurnCapability
+from backend.services.hf_inference_billing_service import decrypt_token, encrypt_token
 
 
 class CapabilityError(RuntimeError):
@@ -39,6 +41,8 @@ class ChatCapabilityService:
         chat_session_id: uuid.UUID,
         turn_id: uuid.UUID,
         owner_id: str,
+        provider_token: str | None = None,
+        settings: Settings | None = None,
         model: str,
         scopes: set[str],
         sdk_session_id: uuid.UUID | None = None,
@@ -56,6 +60,11 @@ class ChatCapabilityService:
             turn_id=turn_id,
             sdk_session_id=sdk_session_id,
             owner_hash=_digest(owner_id),
+            provider_token_encrypted=(
+                encrypt_token(provider_token, _digest(owner_id), settings)
+                if provider_token and settings
+                else None
+            ),
             model=model,
             scopes=sorted(scopes),
             nonce=secrets.token_hex(16),
@@ -64,6 +73,14 @@ class ChatCapabilityService:
         self.db.add(row)
         self.db.flush()
         return IssuedCapability(token, row.id, expires_at)
+
+    @staticmethod
+    def provider_token(
+        row: ChatTurnCapability, owner_id: str, settings: Settings
+    ) -> str | None:
+        if not row.provider_token_encrypted:
+            return None
+        return decrypt_token(row.provider_token_encrypted, owner_id, settings)
 
     def validate(
         self,

@@ -48,6 +48,7 @@ class ChatServiceError(Exception):
 class ChatOwner:
     hf_user_id: str
     hf_username: str
+    hf_inference_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,8 +84,12 @@ class TurnAdmission:
     system_prompt_sha256: str = ""
 
 
-def owner_from_user(user: dict) -> ChatOwner:
-    return ChatOwner(hf_user_id=user["hf_user_id"], hf_username=user["username"])
+def owner_from_user(user: dict, *, inference_token: str | None = None) -> ChatOwner:
+    return ChatOwner(
+        hf_user_id=user["hf_user_id"],
+        hf_username=user["username"],
+        hf_inference_token=inference_token,
+    )
 
 
 def _now() -> datetime:

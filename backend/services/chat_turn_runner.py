@@ -38,19 +38,27 @@ class LocalChatTurnRunner:
         prompt: str,
         resume_id: uuid.UUID | None,
         store: PostgresSDKSessionStore,
+        owner: ChatOwner,
     ):
         self.settings = settings
         self.admission = admission
         self.prompt = prompt
         self.resume_id = resume_id
         self.store = store
+        self.owner = owner
         self.sdk_directory = settings.chat_agent_cwd
 
     async def events(self) -> AsyncIterator[dict]:
         yield {"type": "workspace_ready"}
+        provider_settings = self.settings.model_copy(
+            update={
+                "hf_token": self.owner.hf_inference_token,
+                "chat_hf_bill_to": "",
+            }
+        )
         async for event in stream_agent_events(
             self.prompt,
-            self.settings,
+            provider_settings,
             model_route=self.admission.model_route,
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,
@@ -148,6 +156,7 @@ def create_chat_turn_runner(
             prompt=prompt,
             resume_id=resume_id,
             store=store,
+            owner=owner,
         )
     if admission.execution_backend != "modal_cli":
         raise ValueError(
@@ -158,6 +167,8 @@ def create_chat_turn_runner(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,
             owner_id=owner.hf_user_id,
+            provider_token=owner.hf_inference_token,
+            settings=settings,
             model=admission.model_route,
             scopes={"model", "catalog", "session_store", "web_fetch"},
             sdk_session_id=resume_id,

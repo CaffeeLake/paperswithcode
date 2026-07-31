@@ -760,6 +760,11 @@ def test_chat_endpoint_requires_authentication(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
     monkeypatch.setattr(settings, "hf_token", "test-token")
+    monkeypatch.setattr(
+        chat_router,
+        "inference_token_for_request",
+        lambda *_args: "user-inference-token",
+    )
     with TestClient(create_app()) as client:
         response = client.post(
             "/api/v1/chat/stream",
@@ -826,6 +831,11 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
     monkeypatch.setattr(settings, "hf_token", "test-token")
+    monkeypatch.setattr(
+        chat_router,
+        "inference_token_for_request",
+        lambda *_args: "user-inference-token",
+    )
 
     class FakeRunner:
         sdk_directory = settings.chat_agent_cwd
@@ -940,6 +950,11 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
     monkeypatch.setattr(settings, "hf_token", "test-token")
+    monkeypatch.setattr(
+        chat_router,
+        "inference_token_for_request",
+        lambda *_args: "user-inference-token",
+    )
     monkeypatch.setattr(chat_router, "_admission", NoCapacity())
     app = create_app()
     app.dependency_overrides[require_user] = lambda: {

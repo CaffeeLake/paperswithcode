@@ -344,6 +344,7 @@ def create_app() -> FastAPI:
         bookmarks,
         contributions,
         preferences,
+        inference_billing,
         pending_edits,
         conferences,
         organizations,
@@ -361,6 +362,9 @@ def create_app() -> FastAPI:
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
     app.include_router(contributions.router, prefix="/api/v1", tags=["contributions"])
     app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])
+    app.include_router(
+        inference_billing.router, prefix="/api/v1", tags=["inference-billing"]
+    )
     app.include_router(pending_edits.router, prefix="/api/v1", tags=["pending_edits"])
     app.include_router(papers.router, prefix="/api/v1", tags=["papers"])
     app.include_router(research_catalog.router, prefix="/api/v1", tags=["research"])

@@ -2362,7 +2362,7 @@ class ChatTurnLatency(Base):
 
 
 class ChatTurnCapability(Base):
-    """Hash-only, short-lived authorization held by the isolated broker."""
+    """Short-lived authorization and encrypted provider credential."""
 
     __tablename__ = "chat_turn_capabilities"
 
@@ -2378,6 +2378,7 @@ class ChatTurnCapability(Base):
         UUID(as_uuid=True), nullable=True
     )
     owner_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     scopes: Mapped[list] = mapped_column(JSONB, nullable=False)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
