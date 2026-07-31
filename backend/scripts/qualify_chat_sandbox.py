@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from modal.exception import NotFoundError
+from modal.exception import ConflictError, NotFoundError
 from modal.stream_type import StreamType
 
 from backend.config import Settings
@@ -349,7 +349,7 @@ fi
                     *command,
                     timeout=timeout,
                 )
-            except NotFoundError:
+            except (ConflictError, NotFoundError):
                 if expect_success:
                     raise
                 return
@@ -362,7 +362,7 @@ fi
         finally:
             try:
                 await sandbox.terminate.aio(wait=False)
-            except NotFoundError:
+            except (ConflictError, NotFoundError):
                 pass
 
     async def run_resource_probes(self) -> dict[str, str]:

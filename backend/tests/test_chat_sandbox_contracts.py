@@ -1771,7 +1771,16 @@ def test_resource_probe_treats_ephemeral_disk_as_provider_managed(monkeypatch):
     assert probes == ["pids", "memory"]
 
 
-def test_resource_probe_accepts_provider_kill_as_expected_limit(monkeypatch):
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        qualify_chat_sandbox.NotFoundError("gone"),
+        qualify_chat_sandbox.ConflictError("shutting down"),
+    ],
+)
+def test_resource_probe_accepts_provider_kill_as_expected_limit(
+    monkeypatch, provider_error
+):
     settings = type(
         "Settings",
         (),
@@ -1793,7 +1802,7 @@ def test_resource_probe_accepts_provider_kill_as_expected_limit(monkeypatch):
         return Sandbox()
 
     async def provider_killed(*_args, **_options):
-        raise qualify_chat_sandbox.NotFoundError("gone")
+        raise provider_error
 
     monkeypatch.setattr(runner, "_create", create)
     monkeypatch.setattr(qualify_chat_sandbox, "_exec", provider_killed)
