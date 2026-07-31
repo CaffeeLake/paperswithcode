@@ -62,13 +62,17 @@ class SDKEventAdapter:
         events: list[dict[str, Any]] = []
         index = int(raw.get("index", 0))
         if kind == "message_start":
+            events.extend(self._close_reasoning())
             self.saw_text_delta = False
             self.saw_thinking_delta = False
+            self.block_kinds.clear()
+            self.tool_blocks.clear()
         elif kind == "content_block_start":
             block = raw.get("content_block") or {}
             block_kind = block.get("type", "")
             self.block_kinds[index] = block_kind
             if block_kind == "thinking" and self.show_reasoning:
+                events.extend(self._close_reasoning())
                 self.reasoning_open = True
                 events.append({"type": "reasoning_start"})
             elif block_kind == "tool_use":
@@ -147,6 +151,7 @@ class SDKEventAdapter:
                     )
                 elif isinstance(block, ThinkingBlock) and not self.saw_thinking_delta:
                     if self.show_reasoning and block.thinking:
+                        events.extend(self._close_reasoning())
                         events.extend(
                             [
                                 {"type": "reasoning_start"},

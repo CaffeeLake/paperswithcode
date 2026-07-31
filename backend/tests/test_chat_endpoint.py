@@ -564,6 +564,54 @@ def test_sdk_adapter_does_not_reset_partial_flags_on_intermediate_snapshots():
     ]
 
 
+def test_sdk_adapter_closes_reasoning_before_next_message_start():
+    adapter = SDKEventAdapter(show_reasoning=True)
+    messages = [
+        StreamEvent(
+            uuid="1", session_id="s", event={"type": "message_start", "message": {}}
+        ),
+        StreamEvent(
+            uuid="2",
+            session_id="s",
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking"},
+            },
+        ),
+        StreamEvent(
+            uuid="3",
+            session_id="s",
+            event={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "First"},
+            },
+        ),
+        StreamEvent(
+            uuid="4", session_id="s", event={"type": "message_start", "message": {}}
+        ),
+        StreamEvent(
+            uuid="5",
+            session_id="s",
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking"},
+            },
+        ),
+    ]
+
+    events = [event for message in messages for event in adapter.feed(message)]
+
+    assert [event["type"] for event in events] == [
+        "reasoning_start",
+        "reasoning_delta",
+        "reasoning_end",
+        "reasoning_start",
+    ]
+
+
 def test_sdk_adapter_surfaces_hugging_face_billing_errors():
     adapter = SDKEventAdapter(show_reasoning=False)
 

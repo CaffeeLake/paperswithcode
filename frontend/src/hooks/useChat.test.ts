@@ -170,6 +170,31 @@ describe("useChat reasoning projection", () => {
       open: false,
     }]);
   });
+
+  it("keeps Luna reasoning blocks sequential across delayed boundaries", async () => {
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: "session-1" },
+      { type: "reasoning_start" },
+      { type: "reasoning_delta", text: "First plan" },
+      { type: "reasoning_start" },
+      { type: "reasoning_delta", text: "Second plan" },
+      { type: "tool_call", id: "tool-1", name: "Bash", args: {} },
+      { type: "reasoning_end" },
+      { type: "done", followups: [], finish_reason: "success" },
+    )());
+    const { result } = renderChat();
+
+    act(() => result.current.send("What changed?"));
+
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    const reasoning = result.current.messages.at(-1)?.blocks?.filter(
+      (block) => block.kind === "reasoning",
+    );
+    expect(reasoning).toEqual([
+      { kind: "reasoning", text: "First plan", active: false, open: false },
+      { kind: "reasoning", text: "Second plan", active: false, open: false },
+    ]);
+  });
 });
 
 describe("useChat editAndResend", () => {

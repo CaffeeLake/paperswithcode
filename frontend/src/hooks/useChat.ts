@@ -203,7 +203,15 @@ export function useChat(options: UseChatOptions) {
         optionsRef.current.onTitle(event.title);
         break;
       case "reasoning_start":
-        addBlock({ kind: "reasoning", text: "", active: true, open: true });
+        patchLast((message) => ({
+          ...message,
+          blocks: [
+            ...(message.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
+              ? { ...block, active: false, open: false }
+              : block),
+            { kind: "reasoning", text: "", active: true, open: true },
+          ],
+        }));
         break;
       case "reasoning_delta":
         patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block);
@@ -211,15 +219,25 @@ export function useChat(options: UseChatOptions) {
       case "reasoning_end":
         patchLast((message) => {
           const blocks = message.blocks ?? [];
-          const current = blocks.at(-1);
-          if (current?.kind !== "reasoning") return message;
-          const previous = blocks.at(-2);
+          const currentIndex = findLastMatchingIndex(
+            blocks,
+            (block) => block.kind === "reasoning" && block.active,
+          );
+          if (currentIndex < 0) return message;
+          const current = blocks[currentIndex];
+          if (current.kind !== "reasoning") return message;
+          const previous = blocks[currentIndex - 1];
           if (previous?.kind === "reasoning" && previous.text === current.text) {
-            return { ...message, blocks: blocks.slice(0, -1) };
+            return {
+              ...message,
+              blocks: blocks.filter((_block, index) => index !== currentIndex),
+            };
           }
           return {
             ...message,
-            blocks: [...blocks.slice(0, -1), { ...current, active: false, open: false }],
+            blocks: blocks.map((block, index) => index === currentIndex
+              ? { ...current, active: false, open: false }
+              : block),
           };
         });
         break;
@@ -242,7 +260,7 @@ export function useChat(options: UseChatOptions) {
         });
         break;
       case "done":
-        patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block) }));
+        patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block.kind === "reasoning" && block.active ? { ...block, active: false, open: false } : block) }));
         break;
       case "error":
         patchLast((message) => ({
@@ -250,6 +268,9 @@ export function useChat(options: UseChatOptions) {
           streaming: false,
           error: event.message,
           errorCode: event.code,
+          blocks: (message.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
+            ? { ...block, active: false, open: false }
+            : block),
         }));
         break;
     }
