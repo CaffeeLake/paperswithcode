@@ -22,6 +22,8 @@ from backend.models.database import ChatSandboxLease, ChatTurnLatency
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.scripts.staging_qualification_http import client as staging_client
+from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_SOAK"
 PROMPT = "Reply with one concise acknowledgement."
@@ -55,6 +57,7 @@ async def _turn(
     message: str | None = None,
 ) -> TurnResult:
     token = _token(settings, subject)
+    billing = encrypt_token(settings.hf_token, subject, settings)
     payload: dict[str, Any] = {
         "message": message or (LONG_PROMPT if cancel_mode is not None else PROMPT),
         "client_message_id": str(uuid.uuid4()),
@@ -73,7 +76,7 @@ async def _turn(
     started = time.perf_counter()
     async with staging_client(  # noqa: SIM117
         timeout=240,
-        cookies={settings.session_cookie_name: token},
+        cookies={settings.session_cookie_name: token, COOKIE_NAME: billing},
     ) as client:
         async with client.stream(
             "POST",
@@ -230,6 +233,36 @@ async def _run(
 
     latency = _latency_rows(session_ids, started_at) if session_ids else []
     latency_by_request = {str(row.request_id): row for row in latency}
+    scenarios = {
+        result.request_id: "reliability"
+        for result in normal_turns
+        if result.request_id is not None
+    }
+    scenarios.update(
+        {
+            result.request_id: "clean_cancel"
+            for result in cancellations_landed
+            if result.request_id is not None
+        }
+    )
+    scenarios.update(
+        {
+            result.request_id: "forced_failure"
+            for result in forced_landed
+            if result.request_id is not None
+        }
+    )
+    with db_manager.session_local() as db:
+        service = ChatLatencyService(db)
+        marked = sum(
+            service.mark_qualification(
+                request_id,
+                run_id=run_id,
+                scenario=scenario,
+            )
+            for request_id, scenario in scenarios.items()
+        )
+        db.commit()
     followup_rows = [row for row in latency if row.traffic_class == "followup"]
     clean_cancellations = sum(
         result.request_id is not None
@@ -255,6 +288,7 @@ async def _run(
         and len(followup_rows) == expected_followups
         and clean_cancellations == cancellations
         and forced_failures == forced_cancellations
+        and marked == len(scenarios)
         and (sessions == 0 or cross_owner_rejected)
         and (sessions == 0 or followups < 2 or model_switched)
     )
@@ -277,6 +311,7 @@ async def _run(
             "forced_cancellation_failures": forced_failures,
             "cross_owner_rejected": cross_owner_rejected,
             "model_switched": model_switched,
+            "qualification_rows_marked": marked,
             "error_codes": sorted(
                 {result.error_code for result in turns if result.error_code is not None}
             ),
@@ -314,6 +349,8 @@ def main() -> int:
     settings = settings_for_release(args.release_dir).model_copy(
         update={
             "session_cookie_name": environment.session_cookie_name,
+            "jwt_secret": environment.jwt_secret,
+            "hf_token": environment.hf_token,
             "chat_gemma_route": environment.chat_gemma_route,
             "chat_glm_route": environment.chat_glm_route,
             "chat_kimi_route": environment.chat_kimi_route,

@@ -448,6 +448,7 @@ class _ChatSchemaDB:
         include_share_constraint: bool = True,
         include_pool_columns: bool = True,
         include_latency_columns: bool = True,
+        include_qualification_columns: bool = True,
     ):
         self.transaction_read_only = transaction_read_only
         self.include_edit_columns = include_edit_columns
@@ -455,6 +456,7 @@ class _ChatSchemaDB:
         self.include_share_constraint = include_share_constraint
         self.include_pool_columns = include_pool_columns
         self.include_latency_columns = include_latency_columns
+        self.include_qualification_columns = include_qualification_columns
 
     def execute(self, statement):
         sql = str(statement)
@@ -509,6 +511,13 @@ class _ChatSchemaDB:
                         ("chat_turn_latency", "estimated_active_cost_usd"),
                     ]
                 )
+            if self.include_qualification_columns:
+                rows.extend(
+                    [
+                        ("chat_turn_latency", "qualification_run_id"),
+                        ("chat_turn_latency", "qualification_scenario"),
+                    ]
+                )
             return _ChatSchemaResult(rows=rows)
         if "chat_shares_messages_array_check" in sql:
             return _ChatSchemaResult(
@@ -524,6 +533,11 @@ def test_chat_schema_rejects_read_only_staging_connection():
 
 def test_chat_schema_accepts_writable_staging_connection():
     validate_chat_schema(_ChatSchemaDB("off"))
+
+
+def test_chat_schema_requires_qualification_metadata_columns():
+    with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
+        validate_chat_schema(_ChatSchemaDB("off", include_qualification_columns=False))
 
 
 def test_chat_schema_requires_typed_edit_preparation_columns():

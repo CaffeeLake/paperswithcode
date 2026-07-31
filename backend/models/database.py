@@ -2290,6 +2290,12 @@ class ChatTurnLatency(Base):
     system_prompt_sha256: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
+    qualification_run_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    qualification_scenario: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
     sandbox_cpu_request: Mapped[Optional[float]] = mapped_column(
         Numeric(8, 3), nullable=True
     )
@@ -2355,6 +2361,11 @@ class ChatTurnLatency(Base):
             "browser_terminal_classification IN "
             "('complete','stopped','error','network_error','aborted')",
             name="chat_turn_latency_browser_terminal_check",
+        ),
+        CheckConstraint(
+            "qualification_scenario IS NULL OR qualification_scenario IN "
+            "('focused_latency','reliability','clean_cancel','forced_failure')",
+            name="chat_turn_latency_qualification_scenario_check",
         ),
         Index("idx_chat_turn_latency_admitted", "admitted_at", "turn_id"),
         Index("idx_chat_turn_latency_session", "chat_session_id"),

@@ -138,8 +138,10 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway`.
    The dedicated host exposes only the four capability-authenticated gateway
    routes.
-4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`, then
-   `add_chat_sandbox_pool.sql`, as PostgreSQL superuser with
+4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`,
+   `add_chat_sandbox_pool.sql`, `add_chat_active_cost.sql`,
+   `add_chat_user_billing.sql`, and `add_chat_qualification_metadata.sql` as
+   PostgreSQL superuser with
    `search_path=staging,public`. Both migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
    revoke the production application role. The pool migration remains required
@@ -184,6 +186,34 @@ project. It emits timings and no environment values, commands, prompts,
 credentials, or tool output. Full model,
 SDK compaction, resume, edit/retry, and citation qualification still runs
 through authenticated staging chats before increasing the rollout percentage.
+
+The release-scoped reliability gate uses explicit qualification metadata rather
+than synthetic usernames. Run the naturally paced SLO cohort and the broader
+follow-up/cancellation matrix from the active immutable release, then audit the
+same exact release and start time:
+
+```bash
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.qualify_chat_latency \
+  --sessions 25 \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm QUALIFY_STAGING_CHAT_LATENCY
+
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.qualify_chat_soak \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm QUALIFY_STAGING_CHAT_SOAK
+
+uv run --env-file /etc/paperswithcode/staging.env python \
+  -m backend.scripts.audit_chat_soak \
+  --started-at <candidate-activation-time> \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm AUDIT_STAGING_CHAT_SOAK
+```
+
+The auditor reads all legacy and blue/green staging journal units, reports only
+content-free error codes and aggregates, scopes health and SLO gates to the
+active release, and keeps insufficient pre-soak samples distinct from failures.
 
 ## Release cleanup
 

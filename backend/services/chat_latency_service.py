@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import (
+    ChatMessageRecord,
     ChatSession,
     ChatTurnLatency,
 )
@@ -61,6 +62,12 @@ BROWSER_TERMINAL_CLASSIFICATIONS = {
     "error",
     "network_error",
     "aborted",
+}
+QUALIFICATION_SCENARIOS = {
+    "focused_latency",
+    "reliability",
+    "clean_cancel",
+    "forced_failure",
 }
 
 
@@ -213,31 +220,60 @@ class ChatLatencyService:
             turn_id, "provider_gateway_received", elapsed_ms
         )
 
+    def mark_qualification(
+        self,
+        request_id: str,
+        *,
+        run_id: str,
+        scenario: str,
+    ) -> bool:
+        if scenario not in QUALIFICATION_SCENARIOS:
+            raise ValueError("Unsupported qualification scenario")
+        normalized_run_id = run_id.strip()
+        if not normalized_run_id or len(normalized_run_id) > 64:
+            raise ValueError("qualification run_id must be 1-64 characters")
+        result = self.db.execute(
+            update(ChatTurnLatency)
+            .where(
+                ChatTurnLatency.request_id == uuid.UUID(request_id),
+                ChatTurnLatency.qualification_run_id.is_(None),
+                ChatTurnLatency.qualification_scenario.is_(None),
+            )
+            .values(
+                qualification_run_id=normalized_run_id,
+                qualification_scenario=scenario,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        return bool(result.rowcount)
+
+    @staticmethod
+    def _estimated_active_cost(row: ChatTurnLatency, total_ms: int) -> float | None:
+        if (
+            row.execution_backend != "modal_cli"
+            or row.sandbox_cpu_request is None
+            or row.sandbox_memory_request_mib is None
+        ):
+            return None
+        seconds = total_ms / 1000
+        return seconds * (
+            float(row.sandbox_cpu_request) * MODAL_CPU_USD_PER_CORE_SECOND
+            + (row.sandbox_memory_request_mib / 1024) * MODAL_MEMORY_USD_PER_GIB_SECOND
+        )
+
     def finalize(self, request_id: str, status: str, total_ms: int) -> bool:
         if status not in TERMINAL_STATUSES:
             raise ValueError("Unsupported terminal latency status")
         total_ms = _bounded_duration(total_ms, "total_ms")
         now = datetime.now(UTC)
         row = self.db.execute(
-            select(
-                ChatTurnLatency.execution_backend,
-                ChatTurnLatency.sandbox_cpu_request,
-                ChatTurnLatency.sandbox_memory_request_mib,
-            ).where(ChatTurnLatency.request_id == uuid.UUID(request_id))
-        ).one_or_none()
-        estimated_active_cost_usd = None
-        if (
-            row is not None
-            and row.execution_backend == "modal_cli"
-            and row.sandbox_cpu_request is not None
-            and row.sandbox_memory_request_mib is not None
-        ):
-            seconds = total_ms / 1000
-            estimated_active_cost_usd = seconds * (
-                float(row.sandbox_cpu_request) * MODAL_CPU_USD_PER_CORE_SECOND
-                + (row.sandbox_memory_request_mib / 1024)
-                * MODAL_MEMORY_USD_PER_GIB_SECOND
+            select(ChatTurnLatency).where(
+                ChatTurnLatency.request_id == uuid.UUID(request_id)
             )
+        ).scalar_one_or_none()
+        estimated_active_cost_usd = (
+            self._estimated_active_cost(row, total_ms) if row is not None else None
+        )
         result = self.db.execute(
             update(ChatTurnLatency)
             .where(
@@ -254,6 +290,91 @@ class ChatLatencyService:
             )
         )
         return bool(result.rowcount)
+
+    def reconcile_stale_turns(
+        self,
+        *,
+        now: datetime | None = None,
+        batch_size: int = 100,
+    ) -> dict[str, int]:
+        """Finalize telemetry and projections left open past their turn lease."""
+
+        if not 1 <= batch_size <= 1_000:
+            raise ValueError("stale turn batch_size is out of range")
+        current = now or datetime.now(UTC)
+        rows = list(
+            self.db.execute(
+                select(ChatTurnLatency, ChatSession, ChatMessageRecord)
+                .join(
+                    ChatSession,
+                    ChatSession.id == ChatTurnLatency.chat_session_id,
+                )
+                .join(
+                    ChatMessageRecord,
+                    (ChatMessageRecord.session_id == ChatSession.id)
+                    & (ChatMessageRecord.turn_id == ChatTurnLatency.turn_id)
+                    & (ChatMessageRecord.role == "user"),
+                )
+                .where(
+                    ChatTurnLatency.terminal_status == "running",
+                    or_(
+                        ChatSession.active_turn_id.is_(None),
+                        ChatSession.active_turn_id != ChatTurnLatency.turn_id,
+                        ChatSession.active_turn_expires_at.is_(None),
+                        ChatSession.active_turn_expires_at <= current,
+                    ),
+                )
+                .order_by(ChatTurnLatency.admitted_at, ChatTurnLatency.turn_id)
+                .limit(batch_size)
+                .with_for_update(skip_locked=True)
+            ).all()
+        )
+        reconciled = {"complete": 0, "error": 0, "interrupted": 0}
+        for latency, session, message in rows:
+            active_expiry = session.active_turn_expires_at
+            message_was_terminal = message.status in {
+                "complete",
+                "error",
+                "interrupted",
+            }
+            if message.status == "complete":
+                status = "complete"
+            elif message.status == "error":
+                status = "error"
+            else:
+                status = "interrupted"
+                if message.status in {"generating", "preparing"}:
+                    message.status = "interrupted"
+                    message.error_code = "lease_expired"
+            if session.active_turn_id == latency.turn_id:
+                session.active_turn_id = None
+                session.active_turn_expires_at = None
+                session.updated_at = current
+            admitted_at = latency.admitted_at
+            if admitted_at.tzinfo is None:
+                admitted_at = admitted_at.replace(tzinfo=UTC)
+            if message_was_terminal:
+                ended_at = latency.updated_at
+            elif active_expiry is not None:
+                ended_at = min(current, active_expiry)
+            else:
+                ended_at = current
+            if ended_at.tzinfo is None:
+                ended_at = ended_at.replace(tzinfo=UTC)
+            total_ms = min(
+                MAX_DURATION_MS,
+                max(0, round((ended_at - admitted_at).total_seconds() * 1000)),
+            )
+            latency.terminal_status = status
+            latency.total_ms = total_ms
+            latency.estimated_active_cost_usd = self._estimated_active_cost(
+                latency, total_ms
+            )
+            latency.completed_at = ended_at
+            latency.updated_at = current
+            reconciled[status] += 1
+        self.db.flush()
+        return reconciled
 
     def update_browser(
         self,

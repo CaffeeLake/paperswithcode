@@ -112,9 +112,26 @@ async def lifespan(app: FastAPI):
 
         manager = shared_sandbox_manager(settings)
 
+        def reconcile_stale_chat_turns() -> dict[str, int]:
+            with db_manager.session_local() as db:
+                reconciled = ChatLatencyService(db).reconcile_stale_turns()
+                db.commit()
+            if sum(reconciled.values()):
+                logging.getLogger(__name__).warning(
+                    "chat stale turns reconciled complete=%d error=%d interrupted=%d",
+                    reconciled["complete"],
+                    reconciled["error"],
+                    reconciled["interrupted"],
+                )
+            return reconciled
+
+        async def reconcile_stale_latency() -> None:
+            await asyncio.to_thread(reconcile_stale_chat_turns)
+
         async def replenish_pool_at_startup() -> None:
             try:
                 await manager.reconcile()
+                await reconcile_stale_latency()
                 await manager.maintain_pool()
             except Exception as error:
                 logging.getLogger(__name__).warning(
@@ -129,6 +146,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(60)
                 operations = [
                     manager.reconcile,
+                    reconcile_stale_latency,
                     manager.maintain_pool,
                     manager.reap_idle,
                     manager.enforce_warm_cap,

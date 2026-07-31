@@ -7,10 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
-from backend.models.database import Base, ChatSession, ChatTurnLatency
+from backend.models.database import (
+    Base,
+    ChatMessageRecord,
+    ChatSession,
+    ChatTurnLatency,
+)
 from backend.services.chat_latency_service import ChatLatencyService
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_type, _compiler, **_kwargs):
+    return "JSON"
 
 
 def _settings():
@@ -30,7 +42,11 @@ def db():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(
         engine,
-        tables=[ChatSession.__table__, ChatTurnLatency.__table__],
+        tables=[
+            ChatSession.__table__,
+            ChatMessageRecord.__table__,
+            ChatTurnLatency.__table__,
+        ],
     )
     with Session(engine) as session:
         yield session
@@ -68,6 +84,27 @@ def _admit(
         execution_backend="modal_cli",
         is_new_chat=is_new_chat,
     )
+
+
+def _user_message(
+    db: Session,
+    *,
+    session_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    status: str = "generating",
+) -> ChatMessageRecord:
+    message = ChatMessageRecord(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        turn_id=turn_id,
+        sequence=1,
+        role="user",
+        content="content intentionally omitted from telemetry",
+        status=status,
+    )
+    db.add(message)
+    db.flush()
+    return message
 
 
 def test_admit_stores_only_required_opaque_identifiers_and_versions(db):
@@ -138,6 +175,101 @@ def test_record_phase_and_finalize_are_first_write_only(db):
     assert float(row.estimated_active_cost_usd) > 0
     assert row.completed_at is not None
     assert not service.record_phase(str(request_id), "first_worker_delta", 200)
+
+
+def test_mark_qualification_is_explicit_validated_and_first_write_only(db):
+    session_id = _session(db)
+    request_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, request_id=request_id)
+    service = ChatLatencyService(db)
+
+    assert service.mark_qualification(
+        str(request_id), run_id="run-123", scenario="forced_failure"
+    )
+    assert not service.mark_qualification(
+        str(request_id), run_id="run-456", scenario="reliability"
+    )
+    with pytest.raises(ValueError, match="Unsupported qualification scenario"):
+        service.mark_qualification(
+            str(uuid.uuid4()), run_id="run-123", scenario="unknown"
+        )
+    db.refresh(row)
+
+    assert row.qualification_run_id == "run-123"
+    assert row.qualification_scenario == "forced_failure"
+
+
+def test_reconcile_stale_turns_repairs_expired_projection_and_latency(db):
+    now = datetime(2026, 7, 31, 12, tzinfo=UTC)
+    session_id = _session(db)
+    turn_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, turn_id=turn_id)
+    message = _user_message(db, session_id=session_id, turn_id=turn_id)
+    session = db.get(ChatSession, session_id)
+    session.active_turn_id = turn_id
+    session.active_turn_expires_at = now - timedelta(seconds=1)
+    row.admitted_at = now - timedelta(minutes=4)
+    db.flush()
+
+    reconciled = ChatLatencyService(db).reconcile_stale_turns(now=now)
+    db.refresh(row)
+    db.refresh(message)
+    db.refresh(session)
+
+    assert reconciled == {"complete": 0, "error": 0, "interrupted": 1}
+    assert row.terminal_status == "interrupted"
+    assert row.total_ms == 239_000
+    assert row.completed_at.replace(tzinfo=UTC) == now - timedelta(seconds=1)
+    assert float(row.estimated_active_cost_usd) > 0
+    assert message.status == "interrupted"
+    assert message.error_code == "lease_expired"
+    assert session.active_turn_id is None
+    assert session.active_turn_expires_at is None
+
+
+@pytest.mark.parametrize(
+    ("message_status", "expected"),
+    [("complete", "complete"), ("error", "error"), ("interrupted", "interrupted")],
+)
+def test_reconcile_stale_turns_follows_persisted_terminal_projection(
+    db, message_status, expected
+):
+    now = datetime(2026, 7, 31, 12, tzinfo=UTC)
+    session_id = _session(db)
+    turn_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, turn_id=turn_id)
+    _user_message(
+        db,
+        session_id=session_id,
+        turn_id=turn_id,
+        status=message_status,
+    )
+    row.admitted_at = now - timedelta(minutes=1)
+    db.flush()
+
+    reconciled = ChatLatencyService(db).reconcile_stale_turns(now=now)
+    db.refresh(row)
+
+    assert reconciled[expected] == 1
+    assert row.terminal_status == expected
+
+
+def test_reconcile_stale_turns_leaves_an_unexpired_active_turn_running(db):
+    now = datetime(2026, 7, 31, 12, tzinfo=UTC)
+    session_id = _session(db)
+    turn_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, turn_id=turn_id)
+    _user_message(db, session_id=session_id, turn_id=turn_id)
+    session = db.get(ChatSession, session_id)
+    session.active_turn_id = turn_id
+    session.active_turn_expires_at = now + timedelta(minutes=1)
+    db.flush()
+
+    reconciled = ChatLatencyService(db).reconcile_stale_turns(now=now)
+    db.refresh(row)
+
+    assert reconciled == {"complete": 0, "error": 0, "interrupted": 0}
+    assert row.terminal_status == "running"
 
 
 def test_gateway_can_record_by_turn_and_derive_admission_delta(db):
@@ -284,3 +416,19 @@ def test_latency_migration_is_staging_scoped_and_least_privilege():
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration
+
+
+def test_qualification_metadata_migration_is_staging_scoped_and_least_privilege():
+    migration = (
+        Path(__file__).parents[1]
+        / "database"
+        / "migrations"
+        / "add_chat_qualification_metadata.sql"
+    ).read_text()
+
+    assert "current_schema() <> 'staging'" in migration
+    assert "OWNER TO pwc_staging_owner" in migration
+    assert "TO pwc_staging;" in migration
+    assert "FROM paperswithcode_user;" in migration
+    assert "qualification_run_id" in migration
+    assert "qualification_scenario" in migration
