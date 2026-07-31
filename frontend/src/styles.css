@@ -4984,7 +4984,7 @@ html { scroll-behavior: smooth; }
 }
 .ask-home-examples button {
   font-family: var(--serif);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.4;
   color: var(--ink-faint);
   transition: color 0.15s;
