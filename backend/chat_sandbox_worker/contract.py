@@ -15,6 +15,6 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-BHAKYma5Dt4cHzxOveHfiZ"
+MODAL_IMAGE_ID = "im-MhTgnyYWYT3dSp9S4FDOj8"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
