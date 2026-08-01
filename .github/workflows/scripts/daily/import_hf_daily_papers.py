@@ -23,7 +23,6 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
-from itertools import count
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -150,7 +149,8 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         seen_arxiv_ids = set()
 
         async with aiohttp.ClientSession() as session:
-            for page in count():
+            page = 0
+            while True:
                 params = {
                     "date": date,
                     "p": page,
@@ -198,6 +198,7 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
 
                 if len(page_papers) < self.DAILY_PAPERS_PAGE_SIZE:
                     return papers
+                page += 1
 
     def process_paper(self, paper_data: Dict):
         """Process a single daily-papers entry."""
