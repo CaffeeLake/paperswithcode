@@ -417,7 +417,7 @@ async def stream_chat(
                 raise
     except ChatServiceError as exc:
         if exc.code == "chat_capacity":
-            logger.info(
+            logger.warning(
                 "chat capacity denied environment=%s release=%s active=%s ceiling=%s denial_count=%s retry_seconds=%s",
                 settings.environment,
                 settings.release_id,

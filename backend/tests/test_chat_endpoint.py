@@ -1234,7 +1234,7 @@ def test_closing_stream_persists_interrupted_turn(monkeypatch):
     assert released == [True]
 
 
-def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
+def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch, caplog):
     from backend.routers import chat as chat_router
 
     calls = {"begin_turn": 0, "runner": 0}
@@ -1292,6 +1292,10 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
     assert response.json()["detail"]["code"] == "chat_capacity"
     assert response.headers["retry-after"] == "5"
     assert calls == {"begin_turn": 1, "runner": 0}
+    assert "chat capacity denied environment=" in caplog.text
+    assert "ceiling=" in caplog.text
+    assert "denial_count=" in caplog.text
+    assert "hello" not in caplog.text
 
 
 def test_new_chat_capacity_rejection_precedes_session_creation(monkeypatch):
