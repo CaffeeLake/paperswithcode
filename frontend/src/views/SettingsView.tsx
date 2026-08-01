@@ -110,7 +110,7 @@ const SettingsView: React.FC = () => {
               Model usage is billed by Hugging Face, not Papers With Code.
             </span>
             <div className="settings-note-action">
-              <HfSignInButton returnTo="/settings" />
+              <HfSignInButton returnTo="/settings" authorizeInference />
             </div>
           </div>
         ) : billingLoading && !billing ? (
@@ -169,7 +169,11 @@ const SettingsView: React.FC = () => {
               >
                 View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
               </a>
-              <HfSignInButton returnTo="/settings" label="Refresh HF permissions" />
+              <HfSignInButton
+                returnTo="/settings"
+                label="Refresh HF permissions"
+                authorizeInference
+              />
             </div>
           </div>
         ) : (
@@ -182,7 +186,11 @@ const SettingsView: React.FC = () => {
             </p>
             {billingError && <div className="settings-token-error">{billingError}</div>}
             <div className="settings-billing-actions">
-              <HfSignInButton returnTo="/settings" label="Authorize with Hugging Face" />
+              <HfSignInButton
+                returnTo="/settings"
+                label="Authorize with Hugging Face"
+                authorizeInference
+              />
             </div>
           </div>
         )}

@@ -30,24 +30,31 @@ interface HfSignInButtonProps {
   returnTo: string;
   compact?: boolean;
   label?: string;
+  authorizeInference?: boolean;
+}
+
+export function hfLoginUrl(returnTo: string, authorizeInference = false): string {
+  const endpoint = authUrl("/api/v1/auth/hf/login");
+  const authority = new URL(endpoint, window.location.origin).origin;
+  const target =
+    authority === window.location.origin
+      ? returnTo
+      : new URL(returnTo, window.location.origin).toString();
+  const params = new URLSearchParams({ return_to: target });
+  if (authorizeInference) params.set("authorize_inference", "true");
+  return `${endpoint}?${params.toString()}`;
 }
 
 export const HfSignInButton: React.FC<HfSignInButtonProps> = ({
   returnTo,
   compact = false,
   label = "Sign in",
+  authorizeInference = false,
 }) => {
   if (isAuthDisabled()) return null;
 
   const handleClick = () => {
-    const endpoint = authUrl("/api/v1/auth/hf/login");
-    const authority = new URL(endpoint, window.location.origin).origin;
-    const target =
-      authority === window.location.origin
-        ? returnTo
-        : new URL(returnTo, window.location.origin).toString();
-    const url = `${endpoint}?return_to=${encodeURIComponent(target)}`;
-    window.location.href = url;
+    window.location.href = hfLoginUrl(returnTo, authorizeInference);
   };
 
   if (compact) {

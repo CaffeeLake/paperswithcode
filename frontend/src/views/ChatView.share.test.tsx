@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   createShare: vi.fn(),
   toast: vi.fn(),
   clipboardWrite: vi.fn(),
+  hfLoginUrl: vi.fn(() => window.location.href),
   chatOptions: null as {
     onSessionId: (id: string) => void;
     onTitle: (title: string) => void;
@@ -58,6 +59,9 @@ vi.mock("@/lib/authContext", () => ({
 }));
 vi.mock("@/components/ui/use-toast", () => ({
   useToast: () => ({ toast: mocks.toast }),
+}));
+vi.mock("@/components/HfSignInButton", () => ({
+  hfLoginUrl: mocks.hfLoginUrl,
 }));
 vi.mock("@/lib/chatSessions", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/lib/chatSessions")>();
@@ -99,10 +103,14 @@ function renderChat(path = `/chat/${sessionId}`) {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllEnvs();
   mocks.busy = false;
   mocks.chatOptions = null;
+  mocks.send.mockReset().mockReturnValue(true);
+  mocks.hfLoginUrl.mockReset().mockImplementation(() => window.location.href);
   mocks.load.mockReset();
   mocks.getSession.mockReset().mockResolvedValue({
     ...session,
@@ -125,6 +133,52 @@ beforeEach(() => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: mocks.clipboardWrite },
+  });
+});
+
+describe("ChatView inference authorization", () => {
+  it("starts inference authorization on the first chat when permission is missing", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    renderChat("/chat");
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "What is new in vision-language models?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(mocks.hfLoginUrl).toHaveBeenCalledWith("/chat", true));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/me/inference-billing"),
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(sessionStorage.getItem("pwc:chat-oauth-draft")).toBe(
+      "What is new in vision-language models?",
+    );
+    expect(sessionStorage.getItem("pwc:chat-oauth-auto-send")).toBe("1");
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it("sends directly when inference permission is already connected", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    renderChat("/chat");
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "Explain this benchmark");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith("Explain this benchmark"));
+    expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
   });
 });
 

@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import jwt
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from starlette.requests import Request
@@ -108,6 +109,7 @@ def test_staging_login_redirects_to_production_authority(monkeypatch):
     response = auth.hf_login(
         _request("staging.paperswithcode.co"),
         return_to="/chat?paper=123",
+        authorize_inference=True,
     )
 
     location = response.headers["location"]
@@ -117,18 +119,36 @@ def test_staging_login_redirects_to_production_authority(monkeypatch):
     assert parse_qs(parsed.query)["return_to"] == [
         "https://staging.paperswithcode.co/chat?paper=123"
     ]
+    assert parse_qs(parsed.query)["authorize_inference"] == ["True"]
 
 
-def test_production_login_requests_inference_provider_scope(monkeypatch):
+def test_production_login_requests_only_profile_scope_by_default(monkeypatch):
     monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
 
     response = auth.hf_login(_request("paperswithcode.co"), return_to="/settings")
 
     query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["openid profile"]
+
+
+def test_production_inference_authorization_requests_inference_scope(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
+
+    response = auth.hf_login(
+        _request("paperswithcode.co"),
+        return_to="/chat",
+        authorize_inference=True,
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["scope"] == ["openid profile inference-api"]
 
 
-def test_oauth_callback_sets_encrypted_shared_inference_cookie(monkeypatch):
+@pytest.mark.parametrize("authorize_inference", [False, True])
+def test_oauth_callback_sets_inference_cookie_only_for_inference_authorization(
+    monkeypatch,
+    authorize_inference,
+):
     settings = _settings(production=True)
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
 
@@ -158,7 +178,11 @@ def test_oauth_callback_sets_encrypted_shared_inference_cookie(monkeypatch):
             )
 
     monkeypatch.setattr(auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
-    state = auth._encode_state("/settings", "paperswithcode.co")
+    state = auth._encode_state(
+        "/settings",
+        "paperswithcode.co",
+        authorize_inference=authorize_inference,
+    )
 
     response = asyncio.run(
         auth.hf_callback(
@@ -169,11 +193,16 @@ def test_oauth_callback_sets_encrypted_shared_inference_cookie(monkeypatch):
         )
     )
 
-    oauth_cookie_header = next(
+    oauth_headers = [
         header
         for header in response.headers.getlist("set-cookie")
         if header.startswith(f"{billing.OAUTH_COOKIE_NAME}=")
-    )
+    ]
+    if not authorize_inference:
+        assert oauth_headers == []
+        return
+
+    oauth_cookie_header = oauth_headers[0]
     cookies = SimpleCookie()
     cookies.load(oauth_cookie_header)
     oauth_cookie = cookies[billing.OAUTH_COOKIE_NAME]

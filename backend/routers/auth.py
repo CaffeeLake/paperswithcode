@@ -50,7 +50,8 @@ router = APIRouter()
 HF_AUTHORIZE_URL = "https://huggingface.co/oauth/authorize"
 HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_USERINFO_URL = "https://huggingface.co/oauth/userinfo"
-HF_OAUTH_SCOPES = "openid profile inference-api"
+HF_LOGIN_SCOPES = "openid profile"
+HF_INFERENCE_SCOPES = f"{HF_LOGIN_SCOPES} inference-api"
 
 
 def session_cookie_name() -> str:
@@ -132,12 +133,18 @@ def _is_admin(user: dict | str) -> bool:
     )
 
 
-def _encode_state(return_to: str, host: str) -> str:
+def _encode_state(
+    return_to: str,
+    host: str,
+    *,
+    authorize_inference: bool = False,
+) -> str:
     settings = get_settings()
     payload = {
         "nonce": secrets.token_urlsafe(16),
         "host": host,
         "return_to": return_to,
+        "authorize_inference": authorize_inference,
         "exp": int(time.time()) + STATE_TTL_SECONDS,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -332,6 +339,7 @@ def _oauth_cookie_max_age(token_payload: dict) -> int:
 def hf_login(
     request: Request,
     return_to: Optional[str] = Query(default=None),
+    authorize_inference: bool = False,
 ):
     """Kick off the HF OAuth authorization-code flow."""
 
@@ -346,11 +354,14 @@ def hf_login(
             authority_return = safe_return
         else:
             authority_return = f"{request_origin}/"
+        authority_query = urlencode(
+            {
+                "return_to": authority_return,
+                "authorize_inference": authorize_inference,
+            }
+        )
         return RedirectResponse(
-            url=(
-                f"{authority}/api/v1/auth/hf/login?"
-                f"{urlencode({'return_to': authority_return})}"
-            ),
+            url=f"{authority}/api/v1/auth/hf/login?{authority_query}",
             status_code=status.HTTP_302_FOUND,
         )
     if not settings.hf_oauth_client_id or not settings.jwt_secret:
@@ -359,11 +370,15 @@ def hf_login(
             detail="Hugging Face OAuth is not configured on this server",
         )
 
-    state = _encode_state(safe_return, request.headers.get("host", ""))
+    state = _encode_state(
+        safe_return,
+        request.headers.get("host", ""),
+        authorize_inference=authorize_inference,
+    )
     params = {
         "client_id": settings.hf_oauth_client_id,
         "redirect_uri": _redirect_uri(request),
-        "scope": HF_OAUTH_SCOPES,
+        "scope": HF_INFERENCE_SCOPES if authorize_inference else HF_LOGIN_SCOPES,
         "response_type": "code",
         "state": state,
     }
@@ -475,7 +490,7 @@ async def hf_callback(
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)
     _set_session_cookie(response, session_token, secure=_is_secure_origin(request))
-    if settings.hf_oauth_credential_secret:
+    if state_payload.get("authorize_inference") and settings.hf_oauth_credential_secret:
         response.set_cookie(
             OAUTH_COOKIE_NAME,
             encrypt_oauth_credential(

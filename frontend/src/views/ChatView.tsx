@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import Composer from "@/components/chat/Composer";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons";
+import { hfLoginUrl } from "@/components/HfSignInButton";
 import { useToast } from "@/components/ui/use-toast";
 import { useChat } from "@/hooks/useChat";
 import { isChatLive } from "@/lib/chat";
@@ -49,7 +50,7 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   return (
     <div className="chat-billing-notice" role="note">
       <span>
-        Hugging Face models use the inference permission granted at sign-in.
+        Hugging Face models use the inference permission granted when you start chatting.
         Included monthly credits are used first, then extra usage requires
         purchased credits. You can choose organization billing in Settings.
       </span>
@@ -160,6 +161,8 @@ const ChatView: React.FC = () => {
     () => searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
   );
   const autoSendStartedRef = useRef(false);
+  const inferenceConnectedRef = useRef(false);
+  const inferenceCheckPendingRef = useRef(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -261,13 +264,44 @@ const ChatView: React.FC = () => {
     if (chat.busy) setEditingMessageId(null);
   }, [chat.busy]);
 
-  const send = useCallback((text: string) => {
+  const authorizeInference = useCallback((text: string) => {
+    sessionStorage.setItem(CHAT_DRAFT_KEY, text);
+    sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
+    sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
+    window.location.href = hfLoginUrl("/chat", true);
+  }, [selectedModel]);
+
+  const send = useCallback(async (text: string) => {
     if (!user) {
-      sessionStorage.setItem(CHAT_DRAFT_KEY, text);
-      sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
-      sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
-      window.location.href = apiUrl(`/api/v1/auth/hf/login?return_to=${encodeURIComponent("/chat")}`);
+      authorizeInference(text);
       return;
+    }
+    if (selectedProvider === "huggingface" && !inferenceConnectedRef.current) {
+      if (inferenceCheckPendingRef.current) return;
+      inferenceCheckPendingRef.current = true;
+      try {
+        const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error("Could not check Hugging Face authorization.");
+        const billing = (await response.json()) as { connected: boolean };
+        if (!billing.connected) {
+          authorizeInference(text);
+          return;
+        }
+        inferenceConnectedRef.current = true;
+      } catch (error) {
+        setDraft(text);
+        setSessionError(
+          error instanceof Error
+            ? error.message
+            : "Could not check Hugging Face authorization.",
+        );
+        return;
+      } finally {
+        inferenceCheckPendingRef.current = false;
+      }
     }
     const streamRouteSessionId = routeSessionIdRef.current ?? null;
     if (!sendChat(text)) return;
@@ -275,7 +309,7 @@ const ChatView: React.FC = () => {
     activeStreamSessionIdRef.current = streamRouteSessionId;
     clearQueuedChatLaunch();
     setDraft("");
-  }, [selectedModel, sendChat, user]);
+  }, [authorizeInference, selectedProvider, sendChat, user]);
 
   useEffect(() => {
     if (authLoading || !user) return;
