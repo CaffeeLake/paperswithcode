@@ -23,6 +23,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
+from itertools import count
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -33,17 +34,18 @@ from backend.database.paper_merge import (
     find_external_paper_for_title,
     merge_external_paper_into_arxiv,
 )
-from scripts.utils.cron_helpers import DatabaseCronJob
-from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 from backend.services.organization_sync_service import (
     link_daily_paper_organizations,
 )
+from scripts.utils.cron_helpers import DatabaseCronJob
+from scripts.utils.hf_paper_importer import HuggingFacePaperImporterMixin
 
 
 class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
     """Daily job to import papers from Hugging Face daily papers API."""
 
     DEFAULT_LOOKBACK_DAYS = 7
+    DAILY_PAPERS_PAGE_SIZE = 50
 
     def __init__(
         self,
@@ -142,31 +144,60 @@ class HuggingFaceDailyPapersJob(HuggingFacePaperImporterMixin, DatabaseCronJob):
         self.vacuum_analyze_table("paper_methods")
 
     async def fetch_daily_papers(self, date: str) -> List[Dict]:
-        """Fetch daily papers from Hugging Face API."""
-        url = f"https://huggingface.co/api/daily_papers?date={date}"
+        """Fetch one complete daily cohort from Hugging Face, or fail closed."""
+        url = "https://huggingface.co/api/daily_papers"
+        papers = []
+        seen_arxiv_ids = set()
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    if response.status == 400:
-                        # HF returns 400 for a date whose daily-papers list does
-                        # not exist yet (e.g. the current day shortly after
-                        # 00:00 UTC). Expected, not an error.
-                        self.logger.info(
-                            f"No daily-papers list yet for {date} (HTTP 400)"
-                        )
-                        return []
-                    self.logger.error(
-                        f"Failed to fetch daily papers: HTTP {response.status}"
+        async with aiohttp.ClientSession() as session:
+            for page in count():
+                params = {
+                    "date": date,
+                    "p": page,
+                    "limit": self.DAILY_PAPERS_PAGE_SIZE,
+                    "sort": "publishedAt",
+                }
+                try:
+                    response_context = session.get(
+                        url,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
                     )
-                    return []
-        except Exception as e:
-            self.logger.error(f"Error fetching daily papers: {e}")
-            return []
+                    async with response_context as response:
+                        if response.status == 400 and page == 0:
+                            # HF returns 400 for a date whose daily-papers list
+                            # does not exist yet (e.g. shortly after 00:00 UTC).
+                            self.logger.info(
+                                f"No daily-papers list yet for {date} (HTTP 400)"
+                            )
+                            return []
+                        if response.status != 200:
+                            message = (
+                                "Failed to fetch complete daily-papers cohort "
+                                f"for {date}: HTTP {response.status} on page {page}"
+                            )
+                            self.logger.error(message)
+                            raise RuntimeError(message)
+
+                        page_papers = await response.json()
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    message = (
+                        "Failed to fetch complete daily-papers cohort "
+                        f"for {date} on page {page}: {exc}"
+                    )
+                    self.logger.error(message)
+                    raise RuntimeError(message) from exc
+
+                for paper_data in page_papers:
+                    arxiv_id = paper_data.get("paper", {}).get("id")
+                    if arxiv_id is not None:
+                        if arxiv_id in seen_arxiv_ids:
+                            continue
+                        seen_arxiv_ids.add(arxiv_id)
+                    papers.append(paper_data)
+
+                if len(page_papers) < self.DAILY_PAPERS_PAGE_SIZE:
+                    return papers
 
     def process_paper(self, paper_data: Dict):
         """Process a single daily-papers entry."""
