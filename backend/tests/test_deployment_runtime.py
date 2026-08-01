@@ -402,6 +402,25 @@ def test_shared_session_key_generation_is_stable():
     )
 
 
+def test_shared_oauth_credential_secret_is_stable_and_conflict_safe():
+    production = {
+        "PWC_HF_OAUTH_CREDENTIAL_SECRET": (
+            "PWC_HF_OAUTH_CREDENTIAL_SECRET=shared-secret"
+        )
+    }
+    staging = dict(production)
+
+    assert (
+        configure_host_env.shared_oauth_credential_secret(production, staging)
+        == "shared-secret"
+    )
+    staging["PWC_HF_OAUTH_CREDENTIAL_SECRET"] = (
+        "PWC_HF_OAUTH_CREDENTIAL_SECRET=other-secret"
+    )
+    with pytest.raises(ValueError, match="differs"):
+        configure_host_env.shared_oauth_credential_secret(production, staging)
+
+
 def test_deployed_runtime_rejects_relative_path(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     settings = deployed_settings(tmp_path, release, "production")

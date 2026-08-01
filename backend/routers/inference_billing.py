@@ -10,14 +10,17 @@ from backend.services.hf_inference_billing_service import (
     COOKIE_NAME,
     HF_INFERENCE_SETTINGS_URL,
     HF_TOKEN_SETTINGS_URL,
+    OAUTH_COOKIE_NAME,
     HfInferenceCredential,
     HfInferenceCredentialError,
     HfInferenceOrganization,
     decrypt_credential,
-    decrypt_token,
+    decrypt_oauth_credential,
     encrypt_credential,
+    encrypt_oauth_credential,
     encrypt_token,
     validate_bill_to,
+    verify_oauth_token,
     verify_token,
 )
 from backend.utils.auth import require_user
@@ -59,10 +62,8 @@ def inference_token_for_request(
     user: dict,
     settings: Settings,
 ) -> str | None:
-    encrypted = request.cookies.get(COOKIE_NAME)
-    if not encrypted:
-        return None
-    return decrypt_token(encrypted, user["hf_user_id"], settings)
+    credential = inference_credential_for_request(request, user, settings)
+    return credential.token if credential else None
 
 
 def inference_credential_for_request(
@@ -70,10 +71,42 @@ def inference_credential_for_request(
     user: dict,
     settings: Settings,
 ) -> HfInferenceCredential | None:
+    oauth_encrypted = request.cookies.get(OAUTH_COOKIE_NAME)
+    if oauth_encrypted:
+        credential = decrypt_oauth_credential(
+            oauth_encrypted, user["hf_user_id"], settings
+        )
+        if credential:
+            return credential
     encrypted = request.cookies.get(COOKIE_NAME)
     if not encrypted:
         return None
     return decrypt_credential(encrypted, user["hf_user_id"], settings)
+
+
+def _uses_oauth_credential(request: Request, user: dict, settings: Settings) -> bool:
+    encrypted = request.cookies.get(OAUTH_COOKIE_NAME)
+    return bool(
+        encrypted and decrypt_oauth_credential(encrypted, user["hf_user_id"], settings)
+    )
+
+
+async def _verify_request_credential(
+    request: Request,
+    credential: HfInferenceCredential,
+    user: dict,
+    settings: Settings,
+):
+    verifier = (
+        verify_oauth_token
+        if _uses_oauth_credential(request, user, settings)
+        else verify_token
+    )
+    return await verifier(credential.token, user["hf_user_id"])
+
+
+def _oauth_cookie_domain(settings: Settings) -> str | None:
+    return settings.shared_session_cookie_domain.strip() or None
 
 
 def _status(
@@ -125,7 +158,7 @@ async def get_inference_billing(
     if not credential:
         return _status(settings, connected=False)
     try:
-        account = await verify_token(credential.token, user["hf_user_id"])
+        account = await _verify_request_credential(request, credential, user, settings)
         validate_bill_to(account, credential.bill_to)
     except HfInferenceCredentialError:
         return _status(settings, connected=False)
@@ -178,26 +211,36 @@ async def select_inference_billing_account(
     credential = inference_credential_for_request(request, user, settings)
     if not credential:
         raise HTTPException(
-            status_code=409, detail="Connect Hugging Face billing first."
+            status_code=409,
+            detail="Sign in with Hugging Face again to authorize Inference Providers.",
         )
     try:
-        account = await verify_token(credential.token, user["hf_user_id"])
+        account = await _verify_request_credential(request, credential, user, settings)
         validate_bill_to(account, body.bill_to)
     except HfInferenceCredentialError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
-    response.set_cookie(
-        COOKIE_NAME,
-        encrypt_credential(
-            HfInferenceCredential(token=credential.token, bill_to=body.bill_to),
-            user["hf_user_id"],
-            settings,
-        ),
-        max_age=COOKIE_MAX_AGE_SECONDS,
-        httponly=True,
-        secure=settings.is_deployed,
-        samesite="lax",
-        path="/",
-    )
+    updated = HfInferenceCredential(token=credential.token, bill_to=body.bill_to)
+    if _uses_oauth_credential(request, user, settings):
+        response.set_cookie(
+            OAUTH_COOKIE_NAME,
+            encrypt_oauth_credential(updated, user["hf_user_id"], settings),
+            max_age=COOKIE_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=settings.is_deployed,
+            samesite="lax",
+            path="/",
+            domain=_oauth_cookie_domain(settings),
+        )
+    else:
+        response.set_cookie(
+            COOKIE_NAME,
+            encrypt_credential(updated, user["hf_user_id"], settings),
+            max_age=COOKIE_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=settings.is_deployed,
+            samesite="lax",
+            path="/",
+        )
     return _status(
         settings,
         connected=True,
@@ -211,6 +254,13 @@ async def select_inference_billing_account(
 def disconnect_inference_billing(
     response: Response,
     _user: dict = Depends(require_user),
+    settings: Settings = Depends(get_settings),
 ) -> Response:
     response.delete_cookie(COOKIE_NAME, path="/", samesite="lax")
+    response.delete_cookie(
+        OAUTH_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        domain=_oauth_cookie_domain(settings),
+    )
     return response

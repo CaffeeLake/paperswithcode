@@ -38,6 +38,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from backend.config import get_settings
+from backend.services.hf_inference_billing_service import (
+    OAUTH_COOKIE_NAME,
+    HfInferenceCredential,
+    encrypt_oauth_credential,
+)
 
 router = APIRouter()
 
@@ -45,6 +50,7 @@ router = APIRouter()
 HF_AUTHORIZE_URL = "https://huggingface.co/oauth/authorize"
 HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_USERINFO_URL = "https://huggingface.co/oauth/userinfo"
+HF_OAUTH_SCOPES = "openid profile inference-api"
 
 
 def session_cookie_name() -> str:
@@ -296,11 +302,30 @@ def _clear_session_cookie(response: Response, secure: bool) -> None:
             samesite="lax",
             domain=_shared_cookie_domain(),
         )
+    response.delete_cookie(
+        OAUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        domain=_shared_cookie_domain(),
+    )
 
 
 def _is_secure_origin(request: Request) -> bool:
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     return proto == "https"
+
+
+def _oauth_cookie_max_age(token_payload: dict) -> int:
+    expires_in = token_payload.get("expires_in")
+    if isinstance(expires_in, bool):
+        return SESSION_TTL_SECONDS
+    try:
+        seconds = int(expires_in)
+    except (TypeError, ValueError):
+        return SESSION_TTL_SECONDS
+    return min(seconds, SESSION_TTL_SECONDS) if seconds > 0 else SESSION_TTL_SECONDS
 
 
 @router.get("/auth/hf/login")
@@ -338,7 +363,7 @@ def hf_login(
     params = {
         "client_id": settings.hf_oauth_client_id,
         "redirect_uri": _redirect_uri(request),
-        "scope": "openid profile",
+        "scope": HF_OAUTH_SCOPES,
         "response_type": "code",
         "state": state,
     }
@@ -450,6 +475,19 @@ async def hf_callback(
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)
     _set_session_cookie(response, session_token, secure=_is_secure_origin(request))
+    if settings.hf_oauth_credential_secret:
+        response.set_cookie(
+            OAUTH_COOKIE_NAME,
+            encrypt_oauth_credential(
+                HfInferenceCredential(access_token), hf_user_id, settings
+            ),
+            max_age=_oauth_cookie_max_age(token_payload),
+            httponly=True,
+            secure=_is_secure_origin(request),
+            samesite="lax",
+            path="/",
+            domain=_shared_cookie_domain(),
+        )
     if settings.session_signing_private_key:
         response.set_cookie(
             settings.session_cookie_name,

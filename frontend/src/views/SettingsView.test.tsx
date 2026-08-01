@@ -95,4 +95,27 @@ describe("SettingsView organization billing", () => {
     );
     expect(screen.getByText("Hugging Face organization · huggingface")).toBeVisible();
   });
+
+  it("uses OAuth authorization instead of asking for a manual token", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...personalStatus,
+          connected: false,
+          account_type: null,
+          monthly_credits_usd: null,
+          organizations: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    renderSettings();
+
+    expect(
+      await screen.findByRole("button", { name: "Sign in with Hugging Face" }),
+    ).toHaveTextContent("Authorize with Hugging Face");
+    expect(screen.queryByLabelText("Hugging Face token")).not.toBeInTheDocument();
+    expect(screen.getByText(/No manually created token is needed/)).toBeVisible();
+  });
 });

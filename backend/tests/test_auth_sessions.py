@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -10,6 +13,7 @@ from starlette.requests import Request
 
 from backend.config import Settings
 from backend.routers import auth
+from backend.services import hf_inference_billing_service as billing
 
 
 def _key_values() -> tuple[str, str]:
@@ -44,6 +48,8 @@ def _settings(*, production: bool) -> Settings:
         ),
         admin_hf_usernames="alice",
         hf_oauth_client_id="client",
+        hf_oauth_client_secret="client-secret",
+        hf_oauth_credential_secret="shared-oauth-secret",
     )
 
 
@@ -111,6 +117,72 @@ def test_staging_login_redirects_to_production_authority(monkeypatch):
     assert parse_qs(parsed.query)["return_to"] == [
         "https://staging.paperswithcode.co/chat?paper=123"
     ]
+
+
+def test_production_login_requests_inference_provider_scope(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
+
+    response = auth.hf_login(_request("paperswithcode.co"), return_to="/settings")
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["openid profile inference-api"]
+
+
+def test_oauth_callback_sets_encrypted_shared_inference_cookie(monkeypatch):
+    settings = _settings(production=True)
+    monkeypatch.setattr(auth, "get_settings", lambda: settings)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **_kwargs):
+            assert url == auth.HF_TOKEN_URL
+            return httpx.Response(
+                200,
+                json={"access_token": "oauth-access", "expires_in": 3600},
+            )
+
+        async def get(self, url, **_kwargs):
+            assert url == auth.HF_USERINFO_URL
+            return httpx.Response(
+                200,
+                json={
+                    "sub": "hf-123",
+                    "preferred_username": "alice",
+                    "name": "Alice",
+                },
+            )
+
+    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    state = auth._encode_state("/settings", "paperswithcode.co")
+
+    response = asyncio.run(
+        auth.hf_callback(
+            _request("paperswithcode.co"),
+            code="authorization-code",
+            state=state,
+            error=None,
+        )
+    )
+
+    oauth_cookie_header = next(
+        header
+        for header in response.headers.getlist("set-cookie")
+        if header.startswith(f"{billing.OAUTH_COOKIE_NAME}=")
+    )
+    cookies = SimpleCookie()
+    cookies.load(oauth_cookie_header)
+    oauth_cookie = cookies[billing.OAUTH_COOKIE_NAME]
+    assert oauth_cookie["domain"] == ".paperswithcode.co"
+    assert oauth_cookie["httponly"] is True
+    assert oauth_cookie["max-age"] == "3600"
+    assert billing.decrypt_oauth_credential(
+        oauth_cookie.value, "hf-123", settings
+    ) == billing.HfInferenceCredential("oauth-access")
 
 
 def test_absolute_return_destinations_are_allowlisted(monkeypatch):

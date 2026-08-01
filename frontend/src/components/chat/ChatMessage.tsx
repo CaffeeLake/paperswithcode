@@ -388,7 +388,7 @@ export const AssistantMessage: React.FC<{
           : `The assistant hit an error: ${msg.error}`}</span>
         {["hf_inference_billing_required", "hf_inference_billing_exhausted"].includes(msg.errorCode ?? "") && (
           <a href="/settings">
-            {msg.errorCode === "hf_inference_billing_required" ? "Add HF token in Settings" : "Review billing settings"}
+            {msg.errorCode === "hf_inference_billing_required" ? "Authorize HF in Settings" : "Review billing settings"}
           </a>
         )}
         {msg.errorCode === "chat_session_quota_exceeded" && onArchiveOldChats && (

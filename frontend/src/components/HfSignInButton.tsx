@@ -29,9 +29,14 @@ const HfLogo: React.FC<{ size?: number }> = ({ size = 14 }) => (
 interface HfSignInButtonProps {
   returnTo: string;
   compact?: boolean;
+  label?: string;
 }
 
-export const HfSignInButton: React.FC<HfSignInButtonProps> = ({ returnTo, compact = false }) => {
+export const HfSignInButton: React.FC<HfSignInButtonProps> = ({
+  returnTo,
+  compact = false,
+  label = "Sign in",
+}) => {
   if (isAuthDisabled()) return null;
 
   const handleClick = () => {
@@ -67,7 +72,7 @@ export const HfSignInButton: React.FC<HfSignInButtonProps> = ({ returnTo, compac
       aria-label="Sign in with Hugging Face"
     >
       <HfLogo size={18} />
-      <span>Sign in</span>
+      <span>{label}</span>
     </button>
   );
 };

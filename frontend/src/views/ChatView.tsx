@@ -49,12 +49,12 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   return (
     <div className="chat-billing-notice" role="note">
       <span>
-        Hugging Face models require your own HF token. Add it in Settings;
-        included monthly credits are used first, then extra usage requires
-        purchased credits.
+        Hugging Face models use the inference permission granted at sign-in.
+        Included monthly credits are used first, then extra usage requires
+        purchased credits. You can choose organization billing in Settings.
       </span>
       <div className="chat-billing-notice-actions">
-        <a href="/settings">Add HF token</a>
+        <a href="/settings">Review billing</a>
         <a href={HF_INFERENCE_USAGE_URL} target="_blank" rel="noreferrer">Review usage</a>
         <button
           type="button"

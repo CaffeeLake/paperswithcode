@@ -88,7 +88,7 @@ def test_gateway_fails_closed_instead_of_using_shared_token():
         _user_provider_token(row, settings)
 
     assert error.value.status_code == 402
-    assert error.value.detail == "Connect Hugging Face billing"
+    assert error.value.detail == "Authorize Hugging Face inference"
 
 
 def test_gateway_routes_luna_to_server_funded_openrouter():

@@ -180,6 +180,13 @@ class Settings(BaseSettings):
         default="",
         description="Client secret of the Hugging Face OAuth application",
     )
+    hf_oauth_credential_secret: str = Field(
+        default="",
+        description=(
+            "Shared secret used to encrypt OAuth inference credentials for "
+            "production and staging"
+        ),
+    )
     jwt_secret: str = Field(
         default="",
         description="HS256 secret used to sign the session and OAuth state JWTs",

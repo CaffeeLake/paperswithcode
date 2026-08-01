@@ -10,6 +10,7 @@ from configure_host_env import (
     CONFIG_ROOT,
     assign,
     read_lines,
+    shared_oauth_credential_secret,
     shared_session_keys,
     write_env,
 )
@@ -32,6 +33,7 @@ def main() -> int:
         parser.error("production.env and staging.env must already exist")
 
     private_key, public_key = shared_session_keys(production, staging)
+    oauth_credential_secret = shared_oauth_credential_secret(production, staging)
     common = {
         "PWC_AUTH_AUTHORITY_ORIGIN": "https://paperswithcode.co",
         "PWC_AUTH_RETURN_ORIGINS": (
@@ -40,6 +42,7 @@ def main() -> int:
         "PWC_SHARED_SESSION_COOKIE_DOMAIN": ".paperswithcode.co",
         "PWC_SHARED_SESSION_COOKIE_NAME": "pwc_shared_session",
         "PWC_SESSION_VERIFICATION_PUBLIC_KEY": public_key,
+        "PWC_HF_OAUTH_CREDENTIAL_SECRET": oauth_credential_secret,
     }
     production = assign(
         production,
@@ -50,7 +53,10 @@ def main() -> int:
 
     write_env(CONFIG_ROOT / "production.env", production, "pwc-production")
     write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
-    print("installed shared-session verifier and production-only signer")
+    print(
+        "installed shared-session verifier, production-only signer, and "
+        "shared OAuth credential encryption"
+    )
     return 0
 
 

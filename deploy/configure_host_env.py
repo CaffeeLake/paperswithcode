@@ -147,6 +147,20 @@ def shared_session_keys(
     return private_value, public_value
 
 
+def shared_oauth_credential_secret(
+    production: dict[str, str], staging: dict[str, str]
+) -> str:
+    """Preserve one credential-encryption secret across both environments."""
+
+    key = "PWC_HF_OAUTH_CREDENTIAL_SECRET"
+    configured = {
+        decoded_value(source[key]) for source in (production, staging) if key in source
+    }
+    if len(configured) > 1:
+        raise ValueError(f"{key} differs between protected environments")
+    return next(iter(configured), secrets.token_urlsafe(48))
+
+
 def assign(lines: dict[str, str], values: dict[str, str]) -> dict[str, str]:
     updated = dict(lines)
     updated.update({key: f"{key}={value}" for key, value in values.items()})
@@ -360,6 +374,9 @@ def main() -> int:
     session_private_key, session_public_key = shared_session_keys(
         current_production, current_staging
     )
+    oauth_credential_secret = shared_oauth_credential_secret(
+        current_production, current_staging
+    )
     shared_auth = {
         "PWC_AUTH_AUTHORITY_ORIGIN": "https://paperswithcode.co",
         "PWC_AUTH_RETURN_ORIGINS": (
@@ -368,6 +385,7 @@ def main() -> int:
         "PWC_SHARED_SESSION_COOKIE_DOMAIN": ".paperswithcode.co",
         "PWC_SHARED_SESSION_COOKIE_NAME": "pwc_shared_session",
         "PWC_SESSION_VERIFICATION_PUBLIC_KEY": session_public_key,
+        "PWC_HF_OAUTH_CREDENTIAL_SECRET": oauth_credential_secret,
     }
     shared_roles = shared_role_values(current_production, current_staging, legacy)
 

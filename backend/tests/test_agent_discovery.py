@@ -76,7 +76,7 @@ def test_openid_configuration_describes_delegated_hf_oidc():
         "token_endpoint": "https://huggingface.co/oauth/token",
         "userinfo_endpoint": "https://huggingface.co/oauth/userinfo",
         "jwks_uri": "https://huggingface.co/oauth/jwks",
-        "scopes_supported": ["openid", "profile"],
+        "scopes_supported": ["openid", "profile", "inference-api"],
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
         "grant_types_supported": ["authorization_code", "refresh_token"],

@@ -116,8 +116,9 @@ const SharedChatView: React.FC = () => {
           <p>Your new question starts with an empty context.</p>
           {staging && <div className="shared-chat-access-note" role="note">
             <strong>Limited staging preview.</strong> Starting a chat is available only to
-            approved Hugging Face users. Hugging Face models also require your own HF token
-            in <a href="/settings">Settings</a>; included monthly credits are used first.
+            approved Hugging Face users. Hugging Face models also require the Inference Providers
+            permission granted during sign-in; choose personal or organization billing in{" "}
+            <a href="/settings">Settings</a>.
           </div>}
           <Composer onSend={launchFreshChat} placeholder="Ask a new research question…" />
         </section>

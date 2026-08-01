@@ -188,11 +188,11 @@ describe("AssistantMessage", () => {
     renderAssistant({
       id: "assistant-1",
       role: "assistant",
-      error: "Connect Hugging Face billing in Settings to use this model.",
+      error: "Authorize Hugging Face inference in Settings to use this model.",
       errorCode: "hf_inference_billing_required",
     });
 
-    expect(screen.getByRole("link", { name: "Add HF token in Settings" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Authorize HF in Settings" })).toHaveAttribute(
       "href",
       "/settings",
     );

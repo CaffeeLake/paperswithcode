@@ -109,7 +109,7 @@ def _user_provider_credential(row, settings: Settings) -> HfInferenceCredential:
         row, row.owner_hash, settings
     )
     if not credential:
-        raise HTTPException(status_code=402, detail="Connect Hugging Face billing")
+        raise HTTPException(status_code=402, detail="Authorize Hugging Face inference")
     return credential
 
 

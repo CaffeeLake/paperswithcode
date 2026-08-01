@@ -36,7 +36,6 @@ const SettingsView: React.FC = () => {
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
-  const [billingToken, setBillingToken] = React.useState("");
   const [billingError, setBillingError] = React.useState("");
   const queryClient = useQueryClient();
   const billingQuery = useQuery({
@@ -52,46 +51,6 @@ const SettingsView: React.FC = () => {
     },
   });
   const billing = billingQuery.data ?? null;
-  const connectMutation = useMutation({
-    mutationFn: async (token: string) => {
-      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(
-          typeof payload.detail === "string" ? payload.detail : "Could not connect this token.",
-        );
-      }
-      return payload as InferenceBillingStatus;
-    },
-    onSuccess: (status) => {
-      queryClient.setQueryData(["inference-billing", user?.hf_subject], status);
-      setBillingToken("");
-      setBillingError("");
-    },
-    onError: (error) => {
-      setBillingError(error instanceof Error ? error.message : "Could not connect this token.");
-    },
-  });
-  const disconnectMutation = useMutation({
-    mutationFn: async () => {
-      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error("Could not disconnect billing.");
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["inference-billing", user?.hf_subject],
-      });
-    },
-    onError: () => setBillingError("Could not disconnect billing."),
-  });
   const selectBillingAccountMutation = useMutation({
     mutationFn: async (billTo: string | null) => {
       const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
@@ -122,20 +81,7 @@ const SettingsView: React.FC = () => {
   });
   const billingLoading =
     billingQuery.isLoading ||
-    connectMutation.isPending ||
-    disconnectMutation.isPending ||
     selectBillingAccountMutation.isPending;
-
-  const connectBilling = (event: React.FormEvent) => {
-    event.preventDefault();
-    setBillingError("");
-    connectMutation.mutate(billingToken);
-  };
-
-  const disconnectBilling = () => {
-    setBillingError("");
-    disconnectMutation.mutate();
-  };
 
   React.useEffect(() => {
     document.title = formatPageTitle("Settings");
@@ -235,7 +181,7 @@ const SettingsView: React.FC = () => {
             </div>
             <p className="settings-billing-help">
               Hugging Face maintains the authoritative spend and provider breakdown.
-              Organization billing requires a Team or Enterprise plan and token permission
+              Organization billing requires a Team or Enterprise plan and OAuth access
               for the selected organization.
             </p>
             {billingError && <div className="settings-token-error">{billingError}</div>}
@@ -248,59 +194,22 @@ const SettingsView: React.FC = () => {
               >
                 View live usage <ExternalLink aria-hidden="true" />
               </a>
-              <button
-                type="button"
-                className="button"
-                onClick={() => void disconnectBilling()}
-                disabled={billingLoading}
-              >
-                Disconnect
-              </button>
+              <HfSignInButton returnTo="/settings" label="Refresh HF permissions" />
             </div>
           </div>
         ) : (
-          <form className="settings-billing-connect" onSubmit={(event) => void connectBilling(event)}>
+          <div className="settings-billing-connect">
             <p className="settings-row-desc">
-              Even included monthly credits require a Hugging Face access token.
-              Connect a fine-grained token with <strong>Inference Providers</strong>{" "}
-              permission. The token must belong to @{user.username}. It is encrypted
-              in an HTTP-only cookie. After connecting, choose your personal account
-              or one of the organizations associated with the token.
+              Authorize Papers With Code to call <strong>Inference Providers</strong>{" "}
+              on your behalf. No manually created token is needed. Hugging Face bills
+              your personal account by default; after authorizing, you can optionally
+              select an eligible organization.
             </p>
-            <label htmlFor="hf-inference-token" className="settings-token-label">
-              Hugging Face token
-            </label>
-            <input
-              id="hf-inference-token"
-              type="password"
-              autoComplete="off"
-              value={billingToken}
-              onChange={(event) => setBillingToken(event.target.value)}
-              placeholder="hf_…"
-              required
-            />
             {billingError && <div className="settings-token-error">{billingError}</div>}
             <div className="settings-billing-actions">
-              <button
-                type="submit"
-                className="button button-primary"
-                disabled={billingLoading || !billingToken.trim()}
-              >
-                {billingLoading ? "Connecting…" : "Connect token"}
-              </button>
-              <a
-                className="button"
-                href={
-                  billing?.token_url ??
-                  "https://huggingface.co/settings/tokens/new?tokenType=fineGrained"
-                }
-                target="_blank"
-                rel="noreferrer"
-              >
-                Create token <ExternalLink aria-hidden="true" />
-              </a>
+              <HfSignInButton returnTo="/settings" label="Authorize with Hugging Face" />
             </div>
-          </form>
+          </div>
         )}
       </section>
 

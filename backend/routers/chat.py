@@ -443,7 +443,7 @@ async def stream_chat(
                     raise ChatServiceError(
                         "hf_inference_billing_required",
                         402,
-                        "Connect Hugging Face billing in Settings to use this model.",
+                        "Authorize Hugging Face inference in Settings to use this model.",
                     )
                 if provider == "openrouter":
                     await _authorize_openrouter(settings, owner.hf_user_id)
