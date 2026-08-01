@@ -37,11 +37,13 @@ class ChatServiceError(Exception):
         message: str,
         *,
         commit_changes: bool = False,
+        active_count: int | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.commit_changes = commit_changes
+        self.active_count = active_count
 
 
 @dataclass(frozen=True)
@@ -326,17 +328,20 @@ class ChatSessionService:
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
     ) -> TurnAdmission:
-        if session_id is None:
-            session = self.create_session(owner, initial_model)
-        else:
-            session = self._owned(owner, session_id, lock=True)
+        session = (
+            None if session_id is None else self._owned(owner, session_id, lock=True)
+        )
         now = _now()
-        existing = self.db.execute(
-            select(ChatMessageRecord).where(
-                ChatMessageRecord.session_id == session.id,
-                ChatMessageRecord.client_message_id == client_message_id,
-            )
-        ).scalar_one_or_none()
+        existing = (
+            self.db.execute(
+                select(ChatMessageRecord).where(
+                    ChatMessageRecord.session_id == session.id,
+                    ChatMessageRecord.client_message_id == client_message_id,
+                )
+            ).scalar_one_or_none()
+            if session is not None
+            else None
+        )
         if existing:
             assistant = self.db.execute(
                 select(ChatMessageRecord).where(
@@ -392,7 +397,7 @@ class ChatSessionService:
                 "turn_in_progress", 409, "This turn is already in progress"
             )
 
-        if session.transcript_status == "degraded":
+        if session is not None and session.transcript_status == "degraded":
             raise ChatServiceError(
                 "chat_transcript_degraded",
                 409,
@@ -418,15 +423,11 @@ class ChatSessionService:
             .select_from(ChatSession)
             .where(
                 ChatSession.hf_user_id == owner.hf_user_id,
-                ChatSession.id != session.id,
+                *((ChatSession.id != session.id,) if session is not None else ()),
                 ChatSession.active_turn_id.is_not(None),
                 ChatSession.active_turn_expires_at > func.now(),
             )
         )
-        if other_active:
-            raise ChatServiceError(
-                "chat_capacity", 429, "Another research response is already running"
-            )
         active_total = (
             self.db.scalar(
                 select(func.count())
@@ -438,10 +439,25 @@ class ChatSessionService:
             )
             or 0
         )
+        if other_active:
+            raise ChatServiceError(
+                "chat_capacity",
+                429,
+                "Another research response is already running",
+                active_count=active_total,
+            )
         if active_total >= self.settings.chat_max_concurrency:
             raise ChatServiceError(
-                "chat_capacity", 429, "Research capacity is currently occupied"
+                "chat_capacity",
+                429,
+                "Research capacity is currently occupied",
+                active_count=active_total,
             )
+
+        # Capacity admission precedes creation so a rejected new-chat request
+        # cannot leave behind a session or any message state.
+        if session is None:
+            session = self.create_session(owner, initial_model)
 
         recovered_expired_lease = False
         if (

@@ -151,7 +151,6 @@ def test_chat_admission_rejects_disabled_shared_provider():
         asyncio.run(
             chat_router._authorize_openrouter(
                 _settings(chat_openrouter_server_funded_enabled=False),
-                "user-a",
             )
         )
 
@@ -175,40 +174,20 @@ def test_chat_admission_maps_budget_failure_without_leaking_detail(
         raise budget_error
 
     monkeypatch.setattr(chat_router, "require_openrouter_budget", fail)
-    monkeypatch.setattr(
-        chat_router,
-        "_openrouter_rate_limiter",
-        chat_router._PrincipalRateLimiter(),
-    )
-
     with pytest.raises(ChatServiceError) as error:
-        asyncio.run(chat_router._authorize_openrouter(_settings(), "user-a"))
+        asyncio.run(chat_router._authorize_openrouter(_settings()))
 
     assert error.value.code == expected_code
     assert "exhausted" not in str(error.value)
     assert "unavailable" not in str(error.value)
 
 
-def test_chat_admission_applies_separate_per_user_limit(
+def test_chat_admission_has_no_process_local_request_quota(
     monkeypatch: pytest.MonkeyPatch,
 ):
     async def allow(_settings):
         return None
 
     monkeypatch.setattr(chat_router, "require_openrouter_budget", allow)
-    monkeypatch.setattr(
-        chat_router,
-        "_openrouter_rate_limiter",
-        chat_router._PrincipalRateLimiter(),
-    )
-    settings = _settings(
-        chat_openrouter_requests_per_minute=1,
-        chat_openrouter_requests_per_day=1,
-    )
-
-    asyncio.run(chat_router._authorize_openrouter(settings, "user-a"))
-    with pytest.raises(ChatServiceError) as error:
-        asyncio.run(chat_router._authorize_openrouter(settings, "user-a"))
-
-    assert error.value.code == "provider_rate_limit"
-    asyncio.run(chat_router._authorize_openrouter(settings, "user-b"))
+    asyncio.run(chat_router._authorize_openrouter(_settings()))
+    asyncio.run(chat_router._authorize_openrouter(_settings()))

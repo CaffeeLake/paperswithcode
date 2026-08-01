@@ -73,6 +73,59 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   );
 };
 
+export const ChatCapacityDialog: React.FC<{
+  retryAt: number;
+  onRetry: () => void;
+  onCancel: () => void;
+}> = ({ retryAt, onRetry, onCancel }) => {
+  const [remaining, setRemaining] = useState(() => Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000)));
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    cancelRef.current?.focus();
+    const update = () => setRemaining(Math.max(0, Math.ceil((retryAt - Date.now()) / 1_000)));
+    update();
+    const timer = window.setInterval(update, 250);
+    return () => {
+      window.clearInterval(timer);
+      previouslyFocused?.focus();
+    };
+  }, [retryAt]);
+
+  return (
+    <div className="chat-capacity-dialog-backdrop" role="presentation">
+      <div
+        className="chat-capacity-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chat-capacity-dialog-title"
+        aria-describedby="chat-capacity-dialog-description"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 id="chat-capacity-dialog-title">All research slots are currently in use</h2>
+        <p id="chat-capacity-dialog-description">
+          Your message was not sent or billed. Try again in a few seconds.
+        </p>
+        <p className="chat-capacity-countdown" aria-live="polite">
+          {remaining > 0 ? `Try again available in ${remaining} second${remaining === 1 ? "" : "s"}.` : "You can try again now."}
+        </p>
+        <div className="chat-capacity-dialog-actions">
+          <button type="button" className="chat-capacity-cancel" ref={cancelRef} onClick={onCancel}>Cancel</button>
+          <button type="button" className="chat-capacity-retry" disabled={remaining > 0} onClick={onRetry}>Try again</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 type RouteSessionState = {
   id: string;
   status: "loading" | "loaded" | "error";
@@ -199,6 +252,10 @@ const ChatView: React.FC = () => {
   });
   const loadChat = chat.load;
   const sendChat = chat.send;
+
+  useEffect(() => {
+    if (chat.capacityRequest) setDraft(chat.capacityRequest.question);
+  }, [chat.capacityRequest]);
 
   useEffect(() => {
     if (chat.busy) setEditingMessageId(null);
@@ -650,6 +707,15 @@ const ChatView: React.FC = () => {
             <button type="button" onClick={() => setManualShareUrl("")}>Close</button>
           </div>
         </div>
+      )}
+      {chat.capacityRequest && (
+        <ChatCapacityDialog
+          retryAt={chat.capacityRequest.retryAt}
+          onCancel={chat.cancelCapacity}
+          onRetry={() => {
+            if (chat.retryCapacity()) setDraft("");
+          }}
+        />
       )}
     </div>
   );

@@ -49,8 +49,6 @@ class InferenceBillingStatus(BaseModel):
     account_type: str | None = None
     monthly_credits_usd: float | None = None
     pay_as_you_go: bool = True
-    requests_per_minute: int
-    requests_per_day: int
     usage_url: str = HF_INFERENCE_SETTINGS_URL
     token_url: str = HF_TOKEN_SETTINGS_URL
     bill_to: str | None = None
@@ -130,8 +128,6 @@ def _status(
         monthly_credits_usd=(
             None if organization_billing or not connected else 2.0 if is_pro else 0.1
         ),
-        requests_per_minute=settings.chat_requests_per_minute,
-        requests_per_day=settings.chat_requests_per_day,
         usage_url=(
             f"https://huggingface.co/organizations/{bill_to}/settings/inference-providers"
             if bill_to

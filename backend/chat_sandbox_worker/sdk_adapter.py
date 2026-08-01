@@ -135,11 +135,33 @@ class SDKEventAdapter:
                             ),
                         }
                     ]
+                provider_errors = {
+                    "authentication_failed": (
+                        "hf_inference_credential_expired",
+                        "Your Hugging Face authorization expired. Reconnect in Settings.",
+                    ),
+                    "rate_limit": (
+                        "provider_rate_limit",
+                        "The selected model is temporarily rate-limited. Try again shortly.",
+                    ),
+                    "server_error": (
+                        "provider_unavailable",
+                        "The model provider is temporarily unavailable. Try again shortly.",
+                    ),
+                    "invalid_request": (
+                        "provider_invalid_request",
+                        "The model provider rejected this request.",
+                    ),
+                }
+                code, text = provider_errors.get(
+                    message.error,
+                    ("provider_error", "The model provider failed."),
+                )
                 return [
                     {
                         "type": "error",
-                        "code": "gateway_unavailable",
-                        "message": "The model provider failed.",
+                        "code": code,
+                        "message": text,
                     }
                 ]
             for block in message.content:

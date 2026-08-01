@@ -253,7 +253,29 @@ class SDKEventAdapter:
                             ),
                         }
                     ]
-                return [{"type": "error", "message": "The model provider failed."}]
+                provider_errors = {
+                    "authentication_failed": (
+                        "hf_inference_credential_expired",
+                        "Your Hugging Face authorization expired. Reconnect in Settings.",
+                    ),
+                    "rate_limit": (
+                        "provider_rate_limit",
+                        "The selected model is temporarily rate-limited. Try again shortly.",
+                    ),
+                    "server_error": (
+                        "provider_unavailable",
+                        "The model provider is temporarily unavailable. Try again shortly.",
+                    ),
+                    "invalid_request": (
+                        "provider_invalid_request",
+                        "The model provider rejected this request.",
+                    ),
+                }
+                code, text = provider_errors.get(
+                    message.error,
+                    ("provider_error", "The model provider failed."),
+                )
+                return [{"type": "error", "code": code, "message": text}]
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     events.extend(
@@ -426,12 +448,20 @@ async def stream_agent_events(
             if not adapter.terminal:
                 yield {"type": "error", "message": "The model stream ended early."}
         except TimeoutError:
-            yield {"type": "error", "message": "The chat request timed out."}
+            yield {
+                "type": "error",
+                "code": "provider_timeout",
+                "message": "The model provider timed out. Try again shortly.",
+            }
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("chat provider request failed: %s", type(exc).__name__)
-            yield {"type": "error", "message": "The model provider is unavailable."}
+            yield {
+                "type": "error",
+                "code": "provider_unavailable",
+                "message": "The model provider is temporarily unavailable. Try again shortly.",
+            }
         finally:
             with contextlib.suppress(Exception):
                 await stream.aclose()

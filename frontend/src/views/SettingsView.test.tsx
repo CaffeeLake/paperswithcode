@@ -29,8 +29,6 @@ const personalStatus = {
   account_type: "PRO",
   monthly_credits_usd: 2,
   pay_as_you_go: true,
-  requests_per_minute: 3,
-  requests_per_day: 30,
   usage_url: "https://huggingface.co/settings/inference-providers",
   token_url: "https://huggingface.co/settings/tokens/new",
   bill_to: null,
@@ -94,6 +92,8 @@ describe("SettingsView organization billing", () => {
       }),
     );
     expect(screen.getByText("Hugging Face organization · huggingface")).toBeVisible();
+    expect(screen.queryByText(/chat starts \/ minute/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /monthly Hugging Face inference credit/ })).not.toBeInTheDocument();
   });
 
   it("uses OAuth authorization instead of asking for a manual token", async () => {

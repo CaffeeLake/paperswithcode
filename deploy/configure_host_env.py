@@ -46,6 +46,7 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "MODAL_TOKEN_SECRET",
     "PWC_CHAT_DEFAULT_BACKEND",
     "PWC_CHAT_LANGFUSE_ENABLED",
+    "PWC_CHAT_MAX_CONCURRENCY",
     "PWC_CHAT_BLANK_POOL_ENABLED",
     "PWC_CHAT_BLANK_POOL_MAX",
     "PWC_CHAT_BLANK_POOL_MIN",
@@ -245,6 +246,17 @@ def write_env(path: Path, lines: dict[str, str], group: str) -> None:
     os.replace(temporary, path)
 
 
+def staging_chat_capacity_values() -> dict[str, str]:
+    """Qualified staging shape: two turns plus one warm blank sandbox."""
+
+    return {
+        "PWC_CHAT_MAX_CONCURRENCY": "2",
+        "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": "3",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+
+
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
@@ -267,10 +279,29 @@ def main() -> int:
     parser.add_argument("--staging-langfuse-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
+    parser.add_argument("--staging-chat-capacity-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_chat_capacity_only:
+        if (
+            args.production_codex_only
+            or args.staging_codex_too
+            or args.staging_langfuse_only
+            or args.staging_openrouter_only
+            or args.staging_openrouter_disable_only
+        ):
+            parser.error(
+                "--staging-chat-capacity-only cannot be combined with other modes"
+            )
+        staging = assign(
+            read_lines(CONFIG_ROOT / "staging.env"),
+            staging_chat_capacity_values(),
+        )
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("configured qualified staging chat capacity")
+        return 0
     if args.staging_openrouter_disable_only:
         if (
             args.production_codex_only

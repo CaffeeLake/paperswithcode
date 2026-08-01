@@ -6,6 +6,7 @@ import {
   type ChatEvent,
   type ChatMessage,
   type ChatPaperHit,
+  type ChatStreamRequest,
   ChatStreamError,
   reportChatLatency,
   streamChat,
@@ -41,6 +42,22 @@ interface UseChatOptions {
   onInterrupted: (text: string) => void;
 }
 
+interface EditRequest {
+  targetId: string;
+  snapshot: ChatMessage[];
+  first: boolean;
+}
+
+interface PendingGeneration {
+  question: string;
+  request: ChatStreamRequest;
+  optimistic: ChatMessage[];
+  original: ChatMessage[];
+  edit?: EditRequest;
+  retryAt: number;
+  retryAfterSeconds: number;
+}
+
 export function useChat(options: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -50,6 +67,11 @@ export function useChat(options: UseChatOptions) {
   const preparingTimerRef = useRef<number | null>(null);
   const workspaceStatusStateRef = useRef<"armed" | "shown" | "cleared">("cleared");
   const browserTimingRef = useRef<BrowserTiming | null>(null);
+  const pendingCapacityRef = useRef<PendingGeneration | null>(null);
+  const [capacityRequest, setCapacityRequest] = useState<Pick<
+    PendingGeneration,
+    "question" | "retryAt" | "retryAfterSeconds"
+  > | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const optionsRef = useRef(options);
   const promptRef = useRef("");
@@ -73,6 +95,7 @@ export function useChat(options: UseChatOptions) {
       window.clearTimeout(preparingTimerRef.current);
     }
     abortRef.current?.abort();
+    pendingCapacityRef.current = null;
   }, []);
   useEffect(() => {
     if (!busyRef.current) activeSessionIdRef.current = options.sessionId;
@@ -287,16 +310,11 @@ export function useChat(options: UseChatOptions) {
     return restored;
   };
 
-  interface EditRequest {
-    targetId: string;
-    snapshot: ChatMessage[];
-    first: boolean;
-  }
-
   const run = (
     question: string,
     request: Parameters<typeof streamChat>[0],
     optimistic: ChatMessage[],
+    original: ChatMessage[],
     edit?: EditRequest,
   ) => {
     const messagesGeneration = ++messagesGenerationRef.current;
@@ -340,6 +358,7 @@ export function useChat(options: UseChatOptions) {
       let sawStreamStart = false;
       let sawTerminalEvent = false;
       let streamFailed = false;
+      let capacityDenied = false;
       try {
         for await (const event of streamChat(request, { signal: controller.signal })) {
           if (event.type === "stream_start") {
@@ -378,8 +397,33 @@ export function useChat(options: UseChatOptions) {
         streamFailed = true;
         if (!controller.signal.aborted) {
           clearWorkspaceStatus(controller);
-          recordTerminal(controller, "network_error");
-          if (messagesGenerationRef.current === messagesGeneration) {
+          if (error instanceof ChatStreamError && error.code === "chat_capacity") {
+            capacityDenied = true;
+            const retryAfterSeconds = error.retryAfterSeconds ?? 5;
+            const pending: PendingGeneration = {
+              question,
+              request,
+              optimistic,
+              original,
+              edit,
+              retryAfterSeconds,
+              retryAt: Date.now() + retryAfterSeconds * 1_000,
+            };
+            pendingCapacityRef.current = pending;
+            setCapacityRequest({
+              question,
+              retryAt: pending.retryAt,
+              retryAfterSeconds,
+            });
+            if (messagesGenerationRef.current === messagesGeneration) {
+              setMessages(original);
+              messagesRef.current = original;
+              setSessionError("");
+            }
+          } else {
+            recordTerminal(controller, "network_error");
+          }
+          if (!capacityDenied && messagesGenerationRef.current === messagesGeneration) {
             applyEvent({
               type: "error",
               message: error instanceof Error ? error.message : "The assistant stream failed.",
@@ -395,7 +439,9 @@ export function useChat(options: UseChatOptions) {
           }
           busyRef.current = false;
           setBusy(false);
-          if (!controller.signal.aborted) {
+          if (capacityDenied) {
+            optionsRef.current.onSettled(request.session_id);
+          } else if (!controller.signal.aborted) {
             const canonicalId = activeSessionIdRef.current;
             if (edit && !sawStreamStart) {
               if (messagesGenerationRef.current === messagesGeneration) {
@@ -441,7 +487,7 @@ export function useChat(options: UseChatOptions) {
 
   const send = useCallback((text: string) => {
     const question = text.trim();
-    if (!question || question.length > 8_000 || busyRef.current) return false;
+    if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const current = messagesRef.current;
     const latestUser = [...current].reverse().find((message) => message.role === "user");
     const replacement = latestUser?.status && latestUser.status !== "complete" && latestUser.revision
@@ -461,12 +507,12 @@ export function useChat(options: UseChatOptions) {
       client_message_id: crypto.randomUUID(),
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
-    }, optimistic);
+    }, optimistic, current);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const editAndResend = useCallback((messageId: string, text: string) => {
     const question = text.trim();
-    if (!question || question.length > 8_000 || busyRef.current) return false;
+    if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const snapshot = messagesRef.current.slice();
     const targetIndex = snapshot.findIndex(
       (message) => message.id === messageId && message.role === "user",
@@ -501,11 +547,30 @@ export function useChat(options: UseChatOptions) {
         replace_message_id: target.id,
         prior_revision: target.revision!,
       } : {}),
-    }, optimistic, {
+    }, optimistic, snapshot, {
       targetId: target.id,
       snapshot,
       first,
     });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cancelCapacity = useCallback(() => {
+    pendingCapacityRef.current = null;
+    setCapacityRequest(null);
+  }, []);
+
+  const retryCapacity = useCallback(() => {
+    const pending = pendingCapacityRef.current;
+    if (!pending || Date.now() < pending.retryAt || busyRef.current) return false;
+    pendingCapacityRef.current = null;
+    setCapacityRequest(null);
+    return run(
+      pending.question,
+      pending.request,
+      pending.optimistic,
+      pending.original,
+      pending.edit,
+    );
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stop = useCallback(() => {
@@ -560,6 +625,8 @@ export function useChat(options: UseChatOptions) {
     abortRef.current?.abort();
     abortRef.current = null;
     browserTimingRef.current = null;
+    pendingCapacityRef.current = null;
+    setCapacityRequest(null);
     busyRef.current = false;
     activeSessionIdRef.current = null;
     setMessages([]);
@@ -574,6 +641,8 @@ export function useChat(options: UseChatOptions) {
     }
     workspaceStatusStateRef.current = "cleared";
     browserTimingRef.current = null;
+    pendingCapacityRef.current = null;
+    setCapacityRequest(null);
     // A route change may replace the visible transcript while another chat is
     // still generating. Keep that stream alive, but its generation token above
     // prevents subsequent events from being projected into this transcript.
@@ -586,5 +655,19 @@ export function useChat(options: UseChatOptions) {
     setSessionError("");
   }, []);
 
-  return { messages, busy, papers, sessionError, send, editAndResend, stop, toggleBlock, reset, load };
+  return {
+    messages,
+    busy,
+    papers,
+    sessionError,
+    capacityRequest,
+    send,
+    editAndResend,
+    retryCapacity,
+    cancelCapacity,
+    stop,
+    toggleBlock,
+    reset,
+    load,
+  };
 }

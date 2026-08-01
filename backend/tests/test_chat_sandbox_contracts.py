@@ -690,6 +690,24 @@ def test_worker_adapter_surfaces_hugging_face_billing_errors():
     ]
 
 
+@pytest.mark.parametrize(
+    ("provider_error", "code"),
+    [
+        ("authentication_failed", "hf_inference_credential_expired"),
+        ("rate_limit", "provider_rate_limit"),
+        ("server_error", "provider_unavailable"),
+        ("unknown", "provider_error"),
+    ],
+)
+def test_worker_adapter_keeps_provider_failures_distinct(provider_error, code):
+    events = WorkerSDKAdapter(show_reasoning=False).feed(
+        AssistantMessage(model="test", content=[], error=provider_error)
+    )
+
+    assert events[0]["type"] == "error"
+    assert events[0]["code"] == code
+
+
 def test_worker_adapter_deduplicates_late_completed_thinking_snapshot():
     adapter = WorkerSDKAdapter(show_reasoning=True)
     messages = [

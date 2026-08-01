@@ -172,7 +172,12 @@ export interface StreamChatOptions {
 }
 
 export class ChatStreamError extends Error {
-  constructor(message: string, public readonly code?: string) {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly status?: number,
+    public readonly retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = "ChatStreamError";
   }
@@ -244,11 +249,17 @@ async function* streamChatOverSSE(
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail;
     const stagingDenied = res.status === 403 && !detail;
+    const rawRetryAfter = Number(res.headers.get("Retry-After"));
+    const retryAfterSeconds = Number.isFinite(rawRetryAfter) && rawRetryAfter >= 0
+      ? Math.min(300, Math.ceil(rawRetryAfter))
+      : undefined;
     throw new ChatStreamError(
       stagingDenied
         ? "Chat on staging is limited to approved Hugging Face users. Sign in with an approved account and try again."
         : detail?.message || detail || `Chat stream failed (${res.status})`,
       detail?.code || (stagingDenied ? "staging_access_required" : undefined),
+      res.status,
+      retryAfterSeconds,
     );
   }
 

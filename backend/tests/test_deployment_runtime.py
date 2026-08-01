@@ -1497,6 +1497,15 @@ def test_environment_config_directory_is_search_only(tmp_path: Path, monkeypatch
     assert config.stat().st_mode & 0o777 == 0o640
 
 
+def test_qualified_staging_capacity_keeps_one_warm_sandbox():
+    assert configure_host_env.staging_chat_capacity_values() == {
+        "PWC_CHAT_MAX_CONCURRENCY": "2",
+        "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": "3",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+
+
 def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
     values = configure_host_env.production_codex_values(
         {

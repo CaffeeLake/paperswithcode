@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 import uuid
-from collections import defaultdict, deque
+from itertools import count
 
 from fastapi import (
     APIRouter,
@@ -59,45 +57,18 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
-class _AdmissionControl:
-    """Compatibility seam; durable admission is enforced transactionally."""
-
-    async def try_acquire(self, _maximum: int) -> bool:
-        return True
-
-    async def release(self) -> None:
-        return
+CHAT_CAPACITY_RETRY_SECONDS = 5
+_capacity_denials = count(1)
 
 
-class _PrincipalRateLimiter:
-    def __init__(self) -> None:
-        self._events: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = asyncio.Lock()
-
-    async def check(self, principal: str, per_minute: int, per_day: int) -> int | None:
-        now = time.monotonic()
-        async with self._lock:
-            events = self._events[principal]
-            while events and events[0] <= now - 86_400:
-                events.popleft()
-            recent = [event for event in events if event > now - 60]
-            if len(events) >= per_day:
-                return max(1, round(86_400 - (now - events[0])))
-            if len(recent) >= per_minute:
-                return max(1, round(60 - (now - recent[0])))
-            events.append(now)
-            return None
-
-
-_admission = _AdmissionControl()
-_rate_limiter = _PrincipalRateLimiter()
-_openrouter_rate_limiter = _PrincipalRateLimiter()
+async def _release_durable_admission() -> None:
+    """The database lease is released by turn finalization, not this callback."""
 
 
 def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None:
     response_headers = dict(headers or {})
-    if exc.status_code == 429:
-        response_headers["Retry-After"] = "5"
+    if exc.code == "chat_capacity":
+        response_headers["Retry-After"] = str(CHAT_CAPACITY_RETRY_SECONDS)
     raise HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": str(exc)},
@@ -105,23 +76,12 @@ def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None
     )
 
 
-async def _authorize_openrouter(settings: Settings, principal: str) -> None:
+async def _authorize_openrouter(settings: Settings) -> None:
     if not settings.chat_openrouter_server_funded_enabled:
         raise ChatServiceError(
             "provider_unavailable",
             503,
             "The shared OpenRouter preview is not enabled.",
-        )
-    retry_after = await _openrouter_rate_limiter.check(
-        principal,
-        settings.chat_openrouter_requests_per_minute,
-        settings.chat_openrouter_requests_per_day,
-    )
-    if retry_after is not None:
-        raise ChatServiceError(
-            "provider_rate_limit",
-            429,
-            "The shared OpenRouter preview rate limit was reached.",
         )
     try:
         await require_openrouter_budget(settings)
@@ -398,12 +358,6 @@ async def stream_chat(
             detail="A deployment is activating; retry this turn shortly",
             headers={"Retry-After": "3"},
         )
-    if not await _admission.try_acquire(settings.chat_max_concurrency):
-        raise HTTPException(
-            status_code=429,
-            detail="Chat capacity is currently occupied",
-            headers={"Retry-After": "5"},
-        )
     owner = owner_from_user(
         user,
         inference_token=inference_credential.token if inference_credential else None,
@@ -411,19 +365,6 @@ async def stream_chat(
             inference_credential.bill_to if inference_credential else None
         ),
     )
-    retry_after = await _rate_limiter.check(
-        owner.hf_user_id,
-        settings.chat_requests_per_minute,
-        settings.chat_requests_per_day,
-    )
-    if retry_after is not None:
-        await _admission.release()
-        raise HTTPException(
-            status_code=429,
-            detail="Chat rate limit exceeded",
-            headers={"Retry-After": str(retry_after)},
-        )
-
     request_id = str(uuid.uuid4())
     try:
         with db_manager.session_local() as db:
@@ -446,7 +387,7 @@ async def stream_chat(
                         "Authorize Hugging Face inference in Settings to use this model.",
                     )
                 if provider == "openrouter":
-                    await _authorize_openrouter(settings, owner.hf_user_id)
+                    await _authorize_openrouter(settings)
                 title_token = (
                     service.begin_title(
                         owner,
@@ -475,7 +416,16 @@ async def stream_chat(
                     db.rollback()
                 raise
     except ChatServiceError as exc:
-        await _admission.release()
+        if exc.code == "chat_capacity":
+            logger.info(
+                "chat capacity denied environment=%s release=%s active=%s ceiling=%s denial_count=%s retry_seconds=%s",
+                settings.environment,
+                settings.release_id,
+                exc.active_count,
+                settings.chat_max_concurrency,
+                next(_capacity_denials),
+                CHAT_CAPACITY_RETRY_SECONDS,
+            )
         _raise(exc)
 
     orchestrator = ChatStreamOrchestrator(
@@ -486,7 +436,7 @@ async def stream_chat(
         request_id=request_id,
         title_token=title_token,
         is_disconnected=request.is_disconnected,
-        release_admission=_admission.release,
+        release_admission=_release_durable_admission,
     )
 
     async def event_stream():

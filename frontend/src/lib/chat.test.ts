@@ -43,6 +43,28 @@ describe("reportChatLatency", () => {
 });
 
 describe("streamChat access failures", () => {
+  it("keeps PwC capacity and Retry-After separate from provider errors", async () => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      detail: { code: "chat_capacity", message: "Research capacity is occupied" },
+    }), {
+      status: 429,
+      headers: { "Content-Type": "application/json", "Retry-After": "7" },
+    })));
+
+    const events = streamChat({
+      message: "Capacity check",
+      session_id: null,
+      client_message_id: "message-capacity",
+    });
+
+    await expect(events.next()).rejects.toMatchObject({
+      code: "chat_capacity",
+      status: 429,
+      retryAfterSeconds: 7,
+    } satisfies Partial<ChatStreamError>);
+  });
+
   it("turns an unstructured staging 403 into an actionable error", async () => {
     vi.stubEnv("VITE_CHAT_LIVE", "1");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Forbidden", {

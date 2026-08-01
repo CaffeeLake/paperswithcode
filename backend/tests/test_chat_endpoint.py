@@ -29,6 +29,7 @@ from backend.models.chat import (
     sse_event,
 )
 from backend.routers import chat as chat_router
+from backend.routers.inference_billing import _status as inference_billing_status
 from backend.services import chat_mcp
 from backend.services.chat_agent_service import (
     SEARCH_TOOL_NAME,
@@ -62,6 +63,21 @@ def _cookie_request() -> Request:
             "headers": [(b"cookie", b"pwc_session=test")],
         }
     )
+
+
+def test_chat_quota_configuration_and_billing_api_fields_are_removed():
+    settings = get_settings()
+
+    fields = type(settings).model_fields
+    assert "chat_requests_per_minute" not in fields
+    assert "chat_requests_per_day" not in fields
+    assert "chat_openrouter_requests_per_minute" not in fields
+    assert "chat_openrouter_requests_per_day" not in fields
+    payload = inference_billing_status(
+        settings, connected=True, is_pro=True
+    ).model_dump()
+    assert "requests_per_minute" not in payload
+    assert "requests_per_day" not in payload
 
 
 def test_require_user_returns_immutable_oauth_subject(monkeypatch):
@@ -659,6 +675,25 @@ def test_sdk_adapter_surfaces_hugging_face_billing_errors():
     ]
 
 
+@pytest.mark.parametrize(
+    ("provider_error", "code"),
+    [
+        ("authentication_failed", "hf_inference_credential_expired"),
+        ("rate_limit", "provider_rate_limit"),
+        ("server_error", "provider_unavailable"),
+        ("invalid_request", "provider_invalid_request"),
+        ("unknown", "provider_error"),
+    ],
+)
+def test_sdk_adapter_keeps_provider_failures_distinct(provider_error, code):
+    events = SDKEventAdapter(show_reasoning=False).feed(
+        AssistantMessage(model="test", content=[], error=provider_error)
+    )
+
+    assert events[0]["type"] == "error"
+    assert events[0]["code"] == code
+
+
 def test_sdk_adapter_hides_leading_whitespace_and_over_budget_searches():
     adapter = SDKEventAdapter(show_reasoning=True, maximum_search_calls=2)
     events = []
@@ -1012,7 +1047,13 @@ def test_agent_timeout_emits_typed_error_and_closes_sdk_stream(monkeypatch):
 
     monkeypatch.setattr(chat_agent_service, "sdk_query", fake_query)
     events = asyncio.run(collect())
-    assert events == [{"type": "error", "message": "The chat request timed out."}]
+    assert events == [
+        {
+            "type": "error",
+            "code": "provider_timeout",
+            "message": "The model provider timed out. Try again shortly.",
+        }
+    ]
     assert state["closed"] is True
 
 
@@ -1118,10 +1159,6 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     monkeypatch.setattr(chat_router, "ChatSessionService", FakeService)
     monkeypatch.setattr(chat_stream_service, "ChatSessionService", FakeService)
     monkeypatch.setattr(chat_router.db_manager, "_session_local", FakeDB)
-    monkeypatch.setattr(chat_router, "_admission", chat_router._AdmissionControl())
-    monkeypatch.setattr(
-        chat_router, "_rate_limiter", chat_router._PrincipalRateLimiter()
-    )
     app = create_app()
     app.dependency_overrides[require_user] = lambda: {
         "source": "cookie",
@@ -1200,12 +1237,30 @@ def test_closing_stream_persists_interrupted_turn(monkeypatch):
 def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
     from backend.routers import chat as chat_router
 
-    class NoCapacity:
-        async def try_acquire(self, _maximum):
-            return False
+    calls = {"begin_turn": 0, "runner": 0}
 
-        async def release(self):
-            raise AssertionError("No permit was acquired")
+    class FakeDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rollback(self):
+            return None
+
+    class NoCapacity:
+        def __init__(self, *_args):
+            pass
+
+        def begin_turn(self, *_args, **_kwargs):
+            calls["begin_turn"] += 1
+            raise ChatServiceError(
+                "chat_capacity",
+                429,
+                "Research capacity is currently occupied",
+                active_count=2,
+            )
 
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
@@ -1215,7 +1270,13 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
         "inference_credential_for_request",
         lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
     )
-    monkeypatch.setattr(chat_router, "_admission", NoCapacity())
+    monkeypatch.setattr(chat_router, "ChatSessionService", NoCapacity)
+    monkeypatch.setattr(chat_router.db_manager, "_session_local", FakeDB)
+    monkeypatch.setattr(
+        chat_router,
+        "ChatStreamOrchestrator",
+        lambda **_kwargs: calls.__setitem__("runner", calls["runner"] + 1),
+    )
     app = create_app()
     app.dependency_overrides[require_user] = lambda: {
         "source": "cookie",
@@ -1228,4 +1289,39 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch):
             json={"message": "hello", "client_message_id": "id"},
         )
     assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "chat_capacity"
     assert response.headers["retry-after"] == "5"
+    assert calls == {"begin_turn": 1, "runner": 0}
+
+
+def test_new_chat_capacity_rejection_precedes_session_creation(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.counts = iter((0, 2))
+
+        def execute(self, _query):
+            return None
+
+        def scalar(self, _query):
+            return next(self.counts)
+
+    settings = get_settings().model_copy(update={"chat_max_concurrency": 2})
+    service = ChatSessionService(FakeDB(), settings)
+    created = []
+    monkeypatch.setattr(
+        service,
+        "create_session",
+        lambda *_args, **_kwargs: created.append(True),
+    )
+
+    with pytest.raises(ChatServiceError) as error:
+        service.begin_turn(
+            ChatOwner(hf_user_id="third-user", hf_username="third"),
+            session_id=None,
+            client_message_id="third-request",
+            text="This content must not be stored",
+        )
+
+    assert error.value.code == "chat_capacity"
+    assert error.value.active_count == 2
+    assert created == []

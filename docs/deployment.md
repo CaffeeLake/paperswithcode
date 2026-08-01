@@ -219,6 +219,12 @@ chat models require the signed-in user's Hugging Face billing. If a legacy
 staging preview credential is still present, remove it atomically before the
 next deployment:
 
+Hugging Face is authoritative for each signed-in user's included credits,
+pay-as-you-go billing, billing exhaustion, and provider throttling. Papers With
+Code enforces only durable PostgreSQL-backed active-turn capacity. Any future
+server-funded provider, including OpenRouter, must remain disabled until a
+separately reviewed durable cross-worker quota and budget design is implemented.
+
 ```bash
 sudo python deploy/configure_host_env.py \
   --legacy-env backend/keys.env \

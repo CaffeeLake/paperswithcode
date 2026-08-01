@@ -23,8 +23,6 @@ interface InferenceBillingStatus {
   account_type: string | null;
   monthly_credits_usd: number | null;
   pay_as_you_go: boolean;
-  requests_per_minute: number;
-  requests_per_day: number;
   usage_url: string;
   token_url: string;
   bill_to: string | null;
@@ -154,33 +152,10 @@ const SettingsView: React.FC = () => {
                 </option>
               ))}
             </select>
-            {billing.monthly_credits_usd !== null && (
-              <>
-                <div
-                  className="settings-usage-track"
-                  role="img"
-                  aria-label={`$${billing.monthly_credits_usd.toFixed(2)} monthly Hugging Face inference credit`}
-                >
-                  <span />
-                </div>
-                <div className="settings-usage-scale">
-                  <span>Monthly included credit</span>
-                  <strong>${billing.monthly_credits_usd.toFixed(2)}</strong>
-                </div>
-              </>
-            )}
-            <div className="settings-limit-grid">
-              <div>
-                <strong>{billing.requests_per_minute}</strong>
-                <span>chat starts / minute</span>
-              </div>
-              <div>
-                <strong>{billing.requests_per_day}</strong>
-                <span>chat starts / day</span>
-              </div>
-            </div>
             <p className="settings-billing-help">
-              Hugging Face maintains the authoritative spend and provider breakdown.
+              Hugging Face maintains the authoritative usage, spend, credits, and
+              provider limits. Additional usage is billed by Hugging Face when
+              pay-as-you-go or purchased credits are enabled.
               Organization billing requires a Team or Enterprise plan and OAuth access
               for the selected organization.
             </p>
@@ -192,7 +167,7 @@ const SettingsView: React.FC = () => {
                 target="_blank"
                 rel="noreferrer"
               >
-                View live usage <ExternalLink aria-hidden="true" />
+                View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
               </a>
               <HfSignInButton returnTo="/settings" label="Refresh HF permissions" />
             </div>

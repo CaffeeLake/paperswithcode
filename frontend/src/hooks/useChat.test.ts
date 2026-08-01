@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ChatEvent, ChatMessage, ChatStreamRequest } from "@/lib/chat";
+import { ChatStreamError, type ChatEvent, type ChatMessage, type ChatStreamRequest } from "@/lib/chat";
 import type { ChatSessionDetail } from "@/lib/chatSessions";
 import { useChat } from "@/hooks/useChat";
 
@@ -143,6 +143,125 @@ describe("useChat billing failures", () => {
       error: "Review pay-as-you-go billing.",
       errorCode: "hf_inference_billing_exhausted",
     });
+  });
+});
+
+describe("useChat durable capacity handling", () => {
+  it("uses the same popup state for a brand-new chat", async () => {
+    let request: ChatStreamRequest | undefined;
+    streamChatMock.mockImplementation((next: ChatStreamRequest) => {
+      request = next;
+      return (async function* () {
+        yield* stream()();
+        throw new ChatStreamError("At capacity", "chat_capacity", 429, 0);
+      })();
+    });
+    const { result } = renderChat(null);
+
+    act(() => expect(result.current.send("Start research")).toBe(true));
+    await waitFor(() => expect(result.current.capacityRequest).not.toBeNull());
+
+    expect(request).toMatchObject({
+      message: "Start research",
+      session_id: null,
+      initial_model: "zai-org/GLM-5.2",
+    });
+    expect(result.current.messages).toEqual([]);
+  });
+
+  it("restores the draft state and retries with the exact request metadata", async () => {
+    const requests: ChatStreamRequest[] = [];
+    streamChatMock
+      .mockImplementationOnce((request: ChatStreamRequest) => {
+        requests.push(request);
+        return (async function* () {
+          yield* stream()();
+          throw new ChatStreamError("At capacity", "chat_capacity", 429, 0);
+        })();
+      })
+      .mockImplementationOnce((request: ChatStreamRequest) => {
+        requests.push(request);
+        return stream(
+          { type: "stream_start", request_id: "r2", session_id: "session-1" },
+          { type: "done", finish_reason: "success" },
+        )();
+      });
+    getSessionMock.mockResolvedValue(sessionDetail("session-1", [
+      persistedUser("user-1", 1, "Earlier"),
+      persistedAssistant("answer-1", 2, "Earlier answer"),
+      persistedUser("user-2", 3, "Follow up"),
+      persistedAssistant("answer-2", 4, "Follow-up answer"),
+    ]));
+    const original = uiTurn("user-1", "Earlier");
+    const { result } = renderChat();
+    act(() => result.current.load(original));
+
+    act(() => expect(result.current.send("Follow up")).toBe(true));
+    await waitFor(() => expect(result.current.capacityRequest).not.toBeNull());
+
+    expect(result.current.messages).toEqual(original);
+    expect(result.current.capacityRequest?.question).toBe("Follow up");
+    act(() => expect(result.current.retryCapacity()).toBe(true));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(requests[1].client_message_id).toBe(requests[0].client_message_id);
+  });
+
+  it("preserves edit-and-retry metadata and cancel performs no new request", async () => {
+    let request: ChatStreamRequest | undefined;
+    streamChatMock.mockImplementation((next: ChatStreamRequest) => {
+      request = next;
+      return (async function* () {
+        yield* stream()();
+        throw new ChatStreamError("At capacity", "chat_capacity", 429, 0);
+      })();
+    });
+    const original = [...uiTurn("user-1", "First"), ...uiTurn("user-2", "Second")];
+    const { result } = renderChat();
+    act(() => result.current.load(original));
+
+    act(() => expect(result.current.editAndResend("user-2", "Edited second")).toBe(true));
+    await waitFor(() => expect(result.current.capacityRequest).not.toBeNull());
+
+    expect(request).toMatchObject({
+      message: "Edited second",
+      session_id: "session-1",
+      replace_message_id: "user-2",
+      prior_revision: 1,
+    });
+    expect(result.current.messages).toEqual(original);
+    act(() => result.current.cancelCapacity());
+    expect(result.current.capacityRequest).toBeNull();
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves failed-turn retry metadata", async () => {
+    let request: ChatStreamRequest | undefined;
+    streamChatMock.mockImplementation((next: ChatStreamRequest) => {
+      request = next;
+      return (async function* () {
+        yield* stream()();
+        throw new ChatStreamError("At capacity", "chat_capacity", 429, 0);
+      })();
+    });
+    const failed: ChatMessage[] = [
+      { id: "failed-user", role: "user", text: "Retry me", revision: 2, status: "error" },
+      { id: "failed-answer", role: "assistant", error: "Provider failed" },
+    ];
+    const { result } = renderChat();
+    act(() => result.current.load(failed));
+
+    act(() => expect(result.current.send("Retry me")).toBe(true));
+    await waitFor(() => expect(result.current.capacityRequest).not.toBeNull());
+
+    expect(request).toMatchObject({
+      session_id: "session-1",
+      replace_message_id: "failed-user",
+      prior_revision: 2,
+    });
+    expect(result.current.messages).toEqual(failed);
   });
 });
 
