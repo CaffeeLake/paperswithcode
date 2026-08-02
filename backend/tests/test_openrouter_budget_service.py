@@ -85,6 +85,8 @@ def test_provider_reported_monthly_usage_preserves_reserve():
                     "limit": 5,
                     "limit_remaining": 3.75,
                     "limit_reset": "monthly",
+                    "is_management_key": False,
+                    "is_provisioning_key": False,
                 }
             }
         ) as client:
@@ -108,6 +110,8 @@ def test_provider_limit_must_match_configured_hard_guardrail():
                     "limit": 2,
                     "limit_remaining": 0.25,
                     "limit_reset": "monthly",
+                    "is_management_key": False,
+                    "is_provisioning_key": False,
                 }
             }
         ) as client:
@@ -126,6 +130,8 @@ def test_budget_guard_fails_closed_at_reserve(monkeypatch: pytest.MonkeyPatch):
                     "limit": 5,
                     "limit_remaining": 0,
                     "limit_reset": "monthly",
+                    "is_management_key": False,
+                    "is_provisioning_key": False,
                 }
             }
         ) as client:

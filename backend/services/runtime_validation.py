@@ -301,6 +301,17 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 raise RuntimeError(
                     "OpenRouter request bound exceeds the per-user hard budget"
                 )
+            from backend.services.openrouter_budget_service import (
+                OpenRouterBudgetUnavailable,
+                validate_openrouter_guardrail,
+            )
+
+            try:
+                validate_openrouter_guardrail(settings)
+            except OpenRouterBudgetUnavailable as error:
+                raise RuntimeError(
+                    "OpenRouter provider-enforced guardrail is invalid"
+                ) from error
         if (
             settings.chat_sandbox_cpu_limit is not None
             and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -46,6 +47,68 @@ def _number(value: Any, name: str, *, optional: bool = False) -> float | None:
     return result
 
 
+def _validated_guardrail_data(
+    settings: Settings, payload: object
+) -> tuple[dict[str, Any], float, float | None, float | None]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise OpenRouterBudgetUnavailable("OpenRouter budget response is invalid")
+    if (
+        data.get("is_management_key") is not False
+        or data.get("is_provisioning_key") is not False
+    ):
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter shared credential must be an inference key"
+        )
+    usage = _number(data.get("usage_monthly"), "usage_monthly")
+    provider_limit = _number(data.get("limit"), "limit", optional=True)
+    provider_remaining = _number(
+        data.get("limit_remaining"),
+        "limit_remaining",
+        optional=True,
+    )
+    if provider_limit is None or Decimal(str(provider_limit)) != Decimal(
+        settings.chat_openrouter_workspace_monthly_budget_usd
+    ):
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter workspace key does not have the configured hard limit"
+        )
+    if data.get("limit_reset") != "monthly":
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter workspace key does not have a monthly limit"
+        )
+    assert usage is not None
+    return data, usage, provider_limit, provider_remaining
+
+
+def validate_openrouter_guardrail(
+    settings: Settings, *, client: httpx.Client | None = None
+) -> None:
+    """Fail deployed startup unless the inference key proves its hard limit."""
+
+    if not settings.chat_openrouter_server_funded_enabled:
+        return
+    if not settings.chat_openrouter_api_key:
+        raise OpenRouterBudgetUnavailable("OpenRouter credential is not configured")
+    owns_client = client is None
+    active_client = client or httpx.Client(timeout=3, follow_redirects=False)
+    try:
+        response = active_client.get(
+            OPENROUTER_KEY_STATUS_URL,
+            headers={"Authorization": f"Bearer {settings.chat_openrouter_api_key}"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        _validated_guardrail_data(settings, payload)
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter guardrail could not be verified"
+        ) from error
+    finally:
+        if owns_client:
+            active_client.close()
+
+
 async def openrouter_budget_status(
     settings: Settings,
     *,
@@ -86,25 +149,9 @@ async def openrouter_budget_status(
         if owns_client:
             await active_client.aclose()
 
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, dict):
-        raise OpenRouterBudgetUnavailable("OpenRouter budget response is invalid")
-    usage = _number(data.get("usage_monthly"), "usage_monthly")
-    provider_limit = _number(data.get("limit"), "limit", optional=True)
-    provider_remaining = _number(
-        data.get("limit_remaining"),
-        "limit_remaining",
-        optional=True,
+    _, usage, provider_limit, provider_remaining = _validated_guardrail_data(
+        settings, payload
     )
-    if provider_limit is None or provider_limit != budget:
-        raise OpenRouterBudgetUnavailable(
-            "OpenRouter workspace key does not have the configured hard limit"
-        )
-    if data.get("limit_reset") != "monthly":
-        raise OpenRouterBudgetUnavailable(
-            "OpenRouter workspace key does not have a monthly limit"
-        )
-    assert usage is not None
     application_remaining = max(0.0, budget - usage)
     remaining = application_remaining
     if provider_remaining is not None:

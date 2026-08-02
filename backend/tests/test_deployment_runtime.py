@@ -21,6 +21,7 @@ import deploy.run_backend as run_backend
 import deploy.smoke_test as smoke_test
 from backend.chat_sandbox_worker.contract import MODAL_IMAGE_ID
 from backend.config import Settings
+from backend.services import openrouter_budget_service as deploy_openrouter
 from backend.services.runtime_validation import validate_chat_schema, validate_runtime
 from deploy.cli import _chat_descriptor_from_source, parser_for
 from deploy.install_deploy_tools import (
@@ -348,12 +349,33 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     assert validate_runtime(settings) == profile_features(environment)
 
 
-def test_staging_allows_budgeted_server_funded_openrouter(tmp_path: Path):
+def test_staging_allows_budgeted_server_funded_openrouter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_openrouter_server_funded_enabled = True
+    monkeypatch.setattr(
+        "backend.services.openrouter_budget_service.validate_openrouter_guardrail",
+        lambda _settings: None,
+    )
+
+    assert validate_runtime(settings) == profile_features("staging")
+
+
+def test_staging_rejects_missing_provider_enforced_guardrail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_openrouter_server_funded_enabled = True
 
-    assert validate_runtime(settings) == profile_features("staging")
+    def missing(_settings):
+        raise deploy_openrouter.OpenRouterBudgetUnavailable("no hard limit")
+
+    monkeypatch.setattr(deploy_openrouter, "validate_openrouter_guardrail", missing)
+    with pytest.raises(RuntimeError, match="provider-enforced guardrail"):
+        validate_runtime(settings)
 
 
 def test_staging_rejects_openrouter_request_bound_above_user_budget(tmp_path: Path):
