@@ -98,7 +98,7 @@ def test_gateway_routes_luna_to_server_funded_openrouter():
         chat_openrouter_server_funded_enabled=True,
     )
     row = SimpleNamespace(
-        model=settings.chat_luna_route,
+        model=settings.chat_deepseek_v4_flash_route,
         owner_hash="a" * 64,
         provider_token_encrypted=None,
     )
@@ -117,7 +117,7 @@ def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():
         chat_openrouter_server_funded_enabled=False,
     )
     row = SimpleNamespace(
-        model=settings.chat_luna_route,
+        model=settings.chat_deepseek_v4_flash_route,
         owner_hash="a" * 64,
         provider_token_encrypted=None,
     )

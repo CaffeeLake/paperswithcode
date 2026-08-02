@@ -251,7 +251,7 @@ class Settings(BaseSettings):
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
-    chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
+    chat_deepseek_v4_flash_route: str = Field(default="deepseek/deepseek-v4-flash-0731")
     chat_openrouter_api_key: str = Field(
         default="",
         description="OpenRouter API key reserved for server-funded research chat",
@@ -343,16 +343,18 @@ class Settings(BaseSettings):
                 "provider": "huggingface",
             },
             {
-                "id": "openai/gpt-5.6-luna",
-                "label": "GPT-5.6 Luna",
-                "route": self.chat_luna_route,
+                "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+                "label": "DeepSeek V4 Flash 0731",
+                "route": self.chat_deepseek_v4_flash_route,
                 "provider": "openrouter",
             },
         )
 
     @property
     def chat_model_choices(self) -> tuple[dict[str, str], ...]:
-        if not self.is_deployed:
+        if not self.is_deployed or (
+            self.environment == "staging" and self.chat_openrouter_server_funded_enabled
+        ):
             return self.chat_model_registry
         return tuple(
             choice

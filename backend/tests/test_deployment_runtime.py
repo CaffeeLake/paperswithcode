@@ -342,12 +342,21 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     assert validate_runtime(settings) == profile_features(environment)
 
 
-def test_staging_rejects_server_funded_openrouter(tmp_path: Path):
+def test_staging_allows_budgeted_server_funded_openrouter(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_openrouter_server_funded_enabled = True
 
-    with pytest.raises(RuntimeError, match="user-funded providers"):
+    assert validate_runtime(settings) == profile_features("staging")
+
+
+def test_staging_rejects_openrouter_reserve_below_concurrent_spend(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_openrouter_server_funded_enabled = True
+    settings.chat_openrouter_budget_reserve_usd = 0.1
+
+    with pytest.raises(RuntimeError, match="cover concurrent turn spend"):
         validate_runtime(settings)
 
 
@@ -356,7 +365,7 @@ def test_production_rejects_server_funded_openrouter(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "production")
     settings.chat_openrouter_server_funded_enabled = True
 
-    with pytest.raises(RuntimeError, match="user-funded providers"):
+    with pytest.raises(RuntimeError, match="prohibited in production"):
         validate_runtime(settings)
 
 
@@ -1583,7 +1592,10 @@ def test_staging_langfuse_credentials_are_bounded_and_preserved():
 def test_staging_openrouter_credential_gets_a_chat_only_name():
     assert configure_host_env.staging_openrouter_values(
         {"PWC_OPENROUTER_API_KEY": "PWC_OPENROUTER_API_KEY=secret"}
-    ) == {"PWC_CHAT_OPENROUTER_API_KEY": "secret"}
+    ) == {
+        "PWC_CHAT_OPENROUTER_API_KEY": "secret",
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
+    }
 
     with pytest.raises(ValueError, match="PWC_OPENROUTER_API_KEY"):
         configure_host_env.staging_openrouter_values({})

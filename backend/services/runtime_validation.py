@@ -184,11 +184,11 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 f"{settings.environment} Codex jobs must target {expected_api_url}"
             )
 
-    if settings.chat_openrouter_server_funded_enabled:
-        raise RuntimeError(
-            "server-funded OpenRouter chat is prohibited; deployed chat must use "
-            "user-funded providers"
-        )
+    if (
+        settings.environment == "production"
+        and settings.chat_openrouter_server_funded_enabled
+    ):
+        raise RuntimeError("server-funded OpenRouter chat is prohibited in production")
 
     if settings.environment == "production":
         if not settings.session_signing_private_key:
@@ -259,6 +259,28 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError(f"staging chat runtime is invalid: {error}") from error
         if not settings.hf_token:
             raise RuntimeError("staging chat model gateway requires an HF token")
+        if settings.chat_openrouter_server_funded_enabled:
+            if not settings.chat_openrouter_api_key:
+                raise RuntimeError(
+                    "server-funded OpenRouter chat requires an OpenRouter key"
+                )
+            if (
+                settings.chat_openrouter_budget_reserve_usd
+                >= settings.chat_openrouter_monthly_budget_usd
+            ):
+                raise RuntimeError(
+                    "OpenRouter budget reserve must be below the monthly budget"
+                )
+            # DeepSeek V4 Flash's currently most expensive OpenRouter endpoint is
+            # below $0.16 at the gateway's 512k input / 32k output ceilings. Keep
+            # $0.20 per globally admitted turn reserved so concurrent workers
+            # cannot race the provider-authoritative monthly usage check.
+            if settings.chat_openrouter_budget_reserve_usd < (
+                0.20 * settings.chat_max_concurrency
+            ):
+                raise RuntimeError(
+                    "OpenRouter budget reserve must cover concurrent turn spend"
+                )
         if (
             settings.chat_sandbox_cpu_limit is not None
             and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu

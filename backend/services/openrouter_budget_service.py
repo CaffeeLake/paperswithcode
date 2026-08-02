@@ -9,7 +9,7 @@ import httpx
 
 from backend.config import Settings
 
-OPENROUTER_KEY_STATUS_URL = "https://openrouter.ai/api/v1/auth/key"
+OPENROUTER_KEY_STATUS_URL = "https://openrouter.ai/api/v1/key"
 
 
 class OpenRouterBudgetUnavailable(RuntimeError):

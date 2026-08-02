@@ -37,21 +37,31 @@ def _client(payload: dict, *, status_code: int = 200) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_deployed_model_registry_always_hides_shared_provider(enabled):
-    settings = _settings(chat_openrouter_server_funded_enabled=enabled)
+def test_deployed_model_registry_hides_disabled_shared_provider():
+    settings = _settings(chat_openrouter_server_funded_enabled=False)
 
-    assert "openai/gpt-5.6-luna" not in {
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731" not in {
         choice["id"] for choice in settings.chat_model_choices
     }
-    assert "openai/gpt-5.6-luna" not in settings.chat_model_routes
-    assert settings.chat_model_providers["openai/gpt-5.6-luna"] == "openrouter"
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731" not in settings.chat_model_routes
+    assert (
+        settings.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        == "openrouter"
+    )
+
+
+def test_staging_exposes_explicitly_enabled_shared_provider():
+    settings = _settings(chat_openrouter_server_funded_enabled=True)
+
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731" in {
+        choice["id"] for choice in settings.chat_model_choices
+    }
 
 
 def test_development_keeps_model_available_for_explicit_local_testing():
     settings = Settings(_env_file=None)
 
-    assert "openai/gpt-5.6-luna" in {
+    assert "deepseek-ai/DeepSeek-V4-Flash-0731" in {
         choice["id"] for choice in settings.chat_model_choices
     }
 
