@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 
 CHAT_CAPACITY_RETRY_SECONDS = 5
+SSE_PROXY_FLUSH_PADDING_BYTES = 2048
 _capacity_denials = count(1)
 
 
@@ -440,6 +441,11 @@ async def stream_chat(
     )
 
     async def event_stream():
+        # Some edge POPs buffer small initial HTTP/2 DATA frames even when the
+        # origin and nginx both disable response buffering. An ignored SSE
+        # comment above the common 2 KiB threshold forces those intermediaries
+        # to flush the response before the first model delta arrives.
+        yield b": " + (b" " * SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
         async for frame in orchestrator.events():
             if frame.event is None:
                 yield b": ping\n\n"

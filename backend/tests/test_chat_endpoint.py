@@ -1181,6 +1181,9 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache, no-store, no-transform"
+    assert response.content.startswith(
+        b": " + (b" " * chat_router.SSE_PROXY_FLUSH_PADDING_BYTES) + b"\n\n"
+    )
     events = [
         json.loads(line.removeprefix("data: "))
         for line in response.text.splitlines()
