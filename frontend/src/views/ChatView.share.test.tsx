@@ -1,4 +1,5 @@
 import React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -88,13 +89,17 @@ const session = {
   is_busy: false,
 };
 
+let queryClient: QueryClient;
+
 function chatElement(path = `/chat/${sessionId}`) {
   return (
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path="/chat/:sessionId?" element={<ChatView />} />
-      </Routes>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/chat/:sessionId?" element={<ChatView />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
@@ -104,6 +109,9 @@ function renderChat(path = `/chat/${sessionId}`) {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   localStorage.clear();
   sessionStorage.clear();
   vi.unstubAllEnvs();
