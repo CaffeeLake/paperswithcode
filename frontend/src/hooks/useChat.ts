@@ -16,6 +16,12 @@ import { cancelSession, getSession, toUiMessages } from "@/lib/chatSessions";
 const WORKSPACE_STATUS = "Preparing research workspace…";
 const WORKSPACE_STATUS_DELAY_MS = 750;
 
+function withoutWorkspaceStatus(message: ChatMessage): ChatMessage {
+  if (message.status !== WORKSPACE_STATUS) return message;
+  const { status: _status, ...rest } = message;
+  return rest;
+}
+
 function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (predicate(items[index])) return index;
@@ -120,9 +126,15 @@ export function useChat(options: UseChatOptions) {
     copy[copy.length - 1] = fn(copy[copy.length - 1]);
     return copy;
   });
-  const addBlock = (block: ChatBlock) => patchLast((message) => ({ ...message, blocks: [...(message.blocks ?? []), block] }));
+  const addBlock = (block: ChatBlock) => patchLast((message) => {
+    const visible = withoutWorkspaceStatus(message);
+    return { ...visible, blocks: [...(visible.blocks ?? []), block] };
+  });
   const patchBlock = (match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean, patch: (block: ChatBlock) => ChatBlock) =>
-    patchLast((message) => ({ ...message, blocks: (message.blocks ?? []).map((block, index, all) => match(block, index, all) ? patch(block) : block) }));
+    patchLast((message) => {
+      const visible = withoutWorkspaceStatus(message);
+      return { ...visible, blocks: (visible.blocks ?? []).map((block, index, all) => match(block, index, all) ? patch(block) : block) };
+    });
   const isLastOfKind = (kind: ChatBlock["kind"]) => (block: ChatBlock, index: number, blocks: ChatBlock[]) =>
     block.kind === kind && findLastMatchingIndex(blocks, (candidate) => candidate.kind === kind) === index;
 
@@ -136,11 +148,7 @@ export function useChat(options: UseChatOptions) {
     const wasShown = workspaceStatusStateRef.current === "shown";
     workspaceStatusStateRef.current = "cleared";
     if (!wasShown) return;
-    patchLast((message) => {
-      if (message.status !== WORKSPACE_STATUS) return message;
-      const { status: _status, ...rest } = message;
-      return rest;
-    });
+    patchLast(withoutWorkspaceStatus);
   };
 
   const reportTiming = (
@@ -228,15 +236,18 @@ export function useChat(options: UseChatOptions) {
         optionsRef.current.onTitle(event.title);
         break;
       case "reasoning_start":
-        patchLast((message) => ({
-          ...message,
-          blocks: [
-            ...(message.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
-              ? { ...block, active: false, open: false }
-              : block),
-            { kind: "reasoning", text: "", active: true, open: true },
-          ],
-        }));
+        patchLast((message) => {
+          const visible = withoutWorkspaceStatus(message);
+          return {
+            ...visible,
+            blocks: [
+              ...(visible.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
+                ? { ...block, active: false, open: false }
+                : block),
+              { kind: "reasoning", text: "", active: true, open: true },
+            ],
+          };
+        });
         break;
       case "reasoning_delta":
         patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block);
@@ -278,10 +289,11 @@ export function useChat(options: UseChatOptions) {
         break;
       case "answer_delta":
         patchLast((message) => {
-          const blocks = message.blocks ?? [];
+          const visible = withoutWorkspaceStatus(message);
+          const blocks = visible.blocks ?? [];
           const last = blocks.at(-1);
-          if (last?.kind === "answer" && !last.done) return { ...message, blocks: [...blocks.slice(0, -1), { ...last, text: last.text + event.text }] };
-          return { ...message, blocks: [...blocks, { kind: "answer", text: event.text, done: false }] };
+          if (last?.kind === "answer" && !last.done) return { ...visible, blocks: [...blocks.slice(0, -1), { ...last, text: last.text + event.text }] };
+          return { ...visible, blocks: [...blocks, { kind: "answer", text: event.text, done: false }] };
         });
         break;
       case "done":
@@ -340,7 +352,8 @@ export function useChat(options: UseChatOptions) {
     preparingTimerRef.current = window.setTimeout(() => {
       preparingTimerRef.current = null;
       if (
-        abortRef.current !== controller
+        workspaceStatusStateRef.current !== "armed"
+        || abortRef.current !== controller
         || controller.signal.aborted
         || messagesGenerationRef.current !== messagesGeneration
       ) return;

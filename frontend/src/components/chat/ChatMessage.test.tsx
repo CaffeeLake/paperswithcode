@@ -246,6 +246,24 @@ describe("AssistantMessage", () => {
     );
   });
 
+  it("does not reuse the workspace status after streamed work has started", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      streaming: true,
+      status: "Preparing research workspace…",
+      blocks: [{
+        kind: "reasoning",
+        text: "Checked the evidence.",
+        active: false,
+        open: false,
+      }],
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+    expect(screen.queryByText("Preparing research workspace…")).not.toBeInTheDocument();
+  });
+
   it.each([
     {
       name: "completed reasoning",

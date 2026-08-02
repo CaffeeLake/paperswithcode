@@ -379,7 +379,9 @@ export const AssistantMessage: React.FC<{
       })}
       {isWaitingForAssistant(msg) && (
         <div className="chat-waiting" role="status" aria-live="polite">
-          <span className="chat-thinking">{msg.status ?? "Thinking…"}</span>
+          <span className="chat-thinking">
+            {(msg.blocks?.length ?? 0) === 0 ? (msg.status ?? "Thinking…") : "Thinking…"}
+          </span>
         </div>
       )}
       {msg.error && <div className="chat-error">
