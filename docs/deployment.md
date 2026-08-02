@@ -214,27 +214,23 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-Deployed chat prohibits server-funded OpenRouter in both environments; ordinary
-chat models require the signed-in user's Hugging Face billing. If a legacy
-staging preview credential is still present, remove it atomically before the
-next deployment:
+Ordinary chat models require the signed-in user's Hugging Face billing. Staging
+may additionally enable the shared OpenRouter-backed DeepSeek V4 Flash preview.
+Admission checks provider-authoritative monthly usage before each turn, and the
+configured reserve must cover every globally admitted turn at the gateway token
+ceilings. Production continues to prohibit shared OpenRouter credentials.
 
-Hugging Face is authoritative for each signed-in user's included credits,
-pay-as-you-go billing, billing exhaustion, and provider throttling. Papers With
-Code enforces only durable PostgreSQL-backed active-turn capacity. Any future
-server-funded provider, including OpenRouter, must remain disabled until a
-separately reviewed durable cross-worker quota and budget design is implemented.
+Provision the staging-only credential without printing it:
 
 ```bash
 sudo python deploy/configure_host_env.py \
   --legacy-env backend/keys.env \
-  --staging-openrouter-disable-only
+  --staging-openrouter-only
 ```
 
-The command removes the shared chat credential without printing it and pins the
-preview flag off. The auditor continues to fail closed if an older release has
-the preview enabled and cannot prove its provider-reported usage remains above
-the configured reserve.
+The auditor fails closed if OpenRouter cannot prove that provider-reported usage
+remains above the configured reserve. To retire the preview, use the same
+command with `--staging-openrouter-disable-only`.
 
 ## Release cleanup
 

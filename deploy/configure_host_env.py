@@ -196,7 +196,10 @@ def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "PWC_OPENROUTER_API_KEY"
     if key not in legacy:
         raise ValueError(f"legacy environment is missing: {key}")
-    return {"PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key])}
+    return {
+        "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key]),
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
+    }
 
 
 def without_staging_openrouter(lines: dict[str, str]) -> dict[str, str]:
