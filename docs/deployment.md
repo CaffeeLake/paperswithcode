@@ -247,6 +247,18 @@ sudo systemd-run --quiet --wait --pipe --collect \
   --batch-size 100 --rotate-credentials
 ```
 
+Generate a new active staging AES key and tracking secret without removing old
+decryption versions, then deploy the intended release so processes load it:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env backend/keys.env \
+  --staging-openrouter-secrets-rotate-only
+```
+
+After the explicit credential-rotation batch has re-encrypted every older row,
+retire unused decryption versions in a separately reviewed environment change.
+
 To retire the preview, use the provisioning command with
 `--staging-openrouter-disable-only`. This leaves the ledger intact for
 reconciliation and keeps Hugging Face-backed chat available.

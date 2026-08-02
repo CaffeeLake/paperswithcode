@@ -412,6 +412,34 @@ def test_staging_openrouter_values_preserve_secrets(
     assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "5.00"
 
 
+def test_staging_openrouter_secret_rotation_preserves_decryption_versions():
+    old_key = base64.urlsafe_b64encode(b"a" * 32).rstrip(b"=").decode()
+    current = {
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": (
+            "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING='"
+            + json.dumps({"1": old_key}, separators=(",", ":"))
+            + "'"
+        ),
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": (
+            "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION=1"
+        ),
+        "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET": (
+            "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET=old-secret"
+        ),
+    }
+
+    values = configure_host_env.rotate_staging_openrouter_secret_values(current)
+
+    keyring = json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"])
+    assert keyring["1"] == old_key
+    assert (
+        len(base64.urlsafe_b64decode(keyring["2"] + "=" * (-len(keyring["2"]) % 4)))
+        == 32
+    )
+    assert values["PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION"] == "2"
+    assert values["PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"] != "old-secret"
+
+
 def test_production_rejects_server_funded_openrouter(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     settings = deployed_settings(tmp_path, release, "production")

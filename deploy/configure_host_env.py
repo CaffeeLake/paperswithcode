@@ -222,6 +222,34 @@ def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, s
     }
 
 
+def rotate_staging_openrouter_secret_values(
+    current: dict[str, str],
+) -> dict[str, str]:
+    """Add a new active AES key while retaining versions needed for decrypt."""
+
+    line = current.get("PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING")
+    if not line:
+        raise ValueError("staging OpenRouter credential keyring is not configured")
+    try:
+        parsed = json.loads(decoded_value(line))
+        keyring = {str(int(version)): str(value) for version, value in parsed.items()}
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("staging OpenRouter credential keyring is invalid") from error
+    if not keyring:
+        raise ValueError("staging OpenRouter credential keyring is empty")
+    next_version = max(int(version) for version in keyring) + 1
+    keyring[str(next_version)] = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    )
+    return {
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": json.dumps(
+            keyring, separators=(",", ":")
+        ),
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": str(next_version),
+        "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET": secrets.token_urlsafe(48),
+    }
+
+
 def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "PWC_OPENROUTER_API_KEY"
     if key not in legacy:
@@ -314,11 +342,39 @@ def main() -> int:
     parser.add_argument("--staging-langfuse-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
+    parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_openrouter_secrets_rotate_only:
+        if any(
+            (
+                args.production_codex_only,
+                args.staging_codex_too,
+                args.staging_langfuse_only,
+                args.staging_openrouter_only,
+                args.staging_openrouter_disable_only,
+                args.staging_chat_capacity_only,
+            )
+        ):
+            parser.error(
+                "--staging-openrouter-secrets-rotate-only cannot be combined "
+                "with other modes"
+            )
+        try:
+            staging = assign(
+                read_lines(CONFIG_ROOT / "staging.env"),
+                rotate_staging_openrouter_secret_values(
+                    read_lines(CONFIG_ROOT / "staging.env")
+                ),
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("rotated staging OpenRouter encryption and tracking secrets")
+        return 0
     if args.staging_chat_capacity_only:
         if (
             args.production_codex_only
