@@ -9,7 +9,7 @@ import {
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
 } from "@/lib/chatLaunch";
-import { DEFAULT_CHAT_MODEL } from "@/lib/chatSessions";
+import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { AskAssistant } from "@/views/FeedView";
 
@@ -31,6 +31,14 @@ const renderAskAssistant = () => render(
 );
 
 describe("AskAssistant", () => {
+  it("offers the staging OpenRouter model from the shared picker list", () => {
+    expect(FALLBACK_CHAT_MODELS).toContainEqual({
+      id: "deepseek-ai/DeepSeek-V4-Flash-0731",
+      label: "DeepSeek V4 Flash 0731",
+      provider: "openrouter",
+    });
+  });
+
   it("types, holds, erases, and rotates the suggested placeholder", () => {
     vi.useFakeTimers();
     renderAskAssistant();

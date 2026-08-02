@@ -65,6 +65,11 @@ export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   { id: DEFAULT_CHAT_MODEL, label: "Gemma 4 31B", provider: "huggingface" },
   { id: "zai-org/GLM-5.2", label: "GLM 5.2", provider: "huggingface" },
   { id: "moonshotai/Kimi-K3", label: "Kimi K3", provider: "huggingface" },
+  {
+    id: "deepseek-ai/DeepSeek-V4-Flash-0731",
+    label: "DeepSeek V4 Flash 0731",
+    provider: "openrouter",
+  },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
