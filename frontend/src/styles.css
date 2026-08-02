@@ -4455,10 +4455,12 @@ html { scroll-behavior: smooth; }
 
 /* === HOME ASK BOX (assistant entry point) === */
 .ask-home-group {
-  max-width: 640px;
+  width: 100%;
   margin: 0 auto 36px;
 }
 .ask-home {
+  max-width: 640px;
+  margin: 0 auto;
   padding: 8px;
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
@@ -4507,23 +4509,34 @@ html { scroll-behavior: smooth; }
   padding: 1px 6px;
 }
 .ask-home-prompts {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  justify-content: center;
-  margin-top: 16px;
+  margin-top: 12px;
 }
 .ask-home-prompt {
+  width: 100%;
   font-family: var(--serif);
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.25;
   color: var(--ink-soft);
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
   border-radius: 999px;
-  padding: 8px 16px;
+  padding: 8px 12px;
+  text-wrap: balance;
   transition: border-color 0.15s, color 0.15s;
 }
 .ask-home-prompt:hover { border-color: var(--hairline-strong); color: var(--ink); }
+@media (max-width: 640px) {
+  .ask-home-prompts {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(260px, 1fr);
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+}
 /* Time filter shares the sort-pill look so both filter rows read as one system */
 .sort-options-time { margin-left: auto; }
 .sort-btn-time { text-transform: none; }
