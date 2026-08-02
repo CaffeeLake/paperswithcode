@@ -140,7 +140,8 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    routes.
 4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`,
    `add_chat_sandbox_pool.sql`, `add_chat_active_cost.sql`,
-   `add_chat_user_billing.sql`, and `add_chat_qualification_metadata.sql` as
+   `add_chat_user_billing.sql`, `add_chat_qualification_metadata.sql`, and
+   `add_chat_openrouter_user_budget.sql` as
    PostgreSQL superuser with
    `search_path=staging,public`. Both migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
@@ -217,8 +218,10 @@ active release, and keeps insufficient pre-soak samples distinct from failures.
 Ordinary chat models require the signed-in user's Hugging Face billing. Staging
 may additionally enable the shared OpenRouter-backed DeepSeek V4 Flash preview.
 Admission checks provider-authoritative monthly usage before each turn, and the
-configured reserve must cover every globally admitted turn at the gateway token
-ceilings. Production continues to prohibit shared OpenRouter credentials.
+provider key must prove an exact monthly `$5` staging workspace limit. Durable
+PostgreSQL reservations enforce the separate `$1` per-user ceiling before each
+funded gateway dispatch. Production continues to prohibit shared OpenRouter
+credentials.
 
 Provision the staging-only credential without printing it:
 
@@ -228,9 +231,25 @@ sudo python deploy/configure_host_env.py \
   --staging-openrouter-only
 ```
 
-The auditor fails closed if OpenRouter cannot prove that provider-reported usage
-remains above the configured reserve. To retire the preview, use the same
-command with `--staging-openrouter-disable-only`.
+The application fails closed if OpenRouter cannot prove the exact provider
+guardrail, or if durable per-user accounting is unavailable. Staging runs
+bounded reconciliation and retention maintenance daily. An operator can also
+run the release-scoped maintenance script explicitly, including an intentional
+encryption-key rotation batch:
+
+```bash
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=pwc-staging --gid=pwc-staging \
+  --working-directory=/srv/paperswithcode/environments/staging/current \
+  --property=EnvironmentFile=/etc/paperswithcode/staging.env \
+  /srv/paperswithcode/.venv/bin/python \
+  -m backend.scripts.maintain_openrouter_accounting \
+  --batch-size 100 --rotate-credentials
+```
+
+To retire the preview, use the provisioning command with
+`--staging-openrouter-disable-only`. This leaves the ledger intact for
+reconciliation and keeps Hugging Face-backed chat available.
 
 ## Release cleanup
 

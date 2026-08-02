@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import time
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
+from backend.models.database import ChatSession, ChatTurnCapability
 from backend.services.chat_capability_service import (
     CapabilityError,
     ChatCapabilityService,
@@ -35,6 +37,24 @@ from backend.services.chat_web_fetch_service import (
     fetch_catalog_url,
 )
 from backend.services.hf_inference_billing_service import HfInferenceCredential
+from backend.services.openrouter_budget_service import (
+    OpenRouterBudgetExceeded,
+    OpenRouterBudgetUnavailable,
+    require_openrouter_budget,
+)
+from backend.services.openrouter_byok_service import (
+    OpenRouterBYOKService,
+    OpenRouterCredentialUnavailable,
+)
+from backend.services.openrouter_usage_extractor import OpenRouterUsageExtractor
+from backend.services.openrouter_user_budget_service import (
+    PUBLIC_SUPPORT_URL,
+    OpenRouterMonthlyBudgetExhausted,
+    OpenRouterPricingUnavailable,
+    OpenRouterUserBudgetService,
+    RequestBounds,
+    opaque_owner,
+)
 from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -136,9 +156,40 @@ def _provider_headers(
     return headers
 
 
-def _provider_target(row, settings: Settings) -> tuple[str, str, str | None]:
+def _provider_target(
+    row, settings: Settings, db: Session | None = None
+) -> tuple[str, str, str | None]:
     provider = settings.chat_route_providers.get(row.model)
     if provider == "openrouter":
+        mode = getattr(row, "provider_mode", None) or "openrouter_funded"
+        if mode == "openrouter_byok":
+            if db is None or not row.provider_credential_revision:
+                raise HTTPException(status_code=403, detail="Capability rejected")
+            session = db.get(ChatSession, row.chat_session_id)
+            if (
+                session is None
+                or row.owner_hash
+                != hashlib.sha256(session.hf_user_id.encode()).hexdigest()
+            ):
+                raise HTTPException(status_code=403, detail="Capability rejected")
+            try:
+                selected = OpenRouterBYOKService(db, settings).validate_dispatch(
+                    session.hf_user_id, row.provider_credential_revision
+                )
+                copied = _user_provider_token(row, settings)
+            except OpenRouterCredentialUnavailable:
+                raise HTTPException(
+                    status_code=401, detail="OpenRouter credential was revoked"
+                ) from None
+            if not hmac.compare_digest(selected.token, copied):
+                raise HTTPException(status_code=403, detail="Capability rejected")
+            return (
+                "https://openrouter.ai/api/v1/messages",
+                copied,
+                None,
+            )
+        if mode != "openrouter_funded":
+            raise HTTPException(status_code=403, detail="Capability rejected")
         if (
             not settings.chat_openrouter_server_funded_enabled
             or not settings.chat_openrouter_api_key
@@ -157,6 +208,40 @@ def _provider_target(row, settings: Settings) -> tuple[str, str, str | None]:
             credential.bill_to,
         )
     raise HTTPException(status_code=422, detail="Unsupported model provider")
+
+
+def _capability_owner(row: ChatTurnCapability, db: Session) -> str:
+    session = db.get(ChatSession, row.chat_session_id)
+    if session is None:
+        logger.critical("openrouter funded dispatch missing owner session")
+        raise HTTPException(status_code=403, detail="Capability rejected")
+    if row.owner_hash != hashlib.sha256(session.hf_user_id.encode()).hexdigest():
+        logger.critical("openrouter funded dispatch owner binding mismatch")
+        raise HTTPException(status_code=403, detail="Capability rejected")
+    return session.hf_user_id
+
+
+def _record_provider_error(capability_id: uuid.UUID, code: str) -> None:
+    with db_manager.session_local() as error_db:
+        row = error_db.get(ChatTurnCapability, capability_id)
+        if row is not None:
+            ChatCapabilityService(error_db).record_provider_error(row, code)
+            error_db.commit()
+
+
+def _settle_openrouter_call(
+    settings: Settings,
+    call_id: uuid.UUID,
+    extractor: OpenRouterUsageExtractor,
+) -> None:
+    result = extractor.result()
+    with db_manager.session_local() as accounting_db:
+        service = OpenRouterUserBudgetService(accounting_db, settings)
+        if result.cost_microusd is None:
+            service.mark_cost_unknown(call_id, result.generation_id)
+        else:
+            service.settle_call(call_id, result.cost_microusd, result.generation_id)
+        accounting_db.commit()
 
 
 def _scope(
@@ -302,7 +387,20 @@ async def messages(
     if not _output_tokens_allowed(maximum_tokens):
         raise HTTPException(status_code=422, detail="max_tokens is out of range")
     row = _scope(token, "model", x_pwc_session, x_pwc_turn, db, model=model)
-    provider_url, provider_token, provider_bill_to = _provider_target(row, settings)
+    provider = settings.chat_route_providers.get(row.model)
+    provider_mode = row.provider_mode or (
+        "openrouter_funded" if provider == "openrouter" else "huggingface"
+    )
+    owner_id = _capability_owner(row, db)
+    if provider == "openrouter":
+        # Supplemental reconciliation metadata is opaque and cannot identify
+        # the HF subject at OpenRouter.
+        payload["user"] = opaque_owner(owner_id, settings)
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        if len(raw) > 512 * 1024:
+            raise HTTPException(status_code=413, detail="Model request is too large")
+    provider_url, provider_token, provider_bill_to = _provider_target(row, settings, db)
+    funded_call_id: uuid.UUID | None = None
     try:
         ChatCapabilityService(db).meter_provider(
             row,
@@ -310,6 +408,74 @@ async def messages(
             maximum_requests=16,
             maximum_tokens=MAX_PROVIDER_TURN_TOKENS,
         )
+        call_sequence = row.provider_requests
+        if provider_mode == "openrouter_funded":
+            try:
+                await require_openrouter_budget(settings)
+            except (OpenRouterBudgetExceeded, OpenRouterBudgetUnavailable):
+                ChatCapabilityService(db).record_provider_error(
+                    row, "openrouter_unavailable"
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "openrouter_unavailable",
+                        "message": (
+                            "OpenRouter is currently unavailable. However, you can "
+                            "still bring your own key in Settings."
+                        ),
+                        "byok_settings_available": True,
+                        "support_url": PUBLIC_SUPPORT_URL,
+                    },
+                ) from None
+            funded_call_id = uuid.uuid5(row.id, f"provider-call:{call_sequence}")
+            try:
+                OpenRouterUserBudgetService(db, settings).reserve_call(
+                    owner_id,
+                    turn_id,
+                    funded_call_id,
+                    call_sequence,
+                    model,
+                    RequestBounds(
+                        request_bytes=len(raw),
+                        maximum_output_tokens=maximum_tokens,
+                        payload=payload,
+                    ),
+                )
+            except OpenRouterMonthlyBudgetExhausted as error:
+                ChatCapabilityService(db).record_provider_error(
+                    row, "openrouter_monthly_budget_exhausted"
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "openrouter_monthly_budget_exhausted",
+                        "message": (
+                            "You have used this month's Papers With Code OpenRouter allowance."
+                        ),
+                        "used_percent": 100,
+                        "resets_at": error.resets_at.isoformat().replace("+00:00", "Z"),
+                    },
+                ) from None
+            except OpenRouterPricingUnavailable:
+                ChatCapabilityService(db).record_provider_error(
+                    row, "openrouter_unavailable"
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "openrouter_unavailable",
+                        "message": (
+                            "OpenRouter is currently unavailable. However, you can "
+                            "still bring your own key in Settings."
+                        ),
+                        "byok_settings_available": True,
+                        "support_url": PUBLIC_SUPPORT_URL,
+                    },
+                ) from None
         db.commit()
     except CapabilityError:
         db.rollback()
@@ -318,21 +484,37 @@ async def messages(
         ) from None
     _record_gateway_timing(settings, turn_id, received_at=received_at)
 
+    if funded_call_id is not None:
+        # Persist the ambiguous-dispatch boundary before any network bytes can
+        # reach OpenRouter. A crash after this point retains the full bound.
+        OpenRouterUserBudgetService(db, settings).mark_dispatched(funded_call_id)
+        db.commit()
+
     client = httpx.AsyncClient(timeout=180, follow_redirects=False)
     upstream_headers = _provider_headers(
         provider_token,
         request,
         bill_to=provider_bill_to,
     )
-    upstream = await client.send(
-        client.build_request(
-            "POST",
-            provider_url,
-            content=raw,
-            headers=upstream_headers,
-        ),
-        stream=True,
-    )
+    try:
+        upstream = await client.send(
+            client.build_request(
+                "POST",
+                provider_url,
+                content=raw,
+                headers=upstream_headers,
+            ),
+            stream=True,
+        )
+    except httpx.HTTPError:
+        await client.aclose()
+        if funded_call_id is not None:
+            with db_manager.session_local() as accounting_db:
+                OpenRouterUserBudgetService(accounting_db, settings).mark_cost_unknown(
+                    funded_call_id
+                )
+                accounting_db.commit()
+        raise HTTPException(status_code=502, detail="Model provider failed") from None
     _record_gateway_timing(
         settings,
         turn_id,
@@ -340,10 +522,32 @@ async def messages(
         elapsed_ms=round((time.perf_counter() - gateway_started) * 1000),
     )
 
+    extractor = OpenRouterUsageExtractor()
+
+    if provider_mode == "openrouter_byok" and upstream.status_code == 401:
+        with db_manager.session_local() as credential_db:
+            OpenRouterBYOKService(credential_db, settings).invalidate_auth_failure(
+                owner_id
+            )
+            capability = credential_db.get(ChatTurnCapability, row.id)
+            if capability is not None:
+                ChatCapabilityService(credential_db).record_provider_error(
+                    capability, "openrouter_byok_credential_invalid"
+                )
+            credential_db.commit()
+    elif provider_mode == "openrouter_byok" and upstream.status_code == 402:
+        _record_provider_error(row.id, "openrouter_byok_billing_error")
+    elif provider_mode == "openrouter_byok" and upstream.status_code == 429:
+        _record_provider_error(row.id, "openrouter_byok_rate_limit")
+    elif provider_mode == "openrouter_funded" and upstream.status_code in {402, 403}:
+        _record_provider_error(row.id, "openrouter_unavailable")
+
     async def chunks():
         first_byte = True
         try:
             async for chunk in upstream.aiter_bytes():
+                if funded_call_id is not None:
+                    extractor.feed(chunk)
                 if first_byte:
                     first_byte = False
                     _record_gateway_timing(
@@ -358,6 +562,15 @@ async def messages(
         finally:
             await upstream.aclose()
             await client.aclose()
+            if funded_call_id is not None:
+                try:
+                    _settle_openrouter_call(settings, funded_call_id, extractor)
+                except Exception as error:
+                    logger.error(
+                        "openrouter stream settlement failed call=%s error=%s",
+                        funded_call_id,
+                        type(error).__name__,
+                    )
             logger.info(
                 "chat provider stream complete call_class=research turn=%s "
                 "duration_ms=%.1f",
@@ -375,6 +588,8 @@ async def messages(
             chunks(), status_code=upstream.status_code, headers=headers
         )
     body = await upstream.aread()
+    if funded_call_id is not None:
+        extractor.inspect_complete_response(body)
     _record_gateway_timing(
         settings,
         turn_id,
@@ -383,4 +598,13 @@ async def messages(
     )
     await upstream.aclose()
     await client.aclose()
+    if funded_call_id is not None:
+        try:
+            _settle_openrouter_call(settings, funded_call_id, extractor)
+        except Exception as error:
+            logger.error(
+                "openrouter response settlement failed call=%s error=%s",
+                funded_call_id,
+                type(error).__name__,
+            )
     return Response(body, status_code=upstream.status_code, headers=headers)

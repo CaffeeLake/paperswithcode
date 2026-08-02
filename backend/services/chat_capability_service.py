@@ -47,6 +47,8 @@ class ChatCapabilityService:
         owner_id: str,
         provider_token: str | None = None,
         provider_bill_to: str | None = None,
+        provider_mode: str | None = None,
+        provider_credential_revision: uuid.UUID | None = None,
         settings: Settings | None = None,
         model: str,
         scopes: set[str],
@@ -74,6 +76,8 @@ class ChatCapabilityService:
                 if provider_token and settings
                 else None
             ),
+            provider_mode=provider_mode,
+            provider_credential_revision=provider_credential_revision,
             model=model,
             scopes=sorted(scopes),
             nonce=secrets.token_hex(16),
@@ -168,3 +172,21 @@ class ChatCapabilityService:
         row.revoked_at = datetime.now(UTC)
         self.db.flush()
         return True
+
+    def record_provider_error(self, row: ChatTurnCapability, code: str) -> None:
+        row.provider_error_code = code
+        self.db.flush()
+
+    def provider_error_for_turn(
+        self, chat_session_id: uuid.UUID, turn_id: uuid.UUID
+    ) -> str | None:
+        return self.db.scalar(
+            select(ChatTurnCapability.provider_error_code)
+            .where(
+                ChatTurnCapability.chat_session_id == chat_session_id,
+                ChatTurnCapability.turn_id == turn_id,
+                ChatTurnCapability.provider_error_code.is_not(None),
+            )
+            .order_by(ChatTurnCapability.created_at.desc())
+            .limit(1)
+        )

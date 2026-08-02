@@ -22,8 +22,8 @@ def _settings(**overrides) -> Settings:
         "release_id": "release-a",
         "chat_openrouter_api_key": "secret",
         "chat_openrouter_server_funded_enabled": True,
-        "chat_openrouter_monthly_budget_usd": 5,
-        "chat_openrouter_budget_reserve_usd": 0.5,
+        "chat_openrouter_monthly_user_budget_usd": 1,
+        "chat_openrouter_workspace_monthly_budget_usd": 5,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -82,8 +82,9 @@ def test_provider_reported_monthly_usage_preserves_reserve():
             {
                 "data": {
                     "usage_monthly": 1.25,
-                    "limit": None,
-                    "limit_remaining": None,
+                    "limit": 5,
+                    "limit_remaining": 3.75,
+                    "limit_reset": "monthly",
                 }
             }
         ) as client:
@@ -98,7 +99,7 @@ def test_provider_reported_monthly_usage_preserves_reserve():
     assert "secret" not in str(status.sanitized())
 
 
-def test_provider_limit_can_be_stricter_than_application_budget():
+def test_provider_limit_must_match_configured_hard_guardrail():
     async def run():
         async with _client(
             {
@@ -106,15 +107,14 @@ def test_provider_limit_can_be_stricter_than_application_budget():
                     "usage_monthly": 1,
                     "limit": 2,
                     "limit_remaining": 0.25,
+                    "limit_reset": "monthly",
                 }
             }
         ) as client:
             return await openrouter_budget_status(_settings(), client=client)
 
-    status = asyncio.run(run())
-
-    assert status.remaining_usd == 0.25
-    assert status.within_budget is False
+    with pytest.raises(OpenRouterBudgetUnavailable):
+        asyncio.run(run())
 
 
 def test_budget_guard_fails_closed_at_reserve(monkeypatch: pytest.MonkeyPatch):
@@ -122,9 +122,10 @@ def test_budget_guard_fails_closed_at_reserve(monkeypatch: pytest.MonkeyPatch):
         async with _client(
             {
                 "data": {
-                    "usage_monthly": 4.5,
-                    "limit": None,
-                    "limit_remaining": None,
+                    "usage_monthly": 5,
+                    "limit": 5,
+                    "limit_remaining": 0,
+                    "limit_reset": "monthly",
                 }
             }
         ) as client:
@@ -164,15 +165,15 @@ def test_chat_admission_rejects_disabled_shared_provider():
             )
         )
 
-    assert error.value.code == "provider_unavailable"
+    assert error.value.code == "openrouter_unavailable"
     assert error.value.status_code == 503
 
 
 @pytest.mark.parametrize(
     ("budget_error", "expected_code"),
     [
-        (OpenRouterBudgetExceeded("exhausted"), "provider_budget_exhausted"),
-        (OpenRouterBudgetUnavailable("unavailable"), "provider_budget_unavailable"),
+        (OpenRouterBudgetExceeded("exhausted"), "openrouter_unavailable"),
+        (OpenRouterBudgetUnavailable("unavailable"), "openrouter_unavailable"),
     ],
 )
 def test_chat_admission_maps_budget_failure_without_leaking_detail(
@@ -189,7 +190,7 @@ def test_chat_admission_maps_budget_failure_without_leaking_detail(
 
     assert error.value.code == expected_code
     assert "exhausted" not in str(error.value)
-    assert "unavailable" not in str(error.value)
+    assert str(error.value) == chat_router.OPENROUTER_UNAVAILABLE_MESSAGE
 
 
 def test_chat_admission_has_no_process_local_request_quota(

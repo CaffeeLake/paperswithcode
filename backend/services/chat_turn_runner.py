@@ -52,8 +52,9 @@ class LocalChatTurnRunner:
         yield {"type": "workspace_ready"}
         provider = self.settings.chat_route_providers[self.admission.model_route]
         if provider == "openrouter":
-            provider_token = self.settings.chat_openrouter_api_key
-            provider_base_url = "https://openrouter.ai/api"
+            raise RuntimeError(
+                "OpenRouter calls require the private gateway accounting boundary"
+            )
         else:
             provider_token = self.owner.hf_inference_token or ""
             provider_base_url = "https://router.huggingface.co"
@@ -169,17 +170,31 @@ def create_chat_turn_runner(
         )
     with db_manager.session_local() as db:
         provider = settings.chat_route_providers[admission.model_route]
+        provider_mode = (
+            owner.openrouter_mode if provider == "openrouter" else "huggingface"
+        )
+        if provider == "openrouter" and provider_mode not in {
+            "openrouter_funded",
+            "openrouter_byok",
+        }:
+            raise ValueError("OpenRouter turn has no typed credential admission")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,
             owner_id=owner.hf_user_id,
             provider_token=(
-                owner.hf_inference_token if provider == "huggingface" else None
+                owner.hf_inference_token
+                if provider == "huggingface"
+                else owner.openrouter_token
+                if provider_mode == "openrouter_byok"
+                else None
             ),
             provider_bill_to=(
                 owner.hf_inference_bill_to if provider == "huggingface" else None
             ),
             settings=settings,
+            provider_mode=provider_mode,
+            provider_credential_revision=owner.openrouter_credential_revision,
             model=admission.model_route,
             scopes={"model", "catalog", "session_store", "web_fetch"},
             sdk_session_id=resume_id,

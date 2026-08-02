@@ -23,6 +23,7 @@ from claude_agent_sdk._internal.session_store import project_key_for_directory
 
 from backend.config import Settings
 from backend.database.connection import db_manager
+from backend.services.chat_capability_service import ChatCapabilityService
 from backend.services.chat_citation_service import cited_route_ids, resolve_citations
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxError
@@ -44,6 +45,7 @@ from backend.services.chat_tracing_service import (
 )
 from backend.services.chat_transcript_recovery import reconcile_spooled_session
 from backend.services.chat_turn_runner import ChatTurnRunner, create_chat_turn_runner
+from backend.services.openrouter_user_budget_service import OpenRouterUserBudgetService
 from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
 
 logger = logging.getLogger(__name__)
@@ -487,6 +489,7 @@ class ChatStreamOrchestrator:
                 {
                     "request_id": self.request_id,
                     "session_id": self.admission.session_id,
+                    "provider_execution": self.admission.replay_assistant is None,
                 },
             )
             if self.admission.replay_assistant:
@@ -724,6 +727,48 @@ class ChatStreamOrchestrator:
             elif kind == "tool_result":
                 self.trace.finish_tool(event)
             if kind == "error":
+                provider = self.settings.chat_route_providers.get(
+                    self.admission.model_route
+                )
+                if provider == "openrouter":
+                    with db_manager.session_local() as error_db:
+                        funded_code = ChatCapabilityService(
+                            error_db
+                        ).provider_error_for_turn(
+                            self.admission.session_id, self.admission.turn_id
+                        )
+                        if funded_code:
+                            event["code"] = funded_code
+                            if funded_code == "openrouter_monthly_budget_exhausted":
+                                usage = OpenRouterUserBudgetService(
+                                    error_db, self.settings
+                                ).status_percentage(self.owner.hf_user_id)
+                                reset = usage.resets_at.isoformat().replace(
+                                    "+00:00", "Z"
+                                )
+                                event["message"] = (
+                                    "You have used this month's Papers With Code "
+                                    f"OpenRouter allowance. It resets at {reset}."
+                                )
+                            elif funded_code == "openrouter_unavailable":
+                                event["message"] = (
+                                    "OpenRouter is currently unavailable. However, "
+                                    "you can still bring your own key in Settings."
+                                )
+                            elif funded_code == "openrouter_byok_credential_invalid":
+                                event["message"] = (
+                                    "Your OpenRouter API key is no longer valid. "
+                                    "Reconnect it in Settings, then try again."
+                                )
+                            elif funded_code == "openrouter_byok_billing_error":
+                                event["message"] = (
+                                    "OpenRouter could not bill your API key. Review "
+                                    "your OpenRouter credits and spending limits."
+                                )
+                            elif funded_code == "openrouter_byok_rate_limit":
+                                event["message"] = (
+                                    "Your OpenRouter API key is temporarily rate-limited."
+                                )
                 _persist_failure(
                     self.owner,
                     self.settings,

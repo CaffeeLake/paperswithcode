@@ -71,7 +71,12 @@ export interface ChatCitation {
 }
 
 export type ChatEvent =
-  | { type: "stream_start"; request_id: string; session_id: string | null }
+  | {
+      type: "stream_start";
+      request_id: string;
+      session_id: string | null;
+      provider_execution?: boolean;
+    }
   | { type: "workspace_ready" }
   | { type: "reasoning_start" }
   | { type: "reasoning_delta"; text: string }

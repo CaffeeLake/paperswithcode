@@ -685,6 +685,20 @@ export interface CronJobsResponse {
   };
 }
 
+export interface OpenRouterUsageStatus {
+  used_percent: number;
+  remaining_percent: number;
+  resets_at: string;
+  available: boolean;
+  as_of: string;
+}
+
+export interface OpenRouterCredentialStatus {
+  connected: boolean;
+  verified_at: string | null;
+  fallback_enabled: boolean;
+}
+
 export interface PaperMarkdownJobProgress {
   status: string;
   total_papers: number;
@@ -1910,6 +1924,32 @@ class ApiClient {
       method: 'PUT',
       body: JSON.stringify(prefs),
     });
+  }
+
+  async getOpenRouterUsage(): Promise<OpenRouterUsageStatus> {
+    return this.request<OpenRouterUsageStatus>('/chat/usage', { cache: 'no-store' });
+  }
+
+  async getOpenRouterCredential(): Promise<OpenRouterCredentialStatus> {
+    return this.request<OpenRouterCredentialStatus>('/chat/openrouter-key', { cache: 'no-store' });
+  }
+
+  async connectOpenRouterCredential(apiKey: string): Promise<OpenRouterCredentialStatus> {
+    return this.request<OpenRouterCredentialStatus>('/chat/openrouter-key', {
+      method: 'PUT',
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+  }
+
+  async setOpenRouterFallback(enabled: boolean): Promise<OpenRouterCredentialStatus> {
+    return this.request<OpenRouterCredentialStatus>('/chat/openrouter-key', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async disconnectOpenRouterCredential(): Promise<void> {
+    await this.request<void>('/chat/openrouter-key', { method: 'DELETE' });
   }
 
   async getCronStatus(): Promise<CronJobsResponse> {

@@ -45,6 +45,7 @@ interface UseChatOptions {
   onSessionId: (id: string) => void;
   onTitle: (title: string) => void;
   onSettled: (sessionId: string | null) => void;
+  onProviderTerminal?: () => void;
   onInterrupted: (text: string) => void;
 }
 
@@ -369,6 +370,8 @@ export function useChat(options: UseChatOptions) {
     }, WORKSPACE_STATUS_DELAY_MS);
     void (async () => {
       let sawStreamStart = false;
+      let providerExecuted = false;
+      let providerStatusChanged = false;
       let sawTerminalEvent = false;
       let streamFailed = false;
       let capacityDenied = false;
@@ -376,6 +379,7 @@ export function useChat(options: UseChatOptions) {
         for await (const event of streamChat(request, { signal: controller.signal })) {
           if (event.type === "stream_start") {
             sawStreamStart = true;
+            providerExecuted = event.provider_execution !== false;
             recordStreamStart(controller, event.request_id);
           }
           if (
@@ -393,6 +397,19 @@ export function useChat(options: UseChatOptions) {
             sawTerminalEvent = true;
             streamFailed = event.type === "error";
             recordTerminal(controller, event.type === "error" ? "error" : "complete");
+            if (
+              event.type === "error"
+              && [
+                "openrouter_monthly_budget_exhausted",
+                "openrouter_unavailable",
+                "openrouter_byok_credential_invalid",
+                "openrouter_byok_billing_error",
+                "openrouter_byok_rate_limit",
+              ].includes(event.code ?? "")
+            ) {
+              providerStatusChanged = true;
+              optionsRef.current.onInterrupted(question);
+            }
           }
           const projectsToVisibleConversation = messagesGenerationRef.current === messagesGeneration;
           if (
@@ -435,6 +452,19 @@ export function useChat(options: UseChatOptions) {
             }
           } else {
             recordTerminal(controller, "network_error");
+            if (
+              error instanceof ChatStreamError
+              && [
+                "openrouter_monthly_budget_exhausted",
+                "openrouter_unavailable",
+                "openrouter_byok_credential_invalid",
+                "openrouter_byok_billing_error",
+                "openrouter_byok_rate_limit",
+              ].includes(error.code ?? "")
+            ) {
+              providerStatusChanged = true;
+              optionsRef.current.onInterrupted(question);
+            }
           }
           if (!capacityDenied && messagesGenerationRef.current === messagesGeneration) {
             applyEvent({
@@ -455,6 +485,9 @@ export function useChat(options: UseChatOptions) {
           if (capacityDenied) {
             optionsRef.current.onSettled(request.session_id);
           } else if (!controller.signal.aborted) {
+            if ((sawStreamStart && providerExecuted) || providerStatusChanged) {
+              optionsRef.current.onProviderTerminal?.();
+            }
             const canonicalId = activeSessionIdRef.current;
             if (edit && !sawStreamStart) {
               if (messagesGenerationRef.current === messagesGeneration) {

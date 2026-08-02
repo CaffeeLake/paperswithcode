@@ -397,6 +397,17 @@ export const AssistantMessage: React.FC<{
                 : "Review billing settings"}
           </a>
         )}
+        {msg.errorCode === "openrouter_monthly_budget_exhausted" && <>
+          <a href="/settings#openrouter-byok">Use your own OpenRouter key</a>
+          <span>Or select a Hugging Face-backed model and explicitly retry.</span>
+        </>}
+        {msg.errorCode === "openrouter_unavailable" && <>
+          <a href="/settings#openrouter-byok">Bring your own key in Settings</a>
+          <a href="https://github.com/huggingface/paperswithcode-feedback" target="_blank" rel="noreferrer">File an issue</a>
+        </>}
+        {["openrouter_byok_credential_invalid", "openrouter_byok_billing_error", "openrouter_byok_rate_limit"].includes(msg.errorCode ?? "") && (
+          <a href="/settings#openrouter-byok">Review OpenRouter settings</a>
+        )}
         {msg.errorCode === "chat_session_quota_exceeded" && onArchiveOldChats && (
           <button type="button" disabled={archivePending} onClick={onArchiveOldChats}>
             {archivePending ? "Archiving…" : "Archive chats older than 30 days"}

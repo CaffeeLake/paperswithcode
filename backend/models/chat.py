@@ -279,6 +279,7 @@ class StreamStartEvent(_StrictEvent):
     type: Literal["stream_start"]
     request_id: str
     session_id: uuid.UUID
+    provider_execution: bool = True
 
 
 class ReasoningStartEvent(_StrictEvent):

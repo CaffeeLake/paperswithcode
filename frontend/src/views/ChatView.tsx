@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Share2, X as XIcon } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 
 import Composer from "@/components/chat/Composer";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
@@ -19,6 +20,13 @@ import {
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { apiUrl, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
+import {
+  OPENROUTER_CREDENTIAL_QUERY_KEY,
+  OPENROUTER_USAGE_QUERY_KEY,
+  resetTimeLabels,
+  useOpenRouterCredential,
+  useOpenRouterUsage,
+} from "@/lib/openrouter";
 import {
   DEFAULT_CHAT_MODEL,
   FALLBACK_CHAT_MODELS,
@@ -72,6 +80,27 @@ const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
       </div>
     </div>
   );
+};
+
+const OpenRouterUsageNotice: React.FC<{
+  enabled: boolean;
+  fallbackEnabled: boolean;
+  byokExpected?: boolean;
+}> = ({ enabled, fallbackEnabled, byokExpected }) => {
+  const usageQuery = useOpenRouterUsage(enabled);
+  if (!enabled || !usageQuery.data) return null;
+  const usage = usageQuery.data;
+  const reset = resetTimeLabels(usage.resets_at);
+  return <div className="chat-openrouter-usage" role="status">
+    <span>
+      <strong>{usage.remaining_percent}% left</strong> this month · resets {reset.local}
+    </span>
+    {(usage.remaining_percent === 0 || byokExpected) && <span>
+      {fallbackEnabled
+        ? "Your OpenRouter account will be billed on this explicit send."
+        : <><a href="/settings#openrouter-byok">Connect your own key in Settings</a> to continue.</>}
+    </span>}
+  </div>;
 };
 
 export const ChatCapacityDialog: React.FC<{
@@ -139,6 +168,7 @@ const ChatView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionError, setSessionError] = useState("");
@@ -155,6 +185,11 @@ const ChatView: React.FC = () => {
   const selectedProvider = models.find((model) => model.id === selectedModel)?.provider
     ?? "huggingface";
   const staging = isStagingEnvironment();
+  const openRouterCredentialQuery = useOpenRouterCredential(
+    Boolean(user && selectedProvider === "openrouter"),
+  );
+  const selectedProviderRef = useRef(selectedProvider);
+  selectedProviderRef.current = selectedProvider;
   const [liveTitle, setLiveTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [pendingAutoPrompt, setPendingAutoPrompt] = useState(
@@ -248,6 +283,12 @@ const ChatView: React.FC = () => {
       activeStreamSessionIdRef.current = null;
       activeStreamRouteSessionIdRef.current = null;
       void refreshSessions();
+    },
+    onProviderTerminal: () => {
+      if (selectedProviderRef.current === "openrouter") {
+        void queryClient.invalidateQueries({ queryKey: OPENROUTER_USAGE_QUERY_KEY });
+        void queryClient.invalidateQueries({ queryKey: OPENROUTER_CREDENTIAL_QUERY_KEY });
+      }
     },
     onInterrupted: (text) => {
       setDraft(text);
@@ -575,6 +616,11 @@ const ChatView: React.FC = () => {
   const firstUserId = userMessages[0]?.id;
   const latestUserId = userMessages.at(-1)?.id;
   const isEmpty = chat.messages.length === 0;
+  const lastOpenRouterError = [...chat.messages].reverse().find(
+    (message) => message.role === "assistant" && message.errorCode,
+  )?.errorCode;
+  const byokExpected = lastOpenRouterError === "openrouter_unavailable"
+    || lastOpenRouterError === "openrouter_monthly_budget_exhausted";
   const routeStateMatches = routeSessionState?.id === routeSessionId;
   const isRouteSessionLoading = Boolean(routeSessionId && (
     authLoading || (user && (!routeStateMatches || routeSessionState?.status === "loading"))
@@ -671,6 +717,11 @@ const ChatView: React.FC = () => {
             This is a limited staging preview. Only approved Hugging Face users can start chats.
           </p>}
           <BillingNotice provider={selectedProvider} />
+          <OpenRouterUsageNotice
+            enabled={selectedProvider === "openrouter"}
+            fallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
+            byokExpected={byokExpected}
+          />
           <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
           <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
         </div></div> : <>
@@ -710,6 +761,11 @@ const ChatView: React.FC = () => {
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">
             <BillingNotice provider={selectedProvider} />
+            <OpenRouterUsageNotice
+              enabled={selectedProvider === "openrouter"}
+              fallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
+              byokExpected={byokExpected}
+            />
             <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               {selectedProvider === "openrouter"

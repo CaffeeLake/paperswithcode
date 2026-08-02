@@ -183,6 +183,11 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
     if (code === "hf_inference_credential_expired") return "Your Hugging Face authorization expired. Reconnect in Settings.";
     if (code === "provider_rate_limit") return "The selected model is temporarily rate-limited. Try again shortly.";
     if (code === "provider_timeout") return "The model provider timed out. Try again shortly.";
+    if (code === "openrouter_monthly_budget_exhausted") return "You have used this month's Papers With Code OpenRouter allowance. Review the reset time or enable your own key in Settings.";
+    if (code === "openrouter_unavailable") return "OpenRouter is currently unavailable. However, you can still bring your own key in Settings.";
+    if (code === "openrouter_byok_credential_invalid") return "Your OpenRouter API key is no longer valid. Reconnect it in Settings, then try again.";
+    if (code === "openrouter_byok_billing_error") return "OpenRouter could not bill your API key. Review your OpenRouter credits and spending limits.";
+    if (code === "openrouter_byok_rate_limit") return "Your OpenRouter API key is temporarily rate-limited.";
     if (["provider_error", "provider_unavailable"].includes(code ?? "")) return "The model provider failed before completing the response. You can edit and retry your question.";
     if (code === "persistence_error") return "The response could not be saved. You can edit and retry your question.";
     if (code === "transcript_mirror_error") return "The conversation could not be saved. Please try again in a new chat.";

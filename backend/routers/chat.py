@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from itertools import count
 
 from fastapi import (
@@ -15,6 +18,7 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
@@ -51,6 +55,15 @@ from backend.services.openrouter_budget_service import (
     OpenRouterBudgetUnavailable,
     require_openrouter_budget,
 )
+from backend.services.openrouter_byok_service import (
+    OpenRouterBYOKService,
+    OpenRouterCredentialError,
+    OpenRouterCredentialUnavailable,
+)
+from backend.services.openrouter_user_budget_service import (
+    PUBLIC_SUPPORT_URL,
+    OpenRouterUserBudgetService,
+)
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -72,32 +85,167 @@ def _raise(exc: ChatServiceError, headers: dict[str, str] | None = None) -> None
         response_headers["Retry-After"] = str(CHAT_CAPACITY_RETRY_SECONDS)
     raise HTTPException(
         status_code=exc.status_code,
-        detail={"code": exc.code, "message": str(exc)},
+        detail={"code": exc.code, "message": str(exc), **exc.details},
         headers=response_headers or None,
     )
 
 
-async def _authorize_openrouter(settings: Settings) -> None:
-    if not settings.chat_openrouter_server_funded_enabled:
-        raise ChatServiceError(
-            "provider_unavailable",
-            503,
-            "The shared OpenRouter preview is not enabled.",
+@dataclass(frozen=True)
+class OpenRouterAdmission:
+    mode: str
+    token: str | None = None
+    credential_revision: uuid.UUID | None = None
+
+
+class ConnectOpenRouterKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_key: str = Field(min_length=1, max_length=512)
+
+
+class SetOpenRouterFallback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+OPENROUTER_UNAVAILABLE_MESSAGE = (
+    "OpenRouter is currently unavailable. However, you can still bring your own "
+    "key in Settings."
+)
+
+
+def _selected_byok(db: Session, settings: Settings, owner_id: str):
+    """Isolate credential faults so a healthy funded ledger can still admit."""
+
+    nested = db.begin_nested() if hasattr(db, "begin_nested") else nullcontext()
+    try:
+        with nested:
+            return OpenRouterBYOKService(db, settings).selected(owner_id)
+    except Exception as error:
+        logger.error(
+            "openrouter credential selection unavailable error=%s",
+            type(error).__name__,
         )
+        return None
+
+
+def _require_recent_auth(request: Request, user: dict, settings: Settings) -> None:
+    from backend.routers.auth import decode_request_session
+
+    issued_at = (decode_request_session(request) or {}).get("iat")
+    now = datetime.now(UTC).timestamp()
+    if (
+        not isinstance(issued_at, (int, float))
+        or now - issued_at > settings.chat_openrouter_recent_auth_seconds
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "fresh_auth_required",
+                "message": "Sign in with Hugging Face again before changing your OpenRouter key.",
+            },
+        )
+    if settings.is_deployed:
+        origin = request.headers.get("origin")
+        expected = f"https://{request.headers.get('host', '').split(':', 1)[0]}"
+        if origin != expected or request.headers.get("sec-fetch-site") not in {
+            None,
+            "same-origin",
+            "same-site",
+        }:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "csrf_rejected",
+                    "message": "Request origin was rejected.",
+                },
+            )
+
+
+async def _authorize_openrouter(
+    settings: Settings,
+    db: Session | None = None,
+    owner_id: str | None = None,
+) -> OpenRouterAdmission:
+    if not settings.chat_openrouter_server_funded_enabled:
+        if db is not None and owner_id is not None:
+            byok = _selected_byok(db, settings, owner_id)
+            if byok:
+                return OpenRouterAdmission("openrouter_byok", byok.token, byok.revision)
+        raise ChatServiceError(
+            "openrouter_unavailable",
+            503,
+            OPENROUTER_UNAVAILABLE_MESSAGE,
+            details={
+                "byok_settings_available": True,
+                "support_url": PUBLIC_SUPPORT_URL,
+            },
+        )
+    if db is not None and owner_id is not None:
+        try:
+            funded_available = OpenRouterUserBudgetService(db, settings).can_fund_call(
+                owner_id
+            )
+        except Exception as error:
+            logger.error(
+                "openrouter user budget database failure error=%s",
+                type(error).__name__,
+            )
+            raise ChatServiceError(
+                "openrouter_unavailable",
+                503,
+                OPENROUTER_UNAVAILABLE_MESSAGE,
+                details={
+                    "byok_settings_available": True,
+                    "support_url": PUBLIC_SUPPORT_URL,
+                },
+            ) from None
+        byok = _selected_byok(db, settings, owner_id)
+        if not funded_available:
+            if byok:
+                return OpenRouterAdmission("openrouter_byok", byok.token, byok.revision)
+            status = OpenRouterUserBudgetService(db, settings).status_percentage(
+                owner_id
+            )
+            raise ChatServiceError(
+                "openrouter_monthly_budget_exhausted",
+                429,
+                "You have used this month's Papers With Code OpenRouter allowance.",
+                details={
+                    "used_percent": 100,
+                    "resets_at": status.resets_at.isoformat().replace("+00:00", "Z"),
+                },
+            )
     try:
         await require_openrouter_budget(settings)
     except OpenRouterBudgetExceeded:
+        if db is not None and owner_id is not None:
+            byok = _selected_byok(db, settings, owner_id)
+            if byok:
+                return OpenRouterAdmission("openrouter_byok", byok.token, byok.revision)
         raise ChatServiceError(
-            "provider_budget_exhausted",
+            "openrouter_unavailable",
             503,
-            "The shared OpenRouter preview budget was reached.",
+            OPENROUTER_UNAVAILABLE_MESSAGE,
+            details={
+                "byok_settings_available": True,
+                "support_url": PUBLIC_SUPPORT_URL,
+            },
         ) from None
     except OpenRouterBudgetUnavailable:
+        if db is not None and owner_id is not None:
+            byok = _selected_byok(db, settings, owner_id)
+            if byok:
+                return OpenRouterAdmission("openrouter_byok", byok.token, byok.revision)
         raise ChatServiceError(
-            "provider_budget_unavailable",
+            "openrouter_unavailable",
             503,
-            "The shared OpenRouter preview budget could not be verified.",
+            OPENROUTER_UNAVAILABLE_MESSAGE,
+            details={
+                "byok_settings_available": True,
+                "support_url": PUBLIC_SUPPORT_URL,
+            },
         ) from None
+    return OpenRouterAdmission("openrouter_funded")
 
 
 def _busy(session: ChatSession) -> bool:
@@ -157,6 +305,111 @@ def list_models(
         ],
         "default_model": settings.chat_model_choices[0]["id"],
     }
+
+
+@router.get("/usage")
+def get_openrouter_usage(
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        status = OpenRouterUserBudgetService(db, settings).status_percentage(
+            user["hf_user_id"]
+        )
+    except Exception as error:
+        logger.error("openrouter usage status failed error=%s", type(error).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "openrouter_usage_unavailable",
+                "message": "OpenRouter usage is temporarily unavailable.",
+            },
+        ) from None
+    return status.public_dict()
+
+
+@router.get("/openrouter-key")
+def get_openrouter_key_status(
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        return (
+            OpenRouterBYOKService(db, settings).status(user["hf_user_id"]).public_dict()
+        )
+    except Exception as error:
+        logger.error(
+            "openrouter credential status failed error=%s", type(error).__name__
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "openrouter_credential_unavailable",
+                "message": "Your OpenRouter key status is temporarily unavailable.",
+            },
+        ) from None
+
+
+@router.put("/openrouter-key")
+async def connect_openrouter_key(
+    body: ConnectOpenRouterKey,
+    request: Request,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_recent_auth(request, user, settings)
+    try:
+        status = await OpenRouterBYOKService(db, settings).connect(
+            user["hf_user_id"], body.api_key
+        )
+        db.commit()
+        return status.public_dict()
+    except OpenRouterCredentialError as error:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    except OpenRouterCredentialUnavailable:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="OpenRouter key verification is temporarily unavailable.",
+        ) from None
+
+
+@router.patch("/openrouter-key")
+def set_openrouter_fallback(
+    body: SetOpenRouterFallback,
+    request: Request,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    if body.enabled:
+        _require_recent_auth(request, user, settings)
+    try:
+        status = OpenRouterBYOKService(db, settings).set_fallback_enabled(
+            user["hf_user_id"], body.enabled
+        )
+        db.commit()
+        return status.public_dict()
+    except OpenRouterCredentialError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
+
+
+@router.delete("/openrouter-key", status_code=204)
+def disconnect_openrouter_key(
+    request: Request,
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    _require_recent_auth(request, user, settings)
+    OpenRouterBYOKService(db, settings).disconnect(user["hf_user_id"])
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/sessions", response_model=ChatSessionSummary, status_code=201)
@@ -387,8 +640,21 @@ async def stream_chat(
                         402,
                         "Authorize Hugging Face inference in Settings to use this model.",
                     )
-                if provider == "openrouter":
-                    await _authorize_openrouter(settings)
+                if provider == "openrouter" and not admission.replay_assistant:
+                    try:
+                        openrouter = await _authorize_openrouter(
+                            settings, db, owner.hf_user_id
+                        )
+                    except ChatServiceError as exc:
+                        service.fail_turn(owner, admission, exc.code)
+                        exc.commit_changes = True
+                        raise
+                    owner = replace(
+                        owner,
+                        openrouter_mode=openrouter.mode,
+                        openrouter_token=openrouter.token,
+                        openrouter_credential_revision=openrouter.credential_revision,
+                    )
                 title_token = (
                     service.begin_title(
                         owner,

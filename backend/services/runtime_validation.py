@@ -264,22 +264,42 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 raise RuntimeError(
                     "server-funded OpenRouter chat requires an OpenRouter key"
                 )
-            if (
-                settings.chat_openrouter_budget_reserve_usd
-                >= settings.chat_openrouter_monthly_budget_usd
-            ):
+            if settings.chat_openrouter_workspace_monthly_budget_usd > 5:
                 raise RuntimeError(
-                    "OpenRouter budget reserve must be below the monthly budget"
+                    "staging OpenRouter workspace budget must not exceed $5"
                 )
-            # DeepSeek V4 Flash's currently most expensive OpenRouter endpoint is
-            # below $0.16 at the gateway's 512k input / 32k output ceilings. Keep
-            # $0.20 per globally admitted turn reserved so concurrent workers
-            # cannot race the provider-authoritative monthly usage check.
-            if settings.chat_openrouter_budget_reserve_usd < (
-                0.20 * settings.chat_max_concurrency
+            if settings.chat_openrouter_monthly_user_budget_usd > 1:
+                raise RuntimeError(
+                    "staging OpenRouter per-user budget must not exceed the v1 limit"
+                )
+            if not settings.chat_openrouter_user_tracking_secret:
+                raise RuntimeError("OpenRouter user tracking HMAC is required")
+            from backend.services.openrouter_byok_service import credential_keyring
+            from backend.services.openrouter_user_budget_service import (
+                RequestBounds,
+                safe_maximum_microusd,
+            )
+
+            try:
+                credential_keyring(settings)
+                maximum = safe_maximum_microusd(
+                    settings,
+                    settings.chat_deepseek_v4_flash_route,
+                    RequestBounds(
+                        request_bytes=512 * 1024,
+                        maximum_output_tokens=32_000,
+                        payload={"messages": [{"role": "user", "content": "x"}]},
+                    ),
+                )
+            except (ValueError, RuntimeError) as error:
+                raise RuntimeError(
+                    "OpenRouter durable accounting configuration is invalid"
+                ) from error
+            if maximum > int(
+                settings.chat_openrouter_monthly_user_budget_usd * 1_000_000
             ):
                 raise RuntimeError(
-                    "OpenRouter budget reserve must cover concurrent turn spend"
+                    "OpenRouter request bound exceeds the per-user hard budget"
                 )
         if (
             settings.chat_sandbox_cpu_limit is not None
@@ -370,7 +390,11 @@ def validate_chat_schema(db) -> None:
                     ('chat_sandbox_leases'),
                     ('chat_sandbox_pool'),
                     ('chat_turn_capabilities'),
-                    ('chat_turn_latency')
+                    ('chat_turn_latency'),
+                    ('chat_openrouter_credentials'),
+                    ('chat_openrouter_monthly_usage'),
+                    ('chat_openrouter_provider_calls'),
+                    ('chat_openrouter_credential_audit')
                 ) AS required(name)
                 """
             )
@@ -399,7 +423,13 @@ def validate_chat_schema(db) -> None:
                 ('chat_turn_latency', 'browser_first_visible_delta_ms'),
                 ('chat_turn_latency', 'estimated_active_cost_usd'),
                 ('chat_turn_latency', 'qualification_run_id'),
-                ('chat_turn_latency', 'qualification_scenario')
+                ('chat_turn_latency', 'qualification_scenario'),
+                ('chat_turn_capabilities', 'provider_mode'),
+                ('chat_turn_capabilities', 'provider_credential_revision'),
+                ('chat_turn_capabilities', 'provider_error_code'),
+                ('chat_openrouter_credentials', 'credential_revision'),
+                ('chat_openrouter_monthly_usage', 'reserved_microusd'),
+                ('chat_openrouter_provider_calls', 'actual_microusd')
             )
             """
         )
@@ -422,6 +452,12 @@ def validate_chat_schema(db) -> None:
         ("chat_turn_latency", "estimated_active_cost_usd"),
         ("chat_turn_latency", "qualification_run_id"),
         ("chat_turn_latency", "qualification_scenario"),
+        ("chat_turn_capabilities", "provider_mode"),
+        ("chat_turn_capabilities", "provider_credential_revision"),
+        ("chat_turn_capabilities", "provider_error_code"),
+        ("chat_openrouter_credentials", "credential_revision"),
+        ("chat_openrouter_monthly_usage", "reserved_microusd"),
+        ("chat_openrouter_provider_calls", "actual_microusd"),
     }:
         raise RuntimeError("required chat sandbox schema is missing")
     share_snapshot_constraint = db.execute(

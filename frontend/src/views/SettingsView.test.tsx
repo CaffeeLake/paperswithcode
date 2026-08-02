@@ -55,24 +55,31 @@ describe("SettingsView organization billing", () => {
 
   it("lets a connected user select an organization billing account", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify(personalStatus), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            ...personalStatus,
-            account_type: "Organization",
-            monthly_credits_usd: null,
-            bill_to: "huggingface",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/chat/usage")) return new Response(JSON.stringify({
+        used_percent: 4,
+        remaining_percent: 96,
+        resets_at: "2026-09-01T00:00:00Z",
+        available: true,
+        as_of: "2026-08-02T00:00:00Z",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/chat/openrouter-key")) return new Response(JSON.stringify({
+        connected: false,
+        verified_at: null,
+        fallback_enabled: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      const body = init?.method === "PATCH" ? {
+        ...personalStatus,
+        account_type: "Organization",
+        monthly_credits_usd: null,
+        bill_to: "huggingface",
+      } : personalStatus;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
 
     renderSettings();
     const selector = await screen.findByRole("combobox", {
@@ -91,24 +98,30 @@ describe("SettingsView organization billing", () => {
         body: JSON.stringify({ bill_to: "huggingface" }),
       }),
     );
-    expect(screen.getByText("Hugging Face organization · huggingface")).toBeVisible();
+    expect(screen.getByText("Organization · huggingface")).toBeVisible();
     expect(screen.queryByText(/chat starts \/ minute/)).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /monthly Hugging Face inference credit/ })).not.toBeInTheDocument();
   });
 
   it("uses OAuth authorization instead of asking for a manual token", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          ...personalStatus,
-          connected: false,
-          account_type: null,
-          monthly_credits_usd: null,
-          organizations: [],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/me/inference-billing")) return new Response(JSON.stringify({
+        ...personalStatus,
+        connected: false,
+        account_type: null,
+        monthly_credits_usd: null,
+        organizations: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/chat/usage")) return new Response(JSON.stringify({
+        used_percent: 4, remaining_percent: 96,
+        resets_at: "2026-09-01T00:00:00Z", available: true,
+        as_of: "2026-08-02T00:00:00Z",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({
+        connected: false, verified_at: null, fallback_enabled: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
 
     renderSettings();
 
@@ -116,6 +129,43 @@ describe("SettingsView organization billing", () => {
       await screen.findByRole("button", { name: "Sign in with Hugging Face" }),
     ).toHaveTextContent("Authorize with Hugging Face");
     expect(screen.queryByLabelText("Hugging Face token")).not.toBeInTheDocument();
-    expect(screen.getByText(/No manually created token is needed/)).toBeVisible();
+    expect(screen.getByText(/Reconnect with Hugging Face/)).toBeVisible();
+  });
+
+  it("renders exactly two billing providers and exposes percentage-only OpenRouter usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      const payload = url.includes("/me/inference-billing")
+        ? personalStatus
+        : url.includes("/chat/usage")
+          ? {
+              used_percent: 4,
+              remaining_percent: 96,
+              resets_at: "2026-09-01T00:00:00Z",
+              available: true,
+              as_of: "2026-08-02T00:00:00Z",
+            }
+          : {
+              connected: true,
+              verified_at: "2026-08-02T12:00:00Z",
+              fallback_enabled: false,
+            };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    renderSettings();
+
+    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "OpenRouter" })).toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(2);
+    expect(await screen.findByText("96% left")).toBeVisible();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "96");
+    expect(screen.getByText(/pay-as-you-go billing applies once it is depleted/)).toBeVisible();
+    expect(screen.getByText(/stored securely using AES-256 encryption/)).toBeVisible();
+    expect(screen.queryByText(/\$1|dollar|USD/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
   });
 });

@@ -38,12 +38,14 @@ class ChatServiceError(Exception):
         *,
         commit_changes: bool = False,
         active_count: int | None = None,
+        details: dict[str, object] | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.commit_changes = commit_changes
         self.active_count = active_count
+        self.details = details or {}
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,9 @@ class ChatOwner:
     hf_username: str
     hf_inference_token: str | None = None
     hf_inference_bill_to: str | None = None
+    openrouter_mode: str | None = None
+    openrouter_token: str | None = None
+    openrouter_credential_revision: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -92,12 +97,18 @@ def owner_from_user(
     *,
     inference_token: str | None = None,
     inference_bill_to: str | None = None,
+    openrouter_mode: str | None = None,
+    openrouter_token: str | None = None,
+    openrouter_credential_revision: uuid.UUID | None = None,
 ) -> ChatOwner:
     return ChatOwner(
         hf_user_id=user["hf_user_id"],
         hf_username=user["username"],
         hf_inference_token=inference_token,
         hf_inference_bill_to=inference_bill_to,
+        openrouter_mode=openrouter_mode,
+        openrouter_token=openrouter_token,
+        openrouter_credential_revision=openrouter_credential_revision,
     )
 
 
@@ -175,7 +186,12 @@ class ChatSessionService:
         allocation_bucket = (
             int.from_bytes(hashlib.sha256(session_id.bytes).digest()[:4], "big") % 100
         )
-        if self.settings.chat_new_chat_modal_percentage == 0:
+        provider = self.settings.chat_model_providers[model]
+        if provider == "openrouter":
+            # Trusted cost extraction and per-call reservation live at the
+            # private gateway. Funded OpenRouter must never use local_mcp.
+            execution_backend = "modal_cli"
+        elif self.settings.chat_new_chat_modal_percentage == 0:
             execution_backend = self.settings.chat_default_backend
         else:
             execution_backend = (
@@ -312,6 +328,13 @@ class ChatSessionService:
                 "session_busy", 409, "This chat is generating a response"
             )
         session.selected_model = selected
+        if self.settings.chat_model_providers[selected] == "openrouter":
+            if session.execution_backend != "modal_cli":
+                raise ChatServiceError(
+                    "openrouter_gateway_required",
+                    409,
+                    "Start a new chat to use this OpenRouter model securely.",
+                )
         session.hf_username = owner.hf_username
         session.updated_at = _now()
         self.db.flush()

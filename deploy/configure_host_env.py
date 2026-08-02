@@ -8,6 +8,7 @@ import ast
 import base64
 import grp
 import hashlib
+import json
 import os
 import pwd
 import secrets
@@ -58,6 +59,12 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_CANCEL_GRACE_SECONDS",
     "PWC_CHAT_MODAL_IMAGE_VERSION",
     "PWC_CHAT_NEW_CHAT_MODAL_PERCENTAGE",
+    "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION",
+    "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING",
+    "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD",
+    "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED",
+    "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET",
+    "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD",
     "PWC_CHAT_PERSISTENT_SANDBOX_LIFETIME_SECONDS",
     "PWC_CHAT_PERSISTENT_WORKER_ENABLED",
     "PWC_CHAT_PWC_CLI_VERSION",
@@ -192,11 +199,36 @@ def staging_langfuse_values(legacy: dict[str, str]) -> dict[str, str]:
     }
 
 
+def staging_openrouter_accounting_values(current: dict[str, str]) -> dict[str, str]:
+    """Preserve or generate the durable, non-provider staging secrets."""
+
+    keyring_line = current.get("PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING")
+    if keyring_line:
+        keyring = decoded_value(keyring_line)
+    else:
+        encryption_key = (
+            base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+        )
+        keyring = json.dumps({"1": encryption_key}, separators=(",", ":"))
+    tracking_secret = existing_or_random(
+        current, "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"
+    )
+    return {
+        "PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD": "1.00",
+        "PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD": "5.00",
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING": keyring,
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET": tracking_secret,
+    }
+
+
 def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
     key = "PWC_OPENROUTER_API_KEY"
     if key not in legacy:
         raise ValueError(f"legacy environment is missing: {key}")
+    current = read_lines(CONFIG_ROOT / "staging.env")
     return {
+        **staging_openrouter_accounting_values(current),
         "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key]),
         "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
     }
@@ -491,6 +523,8 @@ def main() -> int:
             "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(
                 legacy["PWC_OPENROUTER_API_KEY"]
             ),
+            **staging_openrouter_accounting_values(current_staging),
+            "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
             "PWC_CHAT_RECOVERY_SPOOL_DIR": (
                 "/var/lib/paperswithcode/staging/chat-recovery-spool"
             ),

@@ -308,6 +308,12 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_openrouter_api_key=(
             "test-only-openrouter-token" if environment == "staging" else ""
         ),
+        chat_openrouter_monthly_user_budget_usd=1,
+        chat_openrouter_workspace_monthly_budget_usd=5,
+        chat_openrouter_credential_keyring=json.dumps(
+            {"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()}
+        ),
+        chat_openrouter_user_tracking_secret="test-only-tracking-secret",
         catalog_mutations_enabled=environment == "production",
         thumbnail_mutations_enabled=False,
         cron_enabled=environment == "production",
@@ -350,14 +356,38 @@ def test_staging_allows_budgeted_server_funded_openrouter(tmp_path: Path):
     assert validate_runtime(settings) == profile_features("staging")
 
 
-def test_staging_rejects_openrouter_reserve_below_concurrent_spend(tmp_path: Path):
+def test_staging_rejects_openrouter_request_bound_above_user_budget(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_openrouter_server_funded_enabled = True
-    settings.chat_openrouter_budget_reserve_usd = 0.1
+    settings.chat_openrouter_monthly_user_budget_usd = 0.1
 
-    with pytest.raises(RuntimeError, match="cover concurrent turn spend"):
+    with pytest.raises(RuntimeError, match="request bound exceeds"):
         validate_runtime(settings)
+
+
+def test_staging_openrouter_values_preserve_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    key = base64.urlsafe_b64encode(b"a" * 32).rstrip(b"=").decode()
+    (config_root / "staging.env").write_text(
+        "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING='"
+        + json.dumps({"1": key}, separators=(",", ":"))
+        + "'\n"
+        "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET=stable-secret\n"
+    )
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", config_root)
+
+    values = configure_host_env.staging_openrouter_values(
+        {"PWC_OPENROUTER_API_KEY": "PWC_OPENROUTER_API_KEY=provider-key"}
+    )
+
+    assert json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"]) == {"1": key}
+    assert values["PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"] == "stable-secret"
+    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "1.00"
+    assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "5.00"
 
 
 def test_production_rejects_server_funded_openrouter(tmp_path: Path):
@@ -520,12 +550,22 @@ class _ChatSchemaDB:
                 "chat_sandbox_pool",
                 "chat_turn_capabilities",
                 "chat_turn_latency",
+                "chat_openrouter_credentials",
+                "chat_openrouter_monthly_usage",
+                "chat_openrouter_provider_calls",
+                "chat_openrouter_credential_audit",
             )
             return _ChatSchemaResult(rows=[(name, name) for name in names])
         if "information_schema.columns" in sql:
             rows = [
                 ("chat_sessions", "execution_backend"),
                 ("chat_messages", "finish_reason"),
+                ("chat_turn_capabilities", "provider_mode"),
+                ("chat_turn_capabilities", "provider_credential_revision"),
+                ("chat_turn_capabilities", "provider_error_code"),
+                ("chat_openrouter_credentials", "credential_revision"),
+                ("chat_openrouter_monthly_usage", "reserved_microusd"),
+                ("chat_openrouter_provider_calls", "actual_microusd"),
             ]
             if self.include_edit_columns:
                 rows.extend(
@@ -1589,13 +1629,22 @@ def test_staging_langfuse_credentials_are_bounded_and_preserved():
     assert configure_host_env.staging_runtime_passthrough(lines) == lines
 
 
-def test_staging_openrouter_credential_gets_a_chat_only_name():
-    assert configure_host_env.staging_openrouter_values(
+def test_staging_openrouter_credential_gets_a_chat_only_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(configure_host_env, "CONFIG_ROOT", tmp_path)
+    values = configure_host_env.staging_openrouter_values(
         {"PWC_OPENROUTER_API_KEY": "PWC_OPENROUTER_API_KEY=secret"}
-    ) == {
-        "PWC_CHAT_OPENROUTER_API_KEY": "secret",
-        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
-    }
+    )
+    assert values["PWC_CHAT_OPENROUTER_API_KEY"] == "secret"
+    assert values["PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED"] == "true"
+    assert values["PWC_CHAT_OPENROUTER_MONTHLY_USER_BUDGET_USD"] == "1.00"
+    assert values["PWC_CHAT_OPENROUTER_WORKSPACE_MONTHLY_BUDGET_USD"] == "5.00"
+    encoded_key = json.loads(values["PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING"])["1"]
+    assert (
+        len(base64.urlsafe_b64decode(encoded_key + "=" * (-len(encoded_key) % 4))) == 32
+    )
+    assert values["PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET"]
 
     with pytest.raises(ValueError, match="PWC_OPENROUTER_API_KEY"):
         configure_host_env.staging_openrouter_values({})

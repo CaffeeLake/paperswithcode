@@ -109,6 +109,13 @@ async def lifespan(app: FastAPI):
         from backend.database.connection import db_manager
         from backend.services.chat_latency_service import ChatLatencyService
         from backend.services.chat_turn_runner import shared_sandbox_manager
+        from backend.services.openrouter_budget_service import (
+            OpenRouterBudgetUnavailable,
+            openrouter_budget_status,
+        )
+        from backend.services.openrouter_user_budget_service import (
+            OpenRouterUserBudgetService,
+        )
 
         manager = shared_sandbox_manager(settings)
 
@@ -141,6 +148,7 @@ async def lifespan(app: FastAPI):
 
         async def maintain_sandboxes() -> None:
             latency_cleanup_date = None
+            openrouter_maintenance_date = None
             active_spend_alerting = False
             while True:
                 await asyncio.sleep(60)
@@ -155,14 +163,77 @@ async def lifespan(app: FastAPI):
                 today = datetime.now(UTC).date()
                 if latency_cleanup_date != today:
 
-                    async def cleanup_latency() -> None:
+                    async def cleanup_latency(operation_date=today) -> None:
                         nonlocal latency_cleanup_date
                         with db_manager.session_local() as db:
                             ChatLatencyService(db).cleanup()
                             db.commit()
-                        latency_cleanup_date = today
+                        latency_cleanup_date = operation_date
 
                     operations.append(cleanup_latency)
+
+                if openrouter_maintenance_date != today:
+
+                    async def maintain_openrouter_accounting(
+                        operation_date=today,
+                    ) -> None:
+                        nonlocal openrouter_maintenance_date
+                        with db_manager.session_local() as db:
+                            service = OpenRouterUserBudgetService(db, settings)
+                            health = service.accounting_health()
+                            reconciliation = (
+                                await service.reconcile_unknown(batch_size=100)
+                                if settings.chat_openrouter_server_funded_enabled
+                                else {"reconciled": 0, "examined": 0, "cursor": None}
+                            )
+                            cleanup = service.cleanup_retention(batch_size=500)
+                            db.commit()
+                        if health["stale_reservations"] or health["old_unknown_costs"]:
+                            logging.getLogger(__name__).error(
+                                "openrouter accounting incidents stale_reservations=%d "
+                                "old_unknown_costs=%d",
+                                health["stale_reservations"],
+                                health["old_unknown_costs"],
+                            )
+                        if settings.chat_openrouter_server_funded_enabled:
+                            try:
+                                provider = await openrouter_budget_status(settings)
+                                provider_microusd = round(
+                                    provider.usage_monthly_usd * 1_000_000
+                                )
+                                drift = abs(
+                                    provider_microusd - health["ledger_microusd"]
+                                )
+                                if (
+                                    drift
+                                    >= settings.chat_openrouter_drift_alert_microusd
+                                ):
+                                    logging.getLogger(__name__).error(
+                                        "openrouter funded usage drift "
+                                        "ledger_microusd=%d provider_microusd=%d "
+                                        "drift_microusd=%d",
+                                        health["ledger_microusd"],
+                                        provider_microusd,
+                                        drift,
+                                    )
+                            except OpenRouterBudgetUnavailable as error:
+                                logging.getLogger(__name__).error(
+                                    "openrouter management status unavailable error=%s",
+                                    type(error).__name__,
+                                )
+                        openrouter_maintenance_date = operation_date
+                        logging.getLogger(__name__).info(
+                            "openrouter accounting maintenance reconciled=%d "
+                            "examined=%d deleted_calls=%d deleted_months=%d "
+                            "deleted_audit=%d",
+                            reconciliation["reconciled"],
+                            reconciliation["examined"],
+                            cleanup["provider_calls"],
+                            cleanup["monthly_usage"],
+                            cleanup["credential_audit"],
+                        )
+
+                    operations.append(maintain_openrouter_accounting)
 
                 async def monitor_active_spend() -> None:
                     nonlocal active_spend_alerting
@@ -342,37 +413,37 @@ def create_app() -> FastAPI:
     # Include routers
     from backend.routers import (
         agent_discovery,
-        papers,
-        external_resources,
-        authors,
-        thumbnails,
-        paper_assets,
-        paper_pages,
-        search_discovery,
-        sitemaps,
-        repositories,
         areas,
-        tasks,
-        methods,
-        datasets,
-        evaluations,
-        metrics,
-        cron,
         auth,
+        authors,
         bookmarks,
-        contributions,
-        preferences,
-        inference_billing,
-        pending_edits,
-        conferences,
-        organizations,
-        frameworks,
         chat,
         codex_add_evals,
-        codex_enrich_paper,
         codex_curation_callbacks,
-        stats,
+        codex_enrich_paper,
+        conferences,
+        contributions,
+        cron,
+        datasets,
+        evaluations,
+        external_resources,
+        frameworks,
+        inference_billing,
+        methods,
+        metrics,
+        organizations,
+        paper_assets,
+        paper_pages,
+        papers,
+        pending_edits,
+        preferences,
+        repositories,
         research_catalog,
+        search_discovery,
+        sitemaps,
+        stats,
+        tasks,
+        thumbnails,
     )
 
     app.include_router(agent_discovery.router, tags=["agent_discovery"])

@@ -17,7 +17,7 @@ class OpenRouterBudgetUnavailable(RuntimeError):
 
 
 class OpenRouterBudgetExceeded(RuntimeError):
-    """The configured or provider-enforced shared spend reserve was reached."""
+    """The provider-enforced shared workspace limit was reached."""
 
 
 @dataclass(frozen=True)
@@ -53,8 +53,8 @@ async def openrouter_budget_status(
 ) -> OpenRouterBudgetStatus:
     """Read provider-authoritative key usage without exposing the credential."""
 
-    budget = float(settings.chat_openrouter_monthly_budget_usd)
-    reserve = float(settings.chat_openrouter_budget_reserve_usd)
+    budget = float(settings.chat_openrouter_workspace_monthly_budget_usd)
+    reserve = 0.0
     if not settings.chat_openrouter_server_funded_enabled:
         return OpenRouterBudgetStatus(
             enabled=False,
@@ -96,12 +96,20 @@ async def openrouter_budget_status(
         "limit_remaining",
         optional=True,
     )
+    if provider_limit is None or provider_limit != budget:
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter workspace key does not have the configured hard limit"
+        )
+    if data.get("limit_reset") != "monthly":
+        raise OpenRouterBudgetUnavailable(
+            "OpenRouter workspace key does not have a monthly limit"
+        )
     assert usage is not None
     application_remaining = max(0.0, budget - usage)
     remaining = application_remaining
     if provider_remaining is not None:
         remaining = min(remaining, provider_remaining)
-    within_budget = remaining > reserve
+    within_budget = remaining > 0
     return OpenRouterBudgetStatus(
         enabled=True,
         usage_monthly_usd=usage,
@@ -118,6 +126,6 @@ async def require_openrouter_budget(settings: Settings) -> OpenRouterBudgetStatu
     status = await openrouter_budget_status(settings)
     if not status.within_budget:
         raise OpenRouterBudgetExceeded(
-            "The shared OpenRouter preview reached its spend reserve"
+            "The shared OpenRouter preview reached its workspace limit"
         )
     return status

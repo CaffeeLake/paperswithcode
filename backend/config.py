@@ -2,9 +2,10 @@
 Configuration management for the FastAPI backend.
 """
 
+import re
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-import re
 from typing import List, Literal
 
 from pydantic import Field
@@ -257,8 +258,47 @@ class Settings(BaseSettings):
         description="OpenRouter API key reserved for server-funded research chat",
     )
     chat_openrouter_server_funded_enabled: bool = Field(default=False)
-    chat_openrouter_monthly_budget_usd: float = Field(default=5, gt=0, le=1000)
-    chat_openrouter_budget_reserve_usd: float = Field(default=0.5, ge=0, le=100)
+    chat_openrouter_monthly_user_budget_usd: Decimal = Field(
+        default=Decimal("1.00"), gt=0, le=1000
+    )
+    chat_openrouter_workspace_monthly_budget_usd: Decimal = Field(
+        default=Decimal("200.00"), gt=0, le=10000
+    )
+    # Kept as read-only aliases during the staging rollback window. New code
+    # enforces the per-user and workspace values above.
+    chat_openrouter_monthly_budget_usd: Decimal = Field(
+        default=Decimal("200.00"), gt=0, le=10000
+    )
+    chat_openrouter_budget_reserve_usd: Decimal = Field(
+        default=Decimal("0.50"), ge=0, le=100
+    )
+    chat_openrouter_monthly_usage_retention_months: int = Field(
+        default=13, ge=13, le=60
+    )
+    chat_openrouter_provider_call_retention_days: int = Field(default=90, ge=90, le=365)
+    chat_openrouter_credential_audit_retention_days: int = Field(
+        default=90, ge=1, le=90
+    )
+    chat_openrouter_recent_auth_seconds: int = Field(default=15 * 60, ge=60, le=60 * 60)
+    chat_openrouter_credential_keyring: str = Field(
+        default="",
+        description="JSON map of encryption-key versions to base64url AES-256 keys",
+    )
+    chat_openrouter_credential_active_key_version: int = Field(default=1, ge=1)
+    chat_openrouter_user_tracking_secret: str = Field(
+        default="", description="HMAC secret for opaque OpenRouter user tracking"
+    )
+    chat_openrouter_pricing_verified_at: str = Field(default="2026-08-02")
+    chat_openrouter_pricing_max_age_days: int = Field(default=30, ge=1, le=90)
+    chat_openrouter_reconciliation_stale_minutes: int = Field(
+        default=15, ge=1, le=24 * 60
+    )
+    chat_openrouter_drift_alert_microusd: int = Field(
+        default=50_000, ge=1, le=10_000_000
+    )
+    chat_openrouter_input_microusd_per_token: int = Field(default=1, ge=1)
+    chat_openrouter_output_microusd_per_token: int = Field(default=5, ge=1)
+    chat_openrouter_request_fee_microusd: int = Field(default=10_000, ge=0)
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)

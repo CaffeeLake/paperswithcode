@@ -5,29 +5,29 @@ These models represent the database schema and provide ORM functionality
 for interacting with the PostgreSQL database.
 """
 
-from datetime import date, datetime
 import uuid
+from datetime import date, datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
-    Integer,
-    SmallInteger,
-    BigInteger,
-    LargeBinary,
-    String,
-    Text,
     Date,
     DateTime,
-    Numeric,
     ForeignKey,
     ForeignKeyConstraint,
-    UniqueConstraint,
     Index,
+    Integer,
+    LargeBinary,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR, UUID
-from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 from sqlalchemy.sql import func, text
 
 Base = declarative_base()
@@ -2433,6 +2433,13 @@ class ChatTurnCapability(Base):
     )
     owner_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_token_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provider_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    provider_credential_revision: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    provider_error_code: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     scopes: Mapped[list] = mapped_column(JSONB, nullable=False)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
@@ -2458,12 +2465,148 @@ class ChatTurnCapability(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     __table_args__ = (
+        CheckConstraint(
+            "provider_mode IS NULL OR provider_mode IN "
+            "('huggingface','openrouter_funded','openrouter_byok')",
+            name="chat_turn_capabilities_provider_mode_check",
+        ),
         Index(
             "idx_chat_turn_capabilities_scope",
             "chat_session_id",
             "turn_id",
             "expires_at",
         ),
+    )
+
+
+class ChatOpenRouterCredential(Base):
+    """Write-only, owner-scoped encrypted OpenRouter inference credential."""
+
+    __tablename__ = "chat_openrouter_credentials"
+
+    hf_user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    encryption_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    fallback_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    credential_revision: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChatOpenRouterMonthlyUsage(Base):
+    """Authoritative funded OpenRouter usage for one HF subject and UTC month."""
+
+    __tablename__ = "chat_openrouter_monthly_usage"
+
+    hf_user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    month_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    limit_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    spent_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    unknown_cost_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "limit_microusd > 0 AND reserved_microusd >= 0 AND "
+            "spent_microusd >= 0 AND unknown_cost_calls >= 0",
+            name="chat_openrouter_monthly_usage_nonnegative_check",
+        ),
+    )
+
+
+class ChatOpenRouterProviderCall(Base):
+    """Idempotent funded-provider reservation and trusted settlement ledger."""
+
+    __tablename__ = "chat_openrouter_provider_calls"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(UUID(as_uuid=True), nullable=False)
+    call_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    hf_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    month_start: Mapped[date] = mapped_column(Date, nullable=False)
+    model_route: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    generation_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    settled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('reserved','dispatched','settled','released','cost_unknown')",
+            name="chat_openrouter_provider_calls_state_check",
+        ),
+        CheckConstraint(
+            "reserved_microusd >= 0 AND "
+            "(actual_microusd IS NULL OR actual_microusd >= 0)",
+            name="chat_openrouter_provider_calls_nonnegative_check",
+        ),
+        UniqueConstraint(
+            "turn_id", "call_sequence", name="uq_chat_openrouter_turn_call"
+        ),
+        Index(
+            "idx_chat_openrouter_calls_owner_month",
+            "hf_user_id",
+            "month_start",
+        ),
+        Index("idx_chat_openrouter_calls_state_updated", "state", "updated_at"),
+    )
+
+
+class ChatOpenRouterCredentialAudit(Base):
+    """Bounded non-secret credential lifecycle audit event."""
+
+    __tablename__ = "chat_openrouter_credential_audit"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('connected','replaced','fallback_enabled',"
+            "'fallback_disabled','disconnected','invalidated','account_deleted')",
+            name="chat_openrouter_credential_audit_action_check",
+        ),
+        Index("idx_chat_openrouter_credential_audit_created", "created_at"),
     )
 
 

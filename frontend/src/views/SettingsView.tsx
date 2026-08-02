@@ -13,9 +13,16 @@ import { useTheme } from "next-themes";
 
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
+import { ApiError, apiClient } from "@/lib/api";
 import { apiUrl } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
+import {
+  OPENROUTER_CREDENTIAL_QUERY_KEY,
+  resetTimeLabels,
+  useOpenRouterCredential,
+  useOpenRouterUsage,
+} from "@/lib/openrouter";
 import { usePreferences } from "@/lib/preferencesContext";
 
 interface InferenceBillingStatus {
@@ -29,12 +36,31 @@ interface InferenceBillingStatus {
   organizations: Array<{ name: string; display_name: string }>;
 }
 
+const OPENROUTER_KEY_SETTINGS_URL = "https://openrouter.ai/settings/keys";
+
+function openRouterErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (typeof error.detail === "string") return error.detail;
+    if (
+      typeof error.detail === "object"
+      && error.detail !== null
+      && "message" in error.detail
+      && typeof error.detail.message === "string"
+    ) return error.detail.message;
+  }
+  return error instanceof Error && !error.message.startsWith("API request failed:")
+    ? error.message
+    : fallback;
+}
+
 const SettingsView: React.FC = () => {
   const { user } = useAuth();
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
   const [billingError, setBillingError] = React.useState("");
+  const [openRouterError, setOpenRouterError] = React.useState("");
+  const [openRouterKey, setOpenRouterKey] = React.useState("");
   const queryClient = useQueryClient();
   const billingQuery = useQuery({
     queryKey: ["inference-billing", user?.hf_subject],
@@ -49,6 +75,11 @@ const SettingsView: React.FC = () => {
     },
   });
   const billing = billingQuery.data ?? null;
+  const usageQuery = useOpenRouterUsage(Boolean(user));
+  const credentialQuery = useOpenRouterCredential(Boolean(user));
+  const usage = usageQuery.data;
+  const credential = credentialQuery.data;
+  const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
   const selectBillingAccountMutation = useMutation({
     mutationFn: async (billTo: string | null) => {
       const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
@@ -80,6 +111,41 @@ const SettingsView: React.FC = () => {
   const billingLoading =
     billingQuery.isLoading ||
     selectBillingAccountMutation.isPending;
+  const connectOpenRouterMutation = useMutation({
+    mutationFn: (apiKey: string) => apiClient.connectOpenRouterCredential(apiKey),
+    onSuccess: (status) => {
+      queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
+      setOpenRouterKey("");
+      setOpenRouterError("");
+    },
+    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+      error, "Could not connect the OpenRouter key.",
+    )),
+  });
+  const fallbackMutation = useMutation({
+    mutationFn: (enabled: boolean) => apiClient.setOpenRouterFallback(enabled),
+    onSuccess: (status) => {
+      queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
+      setOpenRouterError("");
+    },
+    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+      error, "Could not change paid fallback.",
+    )),
+  });
+  const disconnectOpenRouterMutation = useMutation({
+    mutationFn: () => apiClient.disconnectOpenRouterCredential(),
+    onSuccess: () => {
+      queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, {
+        connected: false,
+        verified_at: null,
+        fallback_enabled: false,
+      });
+      setOpenRouterError("");
+    },
+    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+      error, "Could not disconnect the OpenRouter key.",
+    )),
+  });
 
   React.useEffect(() => {
     document.title = formatPageTitle("Settings");
@@ -113,87 +179,172 @@ const SettingsView: React.FC = () => {
               <HfSignInButton returnTo="/settings" authorizeInference />
             </div>
           </div>
-        ) : billingLoading && !billing ? (
-          <div className="settings-billing-loading">Checking Hugging Face billing…</div>
-        ) : billing?.connected ? (
-          <div className="settings-billing">
-            <div className="settings-plan-row">
+        ) : <div className="settings-provider-grid">
+          <section className="settings-provider-card" aria-labelledby="inference-providers-heading">
+            <div className="settings-provider-heading">
               <div>
-                <div className="settings-row-label">
-                  {billing.bill_to
-                    ? `Hugging Face organization · ${billing.bill_to}`
-                    : `Hugging Face ${billing.account_type}`}
-                </div>
-                <div className="settings-row-desc">
-                  {billing.bill_to
-                    ? "Chat requests use this organization’s shared credits and billing."
-                    : `$${billing.monthly_credits_usd?.toFixed(2)} included each month, then pay as you go through your personal HF account when enabled.`}
-                </div>
+                <h3 id="inference-providers-heading">Inference Providers</h3>
+                <p>Hugging Face-billed model usage</p>
               </div>
-              <span className="settings-connected-badge">Connected</span>
+              {billing?.connected && <span className="settings-connected-badge">Connected</span>}
             </div>
-            <label className="settings-token-label" htmlFor="hf-billing-account">
-              Bill chat usage to
-            </label>
-            <select
-              id="hf-billing-account"
-              className="settings-billing-select"
-              value={billing.bill_to ?? ""}
-              onChange={(event) => {
-                setBillingError("");
-                selectBillingAccountMutation.mutate(event.target.value || null);
-              }}
-              disabled={billingLoading}
-            >
-              <option value="">Personal account (@{user.username})</option>
-              {billing.organizations.map((organization) => (
-                <option key={organization.name} value={organization.name}>
-                  {organization.display_name} ({organization.name})
-                </option>
-              ))}
-            </select>
-            <p className="settings-billing-help">
-              Hugging Face maintains the authoritative usage, spend, credits, and
-              provider limits. Additional usage is billed by Hugging Face when
-              pay-as-you-go or purchased credits are enabled.
-              Organization billing requires a Team or Enterprise plan and OAuth access
-              for the selected organization.
-            </p>
-            {billingError && <div className="settings-token-error">{billingError}</div>}
-            <div className="settings-billing-actions">
-              <a
-                className="button button-primary"
-                href={billing.usage_url}
-                target="_blank"
-                rel="noreferrer"
+            {billingLoading && !billing ? (
+              <div className="settings-billing-loading">Checking Hugging Face billing…</div>
+            ) : billing?.connected ? <div className="settings-billing">
+              <div className="settings-row-label">
+                {billing.bill_to
+                  ? `Organization · ${billing.bill_to}`
+                  : `Personal account · @${user.username}`}
+              </div>
+              <p className="settings-row-desc">
+                Usage for Hugging Face Inference Providers is billed by Hugging Face
+                to your selected account. Your included Hugging Face usage is applied
+                first; pay-as-you-go billing applies once it is depleted, according to
+                your Hugging Face plan and billing settings. Papers With Code does not
+                fund, meter, or reset these credits.
+              </p>
+              <label className="settings-token-label" htmlFor="hf-billing-account">
+                Bill chat usage to
+              </label>
+              <select
+                id="hf-billing-account"
+                className="settings-billing-select"
+                value={billing.bill_to ?? ""}
+                onChange={(event) => {
+                  setBillingError("");
+                  selectBillingAccountMutation.mutate(event.target.value || null);
+                }}
+                disabled={billingLoading}
               >
-                View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
-              </a>
-              <HfSignInButton
-                returnTo="/settings"
-                label="Refresh HF permissions"
-                authorizeInference
-              />
+                <option value="">Personal account (@{user.username})</option>
+                {billing.organizations.map((organization) => (
+                  <option key={organization.name} value={organization.name}>
+                    {organization.display_name} ({organization.name})
+                  </option>
+                ))}
+              </select>
+              {billingError && <div className="settings-token-error">{billingError}</div>}
+              <div className="settings-billing-actions">
+                <a className="button button-primary" href={billing.usage_url} target="_blank" rel="noreferrer">
+                  View Hugging Face usage &amp; billing <ExternalLink aria-hidden="true" />
+                </a>
+                <HfSignInButton returnTo="/settings" label="Refresh HF permissions" authorizeInference />
+              </div>
+            </div> : <div className="settings-billing-connect">
+              <p className="settings-row-desc">
+                Reconnect with Hugging Face to authorize Inference Providers. Hugging
+                Face bills your personal account or the organization you select.
+              </p>
+              <div className="settings-billing-actions">
+                <HfSignInButton returnTo="/settings" label="Authorize with Hugging Face" authorizeInference />
+              </div>
+            </div>}
+          </section>
+
+          <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
+            <div className="settings-provider-heading">
+              <div>
+                <h3 id="openrouter-heading">OpenRouter</h3>
+                <p>Papers With Code-funded allowance and optional fallback</p>
+              </div>
+              {credential?.connected && <span className="settings-connected-badge">Key connected</span>}
             </div>
-          </div>
-        ) : (
-          <div className="settings-billing-connect">
             <p className="settings-row-desc">
-              Authorize Papers With Code to call <strong>Inference Providers</strong>{" "}
-              on your behalf. No manually created token is needed. Hugging Face bills
-              your personal account by default; after authorizing, you can optionally
-              select an eligible organization.
+              Papers With Code pays for these OpenRouter requests and provides free but
+              limited monthly usage. Your own key is available as an optional fallback.
             </p>
-            {billingError && <div className="settings-token-error">{billingError}</div>}
-            <div className="settings-billing-actions">
-              <HfSignInButton
-                returnTo="/settings"
-                label="Authorize with Hugging Face"
-                authorizeInference
-              />
+            {usage && (usage.available || usage.remaining_percent === 0) ? <div className="settings-usage-row">
+              <div className="settings-usage-heading">
+                <div>
+                  <div className="settings-row-label">Monthly OpenRouter usage</div>
+                  <div className="settings-row-desc">
+                    Resets {resetLabels?.local} <span aria-label="UTC reset time">({resetLabels?.utc})</span>
+                  </div>
+                </div>
+                <strong>{usage.remaining_percent}% left</strong>
+              </div>
+              <div
+                className="settings-usage-track"
+                role="progressbar"
+                aria-label={`${usage.remaining_percent}% remaining; resets ${resetLabels?.local}; ${resetLabels?.utc}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={usage.remaining_percent}
+              >
+                <span style={{ width: `${usage.remaining_percent}%` }} />
+              </div>
+              {usage.remaining_percent === 0 && <p className="settings-limit-note">
+                Your free monthly allowance is depleted. DeepSeek V4 Flash is
+                temporarily unavailable unless you enable your own key below.
+              </p>}
+            </div> : <div className="settings-billing-loading">
+              {usageQuery.isError || usage
+                ? "OpenRouter usage is currently unavailable."
+                : "Checking OpenRouter usage…"}
+            </div>}
+
+            <div className="settings-byok-controls">
+              <div className="settings-row-label">Provide your own OpenRouter API key</div>
+              {credential?.connected ? <>
+                <p className="settings-row-desc">
+                  Connected{credential.verified_at
+                    ? ` · Last verified ${new Date(credential.verified_at).toLocaleString()}`
+                    : ""}. Your API key is stored securely using AES-256 encryption.
+                  It is never shown again.
+                </p>
+                <label className="settings-fallback-control">
+                  <Switch
+                    checked={credential.fallback_enabled}
+                    disabled={fallbackMutation.isPending}
+                    onCheckedChange={(checked) => fallbackMutation.mutate(Boolean(checked))}
+                  />
+                  <span>
+                    <strong>Use my OpenRouter key when Papers With Code-funded OpenRouter access is unavailable</strong>
+                    <small>
+                      OpenRouter bills this usage to your own account. It is not
+                      covered by Papers With Code.
+                    </small>
+                  </span>
+                </label>
+                <p className="settings-billing-help">
+                  Disconnecting prevents new requests but cannot cancel a request
+                  already sent to OpenRouter.
+                </p>
+                <div className="settings-billing-actions">
+                  <button className="button" type="button" disabled={disconnectOpenRouterMutation.isPending} onClick={() => disconnectOpenRouterMutation.mutate()}>
+                    Disconnect
+                  </button>
+                  <a className="button" href={OPENROUTER_KEY_SETTINGS_URL} target="_blank" rel="noreferrer">
+                    Revoke or rotate at OpenRouter <ExternalLink aria-hidden="true" />
+                  </a>
+                </div>
+              </> : <form onSubmit={(event) => {
+                event.preventDefault();
+                if (openRouterKey.trim()) connectOpenRouterMutation.mutate(openRouterKey.trim());
+              }}>
+                <label className="settings-token-label" htmlFor="openrouter-api-key">OpenRouter API key</label>
+                <input
+                  id="openrouter-api-key"
+                  type="password"
+                  autoComplete="off"
+                  value={openRouterKey}
+                  onChange={(event) => setOpenRouterKey(event.target.value)}
+                  placeholder="sk-or-…"
+                />
+                <p className="settings-billing-help">
+                  Connecting stores the key but does not authorize paid fallback.
+                  Enable billing separately after it is verified.
+                </p>
+                <div className="settings-billing-actions">
+                  <button className="button button-primary" type="submit" disabled={!openRouterKey.trim() || connectOpenRouterMutation.isPending}>
+                    {connectOpenRouterMutation.isPending ? "Verifying…" : "Connect key"}
+                  </button>
+                </div>
+              </form>}
+              {openRouterError && <div className="settings-token-error">{openRouterError}</div>}
             </div>
-          </div>
-        )}
+          </section>
+        </div>}
       </section>
 
       <section className="settings-section">
