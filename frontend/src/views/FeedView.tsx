@@ -41,8 +41,60 @@ const TIME_TO_PERIOD: Record<TimeWindow, Period> = {
   all_time: "All Time",
 };
 
-const CHAT_PLACEHOLDER = "Ask the assistant about papers, tasks, methods, or benchmarks...";
-const SUGGESTED_CHAT_CATEGORIES = ["Benchmarks", "Papers", "Models"] as const;
+const PLACEHOLDER_TYPE_MS = 45;
+const PLACEHOLDER_HOLD_MS = 1_800;
+const PLACEHOLDER_ERASE_MS = 25;
+const PLACEHOLDER_GAP_MS = 350;
+
+const useRotatingChatPlaceholder = (active: boolean) => {
+  const [placeholder, setPlaceholder] = useState(SUGGESTED_CHAT_PROMPTS[0].slice(0, 1));
+
+  useEffect(() => {
+    if (!active) return;
+
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setPlaceholder(SUGGESTED_CHAT_PROMPTS[0]);
+      return;
+    }
+
+    let promptIndex = 0;
+    let characterIndex = 1;
+    let erasing = false;
+    let timer: number;
+    setPlaceholder(SUGGESTED_CHAT_PROMPTS[0].slice(0, characterIndex));
+
+    const tick = () => {
+      const prompt = SUGGESTED_CHAT_PROMPTS[promptIndex];
+
+      if (!erasing) {
+        characterIndex += 1;
+        setPlaceholder(prompt.slice(0, characterIndex));
+        if (characterIndex === prompt.length) {
+          erasing = true;
+          timer = window.setTimeout(tick, PLACEHOLDER_HOLD_MS);
+          return;
+        }
+        timer = window.setTimeout(tick, PLACEHOLDER_TYPE_MS);
+        return;
+      }
+
+      characterIndex -= 1;
+      setPlaceholder(prompt.slice(0, characterIndex));
+      if (characterIndex === 0) {
+        erasing = false;
+        promptIndex = (promptIndex + 1) % SUGGESTED_CHAT_PROMPTS.length;
+        timer = window.setTimeout(tick, PLACEHOLDER_GAP_MS);
+        return;
+      }
+      timer = window.setTimeout(tick, PLACEHOLDER_ERASE_MS);
+    };
+
+    timer = window.setTimeout(tick, PLACEHOLDER_TYPE_MS);
+    return () => window.clearTimeout(timer);
+  }, [active]);
+
+  return placeholder;
+};
 
 const parseOrderBy = (value: string | null): OrderBy => {
   if (value === "trending" || value === "date_published" || value === "citation_count") {
@@ -64,6 +116,7 @@ export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const placeholder = useRotatingChatPlaceholder(!question);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -82,69 +135,62 @@ export const AskAssistant: React.FC = () => {
   };
 
   return (
-    <div className="ask-home">
-      <div className="ask-home-window">
-        <div className="ask-home-composer">
-          <textarea
-            ref={ref}
-            rows={1}
-            value={question}
-            placeholder={CHAT_PLACEHOLDER}
-            aria-label="Ask the assistant"
-            onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-          <div className="ask-home-foot">
-            <div className="ask-home-provider-tools">
-              <ModelPicker
-                models={FALLBACK_CHAT_MODELS}
-                selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
-              />
-              <span className="ask-home-hint">
-                Via 🤗{" "}
-                <a
-                  href="https://huggingface.co/docs/inference-providers/en/index"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Inference Providers
-                </a>
-              </span>
-            </div>
-            <button
-              type="button"
-              className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-              onClick={() => submit()}
-              disabled={!question.trim()}
-              aria-label="Ask the assistant"
-            >
-              <ArrowUpIcon />
-            </button>
+    <div className="ask-home-group">
+      <div className="ask-home">
+        <textarea
+          ref={ref}
+          rows={1}
+          value={question}
+          placeholder={placeholder}
+          aria-label="Ask the assistant"
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="ask-home-foot">
+          <div className="ask-home-provider-tools">
+            <ModelPicker
+              models={FALLBACK_CHAT_MODELS}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+            />
+            <span className="ask-home-hint">
+              Via 🤗{" "}
+              <a
+                href="https://huggingface.co/docs/inference-providers/en/index"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Inference Providers
+              </a>
+            </span>
           </div>
+          <button
+            type="button"
+            className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+            onClick={() => submit()}
+            disabled={!question.trim()}
+            aria-label="Ask the assistant"
+          >
+            <ArrowUpIcon />
+          </button>
         </div>
-        <div className="ask-home-start-label">Start with</div>
-        <div className="ask-home-suggestions">
-          {SUGGESTED_CHAT_PROMPTS.map((prompt, index) => (
-            <button
-              key={prompt}
-              type="button"
-              className="ask-home-suggestion"
-              onClick={() => submit(prompt)}
-            >
-              <span className="ask-home-suggestion-category">
-                {SUGGESTED_CHAT_CATEGORIES[index]}
-              </span>
-              <span className="ask-home-suggestion-prompt">{prompt}</span>
-              <span className="ask-home-suggestion-arrow" aria-hidden="true">→</span>
-            </button>
-          ))}
-        </div>
+      </div>
+      <div className="ask-home-prompts" aria-label="Sample prompts">
+        {SUGGESTED_CHAT_PROMPTS.map((prompt) => (
+          <button
+            key={prompt}
+            type="button"
+            className="ask-home-prompt"
+            onClick={() => submit(prompt)}
+          >
+            {prompt}
+          </button>
+        ))}
       </div>
     </div>
   );

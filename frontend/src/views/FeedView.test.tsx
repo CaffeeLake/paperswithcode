@@ -1,8 +1,8 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CHAT_AUTO_SEND_KEY,
@@ -15,6 +15,10 @@ import { AskAssistant } from "@/views/FeedView";
 
 beforeEach(() => {
   sessionStorage.clear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const renderAskAssistant = () => render(
@@ -35,14 +39,27 @@ describe("AskAssistant", () => {
     });
   });
 
-  it("shows the instructional placeholder and suggested starting points", () => {
+  it("types, holds, erases, and rotates the suggested placeholder", () => {
+    vi.useFakeTimers();
     renderAskAssistant();
     const textarea = screen.getByRole("textbox", { name: "Ask the assistant" });
+    const firstPrompt = SUGGESTED_CHAT_PROMPTS[0];
 
-    expect(textarea).toHaveAttribute(
-      "placeholder",
-      "Ask the assistant about papers, tasks, methods, or benchmarks...",
-    );
+    expect(textarea).toHaveAttribute("placeholder", firstPrompt.slice(0, 1));
+
+    act(() => vi.advanceTimersByTime(45 * (firstPrompt.length - 1)));
+    expect(textarea).toHaveAttribute("placeholder", firstPrompt);
+
+    act(() => vi.advanceTimersByTime(1_800));
+    expect(textarea).toHaveAttribute("placeholder", firstPrompt.slice(0, -1));
+
+    act(() => vi.advanceTimersByTime(25 * (firstPrompt.length - 1) + 350));
+    expect(textarea).toHaveAttribute("placeholder", SUGGESTED_CHAT_PROMPTS[1].slice(0, 1));
+  });
+
+  it("shows three sample prompt bubbles", () => {
+    renderAskAssistant();
+
     SUGGESTED_CHAT_PROMPTS.forEach((prompt) => {
       expect(screen.getByRole("button", { name: new RegExp(prompt, "i") })).toBeInTheDocument();
     });
