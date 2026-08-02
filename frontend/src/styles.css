@@ -4332,28 +4332,6 @@ html { scroll-behavior: smooth; }
     gap: 16px;
   }
   .feed-title { font-size: 26px; }
-  .ask-home { padding: 10px; border-radius: 16px; }
-  .ask-home-window { border-radius: 12px; }
-  .ask-home-composer { padding: 0 18px 18px; }
-  .ask-home textarea {
-    min-height: 90px;
-    padding-top: 24px;
-    font-size: 21px;
-  }
-  .ask-home-foot { align-items: flex-end; }
-  .ask-home-provider-tools { gap: 8px; }
-  .ask-home .chat-model-select { min-height: 36px; font-size: 13px; }
-  .ask-home-hint { font-size: 16px; }
-  .ask-home-start-label { height: 48px; padding: 0 18px; font-size: 11px; }
-  .ask-home-suggestion {
-    min-height: 88px;
-    grid-template-columns: 1fr 20px;
-    gap: 10px;
-    padding: 16px 18px;
-  }
-  .ask-home-suggestion-category { grid-column: 1; font-size: 10px; }
-  .ask-home-suggestion-prompt { grid-column: 1; font-size: 19px; }
-  .ask-home-suggestion-arrow { grid-column: 2; grid-row: 1 / span 2; }
   .tag-hero { padding: 32px 0 24px; margin-bottom: 24px; }
   .tag-hero-title { font-size: 30px; }
   .method-hero-title { font-size: 30px; }
@@ -4477,88 +4455,93 @@ html { scroll-behavior: smooth; }
 
 /* === HOME ASK BOX (assistant entry point) === */
 .ask-home {
-  margin: 0 auto 36px;
-  padding: 30px;
+  margin: 0 auto 24px;
+  padding: 8px;
   background: color-mix(in oklch, var(--bg-elevated) 72%, var(--bg));
   border: 1px solid var(--hairline);
-  border-radius: 22px;
+  border-radius: 14px;
   box-shadow: 0 1px 2px rgba(30, 28, 20, 0.025);
 }
 .ask-home-window {
   overflow: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
-  border-radius: 19px;
+  border-radius: 12px;
 }
 .ask-home-composer {
-  padding: 0 30px 22px;
+  padding: 0 16px 8px;
 }
 .ask-home textarea {
   width: 100%;
-  min-height: 102px;
+  min-height: 44px;
   border: 0;
   outline: 0;
   resize: none;
   background: transparent;
   font-family: var(--serif);
-  font-size: 25px;
+  font-size: 18px;
   font-style: italic;
   line-height: 1.3;
   color: var(--ink);
-  padding: 32px 0 14px;
+  padding: 12px 0 5px;
 }
 .ask-home textarea::placeholder { color: var(--ink-faint); }
 .ask-home-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 12px;
 }
 .ask-home-provider-tools {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 9px;
   flex-wrap: wrap;
 }
 .ask-home .chat-model-select {
-  min-height: 42px;
-  max-width: 230px;
-  padding: 8px 12px;
+  min-height: 32px;
+  max-width: 190px;
+  padding: 4px 8px;
   border: 1px solid color-mix(in oklch, var(--accent) 18%, var(--hairline));
-  border-radius: 11px;
-  font-size: 16px;
+  border-radius: 8px;
+  font-size: 12px;
 }
 .ask-home-hint {
   display: flex;
   align-items: center;
   gap: 5px;
   font-family: var(--serif);
-  font-size: 20px;
+  font-size: 15px;
   color: var(--ink-soft);
 }
 .ask-home-hint a { font-weight: 600; }
 .ask-home-hint svg { color: var(--accent-text); }
+.ask-home .chat-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
 .ask-home-start-label {
-  height: 57px;
+  height: 30px;
   display: flex;
   align-items: center;
-  padding: 0 31px;
+  padding: 0 16px;
   border-top: 1px solid var(--hairline);
   border-bottom: 1px solid var(--hairline);
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-faint);
 }
 .ask-home-suggestion {
   width: 100%;
-  min-height: 104px;
+  min-height: 52px;
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) 24px;
+  grid-template-columns: 110px minmax(0, 1fr) 18px;
   align-items: center;
-  gap: 22px;
-  padding: 18px 31px;
+  gap: 14px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--hairline);
   text-align: left;
   transition: background 0.15s;
@@ -4574,26 +4557,45 @@ html { scroll-behavior: smooth; }
 }
 .ask-home-suggestion-category {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ink-faint);
 }
 .ask-home-suggestion-prompt {
   font-family: var(--serif);
-  font-size: 24px;
-  line-height: 1.35;
+  font-size: 18px;
+  line-height: 1.25;
   color: var(--ink);
 }
 .ask-home-suggestion-arrow {
   color: var(--hairline-strong);
-  font-size: 24px;
+  font-size: 18px;
   transition: color 0.15s, transform 0.15s;
 }
 .ask-home-suggestion:hover .ask-home-suggestion-arrow,
 .ask-home-suggestion:focus-visible .ask-home-suggestion-arrow {
   color: var(--accent-text);
   transform: translateX(2px);
+}
+@media (max-width: 640px) {
+  .ask-home { padding: 8px; border-radius: 12px; }
+  .ask-home-window { border-radius: 9px; }
+  .ask-home-composer { padding: 0 12px 8px; }
+  .ask-home textarea { min-height: 64px; font-size: 18px; }
+  .ask-home-foot { align-items: flex-end; }
+  .ask-home-provider-tools { gap: 6px; }
+  .ask-home-hint { font-size: 14px; }
+  .ask-home-start-label { padding: 0 12px; }
+  .ask-home-suggestion {
+    min-height: 70px;
+    grid-template-columns: minmax(0, 1fr) 18px;
+    gap: 5px 10px;
+    padding: 10px 12px;
+  }
+  .ask-home-suggestion-category { grid-column: 1; }
+  .ask-home-suggestion-prompt { grid-column: 1; font-size: 16px; }
+  .ask-home-suggestion-arrow { grid-column: 2; grid-row: 1 / span 2; }
 }
 /* Time filter shares the sort-pill look so both filter rows read as one system */
 .sort-options-time { margin-left: auto; }
