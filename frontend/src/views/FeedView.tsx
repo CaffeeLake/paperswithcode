@@ -135,62 +135,48 @@ export const AskAssistant: React.FC = () => {
   };
 
   return (
-    <div className="ask-home-group">
-      <div className="ask-home">
-        <textarea
-          ref={ref}
-          rows={1}
-          value={question}
-          placeholder={placeholder}
-          aria-label="Ask the assistant"
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="ask-home-foot">
-          <div className="ask-home-provider-tools">
-            <ModelPicker
-              models={FALLBACK_CHAT_MODELS}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-            />
-            <span className="ask-home-hint">
-              Via 🤗{" "}
-              <a
-                href="https://huggingface.co/docs/inference-providers/en/index"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Inference Providers
-              </a>
-            </span>
-          </div>
-          <button
-            type="button"
-            className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-            onClick={() => submit()}
-            disabled={!question.trim()}
-            aria-label="Ask the assistant"
-          >
-            <ArrowUpIcon />
-          </button>
+    <div className="ask-home">
+      <textarea
+        ref={ref}
+        rows={1}
+        value={question}
+        placeholder={placeholder}
+        aria-label="Ask the assistant"
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+      />
+      <div className="ask-home-foot">
+        <div className="ask-home-provider-tools">
+          <ModelPicker
+            models={FALLBACK_CHAT_MODELS}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+          />
+          <span className="ask-home-hint">
+            Via 🤗{" "}
+            <a
+              href="https://huggingface.co/docs/inference-providers/en/index"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Inference Providers
+            </a>
+          </span>
         </div>
-      </div>
-      <div className="ask-home-prompts" aria-label="Sample prompts">
-        {SUGGESTED_CHAT_PROMPTS.map((prompt) => (
-          <button
-            key={prompt}
-            type="button"
-            className="ask-home-prompt"
-            onClick={() => submit(prompt)}
-          >
-            {prompt}
-          </button>
-        ))}
+        <button
+          type="button"
+          className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
+          onClick={() => submit()}
+          disabled={!question.trim()}
+          aria-label="Ask the assistant"
+        >
+          <ArrowUpIcon />
+        </button>
       </div>
     </div>
   );

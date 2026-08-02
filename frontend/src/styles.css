@@ -4454,18 +4454,14 @@ html { scroll-behavior: smooth; }
 .action-btn.is-saved:hover { background: color-mix(in oklch, var(--ink) 88%, var(--accent)); }
 
 /* === HOME ASK BOX (assistant entry point) === */
-.ask-home-group {
-  width: 100%;
-  margin: 0 auto 36px;
-}
 .ask-home {
   max-width: 640px;
-  margin: 0 auto;
-  padding: 8px;
+  margin: 0 auto 36px;
   background: var(--bg-elevated);
   border: 1px solid var(--hairline);
   border-radius: 14px;
   box-shadow: 0 1px 2px rgba(30, 28, 20, 0.04), 0 12px 34px -18px rgba(30, 28, 20, 0.28);
+  padding: 8px;
 }
 .ask-home textarea {
   width: 100%;
@@ -4507,35 +4503,6 @@ html { scroll-behavior: smooth; }
   border: 1px solid var(--hairline);
   border-radius: 5px;
   padding: 1px 6px;
-}
-.ask-home-prompts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.ask-home-prompt {
-  width: 100%;
-  font-family: var(--serif);
-  font-size: 13px;
-  line-height: 1.25;
-  color: var(--ink-soft);
-  background: var(--bg-elevated);
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  padding: 8px 12px;
-  text-wrap: balance;
-  transition: border-color 0.15s, color 0.15s;
-}
-.ask-home-prompt:hover { border-color: var(--hairline-strong); color: var(--ink); }
-@media (max-width: 640px) {
-  .ask-home-prompts {
-    grid-template-columns: none;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(260px, 1fr);
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
 }
 /* Time filter shares the sort-pill look so both filter rows read as one system */
 .sort-options-time { margin-left: auto; }

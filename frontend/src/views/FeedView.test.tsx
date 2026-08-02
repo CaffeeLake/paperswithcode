@@ -57,26 +57,6 @@ describe("AskAssistant", () => {
     expect(textarea).toHaveAttribute("placeholder", SUGGESTED_CHAT_PROMPTS[1].slice(0, 1));
   });
 
-  it("shows three sample prompt bubbles", () => {
-    renderAskAssistant();
-
-    SUGGESTED_CHAT_PROMPTS.forEach((prompt) => {
-      expect(screen.getByRole("button", { name: new RegExp(prompt, "i") })).toBeInTheDocument();
-    });
-  });
-
-  it("launches chat from a suggested starting point", async () => {
-    const user = userEvent.setup();
-    renderAskAssistant();
-
-    await user.click(screen.getByRole("button", { name: /retrieval-augmented generation/i }));
-
-    expect(await screen.findByText("Chat launched")).toBeInTheDocument();
-    expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe(SUGGESTED_CHAT_PROMPTS[1]);
-    expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBe(DEFAULT_CHAT_MODEL);
-    expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
-  });
-
   it("launches chat with the typed question", async () => {
     const user = userEvent.setup();
     renderAskAssistant();
