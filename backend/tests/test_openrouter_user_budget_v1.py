@@ -274,6 +274,8 @@ def test_recent_auth_and_same_origin_csrf_are_both_required(monkeypatch):
 
 
 def test_disabling_byok_consent_does_not_require_step_up(monkeypatch):
+    csrf_checks = []
+
     class FakeDB:
         def commit(self):
             return None
@@ -302,18 +304,51 @@ def test_disabling_byok_consent_does_not_require_step_up(monkeypatch):
         "_require_recent_auth",
         lambda *_args: (_ for _ in ()).throw(AssertionError("step-up called")),
     )
+    monkeypatch.setattr(
+        chat_router,
+        "_require_same_origin_csrf",
+        lambda request, settings: csrf_checks.append((request, settings)),
+    )
+    request = SimpleNamespace()
+    settings = _settings()
     result = chat_router.set_openrouter_fallback(
         chat_router.SetOpenRouterFallback(enabled=False),
-        SimpleNamespace(),
+        request,
         {"hf_user_id": "hf-user"},
         FakeDB(),
-        _settings(),
+        settings,
     )
     assert result == {
         "connected": True,
         "verified_at": None,
         "fallback_enabled": False,
     }
+    assert csrf_checks == [(request, settings)]
+
+
+def test_disabling_byok_consent_still_rejects_cross_origin():
+    request = Request(
+        {
+            "type": "http",
+            "method": "PATCH",
+            "path": "/api/v1/chat/openrouter-key",
+            "headers": [
+                (b"host", b"staging.paperswithcode.co"),
+                (b"origin", b"https://attacker.example"),
+                (b"sec-fetch-site", b"cross-site"),
+            ],
+        }
+    )
+    with pytest.raises(HTTPException) as csrf:
+        chat_router.set_openrouter_fallback(
+            chat_router.SetOpenRouterFallback(enabled=False),
+            request,
+            {"hf_user_id": "hf-user"},
+            SimpleNamespace(),
+            _settings(environment="staging", release_id="test-release"),
+        )
+    assert csrf.value.status_code == 403
+    assert csrf.value.detail["code"] == "csrf_rejected"
 
 
 def test_allowance_and_workspace_failures_have_distinct_secret_safe_contracts(

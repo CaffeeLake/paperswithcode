@@ -198,6 +198,42 @@ describe("AssistantMessage", () => {
     );
   });
 
+  it("keeps monthly OpenRouter exhaustion distinct and offers explicit alternatives", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "You have used this month's Papers With Code OpenRouter allowance. It resets at 2026-09-01T00:00:00Z.",
+      errorCode: "openrouter_monthly_budget_exhausted",
+    });
+
+    expect(screen.getByText(/resets at 2026-09-01T00:00:00Z/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Use your own OpenRouter key" })).toHaveAttribute(
+      "href",
+      "/settings#openrouter-byok",
+    );
+    expect(screen.getByText(/select a Hugging Face-backed model and explicitly retry/)).toBeVisible();
+    expect(screen.queryByText(/capacity|provider rate/i)).not.toBeInTheDocument();
+  });
+
+  it("uses the generic OpenRouter-unavailable contract without pool details", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "OpenRouter is currently unavailable. However, you can still bring your own key in Settings.",
+      errorCode: "openrouter_unavailable",
+    });
+
+    expect(screen.getByRole("link", { name: "Bring your own key in Settings" })).toHaveAttribute(
+      "href",
+      "/settings#openrouter-byok",
+    );
+    expect(screen.getByRole("link", { name: "File an issue" })).toHaveAttribute(
+      "href",
+      "https://github.com/huggingface/paperswithcode-feedback",
+    );
+    expect(screen.queryByText(/shared|workspace|pool|spend|headroom/i)).not.toBeInTheDocument();
+  });
+
   it("explains the chat limit and offers bulk archiving", async () => {
     const onArchive = vi.fn();
     const user = userEvent.setup();

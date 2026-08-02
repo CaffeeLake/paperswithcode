@@ -128,6 +128,24 @@ def _selected_byok(db: Session, settings: Settings, owner_id: str):
         return None
 
 
+def _require_same_origin_csrf(request: Request, settings: Settings) -> None:
+    if settings.is_deployed:
+        origin = request.headers.get("origin")
+        expected = f"https://{request.headers.get('host', '').split(':', 1)[0]}"
+        if origin != expected or request.headers.get("sec-fetch-site") not in {
+            None,
+            "same-origin",
+            "same-site",
+        }:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "csrf_rejected",
+                    "message": "Request origin was rejected.",
+                },
+            )
+
+
 def _require_recent_auth(request: Request, user: dict, settings: Settings) -> None:
     from backend.routers.auth import decode_request_session
 
@@ -144,21 +162,7 @@ def _require_recent_auth(request: Request, user: dict, settings: Settings) -> No
                 "message": "Sign in with Hugging Face again before changing your OpenRouter key.",
             },
         )
-    if settings.is_deployed:
-        origin = request.headers.get("origin")
-        expected = f"https://{request.headers.get('host', '').split(':', 1)[0]}"
-        if origin != expected or request.headers.get("sec-fetch-site") not in {
-            None,
-            "same-origin",
-            "same-site",
-        }:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "csrf_rejected",
-                    "message": "Request origin was rejected.",
-                },
-            )
+    _require_same_origin_csrf(request, settings)
 
 
 async def _authorize_openrouter(
@@ -388,6 +392,8 @@ def set_openrouter_fallback(
 ):
     if body.enabled:
         _require_recent_auth(request, user, settings)
+    else:
+        _require_same_origin_csrf(request, settings)
     try:
         status = OpenRouterBYOKService(db, settings).set_fallback_enabled(
             user["hf_user_id"], body.enabled
