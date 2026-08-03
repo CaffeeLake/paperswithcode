@@ -118,8 +118,8 @@ WITH framework_data(
         ('image-video-generation','generation-inference','comfyui','ComfyUI','Comfy Org','A node-based interface, API, and backend for composing diffusion generation workflows.','Design and share visual generation pipelines without wiring every step in code.','https://github.com/comfy-org/comfyui',NULL,NULL,'gpu',1),
         ('image-video-generation','generation-inference','sglang-diffusion','SGLang Diffusion','SGLang Project','A high-performance serving framework for image and video generation models.','Serve diffusion models with production-oriented throughput and distributed execution.','https://github.com/sgl-project/sglang','https://docs.sglang.io/docs/sglang-diffusion/index',NULL,'gpu',2),
         ('image-video-generation','generation-inference','cache-dit','Cache-DiT','Vipshop','A PyTorch-native inference engine with caching, parallelism, quantization, and CPU offload for DiTs.','Speed up diffusion-transformer inference with composable acceleration techniques.','https://github.com/vipshop/cache-dit',NULL,NULL,'gpu',3),
-        ('image-video-generation','generation-inference','fastvideo','FastVideo','Hao AI Lab','A unified inference and post-training framework for accelerated video generation.','Train, fine-tune, or serve video generation models in one optimized framework.','https://github.com/hao-ai-lab/FastVideo',NULL,NULL,'gpu',4),
-        ('image-video-generation','generation-inference','xdit','xDiT','xDiT Project','A scalable inference engine for diffusion transformers using multiple parallelism strategies.','Scale large image and video diffusion transformers across multiple GPUs.','https://github.com/xdit-project/xDiT',NULL,NULL,'gpu',5),
+        ('image-video-generation','generation-inference','fastvideo','FastVideo','Hao AI Lab','A unified inference and post-training framework for accelerated video generation.','Train, fine-tune, or serve video generation models in one optimized framework.','https://github.com/hao-ai-lab/fastvideo',NULL,NULL,'gpu',4),
+        ('image-video-generation','generation-inference','xdit','xDiT','xDiT Project','A scalable inference engine for diffusion transformers using multiple parallelism strategies.','Scale large image and video diffusion transformers across multiple GPUs.','https://github.com/xdit-project/xdit',NULL,'2411.01738','gpu',5),
         ('robotics','robot-learning','lerobot','LeRobot','Hugging Face','An open-source PyTorch library for real-world robotics with datasets, policies, training, evaluation, and hardware integrations.','Build an end-to-end robot-learning workflow or reproduce modern policies across supported hardware.','https://github.com/huggingface/lerobot','https://huggingface.co/docs/lerobot/','2602.22818','gpu,cpu',0)
 ),
 repos AS (
@@ -150,7 +150,10 @@ LEFT JOIN LATERAL (
 ON CONFLICT (slug) DO UPDATE SET
     category_id = EXCLUDED.category_id,
     repository_id = EXCLUDED.repository_id,
-    introducing_paper_id = EXCLUDED.introducing_paper_id,
+    introducing_paper_id = COALESCE(
+        EXCLUDED.introducing_paper_id,
+        frameworks.introducing_paper_id
+    ),
     name = EXCLUDED.name,
     organization_name = EXCLUDED.organization_name,
     description = EXCLUDED.description,
