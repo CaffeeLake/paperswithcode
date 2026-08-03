@@ -1280,22 +1280,26 @@ def test_tool_budget_counts_parallel_calls_and_fifth_search_is_denied():
     assert budget.calls == 4
 
 
-def test_web_fetch_is_limited_to_observed_public_urls():
+def test_web_fetch_allows_arxiv_or_observed_public_urls():
     budget = ToolBudget(
         maximum_calls=12,
         maximum_direct_searches=4,
         maximum_result_bytes=1024,
         maximum_turn_output_bytes=4096,
     )
-    budget.observe_urls(
-        "Read https://arxiv.org/abs/2607.12345 and http://127.0.0.1/private"
-    )
+    budget.observe_urls("Read https://example.com/paper and http://127.0.0.1/private")
 
     assert budget.authorize(
         "fetch", "WebFetch", {"url": "https://arxiv.org/abs/2607.12345"}
     ).allowed
+    assert budget.authorize(
+        "observed", "WebFetch", {"url": "https://example.com/paper"}
+    ).allowed
     assert not budget.authorize(
         "unknown", "WebFetch", {"url": "https://example.com/unseen"}
+    ).allowed
+    assert not budget.authorize(
+        "subdomain", "WebFetch", {"url": "https://export.arxiv.org/abs/2607.12345"}
     ).allowed
     assert not budget.authorize(
         "private", "WebFetch", {"url": "http://127.0.0.1/private"}
@@ -1386,6 +1390,8 @@ def test_catalog_web_fetch_requires_existing_arxiv_or_exact_attached_url():
         authorize_catalog_url(DB(True), "https://github.com/org/repo")
         == "https://github.com/org/repo"
     )
+    with pytest.raises(ChatWebFetchError, match="not linked"):
+        authorize_catalog_url(DB(False), "https://arxiv.org/abs/2503.19108")
     with pytest.raises(ChatWebFetchError, match="not attached"):
         authorize_catalog_url(DB(False, False), "https://github.com/org/repo/issues")
 
@@ -1553,7 +1559,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-RIoIiGfP6ujxtiSY2dkpLi"
-    assert WORKER_CONTRACT_VERSION == "29"
+    assert WORKER_CONTRACT_VERSION == "30"
 
 
 def test_task_catalog_is_bounded_and_ranked():

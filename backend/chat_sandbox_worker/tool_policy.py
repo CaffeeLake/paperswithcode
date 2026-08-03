@@ -15,6 +15,7 @@ _HINT = "\n[output truncated; narrow, filter, or paginate the request and try ag
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
 _SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)
 _URL = re.compile(r'https?://[^\s<>"\\]+', re.IGNORECASE)
+_ALWAYS_FETCHABLE_HOSTS = frozenset({"arxiv.org"})
 
 
 def _prefix(payload: bytes, maximum: int) -> bytes:
@@ -123,11 +124,15 @@ class ToolBudget:
             normalized = _public_url(url) if isinstance(url, str) else None
             if normalized is None:
                 return Decision(False, "WebFetch requires a public HTTPS URL.")
-            if normalized not in self.fetchable_urls:
+            hostname = urlsplit(normalized).hostname
+            if (
+                normalized not in self.fetchable_urls
+                and hostname not in _ALWAYS_FETCHABLE_HOSTS
+            ):
                 return Decision(
                     False,
-                    "WebFetch is limited to URLs supplied by the user "
-                    "or returned by a tool.",
+                    "WebFetch is limited to arxiv.org URLs, URLs supplied by "
+                    "the user, or URLs returned by a tool.",
                 )
         if name in {"Read", "Grep"}:
             path = args.get("file_path") or args.get("path")
