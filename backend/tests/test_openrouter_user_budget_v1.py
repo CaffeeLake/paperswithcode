@@ -149,6 +149,18 @@ def test_byok_verification_rejects_non_inference_keys(field):
         asyncio.run(run())
 
 
+def test_byok_verification_reports_a_rejected_key_as_invalid():
+    async def run():
+        def handler(_request: httpx.Request):
+            return httpx.Response(401, json={"error": "invalid key"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await verify_openrouter_inference_key("sk-or-v1-invalid", client=client)
+
+    with pytest.raises(OpenRouterCredentialError, match="rejected"):
+        asyncio.run(run())
+
+
 def test_streaming_usage_extraction_handles_chunks_duplicates_and_bytes():
     raw = (
         b"event: message_delta\n"

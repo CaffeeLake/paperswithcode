@@ -135,6 +135,8 @@ async def verify_openrouter_inference_key(
         raise OpenRouterCredentialUnavailable(
             "OpenRouter key verification is temporarily unavailable"
         ) from error
+    except OpenRouterCredentialError:
+        raise
     except (TypeError, ValueError) as error:
         raise OpenRouterCredentialUnavailable(
             "OpenRouter returned an invalid key status"
