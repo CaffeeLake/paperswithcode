@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -12,13 +13,14 @@ from datetime import UTC, datetime
 
 import httpx
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
 from backend.models.database import (
     ChatOpenRouterCredential,
     ChatOpenRouterCredentialAudit,
+    ChatTurnCapability,
 )
 from backend.services.openrouter_user_budget_service import opaque_owner
 
@@ -180,6 +182,20 @@ class OpenRouterBYOKService:
             )
         )
 
+    def _revoke_capabilities(self, owner_id: str, now: datetime) -> None:
+        """Make every undispatched BYOK capability for this owner unrecoverable."""
+
+        owner_hash = hashlib.sha256(owner_id.encode()).hexdigest()
+        self.db.execute(
+            update(ChatTurnCapability)
+            .where(
+                ChatTurnCapability.owner_hash == owner_hash,
+                ChatTurnCapability.provider_mode == "openrouter_byok",
+                ChatTurnCapability.revoked_at.is_(None),
+            )
+            .values(provider_token_encrypted=None, revoked_at=now)
+        )
+
     def status(self, owner_id: str) -> OpenRouterCredentialStatus:
         row = self._row(owner_id)
         if row is None:
@@ -200,6 +216,8 @@ class OpenRouterBYOKService:
         )
         row = self._row(owner_id, lock=True)
         replacement = row is not None
+        if replacement:
+            self._revoke_capabilities(owner_id, current)
         if row is None:
             row = ChatOpenRouterCredential(
                 hf_user_id=owner_id,
@@ -237,6 +255,8 @@ class OpenRouterBYOKService:
         row = self._row(owner_id, lock=True)
         if row is None:
             raise OpenRouterCredentialError("Connect an OpenRouter API key first.")
+        if not enabled:
+            self._revoke_capabilities(owner_id, current)
         if row.fallback_enabled == enabled:
             return self.status(owner_id)
         row.fallback_enabled = enabled
@@ -280,6 +300,7 @@ class OpenRouterBYOKService:
         row = self._row(owner_id, lock=True)
         if row is None:
             return
+        self._revoke_capabilities(owner_id, current)
         row.fallback_enabled = False
         row.credential_revision = uuid.uuid4()
         row.updated_at = current
@@ -295,6 +316,7 @@ class OpenRouterBYOKService:
     ) -> None:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         row = self._row(owner_id, lock=True)
+        self._revoke_capabilities(owner_id, current)
         if row is not None:
             self.db.delete(row)
         self._audit(
