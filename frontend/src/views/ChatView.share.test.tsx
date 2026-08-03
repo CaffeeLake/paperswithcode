@@ -2,7 +2,7 @@ import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -91,12 +91,20 @@ const session = {
 
 let queryClient: QueryClient;
 
+const LocationProbe = () => {
+  const location = useLocation();
+  return <output data-testid="chat-location">{location.pathname}</output>;
+};
+
 function chatElement(path = `/chat/${sessionId}`) {
   return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/chat/:sessionId?" element={<ChatView />} />
+          <Route
+            path="/chat/:sessionId?"
+            element={<><ChatView /><LocationProbe /></>}
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -408,6 +416,18 @@ describe("ChatView navigation", () => {
 });
 
 describe("ChatView new-session sidebar", () => {
+  it("replaces the new-chat URL with the admitted session ID", async () => {
+    mocks.listSessions.mockResolvedValue([]);
+    renderChat("/chat");
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+
+    act(() => mocks.chatOptions?.onSessionId(sessionId));
+
+    expect(await screen.findByTestId("chat-location")).toHaveTextContent(
+      `/chat/${sessionId}`,
+    );
+  });
+
   it("inserts the session at stream start and applies streamed title deltas", async () => {
     mocks.listSessions.mockResolvedValue([]);
     renderChat("/chat");

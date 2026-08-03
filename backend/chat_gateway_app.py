@@ -407,6 +407,7 @@ async def messages(
         if len(raw) > 512 * 1024:
             raise HTTPException(status_code=413, detail="Model request is too large")
     provider_url, provider_token, provider_bill_to = _provider_target(row, settings, db)
+    capability_id = row.id
     funded_call_id: uuid.UUID | None = None
     try:
         ChatCapabilityService(db).meter_provider(
@@ -416,79 +417,78 @@ async def messages(
             maximum_tokens=MAX_PROVIDER_TURN_TOKENS,
         )
         call_sequence = row.provider_requests
-        if provider_mode == "openrouter_funded":
-            try:
-                await require_openrouter_budget(settings)
-            except (OpenRouterBudgetExceeded, OpenRouterBudgetUnavailable):
-                ChatCapabilityService(db).record_provider_error(
-                    row, "openrouter_unavailable"
-                )
-                db.commit()
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "openrouter_unavailable",
-                        "message": (
-                            "OpenRouter is currently unavailable. However, you can "
-                            "still bring your own key in Settings."
-                        ),
-                        "byok_settings_available": True,
-                        "support_url": PUBLIC_SUPPORT_URL,
-                    },
-                ) from None
-            funded_call_id = uuid.uuid5(row.id, f"provider-call:{call_sequence}")
-            try:
-                OpenRouterUserBudgetService(db, settings).reserve_call(
-                    owner_id,
-                    turn_id,
-                    funded_call_id,
-                    call_sequence,
-                    model,
-                    RequestBounds(
-                        request_bytes=len(raw),
-                        maximum_output_tokens=maximum_tokens,
-                        payload=payload,
-                    ),
-                )
-            except OpenRouterMonthlyBudgetExhausted as error:
-                ChatCapabilityService(db).record_provider_error(
-                    row, "openrouter_monthly_budget_exhausted"
-                )
-                db.commit()
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "code": "openrouter_monthly_budget_exhausted",
-                        "message": (
-                            "You have used this month's Papers With Code OpenRouter allowance."
-                        ),
-                        "used_percent": 100,
-                        "resets_at": error.resets_at.isoformat().replace("+00:00", "Z"),
-                    },
-                ) from None
-            except OpenRouterPricingUnavailable:
-                ChatCapabilityService(db).record_provider_error(
-                    row, "openrouter_unavailable"
-                )
-                db.commit()
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "openrouter_unavailable",
-                        "message": (
-                            "OpenRouter is currently unavailable. However, you can "
-                            "still bring your own key in Settings."
-                        ),
-                        "byok_settings_available": True,
-                        "support_url": PUBLIC_SUPPORT_URL,
-                    },
-                ) from None
+        # Capability validation takes a row lock so concurrent SDK model calls
+        # receive distinct request counters. Land that bounded mutation before
+        # any provider network check; otherwise a slow OpenRouter budget lookup
+        # holds the lock for its full timeout and blocks the other model call.
         db.commit()
     except CapabilityError:
         db.rollback()
         raise HTTPException(
             status_code=429, detail="Model execution limit reached"
         ) from None
+
+    if provider_mode == "openrouter_funded":
+        try:
+            await require_openrouter_budget(settings)
+        except (OpenRouterBudgetExceeded, OpenRouterBudgetUnavailable):
+            _record_provider_error(capability_id, "openrouter_unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "openrouter_unavailable",
+                    "message": (
+                        "OpenRouter is currently unavailable. However, you can "
+                        "still bring your own key in Settings."
+                    ),
+                    "byok_settings_available": True,
+                    "support_url": PUBLIC_SUPPORT_URL,
+                },
+            ) from None
+        try:
+            funded_call_id = uuid.uuid5(capability_id, f"provider-call:{call_sequence}")
+            OpenRouterUserBudgetService(db, settings).reserve_call(
+                owner_id,
+                turn_id,
+                funded_call_id,
+                call_sequence,
+                model,
+                RequestBounds(
+                    request_bytes=len(raw),
+                    maximum_output_tokens=maximum_tokens,
+                    payload=payload,
+                ),
+            )
+            db.commit()
+        except OpenRouterMonthlyBudgetExhausted as error:
+            db.rollback()
+            _record_provider_error(capability_id, "openrouter_monthly_budget_exhausted")
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "openrouter_monthly_budget_exhausted",
+                    "message": (
+                        "You have used this month's Papers With Code OpenRouter allowance."
+                    ),
+                    "used_percent": 100,
+                    "resets_at": error.resets_at.isoformat().replace("+00:00", "Z"),
+                },
+            ) from None
+        except OpenRouterPricingUnavailable:
+            db.rollback()
+            _record_provider_error(capability_id, "openrouter_unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "openrouter_unavailable",
+                    "message": (
+                        "OpenRouter is currently unavailable. However, you can "
+                        "still bring your own key in Settings."
+                    ),
+                    "byok_settings_available": True,
+                    "support_url": PUBLIC_SUPPORT_URL,
+                },
+            ) from None
     _record_gateway_timing(settings, turn_id, received_at=received_at)
 
     if funded_call_id is not None:
@@ -536,7 +536,7 @@ async def messages(
             OpenRouterBYOKService(credential_db, settings).invalidate_auth_failure(
                 owner_id
             )
-            capability = credential_db.get(ChatTurnCapability, row.id)
+            capability = credential_db.get(ChatTurnCapability, capability_id)
             if capability is not None:
                 ChatCapabilityService(credential_db).record_provider_error(
                     capability, "openrouter_byok_credential_invalid"
@@ -545,9 +545,9 @@ async def messages(
     elif provider_mode == "openrouter_byok":
         provider_error = _byok_provider_error_code(upstream.status_code)
         if provider_error is not None:
-            _record_provider_error(row.id, provider_error)
+            _record_provider_error(capability_id, provider_error)
     elif provider_mode == "openrouter_funded" and upstream.status_code in {402, 403}:
-        _record_provider_error(row.id, "openrouter_unavailable")
+        _record_provider_error(capability_id, "openrouter_unavailable")
 
     async def chunks():
         first_byte = True

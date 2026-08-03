@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,15 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from backend import chat_gateway_app as gateway
 from backend.config import Settings
 from backend.routers import chat as chat_router
 from backend.routers.chat import _authorize_openrouter, _require_recent_auth
 from backend.services.chat_session_service import ChatServiceError
-from backend.services.openrouter_budget_service import OpenRouterBudgetExceeded
+from backend.services.openrouter_budget_service import (
+    OpenRouterBudgetExceeded,
+    OpenRouterBudgetUnavailable,
+)
 from backend.services.openrouter_byok_service import (
     OpenRouterCredentialError,
     decrypt_openrouter_key,
@@ -205,6 +210,69 @@ def test_streaming_usage_extraction_handles_chunks_duplicates_and_bytes():
     assert result.generation_id == "gen-1"
     assert result.prompt_tokens == 12
     assert result.completion_tokens == 34
+
+
+def test_gateway_releases_capability_lock_before_openrouter_budget_check(monkeypatch):
+    class FakeDB:
+        commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            return None
+
+    class FakeCapabilityService:
+        def __init__(self, _db):
+            pass
+
+        def meter_provider(self, row, **_kwargs):
+            row.provider_requests += 1
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {}
+
+        async def body(self):
+            return b'{"model":"deepseek/deepseek-v4","max_tokens":100,"messages":[]}'
+
+    settings = _settings()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        model=settings.chat_deepseek_v4_flash_route,
+        provider_mode="openrouter_funded",
+        provider_requests=0,
+    )
+    db = FakeDB()
+
+    async def slow_budget_check(_settings):
+        assert db.commits == 1
+        raise OpenRouterBudgetUnavailable("provider timed out")
+
+    monkeypatch.setattr(gateway, "_scope", lambda *_args, **_kwargs: row)
+    monkeypatch.setattr(gateway, "_capability_owner", lambda *_args: "hf-user")
+    monkeypatch.setattr(
+        gateway,
+        "_provider_target",
+        lambda *_args: ("https://openrouter.ai/api/v1/messages", "token", None),
+    )
+    monkeypatch.setattr(gateway, "ChatCapabilityService", FakeCapabilityService)
+    monkeypatch.setattr(gateway, "require_openrouter_budget", slow_budget_check)
+    monkeypatch.setattr(gateway, "_record_provider_error", lambda *_args: None)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            gateway.messages(
+                FakeRequest(),
+                "Bearer capability",
+                str(uuid.uuid4()),
+                str(uuid.uuid4()),
+                db,
+                settings,
+            )
+        )
+
+    assert error.value.status_code == 503
+    assert db.commits == 1
 
 
 def test_usage_extraction_missing_malformed_or_conflicting_cost_is_unknown():

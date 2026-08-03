@@ -272,7 +272,9 @@ const ChatView: React.FC = () => {
     onSessionId: (id) => {
       activeStreamSessionIdRef.current = id;
       const isNewSession = id !== routeSessionIdRef.current;
-      const shouldFollowStream = routeSessionIdRef.current === activeStreamRouteSessionIdRef.current;
+      const shouldFollowStream = (
+        routeSessionIdRef.current ?? null
+      ) === activeStreamRouteSessionIdRef.current;
       const now = new Date().toISOString();
       setSessions((previous) => previous.some((session) => session.id === id)
         ? previous.map((session) => session.id === id ? { ...session, is_busy: true } : session)
