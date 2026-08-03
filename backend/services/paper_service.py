@@ -1124,20 +1124,25 @@ class PaperService:
     ) -> tuple[Optional[int], Optional[PaperFeedScope]]:
         if framework is not None:
             row = (
-                self.db.query(DBFramework, DBRepository)
+                self.db.query(DBFramework, DBRepository, DBPaper)
                 .outerjoin(DBRepository, DBFramework.repository_id == DBRepository.id)
+                .outerjoin(DBPaper, DBFramework.introducing_paper_id == DBPaper.id)
                 .filter(func.lower(DBFramework.slug) == framework.lower())
                 .first()
             )
             if not row:
                 raise PaperNotFoundError(f"Framework with slug '{framework}' not found")
-            db_framework, db_repository = row
+            db_framework, db_repository, introducing_paper = row
             repository_name = self._repository_identity(db_repository)
             return db_framework.repository_id, PaperFeedScope(
                 kind="framework",
                 repository=repository_name,
                 framework_slug=db_framework.slug,
                 framework_name=db_framework.name,
+                github_url=db_repository.url if db_repository else None,
+                introducing_paper_arxiv_id=(
+                    introducing_paper.arxiv_id if introducing_paper else None
+                ),
             )
 
         if repository is None:
@@ -1168,6 +1173,7 @@ class PaperService:
             PaperFeedScope(
                 kind="repository",
                 repository=self._repository_identity(db_repository) or identity,
+                github_url=db_repository.url if db_repository else normalized_url,
             ),
         )
 

@@ -2584,6 +2584,12 @@ a.paper-resource.is-link:focus-visible {
   gap: 10px;
   margin-top: auto;
 }
+.paper-feed-scope-links {
+  margin-top: 12px;
+}
+.papers-feed-layout-scoped {
+  display: block;
+}
 .framework-link {
   display: inline-flex;
   align-items: center;

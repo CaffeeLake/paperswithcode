@@ -280,6 +280,8 @@ class PaperFeedScope(BaseModel):
     repository: Optional[str] = None
     framework_slug: Optional[str] = None
     framework_name: Optional[str] = None
+    github_url: Optional[str] = None
+    introducing_paper_arxiv_id: Optional[str] = None
 
 
 class Papers(BaseModel):

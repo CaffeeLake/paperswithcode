@@ -111,6 +111,7 @@ const PapersListView: React.FC = () => {
   const topTasks = useQuery({
     queryKey: ["top-tasks-sidebar"],
     queryFn: () => apiClient.getTopTasks({ limit: 8 }),
+    enabled: !isRepositoryFeed,
     staleTime: 10 * 60 * 1000,
   });
 
@@ -145,6 +146,29 @@ const PapersListView: React.FC = () => {
                 : "Repository-scoped paper feed."
               : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
           </div>
+          {isRepositoryFeed && scope && (
+            <div className="framework-card-links paper-feed-scope-links">
+              {scope.github_url && (
+                <a
+                  href={scope.github_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="framework-link"
+                >
+                  <Icon name="github" size={13} />
+                  GitHub
+                </a>
+              )}
+              {scope.kind === "framework" && scope.introducing_paper_arxiv_id && (
+                <Link
+                  to={`/paper/${scope.introducing_paper_arxiv_id}`}
+                  className="framework-link"
+                >
+                  Introducing paper
+                </Link>
+              )}
+            </div>
+          )}
         </div>
         <div className="period-switch">
           {PERIODS.map((p) => (
@@ -167,8 +191,8 @@ const PapersListView: React.FC = () => {
         </div>
       </div>
 
-      <div className="layout-with-sidebar">
-        <aside className="sidebar">
+      <div className={isRepositoryFeed ? "papers-feed-layout-scoped" : "layout-with-sidebar"}>
+        {!isRepositoryFeed && <aside className="sidebar">
           <div className="sidebar-section">
             <div className="sidebar-label">Top Domains</div>
             {topTasks.isLoading && (
@@ -185,7 +209,7 @@ const PapersListView: React.FC = () => {
               </Link>
             ))}
           </div>
-        </aside>
+        </aside>}
 
         <div>
           <div className="sort-bar">

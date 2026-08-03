@@ -655,6 +655,8 @@ export interface PaginatedResponse<T> {
     repository?: string | null;
     framework_slug?: string | null;
     framework_name?: string | null;
+    github_url?: string | null;
+    introducing_paper_arxiv_id?: string | null;
   } | null;
 }
 

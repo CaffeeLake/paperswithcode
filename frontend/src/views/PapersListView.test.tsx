@@ -53,6 +53,8 @@ describe("PapersListView repository scopes", () => {
             framework_slug: "lerobot",
             framework_name: "LeRobot",
             repository: "huggingface/lerobot",
+            github_url: "https://github.com/huggingface/lerobot",
+            introducing_paper_arxiv_id: "2602.22818",
           },
         }],
       },
@@ -64,7 +66,7 @@ describe("PapersListView repository scopes", () => {
     };
   });
 
-  it("forwards URL filters, shows context, and hides only the code toggle", () => {
+  it("forwards URL filters and shows framework resources without the generic sidebar", () => {
     renderView("/papers?framework=lerobot&search=robot&order_by=citation_count&time=week&has_hf_artifacts=true");
 
     expect(paperParams).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -79,6 +81,15 @@ describe("PapersListView repository scopes", () => {
     expect(screen.getByText(/GitHub repository/)).toHaveTextContent("huggingface/lerobot");
     expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
     expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();
+    expect(screen.queryByText("Top Domains")).toBeNull();
+    expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute(
+      "href",
+      "https://github.com/huggingface/lerobot",
+    );
+    expect(screen.getByRole("link", { name: "Introducing paper" })).toHaveAttribute(
+      "href",
+      "/paper/2602.22818",
+    );
   });
 
   it("preserves framework scope when sort, time, artifact, and search controls change", async () => {

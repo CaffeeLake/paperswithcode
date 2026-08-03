@@ -168,17 +168,22 @@ class ScopeQuery:
 
 
 class ScopeDatabase:
-    def __init__(self, repository=None, framework=None, papers=None):
+    def __init__(
+        self, repository=None, framework=None, introducing_paper=None, papers=None
+    ):
         self.repository = repository
         self.framework = framework
+        self.introducing_paper = introducing_paper
         self.paper_query = ScopeQuery(papers=papers)
         self.repository_query = None
 
     def query(self, *entities):
-        if entities == (DBFramework, DBRepository):
+        if entities == (DBFramework, DBRepository, DBPaper):
             return ScopeQuery(
                 first_result=(
-                    (self.framework, self.repository) if self.framework else None
+                    (self.framework, self.repository, self.introducing_paper)
+                    if self.framework
+                    else None
                 )
             )
         if entities == (DBRepository,):
@@ -223,6 +228,33 @@ def test_unknown_repository_is_an_empty_scoped_feed():
 def test_unknown_framework_is_not_found():
     with pytest.raises(PaperNotFoundError):
         PaperService(ScopeDatabase()).get_papers(framework="missing")
+
+
+def test_framework_scope_includes_resource_links():
+    repository = SimpleNamespace(
+        id=41,
+        owner="huggingface",
+        name="lerobot",
+        url="https://github.com/huggingface/lerobot",
+    )
+    framework = SimpleNamespace(
+        repository_id=41,
+        slug="lerobot",
+        name="LeRobot",
+    )
+    introducing_paper = SimpleNamespace(arxiv_id="2602.22818")
+
+    repository_id, scope = PaperService(
+        ScopeDatabase(
+            repository=repository,
+            framework=framework,
+            introducing_paper=introducing_paper,
+        )
+    )._resolve_paper_feed_scope(framework="lerobot", repository=None)
+
+    assert repository_id == 41
+    assert scope.github_url == repository.url
+    assert scope.introducing_paper_arxiv_id == introducing_paper.arxiv_id
 
 
 def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch):
