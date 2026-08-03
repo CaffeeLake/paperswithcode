@@ -89,6 +89,31 @@ def test_safe_maximum_is_integer_conservative_and_modality_closed():
         )
 
 
+def test_safe_maximum_accepts_nested_tool_schema_type_property():
+    settings = _settings()
+    payload = {
+        "tools": [
+            {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                    },
+                }
+            }
+        ]
+    }
+
+    maximum = safe_maximum_microusd(
+        settings,
+        settings.chat_deepseek_v4_flash_route,
+        RequestBounds(100, 32_000, payload),
+        now=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+
+    assert maximum == 100 + 32_000 * 5 + 10_000
+
+
 def test_safe_maximum_fails_closed_for_stale_or_unknown_pricing():
     settings = _settings(chat_openrouter_pricing_verified_at="2026-01-01")
     bounds = RequestBounds(100, 32_000, {"messages": []})

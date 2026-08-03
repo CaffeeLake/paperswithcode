@@ -108,7 +108,7 @@ def _contains_unsupported_modality(value: object) -> bool:
     if not isinstance(value, dict):
         return False
     block_type = value.get("type")
-    if block_type in {
+    if isinstance(block_type, str) and block_type in {
         "image",
         "image_url",
         "input_audio",
