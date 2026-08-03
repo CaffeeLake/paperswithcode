@@ -375,7 +375,7 @@ def test_reference_backfill_uses_batched_openalex_ids_and_records_provider():
     }
 
 
-def test_openalex_missing_work_does_not_advance_coverage_cursor():
+def test_openalex_missing_work_is_counted_as_unresolvable_coverage():
     db = _session()
     db.add_all(
         [
@@ -416,10 +416,13 @@ def test_openalex_missing_work_does_not_advance_coverage_cursor():
     )
 
     progress = db.get(MethodReferenceBackfillMonth, (10, date(2026, 1, 1)))
-    assert stats.papers_failed == 1
+    assert stats.papers_failed == 0
+    assert stats.papers_unresolvable == 1
     assert progress.processed_papers == 1
-    assert progress.cursor_paper_id == 1
-    assert progress.retryable_failures == 1
+    assert progress.unresolvable_papers == 1
+    assert progress.cursor_paper_id == 2
+    assert progress.retryable_failures == 0
+    assert progress.status == "complete"
 
 
 def test_reference_backfill_counts_excluded_match_as_processed_not_matched():

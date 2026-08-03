@@ -96,3 +96,23 @@ def test_openalex_resolves_missing_bulk_result_through_arxiv_doi():
     assert batch.references_by_arxiv["1207.7235"] == {"https://openalex.org/W1"}
     assert len(requests) == 2
     assert client.api_calls == 2
+
+
+def test_openalex_treats_missing_doi_fallback_as_unresolvable_not_failed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/works":
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(404, json={"error": "work not found"})
+
+    client = OpenAlexReferenceClient(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        request_delay=0,
+    )
+    batch = client.fetch_works(["2607.99999"])
+
+    assert batch is not None
+    assert batch.work_ids_by_arxiv == {}
+    assert batch.references_by_arxiv == {}
+    assert client.api_calls == 2
+    assert client.api_errors == 0
+    assert client.failed_requests == 0

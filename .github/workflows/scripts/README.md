@@ -19,12 +19,15 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-calculate-organization-trending-scores.yml` | `40 3 * * *` | `pwc-cron calculate_organization_trending_scores` | `.github/workflows/scripts/daily/calculate_organization_trending_scores.py` |
 | `cron-refresh-paper-embeddings.yml` | `15 * * * *` | `.github/workflows/scripts/run_refresh_paper_embeddings.sh` | `.github/workflows/scripts/hourly/refresh_paper_embeddings.py` |
 | `cron-update-hf-artifacts.yml` | `30 * * * *` | `pwc-cron update_hf_artifacts` | `.github/workflows/scripts/hourly/update_hf_artifacts.py` |
+| `cron-backfill-method-keywords.yml` | `10 1 * * *` | `pwc-cron backfill_method_keywords --resume --limit 10000 --max-runtime-seconds 3300` | `.github/workflows/scripts/backfill/backfill_method_keywords.py` |
+| `cron-backfill-method-references.yml` | `15 */6 * * *` | `pwc-cron backfill_method_references --provider openalex --resume --retry-failures --limit 10000 --max-runtime-seconds 19800` | `.github/workflows/scripts/backfill/backfill_method_references.py` |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
 | `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` | `.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh` | `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` |
 
 The `test-database.yml` workflow is unrelated to cron scheduling.
 
-Historical method work is manual and release-pinned:
+Historical method work is scheduled in bounded, resumable, release-pinned runs.
+The commands below remain available for estimates and targeted maintenance:
 
 ```bash
 # Non-mutating capacity and match estimates first.
@@ -39,7 +42,7 @@ sudo pwc-cron backfill_method_references --method-slug clip \
   --provider openalex --resume --limit 1000
 ```
 
-The reference backfill fails closed unless
+The Semantic Scholar reference backfill fails closed unless
 `PWC_SEMANTIC_SCHOLAR_API_KEY_2` is present and valid. That secondary key is
 reserved for historical scans; hourly citation updates and the weekly
 incremental linker continue to own `PWC_SEMANTIC_SCHOLAR_API_KEY`.

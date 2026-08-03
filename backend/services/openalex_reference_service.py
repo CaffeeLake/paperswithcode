@@ -55,7 +55,13 @@ class OpenAlexReferenceClient:
         if self._owns_client:
             self._client.close()
 
-    def _request(self, url: str, params: dict[str, object]) -> dict | None:
+    def _request(
+        self,
+        url: str,
+        params: dict[str, object],
+        *,
+        not_found_is_empty: bool = False,
+    ) -> dict | None:
         if self.api_key:
             params["api_key"] = self.api_key
 
@@ -70,6 +76,9 @@ class OpenAlexReferenceClient:
                 if response.status_code == 200:
                     self._sleep(self.request_delay)
                     return response.json()
+                if response.status_code == 404 and not_found_is_empty:
+                    self._sleep(self.request_delay)
+                    return {}
                 if response.status_code == 429:
                     self.rate_limit_hits += 1
                 elif 500 <= response.status_code < 600:
@@ -114,6 +123,7 @@ class OpenAlexReferenceClient:
         return self._request(
             f"{OPENALEX_WORKS_URL}/https://doi.org/10.48550/arxiv.{arxiv_id}",
             {"select": "id,referenced_works"},
+            not_found_is_empty=True,
         )
 
     def fetch_works(self, arxiv_ids: Iterable[str]) -> OpenAlexWorkBatch | None:
@@ -147,6 +157,8 @@ class OpenAlexReferenceClient:
                 work = self._request_arxiv_doi(arxiv_id)
                 if work is None:
                     return None
+                if not work:
+                    continue
                 batch.work_ids_by_arxiv.setdefault(arxiv_id, set()).add(work["id"])
                 batch.references_by_arxiv.setdefault(arxiv_id, set()).update(
                     work.get("referenced_works") or []

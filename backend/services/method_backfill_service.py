@@ -498,7 +498,7 @@ def run_reference_backfill(
                     matched = set()
                 elif not openalex_batch.work_ids_by_arxiv.get(paper.arxiv_id):
                     resolved = False
-                    failed = True
+                    stats.papers_unresolvable += 1
                     matched = set()
                 else:
                     resolved = True

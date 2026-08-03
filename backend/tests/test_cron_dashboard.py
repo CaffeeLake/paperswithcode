@@ -127,8 +127,12 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
 
     keyword_job = _job("backfill_method_keywords")
     assert "method_keyword_backfill_runs" in keyword_job.db_freshness_query
+    assert keyword_job.schedule.startswith("10 1")
+    assert keyword_job.workflow_file == "cron-backfill-method-keywords.yml"
     reference_job = _job("backfill_method_references")
     assert "method_reference_backfill_months" in reference_job.db_freshness_query
+    assert reference_job.schedule.startswith("15 */6")
+    assert reference_job.workflow_file == "cron-backfill-method-references.yml"
 
 
 def test_hot_job_has_dedicated_lock_and_operational_metrics():
