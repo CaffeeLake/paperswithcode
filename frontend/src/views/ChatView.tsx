@@ -473,8 +473,7 @@ const ChatView: React.FC = () => {
       if (autoSendStartedRef.current) return;
       autoSendStartedRef.current = true;
       const prompt = pendingAutoPrompt;
-      setPendingAutoPrompt("");
-      send(prompt);
+      void send(prompt).finally(() => setPendingAutoPrompt(""));
     }, 0);
     return () => window.clearTimeout(timer);
   }, [authLoading, chat.busy, pendingAutoPrompt, routeSessionId, routeSessionState?.status, send]);
@@ -735,7 +734,7 @@ const ChatView: React.FC = () => {
           )}
         </div>
 
-        {isRouteSessionLoading ? <div className="chat-session-loading" role="status" aria-live="polite">
+        {isRouteSessionLoading && !pendingAutoPrompt ? <div className="chat-session-loading" role="status" aria-live="polite">
           <Spinner />
           <span>Loading conversation…</span>
         </div> : routeSessionError ? <div className="chat-session-load-error" role="alert">
@@ -744,7 +743,7 @@ const ChatView: React.FC = () => {
             setRouteSessionState({ id: routeSessionId!, status: "loading" });
             setRouteLoadAttempt((attempt) => attempt + 1);
           }}>Try again</button>
-        </div> : isEmpty ? <div className="chat-empty"><div className="chat-empty-inner">
+        </div> : isEmpty && !pendingAutoPrompt ? <div className="chat-empty"><div className="chat-empty-inner">
           <div className="chat-empty-eyebrow">AI research assistant · Staging preview</div>
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
@@ -763,6 +762,11 @@ const ChatView: React.FC = () => {
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
           <div className="chat-conversation" ref={scrollRef}><div className="chat-conversation-inner">
+            {isEmpty && pendingAutoPrompt && <UserMessage
+              id="queued-launch-preview"
+              text={pendingAutoPrompt}
+              isInitial
+            />}
             {chat.messages.map((message) => message.role === "user"
               ? <UserMessage
                   key={message.id}

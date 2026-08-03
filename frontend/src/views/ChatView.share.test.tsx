@@ -116,6 +116,13 @@ beforeEach(() => {
   sessionStorage.clear();
   vi.unstubAllEnvs();
   mocks.busy = false;
+  mocks.messages.splice(0, mocks.messages.length, {
+    id: "user-1",
+    role: "user",
+    text: "Question",
+    revision: 1,
+    status: "complete",
+  });
   mocks.chatOptions = null;
   mocks.send.mockReset().mockReturnValue(true);
   mocks.hfLoginUrl.mockReset().mockImplementation(() => window.location.href);
@@ -146,26 +153,37 @@ beforeEach(() => {
 
 describe("ChatView inference authorization", () => {
   it("loads a reserved chat before auto-sending its queued home-page prompt", async () => {
+    mocks.messages.length = 0;
     let resolveSession!: (value: typeof session & { transcript_status: string; messages: never[] }) => void;
+    let resolveBilling!: (value: Response) => void;
     mocks.getSession.mockReturnValueOnce(new Promise((resolve) => {
       resolveSession = resolve;
     }));
     sessionStorage.setItem("pwc:chat-oauth-draft", "Compare recent vision-language models");
     sessionStorage.setItem("pwc:chat-oauth-model", session.selected_model);
     sessionStorage.setItem("pwc:chat-oauth-auto-send", "1");
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ connected: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    vi.spyOn(globalThis, "fetch").mockReturnValueOnce(new Promise((resolve) => {
+      resolveBilling = resolve;
+    }));
 
     renderChat();
 
     await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(sessionId));
+    expect(await screen.findByText("Compare recent vision-language models")).toBeVisible();
+    expect(screen.queryByText("Ask Papers With Code")).not.toBeInTheDocument();
     expect(mocks.send).not.toHaveBeenCalled();
 
     resolveSession({ ...session, transcript_status: "ready", messages: [] });
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/me/inference-billing"),
+      expect.anything(),
+    ));
+
+    resolveBilling(new Response(JSON.stringify({ connected: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
 
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(
       "Compare recent vision-language models",
