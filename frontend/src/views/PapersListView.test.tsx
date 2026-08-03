@@ -78,6 +78,14 @@ describe("PapersListView repository scopes", () => {
       has_hf_artifacts: true,
     }));
     expect(screen.getByRole("heading", { name: /Papers implemented by LeRobot/ })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Papers/Frameworks/LeRobot",
+    );
+    expect(screen.getByRole("link", { name: "Papers" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Frameworks" })).toHaveAttribute(
+      "href",
+      "/frameworks",
+    );
     expect(screen.getByText(/GitHub repository/)).toHaveTextContent("huggingface/lerobot");
     expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
     expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();
@@ -136,5 +144,6 @@ describe("PapersListView repository scopes", () => {
     renderView("/papers");
 
     expect(screen.getByRole("button", { name: "Has code" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
   });
 });

@@ -134,6 +134,15 @@ const PapersListView: React.FC = () => {
 
   return (
     <div className="page">
+      {scope?.kind === "framework" && (
+        <nav className="breadcrumb" aria-label="Breadcrumb">
+          <Link to="/">Papers</Link>
+          <span className="sep">/</span>
+          <Link to="/frameworks">Frameworks</Link>
+          <span className="sep">/</span>
+          <span style={{ color: "var(--ink)" }}>{scope.framework_name}</span>
+        </nav>
+      )}
       <div className="feed-header">
         <div>
           <h1 className="feed-title">
