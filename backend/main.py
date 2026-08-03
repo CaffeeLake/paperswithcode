@@ -33,6 +33,33 @@ from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 _SLOW_REQUEST_MS = float(os.getenv("PWC_SLOW_REQUEST_MS", "1000"))
 _timing_logger = logging.getLogger("backend.timing")
 
+_STAGING_CATALOG_PREFIXES = (
+    "/api/v1/papers",
+    "/api/v1/tasks",
+    "/api/v1/methods",
+    "/api/v1/datasets",
+    "/api/v1/evaluations",
+    "/api/v1/metrics",
+    "/api/v1/conferences",
+    "/api/v1/organizations",
+    "/api/v1/frameworks",
+    "/api/v1/repositories",
+    "/api/v1/external-resources",
+)
+
+
+def _is_staging_catalog_mutation_path(path: str) -> bool:
+    paper_path = path.removeprefix("/api/v1/papers/")
+    is_bucket_copy = (
+        paper_path != path
+        and paper_path.endswith("/copy-to-bucket")
+        and paper_path.count("/") == 1
+        and bool(paper_path.removesuffix("/copy-to-bucket"))
+    )
+    return not is_bucket_copy and any(
+        path.startswith(prefix) for prefix in _STAGING_CATALOG_PREFIXES
+    )
+
 
 def _is_mutable_paper_detail_path(path: str) -> bool:
     if path.startswith("/api/v1/papers/arxiv/"):
@@ -296,23 +323,10 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def enforce_staging_write_boundary(request, call_next):
         if settings.is_deployed and request.method not in {"GET", "HEAD", "OPTIONS"}:
-            catalog_prefixes = (
-                "/api/v1/papers",
-                "/api/v1/tasks",
-                "/api/v1/methods",
-                "/api/v1/datasets",
-                "/api/v1/evaluations",
-                "/api/v1/metrics",
-                "/api/v1/conferences",
-                "/api/v1/organizations",
-                "/api/v1/frameworks",
-                "/api/v1/repositories",
-                "/api/v1/external-resources",
-                "/api/thumbnails",
-            )
             is_thumbnail_mutation = request.url.path.startswith("/api/thumbnails")
-            is_staging_catalog_mutation = settings.environment == "staging" and any(
-                request.url.path.startswith(prefix) for prefix in catalog_prefixes[:-1]
+            is_staging_catalog_mutation = (
+                settings.environment == "staging"
+                and _is_staging_catalog_mutation_path(request.url.path)
             )
             if is_staging_catalog_mutation or (
                 is_thumbnail_mutation and not settings.thumbnail_mutations_enabled
