@@ -265,10 +265,31 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 )
             if not settings.chat_sandbox_budget_attestation:
                 raise RuntimeError("PWC_CHAT_SANDBOX_BUDGET_ATTESTATION is required")
+            expected_attestation = (
+                f"modal-workspace-{settings.chat_sandbox_workspace_cap_microusd // 1_000_000}-"
+                f"{settings.environment}-{settings.chat_sandbox_environment_cap_microusd // 1_000_000}-v1"
+            )
+            if settings.chat_sandbox_budget_attestation != expected_attestation:
+                raise RuntimeError(
+                    "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match configured policy"
+                )
             if not settings.chat_sandbox_slack_webhook_url:
                 raise RuntimeError("PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL is required")
+            if not settings.chat_sandbox_alert_fallback_webhook_url:
+                raise RuntimeError(
+                    "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL is required"
+                )
+            if (
+                settings.chat_sandbox_alert_fallback_webhook_url
+                == settings.chat_sandbox_slack_webhook_url
+            ):
+                raise RuntimeError(
+                    "sandbox spend primary and fallback alert destinations must differ"
+                )
             if not settings.chat_sandbox_runbook_url:
                 raise RuntimeError("PWC_CHAT_SANDBOX_RUNBOOK_URL is required")
+            if not settings.chat_sandbox_operator_username_set:
+                raise RuntimeError("PWC_CHAT_SANDBOX_OPERATOR_USERNAMES is required")
             rate = (
                 settings.chat_sandbox_cpu_limit or settings.chat_sandbox_cpu
             ) * 40 + (
@@ -286,6 +307,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                     )
                 )
                 + settings.chat_sandbox_reconciliation_allowance_microusd
+                * settings.chat_sandbox_total_live_cap
             )
             if (
                 settings.chat_sandbox_environment_cap_microusd
@@ -487,6 +509,9 @@ def validate_chat_schema(db) -> None:
                 ('chat_sandbox_compute_intervals', 'accrued_microusd'),
                 ('chat_sandbox_budget_states', 'circuit_state'),
                 ('chat_sandbox_budget_states', 'provider_floor_microusd'),
+                ('chat_sandbox_budget_states', 'last_reconciliation_attempt_at'),
+                ('chat_sandbox_circuit_events', 'fallback_delivery_state'),
+                ('chat_sandbox_circuit_events', 'fallback_next_delivery_attempt_at'),
                 ('chat_turn_latency', 'request_id'),
                 ('chat_turn_latency', 'terminal_status'),
                 ('chat_turn_latency', 'browser_first_visible_delta_ms'),

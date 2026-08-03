@@ -2398,6 +2398,9 @@ class ChatSandboxBudgetState(Base):
     last_reconciled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True)
     )
+    last_reconciliation_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
     reconciliation_state: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="unavailable"
     )
@@ -2443,6 +2446,18 @@ class ChatSandboxCircuitEvent(Base):
         DateTime(timezone=True)
     )
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    fallback_delivery_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    fallback_delivery_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    fallback_next_delivery_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    fallback_delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

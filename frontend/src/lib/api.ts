@@ -901,14 +901,21 @@ export interface ChatSandboxSpendStatus {
   reconciliation_state: 'fresh' | 'stale' | 'unavailable';
   last_metered_at: string | null;
   last_reconciled_at: string | null;
+  last_reconciliation_attempt_at: string | null;
   next_reconciliation_at: string | null;
   live_count: number;
   termination_uncertain_count: number;
   live_states: Record<'starting' | 'blank' | 'busy' | 'idle' | 'draining' | 'termination_uncertain', number>;
   burn_rate_microusd_per_hour: number | null;
   projected_cap_hit_at: string | null;
+  prior_cycle: {
+    billing_cycle: string;
+    estimated_microusd: number;
+    provider_floor_microusd: number;
+    effective_microusd: number;
+  } | null;
   daily_spend: Array<{ date: string; blank_pool_microusd: number; assigned_microusd: number }>;
-  events: Array<{ id: string; type: string; severity: string; reason: string | null; created_at: string }>;
+  events: Array<{ id: string; type: string; severity: string; reason: string | null; created_at: string; details: Record<string, unknown> }>;
 }
 
 class ApiClient {
@@ -1978,8 +1985,9 @@ class ApiClient {
     return this.request<ChatAvailability>('/chat/availability', { cache: 'no-store' });
   }
 
-  async getChatSandboxSpend(): Promise<ChatSandboxSpendStatus> {
-    return this.request<ChatSandboxSpendStatus>('/chat/admin/sandbox-spend', { cache: 'no-store' });
+  async getChatSandboxSpend(environment?: string): Promise<ChatSandboxSpendStatus> {
+    const query = environment ? `?environment=${encodeURIComponent(environment)}` : '';
+    return this.request<ChatSandboxSpendStatus>(`/chat/admin/sandbox-spend${query}`, { cache: 'no-store' });
   }
 
   async getOpenRouterCredential(): Promise<OpenRouterCredentialStatus> {

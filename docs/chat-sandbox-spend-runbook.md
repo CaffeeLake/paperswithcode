@@ -21,10 +21,19 @@ This runbook covers the application circuit only. Modal Workspace and Environmen
 
 ## Staging qualification
 
-Keep `PWC_CHAT_BLANK_POOL_ENABLED=false` for the initial deployment. Exercise the synthetic `$74.99`/`$75`/`$99.99`/`$100` states, alert transitions, restart persistence, public rejection and interruption UX, and the audited re-arm path before creating real compute. Then create one bounded sandbox, verify both natural and forced 30-second drain outcomes and zero tagged orphans, and only then enable one blank sandbox to prove its interval remains continuous when claimed. A deployment resets the seven-day soak evidence; rerun the release-scoped soak audit before treating staging as qualified.
+Keep `PWC_CHAT_BLANK_POOL_ENABLED=false` for the initial deployment. Exercise the synthetic `$74.99`/`$75`/`$99.99`/`$100` states, alert transitions, restart persistence, public rejection and interruption UX, and the audited re-arm path before creating real compute:
+
+```bash
+sudo uv run --env-file /etc/paperswithcode/staging.env \
+  python -m backend.scripts.qualify_chat_sandbox_spend \
+  --qualification-id <unique-lowercase-id> \
+  --confirm QUALIFY_STAGING_CHAT_SPEND
+```
+
+The command prints an isolated admin-dashboard environment record and creates no provider compute. Then create one bounded sandbox, verify both natural and forced 30-second drain outcomes and zero tagged orphans, and only then enable one blank sandbox to prove its interval remains continuous when claimed. A deployment resets the seven-day soak evidence; rerun the release-scoped soak audit before treating staging as qualified.
 
 ## Recovery
 
-Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. Exceptional early rearm uses `backend.scripts.manage_chat_sandbox_circuit` with a typed environment/cycle confirmation, an audited reason, and an explicit `accounting-correction` or `reviewed-higher-caps` basis; it is never available from the dashboard.
+Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction` or `reviewed-higher-caps` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.
 
 After any provider policy change, record the Workspace and Environment settings, native notification recipients, operator identity, timestamp, and matching deployment attestation in the private operations audit trail. The sole owner must maintain MFA, verified recovery and billing email, and the current Modal support recovery path outside source control.

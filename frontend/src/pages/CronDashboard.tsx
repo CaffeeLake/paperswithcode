@@ -34,6 +34,12 @@ export const ChatComputePanel = ({ data, loading, error }: {
   loading: boolean;
   error: unknown;
 }) => {
+  const [policyProfile, setPolicyProfile] = useState("staging-current");
+  const policyProfiles: Record<string, string> = {
+    "staging-current": "Staging now · $75 warning / $100 trip / $125 Environment",
+    "staging-production-era": "Staging with production · $15 / $20 / $25",
+    production: "Production · $175 / $200 / $225",
+  };
   if (loading) {
     return <div className="flex items-center py-12"><Loader2 className="h-6 w-6 animate-spin mr-3" />Loading chat compute…</div>;
   }
@@ -51,7 +57,8 @@ export const ChatComputePanel = ({ data, loading, error }: {
       <Card><CardHeader><CardTitle className="text-sm">Live compute</CardTitle></CardHeader><CardContent><div className="text-2xl font-bold">{data.live_count}</div><p className="text-xs cron-muted">{data.termination_uncertain_count} termination uncertain</p></CardContent></Card>
     </div>
     <Card><CardHeader><CardTitle>Accounting and policy</CardTitle><CardDescription>{data.environment} · cycle {data.billing_cycle}</CardDescription></CardHeader><CardContent className="grid md:grid-cols-3 gap-4 text-sm">
-      <label><strong>Environment</strong><select aria-label="Chat compute environment" value={data.environment} disabled className="block mt-1"><option>{data.environment}</option></select></label>
+      <div><strong>Environment record</strong><br />{data.environment}</div>
+      <label><strong>Policy profile</strong><select aria-label="Chat compute policy profile" value={policyProfile} onChange={(event) => setPolicyProfile(event.target.value)} className="block mt-1"><option value="staging-current">Staging now</option><option value="staging-production-era">Staging with production</option><option value="production">Production</option></select><span className="text-xs cron-muted">{policyProfiles[policyProfile]} · Workspace $250</span></label>
       <div><strong>Conservative estimate</strong><br />{usd(data.estimated_microusd)}</div>
       <div><strong>Provider-reported floor</strong><br />{usd(data.provider_floor_microusd)} · <Badge>{reconciliationLabel}</Badge></div>
       <div><strong>Provider backstops</strong><br />Environment {usd(data.environment_cap_microusd)} · Workspace {usd(data.workspace_cap_microusd)}</div>
@@ -59,8 +66,9 @@ export const ChatComputePanel = ({ data, loading, error }: {
       <div><strong>Policy allocation</strong><br />Staging now $75/$100/$125 · staging with prod $15/$20/$25 · production $175/$200/$225 · workspace $250</div>
       <div><strong>Cycle end</strong><br />{formatCronDate(data.cycle_end_at)}</div>
       <div><strong>Last metered</strong><br />{data.last_metered_at ? formatCronDate(data.last_metered_at) : "Unavailable"}</div>
-      <div><strong>Provider reconciliation</strong><br />{data.last_reconciled_at ? formatCronDate(data.last_reconciled_at) : "Unavailable"}{data.next_reconciliation_at ? ` · next ${formatCronDate(data.next_reconciliation_at)}` : ""}</div>
-      <div><strong>Burn projection</strong><br />{data.burn_rate_microusd_per_hour === null ? "Not enough data" : `${usd(data.burn_rate_microusd_per_hour)}/hour`}</div>
+      <div><strong>Provider reconciliation</strong><br />{data.last_reconciled_at ? formatCronDate(data.last_reconciled_at) : "Unavailable"}{data.last_reconciliation_attempt_at ? ` · attempted ${formatCronDate(data.last_reconciliation_attempt_at)}` : ""}{data.next_reconciliation_at ? ` · next ${formatCronDate(data.next_reconciliation_at)}` : ""}</div>
+      <div><strong>Burn projection</strong><br />{data.burn_rate_microusd_per_hour === null ? "Not enough data" : `${usd(data.burn_rate_microusd_per_hour)}/hour${data.projected_cap_hit_at ? ` · cap ${formatCronDate(data.projected_cap_hit_at)}` : ""}`}</div>
+      <div><strong>Prior cycle</strong><br />{data.prior_cycle ? `${data.prior_cycle.billing_cycle} · ${usd(data.prior_cycle.effective_microusd)}` : "Not enough data"}</div>
     </CardContent></Card>
     <Card><CardHeader><CardTitle>Live lifecycle</CardTitle></CardHeader><CardContent className="text-sm">{Object.entries(data.live_states).map(([state, count]) => <span className="mr-4" key={state}>{state}: {count}</span>)}</CardContent></Card>
     <Card><CardHeader><CardTitle>Daily spend</CardTitle></CardHeader><CardContent>{data.daily_spend.length ? <ul className="space-y-1 text-sm">{data.daily_spend.map((day) => <li key={day.date}>{day.date}: blank {usd(day.blank_pool_microusd)} · assigned {usd(day.assigned_microusd)}</li>)}</ul> : <p className="cron-muted">No compute recorded in this cycle.</p>}</CardContent></Card>
@@ -71,6 +79,8 @@ export const ChatComputePanel = ({ data, loading, error }: {
 const CronDashboard = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [chatEnvironmentDraft, setChatEnvironmentDraft] = useState("");
+  const [chatEnvironment, setChatEnvironment] = useState("");
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const { user } = useAuth();
 
@@ -89,8 +99,8 @@ const CronDashboard = () => {
     retry: false,
   });
   const chatSpendQuery = useQuery({
-    queryKey: ["chatSandboxSpend", user?.username],
-    queryFn: () => apiClient.getChatSandboxSpend(),
+    queryKey: ["chatSandboxSpend", user?.username, chatEnvironment],
+    queryFn: () => apiClient.getChatSandboxSpend(chatEnvironment || undefined),
     enabled: !!user?.is_admin,
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,
@@ -318,6 +328,7 @@ const CronDashboard = () => {
             <CatalogAuditPanel />
           </TabsContent>
           <TabsContent value="chat-compute" className="mt-6">
+            <Card className="mb-6"><CardHeader><CardTitle>Environment record</CardTitle><CardDescription>Leave blank for live staging, or enter the isolated environment printed by the spend qualification command.</CardDescription></CardHeader><CardContent className="flex gap-2"><input aria-label="Chat compute environment record" value={chatEnvironmentDraft} onChange={(event) => setChatEnvironmentDraft(event.target.value)} placeholder="staging-q-example" className="flex-1 rounded border px-3 py-2" /><Button onClick={() => setChatEnvironment(chatEnvironmentDraft.trim())}>Load</Button></CardContent></Card>
             <ChatComputePanel data={chatSpendQuery.data} loading={chatSpendQuery.isLoading} error={chatSpendQuery.error} />
           </TabsContent>
         </Tabs>

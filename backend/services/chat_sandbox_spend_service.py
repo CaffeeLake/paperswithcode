@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
@@ -26,6 +26,10 @@ MEMORY_MICROUSD_PER_GIB_SECOND = Decimal("6.72")
 
 class ChatComputeDisabled(RuntimeError):
     code = "chat_temporarily_disabled"
+
+    def __init__(self, message: str, *, reason: str = "application_cap"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def billing_cycle(now: datetime) -> date:
@@ -106,12 +110,38 @@ class ChatSandboxSpendService:
                     "safety_reserve",
                     "provider_budget",
                 }
+                sweep = self.db.execute(
+                    select(ChatSandboxCircuitEvent)
+                    .where(
+                        ChatSandboxCircuitEvent.budget_state_id == previous.id,
+                        ChatSandboxCircuitEvent.event_type == "kill_sweep_complete",
+                    )
+                    .order_by(ChatSandboxCircuitEvent.created_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                sweep_after_trip = bool(
+                    sweep is not None
+                    and previous.tripped_at is not None
+                    and self._aware(sweep.created_at)
+                    >= self._aware(previous.tripped_at)
+                )
+                policy_matches = (
+                    (
+                        previous.warning_microusd,
+                        previous.application_cap_microusd,
+                        previous.environment_cap_microusd,
+                        previous.workspace_cap_microusd,
+                    )
+                    == self._policy()
+                    and previous.policy_attestation
+                    == self.settings.chat_sandbox_budget_attestation
+                )
                 if not (
                     safe_spend_trip
                     and provider_cycle_confirmed
                     and unresolved == 0
-                    and previous.policy_attestation
-                    == self.settings.chat_sandbox_budget_attestation
+                    and sweep_after_trip
+                    and policy_matches
                 ):
                     raise ChatComputeDisabled("Chat is temporarily disabled")
             warning, application, environment, workspace = self._policy()
@@ -158,15 +188,82 @@ class ChatSandboxSpendService:
             + self.settings.chat_sandbox_reconciliation_allowance_microusd
         )
 
+    @staticmethod
+    def _interval_rate(interval: ChatSandboxComputeInterval) -> int:
+        return int(
+            (
+                Decimal(interval.cpu_limit_millicores)
+                / Decimal(1000)
+                * CPU_MICROUSD_PER_CORE_SECOND
+                + Decimal(interval.memory_limit_mib)
+                / Decimal(1024)
+                * MEMORY_MICROUSD_PER_GIB_SECOND
+            ).to_integral_value(rounding=ROUND_CEILING)
+        )
+
+    @staticmethod
+    def _aware(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+    def _metered_end(
+        self, interval: ChatSandboxComputeInterval, now: datetime
+    ) -> datetime:
+        start = self._aware(interval.reserved_at)
+        if interval.terminal_at is not None:
+            return self._aware(interval.terminal_at)
+        return min(
+            now,
+            start
+            + timedelta(seconds=self.settings.chat_persistent_sandbox_lifetime_seconds),
+        )
+
+    def _overlap_cost(
+        self,
+        interval: ChatSandboxComputeInterval,
+        start: datetime,
+        end: datetime,
+        now: datetime,
+    ) -> int:
+        overlap_start = max(self._aware(interval.reserved_at), start)
+        overlap_end = min(self._metered_end(interval, now), end)
+        seconds = max(0, int((overlap_end - overlap_start).total_seconds()))
+        return seconds * self._interval_rate(interval)
+
     def refresh(self, now: datetime) -> ChatSandboxBudgetState:
         self._lock()
         state = self._state(now)
+        configured_policy = self._policy()
+        stored_policy = (
+            state.warning_microusd,
+            state.application_cap_microusd,
+            state.environment_cap_microusd,
+            state.workspace_cap_microusd,
+        )
+        integrity_reason = None
+        if (
+            stored_policy != configured_policy
+            or state.policy_attestation != self.settings.chat_sandbox_budget_attestation
+        ):
+            integrity_reason = "accounting_integrity"
+        last_metered = state.last_metered_at
+        if last_metered is not None and self._aware(last_metered) > now + timedelta(
+            seconds=5
+        ):
+            integrity_reason = "metering_degraded"
+        cycle_start = datetime(
+            state.billing_cycle.year, state.billing_cycle.month, 1, tzinfo=UTC
+        )
+        cycle_finish = self._aware(state.cycle_end_at)
         intervals = list(
             self.db.execute(
                 select(ChatSandboxComputeInterval)
                 .where(
                     ChatSandboxComputeInterval.environment == self.settings.environment,
-                    ChatSandboxComputeInterval.billing_cycle == state.billing_cycle,
+                    ChatSandboxComputeInterval.reserved_at < cycle_finish,
+                    or_(
+                        ChatSandboxComputeInterval.terminal_at.is_(None),
+                        ChatSandboxComputeInterval.terminal_at >= cycle_start,
+                    ),
                 )
                 .with_for_update()
             ).scalars()
@@ -174,27 +271,38 @@ class ChatSandboxSpendService:
         accrued = 0
         reserved = 0
         for interval in intervals:
-            end = interval.terminal_at or now
-            if end.tzinfo is None:
-                end = end.replace(tzinfo=UTC)
-            start = interval.reserved_at
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=UTC)
+            interval_start = self._aware(interval.reserved_at)
+            provider_created_at = (
+                None
+                if interval.provider_created_at is None
+                else self._aware(interval.provider_created_at)
+            )
+            terminal_at = (
+                None
+                if interval.terminal_at is None
+                else self._aware(interval.terminal_at)
+            )
+            if (
+                interval.cpu_limit_millicores <= 0
+                or interval.memory_limit_mib <= 0
+                or interval_start > now + timedelta(seconds=5)
+                or (
+                    provider_created_at is not None
+                    and provider_created_at < interval_start
+                )
+                or (terminal_at is not None and terminal_at < interval_start)
+            ):
+                integrity_reason = "metering_degraded"
+            end = self._metered_end(interval, now)
+            start = interval_start
             seconds = max(0, int((end - start).total_seconds()))
             # Each interval preserves its resource limits so policy changes cannot rewrite history.
-            rate = int(
-                (
-                    Decimal(interval.cpu_limit_millicores)
-                    / Decimal(1000)
-                    * CPU_MICROUSD_PER_CORE_SECOND
-                    + Decimal(interval.memory_limit_mib)
-                    / Decimal(1024)
-                    * MEMORY_MICROUSD_PER_GIB_SECOND
-                ).to_integral_value(rounding=ROUND_CEILING)
-            )
+            rate = self._interval_rate(interval)
             interval.accrued_microusd = max(interval.accrued_microusd, seconds * rate)
             interval.updated_at = now
-            accrued += interval.accrued_microusd
+            accrued += self._overlap_cost(
+                interval, cycle_start, min(now, cycle_finish), now
+            )
             if interval.terminal_at is None:
                 reserved += interval.reserved_microusd
         state.estimated_accrued_microusd = accrued
@@ -214,7 +322,19 @@ class ChatSandboxSpendService:
                 state.reconciliation_state = "fresh"
         state.last_metered_at = now
         state.updated_at = now
-        self._evaluate(state, now)
+        if integrity_reason is not None:
+            state.circuit_state = "tripped"
+            state.trip_reason = integrity_reason
+            state.tripped_at = state.tripped_at or now
+            self._event(
+                state,
+                f"circuit_{integrity_reason}",
+                "critical",
+                integrity_reason,
+                now,
+            )
+        else:
+            self._evaluate(state, now)
         if state.provider_floor_microusd > state.estimated_accrued_microusd:
             self._event(
                 state, "provider_above_estimate", "critical", "provider_budget", now
@@ -269,6 +389,9 @@ class ChatSandboxSpendService:
             effective = max(
                 state.estimated_accrued_microusd, state.provider_floor_microusd
             )
+            reconciled_at = state.last_reconciled_at
+            if reconciled_at is not None:
+                reconciled_at = self._aware(reconciled_at)
             self.db.add(
                 ChatSandboxCircuitEvent(
                     id=uuid.uuid4(),
@@ -289,6 +412,11 @@ class ChatSandboxSpendService:
                         "circuit_state": state.circuit_state,
                         "live_count": live_count,
                         "uncertain_count": uncertain_count,
+                        "reconciliation_age_seconds": (
+                            None
+                            if reconciled_at is None
+                            else max(0, int((now - reconciled_at).total_seconds()))
+                        ),
                     },
                     created_at=now,
                 )
@@ -309,10 +437,25 @@ class ChatSandboxSpendService:
             state.circuit_state = "warning"
             self._event(state, "warning_entered", "warning", None, now)
 
+    def trip(self, reason: str, now: datetime | None = None) -> ChatSandboxBudgetState:
+        now = now or datetime.now(UTC)
+        self._lock()
+        state = self.refresh(now)
+        if state.circuit_state != "tripped":
+            state.circuit_state = "tripped"
+            state.trip_reason = reason
+            state.tripped_at = now
+            state.updated_at = now
+            self._event(state, "circuit_tripped", "critical", reason, now)
+        return state
+
     def assert_available(self, now: datetime | None = None) -> ChatSandboxBudgetState:
         state = self.refresh(now or datetime.now(UTC))
         if state.circuit_state == "tripped":
-            raise ChatComputeDisabled("Chat is temporarily disabled")
+            raise ChatComputeDisabled(
+                "Chat is temporarily disabled",
+                reason=state.trip_reason or "application_cap",
+            )
         return state
 
     def reserve_interval(
@@ -335,7 +478,9 @@ class ChatSandboxSpendService:
             state.trip_reason = "safety_reserve"
             state.tripped_at = now
             self._event(state, "circuit_tripped", "critical", state.trip_reason, now)
-            raise ChatComputeDisabled("Chat is temporarily disabled")
+            raise ChatComputeDisabled(
+                "Chat is temporarily disabled", reason=state.trip_reason
+            )
         interval_id = uuid.uuid4()
         self.db.add(
             ChatSandboxComputeInterval(
@@ -467,7 +612,19 @@ class ChatSandboxSpendService:
         self._lock()
         self._state(reported_at, provider_cycle_confirmed=True)
         state = self.refresh(reported_at)
-        was_degraded = state.reconciliation_state != "fresh"
+        was_degraded = state.reconciliation_state != "fresh" and (
+            self.db.execute(
+                select(ChatSandboxCircuitEvent.id)
+                .where(
+                    ChatSandboxCircuitEvent.budget_state_id == state.id,
+                    ChatSandboxCircuitEvent.event_type.in_(
+                        ["reconciliation_stale", "reconciliation_unavailable"]
+                    ),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
         state.provider_floor_microusd = max(
             state.provider_floor_microusd, floor_microusd
         )
@@ -485,6 +642,21 @@ class ChatSandboxSpendService:
                 deduplicate=False,
             )
         return state
+
+    def claim_provider_reconciliation(self, now: datetime) -> bool:
+        """Claim the workspace-wide hourly slot durably across workers/releases."""
+        self._lock()
+        state = self.refresh(now)
+        attempted_at = state.last_reconciliation_attempt_at
+        if attempted_at is not None:
+            attempted_at = self._aware(attempted_at)
+            if (now - attempted_at).total_seconds() < (
+                self.settings.chat_sandbox_reconciliation_interval_seconds
+            ):
+                return False
+        state.last_reconciliation_attempt_at = now
+        state.updated_at = now
+        return True
 
     def reconciliation_unavailable(
         self, now: datetime | None = None
@@ -562,27 +734,58 @@ class ChatSandboxSpendService:
         live_states["termination_uncertain"] = sum(
             row.reconciliation_state == "termination_uncertain" for row in live
         )
-        daily: dict[str, dict[str, int]] = {}
+        cycle_start = datetime(
+            state.billing_cycle.year, state.billing_cycle.month, 1, tzinfo=UTC
+        )
+        cycle_finish = self._aware(state.cycle_end_at)
         cycle_rows = (
             self.db.execute(
                 select(ChatSandboxComputeInterval).where(
                     ChatSandboxComputeInterval.environment == state.environment,
-                    ChatSandboxComputeInterval.billing_cycle == state.billing_cycle,
+                    ChatSandboxComputeInterval.reserved_at < cycle_finish,
+                    or_(
+                        ChatSandboxComputeInterval.terminal_at.is_(None),
+                        ChatSandboxComputeInterval.terminal_at >= cycle_start,
+                    ),
                 )
             )
             .scalars()
             .all()
         )
+        daily: dict[str, dict[str, int]] = {}
         for row in cycle_rows:
-            day = row.reserved_at.date().isoformat()
-            bucket = daily.setdefault(
-                day, {"blank_pool_microusd": 0, "assigned_microusd": 0}
-            )
-            bucket[
-                "blank_pool_microusd"
-                if row.origin == "blank_pool" and row.claimed_at is None
-                else "assigned_microusd"
-            ] += row.accrued_microusd
+            row_start = max(self._aware(row.reserved_at), cycle_start)
+            row_end = min(self._metered_end(row, now), now, cycle_finish)
+            cursor = row_start
+            while cursor < row_end:
+                next_day = datetime(
+                    cursor.year,
+                    cursor.month,
+                    cursor.day,
+                    tzinfo=UTC,
+                ) + timedelta(days=1)
+                segment_end = min(row_end, next_day)
+                bucket = daily.setdefault(
+                    cursor.date().isoformat(),
+                    {"blank_pool_microusd": 0, "assigned_microusd": 0},
+                )
+                claimed_at = (
+                    None if row.claimed_at is None else self._aware(row.claimed_at)
+                )
+                if row.origin == "blank_pool" and (
+                    claimed_at is None or cursor < claimed_at
+                ):
+                    blank_end = min(segment_end, claimed_at or segment_end)
+                    bucket["blank_pool_microusd"] += max(
+                        0, int((blank_end - cursor).total_seconds())
+                    ) * self._interval_rate(row)
+                    cursor = blank_end
+                    if cursor >= segment_end:
+                        continue
+                bucket["assigned_microusd"] += max(
+                    0, int((segment_end - cursor).total_seconds())
+                ) * self._interval_rate(row)
+                cursor = segment_end
         events = (
             self.db.execute(
                 select(ChatSandboxCircuitEvent)
@@ -620,6 +823,39 @@ class ChatSandboxSpendService:
                 now,
                 deduplicate=False,
             )
+        recent_start = max(cycle_start, now - timedelta(hours=24))
+        recent_rows = [
+            row
+            for row in cycle_rows
+            if self._metered_end(row, now) > recent_start
+            and self._aware(row.reserved_at) < now
+        ]
+        observed_start = min(
+            (max(self._aware(row.reserved_at), recent_start) for row in recent_rows),
+            default=now,
+        )
+        observed_hours = max(0.0, (now - observed_start).total_seconds() / 3600)
+        burn_rate = None
+        projected_cap_hit_at = None
+        if len(recent_rows) >= 2 and observed_hours >= 1:
+            recent_cost = sum(
+                self._overlap_cost(row, recent_start, now, now) for row in recent_rows
+            )
+            burn_rate = round(recent_cost / observed_hours)
+            if burn_rate > 0 and state.circuit_state != "tripped":
+                hours_left = (
+                    max(0, state.application_cap_microusd - effective) / burn_rate
+                )
+                projected_cap_hit_at = now + timedelta(hours=hours_left)
+        prior_state = self.db.execute(
+            select(ChatSandboxBudgetState)
+            .where(
+                ChatSandboxBudgetState.environment == state.environment,
+                ChatSandboxBudgetState.billing_cycle < state.billing_cycle,
+            )
+            .order_by(ChatSandboxBudgetState.billing_cycle.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         return {
             "environment": state.environment,
             "billing_cycle": state.billing_cycle.isoformat(),
@@ -643,8 +879,16 @@ class ChatSandboxSpendService:
             "outstanding_reservation_microusd": state.outstanding_reservation_microusd,
             "last_metered_at": state.last_metered_at,
             "last_reconciled_at": state.last_reconciled_at,
+            "last_reconciliation_attempt_at": state.last_reconciliation_attempt_at,
             "next_reconciliation_at": (
-                None if reconciled_at is None else reconciled_at + timedelta(hours=1)
+                self._aware(
+                    state.last_reconciliation_attempt_at
+                    or state.last_reconciled_at
+                    or state.created_at
+                )
+                + timedelta(
+                    seconds=self.settings.chat_sandbox_reconciliation_interval_seconds
+                )
             ),
             "reconciliation_state": reconciliation,
             "live_count": len(live),
@@ -653,8 +897,21 @@ class ChatSandboxSpendService:
             ),
             "live_states": live_states,
             "oldest_live_at": min((row.reserved_at for row in live), default=None),
-            "burn_rate_microusd_per_hour": None,
-            "projected_cap_hit_at": None,
+            "burn_rate_microusd_per_hour": burn_rate,
+            "projected_cap_hit_at": projected_cap_hit_at,
+            "prior_cycle": (
+                None
+                if prior_state is None
+                else {
+                    "billing_cycle": prior_state.billing_cycle.isoformat(),
+                    "estimated_microusd": prior_state.estimated_accrued_microusd,
+                    "provider_floor_microusd": prior_state.provider_floor_microusd,
+                    "effective_microusd": max(
+                        prior_state.estimated_accrued_microusd,
+                        prior_state.provider_floor_microusd,
+                    ),
+                }
+            ),
             "daily_spend": [
                 {"date": day, **values} for day, values in sorted(daily.items())
             ],
@@ -665,6 +922,7 @@ class ChatSandboxSpendService:
                     "severity": event.severity,
                     "reason": event.reason,
                     "created_at": event.created_at,
+                    "details": event.details,
                 }
                 for event in events
             ],

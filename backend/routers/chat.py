@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
+from backend.models.api import ChatAvailabilityResponse, ChatSandboxSpendResponse
 from backend.models.chat import (
     ArchiveOldChatsResponse,
     ChatBrowserLatencyRequest,
@@ -315,7 +316,7 @@ def list_models(
     }
 
 
-@router.get("/availability")
+@router.get("/availability", response_model=ChatAvailabilityResponse)
 def chat_availability():
     """Content-free public state; internal warning and accounting stay private."""
     settings = get_settings()
@@ -325,8 +326,13 @@ def chat_availability():
     ):
         return {"status": "available", "reason": None, "expected_recovery_at": None}
     try:
-        with db_manager.session_local() as db, db.begin():
-            ChatSandboxSpendService(db, settings).assert_available()
+        with db_manager.session_local() as db:
+            try:
+                ChatSandboxSpendService(db, settings).assert_available()
+            except ChatComputeDisabled:
+                db.commit()
+                raise
+            db.commit()
         return {"status": "available", "reason": None, "expected_recovery_at": None}
     except ChatComputeDisabled:
         return {
@@ -336,9 +342,17 @@ def chat_availability():
         }
 
 
-@router.get("/admin/sandbox-spend", dependencies=[Depends(require_admin)])
-def chat_sandbox_spend():
+@router.get(
+    "/admin/sandbox-spend",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatSandboxSpendResponse,
+)
+def chat_sandbox_spend(environment: str | None = None):
     settings = get_settings()
+    if environment is not None:
+        if not environment.startswith(f"{settings.environment}-q-"):
+            raise HTTPException(status_code=404, detail="Unknown qualification")
+        settings = settings.model_copy(update={"environment": environment})
     with db_manager.session_local() as db, db.begin():
         return ChatSandboxSpendService(db, settings).status()
 
@@ -648,8 +662,13 @@ async def stream_chat(
         and settings.chat_sandbox_spend_enforcement_enabled
     ):
         try:
-            with db_manager.session_local() as budget_db, budget_db.begin():
-                ChatSandboxSpendService(budget_db, settings).assert_available()
+            with db_manager.session_local() as budget_db:
+                try:
+                    ChatSandboxSpendService(budget_db, settings).assert_available()
+                except ChatComputeDisabled:
+                    budget_db.commit()
+                    raise
+                budget_db.commit()
         except ChatComputeDisabled as error:
             raise HTTPException(
                 status_code=503,

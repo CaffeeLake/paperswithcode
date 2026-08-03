@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,11 +7,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.config import Settings
+from backend.models.api import ChatSandboxSpendResponse
 from backend.models.database import (
     ChatSandboxBudgetState,
     ChatSandboxCircuitEvent,
     ChatSandboxComputeInterval,
+    ChatSandboxLease,
+    ChatSandboxPool,
+    ChatSession,
 )
+from backend.scripts.manage_chat_sandbox_circuit import operator_identity
+from backend.services.chat_sandbox_service import SandboxError, SandboxSessionManager
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
@@ -23,6 +30,9 @@ def factory():
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     for table in (
+        ChatSession.__table__,
+        ChatSandboxLease.__table__,
+        ChatSandboxPool.__table__,
         ChatSandboxBudgetState.__table__,
         ChatSandboxComputeInterval.__table__,
         ChatSandboxCircuitEvent.__table__,
@@ -129,8 +139,16 @@ def test_spend_trip_rearms_once_after_provider_confirms_new_utc_cycle():
     august = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
     september = datetime(2026, 9, 1, 0, 1, tzinfo=UTC)
     with sessions() as db, db.begin():
-        ChatSandboxSpendService(db, settings()).reconcile_provider_floor(
-            100_000_000, august
+        service = ChatSandboxSpendService(db, settings())
+        service.reconcile_provider_floor(100_000_000, august)
+    with sessions() as db, db.begin():
+        with pytest.raises(ChatComputeDisabled):
+            ChatSandboxSpendService(db, settings()).reconcile_provider_floor(
+                0, september
+            )
+    with sessions() as db, db.begin():
+        ChatSandboxSpendService(db, settings()).record_kill_sweep(
+            complete=True, now=august
         )
     with sessions() as db, db.begin():
         service = ChatSandboxSpendService(db, settings())
@@ -165,6 +183,222 @@ def test_tagged_provider_orphan_is_conservatively_added_to_ledger():
         assert row.terminal_at is None
         assert row.reserved_microusd == service.reservation_amount()
         assert row.reconciliation_state == "termination_uncertain"
+
+
+def test_live_interval_crossing_month_is_metered_in_each_utc_cycle():
+    sessions = factory()
+    start = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
+    september = datetime(2026, 9, 1, 0, 1, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        interval_id = service.reserve_interval(
+            origin="direct", worker_generation="cross-month", now=start
+        )
+        service.provider_created(interval_id, "sb-cross-month", start)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        state = service.refresh(september)
+        assert state.billing_cycle.isoformat() == "2026-09-01"
+        assert state.estimated_accrued_microusd == 60 * service.cost_per_second()
+        row = db.get(ChatSandboxComputeInterval, interval_id)
+        assert row.accrued_microusd == 120 * service.cost_per_second()
+
+
+def test_daily_spend_splits_one_pool_interval_at_claim_time():
+    sessions = factory()
+    start = datetime(2026, 8, 3, 12, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        interval_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="split", now=start
+        )
+        service.provider_created(interval_id, "sb-split", start)
+        service.claim(
+            "sb-split", __import__("uuid").uuid4(), start + timedelta(seconds=20)
+        )
+        service.terminate(
+            "sb-split", "complete", confirmed=True, now=start + timedelta(seconds=70)
+        )
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        status = service.status(start + timedelta(seconds=90))
+        assert status["daily_spend"] == [
+            {
+                "date": "2026-08-03",
+                "blank_pool_microusd": 20 * service.cost_per_second(),
+                "assigned_microusd": 50 * service.cost_per_second(),
+            }
+        ]
+
+
+def test_uncertain_interval_metering_stops_at_configured_maximum_lifetime():
+    sessions = factory()
+    start = datetime(2026, 8, 3, tzinfo=UTC)
+    short = settings(chat_persistent_sandbox_lifetime_seconds=300)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, short)
+        interval_id = service.reserve_interval(
+            origin="direct", worker_generation="uncertain", now=start
+        )
+        service.provider_created(interval_id, "sb-uncertain", start)
+        service.terminate(
+            "sb-uncertain", "termination_uncertain", confirmed=False, now=start
+        )
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, short)
+        state = service.refresh(start + timedelta(hours=1))
+        assert state.estimated_accrued_microusd == 300 * service.cost_per_second()
+
+
+def test_provider_reconciliation_claim_is_durable_across_workers():
+    sessions = factory()
+    now = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        assert ChatSandboxSpendService(db, settings()).claim_provider_reconciliation(
+            now
+        )
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        assert not service.claim_provider_reconciliation(now + timedelta(minutes=59))
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        assert service.claim_provider_reconciliation(now + timedelta(hours=1))
+
+
+def test_final_primary_alert_failure_uses_persisted_independent_fallback(monkeypatch):
+    sessions = factory()
+    configured = settings(
+        chat_sandbox_slack_webhook_url="https://primary.test/hook",
+        chat_sandbox_alert_fallback_webhook_url="https://fallback.test/hook",
+        chat_sandbox_runbook_url="https://runbook.test/chat",
+    )
+    now = datetime.now(UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        state = service.refresh(now)
+        service._event(state, "circuit_tripped", "critical", "application_cap", now)
+        event = db.execute(select(ChatSandboxCircuitEvent)).scalar_one()
+        event.delivery_attempts = 4
+
+    posted: list[str] = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **_kwargs):
+            posted.append(url)
+            if url == configured.chat_sandbox_slack_webhook_url:
+                raise RuntimeError("primary unavailable")
+            return Response()
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.httpx.AsyncClient", Client
+    )
+    manager = SandboxSessionManager(configured, session_factory=sessions)
+    assert asyncio.run(manager.deliver_spend_alerts()) == 0
+    assert posted == [
+        configured.chat_sandbox_slack_webhook_url,
+        configured.chat_sandbox_alert_fallback_webhook_url,
+    ]
+    with sessions() as db:
+        event = db.execute(select(ChatSandboxCircuitEvent)).scalar_one()
+        assert event.delivery_state == "failed"
+        assert event.fallback_delivery_state == "delivered"
+        assert event.fallback_delivered_at is not None
+
+
+def test_circuit_operator_must_be_root_and_allowlisted(monkeypatch):
+    configured = settings(chat_sandbox_operator_usernames="alice")
+    monkeypatch.setattr(
+        "backend.scripts.manage_chat_sandbox_circuit.os.geteuid", lambda: 0
+    )
+    monkeypatch.setenv("SUDO_USER", "Alice")
+    assert operator_identity(configured) == "alice"
+    monkeypatch.setattr(
+        "backend.scripts.manage_chat_sandbox_circuit.os.geteuid", lambda: 1000
+    )
+    with pytest.raises(SystemExit, match="must run as root"):
+        operator_identity(configured)
+
+
+def test_policy_change_without_new_attestation_trips_accounting_integrity():
+    sessions = factory()
+    now = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        ChatSandboxSpendService(db, settings()).refresh(now)
+    with sessions() as db, db.begin():
+        changed = settings(chat_sandbox_application_cap_microusd=110_000_000)
+        state = ChatSandboxSpendService(db, changed).refresh(now + timedelta(seconds=1))
+        assert state.circuit_state == "tripped"
+        assert state.trip_reason == "accounting_integrity"
+
+
+def test_invalid_lifecycle_timestamp_trips_metering_degraded():
+    sessions = factory()
+    now = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        interval_id = service.reserve_interval(
+            origin="direct", worker_generation="bad-clock", now=now
+        )
+        row = db.get(ChatSandboxComputeInterval, interval_id)
+        row.provider_created_at = now - timedelta(seconds=1)
+    with sessions() as db, db.begin():
+        state = ChatSandboxSpendService(db, settings()).refresh(
+            now + timedelta(seconds=1)
+        )
+        assert state.circuit_state == "tripped"
+        assert state.trip_reason == "metering_degraded"
+
+
+def test_admin_spend_status_matches_the_typed_api_contract():
+    sessions = factory()
+    now = datetime(2026, 8, 3, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        payload = ChatSandboxSpendService(db, settings()).status(now)
+        response = ChatSandboxSpendResponse.model_validate(payload)
+        assert response.environment == "staging"
+        assert response.reconciliation_state == "unavailable"
+
+
+def test_startup_rejects_interactive_provider_token(monkeypatch):
+    configured = settings(chat_sandbox_modal_environment="pwc-chat-staging")
+    monkeypatch.setenv("MODAL_ENVIRONMENT", "pwc-chat-staging")
+
+    class Token:
+        def WhichOneof(self, _name):
+            return "user_identity"
+
+    class Stub:
+        async def TokenInfoGet(self, _request):
+            return Token()
+
+    class Client:
+        stub = Stub()
+
+        async def close(self):
+            return None
+
+    async def from_env():
+        return Client()
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service._Client.from_env", from_env
+    )
+    manager = SandboxSessionManager(configured, session_factory=factory())
+    with pytest.raises(SandboxError, match="service identity"):
+        asyncio.run(manager.validate_image_reference())
 
 
 def test_billing_cycle_is_utc_and_rejects_naive_time():

@@ -298,9 +298,13 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_sandbox_slack_webhook_url=(
             "https://hooks.slack.test/services/test" if environment == "staging" else ""
         ),
+        chat_sandbox_alert_fallback_webhook_url=(
+            "https://alerts.test/fallback" if environment == "staging" else ""
+        ),
         chat_sandbox_runbook_url=(
             "https://example.test/runbook" if environment == "staging" else ""
         ),
+        chat_sandbox_operator_usernames=("root" if environment == "staging" else ""),
         chat_gateway_url=(
             "https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway"
             if environment == "staging"

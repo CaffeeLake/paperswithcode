@@ -277,6 +277,8 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_CHAT_SANDBOX_BUDGET_ATTESTATION` | | Reviewed provider-policy attestation required by deployed Modal chat |
 | `PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT` | pwc-chat-staging | Dedicated Modal Environment expected by runtime validation |
 | `PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL` | | Secret-backed operations alert webhook |
+| `PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL` | | Independent incident webhook for primary alert-delivery failure |
+| `PWC_CHAT_SANDBOX_OPERATOR_USERNAMES` | | Protected allowlist for audited circuit-control CLI invocations |
 | `PWC_CHAT_AGENT_TIMEOUT_SECONDS` | 180 | Complete Agent SDK turn deadline |
 | `PWC_CHAT_BASH_TIMEOUT_SECONDS` | 30 | Per-Bash-call deadline |
 | `PWC_CHAT_HF_BILL_TO` | | Optional HF organization slug billed for chat inference |

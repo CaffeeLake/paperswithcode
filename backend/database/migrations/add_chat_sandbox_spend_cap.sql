@@ -30,18 +30,27 @@ CREATE TABLE IF NOT EXISTS chat_sandbox_budget_states (
  provider_floor_microusd bigint NOT NULL DEFAULT 0, outstanding_reservation_microusd bigint NOT NULL DEFAULT 0,
  circuit_state varchar(16) NOT NULL DEFAULT 'armed' CHECK (circuit_state IN ('armed','warning','tripped')),
  trip_reason varchar(64), tripped_at timestamptz, acknowledged_at timestamptz, last_metered_at timestamptz,
- last_reconciled_at timestamptz, reconciliation_state varchar(24) NOT NULL DEFAULT 'unavailable',
+ last_reconciled_at timestamptz, last_reconciliation_attempt_at timestamptz, reconciliation_state varchar(24) NOT NULL DEFAULT 'unavailable',
  policy_attestation varchar(128) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
  UNIQUE(environment,billing_cycle)
 );
+ALTER TABLE chat_sandbox_budget_states
+ ADD COLUMN IF NOT EXISTS last_reconciliation_attempt_at timestamptz;
 CREATE TABLE IF NOT EXISTS chat_sandbox_circuit_events (
  id uuid PRIMARY KEY, budget_state_id uuid NOT NULL REFERENCES chat_sandbox_budget_states(id), event_type varchar(64) NOT NULL,
  severity varchar(16) NOT NULL, reason varchar(64), details jsonb NOT NULL DEFAULT '{}'::jsonb,
  delivery_state varchar(24) NOT NULL DEFAULT 'pending', delivery_attempts integer NOT NULL DEFAULT 0,
- next_delivery_attempt_at timestamptz, delivered_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+ next_delivery_attempt_at timestamptz, delivered_at timestamptz,
+ fallback_delivery_state varchar(24) NOT NULL DEFAULT 'pending', fallback_delivery_attempts integer NOT NULL DEFAULT 0,
+ fallback_next_delivery_attempt_at timestamptz, fallback_delivered_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE chat_sandbox_circuit_events
  ADD COLUMN IF NOT EXISTS next_delivery_attempt_at timestamptz;
+ALTER TABLE chat_sandbox_circuit_events
+ ADD COLUMN IF NOT EXISTS fallback_delivery_state varchar(24) NOT NULL DEFAULT 'pending',
+ ADD COLUMN IF NOT EXISTS fallback_delivery_attempts integer NOT NULL DEFAULT 0,
+ ADD COLUMN IF NOT EXISTS fallback_next_delivery_attempt_at timestamptz,
+ ADD COLUMN IF NOT EXISTS fallback_delivered_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_chat_sandbox_circuit_events_recent ON chat_sandbox_circuit_events(budget_state_id,created_at);
 
 ALTER TABLE chat_sandbox_compute_intervals OWNER TO pwc_staging_owner;
