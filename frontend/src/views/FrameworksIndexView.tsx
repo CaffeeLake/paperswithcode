@@ -1,5 +1,5 @@
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/components";
@@ -61,8 +61,28 @@ const PlatformChip: React.FC<{ platform: FrameworkPlatform }> = ({ platform }) =
 };
 
 export const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
+  const navigate = useNavigate();
+  const papersPath = `/papers?framework=${encodeURIComponent(framework.slug)}`;
+
   return (
-    <article id={`framework-${framework.slug}`} className="framework-card">
+    <article
+      id={`framework-${framework.slug}`}
+      className="framework-card framework-card-clickable"
+      role="link"
+      tabIndex={0}
+      aria-label={`View papers implemented by ${framework.name}`}
+      onClick={(event) => {
+        if ((event.target as Element).closest("a, button")) return;
+        navigate(papersPath);
+      }}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          navigate(papersPath);
+        }
+      }}
+    >
       <div className="framework-card-head">
         <div>
           <h3 className="framework-card-name">{framework.name}</h3>
@@ -102,7 +122,7 @@ export const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework })
           )}
           {framework.github_url && framework.paper_count > 0 && (
             <Link
-              to={`/papers?framework=${encodeURIComponent(framework.slug)}`}
+              to={papersPath}
               className="framework-link"
             >
               Implements {framework.paper_count} {framework.paper_count === 1 ? "paper" : "papers"}

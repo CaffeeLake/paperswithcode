@@ -137,7 +137,7 @@ const PapersListView: React.FC = () => {
       <div className="feed-header">
         <div>
           <h1 className="feed-title">
-            {isRepositoryFeed ? <>Papers implemented with <em>{headingName || framework || repository}</em></> : <>All <em>Papers</em></>}
+            {isRepositoryFeed ? <>Papers implemented by <em>{headingName || framework || repository}</em></> : <>All <em>Papers</em></>}
           </h1>
           <div className="feed-subtitle">
             {isRepositoryFeed

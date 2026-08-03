@@ -1,6 +1,6 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { FrameworkCard } from "@/views/FrameworksIndexView";
@@ -18,6 +18,8 @@ const framework = (paperCount: number): Framework => ({
   introducing_paper_arxiv_id: "2401.00001",
   paper_count: paperCount,
 });
+
+const Location = () => <div data-testid="location">{useLocation().pathname}{useLocation().search}</div>;
 
 describe("FrameworkCard", () => {
   it("labels the introducing paper and links a singular implemented-paper feed", () => {
@@ -42,5 +44,21 @@ describe("FrameworkCard", () => {
     rerender(<FrameworkCard framework={framework(0)} />);
     expect(screen.queryByRole("link", { name: "Implements 0 papers" })).toBeNull();
     expect(screen.getByText("Implements 0 papers")).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("opens the framework feed when the card is clicked or activated by keyboard", () => {
+    render(
+      <MemoryRouter>
+        <FrameworkCard framework={framework(2)} />
+        <Location />
+      </MemoryRouter>,
+    );
+
+    const card = screen.getByRole("link", { name: "View papers implemented by LeRobot" });
+    fireEvent.click(card);
+    expect(screen.getByTestId("location")).toHaveTextContent("/papers?framework=lerobot");
+
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.getByTestId("location")).toHaveTextContent("/papers?framework=lerobot");
   });
 });

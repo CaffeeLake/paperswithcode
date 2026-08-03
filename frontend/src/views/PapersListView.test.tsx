@@ -77,7 +77,7 @@ describe("PapersListView repository scopes", () => {
       time: "week",
       has_hf_artifacts: true,
     }));
-    expect(screen.getByRole("heading", { name: /Papers implemented with LeRobot/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Papers implemented by LeRobot/ })).toBeInTheDocument();
     expect(screen.getByText(/GitHub repository/)).toHaveTextContent("huggingface/lerobot");
     expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
     expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();

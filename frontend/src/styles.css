@@ -2517,6 +2517,14 @@ a.paper-resource.is-link:focus-visible {
 .framework-card:hover {
   border-color: var(--ink);
 }
+.framework-card-clickable {
+  cursor: pointer;
+}
+.framework-card-clickable:focus-visible {
+  border-color: var(--ink);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .framework-card-head {
   display: flex;
   justify-content: space-between;
