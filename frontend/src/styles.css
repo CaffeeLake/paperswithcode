@@ -2601,6 +2601,13 @@ a.paper-resource.is-link:focus-visible {
   border-color: var(--ink);
   background: var(--bg-subtle);
 }
+.framework-link-disabled,
+.framework-link-disabled:hover {
+  color: var(--ink-faint);
+  background: transparent;
+  border-color: var(--hairline);
+  cursor: not-allowed;
+}
 
 /* === SEARCH OVERLAY === */
 .search-overlay {

@@ -49,12 +49,14 @@ export const PaperFeedFilters: React.FC<{
   onHasCodeChange: (checked: boolean) => void;
   onHasHfArtifactsChange: (checked: boolean) => void;
   showDivider?: boolean;
+  showHasCode?: boolean;
 }> = ({
   hasCode,
   hasHfArtifacts,
   onHasCodeChange,
   onHasHfArtifactsChange,
   showDivider = true,
+  showHasCode = true,
 }) => (
   <div
     className="paper-feed-resource-controls"
@@ -65,12 +67,14 @@ export const PaperFeedFilters: React.FC<{
       <span className="paper-feed-resource-divider" aria-hidden="true" />
     )}
     <div className="paper-feed-filter-options">
-      <FeedFilterToggle
-        checked={hasCode}
-        icon={<Icon name="github" size={14} />}
-        label="Has code"
-        onChange={onHasCodeChange}
-      />
+      {showHasCode && (
+        <FeedFilterToggle
+          checked={hasCode}
+          icon={<Icon name="github" size={14} />}
+          label="Has code"
+          onChange={onHasCodeChange}
+        />
+      )}
       <FeedFilterToggle
         checked={hasHfArtifacts}
         icon={<HfMonochromeLogo />}

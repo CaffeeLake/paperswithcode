@@ -625,6 +625,12 @@ export interface PaginatedResponse<T> {
   next_page: number | null;
   previous_page: number | null;
   results: T[];
+  scope?: {
+    kind: 'framework' | 'repository';
+    repository?: string | null;
+    framework_slug?: string | null;
+    framework_name?: string | null;
+  } | null;
 }
 
 export interface SearchPage<T> {
@@ -937,6 +943,8 @@ class ApiClient {
     include_resources?: boolean;
     has_code?: boolean;
     has_hf_artifacts?: boolean;
+    framework?: string;
+    repository?: string;
   }): Promise<PaginatedResponse<Paper>> {
     const searchParams = new URLSearchParams();
 
@@ -953,6 +961,8 @@ class ApiClient {
     if (params?.include_resources !== undefined) searchParams.append('include_resources', params.include_resources.toString());
     if (params?.has_code !== undefined) searchParams.append('has_code', params.has_code.toString());
     if (params?.has_hf_artifacts !== undefined) searchParams.append('has_hf_artifacts', params.has_hf_artifacts.toString());
+    if (params?.framework) searchParams.append('framework', params.framework);
+    if (params?.repository) searchParams.append('repository', params.repository);
 
     const endpoint = `/papers/${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     // Paper rows can gain or lose a thumbnail URL independently of the paper

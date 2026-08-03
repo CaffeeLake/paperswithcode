@@ -60,7 +60,7 @@ const PlatformChip: React.FC<{ platform: FrameworkPlatform }> = ({ platform }) =
   );
 };
 
-const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
+export const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
   return (
     <article id={`framework-${framework.slug}`} className="framework-card">
       <div className="framework-card-head">
@@ -97,8 +97,24 @@ const FrameworkCard: React.FC<{ framework: Framework }> = ({ framework }) => {
               to={`/paper/${framework.introducing_paper_arxiv_id}`}
               className="framework-link"
             >
-              Paper
+              Introducing paper
             </Link>
+          )}
+          {framework.github_url && framework.paper_count > 0 && (
+            <Link
+              to={`/papers?framework=${encodeURIComponent(framework.slug)}`}
+              className="framework-link"
+            >
+              Implements {framework.paper_count} {framework.paper_count === 1 ? "paper" : "papers"}
+            </Link>
+          )}
+          {framework.github_url && framework.paper_count === 0 && (
+            <span
+              className="framework-link framework-link-disabled"
+              aria-disabled="true"
+            >
+              Implements 0 papers
+            </span>
           )}
           {framework.github_url && (
             <a

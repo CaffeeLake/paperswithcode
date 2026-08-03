@@ -9,6 +9,8 @@ export interface Framework {
   when_to_use?: string | null;
   platforms: FrameworkPlatform[];
   github_url?: string | null;
+  repository?: string | null;
+  paper_count: number;
   docs_url?: string | null;
   introducing_paper_arxiv_id?: string | null;
 }

@@ -38,4 +38,19 @@ describe("PaperFeedFilters", () => {
     expect(onHasCodeChange).toHaveBeenCalledWith(true);
     expect(onHasHfArtifactsChange).toHaveBeenCalledWith(false);
   });
+
+  it("can omit the code toggle without removing artifact filtering", () => {
+    render(
+      <PaperFeedFilters
+        hasCode={false}
+        hasHfArtifacts={false}
+        onHasCodeChange={vi.fn()}
+        onHasHfArtifactsChange={vi.fn()}
+        showHasCode={false}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();
+  });
 });

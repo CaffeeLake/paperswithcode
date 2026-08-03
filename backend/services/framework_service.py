@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.models.api import (
@@ -16,8 +17,10 @@ from backend.models.database import (
     FrameworkDomain as DBFrameworkDomain,
     FrameworkPlatform as DBFrameworkPlatform,
     Paper as DBPaper,
+    PaperRepository as DBPaperRepository,
     Repository as DBRepository,
 )
+from backend.utils.github_utils import normalize_github_url, parse_github_url
 
 
 class FrameworkService:
@@ -55,6 +58,23 @@ class FrameworkService:
             .order_by(DBFrameworkPlatform.framework_id, DBFrameworkPlatform.platform)
             .all()
         )
+        paper_count_rows = (
+            self.db.query(
+                DBFramework.id,
+                func.count(func.distinct(DBPaper.id)),
+            )
+            .outerjoin(
+                DBPaperRepository,
+                DBPaperRepository.repository_id == DBFramework.repository_id,
+            )
+            .outerjoin(
+                DBPaper,
+                (DBPaper.id == DBPaperRepository.paper_id) & DBPaper.is_latest_version,
+            )
+            .group_by(DBFramework.id)
+            .all()
+        )
+        paper_counts = dict(paper_count_rows)
 
         platforms_by_framework: dict[int, list[str]] = defaultdict(list)
         for row in platform_rows:
@@ -74,6 +94,8 @@ class FrameworkService:
                     when_to_use=framework.when_to_use,
                     platforms=platforms_by_framework[framework.id],
                     github_url=repository.url if repository else None,
+                    repository=self._repository_identity(repository),
+                    paper_count=paper_counts.get(framework.id, 0),
                     docs_url=framework.docs_url,
                     introducing_paper_arxiv_id=paper.arxiv_id if paper else None,
                 )
@@ -105,3 +127,15 @@ class FrameworkService:
                 for domain in domains
             ]
         )
+
+    @staticmethod
+    def _repository_identity(repository: DBRepository | None) -> str | None:
+        if not repository:
+            return None
+        if repository.owner and repository.name:
+            return f"{repository.owner}/{repository.name}"
+        normalized_url = normalize_github_url(repository.url)
+        if not normalized_url:
+            return None
+        owner, name = parse_github_url(normalized_url)
+        return f"{owner}/{name}" if owner and name else None

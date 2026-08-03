@@ -15,6 +15,8 @@ interface UsePapersParams {
   include_resources?: boolean;
   has_code?: boolean;
   has_hf_artifacts?: boolean;
+  framework?: string;
+  repository?: string;
   enabled?: boolean;
 }
 
@@ -33,12 +35,14 @@ export function usePapers(params: UsePapersParams = {}) {
     include_resources = false,
     has_code = false,
     has_hf_artifacts = false,
+    framework,
+    repository,
     enabled = true,
   } = params;
 
   return useQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }],
-    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }),
+    queryKey: ['papers', { page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }],
+    queryFn: () => apiClient.getPapers({ page, page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }),
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
     placeholderData: keepPreviousData,
@@ -85,6 +89,8 @@ interface UseInfinitePapersParams {
   include_resources?: boolean;
   has_code?: boolean;
   has_hf_artifacts?: boolean;
+  framework?: string;
+  repository?: string;
   enabled?: boolean;
 }
 
@@ -102,11 +108,13 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
     include_resources = false,
     has_code = false,
     has_hf_artifacts = false,
+    framework,
+    repository,
     enabled = true,
   } = params;
 
   return useInfiniteQuery<PaginatedResponse<Paper>, Error>({
-    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts }],
+    queryKey: ['papers-infinite', { page_size, search, order_by, order_dir, time, published_after, published_before, conference, latest_only, include_resources, has_code, has_hf_artifacts, framework, repository }],
     queryFn: ({ pageParam = 1 }) =>
       apiClient.getPapers({
         page: pageParam as number,
@@ -122,6 +130,8 @@ export function useInfinitePapers(params: UseInfinitePapersParams = {}) {
         include_resources,
         has_code,
         has_hf_artifacts,
+        framework,
+        repository,
       }),
     getNextPageParam: (lastPage) => lastPage.next_page,
     initialPageParam: 1,

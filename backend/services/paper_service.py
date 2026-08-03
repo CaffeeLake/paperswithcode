@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, or_, func, text
+from sqlalchemy import and_, desc, asc, or_, func, text
 
 from backend.models.database import (
     Paper as DBPaper,
@@ -47,6 +47,7 @@ from backend.services.thumbnail_service import (
 )
 from backend.models.api import (
     Paper,
+    PaperFeedScope,
     Papers,
     PaperSummary,
     PaperSearchResults,
@@ -85,6 +86,7 @@ from backend.services.paper_version_refresh_service import (
 )
 from backend.services.semantic_scholar_service import SemanticScholarService
 from backend.services.trending_ranking_service import active_paper_score_components
+from backend.utils.github_utils import normalize_github_url, parse_github_url
 
 
 class PaperService:
@@ -948,6 +950,8 @@ class PaperService:
         include_resources: bool = False,
         has_code: bool = False,
         has_hf_artifacts: bool = False,
+        framework: Optional[str] = None,
+        repository: Optional[str] = None,
     ) -> Papers:
         """
         Get paginated list of papers with optional filtering.
@@ -985,8 +989,20 @@ class PaperService:
             if time_window != "all_time":
                 published_after = self._get_published_after_for_time_window(time_window)
 
-            # Special handling for trending sort
-            if order_by == "trending":
+            if framework is not None and repository is not None:
+                raise ValueError("framework and repository are mutually exclusive")
+
+            repository_id, scope = self._resolve_paper_feed_scope(
+                framework=framework,
+                repository=repository,
+            )
+            is_repository_feed = framework is not None or repository is not None
+            if is_repository_feed:
+                latest_only = True
+
+            # The global trending SQL intentionally deduplicates by repository.
+            # Repository-scoped feeds instead retain every linked paper.
+            if order_by == "trending" and not is_repository_feed:
                 return self._get_trending_papers(
                     page=page,
                     page_size=page_size,
@@ -1002,6 +1018,20 @@ class PaperService:
 
             # Build base query
             query = self.db.query(DBPaper)
+
+            if is_repository_feed:
+                if repository_id is None:
+                    return Papers(
+                        count=0,
+                        next_page=None,
+                        previous_page=None,
+                        results=[],
+                        scope=scope,
+                    )
+                query = query.join(
+                    DBPaperRepository,
+                    DBPaperRepository.paper_id == DBPaper.id,
+                ).filter(DBPaperRepository.repository_id == repository_id)
 
             # Filter for latest versions only
             if latest_only:
@@ -1035,11 +1065,14 @@ class PaperService:
                 query = query.filter(DBPaper.conference.ilike(f"%{conference}%"))
 
             # Apply ordering
-            order_column = allowed_order_columns[order_by]
-            if order_dir.lower() == "desc":
-                query = query.order_by(desc(order_column).nullslast())
+            if order_by == "trending":
+                query = self.apply_scoped_trending_order(query)
             else:
-                query = query.order_by(asc(order_column).nullslast())
+                order_column = allowed_order_columns[order_by]
+                if order_dir.lower() == "desc":
+                    query = query.order_by(desc(order_column).nullslast())
+                else:
+                    query = query.order_by(asc(order_column).nullslast())
 
             # Get total count
             total_count = query.count()
@@ -1076,10 +1109,79 @@ class PaperService:
                 next_page=next_page,
                 previous_page=previous_page,
                 results=api_papers,
+                scope=scope,
             )
 
+        except PaperNotFoundError:
+            raise
         except Exception as e:
             raise DatabaseError(f"Error fetching papers: {str(e)}")
+
+    def _resolve_paper_feed_scope(
+        self,
+        framework: Optional[str],
+        repository: Optional[str],
+    ) -> tuple[Optional[int], Optional[PaperFeedScope]]:
+        if framework is not None:
+            row = (
+                self.db.query(DBFramework, DBRepository)
+                .outerjoin(DBRepository, DBFramework.repository_id == DBRepository.id)
+                .filter(func.lower(DBFramework.slug) == framework.lower())
+                .first()
+            )
+            if not row:
+                raise PaperNotFoundError(f"Framework with slug '{framework}' not found")
+            db_framework, db_repository = row
+            repository_name = self._repository_identity(db_repository)
+            return db_framework.repository_id, PaperFeedScope(
+                kind="framework",
+                repository=repository_name,
+                framework_slug=db_framework.slug,
+                framework_name=db_framework.name,
+            )
+
+        if repository is None:
+            return None, None
+
+        normalized_url = normalize_github_url(repository)
+        if not normalized_url and len(repository.strip("/").split("/")) == 2:
+            normalized_url = normalize_github_url(f"github.com/{repository.strip('/')}")
+        if not normalized_url:
+            return None, PaperFeedScope(kind="repository", repository=repository)
+        owner, name = parse_github_url(normalized_url)
+        identity = f"{owner}/{name}" if owner and name else repository
+        db_repository = (
+            self.db.query(DBRepository)
+            .filter(
+                or_(
+                    func.lower(DBRepository.url) == normalized_url,
+                    and_(
+                        func.lower(DBRepository.owner) == owner.lower(),
+                        func.lower(DBRepository.name) == name.lower(),
+                    ),
+                )
+            )
+            .first()
+        )
+        return (
+            db_repository.id if db_repository else None,
+            PaperFeedScope(
+                kind="repository",
+                repository=self._repository_identity(db_repository) or identity,
+            ),
+        )
+
+    @staticmethod
+    def _repository_identity(repository: Optional[DBRepository]) -> Optional[str]:
+        if not repository:
+            return None
+        if repository.owner and repository.name:
+            return f"{repository.owner}/{repository.name}"
+        normalized_url = normalize_github_url(repository.url)
+        if not normalized_url:
+            return None
+        owner, name = parse_github_url(normalized_url)
+        return f"{owner}/{name}" if owner and name else None
 
     # GitHub-only ranking (default + rollback path): rank papers by the EMA
     # star velocity of their best official repository. Two-step dedup: pick the

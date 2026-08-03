@@ -1,11 +1,18 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.database.connection import get_database_session
 from backend.main import create_app
-from backend.models.api import Papers
+from backend.models.api import Paper, Papers
+from backend.models.database import (
+    Framework as DBFramework,
+    Paper as DBPaper,
+    Repository as DBRepository,
+)
+from backend.utils.exceptions import PaperNotFoundError
 from backend.services.conference_service import ConferenceService
 from backend.services.method_service import MethodService
 from backend.services.organization_service import OrganizationService
@@ -76,6 +83,192 @@ def test_papers_endpoint_accepts_feed_order_and_time(
     assert captured["order_by"] == order_by
     assert captured["order_dir"] == "desc"
     assert captured["time_window"] == time_window
+
+
+def test_papers_endpoint_forwards_repository_scope(client, monkeypatch):
+    captured = {}
+
+    def fake_get_papers(self, **kwargs):
+        captured.update(kwargs)
+        return Papers(count=0, next_page=None, previous_page=None, results=[])
+
+    monkeypatch.setattr(PaperService, "get_papers", fake_get_papers)
+
+    response = client.get(
+        "/api/v1/papers/",
+        params={"repository": "https://github.com/HuggingFace/LeRobot"},
+    )
+
+    assert response.status_code == 200
+    assert captured["repository"] == "https://github.com/HuggingFace/LeRobot"
+    assert captured["framework"] is None
+
+
+def test_papers_endpoint_rejects_framework_and_repository(client):
+    response = client.get(
+        "/api/v1/papers/",
+        params={"framework": "lerobot", "repository": "huggingface/lerobot"},
+    )
+
+    assert response.status_code == 422
+    assert "mutually exclusive" in response.json()["detail"]
+
+
+def test_papers_endpoint_returns_not_found_for_unknown_framework(client, monkeypatch):
+    def fake_get_papers(self, **kwargs):
+        raise PaperNotFoundError("Framework with slug 'missing' not found")
+
+    monkeypatch.setattr(PaperService, "get_papers", fake_get_papers)
+
+    response = client.get("/api/v1/papers/", params={"framework": "missing"})
+
+    assert response.status_code == 404
+    assert "Framework" in response.json()["detail"]
+
+
+class ScopeQuery:
+    def __init__(self, first_result=None, papers=None):
+        self.first_result = first_result
+        self.papers = papers or []
+        self.filters = []
+        self.offset_value = None
+        self.limit_value = None
+
+    def outerjoin(self, *args):
+        return self
+
+    def join(self, *args):
+        return self
+
+    def filter(self, *args):
+        self.filters.extend(args)
+        return self
+
+    def first(self):
+        return self.first_result
+
+    def order_by(self, *args):
+        return self
+
+    def count(self):
+        return len(self.papers)
+
+    def offset(self, value):
+        self.offset_value = value
+        return self
+
+    def limit(self, value):
+        self.limit_value = value
+        return self
+
+    def all(self):
+        start = self.offset_value or 0
+        end = start + self.limit_value if self.limit_value is not None else None
+        return self.papers[start:end]
+
+
+class ScopeDatabase:
+    def __init__(self, repository=None, framework=None, papers=None):
+        self.repository = repository
+        self.framework = framework
+        self.paper_query = ScopeQuery(papers=papers)
+        self.repository_query = None
+
+    def query(self, *entities):
+        if entities == (DBFramework, DBRepository):
+            return ScopeQuery(
+                first_result=(
+                    (self.framework, self.repository) if self.framework else None
+                )
+            )
+        if entities == (DBRepository,):
+            self.repository_query = ScopeQuery(first_result=self.repository)
+            return self.repository_query
+        if entities == (DBPaper,):
+            return self.paper_query
+        raise AssertionError(f"Unexpected query: {entities}")
+
+
+def test_repository_scope_normalizes_url_and_resolves_case_insensitively():
+    repository = SimpleNamespace(
+        id=41,
+        owner="huggingface",
+        name="lerobot",
+        url="https://github.com/huggingface/lerobot",
+    )
+    database = ScopeDatabase(repository=repository)
+
+    repository_id, scope = PaperService(database)._resolve_paper_feed_scope(
+        framework=None,
+        repository="https://github.com/HuggingFace/LeRobot/tree/main/examples",
+    )
+
+    assert repository_id == 41
+    assert scope.repository == "huggingface/lerobot"
+    filter_sql = " ".join(str(item) for item in database.repository_query.filters)
+    assert "lower(repositories.owner)" in filter_sql
+    assert "lower(repositories.name)" in filter_sql
+
+
+def test_unknown_repository_is_an_empty_scoped_feed():
+    response = PaperService(ScopeDatabase()).get_papers(
+        repository="unknown/project",
+        order_by="trending",
+    )
+
+    assert response.count == 0
+    assert response.scope.repository == "unknown/project"
+
+
+def test_unknown_framework_is_not_found():
+    with pytest.raises(PaperNotFoundError):
+        PaperService(ScopeDatabase()).get_papers(framework="missing")
+
+
+def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch):
+    repository = SimpleNamespace(
+        id=41,
+        owner="huggingface",
+        name="lerobot",
+        url="https://github.com/huggingface/lerobot",
+    )
+    papers = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    database = ScopeDatabase(repository=repository, papers=papers)
+    service = PaperService(database)
+    scoped_order_calls = []
+    monkeypatch.setattr(
+        service,
+        "apply_scoped_trending_order",
+        lambda query: scoped_order_calls.append(query) or query,
+    )
+    monkeypatch.setattr(service, "_get_paper_relation_data", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        service,
+        "_convert_db_paper_to_api",
+        lambda paper, **kwargs: Paper.model_construct(id=str(paper.id)),
+    )
+
+    response = service.get_papers(
+        repository="HuggingFace/LeRobot",
+        order_by="trending",
+        latest_only=False,
+        page=2,
+        page_size=1,
+        search="robot",
+        time_window="month",
+        has_hf_artifacts=True,
+    )
+
+    assert [paper.id for paper in response.results] == ["2"]
+    assert response.count == 2
+    assert response.next_page is None
+    assert response.previous_page == 1
+    assert scoped_order_calls == [database.paper_query]
+    filter_sql = " ".join(str(item) for item in database.paper_query.filters)
+    assert "is_latest_version" in filter_sql
+    assert "paper_hf_artifacts" in filter_sql
+    assert "lower(papers.title)" in filter_sql
+    assert "papers.date_published" in filter_sql
 
 
 @pytest.mark.parametrize(

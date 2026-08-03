@@ -6,11 +6,13 @@ import { apiClient } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useDebounce } from "@/hooks/useDebounce";
-import { PERIODS, usePeriodFilter } from "@/hooks/usePeriodFilter";
+import { PERIODS } from "@/hooks/usePeriodFilter";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useQuery } from "@tanstack/react-query";
+import { PaperFeedFilters } from "@/components/PaperFeedFilters";
+import { ApiError } from "@/lib/api";
 
 type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [
@@ -21,9 +23,14 @@ const SORT_OPTIONS: Array<[SortKey, string]> = [
 
 const PapersListView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const framework = searchParams.get("framework") || undefined;
+  const repository = searchParams.get("repository") || undefined;
+  const isRepositoryFeed = Boolean(framework || repository);
   const urlSearch = searchParams.get("search") || "";
   const [searchInput, setSearchInput] = useState(urlSearch);
   const debouncedSearch = useDebounce(searchInput, 300);
+
+  useEffect(() => setSearchInput(urlSearch), [urlSearch]);
 
   // Mirror debounced text into the URL so the search is bookmarkable.
   useEffect(() => {
@@ -34,8 +41,47 @@ const PapersListView: React.FC = () => {
     setSearchParams(next, { replace: true });
   }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [sortBy, setSortBy] = useState<SortKey>("new");
-  const { period, setPeriod, publishedAfter } = usePeriodFilter("All Time");
+  const requestedOrder = searchParams.get("order_by");
+  const sortBy: SortKey = requestedOrder === "citation_count"
+    ? "cited"
+    : requestedOrder === "trending" || (!requestedOrder && isRepositoryFeed)
+      ? "trending"
+      : "new";
+  const requestedTime = searchParams.get("time");
+  const period = requestedTime === "today"
+    ? "Today"
+    : requestedTime === "week"
+      ? "This Week"
+      : requestedTime === "month"
+        ? "This Month"
+        : "All Time";
+  const hasHfArtifacts = searchParams.get("has_hf_artifacts") === "true";
+  const hasCode = !isRepositoryFeed && searchParams.get("has_code") === "true";
+
+  const setQueryParam = (key: string, value?: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setSearchParams(next);
+  };
+
+  const setPeriod = (nextPeriod: (typeof PERIODS)[number]) => {
+    const value = nextPeriod === "Today"
+      ? "today"
+      : nextPeriod === "This Week"
+        ? "week"
+        : nextPeriod === "This Month"
+          ? "month"
+          : undefined;
+    setQueryParam("time", value);
+  };
+
+  const setSortBy = (nextSort: SortKey) => {
+    setQueryParam(
+      "order_by",
+      nextSort === "cited" ? "citation_count" : nextSort === "new" ? "date_published" : "trending",
+    );
+  };
 
   const orderBy =
     sortBy === "trending"
@@ -48,8 +94,18 @@ const PapersListView: React.FC = () => {
     order_by: orderBy,
     order_dir: "desc",
     search: debouncedSearch || undefined,
-    published_after: publishedAfter,
+    time: requestedTime === "today" || requestedTime === "week" || requestedTime === "month"
+      ? requestedTime
+      : "all_time",
     include_resources: true,
+    published_after: searchParams.get("published_after") || undefined,
+    published_before: searchParams.get("published_before") || undefined,
+    conference: searchParams.get("conference") || undefined,
+    latest_only: searchParams.get("latest_only") !== "false",
+    has_code: hasCode,
+    has_hf_artifacts: hasHfArtifacts,
+    framework,
+    repository,
   });
 
   const topTasks = useQuery({
@@ -71,16 +127,23 @@ const PapersListView: React.FC = () => {
   }, [isIntersecting, infinite.hasNextPage, infinite.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalCount = infinite.data?.pages?.[0]?.count ?? 0;
+  const scope = infinite.data?.pages?.[0]?.scope;
+  const frameworkNotFound = framework && infinite.error instanceof ApiError && infinite.error.status === 404;
+  const headingName = scope?.kind === "framework" ? scope.framework_name : scope?.repository;
 
   return (
     <div className="page">
       <div className="feed-header">
         <div>
           <h1 className="feed-title">
-            All <em>Papers</em>
+            {isRepositoryFeed ? <>Papers implemented with <em>{headingName || framework || repository}</em></> : <>All <em>Papers</em></>}
           </h1>
           <div className="feed-subtitle">
-            Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}
+            {isRepositoryFeed
+              ? scope?.repository
+                ? <>GitHub repository <strong>{scope.repository}</strong>. {totalCount > 0 && `${totalCount.toLocaleString()} papers.`}</>
+                : "Repository-scoped paper feed."
+              : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
           </div>
         </div>
         <div className="period-switch">
@@ -126,27 +189,38 @@ const PapersListView: React.FC = () => {
 
         <div>
           <div className="sort-bar">
-            <div className="sort-options">
-              {SORT_OPTIONS.map(([k, l]) => (
-                <button
-                  key={k}
-                  className={`sort-btn ${sortBy === k ? "active" : ""}`}
-                  onClick={() => setSortBy(k)}
-                >
-                  {l}
-                </button>
-              ))}
+            <div className="paper-feed-toolbar-controls">
+              <div className="sort-options">
+                {SORT_OPTIONS.map(([k, l]) => (
+                  <button
+                    key={k}
+                    className={`sort-btn ${sortBy === k ? "active" : ""}`}
+                    onClick={() => setSortBy(k)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <PaperFeedFilters
+                hasCode={hasCode}
+                hasHfArtifacts={hasHfArtifacts}
+                onHasCodeChange={(checked) => setQueryParam("has_code", checked ? "true" : undefined)}
+                onHasHfArtifactsChange={(checked) => setQueryParam("has_hf_artifacts", checked ? "true" : undefined)}
+                showHasCode={!isRepositoryFeed}
+              />
             </div>
             <div className="results-count">{cards.length} loaded</div>
           </div>
 
-          {infinite.error && (
+          {frameworkNotFound ? (
+            <div className="no-results">Framework not found.</div>
+          ) : infinite.error && (
             <Alert variant="destructive" className="mb-4">
               <AlertDescription>Failed to load papers. Please try again.</AlertDescription>
             </Alert>
           )}
 
-          {infinite.isLoading ? (
+          {!frameworkNotFound && (infinite.isLoading ? (
             <div className="paper-list">
               {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="paper-card">
@@ -175,7 +249,7 @@ const PapersListView: React.FC = () => {
                 </div>
               )}
             </>
-          )}
+          ))}
         </div>
       </div>
     </div>

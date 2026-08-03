@@ -238,6 +238,10 @@ def get_papers(
     has_hf_artifacts: bool = Query(
         False, description="Only include papers with linked Hugging Face artifacts"
     ),
+    framework: Optional[str] = Query(None, description="Filter by framework slug"),
+    repository: Optional[str] = Query(
+        None, description="Filter by GitHub owner/name or repository URL"
+    ),
     db: Session = Depends(get_database_session),
 ):
     """
@@ -251,6 +255,11 @@ def get_papers(
     - Sorting options
     - Latest version filtering
     """
+    if framework is not None and repository is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="framework and repository are mutually exclusive",
+        )
     try:
         service = PaperService(db)
         return service.get_papers(
@@ -267,7 +276,11 @@ def get_papers(
             include_resources=include_resources,
             has_code=has_code,
             has_hf_artifacts=has_hf_artifacts,
+            framework=framework,
+            repository=repository,
         )
+    except PaperNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
 

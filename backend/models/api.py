@@ -9,7 +9,7 @@ to our database schema. The main differences from the original API:
 """
 
 from datetime import date, datetime
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic import ConfigDict
@@ -246,6 +246,15 @@ class Paper(BaseModel):
         return str(v)
 
 
+class PaperFeedScope(BaseModel):
+    """Resolved repository/framework context for a scoped paper feed."""
+
+    kind: Literal["framework", "repository"]
+    repository: Optional[str] = None
+    framework_slug: Optional[str] = None
+    framework_name: Optional[str] = None
+
+
 class Papers(BaseModel):
     """
     Object representing a paginated page of papers.
@@ -261,6 +270,9 @@ class Papers(BaseModel):
         None, description="Number of the previous page"
     )
     results: List[Paper] = Field(..., description="List of papers on this page")
+    scope: Optional[PaperFeedScope] = Field(
+        None, description="Resolved repository or framework feed context"
+    )
 
 
 # Additional models for extended functionality
@@ -1970,6 +1982,8 @@ class FrameworkCatalogItem(BaseModel):
     when_to_use: Optional[str] = None
     platforms: List[str] = Field(default_factory=list)
     github_url: Optional[str] = None
+    repository: Optional[str] = None
+    paper_count: int = 0
     docs_url: Optional[str] = None
     introducing_paper_arxiv_id: Optional[str] = None
 
