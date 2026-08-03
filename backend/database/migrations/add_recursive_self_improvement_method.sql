@@ -35,7 +35,7 @@ VALUES (
     'A Formulation of Recursive Self-Improvement and Its Possible Efficiency',
     NULL,
     NULL,
-    '[A Formulation of Recursive Self-Improvement and Its Possible Efficiency](/paper/1805.06610)'
+    '[How Close Are We to Self-Improving Artificial Intelligence?](https://itcanthink.substack.com/p/how-close-are-we-to-self-improving) (Chris Paxton; image from ChatGPT)'
 )
 ON CONFLICT (slug) DO UPDATE SET
     name = EXCLUDED.name,
