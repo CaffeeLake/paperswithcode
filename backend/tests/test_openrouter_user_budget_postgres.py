@@ -323,16 +323,42 @@ def test_byok_is_cross_session_encrypted_consent_gated_and_revision_revoked(
     with session_factory.begin() as db:
         service = OpenRouterBYOKService(db, _settings())
         assert service.validate_dispatch(owner, old_revision).token == token
-        service.set_fallback_enabled(owner, False)
+        service.invalidate_auth_failure(owner)
 
     with session_factory() as db:
         capability = db.get(ChatTurnCapability, issued.capability_id)
         assert capability.revoked_at is not None
         assert capability.provider_token_encrypted is None
+        status = OpenRouterBYOKService(db, _settings()).status(owner)
+        assert status.connected is True
+        assert status.fallback_enabled is False
         with pytest.raises(OpenRouterCredentialUnavailable):
             OpenRouterBYOKService(db, _settings()).validate_dispatch(
                 owner, old_revision
             )
+
+    with session_factory.begin() as db:
+        service = OpenRouterBYOKService(db, _settings())
+        service.set_fallback_enabled(owner, True)
+        selected = service.selected(owner)
+        assert selected is not None
+        disabled_capability = ChatCapabilityService(db).issue(
+            chat_session_id=session_id,
+            turn_id=uuid.uuid4(),
+            owner_id=owner,
+            provider_token=selected.token,
+            provider_mode="openrouter_byok",
+            provider_credential_revision=selected.revision,
+            settings=_settings(),
+            model="test/model",
+            scopes={"model"},
+        )
+        service.set_fallback_enabled(owner, False)
+
+    with session_factory() as db:
+        capability = db.get(ChatTurnCapability, disabled_capability.capability_id)
+        assert capability.revoked_at is not None
+        assert capability.provider_token_encrypted is None
 
     with session_factory.begin() as db:
         service = OpenRouterBYOKService(db, _settings())

@@ -229,6 +229,13 @@ def _record_provider_error(capability_id: uuid.UUID, code: str) -> None:
             error_db.commit()
 
 
+def _byok_provider_error_code(status_code: int) -> str | None:
+    return {
+        402: "openrouter_byok_billing_error",
+        429: "openrouter_byok_rate_limit",
+    }.get(status_code)
+
+
 def _settle_openrouter_call(
     settings: Settings,
     call_id: uuid.UUID,
@@ -535,10 +542,10 @@ async def messages(
                     capability, "openrouter_byok_credential_invalid"
                 )
             credential_db.commit()
-    elif provider_mode == "openrouter_byok" and upstream.status_code == 402:
-        _record_provider_error(row.id, "openrouter_byok_billing_error")
-    elif provider_mode == "openrouter_byok" and upstream.status_code == 429:
-        _record_provider_error(row.id, "openrouter_byok_rate_limit")
+    elif provider_mode == "openrouter_byok":
+        provider_error = _byok_provider_error_code(upstream.status_code)
+        if provider_error is not None:
+            _record_provider_error(row.id, provider_error)
     elif provider_mode == "openrouter_funded" and upstream.status_code in {402, 403}:
         _record_provider_error(row.id, "openrouter_unavailable")
 

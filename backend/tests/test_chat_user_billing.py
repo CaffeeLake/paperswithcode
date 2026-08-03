@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.chat_gateway_app import (
+    _byok_provider_error_code,
     _provider_headers,
     _provider_target,
     _user_provider_credential,
@@ -146,6 +147,21 @@ def test_gateway_keeps_hugging_face_models_on_user_billing():
         "connected-user-token",
         "huggingface",
     )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code"),
+    [
+        (402, "openrouter_byok_billing_error"),
+        (429, "openrouter_byok_rate_limit"),
+        (400, None),
+        (500, None),
+    ],
+)
+def test_gateway_keeps_byok_billing_and_rate_limit_errors_distinct(
+    status_code, error_code
+):
+    assert _byok_provider_error_code(status_code) == error_code
 
 
 def test_chat_search_never_calls_shared_query_embedding_endpoint(monkeypatch):
