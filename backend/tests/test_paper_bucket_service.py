@@ -18,7 +18,11 @@ class FakeHfApi:
         self.calls.append(("create", bucket_id, private, exist_ok))
 
     def copy_files(self, source, destination):
+        self.hf_hub_download("owner/repo", "README.md")
         self.calls.append(("copy", source, destination))
+
+    def hf_hub_download(self, _repo_id, _filename, *, cache_dir=None):
+        self.calls.append(("cache", Path(cache_dir).is_dir()))
 
     def batch_bucket_files(self, bucket_id, *, add):
         source, destination = add[0]
@@ -48,6 +52,7 @@ def test_copy_paper_uses_user_token_and_uploads_pdf(monkeypatch):
     assert api.token == "user-oauth-token"
     assert api.calls == [
         ("create", "alice/paper-artifacts", True, True),
+        ("cache", True),
         (
             "copy",
             "hf://openai/gpt-oss-20b/",

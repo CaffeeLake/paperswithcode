@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Icon } from "@/components";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,45 @@ const DIRECT_COPY_BATCH_SIZE = 20;
 export interface DirectBucketArtifact {
   kind: "model" | "dataset" | "space";
   repo_id: string;
+}
+
+interface PendingBucketAuthorization {
+  paperId: string;
+  bucketId: string;
+  destinationMode: "new" | "existing";
+  visibility: "public" | "private";
+  selectedIds: string[];
+}
+
+const BUCKET_AUTHORIZATION_PARAM = "copy_to_bucket";
+
+function pendingBucketAuthorizationKey(paperId: string): string {
+  return `pwc:bucket-copy:${paperId}`;
+}
+
+function loadPendingBucketAuthorization(paperId: string): PendingBucketAuthorization | null {
+  if (typeof window === "undefined") return null;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get(BUCKET_AUTHORIZATION_PARAM) !== paperId) return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(pendingBucketAuthorizationKey(paperId));
+    if (!raw) return null;
+    const pending = JSON.parse(raw) as PendingBucketAuthorization;
+    if (
+      pending.paperId !== paperId ||
+      typeof pending.bucketId !== "string" ||
+      !["new", "existing"].includes(pending.destinationMode) ||
+      !["public", "private"].includes(pending.visibility) ||
+      !Array.isArray(pending.selectedIds) ||
+      pending.selectedIds.some((id) => typeof id !== "string")
+    ) {
+      return null;
+    }
+    return pending;
+  } catch {
+    return null;
+  }
 }
 
 export function chunkBucketArtifacts(
@@ -252,15 +291,29 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
       props.pdfUrl,
     ],
   );
-  const [open, setOpen] = useState(false);
-  const [destinationMode, setDestinationMode] = useState<"new" | "existing">("new");
-  const [bucketId, setBucketId] = useState("");
-  const [visibility, setVisibility] = useState<"public" | "private">("public");
+  const pendingAuthorization = useMemo(
+    () => loadPendingBucketAuthorization(props.paperId),
+    [props.paperId],
+  );
+  const [open, setOpen] = useState(Boolean(pendingAuthorization));
+  const [destinationMode, setDestinationMode] = useState<"new" | "existing">(
+    pendingAuthorization?.destinationMode ?? "new",
+  );
+  const [bucketId, setBucketId] = useState(pendingAuthorization?.bucketId ?? "");
+  const [visibility, setVisibility] = useState<"public" | "private">(
+    pendingAuthorization?.visibility ?? "public",
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    () => new Set(artifacts.map((artifact) => artifact.id)),
+    () =>
+      new Set(
+        pendingAuthorization?.selectedIds ?? artifacts.map((artifact) => artifact.id),
+      ),
   );
   const [copying, setCopying] = useState(false);
   const [copyProgress, setCopyProgress] = useState<{ current: number; total: number } | null>(null);
+  const [resumeAfterAuthorization, setResumeAfterAuthorization] = useState(
+    Boolean(pendingAuthorization),
+  );
 
   const selectedArtifacts = artifacts.filter((artifact) => selectedIds.has(artifact.id));
   const bucketIdIsValid = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(bucketId.trim());
@@ -294,17 +347,29 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
     }
   };
 
-  const authorizeBucket = () => {
+  const authorizeBucket = useCallback(() => {
     const endpoint = authUrl("/api/v1/auth/hf/login");
+    const returnUrl = new URL(window.location.href);
+    returnUrl.searchParams.set(BUCKET_AUTHORIZATION_PARAM, props.paperId);
+    window.sessionStorage.setItem(
+      pendingBucketAuthorizationKey(props.paperId),
+      JSON.stringify({
+        paperId: props.paperId,
+        bucketId: bucketId.trim(),
+        destinationMode,
+        visibility,
+        selectedIds: Array.from(selectedIds),
+      } satisfies PendingBucketAuthorization),
+    );
     const params = new URLSearchParams({
-      return_to: window.location.href,
+      return_to: returnUrl.toString(),
       authorize_bucket: "true",
     });
     if (destinationMode === "new") params.set("bucket_create", "true");
     window.location.assign(`${endpoint}?${params.toString()}`);
-  };
+  }, [bucketId, destinationMode, props.paperId, selectedIds, visibility]);
 
-  const copyNow = async () => {
+  const copyNow = useCallback(async () => {
     if (!props.isSignedIn) {
       authorizeBucket();
       return;
@@ -361,14 +426,36 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
         title: copiedCount ? "Bucket copy partially completed" : "Bucket copy failed",
         description: copiedCount
           ? `${copiedCount} item${copiedCount === 1 ? "" : "s"} copied before the request failed. You can retry or use the CLI commands below.`
-          : "Hugging Face could not complete the copy. You can still use the CLI commands below.",
+          : error instanceof ApiError && typeof error.detail === "string"
+            ? error.detail
+            : "Hugging Face could not complete the copy. You can still use the CLI commands below.",
         variant: "destructive",
       });
     } finally {
       setCopying(false);
       setCopyProgress(null);
     }
-  };
+  }, [
+    authorizeBucket,
+    bucketId,
+    destinationMode,
+    props.isSignedIn,
+    props.paperId,
+    selectedArtifacts,
+    toast,
+    visibility,
+  ]);
+
+  useEffect(() => {
+    if (!resumeAfterAuthorization || !props.isSignedIn) return;
+
+    setResumeAfterAuthorization(false);
+    window.sessionStorage.removeItem(pendingBucketAuthorizationKey(props.paperId));
+    const url = new URL(window.location.href);
+    url.searchParams.delete(BUCKET_AUTHORIZATION_PARAM);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    void copyNow();
+  }, [copyNow, props.isSignedIn, props.paperId, resumeAfterAuthorization]);
 
   const openDialog = () => {
     setSelectedIds(new Set(artifacts.map((artifact) => artifact.id)));

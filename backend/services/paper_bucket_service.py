@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import tempfile
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -128,31 +129,35 @@ def copy_paper_to_bucket(
     ):
         raise PaperBucketError("One or more Hugging Face artifact IDs are invalid.")
 
-    api = HfApi(token=token)
-    try:
-        if create:
-            api.create_bucket(bucket_id, private=private, exist_ok=True)
-    except HfHubHTTPError as error:
-        raise _hub_error(error) from error
-
     copied: list[str] = []
     errors: list[tuple[str, str]] = []
-    for artifact in artifacts:
+    with tempfile.TemporaryDirectory(prefix="pwc-hf-bucket-cache-") as cache_dir:
+        api = HfApi(token=token)
+        # ``copy_files`` downloads small text files through this method but does
+        # not expose a cache_dir argument of its own. Deployed service users have
+        # no writable home directory, so bind an operation-scoped cache explicitly.
+        api.hf_hub_download = partial(api.hf_hub_download, cache_dir=cache_dir)
         try:
-            api.copy_files(
-                artifact.source,
-                f"hf://buckets/{bucket_id}/{artifact.destination}",
-            )
-            copied.append(artifact.identifier)
+            if create:
+                api.create_bucket(bucket_id, private=private, exist_ok=True)
         except HfHubHTTPError as error:
-            failure = _hub_error(error)
-            if failure.authorization_required:
-                raise failure from error
-            errors.append((artifact.identifier, str(failure)))
+            raise _hub_error(error) from error
 
-    if pdf_url and pdf_name:
-        with tempfile.TemporaryDirectory(prefix="pwc-paper-bucket-") as temp_dir:
-            pdf_path = Path(temp_dir) / "paper.pdf"
+        for artifact in artifacts:
+            try:
+                api.copy_files(
+                    artifact.source,
+                    f"hf://buckets/{bucket_id}/{artifact.destination}",
+                )
+                copied.append(artifact.identifier)
+            except HfHubHTTPError as error:
+                failure = _hub_error(error)
+                if failure.authorization_required:
+                    raise failure from error
+                errors.append((artifact.identifier, str(failure)))
+
+        if pdf_url and pdf_name:
+            pdf_path = Path(cache_dir) / "paper.pdf"
             try:
                 _download_arxiv_pdf(pdf_url, pdf_path)
                 api.batch_bucket_files(

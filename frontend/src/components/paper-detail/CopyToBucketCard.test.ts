@@ -1,7 +1,16 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { copyPaperToBucketMock } = vi.hoisted(() => ({
+  copyPaperToBucketMock: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  copyPaperToBucket: copyPaperToBucketMock,
+}));
 
 import {
   CopyToBucketCard,
@@ -10,6 +19,12 @@ import {
   collectBucketArtifacts,
   paperArtifactBucketName,
 } from "./CopyToBucketCard";
+
+beforeEach(() => {
+  copyPaperToBucketMock.mockReset();
+  window.sessionStorage.clear();
+  window.history.replaceState({}, "", "/");
+});
 
 describe("chunkBucketArtifacts", () => {
   it("keeps large copies within the backend request limit", () => {
@@ -144,5 +159,49 @@ describe("CopyToBucketCard", () => {
     expect(screen.getByLabelText("Bucket name")).toHaveValue(
       "nielsr/kimi-k3-artifacts",
     );
+  });
+
+  it("resumes the copy automatically after bucket authorization", async () => {
+    copyPaperToBucketMock.mockResolvedValue({
+      bucket_id: "nielsr/paper-artifacts",
+      copied: ["model:openai/test-model"],
+      errors: [],
+    });
+    window.sessionStorage.setItem(
+      "pwc:bucket-copy:42",
+      JSON.stringify({
+        paperId: "42",
+        bucketId: "nielsr/paper-artifacts",
+        destinationMode: "new",
+        visibility: "private",
+        selectedIds: ["model:openai/test-model"],
+      }),
+    );
+    window.history.replaceState({}, "", "/paper/42?copy_to_bucket=42");
+
+    render(
+      React.createElement(CopyToBucketCard, {
+        githubUrls: [],
+        hfModelUrls: ["https://huggingface.co/openai/test-model"],
+        hfDatasetUrls: [],
+        hfSpaceUrls: [],
+        paperId: "42",
+        pdfName: "42",
+        pdfUrl: null,
+        isSignedIn: true,
+        suggestedBucketId: "nielsr/paper-artifacts",
+      }),
+    );
+
+    await waitFor(() => expect(copyPaperToBucketMock).toHaveBeenCalledOnce());
+    expect(copyPaperToBucketMock).toHaveBeenCalledWith("42", {
+      bucket_id: "nielsr/paper-artifacts",
+      create: true,
+      private: true,
+      include_pdf: false,
+      artifacts: [{ kind: "model", repo_id: "openai/test-model" }],
+    });
+    expect(window.location.search).toBe("");
+    expect(window.sessionStorage.getItem("pwc:bucket-copy:42")).toBeNull();
   });
 });
