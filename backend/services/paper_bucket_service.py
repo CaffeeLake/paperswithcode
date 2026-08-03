@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from dataclasses import dataclass
@@ -19,6 +20,18 @@ BUCKET_MANAGE_OAUTH_COOKIE_NAME = "pwc_hf_bucket_manage"
 MAX_PDF_BYTES = 100 * 1024 * 1024
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
 _ARXIV_PDF_HOSTS = {"arxiv.org", "export.arxiv.org"}
+
+
+def _configure_hugging_face_cache() -> None:
+    runtime_data_dir = os.getenv("PWC_RUNTIME_DATA_DIR")
+    if not runtime_data_dir:
+        return
+    hf_cache_dir = Path(runtime_data_dir) / "hf-cache"
+    os.environ.setdefault("HF_HOME", str(hf_cache_dir))
+    os.environ.setdefault("HF_XET_CACHE", str(hf_cache_dir / "xet"))
+
+
+_configure_hugging_face_cache()
 
 
 class PaperBucketError(ValueError):

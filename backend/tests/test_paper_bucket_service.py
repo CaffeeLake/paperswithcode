@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import httpx
@@ -27,6 +28,17 @@ class FakeHfApi:
     def batch_bucket_files(self, bucket_id, *, add):
         source, destination = add[0]
         self.calls.append(("add", bucket_id, Path(source).read_bytes(), destination))
+
+
+def test_configures_xet_cache_in_writable_runtime_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("PWC_RUNTIME_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_XET_CACHE", raising=False)
+
+    bucket_service._configure_hugging_face_cache()
+
+    assert os.environ["HF_HOME"] == str(tmp_path / "hf-cache")
+    assert os.environ["HF_XET_CACHE"] == str(tmp_path / "hf-cache" / "xet")
 
 
 def test_copy_paper_uses_user_token_and_uploads_pdf(monkeypatch):
