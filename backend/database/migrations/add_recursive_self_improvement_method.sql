@@ -1,5 +1,5 @@
--- Add Recursive Self-Improvement (RSI) and link papers with manually reviewed,
--- unambiguous phrase matches in their title or abstract.
+-- Add Recursive Self-Improvement (RSI) and link a manually reviewed collection
+-- spanning foundational work, direct RSI systems, and substantive RSI analyses.
 
 INSERT INTO methods (
     slug,
@@ -58,19 +58,50 @@ FROM (
     SELECT DISTINCT ON (arxiv_id) id
     FROM papers
     WHERE arxiv_id IN (
+        'cs/0309048',
+        '1312.6764',
+        '1410.0369',
         '1805.06610',
         '2202.05780',
+        '2205.00167',
+        '2309.16797',
         '2310.02304',
+        '2406.18532',
+        '2408.08435',
         '2410.04444',
         '2410.12375',
         '2411.16905',
+        '2502.00757',
+        '2504.15228',
+        '2505.22954',
+        '2506.04651',
+        '2510.21614',
+        '2511.13646',
+        '2512.18746',
+        '2602.04837',
         '2602.15659',
+        '2602.22480',
         '2603.06333',
+        '2603.18073',
+        '2603.19461',
+        '2603.29640',
+        '2604.15034',
+        '2604.21003',
         '2605.15871',
+        '2605.27276',
         '2606.04455',
+        '2606.12683',
+        '2606.14249',
+        '2606.26294',
+        '2607.05297',
         '2607.05382',
+        '2607.07663',
+        '2607.12254',
         '2607.12625',
+        '2607.13104',
+        '2607.15524',
         '2607.21461',
+        '2607.27191',
         '2607.28568'
     )
     ORDER BY arxiv_id, is_latest_version DESC, id DESC
@@ -80,4 +111,87 @@ CROSS JOIN (
     FROM methods
     WHERE slug = 'recursive-self-improvement'
 ) AS method
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM paper_method_exclusions exclusion
+    WHERE exclusion.paper_id = curated_papers.id
+      AND exclusion.method_id = method.id
+)
 ON CONFLICT (paper_id, method_id) DO NOTHING;
+
+WITH curated_papers AS (
+    SELECT DISTINCT ON (p.arxiv_id) p.id AS paper_id, m.id AS method_id
+    FROM papers p
+    CROSS JOIN methods m
+    WHERE p.arxiv_id IN (
+        'cs/0309048',
+        '1312.6764',
+        '1410.0369',
+        '1805.06610',
+        '2202.05780',
+        '2205.00167',
+        '2309.16797',
+        '2310.02304',
+        '2406.18532',
+        '2408.08435',
+        '2410.04444',
+        '2410.12375',
+        '2411.16905',
+        '2502.00757',
+        '2504.15228',
+        '2505.22954',
+        '2506.04651',
+        '2510.21614',
+        '2511.13646',
+        '2512.18746',
+        '2602.04837',
+        '2602.15659',
+        '2602.22480',
+        '2603.06333',
+        '2603.18073',
+        '2603.19461',
+        '2603.29640',
+        '2604.15034',
+        '2604.21003',
+        '2605.15871',
+        '2605.27276',
+        '2606.04455',
+        '2606.12683',
+        '2606.14249',
+        '2606.26294',
+        '2607.05297',
+        '2607.05382',
+        '2607.07663',
+        '2607.12254',
+        '2607.12625',
+        '2607.13104',
+        '2607.15524',
+        '2607.21461',
+        '2607.27191',
+        '2607.28568'
+    )
+      AND p.is_latest_version
+      AND m.slug = 'recursive-self-improvement'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM paper_method_exclusions exclusion
+          WHERE exclusion.paper_id = p.id
+            AND exclusion.method_id = m.id
+      )
+    ORDER BY p.arxiv_id, p.id DESC
+)
+INSERT INTO paper_method_evidence (
+    paper_id,
+    method_id,
+    evidence_type,
+    details
+)
+SELECT
+    paper_id,
+    method_id,
+    'manual',
+    '{"reason":"Manually reviewed for direct RSI relevance or substantive RSI discussion"}'::jsonb
+FROM curated_papers
+ON CONFLICT (paper_id, method_id, evidence_type) DO UPDATE SET
+    last_seen_at = now(),
+    details = EXCLUDED.details;
