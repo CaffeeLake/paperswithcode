@@ -25,7 +25,7 @@ const renderAskAssistant = () => render(
   <MemoryRouter initialEntries={["/"]}>
     <Routes>
       <Route path="/" element={<AskAssistant />} />
-      <Route path="/chat" element={<div>Chat launched</div>} />
+      <Route path="/chat/:sessionId" element={<div>Dedicated chat launched</div>} />
     </Routes>
   </MemoryRouter>,
 );
@@ -58,6 +58,15 @@ describe("AskAssistant", () => {
   });
 
   it("launches chat with the typed question", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "New chat",
+      selected_model: DEFAULT_CHAT_MODEL,
+      created_at: "2026-08-03T00:00:00Z",
+      updated_at: "2026-08-03T00:00:00Z",
+      message_count: 0,
+      is_busy: false,
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
     const user = userEvent.setup();
     renderAskAssistant();
     const question = "Compare recent vision-language models";
@@ -65,7 +74,14 @@ describe("AskAssistant", () => {
     await user.type(screen.getByRole("textbox", { name: "Ask the assistant" }), question);
     await user.click(screen.getByRole("button", { name: "Ask the assistant" }));
 
-    expect(await screen.findByText("Chat launched")).toBeInTheDocument();
+    expect(await screen.findByText("Dedicated chat launched")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/chat/sessions"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ selected_model: DEFAULT_CHAT_MODEL }),
+      }),
+    );
     expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe(question);
     expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBe(DEFAULT_CHAT_MODEL);
     expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");

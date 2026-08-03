@@ -145,6 +145,33 @@ beforeEach(() => {
 });
 
 describe("ChatView inference authorization", () => {
+  it("loads a reserved chat before auto-sending its queued home-page prompt", async () => {
+    let resolveSession!: (value: typeof session & { transcript_status: string; messages: never[] }) => void;
+    mocks.getSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    sessionStorage.setItem("pwc:chat-oauth-draft", "Compare recent vision-language models");
+    sessionStorage.setItem("pwc:chat-oauth-model", session.selected_model);
+    sessionStorage.setItem("pwc:chat-oauth-auto-send", "1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    renderChat();
+
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(sessionId));
+    expect(mocks.send).not.toHaveBeenCalled();
+
+    resolveSession({ ...session, transcript_status: "ready", messages: [] });
+
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(
+      "Compare recent vision-language models",
+    ));
+  });
+
   it("starts inference authorization on the first chat when permission is missing", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ connected: false }), {

@@ -460,7 +460,13 @@ const ChatView: React.FC = () => {
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (authLoading || chat.busy || !pendingAutoPrompt || autoSendStartedRef.current) return;
+    if (
+      authLoading
+      || chat.busy
+      || !pendingAutoPrompt
+      || autoSendStartedRef.current
+      || (routeSessionId && routeSessionState?.status !== "loaded")
+    ) return;
     // Deferring avoids React StrictMode's development-only effect cleanup from
     // aborting the request before the second effect pass can own it.
     const timer = window.setTimeout(() => {
@@ -471,7 +477,7 @@ const ChatView: React.FC = () => {
       send(prompt);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [authLoading, chat.busy, pendingAutoPrompt, send]);
+  }, [authLoading, chat.busy, pendingAutoPrompt, routeSessionId, routeSessionState?.status, send]);
 
   useEffect(() => {
     const onFocus = () => {

@@ -9,7 +9,7 @@ import { apiClient } from "@/lib/api";
 import { isChatEnabled } from "@/lib/apiUrl";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
-import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
+import { createSession, DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -116,6 +116,7 @@ export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const [launching, setLaunching] = useState(false);
   const placeholder = useRotatingChatPlaceholder(!question);
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -127,11 +128,19 @@ export const AskAssistant: React.FC = () => {
     }
   }, [question]);
 
-  const submit = (prompt = question) => {
+  const submit = async (prompt = question) => {
     const q = prompt.trim();
-    if (!q) return;
+    if (!q || launching) return;
+    setLaunching(true);
     queueChatLaunch(q, selectedModel);
-    navigate("/chat");
+    try {
+      const session = await createSession(selectedModel);
+      navigate(`/chat/${session.id}`);
+    } catch {
+      // Anonymous users still need the chat route to begin OAuth. Network and
+      // quota errors are also rendered there without losing the queued prompt.
+      navigate("/chat");
+    }
   };
 
   return (
@@ -142,6 +151,7 @@ export const AskAssistant: React.FC = () => {
         value={question}
         placeholder={placeholder}
         aria-label="Ask the assistant"
+        disabled={launching}
         onChange={(e) => setQuestion(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
@@ -172,7 +182,7 @@ export const AskAssistant: React.FC = () => {
           type="button"
           className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
           onClick={() => submit()}
-          disabled={!question.trim()}
+          disabled={!question.trim() || launching}
           aria-label="Ask the assistant"
         >
           <ArrowUpIcon />

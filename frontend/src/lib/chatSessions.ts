@@ -122,6 +122,13 @@ export async function listSessions(): Promise<ChatSession[]> {
   return sessions;
 }
 
+export function createSession(selectedModel?: string): Promise<ChatSession> {
+  return request("/api/v1/chat/sessions", {
+    method: "POST",
+    body: JSON.stringify({ selected_model: selectedModel || null }),
+  });
+}
+
 export function getSession(id: string): Promise<ChatSessionDetail> {
   return request(`/api/v1/chat/sessions/${id}`);
 }
