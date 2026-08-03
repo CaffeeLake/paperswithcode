@@ -19,6 +19,10 @@ This runbook covers the application circuit only. Modal Workspace and Environmen
 6. Compare the conservative ledger with Modal's month-to-date report. Provider spend is a floor and may only raise effective spend.
 7. Investigate non-chat Workspace spend before changing any cap.
 
+## Staging qualification
+
+Keep `PWC_CHAT_BLANK_POOL_ENABLED=false` for the initial deployment. Exercise the synthetic `$74.99`/`$75`/`$99.99`/`$100` states, alert transitions, restart persistence, public rejection and interruption UX, and the audited re-arm path before creating real compute. Then create one bounded sandbox, verify both natural and forced 30-second drain outcomes and zero tagged orphans, and only then enable one blank sandbox to prove its interval remains continuous when claimed. A deployment resets the seven-day soak evidence; rerun the release-scoped soak audit before treating staging as qualified.
+
 ## Recovery
 
 Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. Exceptional early rearm uses `backend.scripts.manage_chat_sandbox_circuit` with a typed environment/cycle confirmation, an audited reason, and an explicit `accounting-correction` or `reviewed-higher-caps` basis; it is never available from the dashboard.

@@ -339,6 +339,7 @@ def staging_chat_capacity_values() -> dict[str, str]:
 
 def staging_chat_spend_values() -> dict[str, str]:
     return {
+        "PWC_CHAT_BLANK_POOL_ENABLED": "false",
         "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "75000000",
         "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED": "true",
         "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": "modal-workspace-250-staging-125-v1",
