@@ -140,6 +140,9 @@ def main() -> int:
     with db_manager.session_local() as db, db.begin():
         service = ChatSandboxSpendService(db, fallback_settings)
         service.reconcile_provider_floor(75_000_000, now)
+        # Deployed repository sessions disable autoflush, so make the synthetic
+        # transition visible to the verification query in this transaction.
+        db.flush()
         fallback_event = db.execute(
             select(ChatSandboxCircuitEvent)
             .join(
