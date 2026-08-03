@@ -318,6 +318,26 @@ def test_final_primary_alert_failure_uses_persisted_independent_fallback(monkeyp
         assert event.fallback_delivered_at is not None
 
 
+def test_unconfigured_alert_destination_leaves_event_pending():
+    sessions = factory()
+    configured = settings(
+        chat_sandbox_slack_webhook_url="",
+        chat_sandbox_alert_fallback_webhook_url="",
+    )
+    now = datetime.now(UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        state = service.refresh(now)
+        service._event(state, "warning_entered", "warning", None, now)
+
+    manager = SandboxSessionManager(configured, session_factory=sessions)
+    assert asyncio.run(manager.deliver_spend_alerts()) == 0
+    with sessions() as db:
+        event = db.execute(select(ChatSandboxCircuitEvent)).scalar_one()
+        assert event.delivery_state == "pending"
+        assert event.delivery_attempts == 0
+
+
 def test_circuit_operator_must_be_root_and_allowlisted(monkeypatch):
     configured = settings(chat_sandbox_operator_usernames="alice")
     monkeypatch.setattr(
@@ -373,7 +393,10 @@ def test_admin_spend_status_matches_the_typed_api_contract():
 
 
 def test_startup_rejects_interactive_provider_token(monkeypatch):
-    configured = settings(chat_sandbox_modal_environment="pwc-chat-staging")
+    configured = settings(
+        chat_sandbox_provider_mode="team_environments",
+        chat_sandbox_modal_environment="pwc-chat-staging",
+    )
     monkeypatch.setenv("MODAL_ENVIRONMENT", "pwc-chat-staging")
 
     class Token:
@@ -387,7 +410,7 @@ def test_startup_rejects_interactive_provider_token(monkeypatch):
     class Client:
         stub = Stub()
 
-        async def close(self):
+        async def _close(self):
             return None
 
     async def from_env():
@@ -399,6 +422,60 @@ def test_startup_rejects_interactive_provider_token(monkeypatch):
     manager = SandboxSessionManager(configured, session_factory=factory())
     with pytest.raises(SandboxError, match="service identity"):
         asyncio.run(manager.validate_image_reference())
+
+
+def test_startup_accepts_attested_starter_workspace_owner(monkeypatch):
+    configured = settings(
+        chat_sandbox_provider_mode="starter_workspace",
+        chat_sandbox_modal_environment="pwc-chat-staging",
+        chat_sandbox_modal_workspace="nielsrogge",
+        chat_sandbox_modal_owner_username="nielsrogge",
+    )
+    monkeypatch.setenv("MODAL_ENVIRONMENT", "pwc-chat-staging")
+
+    class UserIdentity:
+        username = "nielsrogge"
+
+    class Token:
+        workspace_name = "nielsrogge"
+        user_identity = UserIdentity()
+
+        def WhichOneof(self, _name):
+            return "user_identity"
+
+    class Stub:
+        async def TokenInfoGet(self, _request):
+            return Token()
+
+    class Client:
+        stub = Stub()
+
+        async def _close(self):
+            return None
+
+    async def from_env():
+        return Client()
+
+    async def lookup(*_args, **_kwargs):
+        return object()
+
+    async def resolve_image(_image_id):
+        return object()
+
+    class Lookup:
+        aio = lookup
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service._Client.from_env", from_env
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.modal.App.lookup", Lookup()
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.resolve_modal_image", resolve_image
+    )
+    manager = SandboxSessionManager(configured, session_factory=factory())
+    asyncio.run(manager.validate_image_reference())
 
 
 def test_billing_cycle_is_utc_and_rejects_naive_time():

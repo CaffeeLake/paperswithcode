@@ -289,11 +289,18 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_worker_contract_version=runtime["worker_contract_version"],
         chat_system_prompt_sha256=runtime["system_prompt_sha256"],
         chat_sandbox_spend_enforcement_enabled=environment == "staging",
+        chat_sandbox_provider_mode="starter_workspace",
         chat_sandbox_budget_attestation=(
-            "modal-workspace-250-staging-125-v1" if environment == "staging" else ""
+            "modal-workspace-nielsrogge-250-staging-starter-v1"
+            if environment == "staging"
+            else ""
         ),
         chat_sandbox_modal_environment=(
             "pwc-chat-staging" if environment == "staging" else ""
+        ),
+        chat_sandbox_modal_workspace=("nielsrogge" if environment == "staging" else ""),
+        chat_sandbox_modal_owner_username=(
+            "nielsrogge" if environment == "staging" else ""
         ),
         chat_sandbox_slack_webhook_url=(
             "https://hooks.slack.test/services/test" if environment == "staging" else ""
@@ -364,6 +371,38 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     release = make_bundle(tmp_path, chat=environment == "staging")
     settings = deployed_settings(tmp_path, release, environment)
     assert validate_runtime(settings) == profile_features(environment)
+
+
+def test_staging_runtime_preserves_future_team_environment_policy(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_sandbox_provider_mode = "team_environments"
+    settings.chat_sandbox_environment_cap_microusd = 125_000_000
+    settings.chat_sandbox_budget_attestation = "modal-workspace-250-staging-125-v1"
+
+    assert validate_runtime(settings) == profile_features("staging")
+
+
+def test_starter_runtime_rejects_unenforced_environment_cap(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_sandbox_environment_cap_microusd = 125_000_000
+
+    with pytest.raises(RuntimeError, match="no Environment cap"):
+        validate_runtime(settings)
+
+
+def test_starter_initial_rollout_defers_alerts_until_blank_pool(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_sandbox_slack_webhook_url = ""
+    settings.chat_sandbox_alert_fallback_webhook_url = ""
+    settings.chat_blank_pool_enabled = False
+    assert validate_runtime(settings) == profile_features("staging")
+
+    settings.chat_blank_pool_enabled = True
+    with pytest.raises(RuntimeError, match="before blank-pool activation"):
+        validate_runtime(settings)
 
 
 def test_staging_allows_budgeted_server_funded_openrouter(

@@ -2518,6 +2518,7 @@ class ChatSandboxPriorCycleResponse(BaseModel):
 
 class ChatSandboxSpendResponse(BaseModel):
     environment: str
+    provider_mode: Literal["starter_workspace", "team_environments"]
     billing_cycle: str
     cycle_end_at: datetime
     circuit_state: Literal["armed", "warning", "tripped"]
@@ -2528,7 +2529,7 @@ class ChatSandboxSpendResponse(BaseModel):
     effective_microusd: int
     warning_microusd: int
     application_cap_microusd: int
-    environment_cap_microusd: int
+    environment_cap_microusd: int | None = None
     workspace_cap_microusd: int
     remaining_microusd: int
     outstanding_reservation_microusd: int

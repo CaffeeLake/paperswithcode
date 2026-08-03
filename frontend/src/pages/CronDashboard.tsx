@@ -36,7 +36,7 @@ export const ChatComputePanel = ({ data, loading, error }: {
 }) => {
   const [policyProfile, setPolicyProfile] = useState("staging-current");
   const policyProfiles: Record<string, string> = {
-    "staging-current": "Staging now · $75 warning / $100 trip / $125 Environment",
+    "staging-current": "Starter staging · $75 warning / $100 trip / no Environment cap",
     "staging-production-era": "Staging with production · $15 / $20 / $25",
     production: "Production · $175 / $200 / $225",
   };
@@ -57,13 +57,13 @@ export const ChatComputePanel = ({ data, loading, error }: {
       <Card><CardHeader><CardTitle className="text-sm">Live compute</CardTitle></CardHeader><CardContent><div className="text-2xl font-bold">{data.live_count}</div><p className="text-xs cron-muted">{data.termination_uncertain_count} termination uncertain</p></CardContent></Card>
     </div>
     <Card><CardHeader><CardTitle>Accounting and policy</CardTitle><CardDescription>{data.environment} · cycle {data.billing_cycle}</CardDescription></CardHeader><CardContent className="grid md:grid-cols-3 gap-4 text-sm">
-      <div><strong>Environment record</strong><br />{data.environment}</div>
+      <div><strong>Environment record</strong><br />{data.environment} · {data.provider_mode === "starter_workspace" ? "Starter Workspace" : "Team isolated"}</div>
       <label><strong>Policy profile</strong><select aria-label="Chat compute policy profile" value={policyProfile} onChange={(event) => setPolicyProfile(event.target.value)} className="block mt-1"><option value="staging-current">Staging now</option><option value="staging-production-era">Staging with production</option><option value="production">Production</option></select><span className="text-xs cron-muted">{policyProfiles[policyProfile]} · Workspace $250</span></label>
       <div><strong>Conservative estimate</strong><br />{usd(data.estimated_microusd)}</div>
       <div><strong>Provider-reported floor</strong><br />{usd(data.provider_floor_microusd)} · <Badge>{reconciliationLabel}</Badge></div>
-      <div><strong>Provider backstops</strong><br />Environment {usd(data.environment_cap_microusd)} · Workspace {usd(data.workspace_cap_microusd)}</div>
+      <div><strong>Provider backstops</strong><br />{data.environment_cap_microusd === null ? "Starter: no Environment cap" : `Environment ${usd(data.environment_cap_microusd)}`} · Workspace {usd(data.workspace_cap_microusd)}</div>
       <div><strong>Active thresholds</strong><br />Warning {usd(data.warning_microusd)} · trip {usd(data.application_cap_microusd)}</div>
-      <div><strong>Policy allocation</strong><br />Staging now $75/$100/$125 · staging with prod $15/$20/$25 · production $175/$200/$225 · workspace $250</div>
+      <div><strong>Policy allocation</strong><br />Starter staging $75/$100 with no Environment cap · future Team staging $15/$20/$25 · production $175/$200/$225 · workspace $250</div>
       <div><strong>Cycle end</strong><br />{formatCronDate(data.cycle_end_at)}</div>
       <div><strong>Last metered</strong><br />{data.last_metered_at ? formatCronDate(data.last_metered_at) : "Unavailable"}</div>
       <div><strong>Provider reconciliation</strong><br />{data.last_reconciled_at ? formatCronDate(data.last_reconciled_at) : "Unavailable"}{data.last_reconciliation_attempt_at ? ` · attempted ${formatCronDate(data.last_reconciliation_attempt_at)}` : ""}{data.next_reconciliation_at ? ` · next ${formatCronDate(data.next_reconciliation_at)}` : ""}</div>

@@ -885,6 +885,7 @@ export interface ChatAvailability {
 
 export interface ChatSandboxSpendStatus {
   environment: string;
+  provider_mode: 'starter_workspace' | 'team_environments';
   billing_cycle: string;
   cycle_end_at: string;
   circuit_state: 'armed' | 'warning' | 'tripped';
@@ -895,7 +896,7 @@ export interface ChatSandboxSpendStatus {
   effective_microusd: number;
   warning_microusd: number;
   application_cap_microusd: number;
-  environment_cap_microusd: number;
+  environment_cap_microusd: number | null;
   workspace_cap_microusd: number;
   remaining_microusd: number;
   reconciliation_state: 'fresh' | 'stale' | 'unavailable';

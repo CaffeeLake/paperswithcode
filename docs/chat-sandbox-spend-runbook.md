@@ -1,18 +1,18 @@
 # Chat sandbox spend circuit
 
-This runbook covers the application circuit only. Modal Workspace and Environment budget changes must be made by the sole Workspace operator in Modal and recorded in the private operations audit trail. Never place a provider budget-write credential in the web application.
+This runbook covers the application circuit. The current Starter policy uses the sole owner's personal token in the dedicated `pwc-chat-staging` Environment and a provider-enforced `$250` Workspace budget; it has no Environment-specific provider cap or credential isolation. Modal budget changes must be made by the sole Workspace operator and recorded in the private operations audit trail. Never place a provider budget-write credential in the web application.
 
 ## Required provider policy
 
 - Workspace: `$250` enforced monthly budget and native account-email notifications.
-- Staging while production chat is disabled: dedicated `pwc-chat-staging` Environment, `$125` compute budget; application warning/trip `$75`/`$100`.
-- Before production chat is approved: reduce staging to `$25` with `$15`/`$20` warning/trip, create the dedicated `pwc-chat-production` identity, and attest production `$175`/`$200`/`$225` beneath the shared Workspace cap.
-- Environment-scoped service credentials must not list or terminate the other chat Environment's sandboxes.
+- Current Starter staging: dedicated `pwc-chat-staging` namespace with the sole owner's personal token, no Environment cap, and application warning/trip `$75`/`$100`.
+- Future Team upgrade: add separate environment-scoped service users and `$125`/`$225` staging/production Environment caps. Before production chat is approved, reduce staging to `$25` with `$15`/`$20` warning/trip and attest production `$175`/`$200`/`$225` beneath the shared Workspace cap.
+- In Team mode, Environment-scoped service credentials must not list or terminate the other chat Environment's sandboxes.
 
 ## Incident response
 
 1. Confirm the read-only Chat Compute dashboard state and event ID.
-2. Verify the Modal Workspace and active Environment enforced budgets and native notification recipients.
+2. Verify the `$250` Modal Workspace budget and native notification recipients. In Team mode, also verify the active Environment budget.
 3. Enumerate provider sandboxes tagged `service=pwc-chat`; compare them with live compute intervals.
 4. Run the watchdog from the active immutable staging release or wait for its next 15-second pass. It terminates tracked workers and tagged orphans.
 5. Confirm zero provider sandboxes and zero unresolved reservations/termination states. Keep the circuit tripped on uncertainty.
@@ -22,6 +22,8 @@ This runbook covers the application circuit only. Modal Workspace and Environmen
 ## Staging qualification
 
 Keep `PWC_CHAT_BLANK_POOL_ENABLED=false` for the initial deployment. Exercise the synthetic `$74.99`/`$75`/`$99.99`/`$100` states, alert transitions, restart persistence, public rejection and interruption UX, and the audited re-arm path before creating real compute:
+
+The first code deployment may leave both application alert webhooks unset while the blank pool remains disabled; transition events stay pending without consuming retries. Configure and test distinct primary and fallback destinations before synthetic qualification or blank-pool activation.
 
 ```bash
 sudo uv run --env-file /etc/paperswithcode/staging.env \
@@ -36,4 +38,4 @@ The command prints an isolated admin-dashboard environment record and creates no
 
 Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction` or `reviewed-higher-caps` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.
 
-After any provider policy change, record the Workspace and Environment settings, native notification recipients, operator identity, timestamp, and matching deployment attestation in the private operations audit trail. The sole owner must maintain MFA, verified recovery and billing email, and the current Modal support recovery path outside source control.
+After any provider policy change, record the Workspace setting, optional Team Environment settings, native notification recipients, operator identity, timestamp, and matching deployment attestation in the private operations audit trail. The sole owner must maintain MFA, verified recovery and billing email, and the current Modal support recovery path outside source control.

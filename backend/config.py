@@ -355,10 +355,15 @@ class Settings(BaseSettings):
     chat_sandbox_warning_microusd: int = Field(default=75_000_000, ge=1)
     chat_sandbox_spend_enforcement_enabled: bool = Field(default=False)
     chat_sandbox_application_cap_microusd: int = Field(default=100_000_000, ge=1)
-    chat_sandbox_environment_cap_microusd: int = Field(default=125_000_000, ge=1)
+    chat_sandbox_environment_cap_microusd: int = Field(default=0, ge=0)
     chat_sandbox_workspace_cap_microusd: int = Field(default=250_000_000, ge=1)
+    chat_sandbox_provider_mode: Literal["starter_workspace", "team_environments"] = (
+        "starter_workspace"
+    )
     chat_sandbox_budget_attestation: str = Field(default="", max_length=128)
     chat_sandbox_modal_environment: str = Field(default="", max_length=128)
+    chat_sandbox_modal_workspace: str = Field(default="", max_length=128)
+    chat_sandbox_modal_owner_username: str = Field(default="", max_length=128)
     chat_sandbox_watchdog_seconds: int = Field(default=15, ge=5, le=60)
     chat_sandbox_drain_grace_seconds: int = Field(default=30, ge=0, le=30)
     chat_sandbox_termination_grace_seconds: int = Field(default=30, ge=5, le=120)

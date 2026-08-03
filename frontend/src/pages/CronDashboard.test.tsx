@@ -6,6 +6,7 @@ import { ChatComputePanel } from "./CronDashboard";
 
 const status = (overrides: Partial<ChatSandboxSpendStatus> = {}): ChatSandboxSpendStatus => ({
   environment: "staging",
+  provider_mode: "starter_workspace",
   billing_cycle: "2026-08-01",
   cycle_end_at: "2026-09-01T00:00:00Z",
   circuit_state: "armed",
@@ -16,7 +17,7 @@ const status = (overrides: Partial<ChatSandboxSpendStatus> = {}): ChatSandboxSpe
   effective_microusd: 10_000_000,
   warning_microusd: 75_000_000,
   application_cap_microusd: 100_000_000,
-  environment_cap_microusd: 125_000_000,
+  environment_cap_microusd: null,
   workspace_cap_microusd: 250_000_000,
   remaining_microusd: 90_000_000,
   reconciliation_state: "fresh",

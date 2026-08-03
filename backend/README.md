@@ -272,10 +272,13 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED` | false | Enable durable full-lifecycle sandbox spend enforcement (required for deployed Modal chat) |
 | `PWC_CHAT_SANDBOX_WARNING_MICROUSD` | 75000000 | Internal operator-warning threshold, in integer microdollars |
 | `PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD` | 100000000 | Durable application trip threshold, in integer microdollars |
-| `PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD` | 125000000 | Attested provider Environment cap, in integer microdollars |
+| `PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD` | 0 | Provider Environment cap in integer microdollars; zero for Starter Workspace-only enforcement |
 | `PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD` | 250000000 | Attested provider Workspace cap, in integer microdollars |
+| `PWC_CHAT_SANDBOX_PROVIDER_MODE` | starter_workspace | Personal Workspace token plus Workspace cap, or `team_environments` for scoped service users and Environment caps |
 | `PWC_CHAT_SANDBOX_BUDGET_ATTESTATION` | | Reviewed provider-policy attestation required by deployed Modal chat |
 | `PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT` | pwc-chat-staging | Dedicated Modal Environment expected by runtime validation |
+| `PWC_CHAT_SANDBOX_MODAL_WORKSPACE` | | Modal Workspace name expected by runtime validation |
+| `PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME` | | Sole personal-token owner expected in Starter mode |
 | `PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL` | | Secret-backed operations alert webhook |
 | `PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL` | | Independent incident webhook for primary alert-delivery failure |
 | `PWC_CHAT_SANDBOX_OPERATOR_USERNAMES` | | Protected allowlist for audited circuit-control CLI invocations |

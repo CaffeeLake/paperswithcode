@@ -1203,57 +1203,70 @@ class SandboxSessionManager:
             client = await _Client.from_env()
             try:
                 token = await client.stub.TokenInfoGet(api_pb2.TokenInfoGetRequest())
-                if token.WhichOneof("identity") != "service_user_identity":
+                if self.settings.chat_sandbox_provider_mode == "starter_workspace":
+                    if (
+                        token.WhichOneof("identity") != "user_identity"
+                        or token.workspace_name
+                        != self.settings.chat_sandbox_modal_workspace
+                        or token.user_identity.username
+                        != self.settings.chat_sandbox_modal_owner_username
+                    ):
+                        raise SandboxError(
+                            "sandbox_identity_unverified",
+                            "The configured personal Workspace identity does not match deployment policy",
+                        )
+                elif token.WhichOneof("identity") != "service_user_identity":
                     raise SandboxError(
                         "sandbox_identity_unverified",
                         "A restricted Environment service identity is required",
                     )
-                service_user = token.service_user_identity.service_user_name
-                environment = modal.Environment.from_name(
-                    self.settings.chat_sandbox_modal_environment
-                )
-                members = await environment.members.list.aio()
-                if members["service_users"].get(service_user) != "contributor":
-                    raise SandboxError(
-                        "sandbox_identity_unverified",
-                        "The service identity is not scoped to the chat Environment",
+                else:
+                    service_user = token.service_user_identity.service_user_name
+                    environment = modal.Environment.from_name(
+                        self.settings.chat_sandbox_modal_environment
                     )
-                budget = await client.stub.EnvironmentGetBudget(
-                    api_pb2.EnvironmentGetBudgetRequest(
-                        environment_id=environment.object_id
+                    members = await environment.members.list.aio()
+                    if members["service_users"].get(service_user) != "contributor":
+                        raise SandboxError(
+                            "sandbox_identity_unverified",
+                            "The service identity is not scoped to the chat Environment",
+                        )
+                    budget = await client.stub.EnvironmentGetBudget(
+                        api_pb2.EnvironmentGetBudgetRequest(
+                            environment_id=environment.object_id
+                        )
                     )
-                )
-                configured_budget_microusd = (
-                    round(budget.cycle_budget_dollars * 1_000_000)
-                    if budget.HasField("cycle_budget_dollars")
-                    else None
-                )
-                if (
-                    configured_budget_microusd
-                    != self.settings.chat_sandbox_environment_cap_microusd
-                ):
-                    raise SandboxError(
-                        "sandbox_budget_unverified",
-                        "The provider Environment budget does not match deployment policy",
+                    configured_budget_microusd = (
+                        round(budget.cycle_budget_dollars * 1_000_000)
+                        if budget.HasField("cycle_budget_dollars")
+                        else None
                     )
-                other_environment = (
-                    "pwc-chat-production"
-                    if self.settings.environment == "staging"
-                    else "pwc-chat-staging"
-                )
-                try:
-                    other_members = await modal.Environment.from_name(
-                        other_environment
-                    ).members.list.aio()
-                except NotFoundError:
-                    other_members = {"service_users": {}}
-                if service_user in other_members["service_users"]:
-                    raise SandboxError(
-                        "sandbox_identity_unverified",
-                        "The service identity must not access the other chat Environment",
+                    if (
+                        configured_budget_microusd
+                        != self.settings.chat_sandbox_environment_cap_microusd
+                    ):
+                        raise SandboxError(
+                            "sandbox_budget_unverified",
+                            "The provider Environment budget does not match deployment policy",
+                        )
+                    other_environment = (
+                        "pwc-chat-production"
+                        if self.settings.environment == "staging"
+                        else "pwc-chat-staging"
                     )
+                    try:
+                        other_members = await modal.Environment.from_name(
+                            other_environment
+                        ).members.list.aio()
+                    except NotFoundError:
+                        other_members = {"service_users": {}}
+                    if service_user in other_members["service_users"]:
+                        raise SandboxError(
+                            "sandbox_identity_unverified",
+                            "The service identity must not access the other chat Environment",
+                        )
             finally:
-                await client.close()
+                await client._close()
         try:
             await modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=False)
             await resolve_modal_image(self.settings.chat_modal_image_version)
@@ -2662,6 +2675,10 @@ class SandboxSessionManager:
         """Deliver bounded, content-free circuit transitions without blocking kill sweeps."""
         from backend.models.database import ChatSandboxCircuitEvent
 
+        # Initial rollout keeps transitions durable and pending until the operator
+        # provisions both alert destinations. Blank-pool activation requires them.
+        if not self.settings.chat_sandbox_slack_webhook_url:
+            return 0
         with self.session_factory() as db:
             now = datetime.now(UTC)
             events = list(

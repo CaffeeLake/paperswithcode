@@ -407,7 +407,12 @@ class ChatSandboxSpendService:
                         "provider_floor_microusd": state.provider_floor_microusd,
                         "threshold_microusd": state.application_cap_microusd,
                         "remaining_provider_reserve_microusd": max(
-                            0, state.environment_cap_microusd - effective
+                            0,
+                            (
+                                state.environment_cap_microusd
+                                or state.workspace_cap_microusd
+                            )
+                            - effective,
                         ),
                         "circuit_state": state.circuit_state,
                         "live_count": live_count,
@@ -858,6 +863,7 @@ class ChatSandboxSpendService:
         ).scalar_one_or_none()
         return {
             "environment": state.environment,
+            "provider_mode": self.settings.chat_sandbox_provider_mode,
             "billing_cycle": state.billing_cycle.isoformat(),
             "cycle_end_at": state.cycle_end_at,
             "circuit_state": state.circuit_state,
@@ -868,7 +874,7 @@ class ChatSandboxSpendService:
             "effective_microusd": effective,
             "warning_microusd": state.warning_microusd,
             "application_cap_microusd": state.application_cap_microusd,
-            "environment_cap_microusd": state.environment_cap_microusd,
+            "environment_cap_microusd": state.environment_cap_microusd or None,
             "workspace_cap_microusd": state.workspace_cap_microusd,
             "remaining_microusd": max(
                 0,

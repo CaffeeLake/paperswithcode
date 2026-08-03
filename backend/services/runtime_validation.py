@@ -248,14 +248,27 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             and not settings.chat_sandbox_spend_enforcement_enabled
         ):
             raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
-        if not (
-            settings.chat_sandbox_warning_microusd
-            < settings.chat_sandbox_application_cap_microusd
-            < settings.chat_sandbox_environment_cap_microusd
-            < settings.chat_sandbox_workspace_cap_microusd
-        ):
+        if settings.chat_sandbox_provider_mode == "team_environments":
+            thresholds_valid = (
+                settings.chat_sandbox_warning_microusd
+                < settings.chat_sandbox_application_cap_microusd
+                < settings.chat_sandbox_environment_cap_microusd
+                < settings.chat_sandbox_workspace_cap_microusd
+            )
+            threshold_order = "warning < application < environment < workspace"
+        else:
+            thresholds_valid = (
+                settings.chat_sandbox_warning_microusd
+                < settings.chat_sandbox_application_cap_microusd
+                < settings.chat_sandbox_workspace_cap_microusd
+                and settings.chat_sandbox_environment_cap_microusd == 0
+            )
+            threshold_order = (
+                "warning < application < workspace with no Environment cap"
+            )
+        if not thresholds_valid:
             raise RuntimeError(
-                "sandbox spend thresholds must satisfy warning < application < environment < workspace"
+                f"sandbox spend thresholds must satisfy {threshold_order}"
             )
         if settings.chat_default_backend == "modal_cli":
             expected_modal_environment = f"pwc-chat-{settings.environment}"
@@ -265,24 +278,38 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 )
             if not settings.chat_sandbox_budget_attestation:
                 raise RuntimeError("PWC_CHAT_SANDBOX_BUDGET_ATTESTATION is required")
-            expected_attestation = (
-                f"modal-workspace-{settings.chat_sandbox_workspace_cap_microusd // 1_000_000}-"
-                f"{settings.environment}-{settings.chat_sandbox_environment_cap_microusd // 1_000_000}-v1"
-            )
+            if not settings.chat_sandbox_modal_workspace:
+                raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_WORKSPACE is required")
+            if not settings.chat_sandbox_modal_owner_username:
+                raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME is required")
+            if settings.chat_sandbox_provider_mode == "team_environments":
+                expected_attestation = (
+                    f"modal-workspace-{settings.chat_sandbox_workspace_cap_microusd // 1_000_000}-"
+                    f"{settings.environment}-{settings.chat_sandbox_environment_cap_microusd // 1_000_000}-v1"
+                )
+                provider_cap = settings.chat_sandbox_environment_cap_microusd
+            else:
+                expected_attestation = (
+                    f"modal-workspace-{settings.chat_sandbox_modal_workspace}-"
+                    f"{settings.chat_sandbox_workspace_cap_microusd // 1_000_000}-"
+                    f"{settings.environment}-starter-v1"
+                )
+                provider_cap = settings.chat_sandbox_workspace_cap_microusd
             if settings.chat_sandbox_budget_attestation != expected_attestation:
                 raise RuntimeError(
                     "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match configured policy"
                 )
-            if not settings.chat_sandbox_slack_webhook_url:
-                raise RuntimeError("PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL is required")
-            if not settings.chat_sandbox_alert_fallback_webhook_url:
+            primary_alert = settings.chat_sandbox_slack_webhook_url
+            fallback_alert = settings.chat_sandbox_alert_fallback_webhook_url
+            if bool(primary_alert) != bool(fallback_alert):
                 raise RuntimeError(
-                    "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL is required"
+                    "both sandbox spend alert destinations must be configured together"
                 )
-            if (
-                settings.chat_sandbox_alert_fallback_webhook_url
-                == settings.chat_sandbox_slack_webhook_url
-            ):
+            if settings.chat_blank_pool_enabled and not primary_alert:
+                raise RuntimeError(
+                    "sandbox spend alert destinations are required before blank-pool activation"
+                )
+            if primary_alert and fallback_alert == primary_alert:
                 raise RuntimeError(
                     "sandbox spend primary and fallback alert destinations must differ"
                 )
@@ -309,11 +336,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 + settings.chat_sandbox_reconciliation_allowance_microusd
                 * settings.chat_sandbox_total_live_cap
             )
-            if (
-                settings.chat_sandbox_environment_cap_microusd
-                - settings.chat_sandbox_application_cap_microusd
-                < burst
-            ):
+            if provider_cap - settings.chat_sandbox_application_cap_microusd < burst:
                 raise RuntimeError(
                     "sandbox provider reserve is smaller than the worst-case aggregate burst"
                 )

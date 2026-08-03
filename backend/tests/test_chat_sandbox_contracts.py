@@ -55,6 +55,7 @@ from backend.chat_sandbox_worker.render_task_catalog import (
 )
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter as WorkerSDKAdapter
 from backend.chat_sandbox_worker.tool_policy import ToolBudget, bound_tool_output
+from backend.config import Settings
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, sse_event
 from backend.models.database import ChatTurnCapability
 from backend.scripts import qualify_chat_sandbox, qualify_chat_soak
@@ -74,7 +75,6 @@ from backend.services.chat_sandbox_service import (
     create_isolated_sandbox,
     resolve_modal_image,
 )
-from backend.config import Settings
 from backend.services.chat_session_store_gateway import (
     ChatSessionStoreGateway,
     SessionStoreCommand,
@@ -243,9 +243,11 @@ def test_persistent_health_probe_requires_idle_children_and_empty_broker(
     monkeypatch.setattr(
         control_daemon,
         "_broker_control",
-        lambda payload: {"ok": True, "active": False}
-        if payload == {"operation": "status"}
-        else None,
+        lambda payload: (
+            {"ok": True, "active": False}
+            if payload == {"operation": "status"}
+            else None
+        ),
     )
     daemon_side, relay_side = socket.socketpair()
     request_id = f"health-{uuid.uuid4()}"
@@ -288,9 +290,11 @@ def test_idle_persistent_relay_accepts_backend_replacement(monkeypatch, tmp_path
     monkeypatch.setattr(
         control_daemon,
         "_broker_control",
-        lambda payload: {"ok": True, "active": False}
-        if payload == {"operation": "status"}
-        else None,
+        lambda payload: (
+            {"ok": True, "active": False}
+            if payload == {"operation": "status"}
+            else None
+        ),
     )
     stopped = threading.Event()
     child = SimpleNamespace(poll=lambda: 1 if stopped.is_set() else None)
@@ -1548,7 +1552,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-CJGH5fDP0W2Wq6E6Ltqm98"
+    assert MODAL_IMAGE_ID == "im-RIoIiGfP6ujxtiSY2dkpLi"
     assert WORKER_CONTRACT_VERSION == "29"
 
 
