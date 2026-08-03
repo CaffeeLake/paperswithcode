@@ -348,8 +348,28 @@ class Settings(BaseSettings):
     chat_blank_pool_min_remaining_seconds: int = Field(default=240, ge=60, le=3600)
     chat_blank_pool_rotate_before_seconds: int = Field(default=3600, ge=60, le=43200)
     chat_blank_pool_refill_concurrency: int = Field(default=1, ge=1, le=4)
+    # Read-only compatibility for old environment files during rolling deploys.
+    # Enforcement intentionally ignores these blank-only floating-point values.
     chat_blank_pool_monthly_budget_usd: float = Field(default=35, gt=0, le=1000)
     chat_blank_pool_reported_month_to_date_usd: float = Field(default=0, ge=0, le=10000)
+    chat_sandbox_warning_microusd: int = Field(default=75_000_000, ge=1)
+    chat_sandbox_spend_enforcement_enabled: bool = Field(default=False)
+    chat_sandbox_application_cap_microusd: int = Field(default=100_000_000, ge=1)
+    chat_sandbox_environment_cap_microusd: int = Field(default=125_000_000, ge=1)
+    chat_sandbox_workspace_cap_microusd: int = Field(default=250_000_000, ge=1)
+    chat_sandbox_budget_attestation: str = Field(default="", max_length=128)
+    chat_sandbox_modal_environment: str = Field(default="", max_length=128)
+    chat_sandbox_watchdog_seconds: int = Field(default=15, ge=5, le=60)
+    chat_sandbox_drain_grace_seconds: int = Field(default=30, ge=0, le=30)
+    chat_sandbox_termination_grace_seconds: int = Field(default=30, ge=5, le=120)
+    chat_sandbox_reconciliation_allowance_microusd: int = Field(default=1_000_000, ge=0)
+    chat_sandbox_reconciliation_stale_seconds: int = Field(
+        default=7200, ge=3600, le=86400
+    )
+    chat_sandbox_provider_floor_microusd: int = Field(default=0, ge=0)
+    chat_sandbox_provider_reported_at: str = Field(default="", max_length=64)
+    chat_sandbox_slack_webhook_url: str = Field(default="", max_length=2000)
+    chat_sandbox_runbook_url: str = Field(default="", max_length=2000)
     chat_sandbox_total_live_cap: int = Field(default=2, ge=1, le=16)
     chat_workspace_snapshots_enabled: bool = Field(default=False)
     chat_workspace_snapshot_inactivity_days: int = Field(default=30, ge=1, le=90)

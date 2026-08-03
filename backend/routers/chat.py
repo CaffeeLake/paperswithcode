@@ -41,6 +41,10 @@ from backend.models.database import ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.chat_sandbox_spend_service import (
+    ChatComputeDisabled,
+    ChatSandboxSpendService,
+)
 from backend.services.chat_session_service import (
     ChatServiceError,
     ChatSessionService,
@@ -64,7 +68,7 @@ from backend.services.openrouter_user_budget_service import (
     PUBLIC_SUPPORT_URL,
     OpenRouterUserBudgetService,
 )
-from backend.utils.auth import require_user
+from backend.utils.auth import require_admin, require_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -309,6 +313,34 @@ def list_models(
         ],
         "default_model": settings.chat_model_choices[0]["id"],
     }
+
+
+@router.get("/availability")
+def chat_availability():
+    """Content-free public state; internal warning and accounting stay private."""
+    settings = get_settings()
+    if (
+        settings.chat_default_backend != "modal_cli"
+        or not settings.chat_sandbox_spend_enforcement_enabled
+    ):
+        return {"status": "available", "reason": None, "expected_recovery_at": None}
+    try:
+        with db_manager.session_local() as db, db.begin():
+            ChatSandboxSpendService(db, settings).assert_available()
+        return {"status": "available", "reason": None, "expected_recovery_at": None}
+    except ChatComputeDisabled:
+        return {
+            "status": "paused",
+            "reason": "chat_temporarily_disabled",
+            "expected_recovery_at": None,
+        }
+
+
+@router.get("/admin/sandbox-spend", dependencies=[Depends(require_admin)])
+def chat_sandbox_spend():
+    settings = get_settings()
+    with db_manager.session_local() as db, db.begin():
+        return ChatSandboxSpendService(db, settings).status()
 
 
 @router.get("/usage")
@@ -611,6 +643,18 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    if (
+        settings.chat_default_backend == "modal_cli"
+        and settings.chat_sandbox_spend_enforcement_enabled
+    ):
+        try:
+            with db_manager.session_local() as budget_db, budget_db.begin():
+                ChatSandboxSpendService(budget_db, settings).assert_available()
+        except ChatComputeDisabled as error:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
     inference_credential = inference_credential_for_request(request, user, settings)
     if not deployment_lifecycle.status().accepting_chat_turns:
         raise HTTPException(

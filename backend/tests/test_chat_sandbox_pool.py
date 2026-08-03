@@ -10,19 +10,19 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.chat_sandbox_worker.protocol import encode_frame
 from backend.config import Settings
 from backend.models.database import (
     ChatSandboxLease,
     ChatSandboxPool,
     ChatSession,
 )
-from backend.chat_sandbox_worker.protocol import encode_frame
+from backend.services import chat_sandbox_service
 from backend.services.chat_sandbox_service import (
     SandboxError,
     SandboxSessionManager,
     WorkerClaim,
 )
-from backend.services import chat_sandbox_service
 
 
 def _settings(**overrides) -> Settings:
@@ -344,6 +344,7 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     assert calls[0][0].startswith("chat-blank-")
     assert calls[0][1] == {
         "service": "pwc-chat",
+        "environment": "staging",
         "pool": "blank",
         "pool_id": calls[0][0].removeprefix("chat-blank-"),
         "release": "release-a",

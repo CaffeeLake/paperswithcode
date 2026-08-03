@@ -24,6 +24,7 @@ from backend.models.database import (
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.openrouter_budget_service import (
     OpenRouterBudgetUnavailable,
     openrouter_budget_status,
@@ -57,7 +58,7 @@ JOURNAL_FAILURE_PATTERNS = {
 
 
 def _parse_time(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         raise ValueError("The soak start must include a timezone")
     return parsed.astimezone(UTC)
@@ -278,6 +279,7 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             ChatTurnLatency.acquisition_outcome == "reused_session",
         )
         active_spend = ChatLatencyService(db).active_spend_status(now=now)
+        sandbox_spend = ChatSandboxSpendService(db, environment).status(now=now)
         live_pool = list(
             db.execute(
                 select(
@@ -424,6 +426,20 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             "active": active_spend,
             "blank_pool": pool_budget,
             "openrouter": openrouter_budget,
+            "sandbox_compute": {
+                "circuit_state": sandbox_spend["circuit_state"],
+                "provider_floor_microusd": sandbox_spend["provider_floor_microusd"],
+                "remaining_headroom_microusd": sandbox_spend["remaining_microusd"],
+                "oldest_live_interval_at": sandbox_spend["oldest_live_at"],
+                "last_watchdog_success_at": sandbox_spend["last_metered_at"],
+                "kill_sweep": {
+                    "complete": sandbox_spend["live_count"] == 0,
+                    "live_count": sandbox_spend["live_count"],
+                    "termination_uncertain_count": sandbox_spend[
+                        "termination_uncertain_count"
+                    ],
+                },
+            },
         },
         "capacity": {
             "live_count": live_count,

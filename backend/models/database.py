@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -2299,6 +2300,156 @@ class ChatSandboxPool(Base):
             "ready_at",
         ),
         Index("idx_chat_sandbox_pool_billing", "billing_month", "state"),
+    )
+
+
+class ChatSandboxComputeInterval(Base):
+    """Append-only billing lifecycle for one provider sandbox instance."""
+
+    __tablename__ = "chat_sandbox_compute_intervals"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    modal_sandbox_id: Mapped[Optional[str]] = mapped_column(String(255), unique=True)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    modal_app: Mapped[str] = mapped_column(String(255), nullable=False)
+    app_release_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    image_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    worker_generation: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin: Mapped[str] = mapped_column(String(24), nullable=False)
+    chat_session_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=True))
+    cpu_request_millicores: Mapped[int] = mapped_column(Integer, nullable=False)
+    cpu_limit_millicores: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_request_mib: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_limit_mib: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    provider_created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    termination_requested_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    terminal_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    billing_cycle: Mapped[date] = mapped_column(Date, nullable=False)
+    accrued_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    reserved_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    terminal_reason: Mapped[Optional[str]] = mapped_column(String(64))
+    reconciliation_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="local"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "origin IN ('blank_pool','direct','qualification','reconciled_orphan')",
+            name="chat_sandbox_compute_origin_check",
+        ),
+        CheckConstraint(
+            "accrued_microusd >= 0 AND reserved_microusd >= 0",
+            name="chat_sandbox_compute_cost_check",
+        ),
+        Index(
+            "idx_chat_sandbox_compute_cycle_live",
+            "environment",
+            "billing_cycle",
+            "terminal_at",
+        ),
+    )
+
+
+class ChatSandboxBudgetState(Base):
+    """One durable, worker-shared sandbox spend circuit per billing cycle."""
+
+    __tablename__ = "chat_sandbox_budget_states"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    billing_cycle: Mapped[date] = mapped_column(Date, nullable=False)
+    cycle_end_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    warning_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    application_cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    environment_cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    workspace_cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    estimated_accrued_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    provider_floor_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    outstanding_reservation_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    circuit_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="armed"
+    )
+    trip_reason: Mapped[Optional[str]] = mapped_column(String(64))
+    tripped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_metered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_reconciled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    reconciliation_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="unavailable"
+    )
+    policy_attestation: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "environment", "billing_cycle", name="uq_chat_sandbox_budget_cycle"
+        ),
+        CheckConstraint(
+            "circuit_state IN ('armed','warning','tripped')",
+            name="chat_sandbox_budget_state_check",
+        ),
+    )
+
+
+class ChatSandboxCircuitEvent(Base):
+    """Content-free immutable circuit transition and alert-delivery record."""
+
+    __tablename__ = "chat_sandbox_circuit_events"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    budget_state_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sandbox_budget_states.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(64))
+    details: Mapped[dict] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, server_default="{}"
+    )
+    delivery_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    delivery_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    next_delivery_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        Index(
+            "idx_chat_sandbox_circuit_events_recent", "budget_state_id", "created_at"
+        ),
     )
 
 

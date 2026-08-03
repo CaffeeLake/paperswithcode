@@ -14,11 +14,13 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
+import httpx
 import modal
 from modal.stream_type import StreamType
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
     ProtocolError,
@@ -26,13 +28,21 @@ from backend.chat_sandbox_worker.protocol import (
     decode_frame,
     encode_frame,
 )
-from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
 from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 from backend.config import Settings
 from backend.database.connection import db_manager
-from backend.models.database import ChatSandboxLease, ChatSandboxPool, ChatSession
+from backend.models.database import (
+    ChatSandboxLease,
+    ChatSandboxPool,
+    ChatSession,
+    ChatTurnCapability,
+)
 from backend.services.chat_capability_service import IssuedCapability
 from backend.services.chat_runtime_contract import dedicated_gateway_hostname
+from backend.services.chat_sandbox_spend_service import (
+    ChatComputeDisabled,
+    ChatSandboxSpendService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +80,9 @@ class RunningWorker:
     done: asyncio.Event | None = None
 
 
-def _cancelled_terminal_event(running: RunningWorker) -> dict[str, str] | None:
+def _cancelled_terminal_event(running: RunningWorker | None) -> dict[str, str] | None:
     """Let an accepted user cancellation win over a concurrent worker exit."""
-    if not running.cancel_requested:
+    if running is None or not running.cancel_requested:
         return None
     if running.done is not None:
         running.done.set()
@@ -224,7 +234,7 @@ async def create_isolated_sandbox(
         if await sandbox.poll.aio() is not None:
             break
         await asyncio.sleep(0.05)
-    await sandbox.terminate.aio(wait=False)
+    await sandbox.terminate.aio(wait=settings.chat_sandbox_spend_enforcement_enabled)
     raise SandboxError(
         "sandbox_worker_not_ready", "Persistent worker readiness timed out"
     )
@@ -277,11 +287,33 @@ class SandboxSessionManager:
         self._blank_controls: dict[str, SessionControl] = {}
         self._blank_health_at: dict[str, float] = {}
         self._background_tasks: set[asyncio.Task] = set()
+        self._last_spend_reconciliation_at: datetime | None = None
         if settings.chat_workspace_snapshots_enabled and not self.snapshots.supported:
             raise SandboxError(
                 "snapshot_unsupported",
                 "Configured workspace snapshots require a Directory Snapshot provider",
             )
+
+    async def _terminate_provider_sandbox(
+        self, sandbox_id: str, sandbox: object | None = None
+    ) -> bool:
+        """Wait for provider confirmation whenever spend enforcement is active."""
+        try:
+            target = sandbox or await modal.Sandbox.from_id.aio(sandbox_id)
+            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+                async with asyncio.timeout(
+                    getattr(
+                        self.settings,
+                        "chat_sandbox_termination_grace_seconds",
+                        30,
+                    )
+                ):
+                    await target.terminate.aio(wait=True)
+            else:
+                await target.terminate.aio(wait=False)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _billing_month(now: datetime) -> date:
@@ -345,46 +377,54 @@ class SandboxSessionManager:
         row.estimated_blank_cost_usd = cost
         return seconds, cost
 
-    def _pool_budget_projection(self, db: Session, now: datetime) -> dict[str, float]:
-        rows = list(
-            db.execute(
-                select(ChatSandboxPool).where(
-                    ChatSandboxPool.billing_month == self._billing_month(now)
-                )
-            ).scalars()
-        )
-        accrued = 0.0
-        for row in rows:
-            if row.state in {"starting", "blank_ready", "draining"}:
-                _, cost = self._finalize_pool_cost(row, now)
-            else:
-                cost = float(row.estimated_blank_cost_usd)
-            accrued += cost
-        future_seconds = max(0, (self._next_month(now) - now).total_seconds())
-        reported = float(self.settings.chat_blank_pool_reported_month_to_date_usd)
-        effective_accrued = max(accrued, reported)
-        projected = (
-            effective_accrued
-            + (future_seconds + POOL_ACCOUNTING_SAFETY_SECONDS)
-            * self._pool_cost_per_second()
-            * self.settings.chat_blank_pool_min
-        )
-        return {
-            "accrued_usd": accrued,
-            "reported_usd": reported,
-            "effective_accrued_usd": effective_accrued,
-            "projected_usd": projected,
-            "budget_usd": float(self.settings.chat_blank_pool_monthly_budget_usd),
-        }
-
     def pool_budget_status(self) -> dict[str, float | bool | str]:
         now = datetime.now(UTC)
+        if not getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+            with self.session_factory() as db, db.begin():
+                rows = list(
+                    db.execute(
+                        select(ChatSandboxPool).where(
+                            ChatSandboxPool.billing_month == self._billing_month(now)
+                        )
+                    ).scalars()
+                )
+                accrued = sum(
+                    self._finalize_pool_cost(row, now)[1]
+                    if row.state in {"starting", "blank_ready", "draining"}
+                    else float(row.estimated_blank_cost_usd)
+                    for row in rows
+                )
+            reported = float(self.settings.chat_blank_pool_reported_month_to_date_usd)
+            projected = (
+                max(accrued, reported)
+                + max(0, (self._next_month(now) - now).total_seconds())
+                * self._pool_cost_per_second()
+                * self.settings.chat_blank_pool_min
+            )
+            budget = float(self.settings.chat_blank_pool_monthly_budget_usd)
+            return {
+                "billing_month": self._billing_month(now).isoformat(),
+                "accrued_usd": accrued,
+                "reported_usd": reported,
+                "effective_accrued_usd": max(accrued, reported),
+                "projected_usd": projected,
+                "budget_usd": budget,
+                "within_budget": projected <= budget,
+            }
         with self.session_factory() as db, db.begin():
-            projection = self._pool_budget_projection(db, now)
+            status = ChatSandboxSpendService(db, self.settings).status(now)
         return {
-            **projection,
-            "billing_month": self._billing_month(now).isoformat(),
-            "within_budget": projection["projected_usd"] <= projection["budget_usd"],
+            "billing_month": status["billing_cycle"],
+            "accrued_usd": status["estimated_microusd"] / 1_000_000,
+            "reported_usd": status["provider_floor_microusd"] / 1_000_000,
+            "effective_accrued_usd": status["effective_microusd"] / 1_000_000,
+            "projected_usd": (
+                status["effective_microusd"]
+                + status["outstanding_reservation_microusd"]
+            )
+            / 1_000_000,
+            "budget_usd": status["application_cap_microusd"] / 1_000_000,
+            "within_budget": status["circuit_state"] != "tripped",
         }
 
     def _spawn_pool_replenishment(self) -> None:
@@ -530,11 +570,14 @@ class SandboxSessionManager:
             row.updated_at = now
         if sandbox_id:
             self._drop_blank_control(sandbox_id)
-            try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-                await sandbox.terminate.aio(wait=False)
-            except Exception:
-                pass
+            confirmed = await self._terminate_provider_sandbox(sandbox_id)
+            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        sandbox_id, failure_code, confirmed=confirmed
+                    )
+            if not confirmed:
+                failure_code = "termination_uncertain"
         now = datetime.now(UTC)
         with self.session_factory() as db, db.begin():
             self._lock_capacity(db)
@@ -622,6 +665,13 @@ class SandboxSessionManager:
             now = datetime.now(UTC)
             with self.session_factory() as db, db.begin():
                 self._lock_capacity(db)
+                if getattr(
+                    self.settings, "chat_sandbox_spend_enforcement_enabled", False
+                ):
+                    try:
+                        ChatSandboxSpendService(db, self.settings).assert_available(now)
+                    except ChatComputeDisabled as error:
+                        raise SandboxError(error.code, str(error)) from error
                 existing_lease = self._lease(db, chat_session_id, lock=True)
                 row = db.execute(
                     select(ChatSandboxPool)
@@ -679,6 +729,12 @@ class SandboxSessionManager:
                             updated_at=now,
                         )
                     )
+                    if getattr(
+                        self.settings, "chat_sandbox_spend_enforcement_enabled", False
+                    ):
+                        ChatSandboxSpendService(db, self.settings).claim(
+                            sandbox_id, chat_session_id, now
+                        )
                     claimed = True
             if claimed:
                 blank_control = getattr(self, "_blank_controls", {}).pop(
@@ -703,22 +759,12 @@ class SandboxSessionManager:
             return 0
         now = datetime.now(UTC)
         pool_id: uuid.UUID | None = None
+        interval_id: uuid.UUID | None = None
         evict_session_id: uuid.UUID | None = None
         with self.session_factory() as db, db.begin():
             if not self._lock_pool_maintenance(db):
                 return 0
             if not self._lock_capacity(db, wait=False):
-                return 0
-            budget = self._pool_budget_projection(db, now)
-            if budget["projected_usd"] > budget["budget_usd"]:
-                logger.warning(
-                    "chat blank pool budget blocked billing_month=%s "
-                    "accrued_usd=%.4f projected_usd=%.4f budget_usd=%.2f",
-                    self._billing_month(now),
-                    budget["accrued_usd"],
-                    budget["projected_usd"],
-                    budget["budget_usd"],
-                )
                 return 0
             live_pool = (
                 db.scalar(
@@ -759,6 +805,19 @@ class SandboxSessionManager:
             else:
                 pool_id = uuid.uuid4()
                 worker_generation = secrets.token_hex(16)
+                if getattr(
+                    self.settings, "chat_sandbox_spend_enforcement_enabled", False
+                ):
+                    try:
+                        interval_id = ChatSandboxSpendService(
+                            db, self.settings
+                        ).reserve_interval(
+                            origin="blank_pool",
+                            worker_generation=worker_generation,
+                            now=now,
+                        )
+                    except ChatComputeDisabled:
+                        return 0
                 cpu_limit = (
                     self.settings.chat_sandbox_cpu_limit
                     or self.settings.chat_sandbox_cpu
@@ -803,6 +862,7 @@ class SandboxSessionManager:
                 name=f"chat-blank-{pool_id}",
                 tags={
                     "service": "pwc-chat",
+                    "environment": getattr(self.settings, "environment", "staging"),
                     "pool": "blank",
                     "pool_id": str(pool_id),
                     "release": self.settings.release_id,
@@ -820,11 +880,31 @@ class SandboxSessionManager:
             self._blank_controls[sandbox.object_id] = control
             self._blank_health_at[sandbox.object_id] = time.monotonic()
         except Exception:
-            if "sandbox" in locals() and hasattr(sandbox, "terminate"):
-                await sandbox.terminate.aio(wait=False)
+            provider_sandbox = (
+                sandbox
+                if "sandbox" in locals() and hasattr(sandbox, "terminate")
+                else None
+            )
+            confirmed = False
+            if provider_sandbox is not None:
+                confirmed = await self._terminate_provider_sandbox(
+                    provider_sandbox.object_id, provider_sandbox
+                )
             await self._terminate_pool_row(
                 pool_id, None, failure_code="sandbox_start_failed"
             )
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    spend = ChatSandboxSpendService(db, self.settings)
+                    if provider_sandbox is None:
+                        spend.abort_reservation(interval_id, "sandbox_start_failed")
+                    else:
+                        spend.provider_created(interval_id, provider_sandbox.object_id)
+                        spend.terminate(
+                            provider_sandbox.object_id,
+                            "sandbox_start_failed",
+                            confirmed=confirmed,
+                        )
             return 0
         sandbox_id = sandbox.object_id
         landed = False
@@ -851,9 +931,20 @@ class SandboxSessionManager:
                 row.last_health_checked_at = now
                 row.updated_at = now
                 self._finalize_pool_cost(row, now)
+                if interval_id is not None:
+                    ChatSandboxSpendService(db, self.settings).provider_created(
+                        interval_id, sandbox_id, now
+                    )
                 landed = True
         if not landed:
-            await sandbox.terminate.aio(wait=False)
+            confirmed = await self._terminate_provider_sandbox(sandbox_id, sandbox)
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    spend = ChatSandboxSpendService(db, self.settings)
+                    spend.provider_created(interval_id, sandbox_id)
+                    spend.terminate(
+                        sandbox_id, "ownership_changed", confirmed=confirmed
+                    )
             return 0
         logger.info(
             "chat blank pool refill ready pool_id=%s sandbox_id=%s refill_ms=%d",
@@ -909,10 +1000,27 @@ class SandboxSessionManager:
             if sandbox.object_id in known_ids:
                 continue
             try:
-                await sandbox.terminate.aio(wait=False)
+                confirmed = await self._terminate_provider_sandbox(
+                    sandbox.object_id, sandbox
+                )
+                if not confirmed:
+                    raise RuntimeError("provider termination was not confirmed")
+                if self.settings.chat_sandbox_spend_enforcement_enabled:
+                    with self.session_factory() as db, db.begin():
+                        ChatSandboxSpendService(db, self.settings).terminate(
+                            sandbox.object_id,
+                            "pool_orphan_reconciled",
+                            confirmed=True,
+                        )
                 terminated += 1
             except Exception:
-                pass
+                if self.settings.chat_sandbox_spend_enforcement_enabled:
+                    with self.session_factory() as db, db.begin():
+                        ChatSandboxSpendService(db, self.settings).terminate(
+                            sandbox.object_id,
+                            "termination_uncertain",
+                            confirmed=False,
+                        )
         return terminated
 
     async def _listed_pool_sandboxes(self):
@@ -940,8 +1048,10 @@ class SandboxSessionManager:
                 }
             self._lock_capacity(db)
             if enabled:
-                budget = self._pool_budget_projection(db, now)
-                budget_blocked = budget["projected_usd"] > budget["budget_usd"]
+                try:
+                    ChatSandboxSpendService(db, self.settings).assert_available(now)
+                except ChatComputeDisabled:
+                    budget_blocked = True
             rows = list(
                 db.execute(
                     select(ChatSandboxPool)
@@ -1200,6 +1310,12 @@ class SandboxSessionManager:
         pool_lookup_ms: int | None = None,
     ) -> tuple[object, int, bool, str, int | None]:
         started = time.perf_counter()
+        if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+            with self.session_factory() as db, db.begin():
+                try:
+                    ChatSandboxSpendService(db, self.settings).assert_available()
+                except ChatComputeDisabled as error:
+                    raise SandboxError(error.code, str(error)) from error
         if allow_pool:
             with self.session_factory() as db:
                 pool_eligible = self._lease(db, chat_session_id, lock=False) is None
@@ -1219,6 +1335,7 @@ class SandboxSessionManager:
                 pool_miss = True
         deadline = time.monotonic() + self.ready_timeout_seconds
         claim: StartClaim | None = None
+        interval_id: uuid.UUID | None = None
         sandbox_id: str | None = None
         worker_generation: str | None = None
         while claim is None and sandbox_id is None:
@@ -1337,6 +1454,25 @@ class SandboxSessionManager:
                                 creation_token=creation_token,
                                 now=now,
                             )
+                        if claim is not None:
+                            if getattr(
+                                self.settings,
+                                "chat_sandbox_spend_enforcement_enabled",
+                                False,
+                            ):
+                                try:
+                                    interval_id = ChatSandboxSpendService(
+                                        db, self.settings
+                                    ).reserve_interval(
+                                        origin="direct",
+                                        worker_generation=claim.worker_generation,
+                                        chat_session_id=chat_session_id,
+                                        now=now,
+                                    )
+                                except ChatComputeDisabled as error:
+                                    raise SandboxError(
+                                        error.code, str(error)
+                                    ) from error
                 else:
                     claim = self._claim_start(
                         lease, creation_token=creation_token, now=now
@@ -1358,11 +1494,14 @@ class SandboxSessionManager:
                 await asyncio.sleep(0.05)
 
         if claim and claim.stale_sandbox_id:
-            try:
-                stale = await modal.Sandbox.from_id.aio(claim.stale_sandbox_id)
-                await stale.terminate.aio(wait=False)
-            except Exception:
-                pass
+            confirmed = await self._terminate_provider_sandbox(claim.stale_sandbox_id)
+            if self.settings.chat_sandbox_spend_enforcement_enabled:
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        claim.stale_sandbox_id,
+                        "stale_replaced",
+                        confirmed=confirmed,
+                    )
         await self.enforce_warm_cap()
 
         if sandbox_id:
@@ -1436,6 +1575,8 @@ class SandboxSessionManager:
                     self.settings,
                     name=f"chat-{chat_session_id}",
                     tags={
+                        "service": "pwc-chat",
+                        "environment": getattr(self.settings, "environment", "staging"),
                         "chat_session_hash": hashlib.sha256(
                             str(chat_session_id).encode()
                         ).hexdigest()[:16],
@@ -1462,6 +1603,11 @@ class SandboxSessionManager:
             self._mark_start_failed(
                 chat_session_id, claim.token_hash, "sandbox_timeout"
             )
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).abort_reservation(
+                        interval_id, "sandbox_timeout"
+                    )
             raise SandboxError(
                 "sandbox_timeout", "Secure workspace startup timed out"
             ) from error
@@ -1469,6 +1615,11 @@ class SandboxSessionManager:
             self._mark_start_failed(
                 chat_session_id, claim.token_hash, "sandbox_start_failed"
             )
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).abort_reservation(
+                        interval_id, "sandbox_start_failed"
+                    )
             raise SandboxError(
                 "sandbox_start_failed", "Secure workspace startup failed"
             ) from error
@@ -1490,9 +1641,20 @@ class SandboxSessionManager:
                 lease.last_activity_at = datetime.now(UTC)
                 lease.workspace_dirty = False
                 lease.updated_at = datetime.now(UTC)
+                if interval_id is not None:
+                    ChatSandboxSpendService(db, self.settings).provider_created(
+                        interval_id, sandbox_id
+                    )
                 landed = True
         if not landed:
-            await sandbox.terminate.aio(wait=False)
+            confirmed = await self._terminate_provider_sandbox(sandbox_id, sandbox)
+            if interval_id is not None:
+                with self.session_factory() as db, db.begin():
+                    spend = ChatSandboxSpendService(db, self.settings)
+                    spend.provider_created(interval_id, sandbox_id)
+                    spend.terminate(
+                        sandbox_id, "ownership_changed", confirmed=confirmed
+                    )
             raise SandboxError(
                 "sandbox_start_failed", "Secure workspace ownership changed"
             )
@@ -1663,6 +1825,12 @@ class SandboxSessionManager:
         resume: str | None,
         capability: IssuedCapability,
     ) -> AsyncIterator[dict]:
+        if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+            with self.session_factory() as db, db.begin():
+                try:
+                    ChatSandboxSpendService(db, self.settings).assert_available()
+                except ChatComputeDisabled as error:
+                    raise SandboxError(error.code, str(error)) from error
         retrying_pool_assignment = False
         while True:
             try:
@@ -2121,11 +2289,14 @@ class SandboxSessionManager:
         failure_code: str | None,
     ) -> None:
         if sandbox_id:
-            try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-                await sandbox.terminate.aio(wait=False)
-            except Exception:
-                pass
+            confirmed = await self._terminate_provider_sandbox(sandbox_id)
+            if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        sandbox_id, failure_code, confirmed=confirmed
+                    )
+            if not confirmed:
+                failure_code = "termination_uncertain"
         self._finish_owned_operation(
             chat_session_id,
             token_hash=token_hash,
@@ -2141,11 +2312,12 @@ class SandboxSessionManager:
     ) -> None:
         if sandbox_id:
             self._drop_control_by_sandbox(sandbox_id)
-            try:
-                sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-                await sandbox.terminate.aio(wait=False)
-            except Exception:
-                pass
+            confirmed = await self._terminate_provider_sandbox(sandbox_id)
+            if self.settings.chat_sandbox_spend_enforcement_enabled:
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        sandbox_id, "session_deleted", confirmed=confirmed
+                    )
         if snapshot_id:
             await self.snapshots.delete(snapshot_id)
 
@@ -2215,12 +2387,13 @@ class SandboxSessionManager:
                 # Workspace continuity is recoverable; the transcript remains
                 # authoritative and the next sandbox safely starts empty.
                 pass
-        try:
-            self._drop_control(chat_session_id)
-            sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-            await sandbox.terminate.aio(wait=False)
-        except Exception:
-            pass
+        self._drop_control(chat_session_id)
+        confirmed = await self._terminate_provider_sandbox(sandbox_id)
+        if self.settings.chat_sandbox_spend_enforcement_enabled:
+            with self.session_factory() as db, db.begin():
+                ChatSandboxSpendService(db, self.settings).terminate(
+                    sandbox_id, "snapshot_complete", confirmed=confirmed
+                )
         self._finish_owned_operation(
             chat_session_id,
             token_hash=token_hash,
@@ -2261,6 +2434,262 @@ class SandboxSessionManager:
         excess = max(0, counted - self.settings.chat_sandbox_max_warm)
         evict = list(reversed(idle[-excess:])) if excess else []
         return await self._terminate_many(evict)
+
+    async def enforce_spend_cap(self) -> dict[str, int | str]:
+        """Apply the durable trip time to every worker and tagged provider orphan."""
+        with self.session_factory() as db, db.begin():
+            status = ChatSandboxSpendService(db, self.settings).status()
+        if status["circuit_state"] != "tripped":
+            return {"state": status["circuit_state"], "terminated": 0, "uncertain": 0}
+        now = datetime.now(UTC)
+        tripped_at = status["tripped_at"] or now
+        if tripped_at.tzinfo is None:
+            tripped_at = tripped_at.replace(tzinfo=UTC)
+        deadline = tripped_at + timedelta(
+            seconds=self.settings.chat_sandbox_drain_grace_seconds
+        )
+        with self.session_factory() as db:
+            immediate = list(
+                db.execute(
+                    select(ChatSandboxLease.chat_session_id).where(
+                        ChatSandboxLease.state.in_(
+                            ["starting", "ready", "idle", "terminating"]
+                        )
+                    )
+                ).scalars()
+            )
+            blanks = list(
+                db.execute(
+                    select(ChatSandboxPool.id, ChatSandboxPool.modal_sandbox_id).where(
+                        ChatSandboxPool.state.in_(
+                            ["starting", "blank_ready", "draining"]
+                        )
+                    )
+                ).all()
+            )
+
+        async def terminate_budget_session(session_id: uuid.UUID) -> bool:
+            await self.terminate(session_id, failure_code="chat_disabled_interrupted")
+            return True
+
+        terminated = (
+            sum(
+                await asyncio.gather(
+                    *(terminate_budget_session(session_id) for session_id in immediate)
+                )
+            )
+            if immediate
+            else 0
+        )
+        for pool_id, sandbox_id in blanks:
+            terminated += bool(
+                await self._terminate_pool_row(
+                    pool_id, sandbox_id, failure_code="chat_disabled_interrupted"
+                )
+            )
+        remaining = (deadline - datetime.now(UTC)).total_seconds()
+        if remaining > 0:
+            await asyncio.sleep(
+                min(remaining, self.settings.chat_sandbox_watchdog_seconds)
+            )
+        if datetime.now(UTC) >= deadline:
+            for running in list(self._processes.values()):
+                running.cancel_requested = True
+                with contextlib.suppress(Exception):
+                    running.process.stdin.write(
+                        encode_frame(
+                            {"v": 1, "type": "cancel", "request_id": running.request_id}
+                        )
+                    )
+                    await running.process.stdin.drain.aio()
+            with self.session_factory() as db, db.begin():
+                db.query(ChatTurnCapability).filter(
+                    ChatTurnCapability.revoked_at.is_(None)
+                ).update(
+                    {ChatTurnCapability.revoked_at: datetime.now(UTC)},
+                    synchronize_session=False,
+                )
+                busy = list(
+                    db.execute(
+                        select(ChatSandboxLease.chat_session_id).where(
+                            ChatSandboxLease.state == "busy"
+                        )
+                    ).scalars()
+                )
+            if busy:
+                terminated += sum(
+                    await asyncio.gather(
+                        *(terminate_budget_session(session_id) for session_id in busy)
+                    )
+                )
+        uncertain = 0
+        async for sandbox in modal.Sandbox.list.aio(
+            tags={"service": "pwc-chat", "environment": self.settings.environment}
+        ):
+            try:
+                confirmed = await self._terminate_provider_sandbox(
+                    sandbox.object_id, sandbox
+                )
+                if not confirmed:
+                    raise RuntimeError("provider termination was not confirmed")
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        sandbox.object_id, "chat_disabled_interrupted", confirmed=True
+                    )
+                terminated += 1
+            except Exception:
+                uncertain += 1
+                with self.session_factory() as db, db.begin():
+                    ChatSandboxSpendService(db, self.settings).terminate(
+                        sandbox.object_id, "termination_uncertain", confirmed=False
+                    )
+        with self.session_factory() as db, db.begin():
+            remaining_live = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(ChatSandboxLease)
+                    .where(
+                        ChatSandboxLease.state.in_(
+                            ["starting", "ready", "busy", "idle", "terminating"]
+                        )
+                    )
+                )
+                or 0
+            ) + (
+                db.scalar(
+                    select(func.count())
+                    .select_from(ChatSandboxPool)
+                    .where(
+                        ChatSandboxPool.state.in_(
+                            ["starting", "blank_ready", "draining"]
+                        )
+                    )
+                )
+                or 0
+            )
+            ChatSandboxSpendService(db, self.settings).record_kill_sweep(
+                complete=uncertain == 0 and remaining_live == 0
+            )
+        return {"state": "tripped", "terminated": terminated, "uncertain": uncertain}
+
+    async def deliver_spend_alerts(self) -> int:
+        """Deliver bounded, content-free circuit transitions without blocking kill sweeps."""
+        from backend.models.database import ChatSandboxCircuitEvent
+
+        with self.session_factory() as db:
+            now = datetime.now(UTC)
+            events = list(
+                db.execute(
+                    select(ChatSandboxCircuitEvent)
+                    .where(
+                        ChatSandboxCircuitEvent.delivery_state.in_(
+                            ["pending", "retry"]
+                        ),
+                        ChatSandboxCircuitEvent.delivery_attempts < 5,
+                        (
+                            ChatSandboxCircuitEvent.next_delivery_attempt_at.is_(None)
+                            | (ChatSandboxCircuitEvent.next_delivery_attempt_at <= now)
+                        ),
+                    )
+                    .order_by(ChatSandboxCircuitEvent.created_at)
+                    .limit(10)
+                ).scalars()
+            )
+            event_ids = [event.id for event in events]
+        delivered = 0
+        for event_id in event_ids:
+            with self.session_factory() as db, db.begin():
+                event = db.execute(
+                    select(ChatSandboxCircuitEvent)
+                    .where(ChatSandboxCircuitEvent.id == event_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if event is None or event.delivery_state not in {"pending", "retry"}:
+                    continue
+                event.delivery_attempts += 1
+                payload = {
+                    "text": (
+                        f"PwC chat compute {event.severity}: {event.event_type}; "
+                        f"environment={event.details.get('environment')}; cycle={event.details.get('billing_cycle')}; "
+                        f"release={event.details.get('release')}; effective_microusd={event.details.get('effective_microusd')}; "
+                        f"threshold_microusd={event.details.get('threshold_microusd')}; "
+                        f"provider_reserve_microusd={event.details.get('remaining_provider_reserve_microusd')}; "
+                        f"state={event.details.get('circuit_state')}; live={event.details.get('live_count')}; "
+                        f"uncertain={event.details.get('uncertain_count')}; event_id={event.id}; "
+                        f"dashboard=/cron-dashboard; runbook={self.settings.chat_sandbox_runbook_url}"
+                    )
+                }
+            try:
+                if not self.settings.chat_sandbox_slack_webhook_url:
+                    raise RuntimeError("Slack webhook is not configured")
+                async with httpx.AsyncClient(timeout=5) as client:
+                    response = await client.post(
+                        self.settings.chat_sandbox_slack_webhook_url, json=payload
+                    )
+                    response.raise_for_status()
+            except Exception as error:
+                logger.critical(
+                    "chat spend alert delivery failed event_id=%s error=%s",
+                    event_id,
+                    type(error).__name__,
+                )
+                with self.session_factory() as db, db.begin():
+                    event = db.get(ChatSandboxCircuitEvent, event_id)
+                    if event:
+                        event.delivery_state = (
+                            "failed" if event.delivery_attempts >= 5 else "retry"
+                        )
+                        event.next_delivery_attempt_at = datetime.now(UTC) + timedelta(
+                            seconds=min(300, 15 * (2**event.delivery_attempts))
+                        )
+                continue
+            with self.session_factory() as db, db.begin():
+                event = db.get(ChatSandboxCircuitEvent, event_id)
+                if event:
+                    event.delivery_state = "delivered"
+                    event.next_delivery_attempt_at = None
+                    event.delivered_at = datetime.now(UTC)
+                    delivered += 1
+        return delivered
+
+    async def reconcile_spend_provider(self) -> bool:
+        """Refresh the provider floor at most hourly; local metering remains authoritative."""
+        now = datetime.now(UTC)
+        if (
+            self._last_spend_reconciliation_at
+            and now - self._last_spend_reconciliation_at < timedelta(hours=1)
+        ):
+            return False
+        self._last_spend_reconciliation_at = now
+        cycle = now.date().replace(day=1)
+        start = datetime(cycle.year, cycle.month, 1, tzinfo=UTC)
+        try:
+            items = await modal.Workspace.from_context().billing.report.aio(
+                start=start, end=now, resolution="h"
+            )
+            dollars = sum(
+                item.cost
+                for item in items
+                if item.description == MODAL_APP_NAME
+                and item.environment_name
+                in {"main", self.settings.chat_sandbox_modal_environment}
+            )
+            floor_microusd = round(dollars * 1_000_000)
+            with self.session_factory() as db, db.begin():
+                ChatSandboxSpendService(db, self.settings).reconcile_provider_floor(
+                    floor_microusd, now
+                )
+            return True
+        except Exception as error:
+            logger.error(
+                "chat spend provider reconciliation unavailable error=%s",
+                type(error).__name__,
+            )
+            with self.session_factory() as db, db.begin():
+                ChatSandboxSpendService(db, self.settings).reconciliation_unavailable(
+                    now
+                )
+            return False
 
     async def reconcile(self) -> int:
         """Converge expired creations and provider-lost sandbox leases."""

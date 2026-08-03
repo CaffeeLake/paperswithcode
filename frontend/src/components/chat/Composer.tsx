@@ -19,9 +19,11 @@ interface ComposerProps {
   models?: ModelPickerOption[];
   selectedModel?: string;
   onModelChange?: (model: string) => void;
+  disabled?: boolean;
+  describedBy?: string;
 }
 
-const Composer: React.FC<ComposerProps> = ({ onSend, busy, placeholder, autoFocus, draft, onDraftChange, onStop, models = [], selectedModel, onModelChange }) => {
+const Composer: React.FC<ComposerProps> = ({ onSend, busy, placeholder, autoFocus, draft, onDraftChange, onStop, models = [], selectedModel, onModelChange, disabled = false, describedBy }) => {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -43,7 +45,7 @@ const Composer: React.FC<ComposerProps> = ({ onSend, busy, placeholder, autoFocu
 
   const submit = () => {
     const text = value.trim();
-    if (!text || busy) return;
+    if (!text || busy || disabled) return;
     setValue("");
     onDraftChange?.("");
     onSend(text);
@@ -63,6 +65,7 @@ const Composer: React.FC<ComposerProps> = ({ onSend, busy, placeholder, autoFocu
             submit();
           }
         }}
+        aria-describedby={describedBy}
       />
       <div className="chat-composer-row">
         <div className="chat-composer-tools">
@@ -80,7 +83,7 @@ const Composer: React.FC<ComposerProps> = ({ onSend, busy, placeholder, autoFocu
           type="button"
           className={`chat-send${(busy || value.trim()) ? " chat-send-on" : ""}`}
           onClick={busy ? onStop : submit}
-          disabled={busy ? !onStop : !value.trim()}
+          disabled={disabled || (busy ? !onStop : !value.trim())}
           aria-label={busy ? "Stop generating" : "Send message"}
         >
           {busy ? (onStop ? <span aria-hidden="true">■</span> : <Spinner light />) : <ArrowUpIcon />}

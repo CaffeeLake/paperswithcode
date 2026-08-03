@@ -79,6 +79,7 @@ export function useChat(options: UseChatOptions) {
     PendingGeneration,
     "question" | "retryAt" | "retryAfterSeconds"
   > | null>(null);
+  const [disabledRequest, setDisabledRequest] = useState<{ question: string } | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const optionsRef = useRef(options);
   const promptRef = useRef("");
@@ -427,7 +428,15 @@ export function useChat(options: UseChatOptions) {
         streamFailed = true;
         if (!controller.signal.aborted) {
           clearWorkspaceStatus(controller);
-          if (error instanceof ChatStreamError && error.code === "chat_capacity") {
+          if (error instanceof ChatStreamError && error.code === "chat_temporarily_disabled") {
+            capacityDenied = true;
+            setDisabledRequest({ question });
+            if (messagesGenerationRef.current === messagesGeneration) {
+              setMessages(original);
+              messagesRef.current = original;
+              setSessionError("");
+            }
+          } else if (error instanceof ChatStreamError && error.code === "chat_capacity") {
             capacityDenied = true;
             const retryAfterSeconds = error.retryAfterSeconds ?? 5;
             const pending: PendingGeneration = {
@@ -707,10 +716,12 @@ export function useChat(options: UseChatOptions) {
     papers,
     sessionError,
     capacityRequest,
+    disabledRequest,
     send,
     editAndResend,
     retryCapacity,
     cancelCapacity,
+    dismissDisabled: () => setDisabledRequest(null),
     stop,
     toggleBlock,
     reset,

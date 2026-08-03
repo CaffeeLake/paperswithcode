@@ -149,10 +149,12 @@ async def lifespan(app: FastAPI):
         async def maintain_sandboxes() -> None:
             latency_cleanup_date = None
             openrouter_maintenance_date = None
-            active_spend_alerting = False
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(settings.chat_sandbox_watchdog_seconds)
                 operations = [
+                    manager.enforce_spend_cap,
+                    manager.deliver_spend_alerts,
+                    manager.reconcile_spend_provider,
                     manager.reconcile,
                     reconcile_stale_latency,
                     manager.maintain_pool,
@@ -235,31 +237,6 @@ async def lifespan(app: FastAPI):
 
                     operations.append(maintain_openrouter_accounting)
 
-                async def monitor_active_spend() -> None:
-                    nonlocal active_spend_alerting
-                    with db_manager.session_local() as db:
-                        status = ChatLatencyService(db).active_spend_status()
-                    should_alert = status["should_alert"]
-                    if should_alert and not active_spend_alerting:
-                        logging.getLogger(__name__).warning(
-                            "chat active spend alert "
-                            "projected_monthly_usd=%.2f threshold_usd=%.2f "
-                            "month_to_date_usd=%.2f cost_per_completed_turn_usd=%.6f",
-                            status["projected_monthly_cost_usd"],
-                            status["alert_threshold_usd"],
-                            status["month_to_date_cost_usd"],
-                            status["cost_per_completed_turn_usd"],
-                        )
-                    elif active_spend_alerting and not should_alert:
-                        logging.getLogger(__name__).info(
-                            "chat active spend alert recovered "
-                            "projected_monthly_usd=%.2f threshold_usd=%.2f",
-                            status["projected_monthly_cost_usd"],
-                            status["alert_threshold_usd"],
-                        )
-                    active_spend_alerting = should_alert
-
-                operations.append(monitor_active_spend)
                 for operation in operations:
                     try:
                         await operation()

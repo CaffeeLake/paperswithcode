@@ -140,10 +140,11 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    routes.
 4. Apply `add_chat_sandbox_runtime.sql`, `add_chat_turn_latency.sql`,
    `add_chat_sandbox_pool.sql`, `add_chat_active_cost.sql`,
-   `add_chat_user_billing.sql`, `add_chat_qualification_metadata.sql`, and
-   `add_chat_openrouter_user_budget.sql` as
+   `add_chat_user_billing.sql`, `add_chat_qualification_metadata.sql`,
+   `add_chat_openrouter_user_budget.sql`, and
+   `add_chat_sandbox_spend_cap.sql` as
    PostgreSQL superuser with
-   `search_path=staging,public`. Both migrations refuse any other schema,
+   `search_path=staging,public`. The guarded migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
    revoke the production application role. The pool migration remains required
    even while `PWC_CHAT_BLANK_POOL_ENABLED=false`, because readiness validates

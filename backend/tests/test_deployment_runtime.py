@@ -288,6 +288,19 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_pwc_cli_version=runtime["pwc_cli_version"],
         chat_worker_contract_version=runtime["worker_contract_version"],
         chat_system_prompt_sha256=runtime["system_prompt_sha256"],
+        chat_sandbox_spend_enforcement_enabled=environment == "staging",
+        chat_sandbox_budget_attestation=(
+            "modal-workspace-250-staging-125-v1" if environment == "staging" else ""
+        ),
+        chat_sandbox_modal_environment=(
+            "pwc-chat-staging" if environment == "staging" else ""
+        ),
+        chat_sandbox_slack_webhook_url=(
+            "https://hooks.slack.test/services/test" if environment == "staging" else ""
+        ),
+        chat_sandbox_runbook_url=(
+            "https://example.test/runbook" if environment == "staging" else ""
+        ),
         chat_gateway_url=(
             "https://chat-gateway-staging.paperswithcode.co/api/internal/chat-gateway"
             if environment == "staging"

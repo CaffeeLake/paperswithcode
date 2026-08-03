@@ -871,6 +871,40 @@ export interface TrendsResponse {
   hf_artifacts: TrendPoint[];
 }
 
+export interface ChatAvailability {
+  status: 'available' | 'paused';
+  reason: 'chat_temporarily_disabled' | null;
+  expected_recovery_at: string | null;
+}
+
+export interface ChatSandboxSpendStatus {
+  environment: string;
+  billing_cycle: string;
+  cycle_end_at: string;
+  circuit_state: 'armed' | 'warning' | 'tripped';
+  trip_reason: string | null;
+  tripped_at: string | null;
+  estimated_microusd: number;
+  provider_floor_microusd: number;
+  effective_microusd: number;
+  warning_microusd: number;
+  application_cap_microusd: number;
+  environment_cap_microusd: number;
+  workspace_cap_microusd: number;
+  remaining_microusd: number;
+  reconciliation_state: 'fresh' | 'stale' | 'unavailable';
+  last_metered_at: string | null;
+  last_reconciled_at: string | null;
+  next_reconciliation_at: string | null;
+  live_count: number;
+  termination_uncertain_count: number;
+  live_states: Record<'starting' | 'blank' | 'busy' | 'idle' | 'draining' | 'termination_uncertain', number>;
+  burn_rate_microusd_per_hour: number | null;
+  projected_cap_hit_at: string | null;
+  daily_spend: Array<{ date: string; blank_pool_microusd: number; assigned_microusd: number }>;
+  events: Array<{ id: string; type: string; severity: string; reason: string | null; created_at: string }>;
+}
+
 class ApiClient {
   private baseUrl: string;
   private curation: PaperCurationCoordinator;
@@ -1928,6 +1962,14 @@ class ApiClient {
 
   async getOpenRouterUsage(): Promise<OpenRouterUsageStatus> {
     return this.request<OpenRouterUsageStatus>('/chat/usage', { cache: 'no-store' });
+  }
+
+  async getChatAvailability(): Promise<ChatAvailability> {
+    return this.request<ChatAvailability>('/chat/availability', { cache: 'no-store' });
+  }
+
+  async getChatSandboxSpend(): Promise<ChatSandboxSpendStatus> {
+    return this.request<ChatSandboxSpendStatus>('/chat/admin/sandbox-spend', { cache: 'no-store' });
   }
 
   async getOpenRouterCredential(): Promise<OpenRouterCredentialStatus> {

@@ -4964,6 +4964,17 @@ html { scroll-behavior: smooth; }
   gap: 9px;
   margin-top: 20px;
 }
+
+.chat-paused-banner {
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--muted);
+  padding: 0.7rem 0.85rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
 .chat-capacity-dialog-actions button {
   padding: 8px 14px;
   border-radius: 7px;

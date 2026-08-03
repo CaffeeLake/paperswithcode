@@ -45,6 +45,7 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "LANGFUSE_SECRET_KEY",
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
+    "MODAL_ENVIRONMENT",
     "PWC_CHAT_DEFAULT_BACKEND",
     "PWC_CHAT_LANGFUSE_ENABLED",
     "PWC_CHAT_MAX_CONCURRENCY",
@@ -73,6 +74,22 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_SANDBOX_MEMORY_LIMIT_MIB",
     "PWC_CHAT_SANDBOX_MEMORY_MIB",
     "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP",
+    "PWC_CHAT_SANDBOX_WARNING_MICROUSD",
+    "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED",
+    "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD",
+    "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD",
+    "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD",
+    "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION",
+    "PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT",
+    "PWC_CHAT_SANDBOX_WATCHDOG_SECONDS",
+    "PWC_CHAT_SANDBOX_DRAIN_GRACE_SECONDS",
+    "PWC_CHAT_SANDBOX_TERMINATION_GRACE_SECONDS",
+    "PWC_CHAT_SANDBOX_RECONCILIATION_ALLOWANCE_MICROUSD",
+    "PWC_CHAT_SANDBOX_RECONCILIATION_STALE_SECONDS",
+    "PWC_CHAT_SANDBOX_PROVIDER_FLOOR_MICROUSD",
+    "PWC_CHAT_SANDBOX_PROVIDER_REPORTED_AT",
+    "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL",
+    "PWC_CHAT_SANDBOX_RUNBOOK_URL",
     "PWC_CHAT_SYSTEM_PROMPT_SHA256",
     "PWC_CHAT_WORKER_CONTRACT_VERSION",
     "PWC_CHAT_WORKER_READY_TIMEOUT_SECONDS",
@@ -320,6 +337,25 @@ def staging_chat_capacity_values() -> dict[str, str]:
     }
 
 
+def staging_chat_spend_values() -> dict[str, str]:
+    return {
+        "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "75000000",
+        "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": "modal-workspace-250-staging-125-v1",
+        "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD": "100000000",
+        "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD": "125000000",
+        "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD": "250000000",
+        "PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT": "pwc-chat-staging",
+        "MODAL_ENVIRONMENT": "pwc-chat-staging",
+        "PWC_CHAT_SANDBOX_WATCHDOG_SECONDS": "15",
+        "PWC_CHAT_SANDBOX_DRAIN_GRACE_SECONDS": "30",
+        "PWC_CHAT_SANDBOX_TERMINATION_GRACE_SECONDS": "30",
+        "PWC_CHAT_SANDBOX_RECONCILIATION_ALLOWANCE_MICROUSD": "1000000",
+        "PWC_CHAT_SANDBOX_RECONCILIATION_STALE_SECONDS": "7200",
+        "PWC_CHAT_SANDBOX_RUNBOOK_URL": "https://github.com/huggingface/paperswithcode/blob/main/docs/chat-sandbox-spend-runbook.md",
+    }
+
+
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
@@ -388,7 +424,7 @@ def main() -> int:
             )
         staging = assign(
             read_lines(CONFIG_ROOT / "staging.env"),
-            staging_chat_capacity_values(),
+            {**staging_chat_capacity_values(), **staging_chat_spend_values()},
         )
         write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
         print("configured qualified staging chat capacity")

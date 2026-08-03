@@ -243,6 +243,58 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError("staging must not reuse the production JWT secret")
         if not settings.chat_enabled:
             raise RuntimeError("staging chat feature must be enabled")
+        if (
+            settings.chat_default_backend == "modal_cli"
+            and not settings.chat_sandbox_spend_enforcement_enabled
+        ):
+            raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
+        if not (
+            settings.chat_sandbox_warning_microusd
+            < settings.chat_sandbox_application_cap_microusd
+            < settings.chat_sandbox_environment_cap_microusd
+            < settings.chat_sandbox_workspace_cap_microusd
+        ):
+            raise RuntimeError(
+                "sandbox spend thresholds must satisfy warning < application < environment < workspace"
+            )
+        if settings.chat_default_backend == "modal_cli":
+            expected_modal_environment = f"pwc-chat-{settings.environment}"
+            if settings.chat_sandbox_modal_environment != expected_modal_environment:
+                raise RuntimeError(
+                    f"PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT must be {expected_modal_environment}"
+                )
+            if not settings.chat_sandbox_budget_attestation:
+                raise RuntimeError("PWC_CHAT_SANDBOX_BUDGET_ATTESTATION is required")
+            if not settings.chat_sandbox_slack_webhook_url:
+                raise RuntimeError("PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL is required")
+            if not settings.chat_sandbox_runbook_url:
+                raise RuntimeError("PWC_CHAT_SANDBOX_RUNBOOK_URL is required")
+            rate = (
+                settings.chat_sandbox_cpu_limit or settings.chat_sandbox_cpu
+            ) * 40 + (
+                settings.chat_sandbox_memory_limit_mib
+                or settings.chat_sandbox_memory_mib
+            ) / 1024 * 7
+            burst = (
+                int(
+                    rate
+                    * settings.chat_sandbox_total_live_cap
+                    * (
+                        settings.chat_sandbox_watchdog_seconds
+                        + settings.chat_sandbox_drain_grace_seconds
+                        + settings.chat_sandbox_termination_grace_seconds
+                    )
+                )
+                + settings.chat_sandbox_reconciliation_allowance_microusd
+            )
+            if (
+                settings.chat_sandbox_environment_cap_microusd
+                - settings.chat_sandbox_application_cap_microusd
+                < burst
+            ):
+                raise RuntimeError(
+                    "sandbox provider reserve is smaller than the worst-case aggregate burst"
+                )
         if not all(
             (
                 settings.chat_modal_image_version,
@@ -400,6 +452,9 @@ def validate_chat_schema(db) -> None:
                     ('chat_shares'),
                     ('chat_sandbox_leases'),
                     ('chat_sandbox_pool'),
+                    ('chat_sandbox_compute_intervals'),
+                    ('chat_sandbox_budget_states'),
+                    ('chat_sandbox_circuit_events'),
                     ('chat_turn_capabilities'),
                     ('chat_turn_latency'),
                     ('chat_openrouter_credentials'),
@@ -429,6 +484,9 @@ def validate_chat_schema(db) -> None:
                 ('chat_sandbox_pool', 'worker_generation'),
                 ('chat_sandbox_pool', 'billing_month'),
                 ('chat_sandbox_pool', 'estimated_blank_cost_usd'),
+                ('chat_sandbox_compute_intervals', 'accrued_microusd'),
+                ('chat_sandbox_budget_states', 'circuit_state'),
+                ('chat_sandbox_budget_states', 'provider_floor_microusd'),
                 ('chat_turn_latency', 'request_id'),
                 ('chat_turn_latency', 'terminal_status'),
                 ('chat_turn_latency', 'browser_first_visible_delta_ms'),

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Share2, X as XIcon } from "lucide-react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import Composer from "@/components/chat/Composer";
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
@@ -18,6 +18,7 @@ import {
   readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
+import { apiClient } from "@/lib/api";
 import { apiUrl, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import {
@@ -156,6 +157,26 @@ export const ChatCapacityDialog: React.FC<{
   );
 };
 
+export const ChatDisabledDialog: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
+  return <div className="chat-capacity-dialog-backdrop" role="presentation">
+    <div className="chat-capacity-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="chat-disabled-title" aria-describedby="chat-disabled-description"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } }}>
+      <h2 id="chat-disabled-title">Chat is temporarily disabled</h2>
+      <p id="chat-disabled-description">We've temporarily paused new research runs. Your message wasn't sent, and your draft is still here. Please try again later.</p>
+      <div className="chat-capacity-dialog-actions">
+        <button ref={closeRef} type="button" className="chat-capacity-cancel" onClick={onClose}>Keep editing</button>
+      </div>
+    </div>
+  </div>;
+};
+
 type RouteSessionState = {
   id: string;
   status: "loading" | "loaded" | "error";
@@ -169,6 +190,15 @@ const ChatView: React.FC = () => {
   const { user, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const staging = isStagingEnvironment();
+  const availabilityQuery = useQuery({
+    queryKey: ["chatAvailability"],
+    queryFn: () => apiClient.getChatAvailability(),
+    refetchInterval: 30000,
+    retry: false,
+    enabled: isChatLive() && staging,
+  });
+  const chatPaused = availabilityQuery.data?.status === "paused";
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionError, setSessionError] = useState("");
@@ -184,7 +214,6 @@ const ChatView: React.FC = () => {
   );
   const selectedProvider = models.find((model) => model.id === selectedModel)?.provider
     ?? "huggingface";
-  const staging = isStagingEnvironment();
   const openRouterCredentialQuery = useOpenRouterCredential(
     Boolean(user && selectedProvider === "openrouter"),
   );
@@ -722,8 +751,9 @@ const ChatView: React.FC = () => {
             fallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
             byokExpected={byokExpected}
           />
-          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
-          <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" onClick={() => send(example)}>{example}</button>)}</div>
+          {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
+          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} />
+          <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" disabled={chatPaused} onClick={() => send(example)}>{example}</button>)}</div>
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
           <div className="chat-conversation" ref={scrollRef}><div className="chat-conversation-inner">
@@ -766,7 +796,8 @@ const ChatView: React.FC = () => {
               fallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
               byokExpected={byokExpected}
             />
-            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} />
+            {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
+            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               {selectedProvider === "openrouter"
                 ? <span className="chat-provider-attribution">Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>.</span>
@@ -807,6 +838,11 @@ const ChatView: React.FC = () => {
           }}
         />
       )}
+      {chat.disabledRequest && <ChatDisabledDialog onClose={() => {
+        setDraft(chat.disabledRequest?.question ?? draft);
+        chat.dismissDisabled();
+        void availabilityQuery.refetch();
+      }} />}
     </div>
   );
 };

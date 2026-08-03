@@ -492,3 +492,6 @@ The following summarizes the live structure. See the database for full DDL.
 Keep this document aligned with `backend/models/database.py` and the migrations in
 `backend/database/migrations/`. The live database remains authoritative when
 models and migrations disagree.
+### Chat sandbox spend circuit
+
+`chat_sandbox_compute_intervals` is the append-only, one-row-per-provider-sandbox lifecycle ledger. `chat_sandbox_budget_states` contains one durable circuit per environment and UTC billing cycle, while `chat_sandbox_circuit_events` records content-free state transitions and alert delivery. Claimed blank workers retain the same interval row; only ownership changes.

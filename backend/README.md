@@ -269,6 +269,14 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_CHAT_MAX_TOOL_CALLS` | 12 | Maximum built-in tool calls per Modal turn |
 | `PWC_CHAT_MAX_DIRECT_SEARCH_CALLS` | 4 | Maximum direct `pwc search` calls per Modal turn |
 | `PWC_CHAT_SANDBOX_READY_TIMEOUT_SECONDS` | 30 | Modal sandbox readiness deadline |
+| `PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED` | false | Enable durable full-lifecycle sandbox spend enforcement (required for deployed Modal chat) |
+| `PWC_CHAT_SANDBOX_WARNING_MICROUSD` | 75000000 | Internal operator-warning threshold, in integer microdollars |
+| `PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD` | 100000000 | Durable application trip threshold, in integer microdollars |
+| `PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD` | 125000000 | Attested provider Environment cap, in integer microdollars |
+| `PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD` | 250000000 | Attested provider Workspace cap, in integer microdollars |
+| `PWC_CHAT_SANDBOX_BUDGET_ATTESTATION` | | Reviewed provider-policy attestation required by deployed Modal chat |
+| `PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT` | pwc-chat-staging | Dedicated Modal Environment expected by runtime validation |
+| `PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL` | | Secret-backed operations alert webhook |
 | `PWC_CHAT_AGENT_TIMEOUT_SECONDS` | 180 | Complete Agent SDK turn deadline |
 | `PWC_CHAT_BASH_TIMEOUT_SECONDS` | 30 | Per-Bash-call deadline |
 | `PWC_CHAT_HF_BILL_TO` | | Optional HF organization slug billed for chat inference |

@@ -385,7 +385,9 @@ export const AssistantMessage: React.FC<{
         </div>
       )}
       {msg.error && <div className="chat-error">
-        <span>{msg.errorCode === "chat_session_quota_exceeded"
+        <span>{msg.errorCode === "chat_disabled_interrupted"
+          ? "Chat was disabled while this response was running. The partial response is saved. Please try again later."
+          : msg.errorCode === "chat_session_quota_exceeded"
           ? msg.error
           : `The assistant hit an error: ${msg.error}`}</span>
         {["hf_inference_billing_required", "hf_inference_billing_exhausted", "hf_inference_credential_expired"].includes(msg.errorCode ?? "") && (

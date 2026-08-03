@@ -147,6 +147,25 @@ describe("useChat billing failures", () => {
 });
 
 describe("useChat durable capacity handling", () => {
+  it("preserves the draft without a timed retry when chat is disabled", async () => {
+    streamChatMock.mockImplementation(() => (async function* () {
+      yield* stream()();
+      throw new ChatStreamError(
+        "Chat is temporarily disabled",
+        "chat_temporarily_disabled",
+        503,
+      );
+    })());
+    const original = uiTurn("user-1", "Earlier");
+    const { result } = renderChat();
+    act(() => result.current.load(original));
+    act(() => expect(result.current.send("Keep this draft")).toBe(true));
+    await waitFor(() => expect(result.current.disabledRequest).not.toBeNull());
+    expect(result.current.disabledRequest?.question).toBe("Keep this draft");
+    expect(result.current.capacityRequest).toBeNull();
+    expect(result.current.messages).toEqual(original);
+  });
+
   it("uses the same popup state for a brand-new chat", async () => {
     let request: ChatStreamRequest | undefined;
     streamChatMock.mockImplementation((next: ChatStreamRequest) => {

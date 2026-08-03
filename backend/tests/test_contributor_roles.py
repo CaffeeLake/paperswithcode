@@ -292,3 +292,12 @@ def test_representative_excluded_boundaries_remain_admin_only():
     }
     for key, dependency in expected.items():
         assert dependency in routes[key]
+
+
+def test_chat_spend_dashboard_route_is_admin_only():
+    from backend.routers.chat import router
+
+    route = next(
+        route for route in router.routes if route.path == "/chat/admin/sandbox-spend"
+    )
+    assert "require_admin" in _dependency_names(route)

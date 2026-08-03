@@ -727,6 +727,16 @@ class ChatStreamOrchestrator:
             elif kind == "tool_result":
                 self.trace.finish_tool(event)
             if kind == "error":
+                budget_interrupted = event.get("code") in {
+                    "chat_temporarily_disabled",
+                    "chat_disabled_interrupted",
+                }
+                if budget_interrupted:
+                    event["code"] = "chat_disabled_interrupted"
+                    event["message"] = (
+                        "Chat was disabled while this response was running. "
+                        "The partial response is saved. Please try again later."
+                    )
                 provider = self.settings.chat_route_providers.get(
                     self.admission.model_route
                 )
@@ -774,7 +784,7 @@ class ChatStreamOrchestrator:
                     self.settings,
                     self.admission,
                     event.get("code") or "provider_error",
-                    False,
+                    budget_interrupted,
                     self.projection.completed_blocks(),
                 )
                 self.terminal = "error"
