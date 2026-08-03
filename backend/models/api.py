@@ -14,6 +14,34 @@ from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class PaperBucketArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["model", "dataset", "space"]
+    repo_id: str = Field(min_length=3, max_length=256)
+
+
+class PaperBucketCopyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bucket_id: str = Field(min_length=3, max_length=256)
+    create: bool = True
+    private: bool = False
+    include_pdf: bool = True
+    artifacts: List[PaperBucketArtifact] = Field(default_factory=list, max_length=20)
+
+
+class PaperBucketCopyError(BaseModel):
+    artifact: str
+    message: str
+
+
+class PaperBucketCopyResponse(BaseModel):
+    bucket_id: str
+    copied: List[str]
+    errors: List[PaperBucketCopyError]
+
+
 class Paper(BaseModel):
     """
     Paper object matching the original PapersWithCode API specification.

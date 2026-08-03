@@ -182,6 +182,31 @@ export interface Paper {
   leaderboard_ranks?: LeaderboardRankSummary[];
 }
 
+export interface PaperBucketCopyRequest {
+  bucket_id: string;
+  create: boolean;
+  private: boolean;
+  include_pdf: boolean;
+  artifacts: Array<{ kind: 'model' | 'dataset' | 'space'; repo_id: string }>;
+}
+
+export interface PaperBucketCopyResponse {
+  bucket_id: string;
+  copied: string[];
+  errors: Array<{ artifact: string; message: string }>;
+}
+
+export async function copyPaperToBucket(
+  paperId: string,
+  payload: PaperBucketCopyRequest,
+): Promise<PaperBucketCopyResponse> {
+  return requestJson<PaperBucketCopyResponse>(
+    API_BASE_URL,
+    `/papers/${encodeURIComponent(paperId)}/copy-to-bucket`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
 export interface Author {
   id: string;
   full_name: string;

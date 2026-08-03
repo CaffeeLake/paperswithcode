@@ -12,12 +12,22 @@ from datetime import date
 from typing import Optional, List, Dict, Any, Literal
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Response
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+from backend.config import get_settings
 from backend.database.connection import get_database_session
 from backend.models.api import (
     Paper,
@@ -27,6 +37,8 @@ from backend.models.api import (
     RelatedPaperRecommendation,
     PaperVersions,
     VersionComparison,
+    PaperBucketCopyRequest,
+    PaperBucketCopyResponse,
 )
 from backend.models.database import (
     Paper as DBPaper,
@@ -58,8 +70,17 @@ from backend.utils.auth import (
     catalog_mutation_context,
     require_admin,
     require_contributor,
+    require_user,
 )
 from backend.services.paper_curation_service import PaperCurationService
+from backend.services.hf_inference_billing_service import decrypt_oauth_credential
+from backend.services.paper_bucket_service import (
+    BUCKET_MANAGE_OAUTH_COOKIE_NAME,
+    BUCKET_OAUTH_COOKIE_NAME,
+    HubArtifact,
+    PaperBucketError,
+    copy_paper_to_bucket,
+)
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import (
     get_paper_route_identifier,
@@ -76,6 +97,75 @@ BADGE_CACHE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
     "Cloudflare-CDN-Cache-Control": "no-store",
 }
+
+
+@router.post(
+    "/papers/{paper_id}/copy-to-bucket",
+    response_model=PaperBucketCopyResponse,
+    summary="Copy a paper PDF and Hub artifacts to the signed-in user's Bucket",
+)
+def copy_paper_artifacts_to_bucket(
+    payload: PaperBucketCopyRequest,
+    request: Request,
+    paper_id: str = Path(..., description="ArXiv ID or internal database ID"),
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+):
+    encrypted = (
+        request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME)
+        if payload.create
+        else request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME)
+        or request.cookies.get(BUCKET_OAUTH_COOKIE_NAME)
+    )
+    credential = (
+        decrypt_oauth_credential(encrypted, user["hf_user_id"], get_settings())
+        if encrypted
+        else None
+    )
+    if credential is None:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "bucket_authorization_required",
+                "message": "Authorize Papers With Code to write to your Hugging Face Buckets.",
+            },
+        )
+
+    try:
+        paper = PaperService(db).get_paper_by_id_or_arxiv(paper_id)
+        result = copy_paper_to_bucket(
+            token=credential.token,
+            bucket_id=payload.bucket_id.strip(),
+            create=payload.create,
+            private=payload.private,
+            artifacts=[
+                HubArtifact(kind=artifact.kind, repo_id=artifact.repo_id)
+                for artifact in payload.artifacts
+            ],
+            pdf_url=paper.url_pdf if payload.include_pdf else None,
+            pdf_name=paper.arxiv_id.replace("/", "-") if paper.arxiv_id else None,
+        )
+    except PaperNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PaperBucketError as error:
+        if error.authorization_required:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "bucket_authorization_required",
+                    "message": str(error),
+                },
+            ) from error
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return PaperBucketCopyResponse(
+        bucket_id=payload.bucket_id.strip(),
+        copied=list(result.copied),
+        errors=[
+            {"artifact": artifact, "message": message}
+            for artifact, message in result.errors
+        ],
+    )
 
 
 def _curated_paper_update(

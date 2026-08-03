@@ -14,6 +14,9 @@ describe("collectBucketArtifacts", () => {
   it("normalizes and deduplicates linked repositories", () => {
     expect(
       collectBucketArtifacts({
+        paperId: "42",
+        pdfName: "2601.00001",
+        pdfUrl: "https://arxiv.org/pdf/2601.00001v1",
         githubUrls: [
           "https://github.com/huggingface/transformers",
           "https://github.com/huggingface/transformers/",
@@ -23,6 +26,11 @@ describe("collectBucketArtifacts", () => {
         hfSpaceUrls: ["https://huggingface.co/spaces/openai/demo"],
       }).map(({ id, source, destination }) => ({ id, source, destination })),
     ).toEqual([
+      {
+        id: "pdf",
+        source: "https://arxiv.org/pdf/2601.00001v1",
+        destination: "paper/2601.00001.pdf",
+      },
       {
         id: "model:openai/gpt-oss-20b",
         source: "hf://openai/gpt-oss-20b/",
@@ -50,6 +58,9 @@ describe("collectBucketArtifacts", () => {
 describe("buildBucketCopyCommands", () => {
   it("builds server-side Hub copies and a bounded GitHub checkout", () => {
     const artifacts = collectBucketArtifacts({
+      paperId: "42",
+      pdfName: "2601.00001",
+      pdfUrl: "https://arxiv.org/pdf/2601.00001v1",
       githubUrls: ["https://github.com/huggingface/transformers"],
       hfModelUrls: ["https://huggingface.co/openai/gpt-oss-20b"],
       hfDatasetUrls: [],
@@ -64,6 +75,12 @@ describe("buildBucketCopyCommands", () => {
     expect(commands).toContain("hf buckets create \"$HF_BUCKET\" --exist-ok --private");
     expect(commands).toContain(
       "hf cp 'hf://openai/gpt-oss-20b/' \"hf://buckets/$HF_BUCKET/models/openai/gpt-oss-20b/\"",
+    );
+    expect(commands).toContain(
+      "curl --fail --location 'https://arxiv.org/pdf/2601.00001v1' --output \"$PWC_PDF\"",
+    );
+    expect(commands).toContain(
+      "hf cp \"$PWC_PDF\" \"hf://buckets/$HF_BUCKET/paper/2601.00001.pdf\"",
     );
     expect(commands).toContain("PWC_COPY_DIR=\"$(mktemp -d)\"");
     expect(commands).toContain(
@@ -99,6 +116,10 @@ describe("CopyToBucketCard", () => {
         hfModelUrls: [],
         hfDatasetUrls: [],
         hfSpaceUrls: [],
+        paperId: "42",
+        pdfName: "42",
+        pdfUrl: null,
+        isSignedIn: true,
         suggestedBucketId: "nielsr/kimi-k3-artifacts",
       }),
     );

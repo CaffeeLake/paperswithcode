@@ -1420,6 +1420,10 @@ const PaperDetailView: React.FC = () => {
             hfModelUrls={allHfArtifactUrls.models}
             hfDatasetUrls={allHfArtifactUrls.datasets}
             hfSpaceUrls={allHfArtifactUrls.spaces}
+            paperId={paper.id}
+            pdfName={paper.arxiv_id?.replace("/", "-") || paper.id}
+            pdfUrl={paper.url_pdf}
+            isSignedIn={Boolean(user)}
             suggestedBucketId={
               user ? `${user.username}/${paperArtifactBucketName(paper.title)}` : undefined
             }

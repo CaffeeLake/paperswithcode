@@ -15,8 +15,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
+import { ApiError, copyPaperToBucket } from "@/lib/api";
+import { authUrl } from "@/lib/apiUrl";
 
-export type BucketArtifactKind = "model" | "dataset" | "space" | "github";
+export type BucketArtifactKind = "pdf" | "model" | "dataset" | "space" | "github";
 
 export interface BucketArtifact {
   id: string;
@@ -25,17 +27,26 @@ export interface BucketArtifact {
   url: string;
   source: string;
   destination: string;
+  repoId?: string;
 }
 
-interface CopyToBucketCardProps {
+interface BucketArtifactSources {
   githubUrls: string[];
   hfModelUrls: string[];
   hfDatasetUrls: string[];
   hfSpaceUrls: string[];
+  paperId: string;
+  pdfName: string;
+  pdfUrl?: string | null;
+}
+
+interface CopyToBucketCardProps extends BucketArtifactSources {
+  isSignedIn: boolean;
   suggestedBucketId?: string;
 }
 
 const KIND_LABEL: Record<BucketArtifactKind, string> = {
+  pdf: "PDF",
   model: "Model",
   dataset: "Dataset",
   space: "Space",
@@ -49,7 +60,7 @@ function shellQuote(value: string): string {
 
 function parseHfArtifact(
   url: string,
-  kind: Exclude<BucketArtifactKind, "github">,
+  kind: Exclude<BucketArtifactKind, "github" | "pdf">,
 ): BucketArtifact | null {
   try {
     const parsed = new URL(url);
@@ -70,6 +81,7 @@ function parseHfArtifact(
       url: `https://huggingface.co/${sourcePrefix}${repoId}`,
       source: `hf://${sourcePrefix}${repoId}/`,
       destination: `${kind}s/${repoId}/`,
+      repoId,
     };
   } catch {
     return null;
@@ -105,8 +117,21 @@ export function collectBucketArtifacts({
   hfModelUrls,
   hfDatasetUrls,
   hfSpaceUrls,
-}: CopyToBucketCardProps): BucketArtifact[] {
+  paperId,
+  pdfName,
+  pdfUrl,
+}: BucketArtifactSources): BucketArtifact[] {
   const candidates = [
+    pdfUrl
+      ? {
+          id: "pdf",
+          kind: "pdf" as const,
+          label: "Paper PDF",
+          url: pdfUrl,
+          source: pdfUrl,
+          destination: `paper/${pdfName || paperId}.pdf`,
+        }
+      : null,
     ...hfModelUrls.map((url) => parseHfArtifact(url, "model")),
     ...hfDatasetUrls.map((url) => parseHfArtifact(url, "dataset")),
     ...hfSpaceUrls.map((url) => parseHfArtifact(url, "space")),
@@ -136,9 +161,21 @@ export function buildBucketCopyCommands(
     );
   }
 
-  for (const artifact of artifacts.filter((item) => item.kind !== "github")) {
+  for (const artifact of artifacts.filter(
+    (item) => item.kind !== "github" && item.kind !== "pdf",
+  )) {
     lines.push(
       `hf cp ${shellQuote(artifact.source)} "hf://buckets/$HF_BUCKET/${artifact.destination}"`,
+    );
+  }
+
+  const pdfArtifact = artifacts.find((item) => item.kind === "pdf");
+  if (pdfArtifact) {
+    lines.push(
+      'PWC_PDF="$(mktemp)"',
+      "trap 'rm -f \"$PWC_PDF\"' EXIT",
+      `curl --fail --location ${shellQuote(pdfArtifact.source)} --output "$PWC_PDF"`,
+      `hf cp "$PWC_PDF" "hf://buckets/$HF_BUCKET/${pdfArtifact.destination}"`,
     );
   }
 
@@ -176,8 +213,25 @@ export function paperArtifactBucketName(title: string): string {
 export function CopyToBucketCard(props: CopyToBucketCardProps) {
   const { toast } = useToast();
   const artifacts = useMemo(
-    () => collectBucketArtifacts(props),
-    [props.githubUrls, props.hfDatasetUrls, props.hfModelUrls, props.hfSpaceUrls],
+    () =>
+      collectBucketArtifacts({
+        githubUrls: props.githubUrls,
+        hfDatasetUrls: props.hfDatasetUrls,
+        hfModelUrls: props.hfModelUrls,
+        hfSpaceUrls: props.hfSpaceUrls,
+        paperId: props.paperId,
+        pdfName: props.pdfName,
+        pdfUrl: props.pdfUrl,
+      }),
+    [
+      props.githubUrls,
+      props.hfDatasetUrls,
+      props.hfModelUrls,
+      props.hfSpaceUrls,
+      props.paperId,
+      props.pdfName,
+      props.pdfUrl,
+    ],
   );
   const [open, setOpen] = useState(false);
   const [destinationMode, setDestinationMode] = useState<"new" | "existing">("new");
@@ -186,6 +240,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set(artifacts.map((artifact) => artifact.id)),
   );
+  const [copying, setCopying] = useState(false);
 
   const selectedArtifacts = artifacts.filter((artifact) => selectedIds.has(artifact.id));
   const bucketIdIsValid = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(bucketId.trim());
@@ -216,6 +271,66 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
         description: "Could not access the clipboard. Select and copy the commands manually.",
         variant: "destructive",
       });
+    }
+  };
+
+  const authorizeBucket = () => {
+    const endpoint = authUrl("/api/v1/auth/hf/login");
+    const params = new URLSearchParams({
+      return_to: window.location.href,
+      authorize_bucket: "true",
+    });
+    if (destinationMode === "new") params.set("bucket_create", "true");
+    window.location.assign(`${endpoint}?${params.toString()}`);
+  };
+
+  const copyNow = async () => {
+    if (!props.isSignedIn) {
+      authorizeBucket();
+      return;
+    }
+    setCopying(true);
+    try {
+      const result = await copyPaperToBucket(props.paperId, {
+        bucket_id: bucketId.trim(),
+        create: destinationMode === "new",
+        private: visibility === "private",
+        include_pdf: selectedArtifacts.some((artifact) => artifact.kind === "pdf"),
+        artifacts: selectedArtifacts
+          .filter(
+            (artifact): artifact is BucketArtifact & {
+              kind: "model" | "dataset" | "space";
+              repoId: string;
+            } =>
+              artifact.kind !== "pdf" &&
+              artifact.kind !== "github" &&
+              Boolean(artifact.repoId),
+          )
+          .map((artifact) => ({ kind: artifact.kind, repo_id: artifact.repoId })),
+      });
+      const githubCount = selectedArtifacts.filter((artifact) => artifact.kind === "github").length;
+      toast({
+        title: result.errors.length ? "Bucket copy partially completed" : "Copied to bucket",
+        description: [
+          `${result.copied.length} item${result.copied.length === 1 ? "" : "s"} copied.`,
+          result.errors.length ? `${result.errors.length} item${result.errors.length === 1 ? "" : "s"} failed.` : "",
+          githubCount ? "Use the generated commands below to copy GitHub repositories." : "",
+        ].filter(Boolean).join(" "),
+        variant: result.errors.length ? "destructive" : undefined,
+      });
+      if (!result.errors.length && !githubCount) setOpen(false);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "bucket_authorization_required") {
+        authorizeBucket();
+        return;
+      }
+      toast({
+        title: "Bucket copy failed",
+        description: "Hugging Face could not complete the copy. You can still use the CLI commands below.",
+        variant: "destructive",
+      });
+    } finally {
+      setCopying(false);
     }
   };
 
@@ -254,9 +369,9 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
               Copy to bucket
             </DialogTitle>
             <DialogDescription>
-              Keep your own copy of this paper&apos;s linked code and Hugging Face
-              artifacts. Hub repositories use Xet&apos;s server-side copy; GitHub
-              repositories are cloned into the same destination.
+              Keep your own copy of this paper&apos;s PDF, linked code, and Hugging
+              Face artifacts. Hub repositories use Xet&apos;s server-side copy;
+              GitHub repositories use the generated CLI fallback.
             </DialogDescription>
           </DialogHeader>
 
@@ -337,20 +452,20 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                         rel="noopener noreferrer"
                         className="bucket-artifact-open"
                       >
-                        {artifact.kind === "github" ? "Open" : "Web copy"}
+                        Open
                         <Icon name="external" size={10} />
                       </a>
                     </div>
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  “Web copy” opens the artifact&apos;s native Hugging Face page,
-                  where its Copy to bucket button is also available.
+                  The PDF and Hugging Face artifacts can be copied directly.
+                  GitHub repositories require the CLI workflow below.
                 </p>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="bucket-copy-commands">Copy workflow</Label>
+                <Label htmlFor="bucket-copy-commands">CLI fallback</Label>
                 <pre id="bucket-copy-commands" className="bucket-copy-commands">
                   {bucketIdIsValid
                     ? commands
@@ -377,10 +492,23 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
             <Button
               type="button"
               onClick={copyCommands}
+              variant="outline"
               disabled={!bucketIdIsValid || selectedArtifacts.length === 0}
             >
               <Icon name="copy" size={12} />
               Copy commands
+            </Button>
+            <Button
+              type="button"
+              onClick={copyNow}
+              disabled={
+                copying ||
+                (props.isSignedIn &&
+                  (!bucketIdIsValid ||
+                    !selectedArtifacts.some((artifact) => artifact.kind !== "github")))
+              }
+            >
+              {copying ? "Copying…" : props.isSignedIn ? "Copy now" : "Sign in & copy"}
             </Button>
           </DialogFooter>
         </DialogContent>

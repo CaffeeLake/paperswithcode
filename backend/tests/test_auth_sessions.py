@@ -15,6 +15,10 @@ from starlette.requests import Request
 from backend.config import Settings
 from backend.routers import auth
 from backend.services import hf_inference_billing_service as billing
+from backend.services.paper_bucket_service import (
+    BUCKET_MANAGE_OAUTH_COOKIE_NAME,
+    BUCKET_OAUTH_COOKIE_NAME,
+)
 
 
 def _key_values() -> tuple[str, str]:
@@ -142,6 +146,129 @@ def test_production_inference_authorization_requests_inference_scope(monkeypatch
 
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["scope"] == ["openid profile inference-api"]
+
+
+def test_production_bucket_authorization_requests_write_scope(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
+
+    response = auth.hf_login(
+        _request("paperswithcode.co"),
+        return_to="/paper/2601.00001",
+        authorize_bucket=True,
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["openid profile write-repos"]
+
+
+def test_production_new_bucket_authorization_requests_manage_scope(monkeypatch):
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(production=True))
+
+    response = auth.hf_login(
+        _request("paperswithcode.co"),
+        return_to="/paper/2601.00001",
+        authorize_bucket=True,
+        bucket_create=True,
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["scope"] == ["openid profile manage-repos"]
+
+
+def test_oauth_callback_sets_encrypted_bucket_cookie(monkeypatch):
+    settings = _settings(production=True)
+    monkeypatch.setattr(auth, "get_settings", lambda: settings)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **_kwargs):
+            assert url == auth.HF_TOKEN_URL
+            return httpx.Response(
+                200,
+                json={"access_token": "bucket-oauth-access", "expires_in": 3600},
+            )
+
+        async def get(self, url, **_kwargs):
+            assert url == auth.HF_USERINFO_URL
+            return httpx.Response(
+                200,
+                json={"sub": "hf-123", "preferred_username": "alice"},
+            )
+
+    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    state = auth._encode_state(
+        "/paper/2601.00001",
+        "paperswithcode.co",
+        authorize_bucket=True,
+    )
+
+    response = asyncio.run(
+        auth.hf_callback(
+            _request("paperswithcode.co"),
+            code="authorization-code",
+            state=state,
+            error=None,
+        )
+    )
+
+    cookie_headers = [
+        header
+        for header in response.headers.getlist("set-cookie")
+        if header.startswith(f"{BUCKET_OAUTH_COOKIE_NAME}=")
+    ]
+    assert len(cookie_headers) == 1
+    cookies = SimpleCookie()
+    cookies.load(cookie_headers[0])
+    assert billing.decrypt_oauth_credential(
+        cookies[BUCKET_OAUTH_COOKIE_NAME].value, "hf-123", settings
+    ) == billing.HfInferenceCredential("bucket-oauth-access")
+
+
+def test_new_bucket_authorization_sets_manage_cookie(monkeypatch):
+    settings = _settings(production=True)
+    monkeypatch.setattr(auth, "get_settings", lambda: settings)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **_kwargs):
+            return httpx.Response(200, json={"access_token": "manage-access"})
+
+        async def get(self, _url, **_kwargs):
+            return httpx.Response(
+                200, json={"sub": "hf-123", "preferred_username": "alice"}
+            )
+
+    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    state = auth._encode_state(
+        "/paper/2601.00001",
+        "paperswithcode.co",
+        authorize_bucket=True,
+        bucket_create=True,
+    )
+
+    response = asyncio.run(
+        auth.hf_callback(
+            _request("paperswithcode.co"),
+            code="authorization-code",
+            state=state,
+            error=None,
+        )
+    )
+
+    assert any(
+        header.startswith(f"{BUCKET_MANAGE_OAUTH_COOKIE_NAME}=")
+        for header in response.headers.getlist("set-cookie")
+    )
 
 
 @pytest.mark.parametrize("authorize_inference", [False, True])

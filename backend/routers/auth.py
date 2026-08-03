@@ -43,6 +43,10 @@ from backend.services.hf_inference_billing_service import (
     HfInferenceCredential,
     encrypt_oauth_credential,
 )
+from backend.services.paper_bucket_service import (
+    BUCKET_MANAGE_OAUTH_COOKIE_NAME,
+    BUCKET_OAUTH_COOKIE_NAME,
+)
 
 router = APIRouter()
 
@@ -52,6 +56,8 @@ HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_USERINFO_URL = "https://huggingface.co/oauth/userinfo"
 HF_LOGIN_SCOPES = "openid profile"
 HF_INFERENCE_SCOPES = f"{HF_LOGIN_SCOPES} inference-api"
+HF_BUCKET_WRITE_SCOPES = f"{HF_LOGIN_SCOPES} write-repos"
+HF_BUCKET_MANAGE_SCOPES = f"{HF_LOGIN_SCOPES} manage-repos"
 
 
 def session_cookie_name() -> str:
@@ -138,6 +144,8 @@ def _encode_state(
     host: str,
     *,
     authorize_inference: bool = False,
+    authorize_bucket: bool = False,
+    bucket_create: bool = False,
 ) -> str:
     settings = get_settings()
     payload = {
@@ -145,6 +153,8 @@ def _encode_state(
         "host": host,
         "return_to": return_to,
         "authorize_inference": authorize_inference,
+        "authorize_bucket": authorize_bucket,
+        "bucket_create": bucket_create,
         "exp": int(time.time()) + STATE_TTL_SECONDS,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -340,6 +350,8 @@ def hf_login(
     request: Request,
     return_to: Optional[str] = Query(default=None),
     authorize_inference: bool = False,
+    authorize_bucket: bool = False,
+    bucket_create: bool = False,
 ):
     """Kick off the HF OAuth authorization-code flow."""
 
@@ -358,6 +370,8 @@ def hf_login(
             {
                 "return_to": authority_return,
                 "authorize_inference": authorize_inference,
+                "authorize_bucket": authorize_bucket,
+                "bucket_create": bucket_create,
             }
         )
         return RedirectResponse(
@@ -374,11 +388,21 @@ def hf_login(
         safe_return,
         request.headers.get("host", ""),
         authorize_inference=authorize_inference,
+        authorize_bucket=authorize_bucket,
+        bucket_create=bucket_create,
     )
     params = {
         "client_id": settings.hf_oauth_client_id,
         "redirect_uri": _redirect_uri(request),
-        "scope": HF_INFERENCE_SCOPES if authorize_inference else HF_LOGIN_SCOPES,
+        "scope": (
+            HF_INFERENCE_SCOPES
+            if authorize_inference
+            else HF_BUCKET_MANAGE_SCOPES
+            if authorize_bucket and bucket_create
+            else HF_BUCKET_WRITE_SCOPES
+            if authorize_bucket
+            else HF_LOGIN_SCOPES
+        ),
         "response_type": "code",
         "state": state,
     }
@@ -493,6 +517,23 @@ async def hf_callback(
     if state_payload.get("authorize_inference") and settings.hf_oauth_credential_secret:
         response.set_cookie(
             OAUTH_COOKIE_NAME,
+            encrypt_oauth_credential(
+                HfInferenceCredential(access_token), hf_user_id, settings
+            ),
+            max_age=_oauth_cookie_max_age(token_payload),
+            httponly=True,
+            secure=_is_secure_origin(request),
+            samesite="lax",
+            path="/",
+            domain=_shared_cookie_domain(),
+        )
+    if state_payload.get("authorize_bucket") and settings.hf_oauth_credential_secret:
+        response.set_cookie(
+            (
+                BUCKET_MANAGE_OAUTH_COOKIE_NAME
+                if state_payload.get("bucket_create")
+                else BUCKET_OAUTH_COOKIE_NAME
+            ),
             encrypt_oauth_credential(
                 HfInferenceCredential(access_token), hf_user_id, settings
             ),
