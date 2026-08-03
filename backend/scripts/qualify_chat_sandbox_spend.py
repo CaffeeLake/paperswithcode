@@ -133,6 +133,37 @@ def main() -> int:
         )
     if any(state != "delivered" for _event_type, state in events):
         raise RuntimeError("one or more synthetic alert transitions were not delivered")
+    fallback_environment = f"{environment}-f"
+    fallback_settings = settings.model_copy(
+        update={"environment": fallback_environment}
+    )
+    with db_manager.session_local() as db, db.begin():
+        service = ChatSandboxSpendService(db, fallback_settings)
+        service.reconcile_provider_floor(75_000_000, now)
+        fallback_event = db.execute(
+            select(ChatSandboxCircuitEvent)
+            .join(
+                ChatSandboxBudgetState,
+                ChatSandboxBudgetState.id == ChatSandboxCircuitEvent.budget_state_id,
+            )
+            .where(ChatSandboxBudgetState.environment == fallback_environment)
+        ).scalar_one()
+        # Exercise the real fallback destination without sending five deliberate
+        # failures to the primary endpoint first.
+        fallback_event.delivery_state = "failed"
+        fallback_event.delivery_attempts = 5
+    asyncio.run(SandboxSessionManager(fallback_settings).deliver_spend_alerts())
+    with db_manager.session_local() as db:
+        fallback_state = db.execute(
+            select(ChatSandboxCircuitEvent.fallback_delivery_state)
+            .join(
+                ChatSandboxBudgetState,
+                ChatSandboxBudgetState.id == ChatSandboxCircuitEvent.budget_state_id,
+            )
+            .where(ChatSandboxBudgetState.environment == fallback_environment)
+        ).scalar_one()
+    if fallback_state != "delivered":
+        raise RuntimeError("the synthetic fallback alert was not delivered")
     report = {
         "environment": environment,
         "samples": observed,
@@ -140,6 +171,7 @@ def main() -> int:
         "next_cycle": cycle_end(now.date().replace(day=1)).isoformat(),
         "next_cycle_rearmed": True,
         "alerts_delivered": delivered,
+        "fallback_alert_delivered": True,
         "event_types": sorted(observed_events),
         "concurrent_reservations": {
             "attempted": 8,

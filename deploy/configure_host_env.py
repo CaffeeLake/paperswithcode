@@ -14,6 +14,7 @@ import pwd
 import secrets
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -368,6 +369,29 @@ def staging_chat_spend_values() -> dict[str, str]:
     }
 
 
+def staging_chat_alert_values(legacy: dict[str, str]) -> dict[str, str]:
+    keys = (
+        "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL",
+        "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL",
+    )
+    missing = [key for key in keys if key not in legacy]
+    if missing:
+        raise ValueError("legacy environment is missing: " + ", ".join(missing))
+    values = {key: decoded_value(legacy[key]).strip() for key in keys}
+    for key, value in values.items():
+        parsed = urlsplit(value)
+        if (
+            not value
+            or len(value) > 2000
+            or parsed.scheme != "https"
+            or not parsed.hostname
+        ):
+            raise ValueError(f"{key} must be a non-empty HTTPS webhook URL")
+    if values[keys[0]] == values[keys[1]]:
+        raise ValueError("staging chat alert webhooks must be distinct")
+    return values
+
+
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
@@ -392,6 +416,7 @@ def main() -> int:
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
+    parser.add_argument("--staging-chat-alerts-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
@@ -405,6 +430,7 @@ def main() -> int:
                 args.staging_openrouter_only,
                 args.staging_openrouter_disable_only,
                 args.staging_chat_capacity_only,
+                args.staging_chat_alerts_only,
             )
         ):
             parser.error(
@@ -430,6 +456,7 @@ def main() -> int:
             or args.staging_langfuse_only
             or args.staging_openrouter_only
             or args.staging_openrouter_disable_only
+            or args.staging_chat_alerts_only
         ):
             parser.error(
                 "--staging-chat-capacity-only cannot be combined with other modes"
@@ -441,12 +468,32 @@ def main() -> int:
         write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
         print("configured qualified staging chat capacity")
         return 0
+    if args.staging_chat_alerts_only:
+        if (
+            args.production_codex_only
+            or args.staging_codex_too
+            or args.staging_langfuse_only
+            or args.staging_openrouter_only
+            or args.staging_openrouter_disable_only
+        ):
+            parser.error(
+                "--staging-chat-alerts-only cannot be combined with other modes"
+            )
+        try:
+            values = staging_chat_alert_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed staging chat alert destinations")
+        return 0
     if args.staging_openrouter_disable_only:
         if (
             args.production_codex_only
             or args.staging_codex_too
             or args.staging_langfuse_only
             or args.staging_openrouter_only
+            or args.staging_chat_alerts_only
         ):
             parser.error(
                 "--staging-openrouter-disable-only cannot be combined with other modes"
@@ -460,6 +507,7 @@ def main() -> int:
             args.production_codex_only
             or args.staging_codex_too
             or args.staging_langfuse_only
+            or args.staging_chat_alerts_only
         ):
             parser.error(
                 "--staging-openrouter-only cannot be combined with Codex modes"
@@ -477,6 +525,7 @@ def main() -> int:
             args.production_codex_only
             or args.staging_codex_too
             or args.staging_openrouter_only
+            or args.staging_chat_alerts_only
         ):
             parser.error("--staging-langfuse-only cannot be combined with Codex modes")
         try:

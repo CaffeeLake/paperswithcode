@@ -25,6 +25,15 @@ Keep `PWC_CHAT_BLANK_POOL_ENABLED=false` for the initial deployment. Exercise th
 
 The first code deployment may leave both application alert webhooks unset while the blank pool remains disabled; transition events stay pending without consuming retries. Configure and test distinct primary and fallback destinations before synthetic qualification or blank-pool activation.
 
+Install the two destinations from the local ignored secret file without changing
+production or enabling the pool:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env backend/keys.env \
+  --staging-chat-alerts-only
+```
+
 ```bash
 sudo uv run --env-file /etc/paperswithcode/staging.env \
   python -m backend.scripts.qualify_chat_sandbox_spend \

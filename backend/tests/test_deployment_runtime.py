@@ -1684,6 +1684,55 @@ def test_qualified_staging_capacity_keeps_one_warm_sandbox():
     }
 
 
+def test_staging_chat_alert_values_are_distinct_https_destinations():
+    values = configure_host_env.staging_chat_alert_values(
+        {
+            "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL=https://hooks.slack.test/primary"
+            ),
+            "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL="
+                "https://hooks.slack.test/fallback"
+            ),
+        }
+    )
+
+    assert values == {
+        "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": ("https://hooks.slack.test/primary"),
+        "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL": (
+            "https://hooks.slack.test/fallback"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        {},
+        {
+            "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL=http://alerts.test/primary"
+            ),
+            "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL="
+                "https://alerts.test/fallback"
+            ),
+        },
+        {
+            "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL=https://alerts.test/same"
+            ),
+            "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL": (
+                "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL=https://alerts.test/same"
+            ),
+        },
+    ],
+)
+def test_staging_chat_alert_values_reject_unsafe_configuration(legacy):
+    with pytest.raises(ValueError):
+        configure_host_env.staging_chat_alert_values(legacy)
+
+
 def test_production_codex_credentials_are_mapped_without_enabling_base_flags():
     values = configure_host_env.production_codex_values(
         {
