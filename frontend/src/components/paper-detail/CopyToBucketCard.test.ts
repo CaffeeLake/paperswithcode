@@ -6,9 +6,24 @@ import { describe, expect, it } from "vitest";
 import {
   CopyToBucketCard,
   buildBucketCopyCommands,
+  chunkBucketArtifacts,
   collectBucketArtifacts,
   paperArtifactBucketName,
 } from "./CopyToBucketCard";
+
+describe("chunkBucketArtifacts", () => {
+  it("keeps large copies within the backend request limit", () => {
+    const artifacts = Array.from({ length: 45 }, (_, index) => ({
+      kind: "model" as const,
+      repo_id: `owner/model-${index}`,
+    }));
+
+    const batches = chunkBucketArtifacts(artifacts);
+
+    expect(batches.map((batch) => batch.length)).toEqual([20, 20, 5]);
+    expect(batches.flat()).toEqual(artifacts);
+  });
+});
 
 describe("collectBucketArtifacts", () => {
   it("normalizes and deduplicates linked repositories", () => {

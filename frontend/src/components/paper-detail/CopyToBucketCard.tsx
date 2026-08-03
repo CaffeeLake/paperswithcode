@@ -53,6 +53,25 @@ const KIND_LABEL: Record<BucketArtifactKind, string> = {
   github: "GitHub",
 };
 const REPO_PART_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const DIRECT_COPY_BATCH_SIZE = 20;
+
+export interface DirectBucketArtifact {
+  kind: "model" | "dataset" | "space";
+  repo_id: string;
+}
+
+export function chunkBucketArtifacts(
+  artifacts: DirectBucketArtifact[],
+  batchSize = DIRECT_COPY_BATCH_SIZE,
+): DirectBucketArtifact[][] {
+  if (batchSize < 1) throw new Error("Bucket copy batch size must be positive");
+
+  const batches: DirectBucketArtifact[][] = [];
+  for (let start = 0; start < artifacts.length; start += batchSize) {
+    batches.push(artifacts.slice(start, start + batchSize));
+  }
+  return batches;
+}
 
 function shellQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\"'\"'") + "'";
@@ -241,6 +260,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
     () => new Set(artifacts.map((artifact) => artifact.id)),
   );
   const [copying, setCopying] = useState(false);
+  const [copyProgress, setCopyProgress] = useState<{ current: number; total: number } | null>(null);
 
   const selectedArtifacts = artifacts.filter((artifact) => selectedIds.has(artifact.id));
   const bucketIdIsValid = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(bucketId.trim());
@@ -290,47 +310,63 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
       return;
     }
     setCopying(true);
+    let copiedCount = 0;
+    let failedCount = 0;
     try {
-      const result = await copyPaperToBucket(props.paperId, {
-        bucket_id: bucketId.trim(),
-        create: destinationMode === "new",
-        private: visibility === "private",
-        include_pdf: selectedArtifacts.some((artifact) => artifact.kind === "pdf"),
-        artifacts: selectedArtifacts
-          .filter(
-            (artifact): artifact is BucketArtifact & {
-              kind: "model" | "dataset" | "space";
-              repoId: string;
-            } =>
-              artifact.kind !== "pdf" &&
-              artifact.kind !== "github" &&
-              Boolean(artifact.repoId),
-          )
-          .map((artifact) => ({ kind: artifact.kind, repo_id: artifact.repoId })),
-      });
+      const directArtifacts = selectedArtifacts
+        .filter(
+          (artifact): artifact is BucketArtifact & {
+            kind: "model" | "dataset" | "space";
+            repoId: string;
+          } =>
+            artifact.kind !== "pdf" &&
+            artifact.kind !== "github" &&
+            Boolean(artifact.repoId),
+        )
+        .map((artifact) => ({ kind: artifact.kind, repo_id: artifact.repoId }));
+      const artifactBatches = chunkBucketArtifacts(directArtifacts);
+      if (!artifactBatches.length) artifactBatches.push([]);
+
+      for (const [batchIndex, artifactBatch] of artifactBatches.entries()) {
+        setCopyProgress({ current: batchIndex + 1, total: artifactBatches.length });
+        const result = await copyPaperToBucket(props.paperId, {
+          bucket_id: bucketId.trim(),
+          create: batchIndex === 0 && destinationMode === "new",
+          private: visibility === "private",
+          include_pdf:
+            batchIndex === 0 && selectedArtifacts.some((artifact) => artifact.kind === "pdf"),
+          artifacts: artifactBatch,
+        });
+        copiedCount += result.copied.length;
+        failedCount += result.errors.length;
+      }
+
       const githubCount = selectedArtifacts.filter((artifact) => artifact.kind === "github").length;
       toast({
-        title: result.errors.length ? "Bucket copy partially completed" : "Copied to bucket",
+        title: failedCount ? "Bucket copy partially completed" : "Copied to bucket",
         description: [
-          `${result.copied.length} item${result.copied.length === 1 ? "" : "s"} copied.`,
-          result.errors.length ? `${result.errors.length} item${result.errors.length === 1 ? "" : "s"} failed.` : "",
+          `${copiedCount} item${copiedCount === 1 ? "" : "s"} copied.`,
+          failedCount ? `${failedCount} item${failedCount === 1 ? "" : "s"} failed.` : "",
           githubCount ? "Use the generated commands below to copy GitHub repositories." : "",
         ].filter(Boolean).join(" "),
-        variant: result.errors.length ? "destructive" : undefined,
+        variant: failedCount ? "destructive" : undefined,
       });
-      if (!result.errors.length && !githubCount) setOpen(false);
+      if (!failedCount && !githubCount) setOpen(false);
     } catch (error) {
       if (error instanceof ApiError && error.code === "bucket_authorization_required") {
         authorizeBucket();
         return;
       }
       toast({
-        title: "Bucket copy failed",
-        description: "Hugging Face could not complete the copy. You can still use the CLI commands below.",
+        title: copiedCount ? "Bucket copy partially completed" : "Bucket copy failed",
+        description: copiedCount
+          ? `${copiedCount} item${copiedCount === 1 ? "" : "s"} copied before the request failed. You can retry or use the CLI commands below.`
+          : "Hugging Face could not complete the copy. You can still use the CLI commands below.",
         variant: "destructive",
       });
     } finally {
       setCopying(false);
+      setCopyProgress(null);
     }
   };
 
@@ -508,7 +544,13 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                     !selectedArtifacts.some((artifact) => artifact.kind !== "github")))
               }
             >
-              {copying ? "Copying…" : props.isSignedIn ? "Copy now" : "Sign in & copy"}
+              {copying
+                ? copyProgress && copyProgress.total > 1
+                  ? `Copying ${copyProgress.current}/${copyProgress.total}…`
+                  : "Copying…"
+                : props.isSignedIn
+                  ? "Copy now"
+                  : "Sign in & copy"}
             </Button>
           </DialogFooter>
         </DialogContent>
