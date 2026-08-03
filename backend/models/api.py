@@ -1184,6 +1184,12 @@ class MethodTrend(BaseModel):
     history: List[MethodTrendPoint] = Field(default_factory=list)
     undated_paper_count: int = 0
     history_complete: bool = False
+    comparison_complete: bool = Field(
+        False,
+        description=(
+            "Whether recent and baseline coverage is complete enough to report velocity"
+        ),
+    )
     current_month_is_partial: bool = True
 
     @field_validator("method_id", mode="before")

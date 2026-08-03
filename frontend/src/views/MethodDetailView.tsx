@@ -200,8 +200,14 @@ const MethodDetailView: React.FC = () => {
               <div className="stat">
                 <span className="label">Recent mentions</span>
                 <span className="value">
-                  {trendQ.data.trend_score.toFixed(1)}
-                  <small>/mo</small>
+                  {trendQ.data.comparison_complete ? (
+                    <>
+                      {trendQ.data.trend_score.toFixed(1)}
+                      <small>/mo</small>
+                    </>
+                  ) : (
+                    "Pending"
+                  )}
                 </span>
               </div>
             )}

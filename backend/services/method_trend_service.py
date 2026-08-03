@@ -242,6 +242,7 @@ class MethodTrendService:
             history=history,
             undated_paper_count=undated_count,
             history_complete=history_complete,
+            comparison_complete=comparison_complete,
             current_month_is_partial=True,
         )
 

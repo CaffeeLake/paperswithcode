@@ -514,6 +514,7 @@ export interface MethodTrend {
   history: MethodTrendPoint[];
   undated_paper_count?: number;
   history_complete?: boolean;
+  comparison_complete: boolean;
   current_month_is_partial?: boolean;
 }
 
