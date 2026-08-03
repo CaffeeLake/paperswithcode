@@ -19,6 +19,10 @@ except ModuleNotFoundError:
 def configure_release_environment(release: Path) -> dict:
     manifest = validate_manifest(release)
     features = manifest["backend_features"]
+    runtime_data_dir = Path(os.environ["PWC_RUNTIME_DATA_DIR"])
+    hf_cache_dir = runtime_data_dir / "hf-cache"
+    os.environ.setdefault("HF_HOME", str(hf_cache_dir))
+    os.environ.setdefault("HF_XET_CACHE", str(hf_cache_dir / "xet"))
     os.environ["PWC_RELEASE_ID"] = manifest["release_id"]
     os.environ["PWC_CHAT_ENABLED"] = "true" if features["chat"] else "false"
     os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] = (

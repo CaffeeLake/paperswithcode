@@ -351,6 +351,7 @@ def test_run_backend_derives_features_from_release(
 ):
     release = make_bundle(tmp_path, chat=False)
     monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    monkeypatch.setenv("PWC_RUNTIME_DATA_DIR", str(tmp_path / "runtime-data"))
 
     manifest = configure_release_environment(release)
 
@@ -982,10 +983,31 @@ def test_backend_launcher_uses_release_specific_feature_flags(
 ):
     release = make_bundle(tmp_path, chat=False)
     monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    runtime_data_dir = tmp_path / "runtime-data"
+    monkeypatch.setenv("PWC_RUNTIME_DATA_DIR", str(runtime_data_dir))
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_XET_CACHE", raising=False)
     run_backend.configure_release_environment(release)
     assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "true"
     assert os.environ["PWC_CODEX_ENRICH_PAPER_ENABLED"] == "true"
+    assert os.environ["HF_HOME"] == str(runtime_data_dir / "hf-cache")
+    assert os.environ["HF_XET_CACHE"] == str(runtime_data_dir / "hf-cache" / "xet")
+
+
+def test_backend_launcher_preserves_explicit_hugging_face_cache(
+    tmp_path: Path, monkeypatch
+):
+    release = make_bundle(tmp_path, chat=False)
+    monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    monkeypatch.setenv("PWC_RUNTIME_DATA_DIR", str(tmp_path / "runtime-data"))
+    monkeypatch.setenv("HF_HOME", "/custom/hf")
+    monkeypatch.setenv("HF_XET_CACHE", "/custom/xet")
+
+    run_backend.configure_release_environment(release)
+
+    assert os.environ["HF_HOME"] == "/custom/hf"
+    assert os.environ["HF_XET_CACHE"] == "/custom/xet"
 
 
 def test_backend_launcher_disables_features_for_legacy_rollback(
@@ -1003,6 +1025,7 @@ def test_backend_launcher_disables_features_for_legacy_rollback(
         json.dumps({"chat": False})
     )
     monkeypatch.setenv("PWC_FRONTEND_DIST_DIR", str(release / "frontend-dist"))
+    monkeypatch.setenv("PWC_RUNTIME_DATA_DIR", str(tmp_path / "runtime-data"))
     run_backend.configure_release_environment(release)
     assert os.environ["PWC_CODEX_JOBS_ENABLED"] == "false"
     assert os.environ["PWC_CODEX_ADD_EVALS_ENABLED"] == "false"
