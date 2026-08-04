@@ -168,7 +168,7 @@ Chat sandboxes are pinned to Modal's `eu-west` compute region so the persistent
 worker stays near the dedicated gateway and PostgreSQL host. A region change is
 a worker-contract change: publish a new immutable image, deploy it to staging,
 and repeat the exact-release latency and reliability qualification.
-The qualified staging capacity shape requests 0.25 physical CPU cores and
+The qualified staging capacity shape requests 0.5 physical CPU cores and
 512 MiB, with hard limits of one core and 2 GiB; the higher CPU request avoids
 scheduler tail latency without changing the circuit's worst-case resource rate.
 Reapplying the qualified capacity shape preserves an explicit blank-pool toggle;
