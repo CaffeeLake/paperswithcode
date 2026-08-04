@@ -164,6 +164,11 @@ changes. After merging a prompt sync, publish a new immutable Modal image,
 commit its `MODAL_IMAGE_ID`, and deploy that exact commit to staging; an
 application deploy cannot alter an already-published worker image.
 
+Chat sandboxes are pinned to Modal's `eu-west` compute region so the persistent
+worker stays near the dedicated gateway and PostgreSQL host. A region change is
+a worker-contract change: publish a new immutable image, deploy it to staging,
+and repeat the exact-release latency and reliability qualification.
+
 Before any non-zero rollout, deploy two distinct zero-percent bridge commits so
 both `current` and `previous` understand `modal_cli`. Then run the operator-only
 infrastructure qualification from the selected immutable release:

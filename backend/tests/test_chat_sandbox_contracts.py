@@ -38,6 +38,7 @@ from backend.chat_sandbox_worker import (
 )
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
+    CHAT_SANDBOX_REGION,
     IMAGE_PUBLISH_NAME,
     MODAL_APP_NAME,
     MODAL_IMAGE_ID,
@@ -1612,7 +1613,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-JvrVToiz8xFJS3gplFvf6v"
-    assert WORKER_CONTRACT_VERSION == "31"
+    assert WORKER_CONTRACT_VERSION == "32"
+    assert CHAT_SANDBOX_REGION == "eu-west"
 
 
 def test_task_catalog_is_bounded_and_ranked():
@@ -1787,6 +1789,7 @@ def test_persistent_sandbox_uses_daemon_probe_and_request_limit_pairs(monkeypatc
     )
     assert captured["options"]["cpu"] == (0.125, 1)
     assert captured["options"]["memory"] == (512, 2048)
+    assert captured["options"]["region"] == "eu-west"
     assert captured["options"]["timeout"] == 86400
     assert captured["options"]["idle_timeout"] == 86400
 

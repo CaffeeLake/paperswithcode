@@ -24,7 +24,7 @@ from modal_proto import api_pb2
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
+from backend.chat_sandbox_worker.contract import CHAT_SANDBOX_REGION, MODAL_APP_NAME
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
     ProtocolError,
@@ -183,6 +183,7 @@ async def create_isolated_sandbox(
         },
         name=name,
         tags=tags,
+        region=CHAT_SANDBOX_REGION,
         timeout=(
             settings.chat_persistent_sandbox_lifetime_seconds
             if persistent_enabled
