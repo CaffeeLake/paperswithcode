@@ -390,9 +390,14 @@ def test_persistent_turns_reuse_one_control_attachment():
             return control
 
         manager._start_persistent_control = start_control
-        manager.ensure_ready = lambda _session_id, **_kwargs: asyncio.sleep(
-            0, result=(sandbox, 1, False, "reused_session", None)
-        )
+        ensure_calls = 0
+
+        async def ensure_ready(_session_id, **_kwargs):
+            nonlocal ensure_calls
+            ensure_calls += 1
+            return sandbox, 1, False, "reused_session", None
+
+        manager.ensure_ready = ensure_ready
         manager._claim_worker = lambda *_args: WorkerClaim(
             sandbox_id="sb-persistent",
             token_hash="claim",
@@ -429,6 +434,7 @@ def test_persistent_turns_reuse_one_control_attachment():
             assert released == index
         manager._drop_control(session_id)
         assert start_calls == 1
+        assert ensure_calls == 1
 
     asyncio.run(run())
 

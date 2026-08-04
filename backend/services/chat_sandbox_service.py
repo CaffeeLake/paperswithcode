@@ -2101,19 +2101,32 @@ class SandboxSessionManager:
         persistent = bool(
             getattr(self.settings, "chat_persistent_worker_enabled", False)
         )
-        (
-            sandbox,
-            cold_start_ms,
-            created,
-            acquisition_outcome,
-            pool_lookup_ms,
-        ) = await self.ensure_ready(
-            chat_session_id,
-            pool_miss=forced_pool_miss,
-            allow_pool=bool(
-                allow_pool and persistent and self.blank_pool_enabled and resume is None
-            ),
+        existing_control = (
+            getattr(self, "_controls", {}).get(chat_session_id) if persistent else None
         )
+        if existing_control is not None:
+            sandbox = existing_control.sandbox
+            cold_start_ms = 0
+            created = False
+            acquisition_outcome = "reused_session"
+            pool_lookup_ms = None
+        else:
+            (
+                sandbox,
+                cold_start_ms,
+                created,
+                acquisition_outcome,
+                pool_lookup_ms,
+            ) = await self.ensure_ready(
+                chat_session_id,
+                pool_miss=forced_pool_miss,
+                allow_pool=bool(
+                    allow_pool
+                    and persistent
+                    and self.blank_pool_enabled
+                    and resume is None
+                ),
+            )
         if pool_lookup_ms is not None:
             yield {
                 "type": "_latency",
