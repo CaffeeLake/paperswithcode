@@ -15,6 +15,7 @@ const mockAuth = vi.hoisted(() => ({
     isLoading: false,
   },
 }));
+const mockCanPersist = vi.hoisted(() => ({ value: true }));
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
@@ -28,7 +29,7 @@ vi.mock("@/lib/preferencesContext", () => ({
   usePreferences: () => ({
     preferences: { hideClosedSourceEvals: false },
     setHideClosedSourceEvals: vi.fn(),
-    canPersist: true,
+    canPersist: mockCanPersist.value,
   }),
 }));
 
@@ -64,6 +65,7 @@ describe("SettingsView organization billing", () => {
       user: { username: "nielsr", hf_subject: "hf-user-1" },
       isLoading: false,
     };
+    mockCanPersist.value = true;
   });
 
   afterEach(() => {
@@ -188,23 +190,27 @@ describe("SettingsView organization billing", () => {
 
   it("does not flash the sign-in prompt while the account is loading", () => {
     mockAuth.state = { user: null, isLoading: true };
+    mockCanPersist.value = false;
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
     renderSettings();
 
     expect(screen.getByRole("status")).toHaveTextContent("Checking account…");
     expect(screen.queryByText(/Sign in to connect your Hugging Face account/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You are browsing as a guest/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with Hugging Face" })).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("shows the sign-in prompt after authentication resolves signed out", () => {
     mockAuth.state = { user: null, isLoading: false };
+    mockCanPersist.value = false;
 
     renderSettings();
 
     expect(screen.getByText(/Sign in to connect your Hugging Face account/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Sign in with Hugging Face" })).toBeVisible();
+    expect(screen.getByText(/You are browsing as a guest/)).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Sign in with Hugging Face" })).toHaveLength(2);
   });
 });
 

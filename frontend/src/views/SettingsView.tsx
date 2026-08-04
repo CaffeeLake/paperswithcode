@@ -416,7 +416,7 @@ const SettingsView: React.FC = () => {
           />
         </div>
 
-        {!canPersist && !user && (
+        {!authLoading && !canPersist && !user && (
           <div className="settings-note">
             <span>
               You are browsing as a guest, so this choice only applies to the
