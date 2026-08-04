@@ -2377,10 +2377,13 @@ class SandboxSessionManager:
             if cancelled := _cancelled_terminal_event(running_worker):
                 yield cancelled
                 return
-            if acquisition_outcome == "pool_hit" and not sdk_dispatched:
+            if (
+                acquisition_outcome in {"pool_hit", "reused_session"}
+                and not sdk_dispatched
+            ):
                 raise SandboxError(
                     "pool_assignment_failed",
-                    "The blank workspace assignment failed",
+                    "The secure workspace assignment failed",
                     uncertain=True,
                 ) from error
             if isinstance(error, TimeoutError):
@@ -2398,10 +2401,13 @@ class SandboxSessionManager:
             if cancelled := _cancelled_terminal_event(running_worker):
                 yield cancelled
                 return
-            if acquisition_outcome == "pool_hit" and not sdk_dispatched:
+            if (
+                acquisition_outcome in {"pool_hit", "reused_session"}
+                and not sdk_dispatched
+            ):
                 raise SandboxError(
                     "pool_assignment_failed",
-                    "The blank workspace assignment failed",
+                    "The secure workspace assignment failed",
                     uncertain=True,
                 ) from error
             raise

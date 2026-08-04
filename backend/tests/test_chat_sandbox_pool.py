@@ -903,3 +903,75 @@ def test_postcommit_assignment_failure_destroys_blank_and_cold_starts():
     assert sum(event["type"] == "workspace_ready" for event in events) == 1
     assert claim_calls == 2
     assert terminations[0][1]["failure_code"] == "pool_assignment_failed"
+
+
+def test_reused_control_loss_before_sdk_dispatch_is_retryable():
+    request_id = str(uuid.uuid4())
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+
+    class Input:
+        def __init__(self, control):
+            self.control = control
+            self.drain = SimpleNamespace(aio=self.flush)
+
+        def write(self, _payload):
+            return None
+
+        async def flush(self):
+            await self.control.queues[request_id].put(
+                ConnectionError("persistent control closed")
+            )
+
+    sandbox = SimpleNamespace(object_id="sb-reused")
+    control = SimpleNamespace(
+        sandbox=sandbox,
+        sandbox_id=sandbox.object_id,
+        stderr_task=None,
+        reader_task=None,
+        queues={},
+        resume_id="sdk-session",
+    )
+    control.process = SimpleNamespace(stdin=Input(control))
+    manager = SandboxSessionManager.__new__(SandboxSessionManager)
+    manager.settings = SimpleNamespace(
+        chat_persistent_worker_enabled=True,
+        chat_agent_timeout_seconds=2,
+        chat_gateway_url="https://gateway.example.test",
+    )
+    manager._controls = {session_id: control}
+    manager._processes = {}
+    manager._background_tasks = set()
+    manager._claim_worker = lambda *_args: WorkerClaim(
+        sandbox_id=sandbox.object_id,
+        token_hash="claim",
+        assignment_token="assignment",
+        worker_generation="generation",
+    )
+    terminations: list[str] = []
+
+    async def terminate_worker(_session_id, _claim, *, failure_code):
+        terminations.append(failure_code)
+        manager._controls.pop(session_id, None)
+
+    manager._terminate_worker = terminate_worker
+
+    async def run():
+        with pytest.raises(SandboxError) as raised:
+            async for _event in manager._run_turn_once(
+                chat_session_id=session_id,
+                turn_id=turn_id,
+                request_id=request_id,
+                prompt="prompt",
+                model="model",
+                resume="sdk-session",
+                capability=SimpleNamespace(token="capability"),
+                allow_pool=False,
+                forced_pool_miss=False,
+            ):
+                pass
+        return raised.value
+
+    error = asyncio.run(run())
+    assert error.code == "pool_assignment_failed"
+    assert terminations == ["sandbox_worker_failed"]
