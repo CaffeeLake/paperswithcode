@@ -16,6 +16,69 @@ BEGIN
 END
 $$;
 
+-- Staging intentionally cannot write the shared public audit ledger. Create a
+-- schema-local copy of the audit primitives there; these statements are no-ops
+-- in production, where the public tables already exist.
+CREATE TABLE IF NOT EXISTS catalog_mutation_events (
+  id UUID PRIMARY KEY,
+  actor_hf_subject VARCHAR(255) NOT NULL,
+  actor_username VARCHAR(255),
+  actor_role VARCHAR(32) NOT NULL CHECK (actor_role IN ('admin', 'contributor')),
+  operation VARCHAR(32) NOT NULL,
+  entity_type VARCHAR(64) NOT NULL,
+  entity_id VARCHAR(255) NOT NULL,
+  before_snapshot JSONB,
+  after_snapshot JSONB,
+  request_id VARCHAR(255) NOT NULL,
+  source_environment VARCHAR(32) NOT NULL,
+  release_id VARCHAR(255) NOT NULL,
+  rollback_of_event_id UUID REFERENCES catalog_mutation_events(id) ON DELETE RESTRICT,
+  schema_version SMALLINT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_mutation_events_actor
+  ON catalog_mutation_events (actor_hf_subject, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_catalog_mutation_events_created
+  ON catalog_mutation_events (created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS catalog_mutation_idempotency (
+  actor_hf_subject VARCHAR(255) NOT NULL,
+  idempotency_key VARCHAR(255) NOT NULL,
+  request_hash VARCHAR(64) NOT NULL,
+  result_snapshot JSONB NOT NULL,
+  event_id UUID NOT NULL REFERENCES catalog_mutation_events(id) ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (actor_hf_subject, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS catalog_audit_read_progress (
+  admin_hf_subject VARCHAR(255) PRIMARY KEY,
+  read_through_created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+  IF current_schema() = 'staging' AND NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'catalog_mutation_events'::regclass
+      AND tgname = 'catalog_mutation_events_append_only'
+  ) THEN
+    CREATE TRIGGER catalog_mutation_events_append_only
+      BEFORE UPDATE OR DELETE ON catalog_mutation_events
+      FOR EACH ROW EXECUTE FUNCTION public.reject_catalog_mutation_event_rewrite();
+  END IF;
+  IF current_schema() = 'staging' AND NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'catalog_mutation_events'::regclass
+      AND tgname = 'catalog_mutation_events_no_truncate'
+  ) THEN
+    CREATE TRIGGER catalog_mutation_events_no_truncate
+      BEFORE TRUNCATE ON catalog_mutation_events
+      FOR EACH STATEMENT EXECUTE FUNCTION public.reject_catalog_mutation_event_rewrite();
+  END IF;
+END
+$$;
+
 ALTER TABLE pending_paper_edits ADD COLUMN IF NOT EXISTS hf_subject VARCHAR(255);
 ALTER TABLE pending_paper_edits ADD COLUMN IF NOT EXISTS source_ip VARCHAR(64);
 ALTER TABLE pending_paper_edits ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(255);
@@ -84,7 +147,15 @@ BEGIN
   EXECUTE format('ALTER TABLE %I.user_profile_aliases OWNER TO %I', current_schema(), pending_owner);
 
   IF current_schema() = 'staging' THEN
-    GRANT SELECT, INSERT, UPDATE, DELETE ON user_profiles, user_profile_aliases TO pwc_staging;
+    ALTER TABLE catalog_mutation_events OWNER TO pwc_staging_owner;
+    ALTER TABLE catalog_mutation_idempotency OWNER TO pwc_staging_owner;
+    ALTER TABLE catalog_audit_read_progress OWNER TO pwc_staging_owner;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON
+      user_profiles,
+      user_profile_aliases,
+      catalog_mutation_events,
+      catalog_mutation_idempotency,
+      catalog_audit_read_progress TO pwc_staging;
   END IF;
 END
 $$;
