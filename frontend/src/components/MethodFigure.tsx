@@ -118,58 +118,6 @@ const AttentionFig: React.FC = () => (
   </svg>
 );
 
-const CNNFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    {[0, 1, 2, 3].map((i) => {
-      const x = 30 + i * 75;
-      const w = 60 - i * 8;
-      const h = 240 - i * 30;
-      return (
-        <g key={i}>
-          <rect
-            x={x}
-            y={(420 - h) / 2}
-            width={w}
-            height={h}
-            rx="2"
-            fill={[C.blue, C.green, C.orange, C.purple][i]}
-            stroke={[C.blueS, C.greenS, C.orangeS, C.purpleS][i]}
-            strokeWidth="1"
-          />
-        </g>
-      );
-    })}
-    <text x="60" y="395" fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">conv</text>
-    <text x="135" y="395" fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">conv</text>
-    <text x="210" y="395" fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">conv</text>
-    <text x="285" y="395" fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">fc</text>
-  </svg>
-);
-
-const ViTFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    {[0, 1, 2].map((r) =>
-      [0, 1, 2].map((c) => (
-        <rect
-          key={`${r}-${c}`}
-          x={20 + c * 40}
-          y={40 + r * 40}
-          width="38"
-          height="38"
-          fill={["#F8D7D9", "#FBEFC2", "#CDE2EE", "#CCE2C5", "#D4D2EA", "#F8D7B3", "#F8D7D9", "#FBEFC2", "#CDE2EE"][r * 3 + c]}
-          stroke={C.faint}
-        />
-      )),
-    )}
-    <rect x="40" y="245" width="280" height="120" rx="4" fill="#EFEBE0" stroke={C.faint} strokeDasharray="3 2" />
-    <MFBox x={70} y={258} w={220} h={20} fill={C.yellow} stroke={C.yellowS} label="Norm" />
-    <MFBox x={70} y={282} w={220} h={28} fill={C.orange} stroke={C.orangeS} label="Multi-Head Attention" />
-    <MFBox x={70} y={314} w={220} h={20} fill={C.yellow} stroke={C.yellowS} label="Norm" />
-    <MFBox x={70} y={338} w={220} h={20} fill={C.blue} stroke={C.blueS} label="MLP" />
-    <text x="180" y="385" fontSize="10" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">Transformer Encoder · L×</text>
-  </svg>
-);
-
 const DiffusionFig: React.FC = () => (
   <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
     <text x="180" y="50" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Reverse process: pure noise → sample</text>
@@ -265,8 +213,6 @@ const AgentSkillsFig: React.FC = () => (
 const FIGURE_BY_SLUG: Record<string, React.FC> = {
   attention: AttentionFig,
   "self-attention": AttentionFig,
-  cnn: CNNFig,
-  vit: ViTFig,
   ddpm: DiffusionFig,
   gan: GANFig,
   vae: VAEFig,
