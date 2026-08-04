@@ -435,8 +435,8 @@ def main() -> int:
     args = parser().parse_args()
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
-    if not 1 <= args.max_total_microusd <= 1_000_000:
-        raise SystemExit("--max-total-microusd must be between 1 and 1000000")
+    if not 1 <= args.max_total_microusd <= 5_000_000:
+        raise SystemExit("--max-total-microusd must be between 1 and 5000000")
     report = asyncio.run(
         TripQualification(args.release_dir, args.max_total_microusd).run()
     )

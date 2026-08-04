@@ -56,7 +56,7 @@ sudo systemd-run --quiet --wait --pipe --collect \
   /srv/paperswithcode/.venv/bin/python \
   -m backend.scripts.qualify_chat_sandbox_trip \
   --release-dir /srv/paperswithcode/environments/staging/current \
-  --max-total-microusd 1000000 \
+  --max-total-microusd 2100000 \
   --confirm QUALIFY_STAGING_CHAT_TRIP
 ```
 
