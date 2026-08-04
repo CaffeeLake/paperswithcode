@@ -151,11 +151,27 @@ def test_chat_trace_captures_hierarchy_usage_and_context(monkeypatch):
     assert propagated["user_id"] != "private-user"
 
 
-def test_redaction_masks_common_pii_and_secrets():
-    value = "Email me@example.com, call 415-555-1212, token sk-test_123456789012"
-    assert tracing._redact(value) == (
-        "Email [REDACTED EMAIL], call [REDACTED PHONE], token [REDACTED SECRET]"
-    )
+def test_langfuse_client_exports_trace_content_without_a_mask(monkeypatch):
+    captured = {}
+
+    def client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(tracing, "Langfuse", client)
+    tracing._client.cache_clear()
+    try:
+        tracing._client(
+            "staging",
+            "release-1",
+            "pk-test",
+            "sk-test",
+            "https://example.com",
+        )
+    finally:
+        tracing._client.cache_clear()
+
+    assert "mask_otel_spans" not in captured
 
 
 def test_tracing_is_staging_only(monkeypatch):

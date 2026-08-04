@@ -20,6 +20,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 
 import Header from "@/components/Header";
 import HfSignInButton from "@/components/HfSignInButton";
+import SiteFooter from "@/components/SiteFooter";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -71,6 +72,7 @@ const MethodDetailView = React.lazy(() => import("@/views/MethodDetailView"));
 const BenchmarkDetailView = React.lazy(() => import("@/views/BenchmarkDetailView"));
 const SavedPapersView = React.lazy(() => import("@/views/SavedPapersView"));
 const SettingsView = React.lazy(() => import("@/views/SettingsView"));
+const PrivacyView = React.lazy(() => import("@/views/PrivacyView"));
 const SubmitView = React.lazy(() => import("@/views/SubmitView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const SubmissionsDashboard = React.lazy(() => import("@/pages/SubmissionsDashboard"));
@@ -261,6 +263,7 @@ const Shell: React.FC = () => {
             <Route path="/submit" element={<SubmitView />} />
             <Route path="/saved" element={<AuthGatedRoute element={<SavedPapersView />} />} />
             <Route path="/settings" element={<SettingsView />} />
+            <Route path="/privacy" element={<PrivacyView />} />
             <Route path="/admin-dashboard" element={<AdminDashboardRoute />} />
             <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
@@ -269,6 +272,7 @@ const Shell: React.FC = () => {
           </Routes>
         </React.Suspense>
       </main>
+      <SiteFooter />
       {searchOpen && (
         <React.Suspense fallback={null}>
           <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />

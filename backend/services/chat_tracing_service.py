@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -13,39 +12,10 @@ from functools import lru_cache
 from typing import Any
 
 from langfuse import Langfuse, propagate_attributes
-from langfuse.types import MaskOtelSpansParams, MaskOtelSpansResult, OtelSpanPatch
 
 from backend.config import Settings
 
 logger = logging.getLogger(__name__)
-
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
-_PHONE = re.compile(r"\b(?:\+?\d{1,3}[-. ]?)?\d{3}[-. ]\d{3}[-. ]\d{4}\b")
-_SECRET = re.compile(
-    r"(?i)\b(?:sk|pk)-[a-z0-9_-]{12,}|\bhf_[a-z0-9]{12,}|"
-    r"\bbearer\s+[a-z0-9._~+/=-]{12,}"
-)
-
-
-def _redact(value: str) -> str:
-    value = _EMAIL.sub("[REDACTED EMAIL]", value)
-    value = _PHONE.sub("[REDACTED PHONE]", value)
-    return _SECRET.sub("[REDACTED SECRET]", value)
-
-
-def _mask_otel_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
-    """Redact common PII and credentials immediately before export."""
-
-    patches = {}
-    for identifier, span in params.spans.items():
-        replacements = {
-            key: masked
-            for key, value in span.attributes.items()
-            if isinstance(value, str) and (masked := _redact(value)) != value
-        }
-        if replacements:
-            patches[identifier] = OtelSpanPatch(set_attributes=replacements)
-    return MaskOtelSpansResult(span_patches=patches) if patches else None
 
 
 @lru_cache(maxsize=4)
@@ -62,7 +32,6 @@ def _client(
         base_url=base_url,
         environment=environment,
         release=release,
-        mask_otel_spans=_mask_otel_spans,
     )
 
 
