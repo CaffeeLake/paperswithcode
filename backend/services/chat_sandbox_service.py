@@ -1486,9 +1486,12 @@ class SandboxSessionManager:
         allow_pool: bool = False,
         pool_miss: bool = False,
         pool_lookup_ms: int | None = None,
+        budget_prechecked: bool = False,
     ) -> tuple[object, int, bool, str, int | None]:
         started = time.perf_counter()
-        if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
+        if not budget_prechecked and getattr(
+            self.settings, "chat_sandbox_spend_enforcement_enabled", False
+        ):
             with self.session_factory() as db:
                 try:
                     ChatSandboxSpendService(db, self.settings).assert_available()
@@ -1497,22 +1500,19 @@ class SandboxSessionManager:
                     raise SandboxError(error.code, str(error)) from error
                 db.commit()
         if allow_pool:
-            with self.session_factory() as db:
-                pool_eligible = self._lease(db, chat_session_id, lock=False) is None
-            if pool_eligible:
-                lookup_started = time.perf_counter()
-                claimed = await self.claim_blank(chat_session_id)
-                pool_lookup_ms = round((time.perf_counter() - lookup_started) * 1000)
-                if claimed is not None:
-                    sandbox, _claim_ms = claimed
-                    return (
-                        sandbox,
-                        round((time.perf_counter() - started) * 1000),
-                        False,
-                        "pool_hit",
-                        pool_lookup_ms,
-                    )
-                pool_miss = True
+            lookup_started = time.perf_counter()
+            claimed = await self.claim_blank(chat_session_id)
+            pool_lookup_ms = round((time.perf_counter() - lookup_started) * 1000)
+            if claimed is not None:
+                sandbox, _claim_ms = claimed
+                return (
+                    sandbox,
+                    round((time.perf_counter() - started) * 1000),
+                    False,
+                    "pool_hit",
+                    pool_lookup_ms,
+                )
+            pool_miss = True
         deadline = time.monotonic() + self.ready_timeout_seconds
         claim: StartClaim | None = None
         interval_id: uuid.UUID | None = None
@@ -1746,6 +1746,7 @@ class SandboxSessionManager:
                     chat_session_id,
                     pool_miss=pool_miss,
                     pool_lookup_ms=pool_lookup_ms,
+                    budget_prechecked=budget_prechecked,
                 )
 
         assert claim is not None
@@ -2120,6 +2121,7 @@ class SandboxSessionManager:
             ) = await self.ensure_ready(
                 chat_session_id,
                 pool_miss=forced_pool_miss,
+                budget_prechecked=True,
                 allow_pool=bool(
                     allow_pool
                     and persistent

@@ -392,8 +392,9 @@ def test_persistent_turns_reuse_one_control_attachment():
         manager._start_persistent_control = start_control
         ensure_calls = 0
 
-        async def ensure_ready(_session_id, **_kwargs):
+        async def ensure_ready(_session_id, **kwargs):
             nonlocal ensure_calls
+            assert kwargs["budget_prechecked"] is True
             ensure_calls += 1
             return sandbox, 1, False, "reused_session", None
 
