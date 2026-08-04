@@ -1049,6 +1049,7 @@ class SandboxSessionManager:
                     "drained": 0,
                     "lost": 0,
                     "orphaned": 0,
+                    "abandoned": 0,
                     "cleaned": 0,
                     "replenished": 0,
                 }
@@ -1169,11 +1170,23 @@ class SandboxSessionManager:
                     or 0
                 )
         orphaned = await self.reconcile_pool_orphans()
+        abandoned = 0
+        if self.settings.chat_sandbox_spend_enforcement_enabled:
+            with self.session_factory() as db, db.begin():
+                abandoned = ChatSandboxSpendService(
+                    db, self.settings
+                ).abort_abandoned_pool_reservations()
+            if abandoned:
+                logger.info(
+                    "chat blank pool abandoned reservations released count=%d",
+                    abandoned,
+                )
         replenished = 0 if budget_blocked else await self.replenish_pool()
         return {
             "drained": drained,
             "lost": lost,
             "orphaned": orphaned,
+            "abandoned": abandoned,
             "cleaned": cleaned,
             "replenished": replenished,
         }

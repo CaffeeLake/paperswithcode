@@ -127,6 +127,72 @@ def test_cancelled_start_releases_pre_provider_reservation(monkeypatch):
     assert interval.reconciliation_state == "creation_failed"
 
 
+def test_terminal_pool_owner_releases_abandoned_pre_provider_reservation():
+    sessions = factory()
+    configured = settings()
+    now = datetime(2026, 8, 4, 7, 25, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, configured)
+        abandoned_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="abandoned", now=now
+        )
+        active_id = service.reserve_interval(
+            origin="blank_pool", worker_generation="active", now=now
+        )
+        db.add_all(
+            [
+                ChatSandboxPool(
+                    id=uuid.uuid4(),
+                    state="terminated",
+                    image_version=configured.chat_modal_image_version,
+                    worker_contract_version=configured.chat_worker_contract_version,
+                    worker_generation="abandoned",
+                    app_release_id="prior-release",
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    terminated_at=now,
+                    updated_at=now,
+                    cpu_request=1,
+                    cpu_limit=1,
+                    memory_request_mib=2048,
+                    memory_limit_mib=2048,
+                    billing_month=now.date().replace(day=1),
+                ),
+                ChatSandboxPool(
+                    id=uuid.uuid4(),
+                    state="starting",
+                    image_version=configured.chat_modal_image_version,
+                    worker_contract_version=configured.chat_worker_contract_version,
+                    worker_generation="active",
+                    app_release_id=configured.release_id,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    updated_at=now,
+                    cpu_request=1,
+                    cpu_limit=1,
+                    memory_request_mib=2048,
+                    memory_limit_mib=2048,
+                    billing_month=now.date().replace(day=1),
+                ),
+            ]
+        )
+
+    with sessions() as db, db.begin():
+        released = ChatSandboxSpendService(
+            db, configured
+        ).abort_abandoned_pool_reservations(now + timedelta(seconds=1))
+
+    with sessions() as db:
+        abandoned = db.get(ChatSandboxComputeInterval, abandoned_id)
+        active = db.get(ChatSandboxComputeInterval, active_id)
+    assert released == 1
+    assert abandoned.terminal_at is not None
+    assert abandoned.reserved_microusd == 0
+    assert abandoned.reconciliation_state == "creation_failed"
+    assert active.terminal_at is None
+    assert active.reserved_microusd > 0
+
+
 def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
     sessions = factory()
     configured = settings()

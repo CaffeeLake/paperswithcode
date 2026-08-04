@@ -538,6 +538,42 @@ class ChatSandboxSpendService:
             row.reconciliation_state = "creation_failed"
             row.updated_at = now
 
+    def abort_abandoned_pool_reservations(
+        self, now: datetime | None = None, *, limit: int = 100
+    ) -> int:
+        """Release pre-provider reservations whose durable pool owner is terminal."""
+
+        now = now or datetime.now(UTC)
+        active_pool = (
+            select(ChatSandboxPool.id)
+            .where(
+                ChatSandboxPool.worker_generation
+                == ChatSandboxComputeInterval.worker_generation,
+                ChatSandboxPool.state.in_(["starting", "blank_ready", "draining"]),
+            )
+            .exists()
+        )
+        self._lock()
+        rows = list(
+            self.db.scalars(
+                select(ChatSandboxComputeInterval)
+                .where(
+                    ChatSandboxComputeInterval.environment == self.settings.environment,
+                    ChatSandboxComputeInterval.origin == "blank_pool",
+                    ChatSandboxComputeInterval.modal_sandbox_id.is_(None),
+                    ChatSandboxComputeInterval.provider_created_at.is_(None),
+                    ChatSandboxComputeInterval.terminal_at.is_(None),
+                    ~active_pool,
+                )
+                .order_by(ChatSandboxComputeInterval.reserved_at)
+                .limit(limit)
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            self.abort_reservation(row.id, "pool_owner_terminated", now)
+        return len(rows)
+
     def claim(
         self, sandbox_id: str, chat_session_id: uuid.UUID, now: datetime | None = None
     ) -> None:
