@@ -300,6 +300,71 @@ def test_trending_benchmarks_resolve_exact_task_name(db_session):
     assert response.results[0].name == "RisingBench"
 
 
+def test_trending_benchmarks_use_all_time_support_for_sparse_recent_activity(
+    db_session,
+):
+    today = date(2026, 7, 27)
+    _seed_benchmark_trends(db_session, today)
+
+    db_session.add(
+        DBDataset(
+            id=502,
+            name="LegacyBench",
+            slug="legacy-bench",
+            description="Long-established benchmark with sparse recent activity",
+        )
+    )
+    db_session.add(TaskDataset(task_id=50, dataset_id=502))
+
+    papers = []
+    evaluations = []
+    report_ages = [30, 300, 330, 360, 390, 420, 450, 480]
+    for offset, age in enumerate(report_ages, start=600):
+        papers.append(
+            DBPaper(
+                id=offset,
+                title=f"Legacy paper {offset}",
+                abstract="",
+                arxiv_id=f"2501.{offset:05d}",
+                version="v1",
+                is_latest_version=True,
+                date_published=today - timedelta(days=age),
+            )
+        )
+        evaluations.append(
+            DBEvaluation(
+                id=offset,
+                paper_id=offset,
+                task_id=50,
+                dataset_id=502,
+                model_name=f"Legacy model {offset}",
+                metrics={"Accuracy": 1},
+                best_metric="Accuracy",
+            )
+        )
+    db_session.add_all(papers)
+    db_session.add_all(evaluations)
+    db_session.commit()
+
+    response = BenchmarkTrendService(db_session).get_trending_benchmarks(
+        "ocr-trends",
+        min_recent_papers=0,
+        today=today,
+    )
+
+    names = [item.name for item in response.results]
+    assert names.index("RisingBench") < names.index("LegacyBench")
+    assert names.index("LegacyBench") < names.index("EstablishedBench")
+    legacy = next(item for item in response.results if item.name == "LegacyBench")
+    established = next(
+        item for item in response.results if item.name == "EstablishedBench"
+    )
+    assert legacy.recent_paper_count == 1
+    assert established.recent_paper_count == 2
+    assert legacy.all_time_paper_count == 8
+    assert established.all_time_paper_count == 7
+
+
 def test_trending_benchmarks_endpoint_exposes_default_window(client):
     today = datetime.now(UTC).date()
     db = TestingSessionLocal()

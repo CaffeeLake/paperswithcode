@@ -49,6 +49,11 @@ class BenchmarkTrendService:
         evaluation-row creation timestamps, keep backfilled historical results
         from looking newly trendy.
 
+        Benchmarks with at least three recent reporting papers rank by recent
+        activity. Below that support threshold, all-time distinct reporting
+        papers rank first so a single newer report does not displace an
+        established benchmark.
+
         The database currently has evaluation evidence but no paper-reference
         edge table. The response therefore identifies its signal as
         ``evaluation_reports`` and does not infer citations to introducing
@@ -158,14 +163,25 @@ class BenchmarkTrendService:
                 )
             )
 
-        results.sort(
-            key=lambda item: (
-                -item.recent_paper_count,
-                -(item.latest_reported_on or date.min).toordinal(),
+        def ranking_key(item: TrendingBenchmark) -> tuple:
+            latest_ordinal = (item.latest_reported_on or date.min).toordinal()
+            if item.recent_paper_count >= 3:
+                return (
+                    0,
+                    -item.recent_paper_count,
+                    -latest_ordinal,
+                    -item.all_time_paper_count,
+                    item.name.casefold(),
+                )
+            return (
+                1,
                 -item.all_time_paper_count,
+                -item.recent_paper_count,
+                -latest_ordinal,
                 item.name.casefold(),
             )
-        )
+
+        results.sort(key=ranking_key)
 
         return TrendingBenchmarks(
             task_id=task.id,
