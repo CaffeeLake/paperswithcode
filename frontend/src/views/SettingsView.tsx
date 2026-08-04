@@ -61,6 +61,7 @@ const SettingsView: React.FC = () => {
   const chatEnabled = isChatEnabled();
   const [billingError, setBillingError] = React.useState("");
   const [openRouterError, setOpenRouterError] = React.useState("");
+  const [openRouterErrorCode, setOpenRouterErrorCode] = React.useState("");
   const [openRouterKey, setOpenRouterKey] = React.useState("");
   const queryClient = useQueryClient();
   const billingQuery = useQuery({
@@ -112,26 +113,32 @@ const SettingsView: React.FC = () => {
   const billingLoading =
     billingQuery.isLoading ||
     selectBillingAccountMutation.isPending;
+  const setOpenRouterMutationError = (error: unknown, fallback: string) => {
+    setOpenRouterError(openRouterErrorMessage(error, fallback));
+    setOpenRouterErrorCode(error instanceof ApiError ? error.code ?? "" : "");
+  };
   const connectOpenRouterMutation = useMutation({
     mutationFn: (apiKey: string) => apiClient.connectOpenRouterCredential(apiKey),
     onSuccess: (status) => {
       queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
       setOpenRouterKey("");
       setOpenRouterError("");
+      setOpenRouterErrorCode("");
     },
-    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+    onError: (error) => setOpenRouterMutationError(
       error, "Could not connect the OpenRouter key.",
-    )),
+    ),
   });
   const fallbackMutation = useMutation({
     mutationFn: (enabled: boolean) => apiClient.setOpenRouterFallback(enabled),
     onSuccess: (status) => {
       queryClient.setQueryData(OPENROUTER_CREDENTIAL_QUERY_KEY, status);
       setOpenRouterError("");
+      setOpenRouterErrorCode("");
     },
-    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+    onError: (error) => setOpenRouterMutationError(
       error, "Could not change paid fallback.",
-    )),
+    ),
   });
   const disconnectOpenRouterMutation = useMutation({
     mutationFn: () => apiClient.disconnectOpenRouterCredential(),
@@ -142,10 +149,11 @@ const SettingsView: React.FC = () => {
         fallback_enabled: false,
       });
       setOpenRouterError("");
+      setOpenRouterErrorCode("");
     },
-    onError: (error) => setOpenRouterError(openRouterErrorMessage(
+    onError: (error) => setOpenRouterMutationError(
       error, "Could not disconnect the OpenRouter key.",
-    )),
+    ),
   });
 
   React.useEffect(() => {
@@ -363,7 +371,17 @@ const SettingsView: React.FC = () => {
                   </button>
                 </div>
               </form>}
-              {openRouterError && <div className="settings-token-error">{openRouterError}</div>}
+              {openRouterError && <div className="settings-token-error">
+                <p>{openRouterErrorCode === "fresh_auth_required"
+                  ? "Your account is signed in, but adding or enabling an API key requires a Hugging Face sign-in from the last 15 minutes."
+                  : openRouterError}</p>
+                {openRouterErrorCode === "fresh_auth_required" && <div className="settings-billing-actions">
+                  <HfSignInButton
+                    returnTo="/settings#openrouter-byok"
+                    label="Re-authenticate with Hugging Face"
+                  />
+                </div>}
+              </div>}
             </div>
           </section>
         </div>}

@@ -222,6 +222,49 @@ describe("SettingsView organization billing", () => {
     expect(screen.queryByText("43% left")).not.toBeInTheDocument();
   });
 
+  it("offers a direct security refresh when connecting a key needs fresh auth", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/me/inference-billing")) {
+        return new Response(JSON.stringify(personalStatus), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/chat/usage")) {
+        return new Response(JSON.stringify({
+          used_percent: 57,
+          remaining_percent: 43,
+          resets_at: "2026-09-01T00:00:00Z",
+          available: false,
+          unavailable_reason: "shared_credits_exhausted",
+          as_of: "2026-08-04T17:43:39Z",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({
+          detail: {
+            code: "fresh_auth_required",
+            message: "For security, refresh your Hugging Face sign-in before changing your OpenRouter key.",
+          },
+        }), { status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        connected: false,
+        verified_at: null,
+        fallback_enabled: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    renderSettings();
+    const keyInput = await screen.findByLabelText("OpenRouter API key");
+    await userEvent.type(keyInput, "sk-or-test");
+    await userEvent.click(screen.getByRole("button", { name: "Connect key" }));
+
+    expect(await screen.findByText(/account is signed in/i)).toBeVisible();
+    expect(screen.getByText("Re-authenticate with Hugging Face").closest("button")).toBeVisible();
+  });
+
   it("does not flash the sign-in prompt while the account is loading", () => {
     mockAuth.state = { user: null, isLoading: true };
     mockCanPersist.value = false;

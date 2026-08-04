@@ -165,7 +165,10 @@ def _require_recent_auth(request: Request, user: dict, settings: Settings) -> No
             status_code=401,
             detail={
                 "code": "fresh_auth_required",
-                "message": "Sign in with Hugging Face again before changing your OpenRouter key.",
+                "message": (
+                    "For security, refresh your Hugging Face sign-in before "
+                    "changing your OpenRouter key."
+                ),
             },
         )
     _require_same_origin_csrf(request, settings)
