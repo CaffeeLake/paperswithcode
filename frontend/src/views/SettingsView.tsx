@@ -54,7 +54,7 @@ function openRouterErrorMessage(error: unknown, fallback: string): string {
 }
 
 const SettingsView: React.FC = () => {
-  const { user } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
@@ -170,7 +170,11 @@ const SettingsView: React.FC = () => {
 
       {chatEnabled && <section className="settings-section">
         <h2 className="settings-section-title">Chat usage &amp; billing</h2>
-        {!user ? (
+        {authLoading && !user ? (
+          <div className="settings-billing-loading" role="status" aria-live="polite">
+            Checking account…
+          </div>
+        ) : !user ? (
           <div className="settings-note settings-note-flush">
             <span>
               Sign in to connect your Hugging Face account for research chat.

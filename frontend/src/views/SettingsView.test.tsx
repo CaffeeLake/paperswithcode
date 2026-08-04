@@ -6,14 +6,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import SettingsView from "@/views/SettingsView";
 
+const mockAuth = vi.hoisted(() => ({
+  state: {
+    user: { username: "nielsr", hf_subject: "hf-user-1" } as {
+      username: string;
+      hf_subject: string;
+    } | null,
+    isLoading: false,
+  },
+}));
+
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
 }));
 
 vi.mock("@/lib/authContext", () => ({
-  useAuth: () => ({
-    user: { username: "nielsr", hf_subject: "hf-user-1" },
-  }),
+  useAuth: () => mockAuth.state,
 }));
 
 vi.mock("@/lib/preferencesContext", () => ({
@@ -52,6 +60,10 @@ describe("SettingsView organization billing", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    mockAuth.state = {
+      user: { username: "nielsr", hf_subject: "hf-user-1" },
+      isLoading: false,
+    };
   });
 
   afterEach(() => {
@@ -173,12 +185,37 @@ describe("SettingsView organization billing", () => {
     expect(screen.queryByText(/\$1|dollar|USD/i)).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
   });
+
+  it("does not flash the sign-in prompt while the account is loading", () => {
+    mockAuth.state = { user: null, isLoading: true };
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    renderSettings();
+
+    expect(screen.getByRole("status")).toHaveTextContent("Checking account…");
+    expect(screen.queryByText(/Sign in to connect your Hugging Face account/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with Hugging Face" })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the sign-in prompt after authentication resolves signed out", () => {
+    mockAuth.state = { user: null, isLoading: false };
+
+    renderSettings();
+
+    expect(screen.getByText(/Sign in to connect your Hugging Face account/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Sign in with Hugging Face" })).toBeVisible();
+  });
 });
 
 describe("SettingsView production boundary", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "0");
+    mockAuth.state = {
+      user: { username: "nielsr", hf_subject: "hf-user-1" },
+      isLoading: false,
+    };
   });
 
   afterEach(() => {
