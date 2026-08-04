@@ -298,7 +298,6 @@ const FIGURE_BY_SLUG: Record<string, React.FC> = {
   "u-net": UNetFig,
   unet: UNetFig,
   vit: ViTFig,
-  diffusion: DiffusionFig,
   ddpm: DiffusionFig,
   gan: GANFig,
   vae: VAEFig,
