@@ -1,7 +1,14 @@
 import json
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
-from backend.scripts.audit_chat_soak import _parse_time, _status, render_report
+from backend.scripts import audit_chat_soak
+from backend.scripts.audit_chat_soak import (
+    _journal_counts,
+    _parse_time,
+    _status,
+    render_report,
+)
 
 
 def test_parse_time_requires_an_explicit_timezone():
@@ -77,3 +84,31 @@ def test_status_requires_samples_after_the_full_window():
         )
         == "telemetry_ready"
     )
+
+
+def test_journal_counts_ignore_only_qualification_forced_failure_sessions(
+    monkeypatch,
+):
+    expected_session_id = "b20b2118-6d2d-4b72-942b-ff30972da2d6"
+    unexpected_session_id = "ee31e680-cf77-401a-82f4-8a2d68841b80"
+    monkeypatch.setattr(
+        audit_chat_soak.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=(
+                "chat research producer failed "
+                f"session_id={expected_session_id} error=ConnectionClosedError\n"
+                "chat research producer failed "
+                f"session_id={unexpected_session_id} error=ConnectionClosedError\n"
+                f"chat cleanup failed session_id={expected_session_id}\n"
+            )
+        ),
+    )
+
+    counts = _journal_counts(
+        datetime(2026, 8, 4, 10, 32, tzinfo=UTC),
+        expected_failure_session_ids={expected_session_id},
+    )
+
+    assert counts["research_producer_failure"] == 1
+    assert counts["turn_cleanup_failure"] == 1

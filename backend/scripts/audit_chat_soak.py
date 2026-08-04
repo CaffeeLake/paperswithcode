@@ -105,7 +105,11 @@ def _percentile(db, column, *predicates) -> dict[str, int] | None:
     }
 
 
-def _journal_counts(start: datetime) -> dict[str, int]:
+def _journal_counts(
+    start: datetime,
+    *,
+    expected_failure_session_ids: set[str] | None = None,
+) -> dict[str, int]:
     command = ["journalctl"]
     for unit in JOURNAL_UNITS:
         command.extend(["-u", unit])
@@ -124,8 +128,20 @@ def _journal_counts(start: datetime) -> dict[str, int]:
         text=True,
     )
     lines = result.stdout.splitlines()
+    expected_failure_session_ids = expected_failure_session_ids or set()
     counts = {
-        name: sum(pattern in line for line in lines)
+        name: sum(
+            pattern in line
+            and not (
+                name == "research_producer_failure"
+                and "error=ConnectionClosedError" in line
+                and any(
+                    f"session_id={session_id}" in line
+                    for session_id in expected_failure_session_ids
+                )
+            )
+            for line in lines
+        )
         for name, pattern in JOURNAL_FAILURE_PATTERNS.items()
     }
     counts["langfuse_trace_complete"] = sum(
@@ -203,6 +219,18 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             ChatTurnLatency.terminal_status == "error",
             ChatTurnLatency.qualification_scenario == "forced_failure",
         )
+        expected_failure_session_ids = {
+            str(session_id)
+            for session_id in db.scalars(
+                select(ChatTurnLatency.chat_session_id)
+                .where(
+                    *scope,
+                    ChatTurnLatency.terminal_status == "error",
+                    ChatTurnLatency.qualification_scenario == "forced_failure",
+                )
+                .distinct()
+            )
+        }
         unexpected_errors = _count(
             db,
             *scope,
@@ -327,7 +355,10 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             ).all()
         )
 
-    journal = _journal_counts(start)
+    journal = _journal_counts(
+        start,
+        expected_failure_session_ids=expected_failure_session_ids,
+    )
     journal_critical = (
         sum(journal[name] for name in JOURNAL_FAILURE_PATTERNS)
         + journal["session_store_forbidden"]
