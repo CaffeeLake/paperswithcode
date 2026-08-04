@@ -485,7 +485,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="max-h-[90vh] max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <span className="copy-to-bucket-dialog-arrow" aria-hidden="true">→</span>
@@ -498,8 +498,9 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
             </DialogDescription>
           </DialogHeader>
 
-          {artifacts.length ? (
-            <div className="space-y-5">
+          <div className="-mx-6 min-h-0 overflow-y-auto px-6">
+            {artifacts.length ? (
+              <div className="space-y-5">
               <div className="space-y-2">
                 <Label>Choose your destination</Label>
                 <RadioGroup
@@ -595,13 +596,14 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                     : "Enter a bucket name above to prepare the copy commands."}
                 </pre>
               </div>
-            </div>
-          ) : (
-            <p className="py-5 text-sm text-muted-foreground">
-              This paper does not have a linked GitHub repository or Hugging Face
-              artifact to copy yet.
-            </p>
-          )}
+              </div>
+            ) : (
+              <p className="py-5 text-sm text-muted-foreground">
+                This paper does not have a linked GitHub repository or Hugging Face
+                artifact to copy yet.
+              </p>
+            )}
+          </div>
 
           <DialogFooter>
             <a
