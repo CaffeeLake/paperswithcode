@@ -60,6 +60,45 @@ sudo systemd-run --quiet --wait --pipe --collect \
   --confirm QUALIFY_STAGING_CHAT_TRIP
 ```
 
+After that qualification succeeds with zero tagged provider sandboxes, enable
+exactly one staging blank sandbox. This mode changes only the staging pool flag
+and its already-qualified one-blank capacity; it never changes production:
+
+```bash
+sudo /usr/bin/python3 deploy/configure_host_env.py \
+  --legacy-env backend/keys.env \
+  --staging-chat-pool-enable-only
+```
+
+Deploy the exact pushed release to staging so the web process reads the flag,
+wait for one `blank_ready` row, then prove that a real claim keeps one continuous
+`blank_pool` compute interval from provider creation through claim. The runner
+terminates its synthetic claimed session, confirms interval settlement, waits
+for the one replacement blank, and emits content-free evidence:
+
+```bash
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=pwc-staging --gid=pwc-staging \
+  --working-directory=/srv/paperswithcode/environments/staging/current \
+  --property=EnvironmentFile=/etc/paperswithcode/staging.env \
+  /srv/paperswithcode/.venv/bin/python \
+  -m backend.scripts.qualify_chat_pool \
+  --samples 1 \
+  --candidate-cpu 0.125 \
+  --candidate-memory-mib 512 \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --confirm QUALIFY_STAGING_CHAT_POOL
+```
+
+If any qualification or post-run guardrail fails, disable replenishment and
+redeploy the same staging release before investigating:
+
+```bash
+sudo /usr/bin/python3 deploy/configure_host_env.py \
+  --legacy-env backend/keys.env \
+  --staging-chat-pool-disable-only
+```
+
 ## Recovery
 
 Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction` or `reviewed-higher-caps` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.

@@ -344,6 +344,15 @@ def staging_chat_capacity_values() -> dict[str, str]:
     }
 
 
+def staging_chat_pool_values(*, enabled: bool) -> dict[str, str]:
+    """Toggle only the qualified one-blank staging pool shape."""
+
+    values = {"PWC_CHAT_BLANK_POOL_ENABLED": "true" if enabled else "false"}
+    if enabled:
+        values.update(staging_chat_capacity_values())
+    return values
+
+
 def staging_chat_spend_values() -> dict[str, str]:
     return {
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
@@ -417,10 +426,38 @@ def main() -> int:
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
     parser.add_argument("--staging-chat-capacity-only", action="store_true")
     parser.add_argument("--staging-chat-alerts-only", action="store_true")
+    parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
+    parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_chat_pool_enable_only or args.staging_chat_pool_disable_only:
+        if (
+            args.staging_chat_pool_enable_only and args.staging_chat_pool_disable_only
+        ) or any(
+            (
+                args.production_codex_only,
+                args.staging_codex_too,
+                args.staging_langfuse_only,
+                args.staging_openrouter_only,
+                args.staging_openrouter_disable_only,
+                args.staging_openrouter_secrets_rotate_only,
+                args.staging_chat_capacity_only,
+                args.staging_chat_alerts_only,
+            )
+        ):
+            parser.error(
+                "staging chat pool enable/disable cannot be combined with other modes"
+            )
+        enabled = args.staging_chat_pool_enable_only
+        staging = assign(
+            read_lines(CONFIG_ROOT / "staging.env"),
+            staging_chat_pool_values(enabled=enabled),
+        )
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print(f"{'enabled' if enabled else 'disabled'} staging chat blank pool")
+        return 0
     if args.staging_openrouter_secrets_rotate_only:
         if any(
             (

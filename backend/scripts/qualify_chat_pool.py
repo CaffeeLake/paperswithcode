@@ -10,7 +10,7 @@ import math
 import statistics
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,12 +20,19 @@ from sqlalchemy.exc import NoResultFound
 
 from backend.config import get_settings
 from backend.database.connection import db_manager
-from backend.models.database import ChatSandboxPool, ChatTurnLatency
+from backend.models.database import (
+    ChatSandboxComputeInterval,
+    ChatSandboxLease,
+    ChatSandboxPool,
+    ChatSession,
+    ChatTurnLatency,
+)
 from backend.routers.auth import _encode_legacy_session
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.scripts.staging_qualification_http import client as staging_client
 from backend.services.chat_latency_service import ChatLatencyService
 from backend.services.hf_inference_billing_service import COOKIE_NAME, encrypt_token
+from backend.services.chat_sandbox_service import SandboxSessionManager
 
 CONFIRMATION = "QUALIFY_STAGING_CHAT_POOL"
 
@@ -39,6 +46,8 @@ class PoolSample:
     first_delta_ms: int | None
     total_ms: int | None
     estimated_active_cost_usd: float | None
+    continuous_pool_interval: bool
+    cleanup_confirmed: bool
     terminal_status: str
     error_code: str | None
 
@@ -73,6 +82,10 @@ def summarize(samples: list[PoolSample]) -> dict[str, Any]:
         "pool_misses": sum(
             sample.acquisition_outcome == "pool_miss" for sample in samples
         ),
+        "continuous_pool_intervals": sum(
+            sample.continuous_pool_interval for sample in samples
+        ),
+        "cleanup_confirmed": sum(sample.cleanup_confirmed for sample in samples),
         "pool_lookup_ms": metric("pool_lookup_ms"),
         "sdk_dispatch_ms": metric("sdk_dispatch_ms"),
         "first_delta_ms": metric("first_delta_ms"),
@@ -160,28 +173,80 @@ class PoolQualification:
             await asyncio.sleep(0.25)
         raise TimeoutError("Compatible blank worker was not replenished")
 
-    def _latency(self, request_id: str, error_code: str | None) -> PoolSample:
+    def _latency(
+        self, request_id: str, error_code: str | None
+    ) -> tuple[PoolSample, uuid.UUID, uuid.UUID | None]:
         with db_manager.session_local() as db:
             row = db.execute(
                 select(ChatTurnLatency).where(
                     ChatTurnLatency.request_id == uuid.UUID(request_id)
                 )
             ).scalar_one()
-        return PoolSample(
-            request_id=request_id,
-            acquisition_outcome=row.acquisition_outcome,
-            pool_lookup_ms=row.pool_lookup_completed_ms,
-            sdk_dispatch_ms=row.sdk_query_dispatched_ms,
-            first_delta_ms=row.first_application_sse_delta_ms,
-            total_ms=row.total_ms,
-            estimated_active_cost_usd=(
-                float(row.estimated_active_cost_usd)
-                if row.estimated_active_cost_usd is not None
-                else None
-            ),
-            terminal_status=row.terminal_status,
-            error_code=error_code,
-        )
+            intervals = list(
+                db.scalars(
+                    select(ChatSandboxComputeInterval).where(
+                        ChatSandboxComputeInterval.chat_session_id
+                        == row.chat_session_id
+                    )
+                )
+            )
+            lease = db.get(ChatSandboxLease, row.chat_session_id)
+            interval = intervals[0] if len(intervals) == 1 else None
+            continuous = bool(
+                interval is not None
+                and lease is not None
+                and interval.origin == "blank_pool"
+                and interval.modal_sandbox_id is not None
+                and interval.modal_sandbox_id == lease.modal_sandbox_id
+                and interval.provider_created_at is not None
+                and interval.claimed_at is not None
+                and interval.reserved_at <= interval.provider_created_at
+                and interval.provider_created_at <= interval.claimed_at
+                and interval.terminal_at is None
+            )
+            return (
+                PoolSample(
+                    request_id=request_id,
+                    acquisition_outcome=row.acquisition_outcome,
+                    pool_lookup_ms=row.pool_lookup_completed_ms,
+                    sdk_dispatch_ms=row.sdk_query_dispatched_ms,
+                    first_delta_ms=row.first_application_sse_delta_ms,
+                    total_ms=row.total_ms,
+                    estimated_active_cost_usd=(
+                        float(row.estimated_active_cost_usd)
+                        if row.estimated_active_cost_usd is not None
+                        else None
+                    ),
+                    continuous_pool_interval=continuous,
+                    cleanup_confirmed=False,
+                    terminal_status=row.terminal_status,
+                    error_code=error_code,
+                ),
+                row.chat_session_id,
+                interval.id if interval is not None else None,
+            )
+
+    def _session_id(self, subject: str) -> uuid.UUID | None:
+        with db_manager.session_local() as db:
+            return db.scalar(
+                select(ChatSession.id).where(ChatSession.hf_user_id == subject)
+            )
+
+    def _cleanup_confirmed(
+        self, session_id: uuid.UUID, interval_id: uuid.UUID | None
+    ) -> bool:
+        if interval_id is None:
+            return False
+        with db_manager.session_local() as db:
+            lease = db.get(ChatSandboxLease, session_id)
+            interval = db.get(ChatSandboxComputeInterval, interval_id)
+            return bool(
+                lease is not None
+                and lease.state == "terminated"
+                and lease.modal_sandbox_id is None
+                and interval is not None
+                and interval.terminal_at is not None
+            )
 
     async def _turn(self, index: int) -> PoolSample:
         subject = f"pool-qualification-{self.run_id}-{index}"
@@ -222,18 +287,38 @@ class PoolQualification:
                 if event.get("type") in {"done", "cancelled", "error"}:
                     terminal = str(event["type"])
                     error_code = str(event.get("code")) if event.get("code") else None
-        if request_id is None:
-            return PoolSample(
-                None, None, None, None, None, None, None, terminal, error_code
-            )
-        for _ in range(40):
-            try:
-                return self._latency(request_id, error_code)
-            except NoResultFound:
-                await asyncio.sleep(0.05)
-        return PoolSample(
-            request_id, None, None, None, None, None, None, terminal, error_code
+        sample = PoolSample(
+            request_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            False,
+            False,
+            terminal,
+            error_code,
         )
+        session_id: uuid.UUID | None = None
+        interval_id: uuid.UUID | None = None
+        if request_id is not None:
+            for _ in range(40):
+                try:
+                    sample, session_id, interval_id = self._latency(
+                        request_id, error_code
+                    )
+                    break
+                except NoResultFound:
+                    await asyncio.sleep(0.05)
+        session_id = session_id or self._session_id(subject)
+        if session_id is not None:
+            await SandboxSessionManager(self.settings).terminate(session_id)
+            sample = replace(
+                sample,
+                cleanup_confirmed=self._cleanup_confirmed(session_id, interval_id),
+            )
+        return sample
 
     def _blank_starts(self) -> int:
         with db_manager.session_local() as db:
@@ -296,18 +381,17 @@ def main() -> int:
     if not 1 <= args.samples <= 200:
         raise SystemExit("--samples must be 1-200")
     environment_settings = get_settings()
-    release_settings = settings_for_release(args.release_dir).model_copy(
+    release = settings_for_release(args.release_dir)
+    release_settings = environment_settings.model_copy(
         update={
-            "chat_persistent_worker_enabled": (
-                environment_settings.chat_persistent_worker_enabled
-            ),
-            "chat_blank_pool_enabled": environment_settings.chat_blank_pool_enabled,
-            "chat_sandbox_cpu": environment_settings.chat_sandbox_cpu,
-            "chat_sandbox_cpu_limit": environment_settings.chat_sandbox_cpu_limit,
-            "chat_sandbox_memory_mib": environment_settings.chat_sandbox_memory_mib,
-            "chat_sandbox_memory_limit_mib": (
-                environment_settings.chat_sandbox_memory_limit_mib
-            ),
+            "release_id": release.release_id,
+            "chat_enabled": release.chat_enabled,
+            "chat_default_backend": release.chat_default_backend,
+            "chat_new_chat_modal_percentage": (release.chat_new_chat_modal_percentage),
+            "chat_modal_image_version": release.chat_modal_image_version,
+            "chat_pwc_cli_version": release.chat_pwc_cli_version,
+            "chat_worker_contract_version": release.chat_worker_contract_version,
+            "chat_system_prompt_sha256": release.chat_system_prompt_sha256,
         }
     )
     qualification = PoolQualification(
@@ -323,6 +407,8 @@ def main() -> int:
     passed = (
         summary["complete"] == args.samples
         and summary["pool_hits"] == args.samples
+        and summary["continuous_pool_intervals"] == args.samples
+        and summary["cleanup_confirmed"] == args.samples
         and blank_starts >= args.samples
         and marked == args.samples
     )

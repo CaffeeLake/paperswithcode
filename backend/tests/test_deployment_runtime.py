@@ -1684,6 +1684,19 @@ def test_qualified_staging_capacity_keeps_one_warm_sandbox():
     }
 
 
+def test_staging_chat_pool_toggle_is_narrow_and_bounded():
+    assert configure_host_env.staging_chat_pool_values(enabled=True) == {
+        "PWC_CHAT_BLANK_POOL_ENABLED": "true",
+        "PWC_CHAT_MAX_CONCURRENCY": "2",
+        "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": "3",
+        "PWC_CHAT_BLANK_POOL_MIN": "1",
+        "PWC_CHAT_BLANK_POOL_MAX": "1",
+    }
+    assert configure_host_env.staging_chat_pool_values(enabled=False) == {
+        "PWC_CHAT_BLANK_POOL_ENABLED": "false"
+    }
+
+
 def test_staging_chat_alert_values_are_distinct_https_destinations():
     values = configure_host_env.staging_chat_alert_values(
         {
