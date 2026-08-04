@@ -127,6 +127,71 @@ def test_cancelled_start_releases_pre_provider_reservation(monkeypatch):
     assert interval.reconciliation_state == "creation_failed"
 
 
+def test_trip_provider_sweep_preserves_busy_worker_during_grace(monkeypatch):
+    sessions = factory()
+    configured = settings()
+    session_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    with sessions() as db, db.begin():
+        db.add(
+            ChatSession(
+                id=session_id,
+                hf_user_id="grace-owner",
+                hf_username="grace-owner",
+                selected_model="google/gemma-4-31B-it",
+                execution_backend="modal_cli",
+            )
+        )
+        service = ChatSandboxSpendService(db, configured)
+        interval_id = service.reserve_interval(
+            origin="qualification", worker_generation="grace-worker", now=now
+        )
+        service.provider_created(interval_id, "sb-busy", now)
+        db.add(
+            ChatSandboxLease(
+                chat_session_id=session_id,
+                modal_sandbox_id="sb-busy",
+                app_release_id=configured.release_id,
+                image_version=configured.chat_modal_image_version,
+                worker_contract_version=configured.chat_worker_contract_version,
+                worker_generation="grace-worker",
+                state="busy",
+                last_activity_at=now,
+                updated_at=now,
+            )
+        )
+        service.trip("qualification_trip", now)
+
+    async def no_wait(_seconds):
+        return None
+
+    async def listed(*_args, **_kwargs):
+        yield type("Sandbox", (), {"object_id": "sb-busy"})()
+
+    class ListCall:
+        aio = staticmethod(listed)
+
+    terminated = []
+
+    async def terminate_provider(sandbox_id, _sandbox=None):
+        terminated.append(sandbox_id)
+        return True
+
+    monkeypatch.setattr(chat_sandbox_service.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(chat_sandbox_service.modal.Sandbox, "list", ListCall())
+    manager = SandboxSessionManager(configured, session_factory=sessions)
+    manager._terminate_provider_sandbox = terminate_provider
+
+    result = asyncio.run(manager.enforce_spend_cap())
+
+    with sessions() as db:
+        lease = db.get(ChatSandboxLease, session_id)
+    assert result == {"state": "tripped", "terminated": 0, "uncertain": 0}
+    assert terminated == []
+    assert lease.state == "busy"
+    assert lease.modal_sandbox_id == "sb-busy"
+
+
 def test_claim_preserves_one_continuous_pool_interval():
     sessions = factory()
     start = datetime(2026, 8, 1, tzinfo=UTC)

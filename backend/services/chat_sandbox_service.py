@@ -2631,10 +2631,23 @@ class SandboxSessionManager:
                         *(terminate_budget_session(session_id) for session_id in busy)
                     )
                 )
+        protected_busy_ids: set[str] = set()
+        if datetime.now(UTC) < deadline:
+            with self.session_factory() as db:
+                protected_busy_ids = set(
+                    db.execute(
+                        select(ChatSandboxLease.modal_sandbox_id).where(
+                            ChatSandboxLease.state == "busy",
+                            ChatSandboxLease.modal_sandbox_id.is_not(None),
+                        )
+                    ).scalars()
+                )
         uncertain = 0
         async for sandbox in modal.Sandbox.list.aio(
             tags={"service": "pwc-chat", "environment": self.settings.environment}
         ):
+            if sandbox.object_id in protected_busy_ids:
+                continue
             try:
                 confirmed = await self._terminate_provider_sandbox(
                     sandbox.object_id, sandbox

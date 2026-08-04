@@ -43,6 +43,23 @@ sudo uv run --env-file /etc/paperswithcode/staging.env \
 
 The command prints an isolated admin-dashboard environment record and creates no provider compute. Then create one bounded sandbox, verify both natural and forced 30-second drain outcomes and zero tagged orphans, and only then enable one blank sandbox to prove its interval remains continuous when claimed. A deployment resets the seven-day soak evidence; rerun the release-scoped soak audit before treating staging as qualified.
 
+Run the graceful/forced drain qualification from the active immutable release
+with an explicit total reservation ceiling. It creates two sequential tagged
+sandboxes, keeps the blank pool disabled, and prints only sanitized lifecycle
+evidence:
+
+```bash
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=pwc-staging --gid=pwc-staging \
+  --working-directory=/srv/paperswithcode/environments/staging/current \
+  --property=EnvironmentFile=/etc/paperswithcode/staging.env \
+  /srv/paperswithcode/.venv/bin/python \
+  -m backend.scripts.qualify_chat_sandbox_trip \
+  --release-dir /srv/paperswithcode/environments/staging/current \
+  --max-total-microusd 1000000 \
+  --confirm QUALIFY_STAGING_CHAT_TRIP
+```
+
 ## Recovery
 
 Normal recovery occurs only at a confirmed provider billing-cycle boundary with fresh reconciliation, matching policy attestation, zero live/orphan sandboxes, and no unresolved intervals or reservations. Operator-disable and accounting-integrity trips never auto-rearm. The root-only `backend.scripts.manage_chat_sandbox_circuit disable` command records an allowlisted operator, reviewed evidence, reason, and typed environment/cycle confirmation. Exceptional early rearm uses its `rearm` subcommand with the same controls, an explicit `accounting-correction` or `reviewed-higher-caps` basis, and the post-trip `kill_sweep_complete` event ID; it is never available from the dashboard. Run either command without `--confirm` first to review the old/new policy, spend, provider floor, headroom, and live count, then rerun with the exact confirmation string it prints.
