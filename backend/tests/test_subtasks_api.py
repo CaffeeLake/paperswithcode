@@ -960,6 +960,55 @@ def test_task_benchmarks_filtered_by_min_eval_count(client):
     assert payload["count"] == 2
 
 
+def test_living_external_benchmark_bypasses_count_filter_and_sorts_first(client):
+    """A live external leaderboard is useful precisely because PwC does not
+    snapshot its mutable scores. Its explicit warning metadata keeps it visible
+    without weakening the sparse-benchmark filter for ordinary datasets."""
+    db = TestingSessionLocal()
+    _seed_paper_with_three_benchmarks(db)
+    db.add(
+        DBDataset(
+            id=400,
+            name="3D Arena",
+            slug="3d-arena",
+            warning=(
+                "Living external leaderboard: scores are continuously updated "
+                "and intentionally not snapshotted."
+            ),
+        )
+    )
+    db.add_all(
+        [
+            TaskDataset(task_id=10, dataset_id=400),
+            TaskDatasetMetric(task_id=10, dataset_id=400, metric_id=10),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/api/v1/datasets/?task=10&ordering=-paper_count&page_size=50&min_eval_count=2"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert [d["slug"] for d in payload["results"]] == [
+        "3d-arena",
+        "mcp-atlas",
+        "browsecomp",
+    ]
+    assert payload["results"][0]["paper_count"] == 0
+    assert payload["count"] == 3
+
+    task_page = client.get("/api/v1/tasks/10/page")
+    assert task_page.status_code == 200
+    assert [d["slug"] for d in task_page.json()["benchmarks"]] == [
+        "3d-arena",
+        "mcp-atlas",
+        "browsecomp",
+    ]
+
+
 def test_task_page_hides_single_entry_benchmarks_by_default(client):
     """The bundled task-page payload omits benchmarks with only one entry."""
     db = TestingSessionLocal()

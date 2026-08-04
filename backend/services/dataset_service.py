@@ -8,7 +8,7 @@ including pagination, filtering, paper associations, and evaluation data.
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from sqlalchemy.orm import Session, aliased
-from sqlalchemy import func, desc, asc, case, cast, String
+from sqlalchemy import func, desc, asc, case, cast, String, or_
 
 from backend.models.database import (
     Dataset as DBDataset,
@@ -47,6 +47,17 @@ from backend.services.entity_search import (
 # Separator unlikely to collide with real data, used to build the logical
 # leaderboard-row key (see `_leaderboard_row_count`).
 _ROW_KEY_SEP = "\x1f"
+_LIVING_EXTERNAL_WARNING_PREFIX = "Living external leaderboard:"
+
+
+def _is_living_external_leaderboard():
+    """Return the explicit metadata predicate for externally hosted live boards.
+
+    These resources intentionally have no static evaluation rows, but still
+    belong on task pages. The warning prefix is an opt-in catalog contract;
+    ordinary empty or sparse benchmarks remain subject to ``min_eval_count``.
+    """
+    return DBDataset.warning.ilike(f"{_LIVING_EXTERNAL_WARNING_PREFIX}%")
 
 
 def _parse_metric_value(raw_value) -> Optional[float]:
@@ -466,7 +477,12 @@ class DatasetService:
                 # default task-page lists without touching the underlying
                 # data or the dataset detail page (which loads benchmarks
                 # by slug directly, bypassing this filter).
-                query = query.having(_leaderboard_row_count() >= min_eval_count)
+                query = query.having(
+                    or_(
+                        _leaderboard_row_count() >= min_eval_count,
+                        _is_living_external_leaderboard(),
+                    )
+                )
 
             # Get total count before pagination
             total_count = (
@@ -491,6 +507,12 @@ class DatasetService:
             )
             if task_id is not None:
                 query = query.order_by(
+                    asc(
+                        case(
+                            (_is_living_external_leaderboard(), 0),
+                            else_=1,
+                        )
+                    ),
                     order_clause,
                     asc(DBDataset.name),
                 )
@@ -985,7 +1007,12 @@ class DatasetService:
             query = (
                 query.outerjoin(DBEvaluation, evaluation_join)
                 .group_by(DBDataset.id)
-                .having(_leaderboard_row_count() >= min_eval_count)
+                .having(
+                    or_(
+                        _leaderboard_row_count() >= min_eval_count,
+                        _is_living_external_leaderboard(),
+                    )
+                )
             )
         return [int(dataset_id) for (dataset_id,) in query.distinct().all()]
 
