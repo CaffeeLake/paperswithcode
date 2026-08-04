@@ -15,6 +15,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-update-citations.yml` | `30 * * * *` | `.github/workflows/scripts/run_citations_hourly.sh` | `.github/workflows/scripts/hourly/update_citations.py` |
 | `cron-extract-urls.yml` | `45 * * * *` | `.github/workflows/scripts/run_extract_urls_hourly.sh` | `.github/workflows/scripts/hourly/extract_urls.py` |
 | `cron-import-hf-daily-papers.yml` | `0 * * * *` | `pwc-cron import_hf_daily_papers` | `.github/workflows/scripts/daily/import_hf_daily_papers.py` |
+| `cron-sync-3d-arena.yml` | `5 * * * *` | `pwc-cron sync_3d_arena` | `.github/workflows/scripts/hourly/sync_3d_arena.py` |
 | `cron-sync-hf-organizations.yml` | `20 2 * * *` | `pwc-cron sync_hf_organizations` | `.github/workflows/scripts/daily/sync_hf_organizations.py` |
 | `cron-calculate-organization-trending-scores.yml` | `40 3 * * *` | `pwc-cron calculate_organization_trending_scores` | `.github/workflows/scripts/daily/calculate_organization_trending_scores.py` |
 | `cron-refresh-paper-embeddings.yml` | `15 * * * *` | `.github/workflows/scripts/run_refresh_paper_embeddings.sh` | `.github/workflows/scripts/hourly/refresh_paper_embeddings.py` |

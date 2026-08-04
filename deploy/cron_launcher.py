@@ -100,6 +100,12 @@ COMMANDS: dict[str, Job] = {
         timeout="50m",
         idempotency="upsert current Hugging Face artifact links",
     ),
+    "sync_3d_arena": job(
+        "-m",
+        "scripts.hourly.sync_3d_arena",
+        timeout="30m",
+        idempotency="replace managed 3D Arena evaluation rows from validated live data",
+    ),
     "import_hf_daily_papers": job(
         "-m",
         "scripts.daily.import_hf_daily_papers",

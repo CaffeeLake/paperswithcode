@@ -286,6 +286,35 @@ CRON_JOBS: Tuple[CronJobDefinition, ...] = (
         """,
     ),
     CronJobDefinition(
+        id="sync_3d_arena",
+        display_name="Sync 3D Arena",
+        category="hourly",
+        schedule="5 * * * * (hourly)",
+        script_path="hourly/sync_3d_arena.py",
+        log_name="sync_3d_arena",
+        process_patterns=("scripts.hourly.sync_3d_arena",),
+        lock_file=("/var/lib/paperswithcode/production/cron-locks/sync_3d_arena.lock"),
+        expected_runtime_minutes=5,
+        stale_after_minutes=150,
+        critical=False,
+        healthy_no_work_allowed=False,
+        db_freshness_query="""
+            SELECT max(e.updated_at) AS last_write,
+                   count(*) FILTER (
+                     WHERE e.updated_at > now() - interval '2 hours 30 minutes'
+                   ) AS recent_writes,
+                   count(*) AS matched_evaluations
+            FROM evaluations e
+            JOIN datasets d ON d.id = e.dataset_id
+            WHERE d.slug = '3d-arena-iso3d-living'
+              AND e.best_metric = 'Elo (live, external)'
+              AND e.external_source_url =
+                  'https://huggingface.co/spaces/3d-arena/3d-arena'
+        """,
+        workflow_file="cron-sync-3d-arena.yml",
+        workflow_jobs=("run",),
+    ),
+    CronJobDefinition(
         id="import_hf_daily_papers",
         display_name="Import HF Daily Papers",
         category="daily",
