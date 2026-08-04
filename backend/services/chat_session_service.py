@@ -180,7 +180,7 @@ class ChatSessionService:
                 "chat_session_quota_exceeded",
                 409,
                 f"You can have at most {self.settings.chat_session_limit} chats. "
-                "Archive chats older than 30 days or delete a chat to create another.",
+                "Archive old chats or delete a chat to create another.",
             )
         session_id = uuid.uuid4()
         allocation_bucket = (
@@ -274,6 +274,36 @@ class ChatSessionService:
                         ChatSession.active_turn_expires_at <= now,
                     ),
                 )
+                .with_for_update()
+            ).scalars()
+        )
+        for session in rows:
+            session.archived_at = now
+        self.db.flush()
+        return len(rows)
+
+    def archive_oldest_sessions(self, owner: ChatOwner, *, limit: int = 50) -> int:
+        """Hide up to ``limit`` least-recently-updated inactive chats."""
+        self.db.execute(
+            select(
+                func.pg_advisory_xact_lock(func.hashtextextended(owner.hf_user_id, 0))
+            )
+        )
+        now = _now()
+        rows = list(
+            self.db.execute(
+                select(ChatSession)
+                .where(
+                    ChatSession.hf_user_id == owner.hf_user_id,
+                    ChatSession.archived_at.is_(None),
+                    or_(
+                        ChatSession.active_turn_id.is_(None),
+                        ChatSession.active_turn_expires_at.is_(None),
+                        ChatSession.active_turn_expires_at <= now,
+                    ),
+                )
+                .order_by(ChatSession.updated_at.asc(), ChatSession.id.asc())
+                .limit(limit)
                 .with_for_update()
             ).scalars()
         )

@@ -338,8 +338,9 @@ export const AssistantMessage: React.FC<{
   papers: Record<string, ChatPaperHit>;
   onToggleBlock: (messageId: string, blockIndex: number) => void;
   onArchiveOldChats?: () => void;
-  archivePending?: boolean;
-}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, archivePending = false }) => (
+  onArchiveOldestChats?: () => void;
+  archivePending?: "old" | "oldest" | null;
+}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
       {msg.blocks?.map((b, i) => {
@@ -410,10 +411,19 @@ export const AssistantMessage: React.FC<{
         {["openrouter_byok_credential_invalid", "openrouter_byok_billing_error", "openrouter_byok_rate_limit"].includes(msg.errorCode ?? "") && (
           <a href="/settings#openrouter-byok">Review OpenRouter settings</a>
         )}
-        {msg.errorCode === "chat_session_quota_exceeded" && onArchiveOldChats && (
-          <button type="button" disabled={archivePending} onClick={onArchiveOldChats}>
-            {archivePending ? "Archiving…" : "Archive chats older than 30 days"}
-          </button>
+        {msg.errorCode === "chat_session_quota_exceeded" && (onArchiveOldChats || onArchiveOldestChats) && (
+          <span className="chat-error-actions">
+            {onArchiveOldChats && (
+              <button type="button" disabled={archivePending !== null} onClick={onArchiveOldChats}>
+                {archivePending === "old" ? "Archiving…" : "Archive chats older than 30 days"}
+              </button>
+            )}
+            {onArchiveOldestChats && (
+              <button type="button" disabled={archivePending !== null} onClick={onArchiveOldestChats}>
+                {archivePending === "oldest" ? "Archiving…" : "Archive oldest 50 chats"}
+              </button>
+            )}
+          </span>
         )}
       </div>}
       {!msg.streaming && msg.finishReason && msg.finishReason !== "success" && (

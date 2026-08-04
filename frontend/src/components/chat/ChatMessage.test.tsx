@@ -236,24 +236,28 @@ describe("AssistantMessage", () => {
 
   it("explains the chat limit and offers bulk archiving", async () => {
     const onArchive = vi.fn();
+    const onArchiveOldest = vi.fn();
     const user = userEvent.setup();
     render(
       <AssistantMessage
         msg={{
           id: "assistant-1",
           role: "assistant",
-          error: "You can have at most 100 chats. Archive chats older than 30 days or delete a chat to create another.",
+          error: "You can have at most 100 chats. Archive old chats or delete a chat to create another.",
           errorCode: "chat_session_quota_exceeded",
         }}
         papers={{}}
         onToggleBlock={() => undefined}
         onArchiveOldChats={onArchive}
+        onArchiveOldestChats={onArchiveOldest}
       />,
     );
 
     expect(screen.getByText(/at most 100 chats/)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Archive chats older than 30 days" }));
     expect(onArchive).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Archive oldest 50 chats" }));
+    expect(onArchiveOldest).toHaveBeenCalledOnce();
   });
 
   it("shows a thinking status while waiting for the first streamed block", () => {

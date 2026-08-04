@@ -34,6 +34,7 @@ import {
   type ChatModelChoice,
   type ChatSession,
   archiveOldChats,
+  archiveOldestChats,
   createOrRefreshShare,
   getChatModels,
   getSession,
@@ -233,7 +234,7 @@ const ChatView: React.FC = () => {
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 900);
   const [sharePending, setSharePending] = useState(false);
-  const [archivePending, setArchivePending] = useState(false);
+  const [archivePending, setArchivePending] = useState<"old" | "oldest" | null>(null);
   const [manualShareUrl, setManualShareUrl] = useState("");
   const manualTitleLockRef = useRef<Set<string>>(new Set());
   const sessionsLoadedRef = useRef(false);
@@ -535,8 +536,8 @@ const ChatView: React.FC = () => {
     catch (error) { setSessionError(error instanceof Error ? error.message : "Delete failed"); }
   };
   const archiveOld = async () => {
-    if (archivePending) return;
-    setArchivePending(true);
+    if (archivePending !== null) return;
+    setArchivePending("old");
     try {
       const result = await archiveOldChats();
       await refreshSessions();
@@ -562,7 +563,31 @@ const ChatView: React.FC = () => {
         description: error instanceof Error ? error.message : "Try again.",
       });
     } finally {
-      setArchivePending(false);
+      setArchivePending(null);
+    }
+  };
+  const archiveOldest = async () => {
+    if (archivePending !== null) return;
+    setArchivePending("oldest");
+    try {
+      const result = await archiveOldestChats();
+      await refreshSessions();
+      const failedPrompt = [...chat.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+      chat.reset();
+      setDraft(failedPrompt);
+      setLiveTitle("");
+      toast({
+        title: `${result.archived_count} ${result.archived_count === 1 ? "chat" : "chats"} archived`,
+        description: "Your question is ready to send again.",
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Could not archive chats",
+        description: error instanceof Error ? error.message : "Try again.",
+      });
+    } finally {
+      setArchivePending(null);
     }
   };
   const changeModel = async (model: string) => {
@@ -798,6 +823,7 @@ const ChatView: React.FC = () => {
                   papers={chat.papers}
                   onToggleBlock={toggleBlock}
                   onArchiveOldChats={() => void archiveOld()}
+                  onArchiveOldestChats={() => void archiveOldest()}
                   archivePending={archivePending}
                 />)}
           </div></div>

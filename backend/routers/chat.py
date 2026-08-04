@@ -519,6 +519,23 @@ def archive_old_sessions(
         _raise(exc)
 
 
+@router.post("/sessions/archive-oldest", response_model=ArchiveOldChatsResponse)
+def archive_oldest_sessions(
+    user: dict = Depends(require_user),
+    db: Session = Depends(get_database_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        archived_count = ChatSessionService(db, settings).archive_oldest_sessions(
+            owner_from_user(user), limit=50
+        )
+        db.commit()
+        return ArchiveOldChatsResponse(archived_count=archived_count)
+    except ChatServiceError as exc:
+        db.rollback()
+        _raise(exc)
+
+
 @router.get("/sessions/{session_id}", response_model=ChatSessionDetail)
 def get_session(
     session_id: uuid.UUID,

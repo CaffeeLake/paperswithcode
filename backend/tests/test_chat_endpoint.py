@@ -220,6 +220,59 @@ def test_archive_old_sessions_marks_selected_rows_without_deleting():
     assert all(row.archived_at is not None for row in rows)
 
 
+def test_archive_oldest_sessions_endpoint_commits_owner_scoped_archive(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, _db, _settings):
+            pass
+
+        def archive_oldest_sessions(self, owner, *, limit):
+            calls.append((owner.hf_user_id, limit))
+            return 50
+
+    db = SimpleNamespace(commit=lambda: calls.append("commit"), rollback=lambda: None)
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+
+    response = chat_router.archive_oldest_sessions(
+        user={"hf_user_id": "owner-1", "username": "owner"},
+        db=db,
+        settings=object(),
+    )
+
+    assert response.archived_count == 50
+    assert calls == [("owner-1", 50), "commit"]
+
+
+def test_archive_oldest_sessions_marks_at_most_selected_rows_without_deleting():
+    rows = [SimpleNamespace(archived_at=None) for _ in range(50)]
+
+    class Result:
+        def scalars(self):
+            return rows
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = 0
+            self.flushed = False
+
+        def execute(self, _query):
+            self.calls += 1
+            return None if self.calls == 1 else Result()
+
+        def flush(self):
+            self.flushed = True
+
+    db = FakeDB()
+    archived = ChatSessionService(db, object()).archive_oldest_sessions(
+        ChatOwner(hf_user_id="owner-1", hf_username="owner"), limit=50
+    )
+
+    assert archived == 50
+    assert db.flushed
+    assert all(row.archived_at is not None for row in rows)
+
+
 def test_chat_session_quota_error_states_the_exact_limit():
     class FakeDB:
         scalar_query = ""
@@ -246,8 +299,8 @@ def test_chat_session_quota_error_states_the_exact_limit():
     assert exc_info.value.code == "chat_session_quota_exceeded"
     assert "chat_sessions.archived_at IS NULL" in db.scalar_query
     assert str(exc_info.value) == (
-        "You can have at most 100 chats. Archive chats older than 30 days or "
-        "delete a chat to create another."
+        "You can have at most 100 chats. Archive old chats or delete a chat to "
+        "create another."
     )
 
 
