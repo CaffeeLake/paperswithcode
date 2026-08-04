@@ -348,6 +348,15 @@ def staging_chat_capacity_values() -> dict[str, str]:
     }
 
 
+def staging_chat_capacity_configuration(existing: dict[str, str]) -> dict[str, str]:
+    """Apply the qualified shape without changing an explicit pool toggle."""
+
+    values = {**staging_chat_capacity_values(), **staging_chat_spend_values()}
+    if "PWC_CHAT_BLANK_POOL_ENABLED" in existing:
+        values.pop("PWC_CHAT_BLANK_POOL_ENABLED")
+    return values
+
+
 def staging_chat_pool_values(*, enabled: bool) -> dict[str, str]:
     """Toggle only the qualified one-blank staging pool shape."""
 
@@ -502,10 +511,8 @@ def main() -> int:
             parser.error(
                 "--staging-chat-capacity-only cannot be combined with other modes"
             )
-        staging = assign(
-            read_lines(CONFIG_ROOT / "staging.env"),
-            {**staging_chat_capacity_values(), **staging_chat_spend_values()},
-        )
+        existing = read_lines(CONFIG_ROOT / "staging.env")
+        staging = assign(existing, staging_chat_capacity_configuration(existing))
         write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
         print("configured qualified staging chat capacity")
         return 0

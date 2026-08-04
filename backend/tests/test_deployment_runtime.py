@@ -1688,6 +1688,19 @@ def test_qualified_staging_capacity_keeps_one_warm_sandbox():
     }
 
 
+def test_staging_capacity_configuration_preserves_explicit_pool_toggle():
+    enabled = {"PWC_CHAT_BLANK_POOL_ENABLED": "PWC_CHAT_BLANK_POOL_ENABLED=true"}
+    values = configure_host_env.staging_chat_capacity_configuration(enabled)
+
+    assert "PWC_CHAT_BLANK_POOL_ENABLED" not in values
+    assert (
+        configure_host_env.staging_chat_capacity_configuration({})[
+            "PWC_CHAT_BLANK_POOL_ENABLED"
+        ]
+        == "false"
+    )
+
+
 def test_staging_chat_pool_toggle_is_narrow_and_bounded():
     assert configure_host_env.staging_chat_pool_values(enabled=True) == {
         "PWC_CHAT_BLANK_POOL_ENABLED": "true",
