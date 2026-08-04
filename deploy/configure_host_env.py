@@ -341,6 +341,10 @@ def staging_chat_capacity_values() -> dict[str, str]:
         "PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP": "3",
         "PWC_CHAT_BLANK_POOL_MIN": "1",
         "PWC_CHAT_BLANK_POOL_MAX": "1",
+        "PWC_CHAT_SANDBOX_CPU": "0.25",
+        "PWC_CHAT_SANDBOX_CPU_LIMIT": "1",
+        "PWC_CHAT_SANDBOX_MEMORY_MIB": "512",
+        "PWC_CHAT_SANDBOX_MEMORY_LIMIT_MIB": "2048",
     }
 
 
