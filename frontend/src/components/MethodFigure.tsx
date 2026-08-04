@@ -118,37 +118,6 @@ const AttentionFig: React.FC = () => (
   </svg>
 );
 
-const DiffusionFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="50" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Reverse process: pure noise → sample</text>
-    {[0, 1, 2, 3, 4, 5].map((i) => {
-      const x = 25 + i * 56;
-      const noiseLevel = (5 - i) / 5;
-      return (
-        <g key={i}>
-          <rect
-            x={x}
-            y={90}
-            width={50}
-            height={50}
-            rx="3"
-            fill={`oklch(${0.85 - noiseLevel * 0.1} 0.04 250)`}
-            stroke={C.faint}
-          />
-          {noiseLevel < 0.4 && (
-            <circle cx={x + 25} cy={115} r={12 - noiseLevel * 16} fill={C.orange} opacity={1 - noiseLevel * 1.5} />
-          )}
-        </g>
-      );
-    })}
-    <rect x="60" y="240" width="240" height="120" rx="4" fill="#FFF9EE" stroke={C.faint} />
-    <text x="180" y="260" fontSize="11" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">TRAINING OBJECTIVE</text>
-    <text x="180" y="295" fontSize="14" fontFamily="var(--serif)" fontStyle="italic" fill={C.ink} textAnchor="middle">
-      L = E[‖ε − ε_θ(x_t, t)‖²]
-    </text>
-  </svg>
-);
-
 const AGENT_SKILL_TREE_LINES: ReadonlyArray<readonly [string, string]> = [
   ["my-skill/", ""],
   ["├── SKILL.md", "# Required: metadata + instructions"],
@@ -184,7 +153,6 @@ const AgentSkillsFig: React.FC = () => (
 
 const FIGURE_BY_SLUG: Record<string, React.FC> = {
   attention: AttentionFig,
-  ddpm: DiffusionFig,
   "agent-skills": AgentSkillsFig,
 };
 
