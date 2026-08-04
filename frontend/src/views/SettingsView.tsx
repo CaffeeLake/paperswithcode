@@ -14,7 +14,7 @@ import { useTheme } from "next-themes";
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/api";
-import { apiUrl } from "@/lib/apiUrl";
+import { apiUrl, isChatEnabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
 import {
@@ -58,13 +58,14 @@ const SettingsView: React.FC = () => {
   const { preferences, setHideClosedSourceEvals, canPersist } = usePreferences();
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
+  const chatEnabled = isChatEnabled();
   const [billingError, setBillingError] = React.useState("");
   const [openRouterError, setOpenRouterError] = React.useState("");
   const [openRouterKey, setOpenRouterKey] = React.useState("");
   const queryClient = useQueryClient();
   const billingQuery = useQuery({
     queryKey: ["inference-billing", user?.hf_subject],
-    enabled: Boolean(user),
+    enabled: chatEnabled && Boolean(user),
     queryFn: async () => {
       const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
         credentials: "include",
@@ -75,8 +76,8 @@ const SettingsView: React.FC = () => {
     },
   });
   const billing = billingQuery.data ?? null;
-  const usageQuery = useOpenRouterUsage(Boolean(user));
-  const credentialQuery = useOpenRouterCredential(Boolean(user));
+  const usageQuery = useOpenRouterUsage(chatEnabled && Boolean(user));
+  const credentialQuery = useOpenRouterCredential(chatEnabled && Boolean(user));
   const usage = usageQuery.data;
   const credential = credentialQuery.data;
   const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
@@ -167,7 +168,7 @@ const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      <section className="settings-section">
+      {chatEnabled && <section className="settings-section">
         <h2 className="settings-section-title">Chat usage &amp; billing</h2>
         {!user ? (
           <div className="settings-note settings-note-flush">
@@ -345,7 +346,7 @@ const SettingsView: React.FC = () => {
             </div>
           </section>
         </div>}
-      </section>
+      </section>}
 
       <section className="settings-section">
         <h2 className="settings-section-title">Appearance</h2>

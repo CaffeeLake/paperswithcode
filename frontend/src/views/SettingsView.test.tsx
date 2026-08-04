@@ -2,7 +2,7 @@ import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import SettingsView from "@/views/SettingsView";
 
@@ -51,6 +51,11 @@ const renderSettings = () => {
 describe("SettingsView organization billing", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubEnv("VITE_CHAT_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("lets a connected user select an organization billing account", async () => {
@@ -167,5 +172,29 @@ describe("SettingsView organization billing", () => {
     expect(screen.getByText(/stored securely using AES-256 encryption/)).toBeVisible();
     expect(screen.queryByText(/\$1|dollar|USD/i)).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
+  });
+});
+
+describe("SettingsView production boundary", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubEnv("VITE_CHAT_ENABLED", "0");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("hides chat usage and billing without requesting chat billing data", () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    renderSettings();
+
+    expect(screen.queryByRole("heading", { name: "Chat usage & billing" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Inference Providers" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Evaluations" })).toBeVisible();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
