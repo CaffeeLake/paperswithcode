@@ -17,6 +17,9 @@ export class ApiError extends Error {
     this.response = body;
     try {
       this.detail = JSON.parse(body)?.detail;
+      if (typeof this.detail === "string") {
+        this.message = this.detail;
+      }
       if (
         typeof this.detail === "object" &&
         this.detail !== null &&
@@ -24,6 +27,18 @@ export class ApiError extends Error {
         typeof this.detail.code === "string"
       ) {
         this.code = this.detail.code;
+      }
+      if (
+        typeof this.detail === "object" &&
+        this.detail !== null &&
+        "message" in this.detail &&
+        typeof this.detail.message === "string"
+      ) {
+        const help =
+          "help" in this.detail && typeof this.detail.help === "string"
+            ? ` See ${this.detail.help} for help.`
+            : "";
+        this.message = `${this.detail.message}${help}`;
       }
     } catch {
       this.detail = undefined;

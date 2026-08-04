@@ -6,8 +6,11 @@ Submissions that match the paper's current state must be rejected with a
 "empty" review cards. See `backend/services/pending_edit_service.py`.
 """
 
+import json
+
 import pytest
-from sqlalchemy import BigInteger, create_engine
+from fastapi import HTTPException
+from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -25,12 +28,24 @@ from backend.models.database import (
     ProjectPage as DBProjectPage,
     Repository as DBRepository,
     Task as DBTask,
+    Dataset as DBDataset,
+    Metric as DBMetric,
+    Conference as DBConference,
+    TaskDataset,
+    TaskDatasetMetric,
+    CatalogMutationEvent,
 )
 from backend.routers.pending_edits import _to_response
 from backend.services.pending_edit_service import (
     PendingEditError,
+    PendingEditAlreadyReviewedError,
     PendingEditService,
+    SubmissionRateLimitError,
+    SubmissionSuspendedError,
 )
+from backend.config import Settings
+from backend.models.database import UserProfile
+from backend.services.submission_rollback_service import SubmissionRollbackService
 
 
 @compiles(BigInteger, "sqlite")
@@ -55,6 +70,20 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@event.listens_for(engine, "connect")
+def _register_jsonb_typeof(connection, _record):
+    def jsonb_typeof(value):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return "array" if isinstance(parsed, list) else "object"
+
+    connection.create_function("jsonb_typeof", 1, jsonb_typeof)
+
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -210,7 +239,7 @@ def test_submit_method_suggestion_accepts_image_and_sources(db_session):
                 "data_url": image_data_url,
             },
             "image_credit": " Example Research Group ",
-            "source": " New Attention, Example et al. ",
+            "source_url": " https://example.org/new-attention ",
         },
     )
 
@@ -222,7 +251,7 @@ def test_submit_method_suggestion_accepts_image_and_sources(db_session):
             "data_url": image_data_url,
         },
         "image_credit": "Example Research Group",
-        "source": "New Attention, Example et al.",
+        "source_url": "https://example.org/new-attention",
     }
     response = _to_response(row)
     assert response.proposed_payload["image"] == {
@@ -233,15 +262,15 @@ def test_submit_method_suggestion_accepts_image_and_sources(db_session):
     assert row.proposed_payload["image"]["data_url"] == image_data_url
 
 
-def test_submit_method_suggestion_rejects_oversized_source(db_session):
-    with pytest.raises(PendingEditError, match="at most 1000"):
+def test_submit_method_suggestion_rejects_invalid_source(db_session):
+    with pytest.raises(PendingEditError, match="HTTP"):
         PendingEditService(db_session).submit(
             paper_id=None,
             hf_username="alice",
             edit_type="new_method",
             proposed_payload={
                 "name": "New Attention",
-                "source": "x" * 1001,
+                "source_url": "javascript:alert(1)",
             },
         )
     _no_rows_created(db_session)
@@ -254,7 +283,9 @@ def test_submit_directory_conference_suggestion_without_paper_succeeds(db_sessio
         edit_type="new_conference",
         proposed_payload={
             "name": "Conference on Long-context Research 2027",
-            "dates": " May 3–7, 2027 ",
+            "year": 2027,
+            "start_date": "2027-05-03",
+            "end_date": "2027-05-07",
             "venue": " Vancouver Convention Centre ",
             "url": "https://example.org/conference",
         },
@@ -264,20 +295,23 @@ def test_submit_directory_conference_suggestion_without_paper_succeeds(db_sessio
     assert row.paper_id is None
     assert row.proposed_payload == {
         "name": "Conference on Long-context Research 2027",
-        "dates": "May 3–7, 2027",
+        "year": 2027,
+        "start_date": "2027-05-03",
+        "end_date": "2027-05-07",
         "venue": "Vancouver Convention Centre",
         "url": "https://example.org/conference",
     }
 
 
 def test_submit_directory_conference_suggestion_rejects_invalid_url(db_session):
-    with pytest.raises(PendingEditError, match="must start with http"):
+    with pytest.raises(PendingEditError, match="HTTP"):
         PendingEditService(db_session).submit(
             paper_id=None,
             hf_username="alice",
             edit_type="new_conference",
             proposed_payload={
                 "name": "Conference on Long-context Research 2027",
+                "year": 2027,
                 "url": "example.org/conference",
             },
         )
@@ -462,3 +496,240 @@ def test_submit_evaluations_create_succeeds(db_session, paper_fixture):
     assert row.id is not None
     assert row.status == "pending"
     assert row.proposed_payload["operations"][0]["op"] == "create"
+
+
+def test_adjusted_task_approval_is_atomic_audited_and_idempotent(db_session):
+    service = PendingEditService(db_session)
+    submitted = service.submit(
+        paper_id=None,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        edit_type="new_task",
+        proposed_payload={"name": "Original task"},
+    )
+    reviewed = service.approve(
+        edit_id=submitted.id,
+        reviewer_username="admin",
+        reviewer_hf_subject="hf-admin",
+        resolved_payload={"name": "Reviewed task", "keywords": "reviewed"},
+    )
+    assert reviewed.status == "approved"
+    assert reviewed.proposed_payload == {"name": "Original task"}
+    assert reviewed.applied_payload == {"name": "Reviewed task", "keywords": "reviewed"}
+    assert reviewed.result_entity_type == "task"
+    assert (
+        db_session.get(DBTask, int(reviewed.result_entity_id)).slug == "reviewed-task"
+    )
+    event = db_session.get(CatalogMutationEvent, reviewed.catalog_event_id)
+    assert event.entity_type == "submission_created_task"
+    with pytest.raises(PendingEditAlreadyReviewedError):
+        service.approve(edit_id=submitted.id, reviewer_username="admin")
+
+
+def test_failed_taxonomy_application_leaves_submission_pending(
+    db_session, paper_fixture
+):
+    row = PendingEditService(db_session).submit(
+        paper_id=None,
+        hf_username="alice",
+        edit_type="new_task",
+        proposed_payload={"name": "Task A"},
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        PendingEditService(db_session).approve(
+            edit_id=row.id, reviewer_username="admin"
+        )
+    db_session.expire_all()
+    persisted = db_session.get(PendingPaperEdit, row.id)
+    assert persisted.status == "pending"
+    assert persisted.failure_reason
+
+
+def test_benchmark_metric_method_and_conference_approvals_use_canonical_tables(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    method = service.submit(
+        paper_id=None,
+        hf_username="method-user",
+        edit_type="new_method",
+        proposed_payload={
+            "name": "Verified Method",
+            "source_url": "https://example.org/method",
+        },
+    )
+    method = service.approve(edit_id=method.id, reviewer_username="admin")
+    assert db_session.get(DBMethod, int(method.result_entity_id)) is not None
+
+    benchmark = service.submit(
+        paper_id=None,
+        hf_username="benchmark-user",
+        edit_type="new_benchmark",
+        proposed_payload={
+            "name": "Verified Benchmark",
+            "description": "A benchmark.",
+            "task_ids": [1],
+        },
+    )
+    benchmark = service.approve(edit_id=benchmark.id, reviewer_username="admin")
+    dataset_id = int(benchmark.result_entity_id)
+    assert db_session.get(DBDataset, dataset_id) is not None
+    assert db_session.get(TaskDataset, (1, dataset_id)) is not None
+
+    metric = service.submit(
+        paper_id=None,
+        hf_username="metric-user",
+        edit_type="new_metric",
+        proposed_payload={
+            "name": "Verified Score",
+            "description": "A score.",
+            "direction": "higher_is_better",
+            "task_id": 1,
+            "dataset_id": dataset_id,
+        },
+    )
+    metric = service.approve(edit_id=metric.id, reviewer_username="admin")
+    metric_id = int(metric.result_entity_id)
+    assert db_session.get(DBMetric, metric_id) is not None
+    assert db_session.get(TaskDatasetMetric, (1, dataset_id, metric_id)) is not None
+
+    conference = service.submit(
+        paper_id=None,
+        hf_username="conference-user",
+        edit_type="new_conference",
+        proposed_payload={
+            "name": "Verified Conference 2027",
+            "year": 2027,
+            "url": "https://example.org/conference-2027",
+        },
+    )
+    conference = service.approve(edit_id=conference.id, reviewer_username="admin")
+    assert db_session.get(DBConference, int(conference.result_entity_id)) is not None
+
+
+def test_created_entity_rollback_is_append_only(db_session):
+    service = PendingEditService(db_session)
+    row = service.submit(
+        paper_id=None,
+        hf_username="alice",
+        edit_type="new_task",
+        proposed_payload={"name": "Rollback task"},
+    )
+    row = service.approve(edit_id=row.id, reviewer_username="admin")
+    event = db_session.get(CatalogMutationEvent, row.catalog_event_id)
+    task_id = int(row.result_entity_id)
+    rollback = SubmissionRollbackService(db_session).rollback(
+        event=event,
+        actor={"hf_subject": "hf-admin", "username": "admin", "role": "admin"},
+        request_id="test-rollback",
+    )
+    assert db_session.get(DBTask, task_id) is None
+    assert rollback.operation == "rollback"
+    assert rollback.rollback_of_event_id == event.id
+    assert db_session.get(PendingPaperEdit, row.id).status == "approved"
+
+
+def test_created_entity_rollback_refuses_after_later_dependency(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    row = service.submit(
+        paper_id=None,
+        hf_username="alice",
+        edit_type="new_task",
+        proposed_payload={"name": "Now referenced"},
+    )
+    row = service.approve(edit_id=row.id, reviewer_username="admin")
+    event = db_session.get(CatalogMutationEvent, row.catalog_event_id)
+    task_id = int(row.result_entity_id)
+    db_session.add(PaperTask(paper_id=1, task_id=task_id))
+    db_session.commit()
+    with pytest.raises(HTTPException) as error:
+        SubmissionRollbackService(db_session).rollback(
+            event=event,
+            actor={"hf_subject": "hf-admin", "username": "admin", "role": "admin"},
+            request_id="test-conflict",
+        )
+    assert error.value.status_code == 409
+    assert db_session.get(DBTask, task_id) is not None
+
+
+def test_active_submission_limit_is_database_backed(
+    db_session, paper_fixture, monkeypatch
+):
+    current = Settings(submission_max_active_pending=1)
+    monkeypatch.setattr(
+        "backend.services.pending_edit_service.get_settings", lambda: current
+    )
+    service = PendingEditService(db_session)
+    service.submit(
+        paper_id=1,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [1]},
+    )
+    with pytest.raises(SubmissionRateLimitError, match="Active pending"):
+        service.submit(
+            paper_id=1,
+            hf_username="alice",
+            hf_subject="hf-alice",
+            edit_type="methods",
+            proposed_payload={"method_ids": [10, 11]},
+        )
+
+
+def test_idempotent_replay_does_not_create_another_row(db_session, paper_fixture):
+    service = PendingEditService(db_session)
+    first = service.submit(
+        paper_id=1,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        idempotency_key="same-request",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [1]},
+    )
+    replay = service.submit(
+        paper_id=1,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        idempotency_key="same-request",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [1]},
+    )
+    assert replay.id == first.id
+    assert db_session.query(PendingPaperEdit).count() == 1
+    with pytest.raises(PendingEditError, match="another payload"):
+        service.submit(
+            paper_id=1,
+            hf_username="alice",
+            hf_subject="hf-alice",
+            idempotency_key="same-request",
+            edit_type="tasks",
+            proposed_payload={"task_ids": [1, 2, 3]},
+        )
+
+
+def test_suspension_blocks_new_submission_without_deleting_history(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    existing = service.submit(
+        paper_id=1,
+        hf_username="alice",
+        hf_subject="hf-alice",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [1]},
+    )
+    profile = db_session.get(UserProfile, "hf-alice")
+    profile.is_submission_suspended = True
+    db_session.commit()
+    with pytest.raises(SubmissionSuspendedError):
+        service.submit(
+            paper_id=1,
+            hf_username="alice",
+            hf_subject="hf-alice",
+            edit_type="methods",
+            proposed_payload={"method_ids": [10, 11]},
+        )
+    assert db_session.get(PendingPaperEdit, existing.id).status == "pending"

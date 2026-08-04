@@ -94,10 +94,12 @@ const buildGraph = (data: OrganizationContributions) => {
   return { days, months, weekCount };
 };
 
-const ContributionGraphContent: React.FC<{
+export const ContributionGraphContent: React.FC<{
   data: OrganizationContributions;
   organizationName: string;
-}> = ({ data, organizationName }) => {
+  title?: string;
+  noun?: string;
+}> = ({ data, organizationName, title = "Paper contributions", noun = "paper" }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { days, months, weekCount } = useMemo(() => buildGraph(data), [data]);
   const graphWidth = weekCount * CELL_SIZE + (weekCount - 1) * CELL_GAP;
@@ -117,11 +119,11 @@ const ContributionGraphContent: React.FC<{
           id="organization-contributions-title"
           className="organization-contributions-title"
         >
-          Paper contributions
+          {title}
         </h2>
         <p className="organization-contributions-summary">
           {data.total_count.toLocaleString()}{" "}
-          {data.total_count === 1 ? "paper" : "papers"} published in the last
+          {data.total_count === 1 ? noun : `${noun}s`} recorded in the last
           year
         </p>
       </div>
@@ -131,7 +133,7 @@ const ContributionGraphContent: React.FC<{
           className="organization-contributions-plot"
           style={{ width: graphWidth + 34 }}
           role="img"
-          aria-label={`${organizationName} published ${data.total_count} papers in the last year`}
+          aria-label={`${organizationName} recorded ${data.total_count} ${data.total_count === 1 ? noun : `${noun}s`} in the last year`}
         >
           <div className="organization-contributions-weekdays" aria-hidden="true">
             {Array.from({ length: 7 }).map((_, day) => (
@@ -172,7 +174,7 @@ const ContributionGraphContent: React.FC<{
                   }`}
                   title={
                     day.inRange
-                      ? `${day.count} ${day.count === 1 ? "paper" : "papers"} on ${day.date.toLocaleDateString("en", { dateStyle: "long", timeZone: "UTC" })}`
+                      ? `${day.count} ${day.count === 1 ? noun : `${noun}s`} on ${day.date.toLocaleDateString("en", { dateStyle: "long", timeZone: "UTC" })}`
                       : undefined
                   }
                 />

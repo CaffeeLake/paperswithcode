@@ -27,6 +27,7 @@ from backend.services.external_resource_service import (
     ExternalResourceService,
 )
 from backend.utils.exceptions import DatabaseError
+from backend.utils.auth import require_admin
 
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ class ExternalResourceIngestionResponse(BaseModel):
     "/papers/external",
     response_model=ExternalResourceIngestionResponse,
     summary="Create or update an external (non-ArXiv) paper row",
+    dependencies=[Depends(require_admin)],
 )
 def create_external_resource(
     request: ExternalResourceCreateRequest = Body(...),
@@ -164,6 +166,7 @@ def create_external_resource(
     "/papers/external/from-url",
     response_model=ExternalResourceIngestionResponse,
     summary="Fetch and ingest an external page using AI metadata extraction",
+    dependencies=[Depends(require_admin)],
 )
 async def create_external_resource_from_url(
     request: ExternalResourceFromUrlRequest = Body(...),

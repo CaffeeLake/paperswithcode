@@ -19,6 +19,18 @@ class MetricService:
     def __init__(self, db: Session):
         self.db = db
 
+    def create_metric(self, *, commit: bool = True, **fields) -> DBMetric:
+        if self.db.query(DBMetric.id).filter(DBMetric.name == fields["name"]).first():
+            raise ValueError(f"Metric '{fields['name']}' already exists")
+        row = DBMetric(**fields)
+        self.db.add(row)
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        self.db.refresh(row)
+        return row
+
     def get_metrics(
         self,
         page: int = 1,

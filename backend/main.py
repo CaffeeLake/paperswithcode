@@ -26,6 +26,7 @@ from backend.services.deployment_lifecycle import (
 )
 from backend.services.runtime_validation import validate_runtime
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+from backend.utils.csrf import cookie_request_passes_csrf
 
 # Requests slower than this (in milliseconds) are logged so production slow
 # pages can be correlated without ad-hoc instrumentation. Tune via the
@@ -49,6 +50,8 @@ _STAGING_CATALOG_PREFIXES = (
 
 
 def _is_staging_catalog_mutation_path(path: str) -> bool:
+    if path == "/api/v1/papers/submit":
+        return False
     paper_path = path.removeprefix("/api/v1/papers/")
     is_bucket_copy = (
         paper_path != path
@@ -321,6 +324,20 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     @app.middleware("http")
+    async def enforce_cookie_same_origin(request, call_next):
+        if not cookie_request_passes_csrf(request, settings):
+            return JSONResponse(
+                {
+                    "detail": {
+                        "code": "csrf_rejected",
+                        "message": "Unsafe cookie-authenticated requests must be same-origin",
+                    }
+                },
+                status_code=403,
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
     async def enforce_staging_write_boundary(request, call_next):
         if settings.is_deployed and request.method not in {"GET", "HEAD", "OPTIONS"}:
             is_thumbnail_mutation = request.url.path.startswith("/api/thumbnails")
@@ -428,6 +445,7 @@ def create_app() -> FastAPI:
         papers,
         pending_edits,
         preferences,
+        profiles,
         repositories,
         research_catalog,
         search_discovery,
@@ -442,6 +460,7 @@ def create_app() -> FastAPI:
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
     app.include_router(contributions.router, prefix="/api/v1", tags=["contributions"])
     app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])
+    app.include_router(profiles.router, prefix="/api/v1", tags=["profiles"])
     app.include_router(
         inference_billing.router, prefix="/api/v1", tags=["inference-billing"]
     )

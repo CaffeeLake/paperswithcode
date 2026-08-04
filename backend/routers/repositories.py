@@ -25,6 +25,7 @@ from backend.models.api import (
 from backend.services.repository_service import RepositoryService
 from backend.services.project_page_service import ProjectPageService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 
 router = APIRouter()
 
@@ -288,6 +289,7 @@ def get_project_page_by_id(
     response_model=ProjectPage,
     status_code=201,
     summary="Create a new project page",
+    dependencies=[Depends(require_catalog_mutator)],
 )
 def create_project_page(
     request: ProjectPageCreateRequest,
@@ -325,6 +327,7 @@ def create_project_page(
     "/project-pages/{page_id}",
     response_model=ProjectPage,
     summary="Update a project page",
+    dependencies=[Depends(require_catalog_mutator)],
 )
 def update_project_page(
     page_id: str = Path(..., description="Project page ID"),
@@ -366,6 +369,7 @@ def update_project_page(
     "/project-pages/{page_id}",
     status_code=204,
     summary="Delete a project page",
+    dependencies=[Depends(require_fresh_catalog_mutator)],
 )
 def delete_project_page(
     page_id: str = Path(..., description="Project page ID"),

@@ -57,4 +57,26 @@ describe("API transport", () => {
     expect(stale).not.toHaveBeenCalled();
     window.removeEventListener("pwc:auth-stale", stale);
   });
+
+  it("surfaces structured rate-limit guidance", () => {
+    const response = new Response(null, {
+      status: 429,
+      statusText: "Too Many Requests",
+    });
+    const error = new ApiError(
+      response,
+      JSON.stringify({
+        detail: {
+          code: "submission_rate_limited",
+          message: "Submission limit reached.",
+          help: "/rate-limits",
+        },
+      }),
+    );
+
+    expect(error.message).toBe(
+      "Submission limit reached. See /rate-limits for help.",
+    );
+    expect(error.code).toBe("submission_rate_limited");
+  });
 });

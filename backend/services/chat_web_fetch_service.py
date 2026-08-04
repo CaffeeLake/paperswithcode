@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
-import socket
 from dataclasses import dataclass
-from ipaddress import ip_address
 from urllib.parse import urlsplit, urlunsplit
 
-import aiohttp
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +15,11 @@ from backend.models.database import (
     PaperRepository,
     ProjectPage,
     Repository,
+)
+from backend.services.safe_outbound_http_service import (
+    SafeOutboundHttpError,
+    fetch_public_resource,
+    resolve_public_addresses,
 )
 
 MAX_WEB_FETCH_BYTES = 10 * 1024 * 1024
@@ -133,57 +134,22 @@ def authorize_catalog_url(db: Session, value: str) -> str:
 
 
 async def _public_addresses(host: str) -> tuple[str, ...]:
+    """Compatibility wrapper for the shared pinned-fetch validation."""
+
     try:
-        records = await asyncio.get_running_loop().getaddrinfo(
-            host,
-            443,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-    except socket.gaierror:
-        raise ChatWebFetchError(
-            502, "The WebFetch hostname could not be resolved"
-        ) from None
-    addresses = tuple(dict.fromkeys(record[4][0] for record in records))
-    if not addresses or any(not ip_address(value).is_global for value in addresses):
-        raise ChatWebFetchError(403, "WebFetch cannot access a private network address")
-    return addresses
-
-
-class _PinnedResolver(aiohttp.abc.AbstractResolver):
-    def __init__(self, host: str, addresses: tuple[str, ...]):
-        self.host = host
-        self.addresses = addresses
-
-    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
-        if host != self.host:
-            raise OSError("Unexpected WebFetch hostname")
-        return [
-            {
-                "hostname": host,
-                "host": address,
-                "port": port,
-                "family": socket.AF_INET6 if ":" in address else socket.AF_INET,
-                "proto": socket.IPPROTO_TCP,
-                "flags": socket.AI_NUMERICHOST,
-            }
-            for address in self.addresses
-        ]
-
-    async def close(self) -> None:
-        return None
+        return await resolve_public_addresses(host, 443)
+    except SafeOutboundHttpError as exc:
+        raise ChatWebFetchError(exc.status_code, str(exc)) from exc
 
 
 def _validate_origin_metadata(status_code: int, content_type: str) -> str:
     if 300 <= status_code < 400:
         raise ChatWebFetchError(409, "WebFetch redirects are not allowed")
-    if status_code < 200 or status_code >= 300:
-        raise ChatWebFetchError(502, f"WebFetch origin returned HTTP {status_code}")
+    if not 200 <= status_code < 300:
+        raise ChatWebFetchError(502, "WebFetch origin returned an error")
     normalized = content_type.split(";", 1)[0].lower()
     if normalized not in _ALLOWED_CONTENT_TYPES:
-        raise ChatWebFetchError(
-            415, f"Unsupported WebFetch content type: {normalized or 'unknown'}"
-        )
+        raise ChatWebFetchError(415, "Unsupported WebFetch content type")
     return normalized
 
 
@@ -195,35 +161,14 @@ def _validate_body_size(body: bytes) -> bytes:
 
 async def fetch_catalog_url(db: Session, value: str) -> WebFetchResult:
     url = authorize_catalog_url(db, value)
-    host = urlsplit(url).hostname
-    assert host is not None
-    addresses = await _public_addresses(host)
-    timeout = aiohttp.ClientTimeout(total=WEB_FETCH_TIMEOUT_SECONDS)
-    connector = aiohttp.TCPConnector(
-        resolver=_PinnedResolver(host, addresses),
-        ttl_dns_cache=0,
-        use_dns_cache=False,
-    )
-    headers = {
-        "Accept": "text/markdown, text/html, text/plain, application/pdf",
-        "User-Agent": "PapersWithCode-Research-WebFetch/1.0",
-    }
     try:
-        async with (
-            aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout,
-                auto_decompress=True,
-                headers=headers,
-            ) as client,
-            client.get(url, allow_redirects=False) as response,
-        ):
-            content_type = _validate_origin_metadata(
-                response.status, response.headers.get("Content-Type", "")
-            )
-            body = await response.content.read(MAX_WEB_FETCH_BYTES + 1)
-    except ChatWebFetchError:
-        raise
-    except (TimeoutError, aiohttp.ClientError):
-        raise ChatWebFetchError(502, "The WebFetch origin request failed") from None
-    return WebFetchResult(200, content_type, _validate_body_size(body))
+        result = await fetch_public_resource(
+            url,
+            allowed_content_types=_ALLOWED_CONTENT_TYPES,
+            max_bytes=MAX_WEB_FETCH_BYTES,
+            timeout_seconds=WEB_FETCH_TIMEOUT_SECONDS,
+            max_redirects=0,
+        )
+    except SafeOutboundHttpError as exc:
+        raise ChatWebFetchError(exc.status_code, str(exc)) from exc
+    return WebFetchResult(result.status_code, result.content_type, result.body)

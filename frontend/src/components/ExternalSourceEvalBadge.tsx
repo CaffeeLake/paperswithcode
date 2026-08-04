@@ -11,6 +11,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import "@/styles/evaluation-badges.css";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 type Props = {
   sourceUrl?: string | null;
@@ -33,6 +34,7 @@ function sourceLabel(sourceUrl?: string | null): string {
 }
 
 export const ExternalSourceEvalBadge: React.FC<Props> = ({ sourceUrl }) => {
+  const safeSourceUrl = safeExternalHref(sourceUrl);
   const label = sourceLabel(sourceUrl);
   return (
     <HoverCard openDelay={120} closeDelay={120}>
@@ -55,7 +57,7 @@ export const ExternalSourceEvalBadge: React.FC<Props> = ({ sourceUrl }) => {
           <>
             {" "}
             <a
-              href={sourceUrl}
+              href={safeSourceUrl ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="external-eval-tooltip-link"

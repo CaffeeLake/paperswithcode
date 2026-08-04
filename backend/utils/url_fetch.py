@@ -7,23 +7,25 @@ extraction. Heavy parsing (LLM page understanding) lives in genai_steps.
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
-import aiohttp
 from bs4 import BeautifulSoup
+
+from backend.services.safe_outbound_http_service import (
+    SafeOutboundHttpError,
+    fetch_public_resource,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; paperswithcode.co external resource indexer)"
-    ),
-}
+_HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+_JSON_CONTENT_TYPES = frozenset({"application/json", "text/json", "text/plain"})
 
 
 async def fetch_html(
@@ -38,26 +40,19 @@ async def fetch_html(
     if not url:
         return None
 
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     try:
 
         async def _do_fetch() -> Optional[str]:
-            async with aiohttp.ClientSession(
-                headers=_DEFAULT_HEADERS, timeout=timeout
-            ) as session:
-                async with session.get(url, allow_redirects=True) as response:
-                    response.raise_for_status()
-                    raw = await response.content.read(max_bytes + 1)
-                    if len(raw) > max_bytes:
-                        logger.warning(
-                            "Truncating %s: body exceeded %d bytes", url, max_bytes
-                        )
-                        raw = raw[:max_bytes]
-                    encoding = response.charset or "utf-8"
-                    return raw.decode(encoding, errors="replace")
+            result = await fetch_public_resource(
+                url,
+                allowed_content_types=_HTML_CONTENT_TYPES,
+                max_bytes=max_bytes,
+                timeout_seconds=timeout_seconds,
+            )
+            return result.body.decode("utf-8", errors="replace")
 
         return await asyncio.shield(_do_fetch())
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+    except SafeOutboundHttpError as exc:
         logger.warning("fetch_html failed for %s: %s", url, exc)
         return None
     except asyncio.CancelledError:
@@ -203,14 +198,14 @@ async def _framer_search_index_text(html: str, page_url: str) -> Optional[str]:
 
     index_url = match.group(1)
     try:
-        timeout = aiohttp.ClientTimeout(total=15.0)
-        async with aiohttp.ClientSession(
-            headers=_DEFAULT_HEADERS, timeout=timeout
-        ) as session:
-            async with session.get(index_url, allow_redirects=True) as response:
-                response.raise_for_status()
-                payload = await response.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+        result = await fetch_public_resource(
+            index_url,
+            allowed_content_types=_JSON_CONTENT_TYPES,
+            max_bytes=2_000_000,
+            timeout_seconds=15.0,
+        )
+        payload = json.loads(result.body)
+    except (SafeOutboundHttpError, ValueError) as exc:
         logger.warning("framer index fetch failed for %s: %s", index_url, exc)
         return None
     except asyncio.CancelledError:

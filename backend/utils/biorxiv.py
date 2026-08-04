@@ -260,21 +260,32 @@ async def fetch_europepmc_pdf_url(
 
 
 async def _download_pdf_url(url: str, timeout_seconds: float = 60.0) -> Optional[bytes]:
-    headers = {
-        "User-Agent": _API_HEADERS["User-Agent"],
-        "Accept": "application/pdf,*/*",
-    }
-    timeout = httpx.Timeout(timeout_seconds)
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=timeout, headers=headers
-    ) as client:
-        response = await client.get(url)
-        response.raise_for_status()
+    from backend.services.safe_outbound_http_service import (
+        SafeOutboundHttpError,
+        fetch_public_resource,
+    )
 
-    content = response.content
-    if len(content) > _MAX_PDF_BYTES:
-        logger.warning("bioRxiv PDF exceeds size limit: %s", url)
+    try:
+        result = await fetch_public_resource(
+            url,
+            allowed_content_types=frozenset(
+                {"application/pdf", "application/octet-stream"}
+            ),
+            max_bytes=_MAX_PDF_BYTES,
+            timeout_seconds=timeout_seconds,
+            allowed_hosts=frozenset(
+                {
+                    "europepmc.org",
+                    "ftp.ncbi.nlm.nih.gov",
+                    "www.ebi.ac.uk",
+                    "www.europepmc.org",
+                }
+            ),
+        )
+    except SafeOutboundHttpError as exc:
+        logger.warning("bioRxiv PDF safe fetch failed: %s", exc)
         return None
+    content = result.body
     if not content.startswith(b"%PDF"):
         logger.warning("bioRxiv PDF URL did not return PDF bytes: %s", url)
         return None
@@ -293,6 +304,8 @@ def _extract_pdf_from_meca(data: bytes) -> Optional[bytes]:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         for name in archive.namelist():
             if name.lower().endswith(".pdf"):
+                if archive.getinfo(name).file_size > _MAX_PDF_BYTES:
+                    return None
                 return archive.read(name)
     return None
 
@@ -339,7 +352,12 @@ def _download_biorxiv_pdf_from_s3(
     for key in candidate_keys:
         try:
             obj = s3.get_object(Bucket=bucket, Key=key, RequestPayer="requester")
-            pdf_bytes = _extract_pdf_from_meca(obj["Body"].read())
+            if int(obj.get("ContentLength") or 0) > 2 * _MAX_PDF_BYTES:
+                continue
+            archive_bytes = obj["Body"].read(2 * _MAX_PDF_BYTES + 1)
+            if len(archive_bytes) > 2 * _MAX_PDF_BYTES:
+                continue
+            pdf_bytes = _extract_pdf_from_meca(archive_bytes)
             if pdf_bytes and pdf_bytes.startswith(b"%PDF"):
                 return pdf_bytes
         except Exception as exc:

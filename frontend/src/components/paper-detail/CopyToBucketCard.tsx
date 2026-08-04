@@ -17,6 +17,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 import { ApiError, copyPaperToBucket } from "@/lib/api";
 import { authUrl } from "@/lib/apiUrl";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 export type BucketArtifactKind = "pdf" | "model" | "dataset" | "space" | "github";
 
@@ -571,7 +572,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                         <span className="bucket-artifact-name">{artifact.label}</span>
                       </Label>
                       <a
-                        href={artifact.url}
+                        href={safeExternalHref(artifact.url) ?? undefined}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="bucket-artifact-open"

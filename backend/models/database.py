@@ -2878,17 +2878,39 @@ class PendingPaperEdit(Base):
         nullable=True,
     )
     hf_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    hf_subject: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    source_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    payload_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     is_author: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
     edit_type: Mapped[str] = mapped_column(String(32), nullable=False)
     proposed_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     current_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    applied_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    result_entity_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    result_entity_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    catalog_event_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_mutation_events.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    conflict_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=text("'pending'")
     )
     admin_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    user_review_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     reviewed_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reviewed_by_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    reviewed_by_hf_subject: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    review_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    review_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    review_evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2904,12 +2926,16 @@ class PendingPaperEdit(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "edit_type IN ('tasks', 'methods', 'evaluations', 'repositories', 'project_pages', 'source_url', 'hf_artifacts', 'new_task', 'new_method', 'new_benchmark', 'new_metric', 'new_conference')",
+            "edit_type IN ('tasks', 'methods', 'evaluations', 'repositories', 'project_pages', 'source_url', 'hf_artifacts', 'organizations', 'new_task', 'new_method', 'new_benchmark', 'new_metric', 'new_conference', 'new_external_paper')",
             name="pending_paper_edits_edit_type_check",
         ),
         CheckConstraint(
             "status IN ('pending', 'approved', 'rejected')",
             name="pending_paper_edits_status_check",
+        ),
+        CheckConstraint(
+            "reviewed_by_kind IS NULL OR reviewed_by_kind IN ('human', 'codex')",
+            name="pending_paper_edits_reviewed_by_kind_check",
         ),
         Index(
             "idx_pending_paper_edits_status_created_at",
@@ -2922,6 +2948,15 @@ class PendingPaperEdit(Base):
             "edit_type",
         ),
         Index("idx_pending_paper_edits_hf_username", "hf_username"),
+        Index("idx_pending_paper_edits_hf_subject", "hf_subject", "created_at"),
+        Index("idx_pending_paper_edits_source_ip", "source_ip", "created_at"),
+        Index(
+            "uq_pending_paper_edits_subject_idempotency",
+            "hf_subject",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
         Index(
             "idx_pending_paper_edits_author_pending",
             "is_author",
@@ -2935,3 +2970,45 @@ class PendingPaperEdit(Base):
             f"hf_username='{self.hf_username}', edit_type='{self.edit_type}', "
             f"status='{self.status}')>"
         )
+
+
+class UserProfile(Base):
+    """Stable Hugging Face identity and its current public username."""
+
+    __tablename__ = "user_profiles"
+
+    hf_subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    current_username: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False
+    )
+    is_submission_suspended: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    suspension_reason: Mapped[Optional[str]] = mapped_column(Text)
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    suspended_by_hf_subject: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class UserProfileAlias(Base):
+    __tablename__ = "user_profile_aliases"
+
+    alias: Mapped[str] = mapped_column(String(255), primary_key=True)
+    hf_subject: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("user_profiles.hf_subject", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_user_profile_aliases_subject", "hf_subject"),)

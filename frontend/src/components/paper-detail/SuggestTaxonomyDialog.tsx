@@ -28,7 +28,6 @@ interface SuggestTaxonomyDialogProps {
 
 const NAME_MAX = 200;
 const DESCRIPTION_MAX = 2000;
-const DATES_MAX = 200;
 const VENUE_MAX = 300;
 const URL_MAX = 500;
 const IMAGE_SOURCE_MAX = 1000;
@@ -76,12 +75,21 @@ export function SuggestTaxonomyDialog({
 }: SuggestTaxonomyDialogProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [dates, setDates] = useState("");
+  const [year, setYear] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [venue, setVenue] = useState("");
   const [url, setUrl] = useState("");
   const [image, setImage] = useState<SuggestionImage | null>(null);
   const [imageSource, setImageSource] = useState("");
   const [source, setSource] = useState("");
+  const [keywords, setKeywords] = useState("");
+  const [parentId, setParentId] = useState("");
+  const [areaId, setAreaId] = useState("");
+  const [taskIds, setTaskIds] = useState("");
+  const [metricTaskId, setMetricTaskId] = useState("");
+  const [metricDatasetId, setMetricDatasetId] = useState("");
+  const [metricDirection, setMetricDirection] = useState("higher_is_better");
   const [imageError, setImageError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -93,12 +101,21 @@ export function SuggestTaxonomyDialog({
     if (!open) {
       setName("");
       setDescription("");
-      setDates("");
+      setYear("");
+      setStartDate("");
+      setEndDate("");
       setVenue("");
       setUrl("");
       setImage(null);
       setImageSource("");
       setSource("");
+      setKeywords("");
+      setParentId("");
+      setAreaId("");
+      setTaskIds("");
+      setMetricTaskId("");
+      setMetricDatasetId("");
+      setMetricDirection("higher_is_better");
       setImageError("");
     }
   }, [open]);
@@ -144,7 +161,9 @@ export function SuggestTaxonomyDialog({
       if (kind === "conference") {
         Object.entries({
           description: description.trim(),
-          dates: dates.trim(),
+          year: year ? Number(year) : undefined,
+          start_date: startDate,
+          end_date: endDate,
           venue: venue.trim(),
           url: url.trim(),
         }).forEach(([key, value]) => {
@@ -160,7 +179,23 @@ export function SuggestTaxonomyDialog({
           if (imageSource.trim()) proposedPayload.image_credit = imageSource.trim();
         }
         if (kind === "method" && source.trim()) {
-          proposedPayload.source = source.trim();
+          proposedPayload.source_url = source.trim();
+        }
+        if (kind === "task") {
+          if (keywords.trim()) proposedPayload.keywords = keywords.trim();
+          if (parentId) proposedPayload.parent_id = Number(parentId);
+          if (areaId) proposedPayload.area_id = Number(areaId);
+        }
+        if (kind === "benchmark") {
+          proposedPayload.task_ids = taskIds
+            .split(",")
+            .map((value) => Number(value.trim()))
+            .filter((value) => Number.isInteger(value) && value > 0);
+        }
+        if (kind === "metric") {
+          proposedPayload.direction = metricDirection;
+          proposedPayload.task_id = Number(metricTaskId);
+          proposedPayload.dataset_id = Number(metricDatasetId);
         }
       }
       return submitPendingPaperEdit({
@@ -184,6 +219,8 @@ export function SuggestTaxonomyDialog({
           const parsed = JSON.parse(e.response);
           if (typeof parsed?.detail === "string") {
             description = parsed.detail;
+          } else if (parsed?.detail?.message) {
+            description = `${parsed.detail.message} See ${parsed.detail.help || "/rate-limits"} for help.`;
           } else if (Array.isArray(parsed?.detail) && parsed.detail[0]?.msg) {
             description = parsed.detail[0].msg;
           }
@@ -202,9 +239,10 @@ export function SuggestTaxonomyDialog({
   const canSubmit =
     name.trim().length > 0 &&
     (kind === "task" ||
-      kind === "method" ||
-      kind === "conference" ||
-      description.trim().length > 0);
+      (kind === "method" && Boolean(source.trim())) ||
+      (kind === "conference" && Boolean(year) && Boolean(url.trim())) ||
+      (kind === "benchmark" && Boolean(taskIds.trim()) && Boolean(description.trim())) ||
+      (kind === "metric" && Boolean(metricTaskId) && Boolean(metricDatasetId) && Boolean(description.trim())));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -242,6 +280,37 @@ export function SuggestTaxonomyDialog({
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
+          {kind === "task" && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="suggest-keywords">Keywords (optional)</Label>
+                <Input id="suggest-keywords" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="comma-separated matching terms" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Input type="number" min="1" value={parentId} onChange={(e) => setParentId(e.target.value)} placeholder="Parent task ID (optional)" />
+                <Input type="number" min="1" value={areaId} onChange={(e) => setAreaId(e.target.value)} placeholder="Area ID (optional)" />
+              </div>
+            </>
+          )}
+          {kind === "benchmark" && (
+            <div className="space-y-2">
+              <Label htmlFor="suggest-task-ids">Intended task IDs</Label>
+              <Input id="suggest-task-ids" value={taskIds} onChange={(e) => setTaskIds(e.target.value)} placeholder="e.g. 9, 14" />
+            </div>
+          )}
+          {kind === "metric" && (
+            <div className="space-y-3">
+              <Label>Intended leaderboard</Label>
+              <select className="w-full rounded-md border bg-background p-2" value={metricDirection} onChange={(e) => setMetricDirection(e.target.value)}>
+                <option value="higher_is_better">Higher is better</option>
+                <option value="lower_is_better">Lower is better</option>
+              </select>
+              <div className="grid grid-cols-2 gap-3">
+                <Input type="number" min="1" value={metricTaskId} onChange={(e) => setMetricTaskId(e.target.value)} placeholder="Task ID" />
+                <Input type="number" min="1" value={metricDatasetId} onChange={(e) => setMetricDatasetId(e.target.value)} placeholder="Benchmark ID" />
+              </div>
+            </div>
+          )}
           {supportsImage && (
             <>
               <div className="space-y-2">
@@ -308,12 +377,12 @@ export function SuggestTaxonomyDialog({
               </div>
               {kind === "method" && (
                 <div className="space-y-2">
-                  <Label htmlFor="suggest-method-source">Source (optional)</Label>
+                  <Label htmlFor="suggest-method-source">Source URL (optional)</Label>
                   <Input
                     id="suggest-method-source"
                     value={source}
                     maxLength={IMAGE_SOURCE_MAX}
-                    placeholder="Paper title, arXiv URL, or project page"
+                    placeholder="https://arxiv.org/abs/..."
                     onChange={(event) => setSource(event.target.value)}
                   />
                 </div>
@@ -323,14 +392,20 @@ export function SuggestTaxonomyDialog({
           {kind === "conference" && (
             <>
               <div className="space-y-2">
-                <Label htmlFor="suggest-dates">Dates (optional)</Label>
+                <Label htmlFor="suggest-year">Edition year</Label>
                 <Input
-                  id="suggest-dates"
-                  value={dates}
-                  maxLength={DATES_MAX}
-                  placeholder="e.g. May 3–7, 2026"
-                  onChange={(e) => setDates(e.target.value)}
+                  id="suggest-year"
+                  type="number"
+                  min="1900"
+                  max="2200"
+                  value={year}
+                  placeholder="2026"
+                  onChange={(e) => setYear(e.target.value)}
                 />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label htmlFor="suggest-start-date">Start date (optional)</Label><Input id="suggest-start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div>
+                <div><Label htmlFor="suggest-end-date">End date (optional)</Label><Input id="suggest-end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="suggest-venue">Venue (optional)</Label>

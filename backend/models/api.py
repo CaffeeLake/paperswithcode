@@ -13,6 +13,11 @@ from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.utils.public_urls import (
+    normalize_optional_public_url,
+    normalize_public_url,
+)
+
 
 class PaperBucketArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -790,6 +795,8 @@ class ProjectPageCreateRequest(BaseModel):
         description="Source of the project page data (pwc_archive, ai_extraction, manual, etc.)",
     )
 
+    _normalize_url = field_validator("url", mode="before")(normalize_public_url)
+
 
 class ProjectPageUpdateRequest(BaseModel):
     """
@@ -806,6 +813,10 @@ class ProjectPageUpdateRequest(BaseModel):
     source: Optional[str] = Field(
         None,
         description="Source of the project page data (pwc_archive, ai_extraction, manual, etc.)",
+    )
+
+    _normalize_url = field_validator("url", mode="before")(
+        normalize_optional_public_url
     )
 
 
@@ -1772,6 +1783,10 @@ class TaskCreateRequest(BaseModel):
     image_url: Optional[str] = Field(None, description="Task image URL")
     image_credit: Optional[str] = Field(None, description="Image credit/attribution")
 
+    _normalize_image_url = field_validator("image_url", mode="before")(
+        normalize_optional_public_url
+    )
+
 
 class DatasetLeaderboardSummary(BaseModel):
     """Small task-scoped leaderboard projection for fast benchmark headers."""
@@ -2122,6 +2137,19 @@ class DatasetCreateRequest(BaseModel):
     warning: Optional[str] = Field(None, description="Warning/note")
     pwc_url: Optional[str] = Field(None, description="PapersWithCode URL")
 
+    _normalize_urls = field_validator(
+        "url",
+        "hf_url",
+        "paper_url",
+        "homepage",
+        "image_url",
+        "thumbnail_url",
+        "verified_image_url",
+        "license_url",
+        "pwc_url",
+        mode="before",
+    )(normalize_optional_public_url)
+
 
 class DatasetUpdateRequest(BaseModel):
     """
@@ -2156,6 +2184,19 @@ class DatasetUpdateRequest(BaseModel):
     num_papers: Optional[int] = Field(None, description="Number of papers")
     warning: Optional[str] = Field(None, description="Warning/note")
     pwc_url: Optional[str] = Field(None, description="PapersWithCode URL")
+
+    _normalize_urls = field_validator(
+        "url",
+        "hf_url",
+        "paper_url",
+        "homepage",
+        "image_url",
+        "thumbnail_url",
+        "verified_image_url",
+        "license_url",
+        "pwc_url",
+        mode="before",
+    )(normalize_optional_public_url)
 
 
 # Evaluation models
@@ -2337,6 +2378,10 @@ class EvaluationCreateRequest(BaseModel):
         ),
     )
 
+    _normalize_urls = field_validator(
+        "external_source_url", "source_url", "hf_model_url", mode="before"
+    )(normalize_optional_public_url)
+
 
 class EvaluationUpdateRequest(BaseModel):
     """
@@ -2384,6 +2429,10 @@ class EvaluationUpdateRequest(BaseModel):
             "Pass `null` to clear an existing value."
         ),
     )
+
+    _normalize_urls = field_validator(
+        "external_source_url", "source_url", "hf_model_url", mode="before"
+    )(normalize_optional_public_url)
 
 
 # Metric models

@@ -29,6 +29,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_paper_relations.sql` + `run_add_paper_relations.py` | `paper_relations` table |
 | `add_paper_redirects.sql` | Shared redirects for papers merged into canonical ArXiv rows |
 | `add_pending_paper_edits.sql` + `run_add_pending_paper_edits.py` | pending edit queue |
+| `add_security_hardening_submissions.sql` | Stable-subject submission provenance, applied/result review audit fields, idempotency/rate-limit indexes, user profiles/aliases, and suspension state |
 | `allow_taxonomy_suggestions_without_paper.sql` | nullable paper association for suggestions submitted from taxonomy directories |
 | `add_conference_suggestion_edit_type.sql` | conference suggestions submitted from the conference directory |
 | `add_user_bookmarks.sql` + `run_add_user_bookmarks.py` | user bookmarks |

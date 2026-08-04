@@ -7,6 +7,10 @@ def test_bucket_copy_is_not_a_catalog_mutation() -> None:
     assert not _is_staging_catalog_mutation_path("/api/v1/papers/98695/copy-to-bucket")
 
 
+def test_submit_route_applies_its_narrow_staging_policy_at_route_level() -> None:
+    assert not _is_staging_catalog_mutation_path("/api/v1/papers/submit")
+
+
 @pytest.mark.parametrize(
     "path",
     [

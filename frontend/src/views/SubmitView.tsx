@@ -19,6 +19,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { submitPaper } from "@/lib/api";
 import type { PaperSubmitPayload, PaperSubmitResponse } from "@/lib/api";
+import { authUrl } from "@/lib/apiUrl";
+import { useAuth } from "@/lib/authContext";
+
+const SUBMIT_DRAFT_KEY = "pwc:paper-submit-draft";
 
 const ARXIV_BARE_ID = /^\d{4}\.\d{4,5}(v\d+)?$/i;
 const ARXIV_LEGACY_ID = /^[a-z-]+(\.[A-Z]{2})?\/\d{7}$/;
@@ -76,6 +80,9 @@ function extractErrorDetail(err: unknown): string {
     try {
       const parsed = JSON.parse(e.response);
       if (typeof parsed.detail === "string") return parsed.detail;
+      if (parsed.detail?.message) {
+        return `${parsed.detail.message} See ${parsed.detail.help || "/rate-limits"} for help.`;
+      }
     } catch {
       return e.response;
     }
@@ -87,6 +94,7 @@ const SubmitView: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { user, isLoading: authLoading } = useAuth();
 
   const [input, setInput] = React.useState("");
   const [title, setTitle] = React.useState("");
@@ -95,12 +103,36 @@ const SubmitView: React.FC = () => {
   const [datePublished, setDatePublished] = React.useState("");
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    const raw = sessionStorage.getItem(SUBMIT_DRAFT_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(SUBMIT_DRAFT_KEY);
+    try {
+      const draft = JSON.parse(raw) as Record<string, string>;
+      setInput(draft.input ?? "");
+      setTitle(draft.title ?? "");
+      setAbstract(draft.abstract ?? "");
+      setAuthors(draft.authors ?? "");
+      setDatePublished(draft.datePublished ?? "");
+    } catch {
+      // Ignore a corrupt browser-local draft.
+    }
+  }, []);
+
   const kind = classifyInput(input);
   const isExternal = kind === "external";
 
   const mutation = useMutation<PaperSubmitResponse, Error, PaperSubmitPayload>({
     mutationFn: (payload) => submitPaper(payload),
     onSuccess: (data) => {
+      if (data.pending_review) {
+        toast({
+          title: "Submission queued for review",
+          description: "No source page was fetched and no catalog row was changed.",
+        });
+        mutation.reset();
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ["papers"], refetchType: "none" });
       queryClient.invalidateQueries({
         queryKey: ["papers-infinite"],
@@ -123,7 +155,7 @@ const SubmitView: React.FC = () => {
             ? "Opening the paper page…"
             : "Opening the existing paper page…",
       });
-      navigate(`/paper/${data.route_identifier}`);
+      if (data.route_identifier) navigate(`/paper/${data.route_identifier}`);
     },
     onError: (err) => {
       setErrorMsg(extractErrorDetail(err));
@@ -136,6 +168,18 @@ const SubmitView: React.FC = () => {
 
     if (kind === "empty") {
       setErrorMsg("Enter an arXiv ID or a paper URL to submit.");
+      return;
+    }
+
+    if (!user) {
+      sessionStorage.setItem(
+        SUBMIT_DRAFT_KEY,
+        JSON.stringify({ input, title, abstract, authors, datePublished }),
+      );
+      const login = authUrl("/api/v1/auth/hf/login");
+      window.location.assign(
+        `${login}?return_to=${encodeURIComponent(window.location.href)}`,
+      );
       return;
     }
 
@@ -159,9 +203,10 @@ const SubmitView: React.FC = () => {
           lineHeight: 1.55,
         }}
       >
-        Index an arXiv paper or add a non-arXiv paper (blog post, technical
-        report, model release page). Submissions are public and appear in the
-        feed immediately.
+        Index an arXiv paper or propose a non-arXiv paper (blog post, technical
+        report, model release page). External papers enter the submission queue
+        and appear only after review.
+        {" "}<a href="/rate-limits">Read the submission and rate-limit policy.</a>
       </p>
 
       <form
@@ -282,12 +327,14 @@ const SubmitView: React.FC = () => {
         )}
 
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending
-              ? isExternal
-                ? "Fetching & indexing…"
-                : "Indexing…"
-              : "Submit paper"}
+          <Button type="submit" disabled={mutation.isPending || authLoading}>
+            {authLoading
+              ? "Checking sign-in…"
+              : mutation.isPending
+                ? "Submitting…"
+                : user
+                  ? "Submit paper"
+                  : "Sign in to submit"}
           </Button>
           <Button
             type="button"

@@ -10,6 +10,7 @@ import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
 import type { Dataset, Task, TrendingBenchmark } from "@/lib/api";
 import { assetUrl } from "@/lib/apiUrl";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 import { usePreferences } from "@/lib/preferencesContext";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
@@ -327,7 +328,7 @@ const TagBrowseView: React.FC = () => {
                 return (
                   <a
                     key={framework.id}
-                    href={framework.url}
+                    href={safeExternalHref(framework.url) ?? undefined}
                     className="task-framework-link"
                     target="_blank"
                     rel="noreferrer"

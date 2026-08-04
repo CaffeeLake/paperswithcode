@@ -20,6 +20,7 @@ from backend.cli_papers import (
     register_paper_commands,
     register_search_command,
 )
+from backend.cli_submissions import register_submission_commands
 from backend.database.connection import db_manager
 from backend.services.cron_health import build_cron_dashboard
 from backend.services.cron_registry import get_cron_job, list_cron_jobs
@@ -192,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     method_add.set_defaults(handler=add_method)
 
     register_admin_commands(commands)
+    register_submission_commands(commands)
 
     paper_commands = register_paper_commands(commands)
 

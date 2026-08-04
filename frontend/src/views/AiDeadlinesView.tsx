@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import ConferenceDeadlineDialog from "@/components/ai-deadlines/ConferenceDeadlineDialog";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 import {
   conferenceDomains,
   countdownLabel,
@@ -100,7 +101,7 @@ const DeadlineCard: React.FC<{
         </h3>
         {conf.url && (
           <a
-            href={conf.url}
+            href={safeExternalHref(conf.url) ?? undefined}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}

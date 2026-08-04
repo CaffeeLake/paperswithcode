@@ -12,7 +12,17 @@ import base64
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -20,11 +30,15 @@ from backend.database.connection import get_database_session
 from backend.models.database import PendingPaperEdit
 from backend.services.pending_edit_service import (
     PendingEditAlreadyReviewedError,
+    PendingEditConflictError,
     PendingEditError,
     PendingEditNotFoundError,
     PendingEditService,
+    SubmissionRateLimitError,
+    SubmissionSuspendedError,
 )
-from backend.utils.auth import require_admin, require_user
+from backend.utils.auth import require_hf_admin, require_user
+from backend.utils.client_ip import get_client_ip
 from backend.utils.exceptions import (
     DatabaseError,
     PaperNotFoundError,
@@ -45,6 +59,7 @@ EditType = Literal[
     "new_benchmark",
     "new_metric",
     "new_conference",
+    "new_external_paper",
 ]
 StatusLiteral = Literal["pending", "approved", "rejected"]
 
@@ -90,9 +105,16 @@ class PendingEditResponse(BaseModel):
     edit_type: EditType
     proposed_payload: Dict[str, Any]
     current_payload: Optional[Dict[str, Any]] = None
+    applied_payload: Optional[Dict[str, Any]] = None
+    result_entity_type: Optional[str] = None
+    result_entity_id: Optional[str] = None
+    conflict_payload: Optional[Dict[str, Any]] = None
     status: StatusLiteral
     admin_note: Optional[str] = None
+    user_review_reason: Optional[str] = None
     reviewed_by: Optional[str] = None
+    reviewed_by_kind: Optional[str] = None
+    review_evidence: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     reviewed_at: Optional[datetime] = None
@@ -107,6 +129,15 @@ class PendingEditReviewRequest(BaseModel):
     admin_note: Optional[str] = Field(
         default=None,
         description="Optional note recorded alongside the approval or rejection",
+    )
+    user_review_reason: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Public, submitter-safe explanation of the decision",
+    )
+    resolved_payload: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Reviewer-corrected payload; the original proposal remains unchanged.",
     )
 
 
@@ -143,18 +174,41 @@ def _to_response(row: PendingPaperEdit) -> PendingEditResponse:
     tags=["pending_edits"],
 )
 def submit_pending_paper_edit(
-    request: PendingEditSubmitRequest,
+    body: PendingEditSubmitRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
 ) -> PendingEditResponse:
     service = PendingEditService(db)
     try:
         row = service.submit(
-            paper_id=request.paper_id,
+            paper_id=body.paper_id,
             hf_username=user["username"],
-            edit_type=request.edit_type,
-            proposed_payload=request.proposed_payload,
+            hf_subject=user["hf_subject"],
+            source_ip=get_client_ip(request),
+            idempotency_key=idempotency_key,
+            exempt_from_limits=user["role"] in {"admin", "contributor"},
+            edit_type=body.edit_type,
+            proposed_payload=body.proposed_payload,
         )
+    except SubmissionRateLimitError as exc:
+        retry = str(exc.retry_after)
+        response.headers["Retry-After"] = retry
+        response.headers["RateLimit"] = f"limit=20, remaining=0, reset={retry}"
+        response.headers["RateLimit-Policy"] = "20;w=3600"
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "submission_rate_limited",
+                "message": str(exc),
+                "help": "/rate-limits",
+            },
+            headers=dict(response.headers),
+        )
+    except SubmissionSuspendedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except PaperNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PendingEditError as exc:
@@ -185,7 +239,7 @@ def list_pending_paper_edits(
     paper_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ) -> PendingEditListResponse:
     service = PendingEditService(db)
@@ -212,7 +266,7 @@ def list_pending_paper_edits(
 )
 def get_pending_paper_edit(
     edit_id: int = Path(..., ge=1),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ) -> PendingEditResponse:
     service = PendingEditService(db)
@@ -230,7 +284,7 @@ def get_pending_paper_edit(
 )
 def get_pending_paper_edit_image(
     edit_id: int = Path(..., ge=1),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ) -> Response:
     try:
@@ -262,7 +316,7 @@ def get_pending_paper_edit_image(
 def approve_pending_paper_edit(
     edit_id: int = Path(..., ge=1),
     body: Optional[PendingEditReviewRequest] = None,
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ) -> PendingEditResponse:
     service = PendingEditService(db)
@@ -271,11 +325,16 @@ def approve_pending_paper_edit(
         row = service.approve(
             edit_id=edit_id,
             reviewer_username=admin.get("username"),
+            reviewer_hf_subject=admin.get("hf_subject"),
+            resolved_payload=review.resolved_payload,
             admin_note=review.admin_note,
+            user_review_reason=review.user_review_reason,
         )
     except PendingEditNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PendingEditAlreadyReviewedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PendingEditConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -297,7 +356,7 @@ def approve_pending_paper_edit(
 def reject_pending_paper_edit(
     edit_id: int = Path(..., ge=1),
     body: Optional[PendingEditReviewRequest] = None,
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_hf_admin),
     db: Session = Depends(get_database_session),
 ) -> PendingEditResponse:
     service = PendingEditService(db)
@@ -306,7 +365,9 @@ def reject_pending_paper_edit(
         row = service.reject(
             edit_id=edit_id,
             reviewer_username=admin.get("username"),
+            reviewer_hf_subject=admin.get("hf_subject"),
             admin_note=review.admin_note,
+            user_review_reason=review.user_review_reason,
         )
     except PendingEditNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

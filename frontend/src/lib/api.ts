@@ -838,16 +838,18 @@ export interface PaperSubmitPayload {
 }
 
 export interface PaperSubmitResponse {
-  paper: Paper;
+  paper?: Paper | null;
   /** Identifier the frontend should use to build the paper detail URL:
    *  ArXiv ID for ArXiv rows, internal numeric ID otherwise. */
-  route_identifier: string;
+  route_identifier?: string | null;
   /** False when an existing paper was returned instead of creating a new row. */
   created: boolean;
   /** True when an existing arXiv paper was refreshed from arXiv metadata. */
   refreshed?: boolean;
   previous_version?: string | null;
   latest_version?: string | null;
+  submission_id?: number | null;
+  pending_review?: boolean;
 }
 
 /** Which paper-page surface or taxonomy directory a pending edit targets. */
@@ -864,7 +866,8 @@ export type PendingEditType =
   | 'new_method'
   | 'new_benchmark'
   | 'new_metric'
-  | 'new_conference';
+  | 'new_conference'
+  | 'new_external_paper';
 
 export type PendingEditStatus = 'pending' | 'approved' | 'rejected';
 
@@ -876,9 +879,16 @@ export interface PendingPaperEdit {
   edit_type: PendingEditType;
   proposed_payload: Record<string, unknown>;
   current_payload?: Record<string, unknown> | null;
+  applied_payload?: Record<string, unknown> | null;
+  conflict_payload?: Record<string, unknown> | null;
+  result_entity_type?: string | null;
+  result_entity_id?: string | null;
   status: PendingEditStatus;
   admin_note?: string | null;
+  user_review_reason?: string | null;
   reviewed_by?: string | null;
+  reviewed_by_kind?: 'human' | 'codex' | null;
+  review_evidence?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
   reviewed_at?: string | null;
@@ -1063,6 +1073,14 @@ class ApiClient {
     force = false,
   ): Promise<{ version: string }> {
     return this.curation.primeEvaluations(paperId, force);
+  }
+
+  freshAuthMutationDraft() {
+    return this.curation.freshAuthMutationDraft();
+  }
+
+  resumeFreshAuthMutation<T>(): Promise<T> {
+    return this.curation.resumeFreshAuthMutation<T>();
   }
 
   async updatePaperTasks(paperId: string, taskIds: number[]): Promise<Paper> {
@@ -1959,7 +1977,7 @@ class ApiClient {
 
   async approvePendingPaperEdit(
     id: number,
-    body?: { admin_note?: string },
+    body?: { admin_note?: string; user_review_reason?: string; resolved_payload?: Record<string, unknown> },
   ): Promise<PendingPaperEdit> {
     return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/approve`, {
       method: 'POST',
@@ -1969,7 +1987,7 @@ class ApiClient {
 
   async rejectPendingPaperEdit(
     id: number,
-    body?: { admin_note?: string },
+    body?: { admin_note?: string; user_review_reason?: string },
   ): Promise<PendingPaperEdit> {
     return this.request<PendingPaperEdit>(`/admin/paper-edits/${id}/reject`, {
       method: 'POST',

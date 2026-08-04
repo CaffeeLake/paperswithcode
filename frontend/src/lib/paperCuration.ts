@@ -14,6 +14,19 @@ export type PaperEditSection =
 type Request = <T>(endpoint: string, options?: RequestInit) => Promise<T>;
 type FreshAuthRecovery = (section: PaperEditSection) => void;
 
+export interface FreshAuthMutationDraft {
+  section: PaperEditSection;
+  endpoint: string;
+  payload: unknown;
+  options: {
+    method: string;
+    body?: string;
+    headers: Record<string, string>;
+  };
+}
+
+const FRESH_AUTH_MUTATION_KEY = "pwc:fresh-auth-mutation";
+
 function redirectToFreshAuth(section: PaperEditSection): void {
   if (typeof window === "undefined") return;
   sessionStorage.setItem("pwc:fresh-auth-edit", section);
@@ -137,6 +150,7 @@ export class PaperCurationCoordinator {
         error.status === 401 &&
         error.code === "fresh_auth_required"
       ) {
+        this.saveFreshAuthMutation(section, endpoint, payload, requestOptions);
         this.recoverFreshAuth(section);
       } else if (error instanceof ApiError && error.status === 409) {
         this.clearAttempt(requestOptions);
@@ -146,6 +160,62 @@ export class PaperCurationCoordinator {
       }
       throw error;
     }
+  }
+
+  freshAuthMutationDraft(): FreshAuthMutationDraft | null {
+    const serialized = sessionStorage.getItem(FRESH_AUTH_MUTATION_KEY);
+    if (!serialized) return null;
+    try {
+      const draft = JSON.parse(serialized) as FreshAuthMutationDraft;
+      if (
+        !draft.endpoint.startsWith("/") ||
+        draft.endpoint.startsWith("//") ||
+        !["POST", "PUT", "PATCH", "DELETE"].includes(draft.options.method)
+      ) {
+        throw new Error("Invalid saved mutation draft");
+      }
+      return draft;
+    } catch {
+      sessionStorage.removeItem(FRESH_AUTH_MUTATION_KEY);
+      return null;
+    }
+  }
+
+  async resumeFreshAuthMutation<T>(): Promise<T> {
+    const draft = this.freshAuthMutationDraft();
+    if (!draft) throw new Error("No saved catalog edit is available.");
+    const result = await this.request<T>(draft.endpoint, {
+      method: draft.options.method,
+      body: draft.options.body,
+      headers: draft.options.headers,
+    });
+    this.clearAttempt({ headers: draft.options.headers });
+    sessionStorage.removeItem(FRESH_AUTH_MUTATION_KEY);
+    sessionStorage.removeItem("pwc:fresh-auth-edit");
+    return result;
+  }
+
+  private saveFreshAuthMutation(
+    section: PaperEditSection,
+    endpoint: string,
+    payload: unknown,
+    options: RequestInit,
+  ): void {
+    const headers = Object.fromEntries(new Headers(options.headers).entries());
+    const body = typeof options.body === "string" ? options.body : undefined;
+    sessionStorage.setItem(
+      FRESH_AUTH_MUTATION_KEY,
+      JSON.stringify({
+        section,
+        endpoint,
+        payload,
+        options: {
+          method: (options.method ?? "POST").toUpperCase(),
+          body,
+          headers,
+        },
+      } satisfies FreshAuthMutationDraft),
+    );
   }
 
   private idempotencyHeaders(

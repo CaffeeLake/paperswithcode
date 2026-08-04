@@ -14,7 +14,7 @@ from backend.models.database import Method as DBMethod
 from backend.services.method_service import MethodService
 from backend.services.method_trend_service import MethodTrendService
 from backend.database.connection import get_database_session
-from backend.utils.auth import require_admin
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 from backend.utils.entity_images import (
     IMAGE_CACHE_HEADERS,
     IMAGE_MISSING_HEADERS,
@@ -269,7 +269,7 @@ def get_method_papers(
 @router.post(
     "/{method_id}/keywords",
     response_model=Method,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_catalog_mutator)],
 )
 def add_method_keywords(
     method_id: str,
@@ -305,7 +305,7 @@ def add_method_keywords(
 @router.delete(
     "/{method_id}/keywords",
     response_model=Method,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_fresh_catalog_mutator)],
 )
 def remove_method_keywords(
     method_id: str,
@@ -341,7 +341,7 @@ def remove_method_keywords(
 @router.put(
     "/{method_id}/keywords",
     response_model=Method,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_fresh_catalog_mutator)],
 )
 def replace_method_keywords(
     method_id: str,

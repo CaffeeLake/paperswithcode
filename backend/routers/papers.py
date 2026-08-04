@@ -16,6 +16,7 @@ from fastapi import (
     APIRouter,
     Body,
     Depends,
+    Header,
     HTTPException,
     Path,
     Query,
@@ -23,7 +24,7 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -45,13 +46,7 @@ from backend.models.database import (
     Author,
     PaperAuthor,
 )
-from backend.services.external_resource_service import (
-    ExternalResourceError,
-    ExternalResourceInput,
-    ExternalResourceService,
-)
 from backend.services.author_service import normalize_arxiv_author_name
-from backend.utils.biorxiv import fetch_biorxiv_metadata, parse_biorxiv_doi
 from backend.services.paper_service import PaperService
 from backend.services.badge_service import (
     render_leaderboard_badge,
@@ -73,6 +68,12 @@ from backend.utils.auth import (
     require_user,
 )
 from backend.services.paper_curation_service import PaperCurationService
+from backend.services.pending_edit_service import (
+    PendingEditError,
+    PendingEditService,
+    SubmissionRateLimitError,
+    SubmissionSuspendedError,
+)
 from backend.services.hf_inference_billing_service import decrypt_oauth_credential
 from backend.services.paper_bucket_service import (
     BUCKET_MANAGE_OAUTH_COOKIE_NAME,
@@ -82,6 +83,8 @@ from backend.services.paper_bucket_service import (
     copy_paper_to_bucket,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.client_ip import get_client_ip
+from backend.utils.public_urls import normalize_public_url
 from backend.utils.urls import (
     get_paper_route_identifier,
     parse_arxiv_url,
@@ -1010,8 +1013,8 @@ class PaperSubmitRequest(BaseModel):
 class PaperSubmitResponse(BaseModel):
     """Response for a public paper submission."""
 
-    paper: Paper
-    route_identifier: str = Field(
+    paper: Optional[Paper] = None
+    route_identifier: Optional[str] = Field(
         ...,
         description=(
             "Identifier the frontend should use to navigate to the new paper "
@@ -1037,6 +1040,11 @@ class PaperSubmitResponse(BaseModel):
         default=None,
         description="Current latest ArXiv version after submission.",
     )
+    submission_id: Optional[int] = Field(
+        default=None,
+        description="Pending submission ID for non-ArXiv paper proposals.",
+    )
+    pending_review: bool = False
 
 
 _ARXIV_ID_WITH_VERSION_RE = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
@@ -1064,7 +1072,11 @@ def _normalize_arxiv_id(raw: str) -> Optional[str]:
     summary="Submit a paper (ArXiv or external) from the public submit form",
 )
 async def submit_paper(
+    http_request: Request,
+    response: Response,
     request: PaperSubmitRequest = Body(...),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
 ):
     """Unified entry point backing the ``/submit`` page.
@@ -1101,6 +1113,15 @@ async def submit_paper(
             source_url = ""
 
     if arxiv_id:
+        if get_settings().environment == "staging":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "ArXiv submissions mutate the canonical catalog and are disabled "
+                    "on staging. External paper URLs may still be queued for "
+                    "staging-local review."
+                ),
+            )
         paper_service = PaperService(db)
         try:
             existing = paper_service.get_paper_by_arxiv_id(arxiv_id, version=None)
@@ -1143,90 +1164,44 @@ async def submit_paper(
             latest_version=paper.version,
         )
 
-    existing_external = (
-        db.query(DBPaper)
-        .filter(DBPaper.source == "external", DBPaper.source_url == source_url)
-        .first()
-    )
-
-    service = ExternalResourceService(db)
-
-    # bio/medRxiv pages sit behind a Cloudflare bot challenge so raw HTML
-    # fetches return 403 regardless of user agent. Use the public bioRxiv
-    # JSON API instead when the URL points at one of those preprint servers.
-    biorxiv_metadata = None
-    if parse_biorxiv_doi(source_url) is not None:
-        try:
-            biorxiv_metadata = await fetch_biorxiv_metadata(source_url)
-        except Exception as exc:
-            logger.warning("biorxiv metadata lookup failed for %s: %s", source_url, exc)
-            biorxiv_metadata = None
-
-    # Decide which ingestion path to take:
-    #   1. bio/medRxiv URL → use API metadata (LLM extraction skipped).
-    #   2. Caller already supplied title + date_published → trust their
-    #      overrides and skip extraction (lets users index Cloudflare-blocked
-    #      pages by pasting metadata manually).
-    #   3. Otherwise fall back to the generic fetch + LLM extraction path.
     try:
-        if biorxiv_metadata is not None:
-            payload = ExternalResourceInput(
-                source_url=source_url,
-                title=(request.title or biorxiv_metadata.title),
-                abstract=(request.abstract or biorxiv_metadata.abstract),
-                authors=(
-                    request.authors
-                    if request.authors is not None
-                    else biorxiv_metadata.authors
+        row = PendingEditService(db).submit(
+            paper_id=None,
+            hf_username=user["username"],
+            hf_subject=user["hf_subject"],
+            source_ip=get_client_ip(http_request),
+            idempotency_key=idempotency_key,
+            exempt_from_limits=user["role"] in {"admin", "contributor"},
+            edit_type="new_external_paper",
+            proposed_payload={
+                "source_url": source_url,
+                "title": request.title,
+                "abstract": request.abstract,
+                "authors": list(request.authors or []),
+                "date_published": (
+                    request.date_published.isoformat()
+                    if request.date_published is not None
+                    else None
                 ),
-                date_published=(
-                    request.date_published or biorxiv_metadata.date_published
-                ),
-            )
-            result = service.add_external_resource(payload)
-        elif request.title and request.date_published:
-            payload = ExternalResourceInput(
-                source_url=source_url,
-                title=request.title,
-                abstract=request.abstract,
-                authors=list(request.authors or []),
-                date_published=request.date_published,
-            )
-            result = service.add_external_resource(payload)
-        else:
-            result = await service.add_from_url(
-                source_url=source_url,
-                date_published=request.date_published,
-                title_override=request.title,
-                abstract_override=request.abstract,
-                authors_override=request.authors,
-            )
-    except ExternalResourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except DatabaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception as exc:
-        # Upstream extraction (page fetch or LLM metadata extraction) failed.
-        # Surface the underlying message instead of an opaque 500 so the user
-        # can paste overrides and retry without guessing what went wrong.
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Could not fetch or extract metadata for the supplied URL: "
-                f"{exc}. Try again, or fill in the optional title and "
-                "publication date fields to skip automatic extraction."
-            ),
+            },
         )
-
-    paper = result.paper
-    route_identifier = get_paper_route_identifier(
-        paper.source, paper.arxiv_id, int(paper.id)
-    )
+    except SubmissionRateLimitError as exc:
+        response.headers["Retry-After"] = str(exc.retry_after)
+        response.headers["RateLimit"] = "0"
+        response.headers["RateLimit-Policy"] = "submission;w=3600"
+        raise HTTPException(
+            status_code=429,
+            detail=f"{exc}. See /rate-limits for help.",
+            headers=dict(response.headers),
+        )
+    except SubmissionSuspendedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except PendingEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return PaperSubmitResponse(
-        paper=paper,
-        route_identifier=route_identifier,
-        created=existing_external is None,
-        refreshed=False,
+        created=False,
+        submission_id=row.id,
+        pending_review=True,
     )
 
 
@@ -1272,7 +1247,9 @@ async def add_authors_to_paper(
 
 
 @router.post(
-    "/papers/update-citations", summary="Update citation counts from Semantic Scholar"
+    "/papers/update-citations",
+    summary="Update citation counts from Semantic Scholar",
+    dependencies=[Depends(require_admin)],
 )
 async def update_citation_counts(
     limit: int = Query(
@@ -1474,6 +1451,8 @@ class RepositoryInput(BaseModel):
         default=False, description="Whether this is an official repository"
     )
 
+    _normalize_url = field_validator("url", mode="before")(normalize_public_url)
+
 
 class UpdateRepositoriesRequest(BaseModel):
     """Request model for updating paper repositories."""
@@ -1490,6 +1469,8 @@ class ProjectPageInput(BaseModel):
     is_official: bool = Field(
         default=False, description="Whether this is an official project page"
     )
+
+    _normalize_url = field_validator("url", mode="before")(normalize_public_url)
 
 
 class UpdateProjectPagesRequest(BaseModel):
@@ -1638,6 +1619,8 @@ class UpdateSourceUrlRequest(BaseModel):
             "http:// or https:// and be at most 2000 characters."
         ),
     )
+
+    _normalize_url = field_validator("source_url", mode="before")(normalize_public_url)
 
 
 @router.put(

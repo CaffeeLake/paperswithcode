@@ -7,6 +7,7 @@ can mutate them; evaluation CRUD uses :func:`require_admin` so scripts can
 import rows with ``X-Admin-Token``.
 """
 
+import hmac
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -101,7 +102,7 @@ def require_admin(
     if (
         settings.admin_api_token
         and admin_token
-        and admin_token == settings.admin_api_token
+        and hmac.compare_digest(admin_token, settings.admin_api_token)
     ):
         return {
             "source": "header",
@@ -178,7 +179,7 @@ def require_catalog_mutator(
     if (
         settings.admin_api_token
         and admin_token
-        and admin_token == settings.admin_api_token
+        and hmac.compare_digest(admin_token, settings.admin_api_token)
     ):
         return {
             "source": "header",
@@ -192,6 +193,16 @@ def require_catalog_mutator(
 def require_fresh_contributor(request: Request) -> dict:
     actor = require_contributor(request)
     ensure_fresh_contributor_actor(actor)
+    return actor
+
+
+def require_fresh_catalog_mutator(
+    actor: dict = Depends(require_catalog_mutator),
+) -> dict:
+    """Require a catalog mutator and step up destructive contributor actions."""
+
+    if actor["role"] == "contributor":
+        ensure_fresh_contributor_actor(actor)
     return actor
 
 
@@ -212,7 +223,7 @@ def ensure_fresh_contributor_actor(actor: dict) -> None:
 
 def catalog_mutation_context(
     request: Request,
-    actor: dict = Depends(require_contributor),
+    actor: dict = Depends(require_catalog_mutator),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     expected_version: Optional[str] = Header(default=None, alias="If-Match"),
 ) -> dict:
@@ -226,10 +237,12 @@ def catalog_mutation_context(
 
 def fresh_catalog_mutation_context(
     request: Request,
-    actor: dict = Depends(require_fresh_contributor),
+    actor: dict = Depends(require_catalog_mutator),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     expected_version: Optional[str] = Header(default=None, alias="If-Match"),
 ) -> dict:
+    if actor["role"] == "contributor":
+        ensure_fresh_contributor_actor(actor)
     return {
         "actor": actor,
         "idempotency_key": idempotency_key,
@@ -272,8 +285,12 @@ def require_user(request: Request) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sign in with Hugging Face to use this feature",
         )
+    role = role_for_hf_subject(hf_user_id, username=username)
     return {
         "source": "cookie",
         "username": username.lower(),
         "hf_user_id": hf_user_id,
+        "hf_subject": hf_user_id,
+        "role": role,
+        "can_directly_edit_catalog": can_directly_edit_catalog(role),
     }

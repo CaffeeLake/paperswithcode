@@ -25,6 +25,7 @@ import {
   storedRankForMetric,
 } from "@/lib/benchmarkLeaderboard";
 import "@/styles/benchmark-detail.css";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 /** Cap how many metric columns we render in the leaderboard at once. The
  *  View dropdown still lists every configured metric — picking one outside
@@ -512,7 +513,7 @@ const BenchmarkDetailView: React.FC = () => {
               </Link>
             ) : dataset.paper_url ? (
               <a
-                href={dataset.paper_url}
+                href={safeExternalHref(dataset.paper_url) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="method-source-link"

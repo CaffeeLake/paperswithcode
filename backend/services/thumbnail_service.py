@@ -9,22 +9,22 @@ This service handles:
 - Serving cached thumbnails
 """
 
-import asyncio
 import logging
 import re
-import shutil
 import time
-import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import httpx
 from huggingface_hub import HfFileSystem, batch_bucket_files, download_bucket_files
 from PIL import Image, ImageDraw, ImageFont
 from pdf2image import convert_from_bytes
 
 from backend.config import get_settings
+from backend.services.safe_outbound_http_service import (
+    SafeOutboundHttpError,
+    fetch_public_resource,
+)
 from backend.utils.exceptions import ThumbnailGenerationError
 from backend.services.arxiv_service import ArxivService
 from backend.utils.biorxiv import (
@@ -39,6 +39,35 @@ logger = logging.getLogger(__name__)
 THUMBNAIL_RENDERER_CACHE_BUST = "fit9"
 EXPECTED_THUMBNAIL_WIDTH = 400
 EXPECTED_THUMBNAIL_FORMAT = "JPEG"
+EXTERNAL_THUMBNAIL_DIRECT_HOSTS = frozenset(
+    {
+        "aclanthology.org",
+        "arxiv.org",
+        "biorxiv.org",
+        "cvf-openaccess.thecvf.com",
+        "dl.acm.org",
+        "github.com",
+        "huggingface.co",
+        "ieeexplore.ieee.org",
+        "medrxiv.org",
+        "nature.com",
+        "neurips.cc",
+        "openai.com",
+        "openaccess.thecvf.com",
+        "openreview.net",
+        "papers.nips.cc",
+        "proceedings.mlr.press",
+        "proceedings.neurips.cc",
+        "ras.papercept.net",
+        "raw.githubusercontent.com",
+        "www.biorxiv.org",
+        "www.github.com",
+        "www.medrxiv.org",
+        "www.nature.com",
+        "www.openai.com",
+        "zenodo.org",
+    }
+)
 # Paper cards render thumbnails in a 160×220 box, but PDF pages have their own
 # MediaBox/CropBox aspect ratio. Keep the page ratio in the JPEG and let the
 # frontend containment frame handle the small per-page difference.
@@ -574,97 +603,31 @@ class ThumbnailService:
         Download an external PDF when the source URL is directly PDF-like.
         """
         pdf_url = self._normalize_external_pdf_url(source_url)
-        headers = {
-            "Accept": "application/pdf,text/html;q=0.8,*/*;q=0.5",
-            "User-Agent": "paperswithcode-thumbnail-bot/1.0",
-        }
-        timeout = httpx.Timeout(self.pdf_timeout)
-
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout, headers=headers
-        ) as client:
-            if not self._looks_like_pdf_url(pdf_url):
-                try:
-                    head = await client.head(pdf_url)
-                except httpx.HTTPError:
-                    return None
-                content_type = head.headers.get("content-type", "").lower()
-                if "application/pdf" not in content_type:
-                    return None
-
-            try:
-                response = await client.get(pdf_url)
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                raise ThumbnailGenerationError(
-                    f"Failed to download external PDF: {exc}"
-                )
-
-        content_type = response.headers.get("content-type", "").lower()
-        if "application/pdf" not in content_type and not self._looks_like_pdf_url(
-            str(response.url)
-        ):
+        try:
+            result = await fetch_public_resource(
+                pdf_url,
+                allowed_content_types=frozenset({"application/pdf"}),
+                max_bytes=self.max_pdf_size,
+                timeout_seconds=self.pdf_timeout,
+                allowed_hosts=EXTERNAL_THUMBNAIL_DIRECT_HOSTS,
+            )
+        except SafeOutboundHttpError as exc:
+            if exc.status_code == 415 and not self._looks_like_pdf_url(pdf_url):
+                return None
+            raise ThumbnailGenerationError(
+                "Failed to download external PDF safely"
+            ) from exc
+        if not result.body.startswith(b"%PDF"):
             return None
-        if len(response.content) > self.max_pdf_size:
-            raise ThumbnailGenerationError("External PDF is too large")
-        if not response.content.startswith(b"%PDF"):
-            return None
-        return response.content
+        return result.body
 
     async def _capture_external_page_screenshot(self, source_url: str) -> Image.Image:
         """
         Capture the first viewport of an external project page with headless Chrome.
         """
-        chrome_path = (
-            shutil.which("google-chrome")
-            or shutil.which("chromium")
-            or shutil.which("chromium-browser")
+        raise ThumbnailGenerationError(
+            "External webpage screenshots are disabled until isolated browser rendering is available"
         )
-        if chrome_path is None:
-            raise ThumbnailGenerationError("No headless Chrome executable found")
-
-        width, height = self.external_page_viewport
-        with tempfile.TemporaryDirectory(prefix="pwc_external_thumb_") as tmp_dir:
-            screenshot_path = Path(tmp_dir) / "page.jpg"
-            process = await asyncio.create_subprocess_exec(
-                chrome_path,
-                "--headless=new",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--hide-scrollbars",
-                f"--window-size={width},{height}",
-                "--force-device-scale-factor=1",
-                "--run-all-compositor-stages-before-draw",
-                "--virtual-time-budget=10000",
-                f"--screenshot={screenshot_path}",
-                source_url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                _, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.external_page_screenshot_timeout,
-                )
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                try:
-                    await asyncio.wait_for(process.communicate(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
-                raise ThumbnailGenerationError(
-                    "Timed out capturing external page screenshot"
-                ) from exc
-
-            if process.returncode != 0 or not screenshot_path.exists():
-                error = stderr.decode("utf-8", errors="ignore").strip()
-                raise ThumbnailGenerationError(
-                    f"Failed to capture external page screenshot: {error[-500:]}"
-                )
-
-            with Image.open(screenshot_path) as image:
-                return image.convert("RGB")
 
     def _save_thumbnail(self, image: Image.Image, cache_path: Path) -> None:
         """
@@ -916,6 +879,9 @@ class ThumbnailService:
         Returns:
             Number of files deleted
         """
+        if not 1 <= max_age_days <= 3650:
+            raise ValueError("max_age_days must be between 1 and 3650")
+
         deleted_count = 0
         max_age_seconds = max_age_days * 24 * 60 * 60
         current_time = time.time()

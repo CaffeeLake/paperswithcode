@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 import type { Conference, ConferenceDeadline } from "@/lib/api";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 import {
   Dialog,
   DialogContent,
@@ -64,7 +65,8 @@ const addToGoogleCalendar = (conf: Conference, deadline: ConferenceDeadline) => 
     `&dates=${formatICSDate(start)}/${formatICSDate(end)}` +
     `&details=${encodeURIComponent(buildCalendarDescription(conf, deadline))}` +
     `&location=${encodeURIComponent(location)}`;
-  window.open(url, "_blank", "noopener,noreferrer");
+  const safeUrl = safeExternalHref(url);
+  if (safeUrl) window.open(safeUrl, "_blank", "noopener,noreferrer");
 };
 
 const downloadICS = (conf: Conference, deadline: ConferenceDeadline) => {
@@ -302,7 +304,7 @@ const ConferenceDeadlineDialog: React.FC<{
               >
                 {conf.url && (
                   <a
-                    href={conf.url}
+                    href={safeExternalHref(conf.url) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{

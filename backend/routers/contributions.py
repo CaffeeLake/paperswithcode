@@ -14,6 +14,7 @@ from backend.services.catalog_mutation_service import (
 from backend.models.database import CatalogMutationEvent
 from backend.services.evaluation_curation_service import EvaluationCurationService
 from backend.services.paper_curation_service import PaperCurationService
+from backend.services.submission_rollback_service import SubmissionRollbackService
 from backend.utils.auth import require_admin, require_contributor_role
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
@@ -72,6 +73,8 @@ def _rollback_eligible(db: Session, event: CatalogMutationEvent) -> bool:
                 )
             else:
                 current = service.snapshot(int(event.entity_id))
+        elif event.entity_type.startswith("submission_created_"):
+            current = SubmissionRollbackService(db).snapshot(event)
         else:
             return False
     except (ValueError, PaperNotFoundError, DatabaseError):
@@ -108,6 +111,10 @@ def rollback_catalog_event(
         )
     elif event.entity_type.startswith("paper_"):
         rollback = PaperCurationService(db).rollback(
+            event=event, actor=actor, request_id=request_id
+        )
+    elif event.entity_type.startswith("submission_created_"):
+        rollback = SubmissionRollbackService(db).rollback(
             event=event, actor=actor, request_id=request_id
         )
     else:

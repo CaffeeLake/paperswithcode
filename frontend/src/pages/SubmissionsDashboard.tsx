@@ -164,6 +164,10 @@ function SubmissionCard({
   paper?: Paper;
 }) {
   const [adminNote, setAdminNote] = React.useState(submission.admin_note ?? "");
+  const [userReviewReason, setUserReviewReason] = React.useState(submission.user_review_reason ?? "");
+  const [resolvedPayload, setResolvedPayload] = React.useState(
+    JSON.stringify(submission.applied_payload ?? submission.proposed_payload, null, 2),
+  );
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const isDirectorySuggestion = submission.paper_id == null;
@@ -178,7 +182,17 @@ function SubmissionCard({
 
   React.useEffect(() => {
     setAdminNote(submission.admin_note ?? "");
-  }, [submission.admin_note, submission.id]);
+    setUserReviewReason(submission.user_review_reason ?? "");
+    setResolvedPayload(
+      JSON.stringify(submission.applied_payload ?? submission.proposed_payload, null, 2),
+    );
+  }, [
+    submission.admin_note,
+    submission.applied_payload,
+    submission.id,
+    submission.proposed_payload,
+    submission.user_review_reason,
+  ]);
 
   const invalidateAfterReview = React.useCallback(
     (reviewed: PendingPaperEdit) => {
@@ -199,10 +213,19 @@ function SubmissionCard({
   );
 
   const approveMutation = useMutation<PendingPaperEdit, unknown, void>({
-    mutationFn: () =>
-      approvePendingPaperEdit(submission.id, {
+    mutationFn: () => {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(resolvedPayload) as Record<string, unknown>;
+      } catch {
+        throw new Error("Resolved payload must be valid JSON.");
+      }
+      return approvePendingPaperEdit(submission.id, {
         admin_note: adminNote.trim() || undefined,
-      }),
+        user_review_reason: userReviewReason.trim() || undefined,
+        resolved_payload: parsed,
+      });
+    },
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
       toast({
@@ -223,6 +246,7 @@ function SubmissionCard({
     mutationFn: () =>
       rejectPendingPaperEdit(submission.id, {
         admin_note: adminNote.trim() || undefined,
+        user_review_reason: userReviewReason.trim() || undefined,
       }),
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
@@ -304,6 +328,19 @@ function SubmissionCard({
         />
       </div>
 
+      {submission.conflict_payload && (
+        <div className="submission-empty submission-empty-warn">
+          Canonical state changed after this submission. Review the conflict before deciding.
+          <pre>{JSON.stringify(submission.conflict_payload, null, 2)}</pre>
+        </div>
+      )}
+      {submission.review_evidence && (
+        <details className="submission-diff" open>
+          <summary>Codex review artifact</summary>
+          <pre>{JSON.stringify(submission.review_evidence, null, 2)}</pre>
+        </details>
+      )}
+
       <footer className="submission-actions">
         {isPending ? (
           <>
@@ -314,6 +351,22 @@ function SubmissionCard({
               className="submission-note"
               disabled={isMutating}
             />
+            <textarea
+              value={userReviewReason}
+              onChange={(event) => setUserReviewReason(event.target.value)}
+              placeholder="Submitter-visible review reason"
+              className="submission-note"
+              disabled={isMutating}
+            />
+            <label className="text-sm">
+              Resolved payload (the original remains in audit history)
+              <textarea
+                value={resolvedPayload}
+                onChange={(event) => setResolvedPayload(event.target.value)}
+                className="submission-note mt-2 min-h-40 font-mono text-xs"
+                disabled={isMutating}
+              />
+            </label>
             <div className="submission-action-buttons">
               <button
                 type="button"
@@ -344,6 +397,20 @@ function SubmissionCard({
             {submission.admin_note && (
               <span>
                 Admin note: <strong>{submission.admin_note}</strong>
+              </span>
+            )}
+            {submission.user_review_reason && (
+              <span>Submitter-visible reason: <strong>{submission.user_review_reason}</strong></span>
+            )}
+            {submission.applied_payload && (
+              <details>
+                <summary>Applied payload</summary>
+                <pre>{JSON.stringify(submission.applied_payload, null, 2)}</pre>
+              </details>
+            )}
+            {submission.result_entity_type && (
+              <span>
+                Created/applied: <strong>{submission.result_entity_type} #{submission.result_entity_id}</strong>
               </span>
             )}
           </div>

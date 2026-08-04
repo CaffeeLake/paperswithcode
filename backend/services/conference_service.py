@@ -29,6 +29,7 @@ from backend.models.database import PaperTask
 from backend.models.database import Task as DBTask
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+from backend.utils.slug_utils import slugify
 
 
 class ConferenceService:
@@ -36,6 +37,21 @@ class ConferenceService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def create_conference(self, *, commit: bool = True, **fields) -> DBConference:
+        slug = slugify(fields["name"])
+        if len(slug) > 100:
+            raise ValueError("Conference slug would exceed 100 characters")
+        if self.db.query(DBConference.id).filter(DBConference.slug == slug).first():
+            raise ValueError(f"Conference with slug '{slug}' already exists")
+        row = DBConference(slug=slug, **fields)
+        self.db.add(row)
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        self.db.refresh(row)
+        return row
 
     def _get_conference_by_slug(self, slug: str) -> DBConference:
         conference = (

@@ -167,6 +167,23 @@ Supported token probes are `PWC_GEMINI_API_KEY`, `PWC_GITHUB_TOKEN`,
 `PWC_SEMANTIC_SCHOLAR_API_KEY`. Historical method-reference backfills use the
 separately owned `PWC_SEMANTIC_SCHOLAR_API_KEY_2` probe.
 
+## Community submission review
+
+Use only this repository's installed maintenance CLI; the anonymous public
+`huggingface/pwc-cli` remains read-only and must not receive these commands.
+
+- `pwc submissions list --environment production|staging --status pending
+  --json` — Inspect a bounded queue and report the resolved database role/schema.
+- `pwc submissions show ID --environment production|staging --json` — Inspect
+  the proposal, stored snapshot, current canonical state, and review artifact.
+- `pwc submissions decide ID ... --confirm APPLY_SUBMISSION_REVIEW` — Record one
+  structured review through the guarded workflow.
+
+While the apply gate is disabled, use only `--decision needs-human`; this records
+a recommendation without transitioning the pending row. Never review through ad
+hoc SQL or generic admin tokens. Staging must be explicitly requested and named;
+an unqualified user request to review submissions targets production.
+
 ## Versioned paper embeddings
 
 - `pwc embeddings export --output-root PATH --run-id ID --model MODEL

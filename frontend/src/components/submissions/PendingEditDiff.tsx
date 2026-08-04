@@ -12,6 +12,7 @@ import {
   type Task,
 } from "@/lib/api";
 import { assetUrl } from "@/lib/apiUrl";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -253,7 +254,7 @@ function ResourceDiff({ label, currentItems, proposedItems }: {
           >
             <div className="submission-url-content">
               <a
-                href={url}
+                href={safeExternalHref(url) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={cn("submission-url-link", removed && "removed")}
@@ -467,7 +468,7 @@ function SourceUrlDiff({ currentPayload, proposedPayload }: {
     <div className="submission-diff-columns">
       <DiffColumn title="Current source URL">
         {typeof currentUrl === "string" && currentUrl ? (
-          <a className="submission-url-link" href={currentUrl} target="_blank" rel="noopener noreferrer">
+          <a className="submission-url-link" href={safeExternalHref(currentUrl) ?? undefined} target="_blank" rel="noopener noreferrer">
             {currentUrl}
           </a>
         ) : (
@@ -476,7 +477,7 @@ function SourceUrlDiff({ currentPayload, proposedPayload }: {
       </DiffColumn>
       <DiffColumn title="Proposed source URL">
         {typeof proposedUrl === "string" && proposedUrl ? (
-          <a className="submission-url-link" href={proposedUrl} target="_blank" rel="noopener noreferrer">
+          <a className="submission-url-link" href={safeExternalHref(proposedUrl) ?? undefined} target="_blank" rel="noopener noreferrer">
             {proposedUrl}
           </a>
         ) : (
@@ -497,7 +498,9 @@ function TaxonomySuggestionDiff({
   const name = typeof proposedPayload.name === "string" ? proposedPayload.name : "";
   const description =
     typeof proposedPayload.description === "string" ? proposedPayload.description : "";
-  const dates = typeof proposedPayload.dates === "string" ? proposedPayload.dates : "";
+  const year = typeof proposedPayload.year === "number" ? proposedPayload.year : null;
+  const startDate = typeof proposedPayload.start_date === "string" ? proposedPayload.start_date : "";
+  const endDate = typeof proposedPayload.end_date === "string" ? proposedPayload.end_date : "";
   const venue = typeof proposedPayload.venue === "string" ? proposedPayload.venue : "";
   const url = typeof proposedPayload.url === "string" ? proposedPayload.url : "";
   const image = asRecord(proposedPayload.image);
@@ -511,7 +514,7 @@ function TaxonomySuggestionDiff({
     typeof image.file_name === "string" ? image.file_name : "Suggested image";
   const imageCredit =
     typeof proposedPayload.image_credit === "string" ? proposedPayload.image_credit : "";
-  const source = typeof proposedPayload.source === "string" ? proposedPayload.source : "";
+  const source = typeof proposedPayload.source_url === "string" ? proposedPayload.source_url : "";
 
   return (
     <div className="submission-diff-columns">
@@ -547,13 +550,41 @@ function TaxonomySuggestionDiff({
           </DiffColumn>
         </>
       )}
+      {kind === "task" && (
+        <DiffColumn title="Placement and keywords">
+          <span className="submission-field-value">
+            {JSON.stringify({
+              parent_id: proposedPayload.parent_id ?? null,
+              area_id: proposedPayload.area_id ?? null,
+              keywords: proposedPayload.keywords ?? null,
+            })}
+          </span>
+        </DiffColumn>
+      )}
+      {kind === "benchmark" && (
+        <DiffColumn title="Intended task IDs">
+          <span className="submission-field-value">{JSON.stringify(proposedPayload.task_ids ?? [])}</span>
+        </DiffColumn>
+      )}
+      {kind === "metric" && (
+        <DiffColumn title="Metric and leaderboard definition">
+          <span className="submission-field-value">
+            {JSON.stringify({
+              direction: proposedPayload.direction,
+              scale: proposedPayload.scale,
+              task_id: proposedPayload.task_id,
+              dataset_id: proposedPayload.dataset_id,
+            })}
+          </span>
+        </DiffColumn>
+      )}
       {kind === "method" && (
         <DiffColumn title="Source">
           {source ? (
             source.startsWith("http://") || source.startsWith("https://") ? (
               <a
                 className="submission-url-link"
-                href={source}
+                href={safeExternalHref(source) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -569,8 +600,8 @@ function TaxonomySuggestionDiff({
       )}
       {kind === "conference" && (
         <>
-          <DiffColumn title="Dates">
-            {dates || <EmptyInline>No dates provided</EmptyInline>}
+          <DiffColumn title="Edition and dates">
+            {year ? `${year}${startDate ? ` · ${startDate}${endDate ? ` – ${endDate}` : ""}` : ""}` : <EmptyInline>No edition provided</EmptyInline>}
           </DiffColumn>
           <DiffColumn title="Venue">
             {venue || <EmptyInline>No venue provided</EmptyInline>}
@@ -579,7 +610,7 @@ function TaxonomySuggestionDiff({
             {url ? (
               <a
                 className="submission-url-link"
-                href={url}
+                href={safeExternalHref(url) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
               >

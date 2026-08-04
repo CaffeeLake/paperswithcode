@@ -50,6 +50,7 @@ from backend.utils.hf_utils import (
     classify_hf_artifact_url,
     normalize_hf_artifact_url,
 )
+from backend.utils.public_urls import PublicUrlValidationError, normalize_public_url
 
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ class ExternalResourceService:
     # ------------------------------------------------------------------
 
     def add_external_resource(
-        self, payload: ExternalResourceInput
+        self, payload: ExternalResourceInput, *, commit: bool = True
     ) -> ExternalResourceIngestionResult:
         """
         Insert (or update) an external resource and link its associated
@@ -111,9 +112,18 @@ class ExternalResourceService:
         `date_published` raises `ExternalResourceError`; the plan deliberately
         rejects rows without a credible publication date.
         """
-        source_url = (payload.source_url or "").strip()
-        if not source_url:
-            raise ExternalResourceError("source_url is required")
+        try:
+            source_url = normalize_public_url(payload.source_url)
+        except PublicUrlValidationError as exc:
+            raise ExternalResourceError(str(exc)) from exc
+        try:
+            thumbnail_url = (
+                normalize_public_url(payload.thumbnail_url)
+                if payload.thumbnail_url
+                else None
+            )
+        except PublicUrlValidationError as exc:
+            raise ExternalResourceError(str(exc)) from exc
         if not payload.title or not payload.title.strip():
             raise ExternalResourceError("title is required")
         if payload.date_published is None:
@@ -132,7 +142,10 @@ class ExternalResourceService:
                 paper_id, payload.github_repository_urls
             )
             hf_counts = self._set_hf_artifacts(paper_id, payload.hf_artifact_urls)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
             paper_api = PaperService(self.db).get_paper_by_id(
                 paper_id, include_resources=True
             )
@@ -166,7 +179,7 @@ class ExternalResourceService:
                     source="external",
                     source_url=source_url,
                     date_published=payload.date_published,
-                    thumbnail_url=(payload.thumbnail_url or None),
+                    thumbnail_url=thumbnail_url,
                     is_latest_version=True,
                     version="v1",
                     urls_extracted=True,
@@ -181,8 +194,8 @@ class ExternalResourceService:
                     existing.abstract = payload.abstract
                 if payload.date_published is not None:
                     existing.date_published = payload.date_published
-                if payload.thumbnail_url is not None:
-                    existing.thumbnail_url = payload.thumbnail_url
+                if thumbnail_url is not None:
+                    existing.thumbnail_url = thumbnail_url
                 existing.urls_extracted = True
                 paper_id = existing.id
 
@@ -194,12 +207,17 @@ class ExternalResourceService:
             )
             hf_counts = self._set_hf_artifacts(paper_id, payload.hf_artifact_urls)
 
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
         except ExternalResourceError:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             raise
         except Exception as exc:
-            self.db.rollback()
+            if commit:
+                self.db.rollback()
             logger.exception("Failed to ingest external resource %s", source_url)
             raise DatabaseError(
                 f"Failed to ingest external resource {source_url}: {exc}"
@@ -248,9 +266,10 @@ class ExternalResourceService:
         )
         from backend.utils.url_fetch import fetch_html_and_text
 
-        url = (source_url or "").strip()
-        if not url:
-            raise ExternalResourceError("source_url is required")
+        try:
+            url = normalize_public_url(source_url)
+        except PublicUrlValidationError as exc:
+            raise ExternalResourceError(str(exc)) from exc
 
         raw_html, page_text = await fetch_html_and_text(url)
         if not page_text:

@@ -23,6 +23,7 @@ import { isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import type { PaperCardProps } from "@/lib/transform";
 import { displayTaskName, humanizeSlug } from "@/lib/transform";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 // ============================================================================
 // Tag chip — backend slug → deterministic-hue pastel pill
@@ -893,10 +894,10 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
         </div>
         {(paper.githubUrl || paper.hfUrl) && (
           <div className="paper-resources">
-            {paper.githubUrl && (
+            {safeExternalHref(paper.githubUrl) && (
               <a
                 className="paper-resource is-link"
-                href={paper.githubUrl}
+                href={safeExternalHref(paper.githubUrl) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label="Open GitHub repository"
@@ -914,10 +915,10 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
                 )}
               </a>
             )}
-            {paper.hfUrl && paper.hfKind && (
+            {safeExternalHref(paper.hfUrl) && paper.hfKind && (
               <a
                 className="paper-resource is-link"
-                href={paper.hfUrl}
+                href={safeExternalHref(paper.hfUrl) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label={`Open Hugging Face ${paper.hfKind}`}

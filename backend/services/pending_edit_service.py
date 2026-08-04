@@ -11,19 +11,28 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timezone
+import hashlib
+import json
+import logging
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 from sqlalchemy.orm import Session
 
 from backend.models.database import (
     Author as DBAuthor,
+    CatalogMutationEvent,
+    Conference as DBConference,
+    Dataset as DBDataset,
     Evaluation as DBEvaluation,
+    Method as DBMethod,
+    Metric as DBMetric,
     Paper as DBPaper,
     PaperAuthor,
+    PaperConference,
     PaperMethod,
     PaperOrganization,
     PaperProjectPage,
@@ -33,10 +42,30 @@ from backend.models.database import (
     ProjectPage as DBProjectPage,
     Repository as DBRepository,
     Organization as DBOrganization,
+    Task as DBTask,
+    TaskDataset,
+    TaskDatasetMetric,
+    UserProfile,
+    UserProfileAlias,
 )
+from backend.config import get_settings
 from backend.services.evaluation_service import EvaluationService
+from backend.services.external_resource_service import (
+    ExternalResourceInput,
+    ExternalResourceService,
+)
+from backend.services.evaluation_curation_service import EvaluationCurationService
+from backend.services.paper_curation_service import PaperCurationService
+from backend.services.catalog_mutation_service import json_safe
 from backend.services.paper_service import PaperService
+from backend.services.task_service import TaskService
+from backend.services.dataset_service import DatasetService
+from backend.services.method_service import MethodService
+from backend.services.metric_service import MetricService
+from backend.services.conference_service import ConferenceService
+from backend.models.api import TaskCreateRequest, DatasetCreateRequest
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
+from backend.utils.public_urls import PublicUrlValidationError, normalize_public_url
 
 
 EDIT_TYPES = frozenset(
@@ -54,6 +83,7 @@ EDIT_TYPES = frozenset(
         "new_benchmark",
         "new_metric",
         "new_conference",
+        "new_external_paper",
     }
 )
 STATUSES = frozenset({"pending", "approved", "rejected"})
@@ -64,6 +94,7 @@ SUGGESTION_IMAGE_FORMATS = {
     "PNG": "image/png",
     "WEBP": "image/webp",
 }
+logger = logging.getLogger(__name__)
 
 
 class PendingEditError(Exception):
@@ -76,6 +107,20 @@ class PendingEditNotFoundError(PendingEditError):
 
 class PendingEditAlreadyReviewedError(PendingEditError):
     """Raised when an admin tries to approve or reject a non-pending row."""
+
+
+class PendingEditConflictError(PendingEditError):
+    pass
+
+
+class SubmissionRateLimitError(PendingEditError):
+    def __init__(self, message: str, *, retry_after: int = 3600):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class SubmissionSuspendedError(PendingEditError):
+    pass
 
 
 class PendingEditService:
@@ -282,6 +327,7 @@ class PendingEditService:
             "new_benchmark",
             "new_metric",
             "new_conference",
+            "new_external_paper",
         ):
             # Suggestions for brand-new taxonomy entries have no existing live
             # state to diff against.
@@ -416,7 +462,11 @@ class PendingEditService:
                     raise PendingEditError(
                         "Each repository must have a string 'url' and bool 'is_official'"
                     )
-                out.append({"url": repo["url"], "is_official": repo["is_official"]})
+                try:
+                    url = normalize_public_url(repo["url"])
+                except PublicUrlValidationError as exc:
+                    raise PendingEditError(str(exc)) from exc
+                out.append({"url": url, "is_official": repo["is_official"]})
             return {"repositories": out}
 
         if edit_type == "project_pages":
@@ -436,7 +486,11 @@ class PendingEditService:
                     raise PendingEditError(
                         "Each project page must have a string 'url' and bool 'is_official'"
                     )
-                out.append({"url": page["url"], "is_official": page["is_official"]})
+                try:
+                    url = normalize_public_url(page["url"])
+                except PublicUrlValidationError as exc:
+                    raise PendingEditError(str(exc)) from exc
+                out.append({"url": url, "is_official": page["is_official"]})
             return {"project_pages": out}
 
         if edit_type == "organizations":
@@ -453,15 +507,10 @@ class PendingEditService:
             source_url = payload.get("source_url")
             if not isinstance(source_url, str):
                 raise PendingEditError('Source URL payload must be {"source_url": str}')
-            normalized = source_url.strip()
-            if not normalized:
-                raise PendingEditError("source_url must be a non-empty string")
-            if len(normalized) > 2000:
-                raise PendingEditError("source_url must be at most 2000 characters")
-            if not (
-                normalized.startswith("http://") or normalized.startswith("https://")
-            ):
-                raise PendingEditError("source_url must start with http:// or https://")
+            try:
+                normalized = normalize_public_url(source_url)
+            except PublicUrlValidationError as exc:
+                raise PendingEditError(str(exc)) from exc
             return {"source_url": normalized}
 
         if edit_type == "hf_artifacts":
@@ -491,6 +540,43 @@ class PendingEditService:
                 "hf_spaces": spaces,
             }
 
+        if edit_type == "new_external_paper":
+            source_url = payload.get("source_url")
+            if not isinstance(source_url, str):
+                raise PendingEditError("External paper source_url must be a string")
+            try:
+                normalized_url = normalize_public_url(source_url)
+            except PublicUrlValidationError as exc:
+                raise PendingEditError(str(exc)) from exc
+            normalized_external: Dict[str, Any] = {"source_url": normalized_url}
+            for field, limit in (("title", 500), ("abstract", 20_000)):
+                value = payload.get(field)
+                if value is not None:
+                    if not isinstance(value, str) or len(value.strip()) > limit:
+                        raise PendingEditError(f"External paper {field} is invalid")
+                    if value.strip():
+                        normalized_external[field] = value.strip()
+            authors = payload.get("authors") or []
+            if not isinstance(authors, list) or not all(
+                isinstance(author, str) and author.strip() for author in authors
+            ):
+                raise PendingEditError("External paper authors must be a list of names")
+            normalized_external["authors"] = [author.strip() for author in authors]
+            published = payload.get("date_published")
+            if published is not None:
+                if not isinstance(published, str):
+                    raise PendingEditError(
+                        "External paper date_published must be ISO text"
+                    )
+                try:
+                    datetime.fromisoformat(published)
+                except ValueError as exc:
+                    raise PendingEditError(
+                        "External paper date_published is invalid"
+                    ) from exc
+                normalized_external["date_published"] = published
+            return normalized_external
+
         if edit_type in (
             "new_task",
             "new_method",
@@ -510,38 +596,6 @@ class PendingEditService:
                     "Suggestion 'name' must be at most 200 characters"
                 )
 
-            if edit_type == "new_conference":
-                normalized_payload = {"name": normalized_name}
-                optional_limits = {
-                    "description": 2000,
-                    "dates": 200,
-                    "venue": 300,
-                    "url": 500,
-                }
-                for field, max_length in optional_limits.items():
-                    value = payload.get(field)
-                    if value is None:
-                        continue
-                    if not isinstance(value, str):
-                        raise PendingEditError(f"Suggestion '{field}' must be a string")
-                    normalized_value = value.strip()
-                    if not normalized_value:
-                        continue
-                    if len(normalized_value) > max_length:
-                        raise PendingEditError(
-                            f"Suggestion '{field}' must be at most "
-                            f"{max_length} characters"
-                        )
-                    normalized_payload[field] = normalized_value
-                url = normalized_payload.get("url")
-                if url and not (
-                    url.startswith("http://") or url.startswith("https://")
-                ):
-                    raise PendingEditError(
-                        "Suggestion 'url' must start with http:// or https://"
-                    )
-                return normalized_payload
-
             normalized_payload = {"name": normalized_name}
             if description is not None:
                 if not isinstance(description, str):
@@ -554,10 +608,111 @@ class PendingEditService:
                         )
                     normalized_payload["description"] = normalized_description
 
-            if edit_type in ("new_benchmark", "new_metric"):
+            def optional_text(field: str, limit: int) -> None:
+                value = payload.get(field)
+                if value is None:
+                    return
+                if not isinstance(value, str) or len(value.strip()) > limit:
+                    raise PendingEditError(f"Suggestion '{field}' is invalid")
+                if value.strip():
+                    normalized_payload[field] = value.strip()
+
+            def optional_id(field: str) -> None:
+                value = payload.get(field)
+                if value is not None:
+                    if not isinstance(value, int) or value <= 0:
+                        raise PendingEditError(
+                            f"Suggestion '{field}' must be a positive integer"
+                        )
+                    normalized_payload[field] = value
+
+            if edit_type == "new_conference":
+                for field, limit in (
+                    ("short_name", 50),
+                    ("venue", 300),
+                    ("location", 300),
+                    ("description", 2000),
+                    ("url", 500),
+                ):
+                    optional_text(field, limit)
+                year = payload.get("year")
+                if not isinstance(year, int) or not 1900 <= year <= 2200:
+                    raise PendingEditError("Conference 'year' is required")
+                normalized_payload["year"] = year
+                for field in ("start_date", "end_date"):
+                    value = payload.get(field)
+                    if value is not None:
+                        if not isinstance(value, str):
+                            raise PendingEditError(
+                                f"Conference '{field}' must be an ISO date"
+                            )
+                        try:
+                            date.fromisoformat(value)
+                        except ValueError as exc:
+                            raise PendingEditError(
+                                f"Conference '{field}' must be an ISO date"
+                            ) from exc
+                        normalized_payload[field] = value
+                if normalized_payload.get("url"):
+                    try:
+                        normalized_payload["url"] = normalize_public_url(
+                            normalized_payload["url"]
+                        )
+                    except PublicUrlValidationError as exc:
+                        raise PendingEditError(str(exc)) from exc
+                else:
+                    raise PendingEditError("Conference source URL is required")
+                return normalized_payload
+
+            if edit_type == "new_benchmark":
                 if "description" not in normalized_payload:
+                    raise PendingEditError("Benchmark 'description' is required")
+                task_ids = payload.get("task_ids")
+                if (
+                    not isinstance(task_ids, list)
+                    or not task_ids
+                    or not all(isinstance(item, int) and item > 0 for item in task_ids)
+                ):
                     raise PendingEditError(
-                        "Suggestion 'description' must be a non-empty string"
+                        "Benchmark 'task_ids' must contain positive integers"
+                    )
+                normalized_payload["task_ids"] = sorted(set(task_ids))
+                for field, limit in (
+                    ("full_name", 500),
+                    ("url", 500),
+                    ("hf_url", 500),
+                    ("paper_url", 500),
+                    ("license_name", 255),
+                    ("license_url", 500),
+                ):
+                    optional_text(field, limit)
+                for field in ("url", "hf_url", "paper_url", "license_url"):
+                    if normalized_payload.get(field):
+                        try:
+                            normalized_payload[field] = normalize_public_url(
+                                normalized_payload[field]
+                            )
+                        except PublicUrlValidationError as exc:
+                            raise PendingEditError(str(exc)) from exc
+                return normalized_payload
+
+            if edit_type == "new_metric":
+                if "description" not in normalized_payload:
+                    raise PendingEditError("Metric 'description' is required")
+                direction = payload.get("direction")
+                if direction not in ("higher_is_better", "lower_is_better"):
+                    raise PendingEditError("Metric 'direction' is required")
+                normalized_payload["direction"] = direction
+                optional_text("full_name", 255)
+                optional_text("scale", 50)
+                optional_id("task_id")
+                optional_id("dataset_id")
+                if (
+                    "task_id" not in normalized_payload
+                    or "dataset_id" not in normalized_payload
+                ):
+                    raise PendingEditError(
+                        "Metric leaderboard needs both task_id and dataset_id"
                     )
                 return normalized_payload
 
@@ -580,17 +735,28 @@ class PendingEditService:
                     normalized_payload["image_credit"] = normalized_image_credit
 
             if edit_type == "new_method":
-                source = payload.get("source")
-                if source is not None:
-                    if not isinstance(source, str):
-                        raise PendingEditError("Suggestion 'source' must be a string")
-                    normalized_source = source.strip()
-                    if normalized_source:
-                        if len(normalized_source) > 1000:
-                            raise PendingEditError(
-                                "Suggestion 'source' must be at most 1000 characters"
-                            )
-                        normalized_payload["source"] = normalized_source
+                optional_id("source_paper_id")
+                optional_text("source_url", 500)
+                optional_text("source_title", 500)
+                if normalized_payload.get("source_url"):
+                    try:
+                        normalized_payload["source_url"] = normalize_public_url(
+                            normalized_payload["source_url"]
+                        )
+                    except PublicUrlValidationError as exc:
+                        raise PendingEditError(str(exc)) from exc
+                if (
+                    "source_paper_id" not in normalized_payload
+                    and "source_url" not in normalized_payload
+                ):
+                    raise PendingEditError(
+                        "Method source_paper_id or source_url is required"
+                    )
+
+            if edit_type == "new_task":
+                optional_id("parent_id")
+                optional_id("area_id")
+                optional_text("keywords", 2000)
 
             return normalized_payload
 
@@ -620,7 +786,16 @@ class PendingEditService:
                         )
                     if not PendingEditService._is_valid_evaluation_create_data(data):
                         continue
-                    out_ops.append({"op": "create", "data": data})
+                    normalized_data = dict(data)
+                    for field in ("external_source_url", "source_url", "hf_model_url"):
+                        if normalized_data.get(field) is not None:
+                            try:
+                                normalized_data[field] = normalize_public_url(
+                                    normalized_data[field]
+                                )
+                            except (PublicUrlValidationError, TypeError) as exc:
+                                raise PendingEditError(str(exc)) from exc
+                    out_ops.append({"op": "create", "data": normalized_data})
                 elif kind == "update":
                     evaluation_id = op.get("evaluation_id")
                     data = op.get("data")
@@ -628,8 +803,21 @@ class PendingEditService:
                         raise PendingEditError(
                             "Evaluation update op needs int 'evaluation_id' and 'data' object"
                         )
+                    normalized_data = dict(data)
+                    for field in ("external_source_url", "source_url", "hf_model_url"):
+                        if normalized_data.get(field) is not None:
+                            try:
+                                normalized_data[field] = normalize_public_url(
+                                    normalized_data[field]
+                                )
+                            except (PublicUrlValidationError, TypeError) as exc:
+                                raise PendingEditError(str(exc)) from exc
                     out_ops.append(
-                        {"op": "update", "evaluation_id": evaluation_id, "data": data}
+                        {
+                            "op": "update",
+                            "evaluation_id": evaluation_id,
+                            "data": normalized_data,
+                        }
                     )
                 else:  # delete
                     evaluation_id = op.get("evaluation_id")
@@ -741,6 +929,10 @@ class PendingEditService:
         *,
         paper_id: Optional[int],
         hf_username: str,
+        hf_subject: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        exempt_from_limits: bool = False,
         edit_type: str,
         proposed_payload: Any,
     ) -> PendingPaperEdit:
@@ -755,6 +947,7 @@ class PendingEditService:
             "new_benchmark",
             "new_metric",
             "new_conference",
+            "new_external_paper",
         )
         if paper_id is None and not is_taxonomy_suggestion:
             raise PendingEditError(
@@ -768,12 +961,135 @@ class PendingEditService:
                 raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
 
         normalized_payload = self._validate_payload(edit_type, proposed_payload)
+        settings = get_settings()
+        encoded_payload = json.dumps(
+            normalized_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if len(encoded_payload) > settings.submission_max_payload_bytes:
+            raise PendingEditError("Submission payload is too large")
+        payload_hash = hashlib.sha256(encoded_payload).hexdigest()
+        stable_subject = hf_subject or f"legacy-username:{hf_username.lower()}"
+        if idempotency_key and len(idempotency_key) > 255:
+            raise PendingEditError("Idempotency key is too long")
+        if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
+            self.db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:subject, 0))"),
+                {"subject": stable_subject},
+            )
+
+        profile = (
+            self.db.query(UserProfile)
+            .filter(UserProfile.hf_subject == stable_subject)
+            .with_for_update()
+            .first()
+        )
+        normalized_username = hf_username.strip().lower()
+        if profile is None:
+            profile = UserProfile(
+                hf_subject=stable_subject,
+                current_username=normalized_username,
+            )
+            self.db.add(profile)
+            self.db.flush()
+            self.db.add(
+                UserProfileAlias(
+                    alias=normalized_username,
+                    hf_subject=stable_subject,
+                )
+            )
+        elif profile.current_username != normalized_username:
+            existing_alias = self.db.get(UserProfileAlias, normalized_username)
+            if (
+                existing_alias is not None
+                and existing_alias.hf_subject != stable_subject
+            ):
+                raise PendingEditError("Hugging Face username is already claimed")
+            profile.current_username = normalized_username
+            if existing_alias is None:
+                self.db.add(
+                    UserProfileAlias(
+                        alias=normalized_username,
+                        hf_subject=stable_subject,
+                    )
+                )
+        if profile.is_submission_suspended:
+            raise SubmissionSuspendedError("This account cannot create new submissions")
+
+        if idempotency_key:
+            replay = (
+                self.db.query(PendingPaperEdit)
+                .filter(
+                    PendingPaperEdit.hf_subject == stable_subject,
+                    PendingPaperEdit.idempotency_key == idempotency_key,
+                )
+                .first()
+            )
+            if replay is not None:
+                if replay.payload_hash != payload_hash:
+                    raise PendingEditError(
+                        "Idempotency key was already used for another payload"
+                    )
+                return replay
         current_payload = (
             {} if paper_id is None else self._build_snapshot(paper_id, edit_type)
         )
 
         if self._is_noop(edit_type, normalized_payload, current_payload):
             raise PendingEditError("Submission does not contain any changes.")
+
+        duplicate = (
+            self.db.query(PendingPaperEdit)
+            .filter(
+                PendingPaperEdit.hf_subject == stable_subject,
+                PendingPaperEdit.edit_type == edit_type,
+                PendingPaperEdit.paper_id == paper_id,
+                PendingPaperEdit.payload_hash == payload_hash,
+                PendingPaperEdit.status == "pending",
+            )
+            .first()
+        )
+        if duplicate is not None:
+            return duplicate
+
+        if not exempt_from_limits:
+            active = (
+                self.db.query(PendingPaperEdit.id)
+                .filter(
+                    PendingPaperEdit.hf_subject == stable_subject,
+                    PendingPaperEdit.status == "pending",
+                )
+                .count()
+            )
+            if active >= settings.submission_max_active_pending:
+                raise SubmissionRateLimitError(
+                    "Active pending submission limit reached"
+                )
+            window_start = datetime.now(timezone.utc) - timedelta(hours=1)
+            subject_created = (
+                self.db.query(PendingPaperEdit.id)
+                .filter(
+                    PendingPaperEdit.hf_subject == stable_subject,
+                    PendingPaperEdit.created_at >= window_start,
+                )
+                .count()
+            )
+            if subject_created >= settings.submission_hourly_subject_limit:
+                raise SubmissionRateLimitError(
+                    "Hourly account submission limit reached"
+                )
+            if source_ip:
+                ip_created = (
+                    self.db.query(PendingPaperEdit.id)
+                    .filter(
+                        PendingPaperEdit.source_ip == source_ip,
+                        PendingPaperEdit.created_at >= window_start,
+                    )
+                    .count()
+                )
+                if ip_created >= settings.submission_hourly_ip_limit:
+                    raise SubmissionRateLimitError(
+                        "Hourly network submission limit reached"
+                    )
 
         is_author = (
             self.is_linked_author(paper_id, hf_username)
@@ -784,6 +1100,10 @@ class PendingEditService:
         row = PendingPaperEdit(
             paper_id=paper_id,
             hf_username=hf_username,
+            hf_subject=stable_subject,
+            source_ip=source_ip,
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
             is_author=is_author,
             edit_type=edit_type,
             proposed_payload=normalized_payload,
@@ -793,6 +1113,13 @@ class PendingEditService:
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
+        logger.info(
+            "submission_created id=%s subject=%s edit_type=%s paper_id=%s",
+            row.id,
+            stable_subject,
+            edit_type,
+            paper_id,
+        )
         return row
 
     # ----------------------------------------------------------------
@@ -854,9 +1181,19 @@ class PendingEditService:
         *,
         edit_id: int,
         reviewer_username: Optional[str],
+        reviewer_hf_subject: Optional[str] = None,
+        resolved_payload: Optional[Dict[str, Any]] = None,
         admin_note: Optional[str] = None,
+        user_review_reason: Optional[str] = None,
     ) -> PendingPaperEdit:
-        row = self.get(edit_id)
+        row = (
+            self.db.query(PendingPaperEdit)
+            .filter(PendingPaperEdit.id == edit_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            raise PendingEditNotFoundError(f"Pending edit with ID {edit_id} not found")
         if row.status != "pending":
             raise PendingEditAlreadyReviewedError(
                 f"Pending edit {edit_id} is already {row.status}"
@@ -868,27 +1205,275 @@ class PendingEditService:
             "new_benchmark",
             "new_metric",
             "new_conference",
+            "new_external_paper",
         ):
             raise PendingEditError("This edit is missing its paper_id")
-        self._apply_payload(row.edit_type, row.paper_id, row.proposed_payload)
+        if row.paper_id is not None:
+            current = self._build_snapshot(row.paper_id, row.edit_type)
+            if current != (row.current_payload or {}):
+                row.conflict_payload = {
+                    "submitted_snapshot": row.current_payload or {},
+                    "current_snapshot": current,
+                }
+                self.db.commit()
+                raise PendingEditConflictError(
+                    "Canonical state changed after submission"
+                )
+        applied_payload = self._validate_payload(
+            row.edit_type,
+            resolved_payload if resolved_payload is not None else row.proposed_payload,
+        )
+        event_before = self._approval_event_snapshot(row.edit_type, row.paper_id)
+        try:
+            result_type, result_id = self._apply_payload(
+                row.edit_type, row.paper_id, applied_payload
+            )
+        except Exception as exc:
+            self.db.rollback()
+            failed_row = self.db.get(PendingPaperEdit, edit_id)
+            if failed_row is not None and failed_row.status == "pending":
+                failed_row.failure_reason = str(exc)[:2000]
+                self.db.commit()
+            logger.warning(
+                "submission_apply_failed id=%s edit_type=%s error_type=%s",
+                edit_id,
+                row.edit_type,
+                type(exc).__name__,
+            )
+            raise
 
         row.status = "approved"
         row.reviewed_by = reviewer_username
+        row.reviewed_by_kind = "human"
+        row.reviewed_by_hf_subject = reviewer_hf_subject
+        row.applied_payload = applied_payload
+        row.result_entity_type = result_type
+        row.result_entity_id = result_id
+        after_snapshot = self._approval_event_snapshot(
+            row.edit_type, row.paper_id, result_type=result_type, result_id=result_id
+        )
+        if row.paper_id is not None:
+            event_entity_type = (
+                "evaluation"
+                if row.edit_type == "evaluations"
+                else f"paper_{row.edit_type}"
+            )
+            event_entity_id = (
+                f"paper:{row.paper_id}"
+                if row.edit_type == "evaluations"
+                else str(row.paper_id)
+            )
+        else:
+            event_entity_type = f"submission_created_{result_type}"
+            event_entity_id = result_id
+        event = CatalogMutationEvent(
+            actor_hf_subject=reviewer_hf_subject or "legacy-human-reviewer",
+            actor_username=reviewer_username,
+            actor_role="admin",
+            operation="approve_submission",
+            entity_type=event_entity_type,
+            entity_id=event_entity_id,
+            before_snapshot=json_safe(event_before),
+            after_snapshot=json_safe(after_snapshot),
+            request_id=f"submission-review:{row.id}",
+            source_environment=get_settings().environment,
+            release_id=get_settings().release_id,
+        )
+        self.db.add(event)
+        self.db.flush()
+        row.catalog_event_id = event.id
         row.admin_note = admin_note
+        row.user_review_reason = user_review_reason
         row.reviewed_at = datetime.now(timezone.utc)
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
+        logger.info(
+            "submission_approved id=%s reviewer_subject=%s result=%s:%s",
+            row.id,
+            reviewer_hf_subject,
+            result_type,
+            result_id,
+        )
         return row
+
+    def _approval_event_snapshot(
+        self,
+        edit_type: str,
+        paper_id: Optional[int],
+        *,
+        result_type: Optional[str] = None,
+        result_id: Optional[str] = None,
+    ) -> Any:
+        if paper_id is not None:
+            if edit_type == "evaluations":
+                return EvaluationCurationService(self.db)._paper_evaluations(paper_id)
+            return PaperCurationService(self.db).snapshot(paper_id, edit_type)
+        if result_type is None or result_id is None:
+            return {}
+        return self._created_entity_snapshot(result_type, int(result_id))
+
+    def _created_entity_snapshot(
+        self, entity_type: str, entity_id: int
+    ) -> Dict[str, Any]:
+        model_by_type = {
+            "paper": DBPaper,
+            "task": DBTask,
+            "method": DBMethod,
+            "dataset": DBDataset,
+            "metric": DBMetric,
+            "conference": DBConference,
+        }
+        model = model_by_type[entity_type]
+        row = self.db.get(model, entity_id)
+        if row is None:
+            return {}
+        values: Dict[str, Any] = {}
+        for column in model.__table__.columns:
+            value = getattr(row, column.name)
+            if isinstance(value, bytes):
+                value = {"base64": base64.b64encode(value).decode()}
+            elif isinstance(value, (datetime, date)):
+                value = value.isoformat()
+            values[column.name] = value
+        snapshot: Dict[str, Any] = {"entity": values}
+        if entity_type == "paper":
+            snapshot["associations"] = {
+                "author_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperAuthor.author_id)
+                    .filter(PaperAuthor.paper_id == entity_id)
+                    .all()
+                ),
+                "task_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperTask.task_id)
+                    .filter(PaperTask.paper_id == entity_id)
+                    .all()
+                ),
+                "method_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperMethod.method_id)
+                    .filter(PaperMethod.paper_id == entity_id)
+                    .all()
+                ),
+                "organization_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperOrganization.organization_id)
+                    .filter(PaperOrganization.paper_id == entity_id)
+                    .all()
+                ),
+                "repository_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperRepository.repository_id)
+                    .filter(PaperRepository.paper_id == entity_id)
+                    .all()
+                ),
+                "project_page_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperProjectPage.project_page_id)
+                    .filter(PaperProjectPage.paper_id == entity_id)
+                    .all()
+                ),
+                "conference_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperConference.conference_id)
+                    .filter(PaperConference.paper_id == entity_id)
+                    .all()
+                ),
+                "evaluation_ids": sorted(
+                    row[0]
+                    for row in self.db.query(DBEvaluation.id)
+                    .filter(DBEvaluation.paper_id == entity_id)
+                    .all()
+                ),
+            }
+        if entity_type == "task":
+            snapshot["associations"] = {
+                "child_ids": sorted(
+                    row[0]
+                    for row in self.db.query(DBTask.id)
+                    .filter(DBTask.parent_id == entity_id)
+                    .all()
+                ),
+                "paper_ids": sorted(
+                    row[0]
+                    for row in self.db.query(PaperTask.paper_id)
+                    .filter(PaperTask.task_id == entity_id)
+                    .all()
+                ),
+                "dataset_ids": sorted(
+                    row[0]
+                    for row in self.db.query(TaskDataset.dataset_id)
+                    .filter(TaskDataset.task_id == entity_id)
+                    .all()
+                ),
+                "evaluation_ids": sorted(
+                    row[0]
+                    for row in self.db.query(DBEvaluation.id)
+                    .filter(DBEvaluation.task_id == entity_id)
+                    .all()
+                ),
+            }
+        if entity_type == "method":
+            snapshot["paper_ids"] = sorted(
+                row[0]
+                for row in self.db.query(PaperMethod.paper_id)
+                .filter(PaperMethod.method_id == entity_id)
+                .all()
+            )
+        if entity_type == "dataset":
+            snapshot["task_ids"] = sorted(
+                task_id
+                for (task_id,) in self.db.query(TaskDataset.task_id)
+                .filter(TaskDataset.dataset_id == entity_id)
+                .all()
+            )
+            snapshot["evaluation_ids"] = sorted(
+                row[0]
+                for row in self.db.query(DBEvaluation.id)
+                .filter(DBEvaluation.dataset_id == entity_id)
+                .all()
+            )
+            snapshot["leaderboards"] = [
+                {"task_id": row.task_id, "metric_id": row.metric_id}
+                for row in self.db.query(TaskDatasetMetric)
+                .filter(TaskDatasetMetric.dataset_id == entity_id)
+                .all()
+            ]
+        if entity_type == "metric":
+            snapshot["leaderboards"] = [
+                {"task_id": row.task_id, "dataset_id": row.dataset_id}
+                for row in self.db.query(TaskDatasetMetric)
+                .filter(TaskDatasetMetric.metric_id == entity_id)
+                .all()
+            ]
+        if entity_type == "conference":
+            snapshot["paper_ids"] = sorted(
+                row[0]
+                for row in self.db.query(PaperConference.paper_id)
+                .filter(PaperConference.conference_id == entity_id)
+                .all()
+            )
+        return snapshot
 
     def reject(
         self,
         *,
         edit_id: int,
         reviewer_username: Optional[str],
+        reviewer_hf_subject: Optional[str] = None,
         admin_note: Optional[str] = None,
+        user_review_reason: Optional[str] = None,
     ) -> PendingPaperEdit:
-        row = self.get(edit_id)
+        row = (
+            self.db.query(PendingPaperEdit)
+            .filter(PendingPaperEdit.id == edit_id)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            raise PendingEditNotFoundError(f"Pending edit with ID {edit_id} not found")
         if row.status != "pending":
             raise PendingEditAlreadyReviewedError(
                 f"Pending edit {edit_id} is already {row.status}"
@@ -896,11 +1481,19 @@ class PendingEditService:
 
         row.status = "rejected"
         row.reviewed_by = reviewer_username
+        row.reviewed_by_kind = "human"
+        row.reviewed_by_hf_subject = reviewer_hf_subject
         row.admin_note = admin_note
+        row.user_review_reason = user_review_reason
         row.reviewed_at = datetime.now(timezone.utc)
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
+        logger.info(
+            "submission_rejected id=%s reviewer_subject=%s",
+            row.id,
+            reviewer_hf_subject,
+        )
         return row
 
     # ----------------------------------------------------------------
@@ -909,62 +1502,187 @@ class PendingEditService:
 
     def _apply_payload(
         self, edit_type: str, paper_id: Optional[int], payload: Dict[str, Any]
-    ) -> None:
-        if edit_type in (
-            "new_task",
-            "new_method",
-            "new_benchmark",
-            "new_metric",
-            "new_conference",
-        ):
-            # Taxonomy suggestions are informational. Approving simply marks the
-            # row reviewed; an admin creates the actual entry (task, method,
-            # benchmark, metric, or conference) by hand.
-            return
+    ) -> tuple[str, str]:
+        if edit_type == "new_external_paper":
+            title = payload.get("title")
+            published = payload.get("date_published")
+            if not title or not published:
+                raise PendingEditError(
+                    "External-paper approval requires source_url, title, and date_published"
+                )
+            try:
+                published_date = date.fromisoformat(str(published))
+            except ValueError as exc:
+                raise PendingEditError(
+                    "External-paper publication date is invalid"
+                ) from exc
+            result = ExternalResourceService(self.db).add_external_resource(
+                ExternalResourceInput(
+                    source_url=payload["source_url"],
+                    title=title,
+                    abstract=payload.get("abstract"),
+                    authors=list(payload.get("authors") or []),
+                    date_published=published_date,
+                ),
+                commit=False,
+            )
+            return "paper", str(result.paper.id)
+        if edit_type == "new_task":
+            parent_id = payload.get("parent_id")
+            area_id = payload.get("area_id")
+            created = TaskService(self.db).create_task(
+                TaskCreateRequest(
+                    name=payload["name"],
+                    description=payload.get("description"),
+                    keywords=payload.get("keywords"),
+                    parent_id=parent_id,
+                    area_id=area_id,
+                    image_credit=payload.get("image_credit"),
+                ),
+                commit=False,
+            )
+            entity = self.db.get(DBTask, int(created.id))
+            assert entity is not None
+            image_data, image_mime = self._decode_suggestion_image(payload.get("image"))
+            entity.image_data = image_data
+            entity.image_mime_type = image_mime
+            self.db.flush()
+            return "task", str(entity.id)
+        if edit_type == "new_method":
+            source_paper_id = payload.get("source_paper_id")
+            if source_paper_id and self.db.get(DBPaper, source_paper_id) is None:
+                raise PendingEditError(f"Source paper {source_paper_id} does not exist")
+            image_data, image_mime = self._decode_suggestion_image(payload.get("image"))
+            entity = MethodService(self.db).create_method(
+                commit=False,
+                name=payload["name"],
+                description=payload.get("description"),
+                source_paper_id=source_paper_id,
+                source_url=payload.get("source_url"),
+                source_title=payload.get("source_title"),
+                image_data=image_data,
+                image_mime_type=image_mime,
+                image_credit=payload.get("image_credit"),
+            )
+            return "method", str(entity.id)
+        if edit_type == "new_benchmark":
+            task_ids = payload["task_ids"]
+            created = DatasetService(self.db).create_dataset(
+                DatasetCreateRequest(
+                    name=payload["name"],
+                    full_name=payload.get("full_name"),
+                    description=payload["description"],
+                    url=payload.get("url"),
+                    hf_url=payload.get("hf_url"),
+                    paper_url=payload.get("paper_url"),
+                    license_name=payload.get("license_name"),
+                    license_url=payload.get("license_url"),
+                    task_ids=task_ids,
+                ),
+                commit=False,
+            )
+            entity = self.db.get(DBDataset, int(created.id))
+            assert entity is not None
+            for task_id in task_ids:
+                self.db.add(TaskDataset(task_id=task_id, dataset_id=entity.id))
+            self.db.flush()
+            return "dataset", str(entity.id)
+        if edit_type == "new_metric":
+            entity = MetricService(self.db).create_metric(
+                commit=False,
+                name=payload["name"],
+                full_name=payload.get("full_name"),
+                direction=payload["direction"],
+                scale=payload.get("scale"),
+                description=payload["description"],
+            )
+            task_id = payload.get("task_id")
+            dataset_id = payload.get("dataset_id")
+            if task_id is not None:
+                membership = self.db.get(TaskDataset, (task_id, dataset_id))
+                if membership is None:
+                    raise PendingEditError(
+                        "The requested task/benchmark association does not exist"
+                    )
+                self.db.add(
+                    TaskDatasetMetric(
+                        task_id=task_id,
+                        dataset_id=dataset_id,
+                        metric_id=entity.id,
+                    )
+                )
+                self.db.flush()
+            return "metric", str(entity.id)
+        if edit_type == "new_conference":
+            entity = ConferenceService(self.db).create_conference(
+                commit=False,
+                name=payload["name"],
+                short_name=payload.get("short_name"),
+                year=payload["year"],
+                url=payload.get("url"),
+                start_date=date.fromisoformat(payload["start_date"])
+                if payload.get("start_date")
+                else None,
+                end_date=date.fromisoformat(payload["end_date"])
+                if payload.get("end_date")
+                else None,
+                venue=payload.get("venue"),
+                location=payload.get("location"),
+                description=payload.get("description"),
+            )
+            return "conference", str(entity.id)
         if paper_id is None:
             raise PendingEditError("This edit is missing its paper_id")
         if edit_type == "tasks":
             PaperService(self.db).update_paper_tasks(
-                paper_id, list(payload.get("task_ids", []))
+                paper_id, list(payload.get("task_ids", [])), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "methods":
             PaperService(self.db).update_paper_methods(
-                paper_id, list(payload.get("method_ids", []))
+                paper_id, list(payload.get("method_ids", [])), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "repositories":
             PaperService(self.db).update_paper_repositories(
-                paper_id, list(payload.get("repositories", []))
+                paper_id, list(payload.get("repositories", [])), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "project_pages":
             PaperService(self.db).update_paper_project_pages(
-                paper_id, list(payload.get("project_pages", []))
+                paper_id, list(payload.get("project_pages", [])), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "organizations":
             PaperService(self.db).update_paper_organizations(
-                paper_id, list(payload.get("organization_ids", []))
+                paper_id, list(payload.get("organization_ids", [])), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "source_url":
             PaperService(self.db).update_paper_source_url(
-                paper_id, str(payload.get("source_url", ""))
+                paper_id, str(payload.get("source_url", "")), commit=False
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "hf_artifacts":
             PaperService(self.db).update_paper_hf_artifacts(
                 paper_id,
                 list(payload.get("hf_models", [])),
                 list(payload.get("hf_datasets", [])),
                 list(payload.get("hf_spaces", [])),
+                commit=False,
             )
-            return
+            return "paper", str(paper_id)
         if edit_type == "evaluations":
             self._apply_evaluations(paper_id, payload)
-            return
+            return "paper", str(paper_id)
         raise PendingEditError(f"Unsupported edit_type: {edit_type}")
+
+    @staticmethod
+    def _decode_suggestion_image(image: Any) -> tuple[Optional[bytes], Optional[str]]:
+        if not image:
+            return None, None
+        prefix = f"data:{image['mime_type']};base64,"
+        return base64.b64decode(image["data_url"][len(prefix) :]), image["mime_type"]
 
     def _apply_evaluations(self, paper_id: int, payload: Dict[str, Any]) -> None:
         operations: List[Dict[str, Any]] = payload.get("operations", [])
@@ -975,7 +1693,7 @@ class PendingEditService:
             if kind == "delete":
                 evaluation_id = int(op["evaluation_id"])
                 self._ensure_evaluation_paper_match(evaluation_id, paper_id)
-                service.delete_evaluation(evaluation_id)
+                service.delete_evaluation(evaluation_id, commit=False)
                 continue
 
             if kind == "update":
@@ -1010,6 +1728,7 @@ class PendingEditService:
                     source_url_set=source_url_set,
                     num_parameters_set=num_parameters_set,
                     hf_model_url_set=hf_model_url_set,
+                    commit=False,
                 )
                 continue
 
@@ -1038,6 +1757,7 @@ class PendingEditService:
                     source_url=data.get("source_url"),
                     num_parameters=data.get("num_parameters"),
                     hf_model_url=data.get("hf_model_url"),
+                    commit=False,
                 )
                 continue
 

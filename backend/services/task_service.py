@@ -1197,7 +1197,7 @@ class TaskService:
             self.db.rollback()
             raise DatabaseError(f"Failed to replace keywords for task: {str(e)}")
 
-    def create_task(self, request: TaskCreateRequest) -> Task:
+    def create_task(self, request: TaskCreateRequest, *, commit: bool = True) -> Task:
         """
         Create a new task.
 
@@ -1254,7 +1254,10 @@ class TaskService:
             )
 
             self.db.add(db_task)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
             self.db.refresh(db_task)
 
             # Return the created task using the existing get_task_by_id method

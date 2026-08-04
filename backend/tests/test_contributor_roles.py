@@ -242,7 +242,7 @@ def _dependency_names(route) -> set[str]:
     return names
 
 
-def test_only_approved_catalog_routes_receive_contributor_dependency():
+def test_all_catalog_write_routes_receive_catalog_mutator_dependency():
     from backend.main import app
 
     routes = {
@@ -262,7 +262,42 @@ def test_only_approved_catalog_routes_receive_contributor_dependency():
     }
     for path in approved_paper_paths:
         assert "catalog_mutation_context" in routes[("PUT", path)]
-        assert "require_contributor" in routes[("PUT", path)]
+        assert "require_catalog_mutator" in routes[("PUT", path)]
+
+    catalog_routes = {
+        ("POST", "/api/v1/project-pages/"): "require_catalog_mutator",
+        ("PUT", "/api/v1/project-pages/{page_id}"): "require_catalog_mutator",
+        ("DELETE", "/api/v1/project-pages/{page_id}"): "require_fresh_catalog_mutator",
+        ("POST", "/api/v1/datasets/"): "require_catalog_mutator",
+        ("PUT", "/api/v1/datasets/{dataset_id}"): "require_catalog_mutator",
+        (
+            "POST",
+            "/api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics",
+        ): "require_catalog_mutator",
+        (
+            "PUT",
+            "/api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics",
+        ): "require_fresh_catalog_mutator",
+        (
+            "DELETE",
+            "/api/v1/datasets/{dataset_id}/tasks/{task_id}/metrics/{metric_name}",
+        ): "require_fresh_catalog_mutator",
+        ("POST", "/api/v1/tasks/"): "require_catalog_mutator",
+        ("POST", "/api/v1/tasks/{task_id}/keywords"): "require_catalog_mutator",
+        ("PUT", "/api/v1/tasks/{task_id}/keywords"): "require_fresh_catalog_mutator",
+        ("DELETE", "/api/v1/tasks/{task_id}/keywords"): "require_fresh_catalog_mutator",
+        ("POST", "/api/v1/methods/{method_id}/keywords"): "require_catalog_mutator",
+        (
+            "PUT",
+            "/api/v1/methods/{method_id}/keywords",
+        ): "require_fresh_catalog_mutator",
+        (
+            "DELETE",
+            "/api/v1/methods/{method_id}/keywords",
+        ): "require_fresh_catalog_mutator",
+    }
+    for key, dependency in catalog_routes.items():
+        assert dependency in routes[key]
 
     for method, path in {
         ("POST", "/api/v1/evaluations/batch"),
@@ -284,14 +319,23 @@ def test_representative_excluded_boundaries_remain_admin_only():
         for method in route.methods
     }
     expected = {
-        ("POST", "/api/v1/admin/paper-edits/{edit_id}/approve"): "require_admin",
+        ("POST", "/api/v1/admin/paper-edits/{edit_id}/approve"): "require_hf_admin",
         ("POST", "/api/v1/evaluations/recalculate-ranks"): "require_admin",
         ("POST", "/api/v1/admin/codex-add-evals/jobs"): "require_hf_admin",
         ("POST", "/api/v1/admin/codex-enrich-paper/jobs"): "require_hf_admin",
         ("POST", "/api/v1/papers/index/{arxiv_id}"): "require_admin",
+        ("POST", "/api/v1/papers/update-citations"): "require_admin",
+        ("POST", "/api/v1/papers/external"): "require_admin",
+        ("POST", "/api/v1/papers/external/from-url"): "require_admin",
     }
     for key, dependency in expected.items():
         assert dependency in routes[key]
+
+    for path in (
+        "/api/thumbnails/generate/{paper_id}",
+        "/api/thumbnails/cache/cleanup",
+    ):
+        assert "require_admin" in routes[("POST", path)]
 
 
 def test_chat_spend_dashboard_route_is_admin_only():

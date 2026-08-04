@@ -22,6 +22,7 @@ from backend.services.dataset_service import DatasetService
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
 from backend.database.connection import get_database_session
 from backend.utils.exceptions import DatabaseError
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -410,7 +411,12 @@ def get_dataset_evaluations(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/", response_model=Dataset, status_code=201)
+@router.post(
+    "/",
+    response_model=Dataset,
+    status_code=201,
+    dependencies=[Depends(require_catalog_mutator)],
+)
 def create_dataset(
     request: DatasetCreateRequest,
     db: Session = Depends(get_database_session),
@@ -465,7 +471,11 @@ def create_dataset(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.put("/{dataset_id}", response_model=Dataset)
+@router.put(
+    "/{dataset_id}",
+    response_model=Dataset,
+    dependencies=[Depends(require_catalog_mutator)],
+)
 def update_dataset(
     dataset_id: str,
     request: DatasetUpdateRequest,
@@ -586,7 +596,10 @@ def get_leaderboard_metrics(
 
 
 @router.post(
-    "/{dataset_id}/tasks/{task_id}/metrics", response_model=dict, status_code=201
+    "/{dataset_id}/tasks/{task_id}/metrics",
+    response_model=dict,
+    status_code=201,
+    dependencies=[Depends(require_catalog_mutator)],
 )
 def add_metric_to_leaderboard(
     dataset_id: str,
@@ -639,7 +652,11 @@ def add_metric_to_leaderboard(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.put("/{dataset_id}/tasks/{task_id}/metrics", response_model=dict)
+@router.put(
+    "/{dataset_id}/tasks/{task_id}/metrics",
+    response_model=dict,
+    dependencies=[Depends(require_fresh_catalog_mutator)],
+)
 def set_leaderboard_metrics(
     dataset_id: str,
     task_id: str,
@@ -687,7 +704,11 @@ def set_leaderboard_metrics(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.delete("/{dataset_id}/tasks/{task_id}/metrics/{metric_name}", status_code=204)
+@router.delete(
+    "/{dataset_id}/tasks/{task_id}/metrics/{metric_name}",
+    status_code=204,
+    dependencies=[Depends(require_fresh_catalog_mutator)],
+)
 def remove_metric_from_leaderboard(
     dataset_id: str,
     task_id: str,

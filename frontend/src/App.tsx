@@ -76,7 +76,8 @@ const PrivacyView = React.lazy(() => import("@/views/PrivacyView"));
 const SubmitView = React.lazy(() => import("@/views/SubmitView"));
 const CronDashboard = React.lazy(() => import("@/pages/CronDashboard"));
 const SubmissionsDashboard = React.lazy(() => import("@/pages/SubmissionsDashboard"));
-const ContributionsPage = React.lazy(() => import("@/pages/ContributionsPage"));
+const UserProfileView = React.lazy(() => import("@/views/UserProfileView"));
+const RateLimitsView = React.lazy(() => import("@/views/RateLimitsView"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
 const SearchOverlay = React.lazy(() => import("@/components/SearchOverlay"));
 
@@ -267,7 +268,8 @@ const Shell: React.FC = () => {
             <Route path="/admin-dashboard" element={<AdminDashboardRoute />} />
             <Route path="/cron-dashboard" element={<Navigate to="/admin-dashboard" replace />} />
             <Route path="/submissions" element={<AuthGatedRoute element={<SubmissionsDashboard />} />} />
-            <Route path="/contributions" element={<AuthGatedRoute element={<ContributionsPage />} />} />
+            <Route path="/rate-limits" element={<RateLimitsView />} />
+            <Route path="/:username" element={<UserProfileView />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </React.Suspense>

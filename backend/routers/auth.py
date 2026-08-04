@@ -510,6 +510,12 @@ async def hf_callback(
         "name": userinfo.get("name"),
         "avatar_url": userinfo.get("picture"),
     }
+    from backend.database.connection import db_manager
+    from backend.services.user_profile_service import UserProfileService
+
+    with db_manager.session_local() as profile_db:
+        UserProfileService(profile_db).upsert_verified_identity(hf_user_id, username)
+        profile_db.commit()
     session_token = _encode_session(user)
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)

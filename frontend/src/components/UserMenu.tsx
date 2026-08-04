@@ -97,11 +97,9 @@ export const UserMenu: React.FC<UserMenuProps> = ({ user, onLogout }) => {
             </DropdownMenuItem>
           </>
         )}
-        {user.can_contribute && (
-          <DropdownMenuItem asChild>
-            <Link to="/contributions">My contributions</Link>
-          </DropdownMenuItem>
-        )}
+        <DropdownMenuItem asChild>
+          <Link to={`/${encodeURIComponent(user.username)}`}>My contributions</Link>
+        </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/settings">Settings</Link>
         </DropdownMenuItem>

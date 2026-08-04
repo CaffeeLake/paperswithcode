@@ -13,6 +13,7 @@ import { transformPaperForCard } from "@/lib/transform";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 type SortKey = "trending" | "new" | "cited";
 const SORT_OPTIONS: Array<[SortKey, string]> = [
@@ -185,7 +186,7 @@ const MethodDetailView: React.FC = () => {
           {m.source_url && m.source_title && (
             <div className="method-source">
               <span className="method-source-label">Source</span>
-              <a className="method-source-link" href={m.source_url} target="_blank" rel="noopener noreferrer">
+              <a className="method-source-link" href={safeExternalHref(m.source_url) ?? undefined} target="_blank" rel="noopener noreferrer">
                 <span className="method-source-title">{m.source_title}</span>
                 {m.introduced_year && <span className="method-source-meta">{m.introduced_year}</span>}
               </a>

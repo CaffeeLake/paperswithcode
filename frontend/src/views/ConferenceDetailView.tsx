@@ -8,6 +8,7 @@ import { chipColors, hueFromSlug } from "@/lib/colors";
 import { displayTaskName } from "@/lib/transform";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 const taskKey = (value?: string) => value?.trim().toLowerCase().replace(/[\s_]+/g, "-") ?? "";
 
@@ -98,7 +99,7 @@ const ConferenceDetailView: React.FC = () => {
             {dates && <span>{dates}</span>}
             {venueLine && <span>{venueLine}</span>}
             {conference?.url && (
-              <a href={conference.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent-text)" }}>
+              <a href={safeExternalHref(conference.url) ?? undefined} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent-text)" }}>
                 {conference.url.replace(/^https?:\/\//, "")}
               </a>
             )}

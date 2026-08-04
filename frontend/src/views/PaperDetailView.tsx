@@ -53,6 +53,7 @@ import {
   paperArtifactBucketName,
 } from "@/components/paper-detail/CopyToBucketCard";
 import { isCodexAddEvalsEnabled, isCodexEnrichPaperEnabled } from "@/lib/codexAddEvals";
+import { safeExternalHref } from "@/lib/safeExternalHref";
 
 const EDIT_SECTION_LABEL: Record<PaperEditSection, string> = {
   tasks: "tasks",
@@ -423,15 +424,46 @@ const PaperDetailView: React.FC = () => {
   }, [activeEditor, editSubmitMode, paper?.id]);
 
   const [signInSection, setSignInSection] = useState<PaperEditSection | null>(null);
+  const freshAuthRecoveryHandled = useRef(false);
 
   useEffect(() => {
-    if (!user || !paper) return;
+    if (!user || !paper || freshAuthRecoveryHandled.current) return;
     const section = sessionStorage.getItem("pwc:fresh-auth-edit");
     if (!section) return;
-    sessionStorage.removeItem("pwc:fresh-auth-edit");
+    freshAuthRecoveryHandled.current = true;
     const editor = parseFreshAuthEditSection(section);
-    if (editor) openEditor(editor);
-  }, [openEditor, paper, user]);
+    const draft = apiClient.freshAuthMutationDraft();
+    if (!draft) {
+      sessionStorage.removeItem("pwc:fresh-auth-edit");
+      if (editor) openEditor(editor);
+      return;
+    }
+    if (
+      !window.confirm(
+        "You signed in again. Apply the saved destructive catalog edit now? " +
+          "The server will recheck the current catalog version before changing anything.",
+      )
+    ) {
+      toast({
+        title: "Edit kept locally",
+        description: "Nothing was changed. Reload this paper when you are ready to confirm the saved edit.",
+      });
+      return;
+    }
+    void apiClient
+      .resumeFreshAuthMutation()
+      .then(() => {
+        toast({ title: "Edit applied", description: "The restored catalog edit was applied." });
+        window.location.reload();
+      })
+      .catch((error: unknown) => {
+        toast({
+          variant: "destructive",
+          title: "Could not apply the saved edit",
+          description: error instanceof Error ? error.message : "Please reload and review the edit again.",
+        });
+      });
+  }, [openEditor, paper, toast, user]);
 
   // Resolve whether the signed-in HF username matches one of the paper's
   // linked authors. Used to surface "you're an author" copy in the pending
@@ -612,7 +644,8 @@ const PaperDetailView: React.FC = () => {
     if (aOff !== bOff) return bOff - aOff;
     return (b.num_stars || 0) - (a.num_stars || 0);
   });
-  const visibleRepos = reposExpanded ? sortedRepos : sortedRepos.slice(0, REPO_PREVIEW_LIMIT);
+  const visibleRepos = (reposExpanded ? sortedRepos : sortedRepos.slice(0, REPO_PREVIEW_LIMIT))
+    .map((repository) => ({ ...repository, safeHref: safeExternalHref(repository.url) }));
   const allHfArtifactUrls = {
     models: [...new Set([...explicitHfArtifacts.models, ...(hfRepos?.modelUrls ?? [])])],
     datasets: [...new Set([...explicitHfArtifacts.datasets, ...(hfRepos?.datasetUrls ?? [])])],
@@ -696,7 +729,13 @@ const PaperDetailView: React.FC = () => {
     introducedFrameworks.length > 0;
   const paperSourceLabel = paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : "External resource";
   const sourceActionLabel = paper.source === "external" ? "Source page" : "arXiv page";
-  const projectPages = paper.project_pages?.filter((page) => page.url) ?? [];
+  const safePdfUrl = safeExternalHref(paper.url_pdf);
+  const safeAbstractUrl = safeExternalHref(paper.url_abs);
+  const safeConferenceUrl = safeExternalHref(paper.conference_url_abs);
+  const projectPages =
+    paper.project_pages
+      ?.filter((page) => page.url)
+      .map((page) => ({ ...page, safeHref: safeExternalHref(page.url) })) ?? [];
   const introducedSummary = (() => {
     const parts: string[] = [];
     if (introducedMethods.length > 0) {
@@ -839,12 +878,12 @@ const PaperDetailView: React.FC = () => {
           </div>
 
           <div className="action-row">
-            {paper.url_pdf && (
-              <a className="action-btn" href={paper.url_pdf} target="_blank" rel="noopener noreferrer">
+            {safePdfUrl && (
+              <a className="action-btn" href={safePdfUrl} target="_blank" rel="noopener noreferrer">
                 <Icon name="pdf" size={12} /> View PDF
               </a>
             )}
-            {paper.url_abs && (
+            {safeAbstractUrl && (
               <EditableActionButton
                 showEdit={paper.source === "external" && canEditPaper}
                 onEdit={() => openEdit("source-url")}
@@ -856,7 +895,7 @@ const PaperDetailView: React.FC = () => {
                       ? "action-btn-segment action-btn-main"
                       : "action-btn"
                   }
-                  href={paper.url_abs}
+                  href={safeAbstractUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -916,7 +955,7 @@ const PaperDetailView: React.FC = () => {
                   className={
                     canEditPaper ? "action-btn-segment action-btn-main" : "action-btn"
                   }
-                  href={projectPages[0].url}
+                  href={projectPages[0].safeHref ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
@@ -944,9 +983,13 @@ const PaperDetailView: React.FC = () => {
                   <DropdownMenuContent align="start" className="project-page-menu">
                     {projectPages.map((page, index) => (
                       <DropdownMenuItem key={page.url} asChild>
-                        <a href={page.url} target="_blank" rel="noopener noreferrer">
-                          {formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}
-                        </a>
+                        {page.safeHref ? (
+                          <a href={page.safeHref} target="_blank" rel="noopener noreferrer">
+                            {formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}
+                          </a>
+                        ) : (
+                          <span>{formatResourceLinkLabel(page.url, `Project page ${index + 1}`)}</span>
+                        )}
                       </DropdownMenuItem>
                     ))}
                   </DropdownMenuContent>
@@ -963,8 +1006,8 @@ const PaperDetailView: React.FC = () => {
                 <Icon name="globe" size={12} /> Add project page
               </button>
             ) : null}
-            {paper.conference_url_abs && (
-              <a className="action-btn" href={paper.conference_url_abs} target="_blank" rel="noopener noreferrer">
+            {safeConferenceUrl && (
+              <a className="action-btn" href={safeConferenceUrl} target="_blank" rel="noopener noreferrer">
                 <Icon name="external" size={12} /> Conference
               </a>
             )}
@@ -1362,10 +1405,10 @@ const PaperDetailView: React.FC = () => {
                   )}
                 </span>
               </div>
-              {visibleRepos.map((r) => (
+              {visibleRepos.filter((r) => r.safeHref).map((r) => (
                 <a
                   key={r.id}
-                  href={r.url}
+                  href={r.safeHref ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="code-line"

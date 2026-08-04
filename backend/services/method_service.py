@@ -19,6 +19,7 @@ from backend.models.api import Method, Methods
 from backend.utils.entity_images import entity_image_url
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
 from backend.utils.urls import get_method_source_url
+from backend.utils.slug_utils import slugify
 from backend.services.entity_search import (
     DETERMINISTIC_CANDIDATE_LIMIT,
     FUZZY_CANDIDATE_LIMIT,
@@ -38,6 +39,19 @@ class MethodService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def create_method(self, *, commit: bool = True, **fields) -> DBMethod:
+        slug = slugify(fields["name"])
+        if self.db.query(DBMethod.id).filter(DBMethod.slug == slug).first():
+            raise ValueError(f"Method with slug '{slug}' already exists")
+        row = DBMethod(slug=slug, **fields)
+        self.db.add(row)
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        self.db.refresh(row)
+        return row
 
     @staticmethod
     def _convert_db_method_to_api(

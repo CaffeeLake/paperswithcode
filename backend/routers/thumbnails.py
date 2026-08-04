@@ -9,7 +9,7 @@ Provides endpoints for:
 
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from backend.services.thumbnail_service import (
 )
 from backend.services.paper_service import PaperService
 from backend.utils.exceptions import PaperNotFoundError
+from backend.utils.auth import require_admin
 
 router = APIRouter(prefix="/thumbnails", tags=["thumbnails"])
 
@@ -97,7 +98,7 @@ def serve_thumbnail(
     return _thumbnail_response(thumbnail_path)
 
 
-@router.post("/generate/{paper_id}")
+@router.post("/generate/{paper_id}", dependencies=[Depends(require_admin)])
 async def generate_thumbnail(
     paper_id: str,
     background_tasks: BackgroundTasks,
@@ -299,9 +300,9 @@ def get_cache_stats(
     return thumbnail_service.get_cache_stats()
 
 
-@router.post("/cache/cleanup")
+@router.post("/cache/cleanup", dependencies=[Depends(require_admin)])
 def cleanup_cache(
-    max_age_days: int = 30,
+    max_age_days: int = Query(default=30, ge=1, le=3650),
     thumbnail_service: ThumbnailService = Depends(get_thumbnail_service),
 ):
     """

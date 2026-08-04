@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.models.database import Area, Method, PaperMethod
 from backend.services.paper_method_link_service import sync_method_source_evidence
 from backend.utils.paper_reference import resolve_paper
+from backend.utils.public_urls import normalize_public_url
 
 
 @dataclass(frozen=True)
@@ -74,9 +75,11 @@ def add_or_update_method(
     method.area_id = area.id
     method.introduced_year = introduced_year
     method.source_paper_id = paper.id if paper else None
-    method.source_url = None if paper else source_url
+    method.source_url = None if paper else normalize_public_url(source_url)
     method.source_title = source_title
-    method.code_snippet_url = code_snippet_url
+    method.code_snippet_url = (
+        normalize_public_url(code_snippet_url) if code_snippet_url else None
+    )
     method.image_url = None
     method.image_credit = image_credit
     db.flush()

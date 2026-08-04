@@ -29,6 +29,7 @@ from backend.utils.entity_images import (
     load_entity_image,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
+from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -449,7 +450,12 @@ def get_task_papers(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/", response_model=Task, status_code=201)
+@router.post(
+    "/",
+    response_model=Task,
+    status_code=201,
+    dependencies=[Depends(require_catalog_mutator)],
+)
 def create_task(
     request: TaskCreateRequest,
     db: Session = Depends(get_database_session),
@@ -500,7 +506,11 @@ def create_task(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/{task_id}/keywords", response_model=Task)
+@router.post(
+    "/{task_id}/keywords",
+    response_model=Task,
+    dependencies=[Depends(require_catalog_mutator)],
+)
 def add_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,
@@ -532,7 +542,11 @@ def add_task_keywords(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{task_id}/keywords", response_model=Task)
+@router.delete(
+    "/{task_id}/keywords",
+    response_model=Task,
+    dependencies=[Depends(require_fresh_catalog_mutator)],
+)
 def remove_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,
@@ -564,7 +578,11 @@ def remove_task_keywords(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{task_id}/keywords", response_model=Task)
+@router.put(
+    "/{task_id}/keywords",
+    response_model=Task,
+    dependencies=[Depends(require_fresh_catalog_mutator)],
+)
 def replace_task_keywords(
     task_id: str,
     keyword_update: KeywordUpdate,

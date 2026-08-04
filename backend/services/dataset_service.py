@@ -1140,7 +1140,9 @@ class DatasetService:
             for dataset_id, recent_count, latest_date, all_time_count in rows
         }
 
-    def create_dataset(self, request: DatasetCreateRequest) -> Dataset:
+    def create_dataset(
+        self, request: DatasetCreateRequest, *, commit: bool = True
+    ) -> Dataset:
         """
         Create a new dataset and link it to specified tasks.
 
@@ -1202,7 +1204,10 @@ class DatasetService:
             )
 
             self.db.add(db_dataset)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
 
             # Note: Task-dataset relationships are now defined via TASK_DATASET_METRICS.
             # If task_ids were provided in the request, use the leaderboard metrics API

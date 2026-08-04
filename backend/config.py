@@ -212,6 +212,10 @@ class Settings(BaseSettings):
         default=False,
         description="Enable audited direct contributor catalog edits in production",
     )
+    submission_max_active_pending: int = Field(default=50, ge=1, le=1000)
+    submission_hourly_subject_limit: int = Field(default=20, ge=1, le=1000)
+    submission_hourly_ip_limit: int = Field(default=100, ge=1, le=10000)
+    submission_max_payload_bytes: int = Field(default=262_144, ge=1024, le=2_097_152)
     session_cookie_domain: str = Field(
         default="",
         description=(

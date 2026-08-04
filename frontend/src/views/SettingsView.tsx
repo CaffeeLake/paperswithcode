@@ -168,6 +168,21 @@ const SettingsView: React.FC = () => {
         </div>
       </div>
 
+      {user && <section className="settings-section">
+        <h2 className="settings-section-title">Catalog access</h2>
+        <div className="settings-note settings-note-flush">
+          <span>
+            Role: <strong>{user.role ?? "community member"}</strong>.{" "}
+            {user.can_directly_edit_catalog
+              ? "You can apply catalog edits directly. Destructive changes require a recent sign-in."
+              : "Your catalog suggestions are sent to the submissions queue for review."}
+            {user.is_admin
+              ? " You can also review submissions and use administrative maintenance tools."
+              : " Submission review and maintenance tools remain admin-only."}
+          </span>
+        </div>
+      </section>}
+
       {chatEnabled && <section className="settings-section">
         <h2 className="settings-section-title">Chat usage &amp; billing</h2>
         {authLoading && !user ? (
