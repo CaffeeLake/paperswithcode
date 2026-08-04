@@ -56,6 +56,20 @@ sudo pwc-deploy staging <commit-or-ref>
 sudo pwc-deploy production <commit-or-ref> --confirm DEPLOY_PRODUCTION
 ```
 
+After changing a protected environment file, refresh an already-current release
+through the same inactive-slot qualification, atomic cutover, drain, smoke, and
+rollback path:
+
+```bash
+sudo pwc-deploy staging <exact-current-sha> --refresh-environment
+sudo pwc-deploy production <exact-current-main-sha> \
+  --refresh-environment --confirm DEPLOY_PRODUCTION
+```
+
+The refresh mode accepts only the active release, always starts the inactive
+slot with the updated environment, and preserves the existing `previous`
+release pointer.
+
 Production accepts only commits reachable from `origin/main`. Every slot deploy
 builds the selected frontend profile and immutable runtime, starts the inactive
 slot, checks its exact release/runtime/slot identity, validates rolling gateway

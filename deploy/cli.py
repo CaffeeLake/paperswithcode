@@ -941,7 +941,13 @@ def _retire_legacy_service(environment: str) -> bool:
     return True
 
 
-def activate_slot(release: Path, environment: str, runtime: Path) -> str:
+def activate_slot(
+    release: Path,
+    environment: str,
+    runtime: Path,
+    *,
+    refresh_environment: bool = False,
+) -> str:
     root = ENVIRONMENTS_ROOT / environment
     active = _active_slot(environment)
     if active is None:
@@ -953,7 +959,9 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
     pointers = read_pointers(root)
     if not old_release or pointers.current != old_release:
         raise DeployError("active slot and current release pointer disagree")
-    if old_release == release:
+    if refresh_environment and old_release != release:
+        raise DeployError("--refresh-environment requires the active release")
+    if old_release == release and not refresh_environment:
         _wait_slot(
             environment,
             active,
@@ -974,6 +982,7 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         return "success"
     inactive = "green" if active == "blue" else "blue"
     original_previous = pointers.previous
+    preserved_previous = original_previous if refresh_environment else old_release
     candidate_manifest = validate_manifest(release, environment)
     active_manifest = validate_manifest(old_release, environment)
     validate_rolling_compatibility(active_manifest, candidate_manifest)
@@ -985,7 +994,10 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         active_release=old_release.name,
         candidate_release=release.name,
     )
-    _prepare_or_reuse_slot(environment, inactive, release, runtime)
+    if refresh_environment:
+        _prepare_slot(environment, inactive, release, runtime)
+    else:
+        _prepare_or_reuse_slot(environment, inactive, release, runtime)
     _write_journal(
         environment,
         "candidate-prepared",
@@ -999,14 +1011,17 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         "previous-update-pending",
         active_slot=active,
         candidate_slot=inactive,
-        previous_release=old_release.name,
+        previous_release=(
+            preserved_previous.name if preserved_previous is not None else None
+        ),
         old_slot=active,
         old_release=old_release.name,
         original_previous=(
             original_previous.name if original_previous is not None else None
         ),
     )
-    atomic_symlink(old_release, root / "previous")
+    if not refresh_environment:
+        atomic_symlink(old_release, root / "previous")
     _write_journal(
         environment,
         "current-update-pending",
@@ -1052,7 +1067,9 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
         active_slot=inactive,
         draining_slot=active,
         active_release=release.name,
-        previous_release=old_release.name,
+        previous_release=(
+            preserved_previous.name if preserved_previous is not None else None
+        ),
         old_slot=active,
         old_release=old_release.name,
         original_previous=(
@@ -1112,7 +1129,9 @@ def activate_slot(release: Path, environment: str, runtime: Path) -> str:
                 "settled",
                 active_slot=inactive,
                 active_release=release.name,
-                previous_release=old_release.name,
+                previous_release=(
+                    preserved_previous.name if preserved_previous is not None else None
+                ),
                 drain_duration_seconds=round(time.monotonic() - drain_started, 3),
                 streams_surviving_cutover=streams_surviving_cutover,
                 forced_termination_count=0,
@@ -1265,6 +1284,11 @@ def deploy(args: argparse.Namespace) -> int:
         raise DeployError(
             "--defer-public-smoke is retired; slot activation has no listener gap"
         )
+    if args.refresh_environment and (args.qualify_only or args.legacy_bridge):
+        raise DeployError(
+            "--refresh-environment cannot be combined with --qualify-only or "
+            "--legacy-bridge"
+        )
     with deployment_lock():
         _recover_interrupted_activation(args.environment)
         sha = resolve_sha(args.source, args.environment)
@@ -1366,7 +1390,12 @@ def deploy(args: argparse.Namespace) -> int:
                 f"{args.environment} nginx has not crossed the explicit active-slot "
                 "migration boundary"
             )
-        result = activate_slot(release, args.environment, runtime)
+        result = activate_slot(
+            release,
+            args.environment,
+            runtime,
+            refresh_environment=args.refresh_environment,
+        )
         try:
             _retire_legacy_service(args.environment)
         except (DeployError, subprocess.CalledProcessError, OSError):
@@ -1584,6 +1613,7 @@ def parser_for(program: str) -> argparse.ArgumentParser:
         parser.add_argument("--defer-public-smoke", action="store_true")
         parser.add_argument("--qualify-only", action="store_true")
         parser.add_argument("--legacy-bridge", action="store_true")
+        parser.add_argument("--refresh-environment", action="store_true")
         parser.set_defaults(handler=deploy)
     elif program.endswith("pwc-rollback"):
         parser.add_argument("environment", choices=ENVIRONMENTS)

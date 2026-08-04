@@ -1660,6 +1660,14 @@ def test_installed_deployment_command_dispatch(program, arguments, handler):
     assert args.handler.__name__ == handler
 
 
+def test_deploy_parser_accepts_environment_refresh():
+    args = parser_for("pwc-deploy").parse_args(
+        ["staging", "abc123", "--refresh-environment"]
+    )
+
+    assert args.refresh_environment
+
+
 def test_environment_config_directory_is_search_only(tmp_path: Path, monkeypatch):
     config = tmp_path / "paperswithcode" / "staging.env"
     monkeypatch.setattr(configure_host_env.os, "chown", lambda *_: None)

@@ -750,6 +750,101 @@ def test_same_release_finalizes_bridge_journal(
     )
 
 
+def test_same_release_environment_refresh_restarts_inactive_slot_and_preserves_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, _candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    prepared: list[tuple[str, Path]] = []
+
+    def prepare(_environment, slot, release, _runtime):
+        prepared.append((slot, release))
+        atomic_symlink(release, root / "slots" / slot / "release")
+        return {}
+
+    monkeypatch.setattr(deploy_cli, "_prepare_slot", prepare)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_prepare_or_reuse_slot",
+        lambda *_args, **_kwargs: pytest.fail("refresh reused a running slot"),
+    )
+    monkeypatch.setattr(deploy_cli, "smoke_public", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {
+            "drain_started_at": "now",
+            "active_http_requests": 0,
+            "active_chat_streams": 0,
+            "active_gateway_streams": 0,
+        },
+    )
+    monkeypatch.setattr(deploy_cli, "_stop_drained_slot", lambda *_args: True)
+    monkeypatch.setattr(deploy_cli, "_drain_report_seconds", lambda _environment: 1)
+
+    result = deploy_cli.activate_slot(
+        old,
+        "staging",
+        tmp_path / "runtime",
+        refresh_environment=True,
+    )
+
+    assert result == "success"
+    assert prepared == [("green", old)]
+    assert (root / "active").resolve() == (root / "slots" / "green").resolve()
+    assert (root / "current").resolve() == old
+    assert (root / "previous").resolve() == older
+
+
+def test_environment_refresh_rejects_a_different_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _root, _old, candidate, _older = _activation_fixture(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        deploy_cli.DeployError,
+        match="--refresh-environment requires the active release",
+    ):
+        deploy_cli.activate_slot(
+            candidate,
+            "staging",
+            tmp_path / "runtime",
+            refresh_environment=True,
+        )
+
+
+def test_environment_refresh_smoke_failure_restores_active_slot_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root, old, _candidate, older = _activation_fixture(tmp_path, monkeypatch)
+    smokes = 0
+
+    def smoke(*_args, **_kwargs):
+        nonlocal smokes
+        smokes += 1
+        if smokes == 1:
+            raise OSError("refreshed environment failed smoke")
+
+    monkeypatch.setattr(deploy_cli, "smoke_public", smoke)
+    monkeypatch.setattr(
+        deploy_cli,
+        "_unix_json",
+        lambda *args, **kwargs: {"accepting_chat_turns": True},
+    )
+
+    with pytest.raises(deploy_cli.DeployError, match="prior activation was restored"):
+        deploy_cli.activate_slot(
+            old,
+            "staging",
+            tmp_path / "runtime",
+            refresh_environment=True,
+        )
+
+    assert smokes == 2
+    assert (root / "active").resolve() == (root / "slots" / "blue").resolve()
+    assert (root / "current").resolve() == old
+    assert (root / "previous").resolve() == older
+
+
 def test_legacy_service_retires_only_after_nginx_slot_migration(
     monkeypatch: pytest.MonkeyPatch,
 ):
