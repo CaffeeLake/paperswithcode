@@ -149,20 +149,6 @@ const DiffusionFig: React.FC = () => (
   </svg>
 );
 
-const GANFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Generator vs. Discriminator</text>
-    <circle cx="50" cy="120" r="22" fill={C.purple} stroke={C.purpleS} />
-    <text x="50" y="125" fontSize="14" fontFamily="var(--serif)" fontStyle="italic" fill={C.ink} textAnchor="middle">z</text>
-    <rect x="110" y="92" width="80" height="56" rx="3" fill={C.blue} stroke={C.blueS} />
-    <text x="150" y="124" fontSize="14" fontFamily="var(--mono)" fill={C.ink} textAnchor="middle">G</text>
-    <rect x="225" y="100" width="40" height="40" rx="3" fill={C.orange} stroke={C.orangeS} />
-    <rect x="225" y="195" width="40" height="40" rx="3" fill={C.green} stroke={C.greenS} />
-    <rect x="290" y="140" width="50" height="50" rx="3" fill={C.pink} stroke={C.pinkS} />
-    <text x="315" y="170" fontSize="14" fontFamily="var(--mono)" fill={C.ink} textAnchor="middle">D</text>
-  </svg>
-);
-
 const AGENT_SKILL_TREE_LINES: ReadonlyArray<readonly [string, string]> = [
   ["my-skill/", ""],
   ["├── SKILL.md", "# Required: metadata + instructions"],
@@ -198,9 +184,7 @@ const AgentSkillsFig: React.FC = () => (
 
 const FIGURE_BY_SLUG: Record<string, React.FC> = {
   attention: AttentionFig,
-  "self-attention": AttentionFig,
   ddpm: DiffusionFig,
-  gan: GANFig,
   "agent-skills": AgentSkillsFig,
 };
 
