@@ -248,7 +248,10 @@ export const MethodFigure: React.FC<MethodFigureProps> = ({ method }) => {
   }
   if (method.image_url) {
     const sizeClass =
-      slug === "transformer" || slug === "gpt-4" || slug === "gpt-4o"
+      slug === "transformer" ||
+      slug === "gpt-4" ||
+      slug === "gpt-4o" ||
+      slug === "multi-head-attention"
         ? " method-figure-svg--compact"
         : slug === "rpn"
           ? " method-figure-svg--scaled-80"
