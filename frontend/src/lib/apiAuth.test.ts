@@ -36,4 +36,22 @@ describe("API auth boundary", () => {
     expect(stale).not.toHaveBeenCalled();
     window.removeEventListener("pwc:auth-stale", stale);
   });
+
+  it("leaves saved-papers Bucket authorization to the bookmark UI", async () => {
+    const stale = vi.fn();
+    window.addEventListener("pwc:auth-stale", stale);
+
+    await expect(
+      withStaleAuthNotification(() =>
+        Promise.reject(
+          unauthorized("saved_papers_bucket_authorization_required"),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "saved_papers_bucket_authorization_required",
+    });
+
+    expect(stale).not.toHaveBeenCalled();
+    window.removeEventListener("pwc:auth-stale", stale);
+  });
 });

@@ -10,6 +10,7 @@ export async function withStaleAuthNotification<T>(
       error instanceof ApiError &&
       error.status === 401 &&
       error.code !== "fresh_auth_required" &&
+      error.code !== "saved_papers_bucket_authorization_required" &&
       typeof window !== "undefined"
     ) {
       window.dispatchEvent(new CustomEvent("pwc:auth-stale"));

@@ -17,10 +17,11 @@ import { PaperCard, TagChip } from "@/components";
 import HfSignInButton from "@/components/HfSignInButton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { apiClient } from "@/lib/api";
+import { ApiError, apiClient } from "@/lib/api";
 import type { SavedPapersResponse } from "@/lib/api";
 import { transformPaperForCard } from "@/lib/transform";
 import { useAuth } from "@/lib/authContext";
+import { savedPapersAuthorizationUrl } from "@/lib/savedPapersAuth";
 
 const SavedPapersView: React.FC = () => {
   const { user, isLoading: isAuthLoading } = useAuth();
@@ -32,6 +33,13 @@ const SavedPapersView: React.FC = () => {
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
   });
+  const bucketAuthorizationRequired =
+    query.error instanceof ApiError &&
+    query.error.code === "saved_papers_bucket_authorization_required";
+
+  const authorizeBucket = () => {
+    window.location.assign(savedPapersAuthorizationUrl());
+  };
 
   if (isAuthLoading) {
     return (
@@ -73,17 +81,38 @@ const SavedPapersView: React.FC = () => {
             {query.data?.count
               ? `${query.data.count.toLocaleString()} saved · grouped by domain`
               : "Your bookmarked papers, grouped by domain."}
+            {query.data && (
+              <>
+                {" · "}
+                <a
+                  href={`https://huggingface.co/buckets/${user.username}/pwc-saved-papers`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Stored in your Hugging Face Bucket
+                </a>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {query.error && (
+      {bucketAuthorizationRequired ? (
+        <div className="saved-signin-panel">
+          <p>
+            Saved papers live in a private Hugging Face Bucket that belongs to you.
+          </p>
+          <button type="button" className="hf-signin-btn" onClick={authorizeBucket}>
+            Connect saved-papers Bucket
+          </button>
+        </div>
+      ) : query.error ? (
         <Alert variant="destructive" className="mb-4">
           <AlertDescription>Failed to load your saved papers. Please try again.</AlertDescription>
         </Alert>
-      )}
+      ) : null}
 
-      {query.isLoading ? (
+      {bucketAuthorizationRequired ? null : query.isLoading ? (
         <div className="paper-list">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="paper-card">

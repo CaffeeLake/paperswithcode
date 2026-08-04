@@ -14,11 +14,21 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiClient, type BookmarkIdsResponse } from "@/lib/api";
+import { ApiError, apiClient, type BookmarkIdsResponse } from "@/lib/api";
 import { apiUrl, isAuthDisabled } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
+import {
+  SAVED_PAPERS_AUTHORIZED_PARAM,
+  savedPapersAuthorizationUrl,
+} from "@/lib/savedPapersAuth";
 
 const BOOKMARK_IDS_KEY = ["my-bookmark-ids"] as const;
+const PENDING_BOOKMARK_KEY = "pwc:pending-bookmark";
+
+function authorizeSavedPapers(pending: ToggleArgs) {
+  window.sessionStorage.setItem(PENDING_BOOKMARK_KEY, JSON.stringify(pending));
+  window.location.assign(savedPapersAuthorizationUrl(true));
+}
 
 export function useBookmarkIds() {
   const { user } = useAuth();
@@ -79,6 +89,12 @@ export function useToggleBookmark() {
         if (context?.previous) {
           queryClient.setQueryData(BOOKMARK_IDS_KEY, context.previous);
         }
+        if (
+          _err instanceof ApiError &&
+          _err.code === "saved_papers_bucket_authorization_required"
+        ) {
+          authorizeSavedPapers(_vars);
+        }
       },
       onSettled: () => {
         queryClient.invalidateQueries({ queryKey: BOOKMARK_IDS_KEY });
@@ -86,6 +102,28 @@ export function useToggleBookmark() {
       },
     },
   );
+
+  React.useEffect(() => {
+    if (!user || mutation.isPending) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get(SAVED_PAPERS_AUTHORIZED_PARAM) !== "1") return;
+    url.searchParams.delete(SAVED_PAPERS_AUTHORIZED_PARAM);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    const raw = window.sessionStorage.getItem(PENDING_BOOKMARK_KEY);
+    if (!raw) return;
+    window.sessionStorage.removeItem(PENDING_BOOKMARK_KEY);
+    try {
+      const pending = JSON.parse(raw) as ToggleArgs;
+      if (
+        (typeof pending.paperId === "number" || typeof pending.paperId === "string") &&
+        typeof pending.isBookmarked === "boolean"
+      ) {
+        mutation.mutate(pending);
+      }
+    } catch {
+      // Ignore malformed browser state left by an older frontend version.
+    }
+  }, [mutation, user]);
 
   const toggle = React.useCallback(
     (paperId: string | number, isBookmarked: boolean) => {
