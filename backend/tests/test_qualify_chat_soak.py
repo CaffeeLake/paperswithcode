@@ -1,7 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import backend.scripts.staging_qualification_http as qualification_http
-from backend.scripts.qualify_chat_soak import CONFIRMATION, parser
+from backend.scripts.qualify_chat_soak import CONFIRMATION, _matches_release, parser
 
 
 def test_soak_qualifier_parser_has_bounded_explicit_controls(tmp_path):
@@ -28,6 +29,24 @@ def test_soak_qualifier_parser_has_bounded_explicit_controls(tmp_path):
     assert args.clean_cancellations == 20
     assert args.forced_cancellations == 10
     assert args.release_dir == release
+
+
+def test_soak_qualifier_rejects_cross_release_rows():
+    settings = SimpleNamespace(
+        release_id="current-staging",
+        chat_worker_contract_version="30",
+    )
+    current = SimpleNamespace(
+        app_release_id="current-staging",
+        worker_contract_version="30",
+    )
+    previous = SimpleNamespace(
+        app_release_id="previous-staging",
+        worker_contract_version="30",
+    )
+
+    assert _matches_release([current], settings) is True
+    assert _matches_release([current, previous], settings) is False
 
 
 def test_staging_qualification_client_uses_active_slot_socket(tmp_path, monkeypatch):

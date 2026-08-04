@@ -153,6 +153,15 @@ def _latency_rows(session_ids: set[uuid.UUID], started_at: datetime):
         )
 
 
+def _matches_release(rows: list[ChatTurnLatency], settings) -> bool:
+    if not rows:
+        return True
+    return sorted({row.app_release_id for row in rows}) == [settings.release_id] and (
+        sorted({row.worker_contract_version for row in rows})
+        == [settings.chat_worker_contract_version]
+    )
+
+
 async def _run(
     settings,
     *,
@@ -288,6 +297,8 @@ async def _run(
     )
     successful_turns = normal_successes + clean_cancellations
     expected_followups = sessions * followups
+    release_ids = sorted({row.app_release_id for row in latency})
+    contracts = sorted({row.worker_contract_version for row in latency})
     passed = (
         successful_turns == len(normal_turns) + cancellations
         and len(followup_rows) == expected_followups
@@ -296,6 +307,7 @@ async def _run(
         and marked == len(scenarios)
         and (sessions == 0 or cross_owner_rejected)
         and (sessions == 0 or followups < 2 or model_switched)
+        and _matches_release(latency, settings)
     )
     return {
         "status": "passed" if passed else "failed",
@@ -317,6 +329,8 @@ async def _run(
             "cross_owner_rejected": cross_owner_rejected,
             "model_switched": model_switched,
             "qualification_rows_marked": marked,
+            "release_ids": release_ids,
+            "contracts": contracts,
             "error_codes": sorted(
                 {result.error_code for result in turns if result.error_code is not None}
             ),
