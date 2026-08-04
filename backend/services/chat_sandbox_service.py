@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 import modal
 from modal.client import _Client
+from modal.exception import Error as ModalError
 from modal.exception import NotFoundError
 from modal.stream_type import StreamType
 from modal_proto import api_pb2
@@ -1007,6 +1008,7 @@ class SandboxSessionManager:
             if sandbox.object_id in known_ids:
                 continue
             try:
+                await self._link_provider_pool_interval(sandbox)
                 confirmed = await self._terminate_provider_sandbox(
                     sandbox.object_id, sandbox
                 )
@@ -1029,6 +1031,44 @@ class SandboxSessionManager:
                             confirmed=False,
                         )
         return terminated
+
+    async def _link_provider_pool_interval(self, sandbox: object) -> bool:
+        """Recover a pool creation race from immutable provider tags."""
+
+        try:
+            tags = await sandbox.get_tags.aio()
+            pool_id = uuid.UUID(str(tags["pool_id"]))
+        except (AttributeError, KeyError, ModalError, TypeError, ValueError):
+            return False
+        with self.session_factory() as db, db.begin():
+            pool = db.get(ChatSandboxPool, pool_id)
+            if (
+                pool is None
+                or tags.get("pool") != "blank"
+                or tags.get("release") != pool.app_release_id
+                or tags.get("image") != pool.image_version
+                or tags.get("contract") != pool.worker_contract_version
+            ):
+                return False
+            interval = db.execute(
+                select(ChatSandboxComputeInterval)
+                .where(
+                    ChatSandboxComputeInterval.environment == self.settings.environment,
+                    ChatSandboxComputeInterval.worker_generation
+                    == pool.worker_generation,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if interval is None or interval.modal_sandbox_id not in {
+                None,
+                sandbox.object_id,
+            }:
+                return False
+            ChatSandboxSpendService(db, self.settings).provider_created(
+                interval.id,
+                sandbox.object_id,
+            )
+            return True
 
     async def _listed_pool_sandboxes(self):
         async for sandbox in modal.Sandbox.list.aio(

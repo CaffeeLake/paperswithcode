@@ -360,6 +360,41 @@ def test_tagged_provider_orphan_is_conservatively_added_to_ledger():
         assert row.reconciliation_state == "termination_uncertain"
 
 
+def test_provider_floor_replaces_confirmed_orphan_after_closed_billing_hour():
+    sessions = factory()
+    terminal_at = datetime(2026, 8, 3, 7, 30, tzinfo=UTC)
+    reported_at = datetime(2026, 8, 3, 8, 15, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        service.terminate(
+            "sb-confirmed-orphan",
+            "pool_orphan_reconciled",
+            confirmed=True,
+            now=terminal_at,
+        )
+        before = service.refresh(reported_at)
+        assert before.estimated_accrued_microusd > 0
+        after = service.reconcile_provider_floor(123_456, reported_at)
+        assert after.estimated_accrued_microusd == 0
+        assert after.provider_floor_microusd == 123_456
+
+
+def test_provider_floor_keeps_current_hour_orphan_estimate():
+    sessions = factory()
+    terminal_at = datetime(2026, 8, 3, 8, 5, tzinfo=UTC)
+    reported_at = datetime(2026, 8, 3, 8, 15, tzinfo=UTC)
+    with sessions() as db, db.begin():
+        service = ChatSandboxSpendService(db, settings())
+        service.terminate(
+            "sb-current-hour-orphan",
+            "pool_orphan_reconciled",
+            confirmed=True,
+            now=terminal_at,
+        )
+        state = service.reconcile_provider_floor(123_456, reported_at)
+        assert state.estimated_accrued_microusd > 0
+
+
 def test_live_interval_crossing_month_is_metered_in_each_utc_cycle():
     sessions = factory()
     start = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)

@@ -13,6 +13,9 @@ from sqlalchemy.pool import StaticPool
 from backend.chat_sandbox_worker.protocol import encode_frame
 from backend.config import Settings
 from backend.models.database import (
+    ChatSandboxBudgetState,
+    ChatSandboxCircuitEvent,
+    ChatSandboxComputeInterval,
     ChatSandboxLease,
     ChatSandboxPool,
     ChatSession,
@@ -23,6 +26,7 @@ from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
     WorkerClaim,
 )
+from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 
 
 def _settings(**overrides) -> Settings:
@@ -434,6 +438,48 @@ def test_provider_orphan_is_terminated_after_start_window():
 
     assert asyncio.run(manager.reconcile_pool_orphans()) == 1
     assert terminated == [False]
+
+
+def test_provider_orphan_links_existing_pool_interval_from_tags():
+    factory = _database()
+    for table in (
+        ChatSandboxBudgetState.__table__,
+        ChatSandboxComputeInterval.__table__,
+        ChatSandboxCircuitEvent.__table__,
+    ):
+        table.create(factory.kw["bind"], checkfirst=True)
+    configured = _settings(chat_sandbox_spend_enforcement_enabled=True)
+    now = datetime.now(UTC)
+    pool = _blank(configured, sandbox_id=None)
+    pool.state = "terminated"
+    with factory() as db, db.begin():
+        interval_id = ChatSandboxSpendService(db, configured).reserve_interval(
+            origin="blank_pool",
+            worker_generation=pool.worker_generation,
+            now=now,
+        )
+        db.add(pool)
+    manager = _manager(factory, configured)
+
+    async def tags():
+        return {
+            "pool": "blank",
+            "pool_id": str(pool.id),
+            "release": pool.app_release_id,
+            "image": pool.image_version,
+            "contract": pool.worker_contract_version,
+        }
+
+    sandbox = SimpleNamespace(
+        object_id="sb-recovered",
+        get_tags=SimpleNamespace(aio=tags),
+    )
+
+    assert asyncio.run(manager._link_provider_pool_interval(sandbox)) is True
+    with factory() as db:
+        interval = db.get(ChatSandboxComputeInterval, interval_id)
+        assert interval.modal_sandbox_id == "sb-recovered"
+        assert interval.origin == "blank_pool"
 
 
 def test_reconcile_terminates_expired_busy_and_terminating_leases(monkeypatch):

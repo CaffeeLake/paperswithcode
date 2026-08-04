@@ -229,6 +229,28 @@ class ChatSandboxSpendService:
         seconds = max(0, int((overlap_end - overlap_start).total_seconds()))
         return seconds * self._interval_rate(interval)
 
+    def _provider_covered_orphan(
+        self,
+        interval: ChatSandboxComputeInterval,
+        state: ChatSandboxBudgetState,
+    ) -> bool:
+        """Use the provider floor once a confirmed orphan's hour is closed."""
+
+        if (
+            interval.origin != "reconciled_orphan"
+            or interval.reconciliation_state != "confirmed"
+            or interval.terminal_at is None
+            or state.last_reconciled_at is None
+        ):
+            return False
+        reconciled_at = self._aware(state.last_reconciled_at)
+        provider_coverage_end = reconciled_at.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        return self._aware(interval.terminal_at) <= provider_coverage_end
+
     def refresh(self, now: datetime) -> ChatSandboxBudgetState:
         self._lock()
         state = self._state(now)
@@ -300,9 +322,10 @@ class ChatSandboxSpendService:
             rate = self._interval_rate(interval)
             interval.accrued_microusd = max(interval.accrued_microusd, seconds * rate)
             interval.updated_at = now
-            accrued += self._overlap_cost(
-                interval, cycle_start, min(now, cycle_finish), now
-            )
+            if not self._provider_covered_orphan(interval, state):
+                accrued += self._overlap_cost(
+                    interval, cycle_start, min(now, cycle_finish), now
+                )
             if interval.terminal_at is None:
                 reserved += interval.reserved_microusd
         state.estimated_accrued_microusd = accrued
@@ -672,7 +695,10 @@ class ChatSandboxSpendService:
         state.last_reconciled_at = reported_at
         state.reconciliation_state = "fresh"
         state.updated_at = reported_at
-        self._evaluate(state, reported_at)
+        # Recompute after persisting the provider coverage boundary so confirmed
+        # orphan estimates from closed billing hours cannot double-count the
+        # provider-authoritative floor.
+        state = self.refresh(reported_at)
         if was_degraded:
             self._event(
                 state,
