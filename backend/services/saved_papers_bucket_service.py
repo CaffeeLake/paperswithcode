@@ -56,7 +56,7 @@ class SavedPapersBucket:
         ).encode("utf-8")
 
     def initialize(self, load_legacy: Callable[[], list[SavedPaperRef]]) -> None:
-        """Create the Bucket and migrate database bookmarks exactly once."""
+        """Copy and verify database bookmarks before marking migration complete."""
 
         try:
             self.api.create_bucket(self.bucket_id, private=True, exist_ok=True)
@@ -75,6 +75,19 @@ class SavedPapersBucket:
             ]
             if additions:
                 self.api.batch_bucket_files(self.bucket_id, add=additions)
+                migrated_paths = {
+                    item.path
+                    for item in self.api.list_bucket_tree(
+                        self.bucket_id, prefix=BOOKMARK_PREFIX, recursive=False
+                    )
+                    if item.type == "file"
+                }
+                expected_paths = {self._path(item.paper_id) for item in legacy}
+                if not expected_paths.issubset(migrated_paths):
+                    raise PaperBucketError(
+                        "Hugging Face could not verify the saved-paper migration. "
+                        "Your database bookmarks were kept unchanged."
+                    )
             self.api.batch_bucket_files(
                 self.bucket_id,
                 add=[

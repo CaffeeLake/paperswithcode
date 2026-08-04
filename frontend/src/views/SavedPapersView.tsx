@@ -36,6 +36,7 @@ const SavedPapersView: React.FC = () => {
   const bucketAuthorizationRequired =
     query.error instanceof ApiError &&
     query.error.code === "saved_papers_bucket_authorization_required";
+  const showBucketMigration = !!query.data && !query.data.bucket_connected;
 
   const authorizeBucket = () => {
     window.location.assign(savedPapersAuthorizationUrl());
@@ -81,31 +82,55 @@ const SavedPapersView: React.FC = () => {
             {query.data?.count
               ? `${query.data.count.toLocaleString()} saved · grouped by domain`
               : "Your bookmarked papers, grouped by domain."}
-            {" · "}
-            <a
-              href={`https://huggingface.co/buckets/${user.username}/pwc-saved-papers`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open your Hugging Face Bucket
-            </a>
+            {query.data?.bucket_connected ? (
+              <>
+                {" · "}
+                <a
+                  href={`https://huggingface.co/buckets/${user.username}/pwc-saved-papers`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open your Hugging Face Bucket
+                </a>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
 
       {bucketAuthorizationRequired ? (
-        <div className="saved-signin-panel">
+        <div className="saved-bucket-migration">
           <p>
-            Saved papers live in a private Hugging Face Bucket that belongs to you.
+            Your saved papers are still safe in Papers With Code. Approve Bucket
+            access to copy them into a private Hugging Face Bucket that belongs to
+            you.
           </p>
           <button type="button" className="hf-signin-btn" onClick={authorizeBucket}>
-            Connect saved-papers Bucket
+            Approve and migrate saved papers
           </button>
         </div>
       ) : query.error ? (
         <Alert variant="destructive" className="mb-4">
           <AlertDescription>Failed to load your saved papers. Please try again.</AlertDescription>
         </Alert>
+      ) : null}
+
+      {showBucketMigration ? (
+        <div className="saved-bucket-migration">
+          <p>
+            {query.data.count
+              ? `Your ${query.data.count.toLocaleString()} saved ${query.data.count === 1 ? "paper is" : "papers are"} still available below. `
+              : "When you save your first paper, "}
+            Approve Bucket access to copy saved papers into a private Hugging Face
+            Bucket that belongs to you. The existing data is kept until the copy is
+            verified.
+          </p>
+          <button type="button" className="hf-signin-btn" onClick={authorizeBucket}>
+            {query.data.count
+              ? "Approve and migrate saved papers"
+              : "Use a Hugging Face Bucket"}
+          </button>
+        </div>
       ) : null}
 
       {bucketAuthorizationRequired || query.error ? null : query.isLoading ? (

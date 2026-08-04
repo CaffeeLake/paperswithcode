@@ -1,13 +1,14 @@
 """
 User-scoped bookmark endpoints.
 
-All endpoints below require a valid ``pwc_session`` cookie and a user-granted
-Hugging Face Bucket credential. Bookmarks are stored in a private Bucket owned
-by the user; ``user_bookmarks`` is read only as a one-time migration source.
+All endpoints below require a valid ``pwc_session`` cookie. Existing database
+bookmarks remain readable until the user opts into a private Hugging Face
+Bucket. After migration, database rows are retained as a compatibility mirror.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
@@ -37,6 +38,7 @@ from backend.services.saved_papers_bucket_service import (
 from backend.utils.auth import require_user
 
 router = APIRouter(prefix="/me", tags=["bookmarks"])
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,10 @@ class SavedAreaGroup(BaseModel):
 class SavedPapersResponse(BaseModel):
     count: int = Field(..., description="Total number of bookmarked papers")
     areas: List[SavedAreaGroup] = Field(default_factory=list)
+    bucket_connected: bool = Field(
+        False,
+        description="Whether the response was read from the user's HF Bucket",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +100,45 @@ def _bucket_error(error: PaperBucketError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
-def _bucket_store(request: Request, user: dict, db: Session) -> SavedPapersBucket:
+def _bucket_authorization_required() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={
+            "code": "saved_papers_bucket_authorization_required",
+            "message": "Authorize Papers With Code to manage your saved-papers Bucket.",
+        },
+    )
+
+
+def _legacy_bookmark_refs(user: dict, db: Session) -> list[SavedPaperRef]:
+    rows = (
+        db.query(
+            UserBookmark.paper_id,
+            UserBookmark.created_at,
+            DBPaper.title,
+            DBPaper.arxiv_id,
+            DBPaper.source_url,
+        )
+        .join(DBPaper, DBPaper.id == UserBookmark.paper_id)
+        .filter(UserBookmark.hf_username == user["username"])
+        .order_by(desc(UserBookmark.created_at))
+        .all()
+    )
+    return [
+        SavedPaperRef(
+            paper_id=int(row[0]),
+            saved_at=row[1],
+            title=row[2],
+            arxiv_id=row[3],
+            source_url=row[4],
+        )
+        for row in rows
+    ]
+
+
+def _bucket_store(
+    request: Request, user: dict, db: Session
+) -> SavedPapersBucket | None:
     encrypted = request.cookies.get(BUCKET_MANAGE_OAUTH_COOKIE_NAME)
     credential = (
         decrypt_oauth_credential(encrypted, user["hf_user_id"], get_settings())
@@ -102,56 +146,41 @@ def _bucket_store(request: Request, user: dict, db: Session) -> SavedPapersBucke
         else None
     )
     if credential is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "saved_papers_bucket_authorization_required",
-                "message": (
-                    "Authorize Papers With Code to manage your saved-papers Bucket."
-                ),
-            },
-        )
+        return None
 
     store = SavedPapersBucket(token=credential.token, username=user["username"])
-
-    def load_legacy() -> list[SavedPaperRef]:
-        legacy_rows = (
-            db.query(
-                UserBookmark.paper_id,
-                UserBookmark.created_at,
-                DBPaper.title,
-                DBPaper.arxiv_id,
-                DBPaper.source_url,
-            )
-            .join(DBPaper, DBPaper.id == UserBookmark.paper_id)
-            .filter(UserBookmark.hf_username == user["username"])
-            .order_by(desc(UserBookmark.created_at))
-            .all()
-        )
-        return [
-            SavedPaperRef(
-                paper_id=int(row[0]),
-                saved_at=row[1],
-                title=row[2],
-                arxiv_id=row[3],
-                source_url=row[4],
-            )
-            for row in legacy_rows
-        ]
-
-    try:
-        store.initialize(load_legacy)
-    except PaperBucketError as error:
-        raise _bucket_error(error) from error
+    store.initialize(lambda: _legacy_bookmark_refs(user, db))
     return store
 
 
-def _bookmark_refs(request: Request, user: dict, db: Session) -> list[SavedPaperRef]:
-    store = _bucket_store(request, user, db)
+def _require_bucket_store(
+    request: Request, user: dict, db: Session
+) -> SavedPapersBucket:
     try:
-        return store.list()
+        store = _bucket_store(request, user, db)
     except PaperBucketError as error:
         raise _bucket_error(error) from error
+    if store is None:
+        raise _bucket_authorization_required()
+    return store
+
+
+def _bookmark_refs(
+    request: Request, user: dict, db: Session
+) -> tuple[list[SavedPaperRef], bool]:
+    legacy = _legacy_bookmark_refs(user, db)
+    try:
+        store = _bucket_store(request, user, db)
+        if store is None:
+            return legacy, False
+        return store.list(), True
+    except PaperBucketError as error:
+        logger.warning(
+            "Falling back to database bookmarks for %s: %s",
+            user["username"],
+            error,
+        )
+        return legacy, False
 
 
 @router.get(
@@ -166,7 +195,7 @@ def get_my_bookmark_ids(
 ) -> BookmarkIdsResponse:
     """Return just the IDs (cheap; used to hydrate the Save button state)."""
 
-    refs = _bookmark_refs(request, user, db)
+    refs, _ = _bookmark_refs(request, user, db)
     return BookmarkIdsResponse(paper_ids=[item.paper_id for item in refs])
 
 
@@ -187,11 +216,11 @@ def get_my_bookmarks(
     catch-all ``Other / Untagged`` bucket.
     """
 
-    bookmark_refs = _bookmark_refs(request, user, db)
+    bookmark_refs, bucket_connected = _bookmark_refs(request, user, db)
     paper_ids: List[int] = [item.paper_id for item in bookmark_refs]
 
     if not paper_ids:
-        return SavedPapersResponse(count=0, areas=[])
+        return SavedPapersResponse(count=0, areas=[], bucket_connected=bucket_connected)
 
     db_papers = db.query(DBPaper).filter(DBPaper.id.in_(paper_ids)).all()
     paper_by_id: Dict[int, DBPaper] = {p.id: p for p in db_papers}
@@ -315,7 +344,11 @@ def get_my_bookmarks(
             )
         )
 
-    return SavedPapersResponse(count=len(api_papers), areas=out_areas)
+    return SavedPapersResponse(
+        count=len(api_papers),
+        areas=out_areas,
+        bucket_connected=bucket_connected,
+    )
 
 
 @router.post(
@@ -335,7 +368,7 @@ def add_bookmark(
             status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found"
         )
 
-    store = _bucket_store(request, user, db)
+    store = _require_bucket_store(request, user, db)
     try:
         store.add(
             paper_id,
@@ -345,6 +378,18 @@ def add_bookmark(
         )
     except PaperBucketError as error:
         raise _bucket_error(error) from error
+
+    existing = (
+        db.query(UserBookmark)
+        .filter(
+            UserBookmark.hf_username == user["username"],
+            UserBookmark.paper_id == paper_id,
+        )
+        .first()
+    )
+    if existing is None:
+        db.add(UserBookmark(hf_username=user["username"], paper_id=paper_id))
+        db.commit()
     return None
 
 
@@ -359,9 +404,14 @@ def remove_bookmark(
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
 ) -> None:
-    store = _bucket_store(request, user, db)
+    store = _require_bucket_store(request, user, db)
     try:
         store.remove(paper_id)
     except PaperBucketError as error:
         raise _bucket_error(error) from error
+    db.query(UserBookmark).filter(
+        UserBookmark.hf_username == user["username"],
+        UserBookmark.paper_id == paper_id,
+    ).delete(synchronize_session=False)
+    db.commit()
     return None

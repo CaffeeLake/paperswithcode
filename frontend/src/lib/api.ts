@@ -822,6 +822,7 @@ export interface SavedAreaGroup {
 export interface SavedPapersResponse {
   count: number;
   areas: SavedAreaGroup[];
+  bucket_connected: boolean;
 }
 
 /** Payload accepted by `POST /papers/submit`. Either `arxiv_id` or

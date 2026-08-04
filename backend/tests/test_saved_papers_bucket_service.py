@@ -92,3 +92,33 @@ def test_bucket_cache_runtime_error_is_user_safe(monkeypatch):
         assert str(error) == "Hugging Face could not write the saved-papers Bucket."
     else:
         raise AssertionError("expected a user-safe Bucket error")
+
+
+def test_bucket_migration_is_not_marked_complete_until_files_are_verified(
+    monkeypatch,
+):
+    class MissingUploadHfApi(FakeHfApi):
+        def batch_bucket_files(self, _bucket_id, *, add=None, delete=None):
+            filtered = [item for item in add or [] if item[1] == "paperswithcode.json"]
+            super().batch_bucket_files(_bucket_id, add=filtered, delete=delete)
+
+    MissingUploadHfApi.objects = {}
+    monkeypatch.setattr(saved_papers, "HfApi", MissingUploadHfApi)
+    store = saved_papers.SavedPapersBucket(token="user-token", username="alice")
+
+    try:
+        store.initialize(
+            lambda: [
+                saved_papers.SavedPaperRef(
+                    paper_id=10,
+                    saved_at=datetime.now(UTC),
+                    title="Still safe in the database",
+                )
+            ]
+        )
+    except PaperBucketError as error:
+        assert "could not verify" in str(error)
+    else:
+        raise AssertionError("expected migration verification to fail")
+
+    assert "paperswithcode.json" not in MissingUploadHfApi.objects
