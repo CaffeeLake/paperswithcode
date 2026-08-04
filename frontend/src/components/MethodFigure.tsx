@@ -163,20 +163,6 @@ const GANFig: React.FC = () => (
   </svg>
 );
 
-const VAEFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    <text x="180" y="20" fontSize="11" fontFamily="var(--serif)" fontStyle="italic" fill={C.faint} textAnchor="middle">Variational Autoencoder</text>
-    <rect x="30" y="100" width="40" height="40" rx="3" fill={C.green} stroke={C.greenS} />
-    <rect x="100" y="92" width="60" height="56" rx="3" fill={C.blue} stroke={C.blueS} />
-    <text x="130" y="124" fontSize="11" fontFamily="var(--mono)" fill={C.ink} textAnchor="middle">Encoder</text>
-    <circle cx="270" cy="120" r="14" fill={C.purple} stroke={C.purpleS} />
-    <text x="270" y="124" fontSize="13" fontFamily="var(--serif)" fontStyle="italic" fill={C.ink} textAnchor="middle">z</text>
-    <rect x="100" y="200" width="60" height="56" rx="3" fill={C.orange} stroke={C.orangeS} />
-    <text x="130" y="232" fontSize="11" fontFamily="var(--mono)" fill={C.ink} textAnchor="middle">Decoder</text>
-    <rect x="30" y="210" width="40" height="40" rx="3" fill={C.pink} stroke={C.pinkS} />
-  </svg>
-);
-
 const AGENT_SKILL_TREE_LINES: ReadonlyArray<readonly [string, string]> = [
   ["my-skill/", ""],
   ["├── SKILL.md", "# Required: metadata + instructions"],
@@ -215,7 +201,6 @@ const FIGURE_BY_SLUG: Record<string, React.FC> = {
   "self-attention": AttentionFig,
   ddpm: DiffusionFig,
   gan: GANFig,
-  vae: VAEFig,
   "agent-skills": AgentSkillsFig,
 };
 
