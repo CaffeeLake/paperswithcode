@@ -245,6 +245,8 @@ def test_reconcile_stale_turns_follows_persisted_terminal_projection(
         status=message_status,
     )
     row.admitted_at = now - timedelta(minutes=1)
+    session = db.get(ChatSession, session_id)
+    session.updated_at = now - timedelta(minutes=1)
     db.flush()
 
     reconciled = ChatLatencyService(db).reconcile_stale_turns(now=now)
@@ -252,6 +254,23 @@ def test_reconcile_stale_turns_follows_persisted_terminal_projection(
 
     assert reconciled[expected] == 1
     assert row.terminal_status == expected
+
+
+def test_reconcile_stale_turns_allows_stream_finalizer_grace(db):
+    now = datetime(2026, 7, 31, 12, tzinfo=UTC)
+    session_id = _session(db)
+    turn_id = uuid.uuid4()
+    row = _admit(db, session_id=session_id, turn_id=turn_id)
+    _user_message(db, session_id=session_id, turn_id=turn_id, status="complete")
+    session = db.get(ChatSession, session_id)
+    session.updated_at = now - timedelta(seconds=5)
+    db.flush()
+
+    reconciled = ChatLatencyService(db).reconcile_stale_turns(now=now)
+    db.refresh(row)
+
+    assert reconciled == {"complete": 0, "error": 0, "interrupted": 0}
+    assert row.terminal_status == "running"
 
 
 def test_reconcile_stale_turns_leaves_an_unexpired_active_turn_running(db):

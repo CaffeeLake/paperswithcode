@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from math import isfinite
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
@@ -28,6 +28,7 @@ ACTIVE_SPEND_LOOKBACK_DAYS = 7
 ACTIVE_SPEND_BASELINE_DAYS = 30
 ACTIVE_SPEND_ALERT_MULTIPLIER = 2.0
 MIN_ACTIVE_SPEND_OBSERVATION_SECONDS = 60.0
+STALE_TURN_FINALIZATION_GRACE_SECONDS = 30
 
 PHASE_COLUMNS = {
     "sandbox_acquisition_started": "acquisition_started_ms",
@@ -302,6 +303,9 @@ class ChatLatencyService:
         if not 1 <= batch_size <= 1_000:
             raise ValueError("stale turn batch_size is out of range")
         current = now or datetime.now(UTC)
+        finalization_cutoff = current - timedelta(
+            seconds=STALE_TURN_FINALIZATION_GRACE_SECONDS
+        )
         rows = list(
             self.db.execute(
                 select(ChatTurnLatency, ChatSession, ChatMessageRecord)
@@ -318,10 +322,15 @@ class ChatLatencyService:
                 .where(
                     ChatTurnLatency.terminal_status == "running",
                     or_(
-                        ChatSession.active_turn_id.is_(None),
-                        ChatSession.active_turn_id != ChatTurnLatency.turn_id,
-                        ChatSession.active_turn_expires_at.is_(None),
                         ChatSession.active_turn_expires_at <= current,
+                        and_(
+                            or_(
+                                ChatSession.active_turn_id.is_(None),
+                                ChatSession.active_turn_id != ChatTurnLatency.turn_id,
+                                ChatSession.active_turn_expires_at.is_(None),
+                            ),
+                            ChatSession.updated_at <= finalization_cutoff,
+                        ),
                     ),
                 )
                 .order_by(ChatTurnLatency.admitted_at, ChatTurnLatency.turn_id)
