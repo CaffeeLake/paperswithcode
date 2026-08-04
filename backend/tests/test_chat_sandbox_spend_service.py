@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,6 +18,7 @@ from backend.models.database import (
     ChatSession,
 )
 from backend.scripts.manage_chat_sandbox_circuit import operator_identity
+from backend.services import chat_sandbox_service
 from backend.services.chat_sandbox_service import SandboxError, SandboxSessionManager
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
@@ -81,6 +83,48 @@ def test_lifecycle_meter_includes_reservation_to_confirmed_termination():
         state = service.refresh(start + timedelta(seconds=90))
         assert state.estimated_accrued_microusd == 70 * service.cost_per_second()
         assert state.outstanding_reservation_microusd == 0
+
+
+def test_cancelled_start_releases_pre_provider_reservation(monkeypatch):
+    sessions = factory()
+    configured = settings()
+    session_id = uuid.uuid4()
+    with sessions() as db, db.begin():
+        db.add(
+            ChatSession(
+                id=session_id,
+                hf_user_id="cancelled-start-owner",
+                hf_username="cancelled-start-owner",
+                selected_model="google/gemma-4-31B-it",
+                execution_backend="modal_cli",
+            )
+        )
+    manager = SandboxSessionManager(configured, session_factory=sessions)
+    manager._lock_start_claim = lambda *_args: None
+
+    async def enforce_warm_cap():
+        return 0
+
+    async def cancelled_create(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    manager.enforce_warm_cap = enforce_warm_cap
+    monkeypatch.setattr(
+        chat_sandbox_service, "create_isolated_sandbox", cancelled_create
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager.ensure_ready(session_id))
+
+    with sessions() as db:
+        lease = db.get(ChatSandboxLease, session_id)
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert lease.state == "failed"
+    assert lease.failure_code == "sandbox_start_failed"
+    assert interval.provider_created_at is None
+    assert interval.terminal_at is not None
+    assert interval.reserved_microusd == 0
+    assert interval.reconciliation_state == "creation_failed"
 
 
 def test_claim_preserves_one_continuous_pool_interval():

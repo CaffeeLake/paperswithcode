@@ -1652,6 +1652,7 @@ class SandboxSessionManager:
                 )
 
         assert claim is not None
+        sandbox = None
         try:
             async with asyncio.timeout(self.ready_timeout_seconds):
                 sandbox = await create_isolated_sandbox(
@@ -1682,6 +1683,29 @@ class SandboxSessionManager:
                                 lease.workspace_snapshot_id = None
                                 lease.snapshot_image_version = None
                                 lease.snapshot_updated_at = None
+        except asyncio.CancelledError:
+            self._mark_start_failed(
+                chat_session_id, claim.token_hash, "sandbox_start_failed"
+            )
+            if interval_id is not None:
+                if sandbox is None:
+                    with self.session_factory() as db, db.begin():
+                        ChatSandboxSpendService(db, self.settings).abort_reservation(
+                            interval_id, "sandbox_start_failed"
+                        )
+                else:
+                    confirmed = await self._terminate_provider_sandbox(
+                        sandbox.object_id, sandbox
+                    )
+                    with self.session_factory() as db, db.begin():
+                        spend = ChatSandboxSpendService(db, self.settings)
+                        spend.provider_created(interval_id, sandbox.object_id)
+                        spend.terminate(
+                            sandbox.object_id,
+                            "sandbox_start_failed",
+                            confirmed=confirmed,
+                        )
+            raise
         except TimeoutError as error:
             self._mark_start_failed(
                 chat_session_id, claim.token_hash, "sandbox_timeout"
