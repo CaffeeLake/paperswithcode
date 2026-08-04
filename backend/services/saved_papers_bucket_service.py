@@ -92,6 +92,10 @@ class SavedPapersBucket:
             )
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except RuntimeError as error:
+            raise PaperBucketError(
+                "Hugging Face could not write the saved-papers Bucket."
+            ) from error
 
     def list(self) -> list[SavedPaperRef]:
         try:
@@ -114,6 +118,10 @@ class SavedPapersBucket:
             return sorted(refs, key=lambda item: item.saved_at, reverse=True)
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except RuntimeError as error:
+            raise PaperBucketError(
+                "Hugging Face could not read the saved-papers Bucket."
+            ) from error
 
     def add(
         self,
@@ -137,9 +145,17 @@ class SavedPapersBucket:
             )
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except RuntimeError as error:
+            raise PaperBucketError(
+                "Hugging Face could not write the saved-papers Bucket."
+            ) from error
 
     def remove(self, paper_id: int) -> None:
         try:
             self.api.batch_bucket_files(self.bucket_id, delete=[self._path(paper_id)])
         except HfHubHTTPError as error:
             raise _hub_error(error) from error
+        except RuntimeError as error:
+            raise PaperBucketError(
+                "Hugging Face could not update the saved-papers Bucket."
+            ) from error

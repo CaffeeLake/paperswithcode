@@ -37,8 +37,8 @@ def test_configures_xet_cache_in_writable_runtime_directory(tmp_path, monkeypatc
 
     bucket_service._configure_hugging_face_cache()
 
-    assert os.environ["HF_HOME"] == str(tmp_path / "hf-cache")
-    assert os.environ["HF_XET_CACHE"] == str(tmp_path / "hf-cache" / "xet")
+    assert os.environ["HF_HOME"] == str(tmp_path / "hf-app-cache")
+    assert os.environ["HF_XET_CACHE"] == str(tmp_path / "hf-app-cache" / "xet")
 
 
 def test_copy_paper_uses_user_token_and_uploads_pdf(monkeypatch):

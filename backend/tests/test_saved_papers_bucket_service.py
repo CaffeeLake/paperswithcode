@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 from backend.services import saved_papers_bucket_service as saved_papers
+from backend.services.paper_bucket_service import PaperBucketError
 
 
 class FakeHfApi:
@@ -74,3 +75,20 @@ def test_bucket_migrates_once_and_becomes_the_bookmark_source(monkeypatch):
     assert [item.paper_id for item in store.list()] == [30, 10]
     store.remove(10)
     assert [item.paper_id for item in store.list()] == [30]
+
+
+def test_bucket_cache_runtime_error_is_user_safe(monkeypatch):
+    class FailingHfApi(FakeHfApi):
+        def batch_bucket_files(self, _bucket_id, *, add=None, delete=None):
+            raise RuntimeError("Permission denied")
+
+    FailingHfApi.objects = {}
+    monkeypatch.setattr(saved_papers, "HfApi", FailingHfApi)
+    store = saved_papers.SavedPapersBucket(token="user-token", username="alice")
+
+    try:
+        store.initialize(lambda: [])
+    except PaperBucketError as error:
+        assert str(error) == "Hugging Face could not write the saved-papers Bucket."
+    else:
+        raise AssertionError("expected a user-safe Bucket error")

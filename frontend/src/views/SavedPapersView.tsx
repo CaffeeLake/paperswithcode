@@ -81,18 +81,14 @@ const SavedPapersView: React.FC = () => {
             {query.data?.count
               ? `${query.data.count.toLocaleString()} saved · grouped by domain`
               : "Your bookmarked papers, grouped by domain."}
-            {query.data && (
-              <>
-                {" · "}
-                <a
-                  href={`https://huggingface.co/buckets/${user.username}/pwc-saved-papers`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Stored in your Hugging Face Bucket
-                </a>
-              </>
-            )}
+            {" · "}
+            <a
+              href={`https://huggingface.co/buckets/${user.username}/pwc-saved-papers`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open your Hugging Face Bucket
+            </a>
           </div>
         </div>
       </div>
@@ -112,7 +108,7 @@ const SavedPapersView: React.FC = () => {
         </Alert>
       ) : null}
 
-      {bucketAuthorizationRequired ? null : query.isLoading ? (
+      {bucketAuthorizationRequired || query.error ? null : query.isLoading ? (
         <div className="paper-list">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="paper-card">
