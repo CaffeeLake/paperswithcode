@@ -146,35 +146,6 @@ const CNNFig: React.FC = () => (
   </svg>
 );
 
-const UNetFig: React.FC = () => (
-  <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
-    {[0, 1, 2, 3].map((i) => {
-      const x = 50;
-      const y = 60 + i * 80;
-      const w = 100 - i * 12;
-      const h = 50 - i * 6;
-      return <rect key={`e${i}`} x={x} y={y} width={w} height={h} rx="2" fill={C.blue} stroke={C.blueS} strokeWidth="1" />;
-    })}
-    <rect x="155" y="320" width="50" height="40" rx="2" fill={C.purple} stroke={C.purpleS} />
-    {[0, 1, 2, 3].map((i) => {
-      const x = 210;
-      const y = 60 + i * 80;
-      const w = 100 - i * 12;
-      const h = 50 - i * 6;
-      return <rect key={`d${i}`} x={x} y={y} width={w} height={h} rx="2" fill={C.green} stroke={C.greenS} strokeWidth="1" />;
-    })}
-    {[0, 1, 2, 3].map((i) => {
-      const y = 60 + i * 80 + (50 - i * 6) / 2;
-      const xL = 50 + (100 - i * 12);
-      const xR = 210;
-      return <path key={`s${i}`} d={`M${xL} ${y} L${xR} ${y}`} stroke={C.faint} strokeDasharray="4 3" />;
-    })}
-    <text x="100" y="40" fontSize="10" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">encoder</text>
-    <text x="260" y="40" fontSize="10" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">decoder</text>
-    <text x="180" y="395" fontSize="9" fontFamily="var(--mono)" fill={C.faint} textAnchor="middle">skip connections preserve high-res features</text>
-  </svg>
-);
-
 const ViTFig: React.FC = () => (
   <svg viewBox="0 0 360 420" width="100%" height="100%" style={{ display: "block" }}>
     {[0, 1, 2].map((r) =>
@@ -295,8 +266,6 @@ const FIGURE_BY_SLUG: Record<string, React.FC> = {
   attention: AttentionFig,
   "self-attention": AttentionFig,
   cnn: CNNFig,
-  "u-net": UNetFig,
-  unet: UNetFig,
   vit: ViTFig,
   ddpm: DiffusionFig,
   gan: GANFig,
