@@ -834,7 +834,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "32"
+    assert descriptor["worker_contract_version"] == "34"
     assert _chat_descriptor_from_source(source, "production") is None
 
 
@@ -1917,13 +1917,13 @@ def test_cron_jobs_declare_bounded_execution_contracts():
     assert cron_launcher.COMMANDS
     for spec in cron_launcher.COMMANDS.values():
         assert spec.command
-        assert spec.timeout in {"30m", "50m", "2h", "6h"}
+        assert spec.timeout in {"30m", "45m", "50m", "2h", "6h"}
         assert spec.mutates_shared_data is True
         assert spec.idempotency
         assert spec.health_job
 
 
-def test_hot_workflow_is_manual_only_until_production_activation():
+def test_hot_workflow_runs_on_the_activated_production_schedule():
     workflow = (
         Path(__file__).resolve().parents[2]
         / ".github"
@@ -1931,8 +1931,8 @@ def test_hot_workflow_is_manual_only_until_production_activation():
         / "cron-update-hot-github-trending.yml"
     ).read_text()
     assert "workflow_dispatch:" in workflow
-    assert "schedule:" not in workflow
-    assert 'cron: "*/15 * * * *"' not in workflow
+    assert "schedule:" in workflow
+    assert 'cron: "*/15 * * * *"' in workflow
 
     cron_env_example = (
         Path(__file__).resolve().parents[2]

@@ -18,6 +18,7 @@ from backend.database.connection import db_manager
 from backend.models.database import PendingPaperEdit
 from backend.services.catalog_mutation_service import json_safe
 from backend.services.pending_edit_service import PendingEditService
+from backend.services.pending_edit_snapshots import PendingEditSnapshotService
 
 
 CODEX_SUBMISSION_APPLY_ENABLED = False
@@ -135,7 +136,7 @@ def show_submission(args: argparse.Namespace) -> int:
         service = PendingEditService(db)
         row = service.get(args.id)
         current = (
-            service._build_snapshot(row.paper_id, row.edit_type)
+            PendingEditSnapshotService(db).paper_edit(row.paper_id, row.edit_type)
             if row.paper_id is not None
             else {}
         )

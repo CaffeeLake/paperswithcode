@@ -65,7 +65,7 @@ class EvaluationCurationService:
     def collection_state(self, paper_id: int) -> dict:
         return {
             "paper_id": paper_id,
-            "version": canonical_hash(self._paper_evaluations(paper_id)),
+            "version": canonical_hash(self.paper_evaluations(paper_id)),
         }
 
     def create(self, *, payload: dict, mutation: dict):
@@ -80,7 +80,7 @@ class EvaluationCurationService:
         paper_id = int(payload["paper_id"])
 
         def snapshot():
-            return self._paper_evaluations(paper_id, lock=True)
+            return self.paper_evaluations(paper_id, lock=True)
 
         after, event, replayed = CatalogMutationService(self.db).mutate(
             operation="create",
@@ -154,7 +154,7 @@ class EvaluationCurationService:
             self._recalculate_snapshots(event.before_snapshot, event.after_snapshot)
 
         snapshot = (
-            (lambda: self._paper_evaluations(int(paper_id), lock=True))
+            (lambda: self.paper_evaluations(int(paper_id), lock=True))
             if is_collection
             else (lambda: self.snapshot(int(evaluation_id), lock=True))
         )
@@ -196,7 +196,7 @@ class EvaluationCurationService:
                 task_id, dataset_id, metric_name=metric, commit=False
             )
 
-    def _paper_evaluations(self, paper_id: int, *, lock: bool = False) -> list[dict]:
+    def paper_evaluations(self, paper_id: int, *, lock: bool = False) -> list[dict]:
         if lock:
             self.db.query(DBPaper).filter(
                 DBPaper.id == paper_id
@@ -254,7 +254,7 @@ class EvaluationCurationService:
             entity_type="evaluation",
             entity_id=f"paper:{paper_id}",
             request_payload={"operations": operations},
-            snapshot=lambda: self._paper_evaluations(paper_id, lock=True),
+            snapshot=lambda: self.paper_evaluations(paper_id, lock=True),
             apply=apply,
             **mutation,
         )

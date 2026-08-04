@@ -6,12 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
+from backend.models.database import CatalogMutationEvent
 from backend.services.catalog_mutation_service import (
     CatalogMutationService,
     canonical_hash,
     json_safe,
 )
-from backend.models.database import CatalogMutationEvent
 from backend.services.evaluation_curation_service import EvaluationCurationService
 from backend.services.paper_curation_service import PaperCurationService
 from backend.services.submission_rollback_service import SubmissionRollbackService
@@ -68,7 +68,7 @@ def _rollback_eligible(db: Session, event: CatalogMutationEvent) -> bool:
         elif event.entity_type == "evaluation":
             service = EvaluationCurationService(db)
             if event.entity_id.startswith("paper:"):
-                current = service._paper_evaluations(
+                current = service.paper_evaluations(
                     int(event.entity_id.split(":", 1)[1])
                 )
             else:

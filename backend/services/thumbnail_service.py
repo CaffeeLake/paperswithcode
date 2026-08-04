@@ -17,22 +17,22 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from huggingface_hub import HfFileSystem, batch_bucket_files, download_bucket_files
-from PIL import Image, ImageDraw, ImageFont
 from pdf2image import convert_from_bytes
+from PIL import Image, ImageDraw, ImageFont
 
 from backend.config import get_settings
+from backend.services.arxiv_service import ArxivService
 from backend.services.safe_outbound_http_service import (
     SafeOutboundHttpError,
     fetch_public_resource,
 )
-from backend.utils.exceptions import ThumbnailGenerationError
-from backend.services.arxiv_service import ArxivService
 from backend.utils.biorxiv import (
     BioRxivMetadata,
     download_biorxiv_pdf_bytes,
     fetch_biorxiv_metadata,
     parse_biorxiv_doi,
 )
+from backend.utils.exceptions import ThumbnailGenerationError
 
 logger = logging.getLogger(__name__)
 
@@ -348,9 +348,6 @@ class ThumbnailService:
         self.thumbnail_quality = 85  # JPEG quality
         self.pdf_timeout = 30  # Timeout for PDF downloads in seconds
         self.max_pdf_size = 50 * 1024 * 1024  # 50MB max PDF size
-        self.external_page_screenshot_timeout = 45
-        self.external_page_viewport = (1200, 1680)
-
         # ArXiv service for API interactions
         self.arxiv_service = ArxivService()
 
@@ -495,19 +492,6 @@ class ThumbnailService:
         except Exception as e:
             raise ThumbnailGenerationError(f"Failed to convert PDF to image: {str(e)}")
 
-    def _convert_screenshot_to_thumbnail(self, image: Image.Image) -> Image.Image:
-        """
-        Resize a browser screenshot to the same card-friendly width as PDF thumbnails.
-        """
-        try:
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            return _resize_to_card_fill(image)
-        except Exception as e:
-            raise ThumbnailGenerationError(
-                f"Failed to convert screenshot to thumbnail: {str(e)}"
-            )
-
     def _render_biorxiv_metadata_thumbnail(
         self, metadata: BioRxivMetadata, server: str
     ) -> Image.Image:
@@ -620,14 +604,6 @@ class ThumbnailService:
         if not result.body.startswith(b"%PDF"):
             return None
         return result.body
-
-    async def _capture_external_page_screenshot(self, source_url: str) -> Image.Image:
-        """
-        Capture the first viewport of an external project page with headless Chrome.
-        """
-        raise ThumbnailGenerationError(
-            "External webpage screenshots are disabled until isolated browser rendering is available"
-        )
 
     def _save_thumbnail(self, image: Image.Image, cache_path: Path) -> None:
         """
@@ -794,8 +770,8 @@ class ThumbnailService:
         """
         Generate a thumbnail for a non-ArXiv external paper.
 
-        Direct PDFs are rendered from their first page. Other source URLs fall
-        back to a first-viewport screenshot of the project page.
+        Direct PDFs are rendered from their first page. bioRxiv and medRxiv
+        records can fall back to a metadata card when their PDF is unavailable.
         """
         filename = self.get_external_filename(paper_id)
         if not force:
@@ -829,8 +805,9 @@ class ThumbnailService:
                 )
             thumbnail = self._render_biorxiv_metadata_thumbnail(metadata, server)
         else:
-            screenshot = await self._capture_external_page_screenshot(source_url)
-            thumbnail = self._convert_screenshot_to_thumbnail(screenshot)
+            raise ThumbnailGenerationError(
+                "External thumbnail source did not provide a supported PDF"
+            )
 
         self._save_thumbnail(thumbnail, cache_path)
         self._upload_to_bucket(cache_path, filename)

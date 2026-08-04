@@ -2,32 +2,20 @@
 
 from sqlalchemy.orm import Session
 
-from backend.models.database import (
-    CatalogMutationEvent,
-    Conference,
-    Dataset,
-    Method,
-    Metric,
-    Paper,
-    Task,
-)
+from backend.models.database import CatalogMutationEvent
 from backend.services.catalog_mutation_service import (
     CatalogMutationService,
     canonical_hash,
 )
-from backend.services.pending_edit_service import PendingEditService
+from backend.services.pending_edit_snapshots import (
+    CREATED_ENTITY_MODELS,
+    PendingEditSnapshotService,
+)
 from backend.utils.exceptions import DatabaseError
 
 
 class SubmissionRollbackService:
-    MODEL_BY_TYPE = {
-        "paper": Paper,
-        "task": Task,
-        "method": Method,
-        "dataset": Dataset,
-        "metric": Metric,
-        "conference": Conference,
-    }
+    MODEL_BY_TYPE = CREATED_ENTITY_MODELS
 
     def __init__(self, db: Session):
         self.db = db
@@ -50,7 +38,7 @@ class SubmissionRollbackService:
         row = query.with_for_update().first() if lock else query.first()
         if row is None:
             return {}
-        return PendingEditService(self.db)._created_entity_snapshot(
+        return PendingEditSnapshotService(self.db).created_entity(
             entity_type, entity_id
         )
 

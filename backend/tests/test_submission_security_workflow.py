@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import json
 import uuid
 
@@ -7,18 +6,18 @@ import pytest
 
 from backend.cli import build_parser
 from backend.cli_submissions import decide_submission
-from backend.services.pending_edit_service import PendingEditError, PendingEditService
+from backend.services.pending_edit_errors import PendingEditError
+from backend.services.pending_edit_payloads import validate_payload
 from backend.services.thumbnail_service import ThumbnailService
-from backend.utils.exceptions import ThumbnailGenerationError
 
 
 def test_taxonomy_payloads_require_application_context():
     with pytest.raises(PendingEditError, match="task_ids"):
-        PendingEditService._validate_payload(
+        validate_payload(
             "new_benchmark", {"name": "Bench", "description": "Description"}
         )
     with pytest.raises(PendingEditError, match="both task_id and dataset_id"):
-        PendingEditService._validate_payload(
+        validate_payload(
             "new_metric",
             {
                 "name": "Score",
@@ -28,13 +27,11 @@ def test_taxonomy_payloads_require_application_context():
             },
         )
     with pytest.raises(PendingEditError, match="source URL"):
-        PendingEditService._validate_payload(
-            "new_conference", {"name": "Venue 2027", "year": 2027}
-        )
+        validate_payload("new_conference", {"name": "Venue 2027", "year": 2027})
 
 
 def test_taxonomy_payload_normalizes_typed_fields():
-    payload = PendingEditService._validate_payload(
+    payload = validate_payload(
         "new_metric",
         {
             "name": "  Accuracy ",
@@ -51,6 +48,26 @@ def test_taxonomy_payload_normalizes_typed_fields():
         "task_id": 7,
         "dataset_id": 9,
     }
+
+
+def test_external_paper_date_is_normalized_as_a_date():
+    payload = validate_payload(
+        "new_external_paper",
+        {
+            "source_url": "https://example.com/paper",
+            "date_published": "2026-08-04",
+        },
+    )
+    assert payload["date_published"] == "2026-08-04"
+
+    with pytest.raises(PendingEditError, match="date_published is invalid"):
+        validate_payload(
+            "new_external_paper",
+            {
+                "source_url": "https://example.com/paper",
+                "date_published": "2026-08-04T12:30:00",
+            },
+        )
 
 
 def test_submission_cli_requires_explicit_environment():
@@ -95,9 +112,4 @@ def test_codex_terminal_decisions_are_fail_closed(tmp_path):
 
 
 def test_arbitrary_webpage_screenshots_are_disabled():
-    with pytest.raises(ThumbnailGenerationError, match="disabled"):
-        asyncio.run(
-            ThumbnailService._capture_external_page_screenshot(
-                object(), "https://example.com/page"
-            )
-        )
+    assert not hasattr(ThumbnailService, "_capture_external_page_screenshot")

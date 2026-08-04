@@ -38,6 +38,20 @@ _ALLOWED_CONTENT_TYPES = frozenset(
         "text/x-markdown",
     }
 )
+_SAFE_ERROR_MESSAGES = {
+    "The outbound hostname could not be resolved": (
+        "The WebFetch hostname could not be resolved"
+    ),
+    "The outbound destination is not public": (
+        "WebFetch cannot access a private network address"
+    ),
+    "The outbound redirect limit was exceeded": "WebFetch redirects are not allowed",
+    "The outbound content type is not allowed": "Unsupported WebFetch content type",
+    "The outbound response is too large": "The WebFetch response is too large",
+    "The outbound origin returned an error": "WebFetch origin returned an error",
+    "The outbound request timed out": "The WebFetch origin request failed",
+    "The outbound request failed": "The WebFetch origin request failed",
+}
 
 
 class ChatWebFetchError(RuntimeError):
@@ -51,6 +65,14 @@ class WebFetchResult:
     status_code: int
     content_type: str
     body: bytes
+
+
+def _translate_safe_fetch_error(error: SafeOutboundHttpError) -> ChatWebFetchError:
+    """Preserve the chat-facing error contract behind the shared fetcher."""
+
+    message = str(error)
+    translated = _SAFE_ERROR_MESSAGES.get(message, message)
+    return ChatWebFetchError(error.status_code, translated)
 
 
 def canonical_fetch_url(value: str) -> str:
@@ -139,7 +161,7 @@ async def _public_addresses(host: str) -> tuple[str, ...]:
     try:
         return await resolve_public_addresses(host, 443)
     except SafeOutboundHttpError as exc:
-        raise ChatWebFetchError(exc.status_code, str(exc)) from exc
+        raise _translate_safe_fetch_error(exc) from exc
 
 
 def _validate_origin_metadata(status_code: int, content_type: str) -> str:
@@ -170,5 +192,5 @@ async def fetch_catalog_url(db: Session, value: str) -> WebFetchResult:
             max_redirects=0,
         )
     except SafeOutboundHttpError as exc:
-        raise ChatWebFetchError(exc.status_code, str(exc)) from exc
+        raise _translate_safe_fetch_error(exc) from exc
     return WebFetchResult(result.status_code, result.content_type, result.body)

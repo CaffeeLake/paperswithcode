@@ -2,7 +2,8 @@ import pytest
 from pydantic import ValidationError
 
 from backend.models.api import ProjectPageCreateRequest, ProjectPageUpdateRequest
-from backend.services.pending_edit_service import PendingEditError, PendingEditService
+from backend.services.pending_edit_errors import PendingEditError
+from backend.services.pending_edit_payloads import validate_payload
 from backend.utils.public_urls import PublicUrlValidationError, normalize_public_url
 
 
@@ -42,11 +43,11 @@ def test_project_page_api_models_validate_urls():
 @pytest.mark.parametrize("edit_type,key", [("source_url", "source_url")])
 def test_pending_payload_rejects_unsafe_links(edit_type, key):
     with pytest.raises(PendingEditError):
-        PendingEditService._validate_payload(edit_type, {key: "javascript:bad"})
+        validate_payload(edit_type, {key: "javascript:bad"})
 
 
 def test_pending_project_page_payload_normalizes_urls():
-    payload = PendingEditService._validate_payload(
+    payload = validate_payload(
         "project_pages",
         {
             "project_pages": [
