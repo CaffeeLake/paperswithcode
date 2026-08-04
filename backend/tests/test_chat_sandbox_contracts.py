@@ -138,6 +138,59 @@ def test_broker_accepts_claude_messages_beta_query(monkeypatch):
     assert request.error is None
 
 
+def test_broker_reuses_recent_gateway_connection_and_discards_old_one(monkeypatch):
+    broker = _import_broker(monkeypatch)
+    created = []
+
+    class Connection:
+        def __init__(self):
+            self.closed = False
+            created.append(self)
+
+        def close(self):
+            self.closed = True
+
+    now = 100.0
+    monkeypatch.setattr(broker, "monotonic", lambda: now)
+    pool = broker.GatewayConnectionPool(
+        Connection,
+        max_size=1,
+        max_idle_seconds=30,
+    )
+
+    first = pool.acquire()
+    pool.release(first, reusable=True)
+    assert pool.acquire() is first
+
+    pool.release(first, reusable=True)
+    now = 131.0
+    second = pool.acquire()
+    assert first.closed is True
+    assert second is not first
+    assert len(created) == 2
+
+
+def test_broker_discards_incomplete_gateway_connection(monkeypatch):
+    broker = _import_broker(monkeypatch)
+
+    class Connection:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    pool = broker.GatewayConnectionPool(
+        Connection,
+        max_size=1,
+        max_idle_seconds=30,
+    )
+    connection = pool.acquire()
+    pool.release(connection, reusable=False)
+
+    assert connection.closed is True
+    assert pool.acquire() is not connection
+
+
 def test_broker_capability_rotation_rejects_stale_and_cross_turn_clear(monkeypatch):
     broker = _import_broker(monkeypatch)
     state = broker.BrokerState(
@@ -1559,7 +1612,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-hAUly5YfaugHmtyfMYnPTN"
-    assert WORKER_CONTRACT_VERSION == "30"
+    assert WORKER_CONTRACT_VERSION == "31"
 
 
 def test_task_catalog_is_bounded_and_ranked():

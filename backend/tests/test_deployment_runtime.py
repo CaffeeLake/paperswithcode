@@ -834,7 +834,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "30"
+    assert descriptor["worker_contract_version"] == "31"
     assert _chat_descriptor_from_source(source, "production") is None
 
 

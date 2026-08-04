@@ -11,9 +11,11 @@ import socketserver
 import ssl
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from queue import Empty, Full, LifoQueue
 from threading import Condition, Lock
 from time import monotonic
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -32,6 +34,8 @@ _BENCHMARK_EVALUATIONS = re.compile(r"^/api/v1/datasets/([^/]+)/evaluations/$")
 CONTROL_SOCKET = Path("/var/empty/pwc-broker/control.sock")
 CAPABILITY_DRAIN_QUIET_SECONDS = 0.5
 CAPABILITY_DRAIN_TIMEOUT_SECONDS = 20.0
+GATEWAY_CONNECTION_POOL_SIZE = 4
+GATEWAY_CONNECTION_MAX_IDLE_SECONDS = 30.0
 
 
 def _load_config() -> dict:
@@ -168,6 +172,62 @@ def _connection():
     return connection(UPSTREAM.hostname, UPSTREAM.port, timeout=180)
 
 
+class GatewayConnectionPool:
+    """Bounded idle pool for the broker's dedicated gateway connection."""
+
+    def __init__(
+        self,
+        factory: Callable[[], object],
+        *,
+        max_size: int,
+        max_idle_seconds: float,
+    ) -> None:
+        self._factory = factory
+        self._max_idle_seconds = max_idle_seconds
+        self._idle: LifoQueue[tuple[object, float]] = LifoQueue(maxsize=max_size)
+
+    def acquire(self):
+        while True:
+            try:
+                connection, returned_at = self._idle.get_nowait()
+            except Empty:
+                return self._factory()
+            if monotonic() - returned_at <= self._max_idle_seconds:
+                return connection
+            connection.close()
+
+    def release(self, connection, *, reusable: bool) -> None:
+        if not reusable:
+            connection.close()
+            return
+        try:
+            self._idle.put_nowait((connection, monotonic()))
+        except Full:
+            connection.close()
+
+    def close(self) -> None:
+        while True:
+            try:
+                connection, _returned_at = self._idle.get_nowait()
+            except Empty:
+                return
+            connection.close()
+
+
+GATEWAY_CONNECTIONS = GatewayConnectionPool(
+    lambda: _connection(),
+    max_size=GATEWAY_CONNECTION_POOL_SIZE,
+    max_idle_seconds=GATEWAY_CONNECTION_MAX_IDLE_SECONDS,
+)
+
+
+def _response_reusable(response) -> bool:
+    if getattr(response, "will_close", False):
+        return False
+    isclosed = getattr(response, "isclosed", None)
+    return not callable(isclosed) or bool(isclosed())
+
+
 def _gateway_headers(
     *, active: dict[str, str] | None = None, content_type: str = "application/json"
 ) -> dict[str, str]:
@@ -187,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def _connection(self):
-        return _connection()
+        return GATEWAY_CONNECTIONS.acquire()
 
     def _forward(
         self,
@@ -199,6 +259,7 @@ class Handler(BaseHTTPRequestHandler):
     ) -> None:
         active = STATE.begin_request()
         connection = self._connection()
+        reusable = False
         try:
             prefix = UPSTREAM.path.rstrip("/")
             connection.request(
@@ -220,10 +281,11 @@ class Handler(BaseHTTPRequestHandler):
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
                 self.wfile.flush()
+            reusable = _response_reusable(response)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            connection.close()
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
     def do_POST(self) -> None:
@@ -359,6 +421,7 @@ class Handler(BaseHTTPRequestHandler):
         ).encode()
         active = STATE.begin_request()
         connection = self._connection()
+        reusable = False
         try:
             prefix = UPSTREAM.path.rstrip("/")
             connection.request(
@@ -389,8 +452,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(output)
+            reusable = _response_reusable(response)
         finally:
-            connection.close()
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
 
@@ -487,7 +551,8 @@ class OriginHandler(BaseHTTPRequestHandler):
         length = min(int(self.headers.get("Content-Length", "0")), 512 * 1024)
         body = self.rfile.read(length)
         active = STATE.begin_request()
-        connection = _connection()
+        connection = GATEWAY_CONNECTIONS.acquire()
+        reusable = False
         try:
             prefix = UPSTREAM.path.rstrip("/")
             connection.request(
@@ -513,10 +578,11 @@ class OriginHandler(BaseHTTPRequestHandler):
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
                 self.wfile.flush()
+            reusable = _response_reusable(response)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            connection.close()
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
     def do_GET(self) -> None:
@@ -540,7 +606,8 @@ class OriginHandler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         active = STATE.begin_request()
-        connection = _connection()
+        connection = GATEWAY_CONNECTIONS.acquire()
+        reusable = False
         try:
             prefix = UPSTREAM.path.rstrip("/")
             connection.request(
@@ -558,10 +625,11 @@ class OriginHandler(BaseHTTPRequestHandler):
             self.end_headers()
             while chunk := response.read(16 * 1024):
                 self.wfile.write(chunk)
+            reusable = _response_reusable(response)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            connection.close()
+            GATEWAY_CONNECTIONS.release(connection, reusable=reusable)
             STATE.finish_request()
 
 
@@ -619,7 +687,7 @@ class BrokerControlHandler(socketserver.StreamRequestHandler):
             else:
                 raise RuntimeError("Invalid broker operation")
             response = {"ok": True, "active": STATE.active()}
-        except Exception:
+        except Exception:  # noqa: BLE001 - the credential control plane fails closed
             response = {"ok": False, "code": "broker_control_rejected"}
         self.wfile.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
 
@@ -641,6 +709,7 @@ def main() -> int:
     try:
         broker.serve_forever()
     finally:
+        GATEWAY_CONNECTIONS.close()
         control.shutdown()
         CONTROL_SOCKET.unlink(missing_ok=True)
     return 0
