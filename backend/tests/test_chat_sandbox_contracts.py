@@ -20,6 +20,9 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
 )
 from fastapi import HTTPException
 
@@ -1288,6 +1291,86 @@ def test_worker_adapter_assembles_streamed_tool_arguments():
             "args": {"command": "pwc search on-device"},
         }
     ]
+
+
+def test_worker_adapter_namespaces_reused_provider_tool_ids():
+    hooks = agent.WorkerToolHooks(agent.WorkerSettings.from_environment())
+
+    def tool_result(tool_id, text):
+        return {
+            "type": "tool_result",
+            "id": tool_id,
+            "status": "success",
+            "took_ms": 1,
+            "content": [{"type": "text", "text": text, "truncated": False}],
+            "metadata": {"exit_code": 0, "output_truncated": False},
+        }
+
+    async def messages():
+        yield AssistantMessage(
+            model="test",
+            content=[ToolUseBlock(id="Bash:0", name="Bash", input={})],
+        )
+        hooks.results["Bash:0"] = tool_result("Bash:0", "first")
+        yield UserMessage(
+            content=[ToolResultBlock(tool_use_id="Bash:0", content="first")]
+        )
+        yield AssistantMessage(
+            model="test",
+            content=[
+                ToolUseBlock(id="Bash:0", name="Bash", input={}),
+                ToolUseBlock(id="Bash:1", name="Bash", input={}),
+            ],
+        )
+        hooks.results["Bash:0"] = tool_result("Bash:0", "second")
+        hooks.results["Bash:1"] = tool_result("Bash:1", "third")
+        yield UserMessage(
+            content=[
+                ToolResultBlock(tool_use_id="Bash:0", content="second"),
+                ToolResultBlock(tool_use_id="Bash:1", content="third"),
+            ]
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=2,
+            session_id="sdk-session",
+            total_cost_usd=0,
+            usage=None,
+            result="done",
+            structured_output=None,
+        )
+
+    async def run():
+        return [
+            event
+            async for event in agent._adapt_messages(
+                messages(),
+                request_id="request-1",
+                hooks=hooks,
+                adapter=agent.SDKEventAdapter(show_reasoning=False),
+            )
+        ]
+
+    events = asyncio.run(run())
+    tool_events = [
+        event for event in events if event["type"] in {"tool_call", "tool_result"}
+    ]
+    assert [(event["type"], event["id"]) for event in tool_events] == [
+        ("tool_call", "Bash:0"),
+        ("tool_result", "Bash:0"),
+        ("tool_call", "Bash:0#2"),
+        ("tool_call", "Bash:1"),
+        ("tool_result", "Bash:0#2"),
+        ("tool_result", "Bash:1"),
+    ]
+    validator = WorkerEventValidator()
+    for event in events:
+        if event["type"] != "_sdk_session":
+            validator.accept(event)
+    validator.accept({"type": "worker_done", "status": "complete"})
 
 
 @pytest.mark.parametrize("name", ["Bash", "Read", "Grep", "WebFetch"])

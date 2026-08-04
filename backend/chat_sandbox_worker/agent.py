@@ -341,7 +341,9 @@ async def _adapt_messages(
             for block in message.content if isinstance(message.content, list) else []:
                 if not isinstance(block, ToolResultBlock):
                     continue
-                event = hooks.results.pop(block.tool_use_id, None)
+                raw_tool_id = block.tool_use_id
+                tool_id = adapter.tool_result_id(raw_tool_id)
+                event = hooks.results.pop(raw_tool_id, None)
                 if event is None:
                     text, truncated = bound_tool_output(
                         _response_text(block.content),
@@ -349,7 +351,7 @@ async def _adapt_messages(
                     )
                     event = {
                         "type": "tool_result",
-                        "id": block.tool_use_id,
+                        "id": tool_id,
                         "status": "error" if block.is_error else "success",
                         "took_ms": 0,
                         "content": [
@@ -364,6 +366,8 @@ async def _adapt_messages(
                             "output_truncated": truncated,
                         },
                     }
+                else:
+                    event = {**event, "id": tool_id}
                 yield {"v": 1, "request_id": request_id, **event}
             continue
         adapted = [

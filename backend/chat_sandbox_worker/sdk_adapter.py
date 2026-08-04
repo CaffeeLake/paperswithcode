@@ -25,7 +25,10 @@ class SDKEventAdapter:
         self.terminal = False
         self.block_kinds: dict[int, str] = {}
         self.tool_blocks: dict[int, dict[str, Any]] = {}
-        self.emitted_tool_ids: set[str] = set()
+        self.current_tool_ids: dict[str, str] = {}
+        self.pending_tool_ids: dict[str, list[str]] = {}
+        self.tool_id_occurrences: dict[str, int] = {}
+        self.allocated_tool_ids: set[str] = set()
 
     def _close_reasoning(self) -> list[dict[str, Any]]:
         if not self.reasoning_open:
@@ -34,8 +37,8 @@ class SDKEventAdapter:
         return [{"type": "reasoning_end"}]
 
     def _tool_call(self, block: dict[str, Any]) -> list[dict[str, Any]]:
-        tool_id = str(block.get("id") or "")
-        if not tool_id or tool_id in self.emitted_tool_ids:
+        raw_tool_id = str(block.get("id") or "")
+        if not raw_tool_id or raw_tool_id in self.current_tool_ids:
             return []
         value = block.get("input")
         fragments = "".join(block.get("fragments", []))
@@ -46,7 +49,17 @@ class SDKEventAdapter:
                 return []
         elif not isinstance(value, dict):
             value = {}
-        self.emitted_tool_ids.add(tool_id)
+        # Some OpenAI-compatible providers number tools per response (Bash:0,
+        # Bash:1), while the chat projection requires IDs unique for the turn.
+        occurrence = self.tool_id_occurrences.get(raw_tool_id, 0) + 1
+        tool_id = raw_tool_id if occurrence == 1 else f"{raw_tool_id}#{occurrence}"
+        while tool_id in self.allocated_tool_ids:
+            occurrence += 1
+            tool_id = f"{raw_tool_id}#{occurrence}"
+        self.tool_id_occurrences[raw_tool_id] = occurrence
+        self.allocated_tool_ids.add(tool_id)
+        self.current_tool_ids[raw_tool_id] = tool_id
+        self.pending_tool_ids.setdefault(raw_tool_id, []).append(tool_id)
         return [
             {
                 "type": "tool_call",
@@ -56,6 +69,16 @@ class SDKEventAdapter:
             }
         ]
 
+    def tool_result_id(self, raw_tool_id: str) -> str:
+        pending = self.pending_tool_ids.get(raw_tool_id)
+        if not pending:
+            return raw_tool_id
+        tool_id = pending.pop(0)
+        if not pending:
+            self.pending_tool_ids.pop(raw_tool_id, None)
+        self.current_tool_ids.pop(raw_tool_id, None)
+        return tool_id
+
     def _stream(self, message: StreamEvent) -> list[dict[str, Any]]:
         raw = message.event
         kind = raw.get("type")
@@ -63,6 +86,7 @@ class SDKEventAdapter:
         index = int(raw.get("index", 0))
         if kind == "message_start":
             events.extend(self._close_reasoning())
+            self.current_tool_ids.clear()
             self.saw_text_delta = False
             self.saw_thinking_delta = False
             self.block_kinds.clear()
