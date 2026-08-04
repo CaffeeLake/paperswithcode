@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
@@ -251,6 +251,122 @@ class ChatSandboxSpendService:
         )
         return self._aware(interval.terminal_at) <= provider_coverage_end
 
+    def _terminal_summary(
+        self,
+        *,
+        state: ChatSandboxBudgetState,
+        cycle_start: datetime,
+        cycle_finish: datetime,
+        now: datetime,
+    ) -> tuple[int, bool]:
+        """Aggregate immutable terminal history without row-locking it on admission."""
+
+        if self.db.get_bind().dialect.name != "postgresql":
+            rows = list(
+                self.db.execute(
+                    select(ChatSandboxComputeInterval).where(
+                        ChatSandboxComputeInterval.environment
+                        == self.settings.environment,
+                        ChatSandboxComputeInterval.terminal_at.is_not(None),
+                        ChatSandboxComputeInterval.reserved_at < cycle_finish,
+                        ChatSandboxComputeInterval.terminal_at >= cycle_start,
+                    )
+                ).scalars()
+            )
+            accrued = 0
+            invalid = False
+            for interval in rows:
+                interval_start = self._aware(interval.reserved_at)
+                provider_created_at = (
+                    None
+                    if interval.provider_created_at is None
+                    else self._aware(interval.provider_created_at)
+                )
+                terminal_at = self._aware(interval.terminal_at)
+                if (
+                    interval.cpu_limit_millicores <= 0
+                    or interval.memory_limit_mib <= 0
+                    or interval_start > now + timedelta(seconds=5)
+                    or (
+                        provider_created_at is not None
+                        and provider_created_at < interval_start
+                    )
+                    or terminal_at < interval_start
+                ):
+                    invalid = True
+                if not self._provider_covered_orphan(interval, state):
+                    accrued += self._overlap_cost(
+                        interval, cycle_start, cycle_finish, now
+                    )
+            return accrued, invalid
+
+        coverage_end = None
+        if state.last_reconciled_at is not None:
+            coverage_end = self._aware(state.last_reconciled_at).replace(
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        summary = (
+            self.db.execute(
+                text(
+                    """
+                SELECT
+                    COALESCE(
+                        SUM(
+                            GREATEST(
+                                0,
+                                FLOOR(
+                                    EXTRACT(
+                                        EPOCH FROM (
+                                            LEAST(terminal_at, :cycle_finish)
+                                            - GREATEST(reserved_at, :cycle_start)
+                                        )
+                                    )
+                                )
+                            )::bigint
+                            * CEIL(
+                                cpu_limit_millicores / 1000.0 * 39.42
+                                + memory_limit_mib / 1024.0 * 6.72
+                            )::bigint
+                        ) FILTER (
+                            WHERE NOT (
+                                :has_coverage
+                                AND origin = 'reconciled_orphan'
+                                AND reconciliation_state = 'confirmed'
+                                AND terminal_at <= :coverage_end
+                            )
+                        ),
+                        0
+                    )::bigint AS accrued_microusd,
+                    COUNT(*) FILTER (
+                        WHERE cpu_limit_millicores <= 0
+                           OR memory_limit_mib <= 0
+                           OR reserved_at > :future_limit
+                           OR provider_created_at < reserved_at
+                           OR terminal_at < reserved_at
+                    )::bigint AS invalid_count
+                FROM chat_sandbox_compute_intervals
+                WHERE environment = :environment
+                  AND terminal_at IS NOT NULL
+                  AND reserved_at < :cycle_finish
+                  AND terminal_at >= :cycle_start
+                """
+                ),
+                {
+                    "coverage_end": coverage_end or cycle_start,
+                    "cycle_finish": cycle_finish,
+                    "cycle_start": cycle_start,
+                    "environment": self.settings.environment,
+                    "future_limit": now + timedelta(seconds=5),
+                    "has_coverage": coverage_end is not None,
+                },
+            )
+            .mappings()
+            .one()
+        )
+        return int(summary["accrued_microusd"]), bool(summary["invalid_count"])
+
     def refresh(self, now: datetime) -> ChatSandboxBudgetState:
         self._lock()
         state = self._state(now)
@@ -282,15 +398,19 @@ class ChatSandboxSpendService:
                 .where(
                     ChatSandboxComputeInterval.environment == self.settings.environment,
                     ChatSandboxComputeInterval.reserved_at < cycle_finish,
-                    or_(
-                        ChatSandboxComputeInterval.terminal_at.is_(None),
-                        ChatSandboxComputeInterval.terminal_at >= cycle_start,
-                    ),
+                    ChatSandboxComputeInterval.terminal_at.is_(None),
                 )
                 .with_for_update()
             ).scalars()
         )
-        accrued = 0
+        accrued, invalid_terminal = self._terminal_summary(
+            state=state,
+            cycle_start=cycle_start,
+            cycle_finish=cycle_finish,
+            now=now,
+        )
+        if invalid_terminal:
+            integrity_reason = "metering_degraded"
         reserved = 0
         for interval in intervals:
             interval_start = self._aware(interval.reserved_at)
@@ -322,12 +442,10 @@ class ChatSandboxSpendService:
             rate = self._interval_rate(interval)
             interval.accrued_microusd = max(interval.accrued_microusd, seconds * rate)
             interval.updated_at = now
-            if not self._provider_covered_orphan(interval, state):
-                accrued += self._overlap_cost(
-                    interval, cycle_start, min(now, cycle_finish), now
-                )
-            if interval.terminal_at is None:
-                reserved += interval.reserved_microusd
+            accrued += self._overlap_cost(
+                interval, cycle_start, min(now, cycle_finish), now
+            )
+            reserved += interval.reserved_microusd
         state.estimated_accrued_microusd = accrued
         state.outstanding_reservation_microusd = reserved
         configured_floor = self.settings.chat_sandbox_provider_floor_microusd
