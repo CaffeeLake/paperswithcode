@@ -408,7 +408,10 @@ export const AssistantMessage: React.FC<{
           <a href="/settings#openrouter-byok">Bring your own key in Settings</a>
           <a href="https://github.com/huggingface/paperswithcode-feedback" target="_blank" rel="noreferrer">File an issue</a>
         </>}
-        {["openrouter_byok_credential_invalid", "openrouter_byok_billing_error", "openrouter_byok_rate_limit"].includes(msg.errorCode ?? "") && (
+        {msg.errorCode === "openrouter_byok_billing_error" && (
+          <a href="https://openrouter.ai/settings/credits" target="_blank" rel="noreferrer">Review OpenRouter billing</a>
+        )}
+        {["openrouter_byok_credential_invalid", "openrouter_byok_rate_limit"].includes(msg.errorCode ?? "") && (
           <a href="/settings#openrouter-byok">Review OpenRouter settings</a>
         )}
         {msg.errorCode === "chat_session_quota_exceeded" && (onArchiveOldChats || onArchiveOldestChats) && (

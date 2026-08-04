@@ -234,6 +234,22 @@ describe("AssistantMessage", () => {
     expect(screen.queryByText(/shared|workspace|pool|spend|headroom/i)).not.toBeInTheDocument();
   });
 
+  it("explains that a BYOK spending limit is not an account balance", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "Your OpenRouter key is connected, but OpenRouter rejected billing for the account behind it. A key spending limit is not an account credit balance. Add credits or enable pay-as-you-go in OpenRouter, then try again.",
+      errorCode: "openrouter_byok_billing_error",
+    });
+
+    expect(screen.getByText(/spending limit is not an account credit balance/i)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Review OpenRouter billing" })).toHaveAttribute(
+      "href",
+      "https://openrouter.ai/settings/credits",
+    );
+    expect(screen.queryByRole("link", { name: "Review OpenRouter settings" })).not.toBeInTheDocument();
+  });
+
   it("explains the chat limit and offers bulk archiving", async () => {
     const onArchive = vi.fn();
     const onArchiveOldest = vi.fn();

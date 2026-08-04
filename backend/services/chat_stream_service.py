@@ -772,8 +772,11 @@ class ChatStreamOrchestrator:
                                 )
                             elif funded_code == "openrouter_byok_billing_error":
                                 event["message"] = (
-                                    "OpenRouter could not bill your API key. Review "
-                                    "your OpenRouter credits and spending limits."
+                                    "Your OpenRouter key is connected, but OpenRouter "
+                                    "rejected billing for the account behind it. A key "
+                                    "spending limit is not an account credit balance. "
+                                    "Add credits or enable pay-as-you-go in OpenRouter, "
+                                    "then try again."
                                 )
                             elif funded_code == "openrouter_byok_rate_limit":
                                 event["message"] = (
