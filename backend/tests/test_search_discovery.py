@@ -145,7 +145,15 @@ def test_missing_entity_and_unknown_top_level_are_real_404s(client, monkeypatch)
 
 @pytest.mark.parametrize(
     "path",
-    ["/papers", "/tasks", "/methods", "/conferences", "/organizations", "/chat/abc"],
+    [
+        "/papers",
+        "/tasks",
+        "/methods",
+        "/conferences",
+        "/organizations",
+        "/chat/abc",
+        "/privacy",
+    ],
 )
 def test_known_client_only_routes_keep_the_spa_shell(client, path):
     response = client.get(path)
