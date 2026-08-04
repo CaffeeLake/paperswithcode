@@ -210,6 +210,20 @@ def _provider_target(
     raise HTTPException(status_code=422, detail="Unsupported model provider")
 
 
+def _pin_openrouter_reasoning_effort(
+    payload: dict[str, Any], model: str, settings: Settings
+) -> None:
+    """Keep the discounted OpenAI variants on their requested medium tier."""
+
+    if model not in {settings.chat_luna_route, settings.chat_terra_route}:
+        return
+    output_config = payload.get("output_config")
+    if not isinstance(output_config, dict):
+        output_config = {}
+        payload["output_config"] = output_config
+    output_config["effort"] = "medium"
+
+
 def _capability_owner(row: ChatTurnCapability, db: Session) -> str:
     session = db.get(ChatSession, row.chat_session_id)
     if session is None:
@@ -403,6 +417,7 @@ async def messages(
         # Supplemental reconciliation metadata is opaque and cannot identify
         # the HF subject at OpenRouter.
         payload["user"] = opaque_owner(owner_id, settings)
+        _pin_openrouter_reasoning_effort(payload, model, settings)
         raw = json.dumps(payload, separators=(",", ":")).encode()
         if len(raw) > 512 * 1024:
             raise HTTPException(status_code=413, detail="Model request is too large")

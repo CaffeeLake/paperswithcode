@@ -31,10 +31,20 @@ const renderAskAssistant = () => render(
 );
 
 describe("AskAssistant", () => {
-  it("offers the staging OpenRouter model from the shared picker list", () => {
+  it("offers the Hugging Face DeepSeek and staging OpenRouter models", () => {
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
       id: "deepseek-ai/DeepSeek-V4-Flash-0731",
       label: "DeepSeek V4 Flash 0731",
+      provider: "huggingface",
+    });
+    expect(FALLBACK_CHAT_MODELS).toContainEqual({
+      id: "openai/gpt-5.6-luna",
+      label: "GPT-5.6 Luna (medium)",
+      provider: "openrouter",
+    });
+    expect(FALLBACK_CHAT_MODELS).toContainEqual({
+      id: "openai/gpt-5.6-terra",
+      label: "GPT-5.6 Terra (medium)",
       provider: "openrouter",
     });
   });

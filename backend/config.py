@@ -252,7 +252,11 @@ class Settings(BaseSettings):
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
-    chat_deepseek_v4_flash_route: str = Field(default="deepseek/deepseek-v4-flash-0731")
+    chat_deepseek_v4_flash_route: str = Field(
+        default="deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+    )
+    chat_luna_route: str = Field(default="openai/gpt-5.6-luna")
+    chat_terra_route: str = Field(default="openai/gpt-5.6-terra")
     chat_openrouter_api_key: str = Field(
         default="",
         description="OpenRouter API key reserved for server-funded research chat",
@@ -288,7 +292,7 @@ class Settings(BaseSettings):
     chat_openrouter_user_tracking_secret: str = Field(
         default="", description="HMAC secret for opaque OpenRouter user tracking"
     )
-    chat_openrouter_pricing_verified_at: str = Field(default="2026-08-02")
+    chat_openrouter_pricing_verified_at: str = Field(default="2026-08-04")
     chat_openrouter_pricing_max_age_days: int = Field(default=30, ge=1, le=90)
     chat_openrouter_reconciliation_stale_minutes: int = Field(
         default=15, ge=1, le=24 * 60
@@ -296,8 +300,8 @@ class Settings(BaseSettings):
     chat_openrouter_drift_alert_microusd: int = Field(
         default=50_000, ge=1, le=10_000_000
     )
-    chat_openrouter_input_microusd_per_token: int = Field(default=1, ge=1)
-    chat_openrouter_output_microusd_per_token: int = Field(default=5, ge=1)
+    chat_openrouter_input_microusd_per_token: int = Field(default=2, ge=1)
+    chat_openrouter_output_microusd_per_token: int = Field(default=9, ge=1)
     chat_openrouter_request_fee_microusd: int = Field(default=10_000, ge=0)
     chat_title_model: str = Field(default="openai/gpt-oss-120b")
     chat_title_provider: str = Field(default="cerebras")
@@ -416,8 +420,28 @@ class Settings(BaseSettings):
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
                 "label": "DeepSeek V4 Flash 0731",
                 "route": self.chat_deepseek_v4_flash_route,
+                "provider": "huggingface",
+            },
+            {
+                "id": "openai/gpt-5.6-luna",
+                "label": "GPT-5.6 Luna (medium)",
+                "route": self.chat_luna_route,
                 "provider": "openrouter",
             },
+            {
+                "id": "openai/gpt-5.6-terra",
+                "label": "GPT-5.6 Terra (medium)",
+                "route": self.chat_terra_route,
+                "provider": "openrouter",
+            },
+        )
+
+    @property
+    def chat_openrouter_routes(self) -> tuple[str, ...]:
+        return tuple(
+            choice["route"]
+            for choice in self.chat_model_registry
+            if choice["provider"] == "openrouter"
         )
 
     @property

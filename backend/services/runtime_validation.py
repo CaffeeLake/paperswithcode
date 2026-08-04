@@ -379,14 +379,17 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
 
             try:
                 credential_keyring(settings)
-                maximum = safe_maximum_microusd(
-                    settings,
-                    settings.chat_deepseek_v4_flash_route,
-                    RequestBounds(
-                        request_bytes=512 * 1024,
-                        maximum_output_tokens=32_000,
-                        payload={"messages": [{"role": "user", "content": "x"}]},
-                    ),
+                maximum = max(
+                    safe_maximum_microusd(
+                        settings,
+                        route,
+                        RequestBounds(
+                            request_bytes=1,
+                            maximum_output_tokens=32_000,
+                            payload={"messages": [{"role": "user", "content": "x"}]},
+                        ),
+                    )
+                    for route in settings.chat_openrouter_routes
                 )
             except (ValueError, RuntimeError) as error:
                 raise RuntimeError(
@@ -396,7 +399,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 settings.chat_openrouter_monthly_user_budget_usd * 1_000_000
             ):
                 raise RuntimeError(
-                    "OpenRouter request bound exceeds the per-user hard budget"
+                    "OpenRouter minimum request bound exceeds the per-user hard budget"
                 )
             from backend.services.openrouter_budget_service import (
                 OpenRouterBudgetUnavailable,

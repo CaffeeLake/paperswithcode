@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from backend.chat_gateway_app import (
     _byok_provider_error_code,
+    _pin_openrouter_reasoning_effort,
     _provider_headers,
     _provider_target,
     _user_provider_credential,
@@ -99,7 +100,7 @@ def test_gateway_routes_luna_to_server_funded_openrouter():
         chat_openrouter_server_funded_enabled=True,
     )
     row = SimpleNamespace(
-        model=settings.chat_deepseek_v4_flash_route,
+        model=settings.chat_luna_route,
         owner_hash="a" * 64,
         provider_token_encrypted=None,
     )
@@ -118,7 +119,7 @@ def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():
         chat_openrouter_server_funded_enabled=False,
     )
     row = SimpleNamespace(
-        model=settings.chat_deepseek_v4_flash_route,
+        model=settings.chat_luna_route,
         owner_hash="a" * 64,
         provider_token_encrypted=None,
     )
@@ -127,6 +128,18 @@ def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():
         _provider_target(row, settings)
 
     assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-5.6-luna", "openai/gpt-5.6-terra"])
+def test_gateway_pins_openai_reasoning_to_medium(model):
+    payload = {"output_config": {"format": {"type": "json_schema"}}}
+
+    _pin_openrouter_reasoning_effort(payload, model, Settings(_env_file=None))
+
+    assert payload["output_config"] == {
+        "format": {"type": "json_schema"},
+        "effort": "medium",
+    }
 
 
 def test_gateway_keeps_hugging_face_models_on_user_billing():

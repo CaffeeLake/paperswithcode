@@ -125,7 +125,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
                     turn_id,
                     call_id,
                     1,
-                    service.settings.chat_deepseek_v4_flash_route,
+                    service.settings.chat_luna_route,
                     bounds,
                     NOW,
                 )
@@ -151,7 +151,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
             winning_identity[0],
             winning_identity[1],
             1,
-            service.settings.chat_deepseek_v4_flash_route,
+            service.settings.chat_luna_route,
             bounds,
             NOW,
         )

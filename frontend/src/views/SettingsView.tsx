@@ -274,7 +274,7 @@ const SettingsView: React.FC = () => {
                 <span style={{ width: `${usage.remaining_percent}%` }} />
               </div>
               {usage.remaining_percent === 0 && <p className="settings-limit-note">
-                Your free monthly allowance is depleted. DeepSeek V4 Flash is
+                Your free monthly allowance is depleted. Luna and Terra are
                 temporarily unavailable unless you enable your own key below.
               </p>}
             </div> : <div className="settings-billing-loading">

@@ -146,7 +146,7 @@ def safe_maximum_microusd(
         days=settings.chat_openrouter_pricing_max_age_days
     ):
         raise OpenRouterPricingUnavailable("OpenRouter pricing is stale")
-    if model_route != settings.chat_deepseek_v4_flash_route:
+    if model_route not in settings.chat_openrouter_routes:
         raise OpenRouterPricingUnavailable("OpenRouter model pricing is not pinned")
     if not 1 <= bounds.request_bytes <= MAX_REQUEST_BYTES:
         raise OpenRouterPricingUnavailable("OpenRouter request size is unbounded")

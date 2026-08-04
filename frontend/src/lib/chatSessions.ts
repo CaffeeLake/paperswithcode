@@ -68,6 +68,16 @@ export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
     id: "deepseek-ai/DeepSeek-V4-Flash-0731",
     label: "DeepSeek V4 Flash 0731",
+    provider: "huggingface",
+  },
+  {
+    id: "openai/gpt-5.6-luna",
+    label: "GPT-5.6 Luna (medium)",
+    provider: "openrouter",
+  },
+  {
+    id: "openai/gpt-5.6-terra",
+    label: "GPT-5.6 Terra (medium)",
     provider: "openrouter",
   },
 ];
