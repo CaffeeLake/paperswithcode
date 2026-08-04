@@ -19,8 +19,8 @@ from claude_agent_sdk import (
     ResultMessage,
     ToolResultBlock,
     UserMessage,
-    query as sdk_query,
 )
+from claude_agent_sdk import query as sdk_query
 
 from backend.chat_sandbox_worker.config import WorkerSettings
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
@@ -264,6 +264,8 @@ def _options(
             "PWC_API_URL": "http://127.0.0.1:8765/api/v1",
             "CLAUDE_CONFIG_DIR": "/home/pwc-chat/.claude",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
             "HTTPS_PROXY": "http://127.0.0.1:8766",
             "NO_PROXY": "127.0.0.1,localhost",
             "NODE_EXTRA_CA_CERTS": "/tmp/pwc-webfetch-ca.pem",

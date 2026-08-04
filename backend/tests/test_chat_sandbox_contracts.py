@@ -1477,6 +1477,8 @@ def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
     assert '"skipWebFetchPreflight": True' in source
     assert '"HTTPS_PROXY": "http://127.0.0.1:8766"' in source
     assert '"NO_PROXY": "127.0.0.1,localhost"' in source
+    assert '"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"' in source
+    assert '"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"' in source
 
 
 def test_system_prompt_prevents_unsupported_method_search_flags():
@@ -1614,8 +1616,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-8ucMdjE5MqV2V6Ah03TnPP"
-    assert WORKER_CONTRACT_VERSION == "33"
+    assert MODAL_IMAGE_ID == "im-NHqdWr7JmJjEIs20HG2ngd"
+    assert WORKER_CONTRACT_VERSION == "34"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
