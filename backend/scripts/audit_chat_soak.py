@@ -7,7 +7,7 @@ import argparse
 import asyncio
 import json
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
@@ -62,6 +62,16 @@ def _parse_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("The soak start must include a timezone")
     return parsed.astimezone(UTC)
+
+
+def _json_default(value: object) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def render_report(report: dict) -> str:
+    return json.dumps(report, indent=2, sort_keys=True, default=_json_default)
 
 
 def _count(db, *predicates) -> int:
@@ -462,7 +472,7 @@ def main() -> int:
     if args.confirm != CONFIRMATION:
         raise SystemExit(f"--confirm must be {CONFIRMATION}")
     report, healthy = audit(_parse_time(args.started_at), args.release_dir)
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(render_report(report))
     return 0 if healthy else 1
 
 
