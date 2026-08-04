@@ -8,10 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from backend.services import chat_sandbox_service
-from backend.services import chat_turn_runner
-from backend.services.chat_sandbox_service import SandboxSessionManager, WorkerClaim
 from backend.chat_sandbox_worker.protocol import encode_frame
+from backend.services import chat_sandbox_service, chat_turn_runner
+from backend.services.chat_sandbox_service import (
+    SandboxSessionManager,
+    SessionControl,
+    WorkerClaim,
+)
 
 
 class _Context:
@@ -356,17 +359,7 @@ def test_persistent_turns_reuse_one_control_attachment():
 
     async def run():
         process = Process()
-        exec_calls = 0
-
-        async def execute(*_args, **_kwargs):
-            nonlocal exec_calls
-            exec_calls += 1
-            return process
-
-        sandbox = SimpleNamespace(
-            object_id="sb-persistent",
-            exec=_AsyncCall(execute),
-        )
+        sandbox = SimpleNamespace(object_id="sb-persistent")
         manager = SandboxSessionManager.__new__(SandboxSessionManager)
         manager.settings = SimpleNamespace(
             chat_persistent_worker_enabled=True,
@@ -376,11 +369,34 @@ def test_persistent_turns_reuse_one_control_attachment():
         )
         manager._processes = {}
         manager._controls = {}
+        manager._background_tasks = set()
+        start_calls = 0
+
+        async def start_control(candidate, worker_generation):
+            nonlocal start_calls
+            start_calls += 1
+            assert candidate is sandbox
+            assert worker_generation == "generation-a"
+            control = SessionControl(
+                process=process,
+                sandbox=sandbox,
+                sandbox_id=sandbox.object_id,
+                stderr_task=None,
+                reader_task=None,
+                queues={},
+                resume_id=None,
+            )
+            control.reader_task = asyncio.create_task(manager._read_control(control))
+            return control
+
+        manager._start_persistent_control = start_control
         manager.ensure_ready = lambda _session_id, **_kwargs: asyncio.sleep(
             0, result=(sandbox, 1, False, "reused_session", None)
         )
         manager._claim_worker = lambda *_args: WorkerClaim(
-            sandbox_id="sb-persistent", token_hash="claim"
+            sandbox_id="sb-persistent",
+            token_hash="claim",
+            worker_generation="generation-a",
         )
         released = 0
 
@@ -412,7 +428,7 @@ def test_persistent_turns_reuse_one_control_attachment():
             assert any(event["type"] == "workspace_ready" for event in events)
             assert released == index
         manager._drop_control(session_id)
-        assert exec_calls == 1
+        assert start_calls == 1
 
     asyncio.run(run())
 

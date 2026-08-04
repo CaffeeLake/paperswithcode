@@ -325,7 +325,8 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
     control = SimpleNamespace(sandbox_id="sb-new")
 
-    async def start_control(_sandbox):
+    async def start_control(_sandbox, worker_generation):
+        assert len(worker_generation) == 32
         return control
 
     async def ping_control(candidate, _worker_generation):

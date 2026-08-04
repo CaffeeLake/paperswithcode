@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "32"
+WORKER_CONTRACT_VERSION = "33"
 # A release emits this gateway protocol and accepts workers back to the
 # compatible-from floor while an old slot drains or a rollback is qualified.
 GATEWAY_CONTRACT_VERSION = 26
@@ -11,11 +11,12 @@ PWC_CLI_VERSION = "0.1.4"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
 IMAGE_PUBLISH_NAME = "pwc-chat-v1"
 CHAT_SANDBOX_REGION = "eu-west"
+CONTROL_PORT = 8080
 BASE_IMAGE = (
     "python:3.12-slim-bookworm@"
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-JifVxp737X1JdbD30MI72j"
+MODAL_IMAGE_ID = "im-8ucMdjE5MqV2V6Ah03TnPP"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100

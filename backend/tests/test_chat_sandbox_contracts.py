@@ -33,12 +33,14 @@ from backend.chat_gateway_app import (
 from backend.chat_sandbox_worker import (
     agent,
     control_daemon,
+    control_websocket,
     publish_image,
     supervisor,
 )
 from backend.chat_sandbox_worker.contract import (
     BASE_IMAGE,
     CHAT_SANDBOX_REGION,
+    CONTROL_PORT,
     IMAGE_PUBLISH_NAME,
     MODAL_APP_NAME,
     MODAL_IMAGE_ID,
@@ -1612,9 +1614,10 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-JifVxp737X1JdbD30MI72j"
-    assert WORKER_CONTRACT_VERSION == "32"
+    assert MODAL_IMAGE_ID == "im-8ucMdjE5MqV2V6Ah03TnPP"
+    assert WORKER_CONTRACT_VERSION == "33"
     assert CHAT_SANDBOX_REGION == "eu-west"
+    assert CONTROL_PORT == 8080
 
 
 def test_task_catalog_is_bounded_and_ranked():
@@ -1663,6 +1666,99 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     assert '"chmod -R a+rX /opt/pwc/backend"' in source
     assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
     assert '"chown pwc-broker:pwc-broker /var/empty/pwc-broker"' in source
+    assert '"websockets==16.0"' in source
+
+
+def test_control_websocket_requires_verified_worker_generation(monkeypatch):
+    monkeypatch.setenv("PWC_CHAT_WORKER_GENERATION", "generation-a")
+
+    def connection(metadata):
+        return SimpleNamespace(
+            request=SimpleNamespace(
+                headers={
+                    control_websocket.VERIFIED_METADATA_HEADER: json.dumps(metadata)
+                }
+            )
+        )
+
+    control_websocket._verify_generation(
+        connection({"worker_generation": "generation-a"})
+    )
+    with pytest.raises(PermissionError, match="generation mismatch"):
+        control_websocket._verify_generation(
+            connection({"worker_generation": "generation-b"})
+        )
+    with pytest.raises(PermissionError, match="Missing verified"):
+        control_websocket._verify_generation(
+            SimpleNamespace(request=SimpleNamespace(headers={}))
+        )
+
+
+def test_persistent_control_uses_authenticated_connect_token(monkeypatch):
+    calls: dict = {}
+
+    class Connection:
+        def __init__(self):
+            self.sent = []
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def send(self, payload):
+            self.sent.append(payload)
+
+        async def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    async def create_connect_token(*, user_metadata, port):
+        calls["token"] = (user_metadata, port)
+        return SimpleNamespace(
+            url="https://connect.modal.test/control",
+            token="secret-token",
+        )
+
+    async def connect(url, **options):
+        calls["connect"] = (url, options)
+        return connection
+
+    monkeypatch.setattr(
+        "backend.services.chat_sandbox_service.websocket_connect", connect
+    )
+    manager = SandboxSessionManager(
+        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+    )
+    sandbox = SimpleNamespace(
+        object_id="sb-test",
+        create_connect_token=SimpleNamespace(aio=create_connect_token),
+    )
+
+    async def exercise():
+        control = await manager._start_persistent_control(sandbox, "generation-a")
+        control.process.stdin.write(b"first")
+        control.process.stdin.write(b"-second")
+        await control.process.stdin.drain.aio()
+        await control.process.aclose()
+        if control.reader_task is not None:
+            await control.reader_task
+        return control
+
+    control = asyncio.run(exercise())
+
+    assert calls["token"] == ({"worker_generation": "generation-a"}, 8080)
+    url, options = calls["connect"]
+    assert url == "wss://connect.modal.test/control"
+    assert options["additional_headers"] == {"Authorization": "Bearer secret-token"}
+    assert options["compression"] is None
+    assert options["proxy"] is None
+    assert connection.sent == [b"first-second"]
+    assert connection.closed is True
+    assert control.stderr_task is None
 
 
 def test_image_publication_initializes_modal_app(monkeypatch, capsys):
@@ -1792,6 +1888,9 @@ def test_persistent_sandbox_uses_daemon_probe_and_request_limit_pairs(monkeypatc
     assert captured["options"]["region"] == "eu-west"
     assert captured["options"]["timeout"] == 86400
     assert captured["options"]["idle_timeout"] == 86400
+    assert captured["options"]["inbound_cidr_allowlist"] is None
+    assert captured["options"]["encrypted_ports"] == []
+    assert captured["options"]["unencrypted_ports"] == []
 
 
 def test_supervisor_tolerates_unsupported_proc_remount(monkeypatch):

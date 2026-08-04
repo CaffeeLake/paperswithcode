@@ -24,8 +24,13 @@ from modal.stream_type import StreamType
 from modal_proto import api_pb2
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
+from websockets.asyncio.client import connect as websocket_connect
 
-from backend.chat_sandbox_worker.contract import CHAT_SANDBOX_REGION, MODAL_APP_NAME
+from backend.chat_sandbox_worker.contract import (
+    CHAT_SANDBOX_REGION,
+    CONTROL_PORT,
+    MODAL_APP_NAME,
+)
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
     ProtocolError,
@@ -86,6 +91,41 @@ class RunningWorker:
     done: asyncio.Event | None = None
 
 
+class _WebSocketDrain:
+    def __init__(self, writer: _WebSocketWriter):
+        self._writer = writer
+
+    async def aio(self) -> None:
+        await self._writer.flush()
+
+
+class _WebSocketWriter:
+    def __init__(self, connection):
+        self._connection = connection
+        self._pending = bytearray()
+        self.drain = _WebSocketDrain(self)
+
+    def write(self, data: bytes) -> None:
+        self._pending.extend(data)
+
+    async def flush(self) -> None:
+        if not self._pending:
+            return
+        payload = bytes(self._pending)
+        self._pending.clear()
+        await self._connection.send(payload)
+
+
+class _WebSocketProcess:
+    def __init__(self, connection):
+        self._connection = connection
+        self.stdin = _WebSocketWriter(connection)
+        self.stdout = connection
+
+    async def aclose(self) -> None:
+        await self._connection.close()
+
+
 def _cancelled_terminal_event(running: RunningWorker | None) -> dict[str, str] | None:
     """Let an accepted user cancellation win over a concurrent worker exit."""
     if running is None or not running.cancel_requested:
@@ -100,7 +140,7 @@ class SessionControl:
     process: object
     sandbox: object
     sandbox_id: str
-    stderr_task: asyncio.Task
+    stderr_task: asyncio.Task | None
     reader_task: asyncio.Task | None
     queues: dict[str, asyncio.Queue]
     resume_id: str | None
@@ -202,7 +242,7 @@ async def create_isolated_sandbox(
             memory_limit,
         ),
         outbound_domain_allowlist=[gateway_host],
-        inbound_cidr_allowlist=[],
+        inbound_cidr_allowlist=None if persistent_enabled else [],
         encrypted_ports=[],
         unencrypted_ports=[],
         include_oidc_identity_token=False,
@@ -485,27 +525,30 @@ class SandboxSessionManager:
         except Exception:
             return None
 
-    async def _start_persistent_control(self, sandbox) -> SessionControl:
-        async def drain_stderr(stream) -> None:
-            async for _chunk in stream:
-                pass
-
-        process = await sandbox.exec.aio(
-            "python",
-            "-m",
-            "backend.chat_sandbox_worker.relay",
-            stdout=StreamType.PIPE,
-            stderr=StreamType.PIPE,
-            timeout=self.settings.chat_persistent_sandbox_lifetime_seconds,
-            workdir="/workspace",
-            text=False,
+    async def _start_persistent_control(
+        self, sandbox, worker_generation: str
+    ) -> SessionControl:
+        credentials = await sandbox.create_connect_token.aio(
+            user_metadata={"worker_generation": worker_generation},
+            port=CONTROL_PORT,
         )
-        stderr_task = asyncio.create_task(drain_stderr(process.stderr))
+        websocket_url = credentials.url.replace("https://", "wss://", 1)
+        connection = await websocket_connect(
+            websocket_url,
+            additional_headers={"Authorization": f"Bearer {credentials.token}"},
+            compression=None,
+            proxy=None,
+            open_timeout=5,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=1024 * 1024,
+        )
+        process = _WebSocketProcess(connection)
         control = SessionControl(
             process=process,
             sandbox=sandbox,
             sandbox_id=sandbox.object_id,
-            stderr_task=stderr_task,
+            stderr_task=None,
             reader_task=None,
             queues={},
             resume_id=None,
@@ -879,7 +922,7 @@ class SandboxSessionManager:
                 },
                 worker_generation=worker_generation,
             )
-            control = await self._start_persistent_control(sandbox)
+            control = await self._start_persistent_control(sandbox, worker_generation)
             if not await self._ping_control(control, worker_generation):
                 raise SandboxError(
                     "sandbox_worker_not_ready",
@@ -1927,9 +1970,19 @@ class SandboxSessionManager:
         controls = getattr(self, "_controls", {})
         control = controls.pop(chat_session_id, None)
         if control is not None:
-            control.stderr_task.cancel()
+            if control.stderr_task is not None:
+                control.stderr_task.cancel()
             if control.reader_task is not None:
                 control.reader_task.cancel()
+            self._close_control_transport(control)
+
+    def _close_control_transport(self, control: SessionControl) -> None:
+        close = getattr(control.process, "aclose", None)
+        if close is None:
+            return
+        task = asyncio.create_task(close())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
         controls = getattr(self, "_controls", {})
@@ -1941,9 +1994,11 @@ class SandboxSessionManager:
         control = getattr(self, "_blank_controls", {}).pop(sandbox_id, None)
         getattr(self, "_blank_health_at", {}).pop(sandbox_id, None)
         if control is not None:
-            control.stderr_task.cancel()
+            if control.stderr_task is not None:
+                control.stderr_task.cancel()
             if control.reader_task is not None:
                 control.reader_task.cancel()
+            self._close_control_transport(control)
 
     async def _read_control(self, control: SessionControl) -> None:
         buffer = b""
@@ -2100,10 +2155,6 @@ class SandboxSessionManager:
         try:
             claim = self._claim_worker(chat_session_id, sandbox.object_id)
 
-            async def drain_stderr(stream) -> None:
-                async for _chunk in stream:
-                    pass
-
             controls = getattr(self, "_controls", None)
             if controls is None:
                 controls = self._controls = {}
@@ -2112,40 +2163,29 @@ class SandboxSessionManager:
                 self._drop_control(chat_session_id)
                 control = None
             if control is None:
-                worker_module = (
-                    "backend.chat_sandbox_worker.relay"
-                    if persistent
-                    else "backend.chat_sandbox_worker.supervisor"
-                )
-                process = await sandbox.exec.aio(
-                    "python",
-                    "-m",
-                    worker_module,
-                    stdout=StreamType.PIPE,
-                    stderr=StreamType.PIPE,
-                    timeout=(
-                        self.settings.chat_persistent_sandbox_lifetime_seconds
-                        if persistent
-                        else round(self.settings.chat_agent_timeout_seconds + 15)
-                    ),
-                    workdir="/workspace",
-                    text=False,
-                )
-                stderr_task = asyncio.create_task(drain_stderr(process.stderr))
                 if persistent:
-                    control = SessionControl(
-                        process=process,
-                        sandbox=sandbox,
-                        sandbox_id=sandbox.object_id,
-                        stderr_task=stderr_task,
-                        reader_task=None,
-                        queues={},
-                        resume_id=None,
+                    control = await self._start_persistent_control(
+                        sandbox, claim.worker_generation
                     )
-                    control.reader_task = asyncio.create_task(
-                        self._read_control(control)
-                    )
+                    process = control.process
                     self._controls[chat_session_id] = control
+                else:
+                    process = await sandbox.exec.aio(
+                        "python",
+                        "-m",
+                        "backend.chat_sandbox_worker.supervisor",
+                        stdout=StreamType.PIPE,
+                        stderr=StreamType.PIPE,
+                        timeout=round(self.settings.chat_agent_timeout_seconds + 15),
+                        workdir="/workspace",
+                        text=False,
+                    )
+
+                    async def drain_stderr(stream) -> None:
+                        async for _chunk in stream:
+                            pass
+
+                    stderr_task = asyncio.create_task(drain_stderr(process.stderr))
             else:
                 process = control.process
                 stderr_task = control.stderr_task
@@ -2367,7 +2407,8 @@ class SandboxSessionManager:
                         claim,
                         failure_code=(
                             "cancelled"
-                            if running_worker.cancel_requested
+                            if running_worker is not None
+                            and running_worker.cancel_requested
                             else "sandbox_worker_failed"
                         ),
                     )

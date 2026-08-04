@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import hmac
+import json
 import os
-import select
 import secrets
+import select
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
+from backend.chat_sandbox_worker.control_websocket import start_server
 from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
 from backend.chat_sandbox_worker.supervisor import (
     SUPERVISOR_PREFIX,
@@ -66,7 +67,7 @@ def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
         stderr=sys.stderr,
         env=broker_environment,
         pass_fds=(read_fd,),
-        preexec_fn=_demote("pwc-broker"),
+        preexec_fn=_demote("pwc-broker"),  # noqa: PLW1509
     )
     os.close(read_fd)
     os.write(
@@ -93,7 +94,7 @@ def _start_children() -> tuple[subprocess.Popen, subprocess.Popen]:
         stderr=sys.stderr,
         env=agent_environment,
         pass_fds=(agent_read_fd,),
-        preexec_fn=_demote(
+        preexec_fn=_demote(  # noqa: PLW1509
             "pwc-chat",
             pids_max=int(os.environ.get("PWC_CHAT_SANDBOX_PIDS_MAX", "64")),
         ),
@@ -350,9 +351,12 @@ def main() -> int:
     server.bind(str(CONTROL_SOCKET))
     CONTROL_SOCKET.chmod(0o600)
     server.listen(2)
+    websocket_server, websocket_thread = start_server()
     try:
         _serve_connections(server, broker=broker, agent=agent)
     finally:
+        websocket_server.shutdown()
+        websocket_thread.join(timeout=2)
         server.close()
         CONTROL_SOCKET.unlink(missing_ok=True)
         _stop(agent)
