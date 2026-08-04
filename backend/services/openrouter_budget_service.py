@@ -11,6 +11,7 @@ import httpx
 from backend.config import Settings
 
 OPENROUTER_KEY_STATUS_URL = "https://openrouter.ai/api/v1/key"
+OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
 
 class OpenRouterBudgetUnavailable(RuntimeError):
@@ -30,9 +31,11 @@ class OpenRouterBudgetStatus:
     remaining_usd: float
     provider_limit_usd: float | None
     provider_limit_remaining_usd: float | None
+    provider_credit_remaining_usd: float | None
     within_budget: bool
+    unavailable_reason: str | None
 
-    def sanitized(self) -> dict[str, bool | float | None]:
+    def sanitized(self) -> dict[str, bool | float | str | None]:
         return asdict(self)
 
 
@@ -81,6 +84,16 @@ def _validated_guardrail_data(
     return data, usage, provider_limit, provider_remaining
 
 
+def _validated_credit_balance(payload: object) -> float:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise OpenRouterBudgetUnavailable("OpenRouter credits response is invalid")
+    total_credits = _number(data.get("total_credits"), "total_credits")
+    total_usage = _number(data.get("total_usage"), "total_usage")
+    assert total_credits is not None and total_usage is not None
+    return max(0.0, total_credits - total_usage)
+
+
 def validate_openrouter_guardrail(
     settings: Settings, *, client: httpx.Client | None = None
 ) -> None:
@@ -127,7 +140,9 @@ async def openrouter_budget_status(
             remaining_usd=budget,
             provider_limit_usd=None,
             provider_limit_remaining_usd=None,
+            provider_credit_remaining_usd=None,
             within_budget=True,
+            unavailable_reason=None,
         )
     if not settings.chat_openrouter_api_key:
         raise OpenRouterBudgetUnavailable("OpenRouter credential is not configured")
@@ -135,12 +150,18 @@ async def openrouter_budget_status(
     owns_client = client is None
     active_client = client or httpx.AsyncClient(timeout=3, follow_redirects=False)
     try:
-        response = await active_client.get(
+        key_response = await active_client.get(
             OPENROUTER_KEY_STATUS_URL,
             headers={"Authorization": f"Bearer {settings.chat_openrouter_api_key}"},
         )
-        response.raise_for_status()
-        payload = response.json()
+        key_response.raise_for_status()
+        key_payload = key_response.json()
+        credits_response = await active_client.get(
+            OPENROUTER_CREDITS_URL,
+            headers={"Authorization": f"Bearer {settings.chat_openrouter_api_key}"},
+        )
+        credits_response.raise_for_status()
+        credits_payload = credits_response.json()
     except (httpx.HTTPError, ValueError, TypeError) as error:
         raise OpenRouterBudgetUnavailable(
             "OpenRouter budget status could not be verified"
@@ -150,13 +171,21 @@ async def openrouter_budget_status(
             await active_client.aclose()
 
     _, usage, provider_limit, provider_remaining = _validated_guardrail_data(
-        settings, payload
+        settings, key_payload
     )
+    provider_credit_remaining = _validated_credit_balance(credits_payload)
     application_remaining = max(0.0, budget - usage)
     remaining = application_remaining
     if provider_remaining is not None:
         remaining = min(remaining, provider_remaining)
-    within_budget = remaining > 0
+    workspace_available = remaining > 0
+    credits_available = provider_credit_remaining > 0
+    within_budget = workspace_available and credits_available
+    unavailable_reason = None
+    if not workspace_available:
+        unavailable_reason = "workspace_limit_exhausted"
+    elif not credits_available:
+        unavailable_reason = "shared_credits_exhausted"
     return OpenRouterBudgetStatus(
         enabled=True,
         usage_monthly_usd=usage,
@@ -165,7 +194,9 @@ async def openrouter_budget_status(
         remaining_usd=remaining,
         provider_limit_usd=provider_limit,
         provider_limit_remaining_usd=provider_remaining,
+        provider_credit_remaining_usd=provider_credit_remaining,
         within_budget=within_budget,
+        unavailable_reason=unavailable_reason,
     )
 
 

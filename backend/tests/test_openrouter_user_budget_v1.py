@@ -516,3 +516,46 @@ def test_allowance_and_workspace_failures_have_distinct_secret_safe_contracts(
         "support_url": "https://github.com/huggingface/paperswithcode-feedback",
     }
     assert "workspace" not in str(unavailable.value).lower()
+
+
+def test_usage_reports_shared_credit_failure_separately_from_user_allowance(
+    monkeypatch,
+):
+    user_status = SimpleNamespace(
+        available=True,
+        public_dict=lambda: {
+            "used_percent": 57,
+            "remaining_percent": 43,
+            "resets_at": datetime(2026, 9, 1, tzinfo=UTC),
+            "available": True,
+            "as_of": datetime(2026, 8, 4, tzinfo=UTC),
+        },
+    )
+
+    class UserBudget:
+        def __init__(self, *_args):
+            pass
+
+        def status_percentage(self, _owner):
+            return user_status
+
+    async def shared_status(_settings):
+        return SimpleNamespace(
+            within_budget=False,
+            unavailable_reason="shared_credits_exhausted",
+        )
+
+    monkeypatch.setattr(chat_router, "OpenRouterUserBudgetService", UserBudget)
+    monkeypatch.setattr(chat_router, "openrouter_budget_status", shared_status)
+
+    result = asyncio.run(
+        chat_router.get_openrouter_usage(
+            {"hf_user_id": "hf-user"},
+            SimpleNamespace(),
+            _settings(chat_openrouter_server_funded_enabled=True),
+        )
+    )
+
+    assert result["remaining_percent"] == 43
+    assert result["available"] is False
+    assert result["unavailable_reason"] == "shared_credits_exhausted"

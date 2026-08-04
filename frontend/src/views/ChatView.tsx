@@ -93,11 +93,16 @@ const OpenRouterUsageNotice: React.FC<{
   if (!enabled || !usageQuery.data) return null;
   const usage = usageQuery.data;
   const reset = resetTimeLabels(usage.resets_at);
+  const sharedUnavailable = usage.unavailable_reason === "shared_credits_exhausted"
+    || usage.unavailable_reason === "workspace_limit_exhausted"
+    || usage.unavailable_reason === "provider_status_unavailable";
   return <div className="chat-openrouter-usage" role="status">
     <span>
-      <strong>{usage.remaining_percent}% left</strong> this month · resets {reset.local}
+      {sharedUnavailable
+        ? <><strong>Shared OpenRouter credits unavailable</strong> · {usage.remaining_percent}% of your allowance remains</>
+        : <><strong>{usage.remaining_percent}% left</strong> this month · resets {reset.local}</>}
     </span>
-    {(usage.remaining_percent === 0 || byokExpected) && <span>
+    {(!usage.available || byokExpected) && <span>
       {fallbackEnabled
         ? "Your OpenRouter account will be billed on this explicit send."
         : <><a href="/settings#openrouter-byok">Connect your own key in Settings</a> to continue.</>}

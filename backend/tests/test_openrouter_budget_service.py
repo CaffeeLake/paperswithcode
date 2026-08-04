@@ -29,10 +29,22 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-def _client(payload: dict, *, status_code: int = 200) -> httpx.AsyncClient:
+def _client(
+    payload: dict,
+    *,
+    credits_payload: dict | None = None,
+    status_code: int = 200,
+) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer secret"
-        return httpx.Response(status_code, json=payload)
+        response_payload = (
+            credits_payload
+            if request.url.path.endswith("/credits") and credits_payload is not None
+            else {"data": {"total_credits": 10, "total_usage": 1}}
+            if request.url.path.endswith("/credits")
+            else payload
+        )
+        return httpx.Response(status_code, json=response_payload)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -100,8 +112,35 @@ def test_provider_reported_monthly_usage_preserves_reserve():
     assert status.enabled is True
     assert status.usage_monthly_usd == 1.25
     assert status.remaining_usd == 3.75
+    assert status.provider_credit_remaining_usd == 9
     assert status.within_budget is True
+    assert status.unavailable_reason is None
     assert "secret" not in str(status.sanitized())
+
+
+def test_exhausted_account_credits_override_available_workspace_limit():
+    async def run():
+        async with _client(
+            {
+                "data": {
+                    "usage_monthly": 0.12,
+                    "limit": 5,
+                    "limit_remaining": 4.88,
+                    "limit_reset": "monthly",
+                    "is_management_key": False,
+                    "is_provisioning_key": False,
+                }
+            },
+            credits_payload={"data": {"total_credits": 10, "total_usage": 10.03}},
+        ) as client:
+            return await openrouter_budget_status(_settings(), client=client)
+
+    status = asyncio.run(run())
+
+    assert status.remaining_usd == 4.88
+    assert status.provider_credit_remaining_usd == 0
+    assert status.within_budget is False
+    assert status.unavailable_reason == "shared_credits_exhausted"
 
 
 def test_provider_limit_must_match_configured_hard_guardrail():

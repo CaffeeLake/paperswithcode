@@ -273,7 +273,7 @@ const SettingsView: React.FC = () => {
               Papers With Code pays for these OpenRouter requests and provides free but
               limited monthly usage. Your own key is available as an optional fallback.
             </p>
-            {usage && (usage.available || usage.remaining_percent === 0) ? <div className="settings-usage-row">
+            {usage ? <div className="settings-usage-row">
               <div className="settings-usage-heading">
                 <div>
                   <div className="settings-row-label">Monthly OpenRouter usage</div>
@@ -281,7 +281,7 @@ const SettingsView: React.FC = () => {
                     Resets {resetLabels?.local} <span aria-label="UTC reset time">({resetLabels?.utc})</span>
                   </div>
                 </div>
-                <strong>{usage.remaining_percent}% left</strong>
+                <strong>{usage.available ? `${usage.remaining_percent}% left` : "Unavailable"}</strong>
               </div>
               <div
                 className="settings-usage-track"
@@ -293,9 +293,11 @@ const SettingsView: React.FC = () => {
               >
                 <span style={{ width: `${usage.remaining_percent}%` }} />
               </div>
-              {usage.remaining_percent === 0 && <p className="settings-limit-note">
-                Your free monthly allowance is depleted. Luna and Terra are
-                temporarily unavailable unless you enable your own key below.
+              {!usage.available && <p className="settings-limit-note">
+                {usage.unavailable_reason === "personal_allowance_exhausted"
+                  ? "Your free monthly allowance is depleted."
+                  : `The shared OpenRouter credits are currently unavailable. ${usage.remaining_percent}% of your personal allowance remains.`}
+                {" Luna and Terra are temporarily unavailable unless you enable your own key below."}
               </p>}
             </div> : <div className="settings-billing-loading">
               {usageQuery.isError || usage

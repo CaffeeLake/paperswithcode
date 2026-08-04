@@ -58,6 +58,7 @@ from backend.services.deployment_lifecycle import deployment_lifecycle
 from backend.services.openrouter_budget_service import (
     OpenRouterBudgetExceeded,
     OpenRouterBudgetUnavailable,
+    openrouter_budget_status,
     require_openrouter_budget,
 )
 from backend.services.openrouter_byok_service import (
@@ -358,13 +359,13 @@ def chat_sandbox_spend(environment: str | None = None):
 
 
 @router.get("/usage")
-def get_openrouter_usage(
+async def get_openrouter_usage(
     user: dict = Depends(require_user),
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
     try:
-        status = OpenRouterUserBudgetService(db, settings).status_percentage(
+        user_status = OpenRouterUserBudgetService(db, settings).status_percentage(
             user["hf_user_id"]
         )
     except Exception as error:
@@ -376,7 +377,24 @@ def get_openrouter_usage(
                 "message": "OpenRouter usage is temporarily unavailable.",
             },
         ) from None
-    return status.public_dict()
+    result = user_status.public_dict()
+    try:
+        shared_status = await openrouter_budget_status(settings)
+    except OpenRouterBudgetUnavailable:
+        result.update(
+            available=False,
+            unavailable_reason="provider_status_unavailable",
+        )
+        return result
+    if not user_status.available:
+        unavailable_reason = "personal_allowance_exhausted"
+    else:
+        unavailable_reason = shared_status.unavailable_reason
+    result.update(
+        available=user_status.available and shared_status.within_budget,
+        unavailable_reason=unavailable_reason,
+    )
+    return result
 
 
 @router.get("/openrouter-key")

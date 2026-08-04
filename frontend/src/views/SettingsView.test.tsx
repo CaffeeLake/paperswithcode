@@ -188,6 +188,40 @@ describe("SettingsView organization billing", () => {
     expect(screen.getByRole("switch", { name: /Use my OpenRouter key/ })).not.toBeChecked();
   });
 
+  it("does not present personal allowance as usable when shared credits are depleted", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      const payload = url.includes("/me/inference-billing")
+        ? personalStatus
+        : url.includes("/chat/usage")
+          ? {
+              used_percent: 57,
+              remaining_percent: 43,
+              resets_at: "2026-09-01T00:00:00Z",
+              available: false,
+              unavailable_reason: "shared_credits_exhausted",
+              as_of: "2026-08-04T17:43:39Z",
+            }
+          : {
+              connected: false,
+              verified_at: null,
+              fallback_enabled: false,
+            };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    renderSettings();
+
+    expect(await screen.findByText("Unavailable")).toBeVisible();
+    expect(screen.getByText(/shared OpenRouter credits are currently unavailable/i)).toHaveTextContent(
+      "43% of your personal allowance remains",
+    );
+    expect(screen.queryByText("43% left")).not.toBeInTheDocument();
+  });
+
   it("does not flash the sign-in prompt while the account is loading", () => {
     mockAuth.state = { user: null, isLoading: true };
     mockCanPersist.value = false;
