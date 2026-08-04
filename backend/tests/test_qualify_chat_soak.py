@@ -72,6 +72,7 @@ def test_staging_qualification_client_uses_active_slot_socket(tmp_path, monkeypa
     assert seen["base_url"] == "http://staging-active"
     assert seen["timeout"] == 30
     assert seen["cookies"] == {"session": "token"}
+    assert seen["headers"] == {"Origin": "https://staging.paperswithcode.co"}
 
 
 def test_qualification_scripts_do_not_reference_retired_fixed_port():

@@ -10,6 +10,7 @@ import httpx
 DEFAULT_ACTIVE_SOCKET = Path(
     "/srv/paperswithcode/environments/staging/active/backend.sock"
 )
+STAGING_ORIGIN = "https://staging.paperswithcode.co"
 
 
 def active_socket() -> Path:
@@ -29,4 +30,5 @@ def client(
         transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
         timeout=timeout,
         cookies=cookies,
+        headers={"Origin": STAGING_ORIGIN},
     )
