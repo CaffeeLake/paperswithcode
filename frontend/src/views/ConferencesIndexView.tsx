@@ -97,6 +97,15 @@ const ConferencesIndexView: React.FC = () => {
             <Link to="/ai-deadlines" className="underline underline-offset-2 hover:text-foreground">
               here
             </Link>
+            . Conference information is based on{" "}
+            <a
+              href="https://huggingface.co/ai-conferences"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Hugging Face AI Conferences
+            </a>
             .
           </div>
         </div>
