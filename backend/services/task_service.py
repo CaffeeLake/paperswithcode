@@ -676,10 +676,10 @@ class TaskService:
     def get_task_recommended_frameworks(
         self, task_id: str
     ) -> List[RecommendedFramework]:
-        """Return a task's curated GitHub repositories in display order."""
+        """Return a task's curated frameworks in display order."""
         try:
             rows = (
-                self.db.query(DBRepository)
+                self.db.query(DBRepository, DBFramework)
                 .join(
                     DBFramework,
                     DBFramework.repository_id == DBRepository.id,
@@ -696,7 +696,19 @@ class TaskService:
                 )
                 .all()
             )
-            return [RecommendedFramework.model_validate(row) for row in rows]
+            return [
+                RecommendedFramework(
+                    id=repository.id,
+                    framework_id=framework.id,
+                    framework_slug=framework.slug,
+                    framework_name=framework.name,
+                    url=repository.url,
+                    owner=repository.owner,
+                    name=repository.name,
+                    num_stars=repository.num_stars,
+                )
+                for repository, framework in rows
+            ]
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve recommended frameworks: {str(e)}")
 

@@ -401,6 +401,9 @@ export interface TaskSubtaskBenchmarks {
 
 export interface RecommendedFramework {
   id: string;
+  framework_id: string;
+  framework_slug: string;
+  framework_name: string;
   url: string;
   owner?: string;
   name?: string;

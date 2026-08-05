@@ -2026,17 +2026,20 @@ class TaskSubtaskBenchmarks(BaseModel):
 
 
 class RecommendedFramework(BaseModel):
-    """GitHub repository recommended as a starting point for a task."""
+    """First-class framework recommended as a starting point for a task."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: str = Field(..., description="Repository ID")
+    framework_id: str = Field(..., description="Framework ID")
+    framework_slug: str = Field(..., description="Framework page slug")
+    framework_name: str = Field(..., description="Framework display name")
     url: str = Field(..., description="GitHub repository URL")
     owner: Optional[str] = Field(None, description="GitHub repository owner")
     name: Optional[str] = Field(None, description="GitHub repository name")
     num_stars: int = Field(default=0, description="Current GitHub star count")
 
-    @field_validator("id", mode="before")
+    @field_validator("id", "framework_id", mode="before")
     @classmethod
     def ensure_string_id(cls, v):
         return str(v) if v is not None else v
@@ -2103,8 +2106,8 @@ class TaskPage(BaseModel):
     recommended_frameworks: List[RecommendedFramework] = Field(
         default_factory=list,
         description=(
-            "Ordered GitHub repositories recommended for this task, from "
-            "`task_recommended_frameworks`, with current star counts"
+            "Ordered first-class frameworks recommended for this task, from "
+            "`task_frameworks`, with repository metadata and current star counts"
         ),
     )
     children: List[Task] = Field(

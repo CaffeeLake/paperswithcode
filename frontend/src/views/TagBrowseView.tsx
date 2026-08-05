@@ -8,9 +8,8 @@ import BenchmarkTrendSparkline from "@/components/BenchmarkTrendSparkline";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import MarkdownText from "@/components/MarkdownText";
 import { apiClient } from "@/lib/api";
-import type { Dataset, Task, TrendingBenchmark } from "@/lib/api";
+import type { Dataset, RecommendedFramework, Task, TrendingBenchmark } from "@/lib/api";
 import { assetUrl } from "@/lib/apiUrl";
-import { safeExternalHref } from "@/lib/safeExternalHref";
 import { usePreferences } from "@/lib/preferencesContext";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfiniteTaskPapers } from "@/hooks/usePapers";
@@ -45,6 +44,30 @@ const formatStarCount = (stars: number) =>
     notation: stars >= 1000 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(stars);
+
+export const RecommendedFrameworkLinks: React.FC<{
+  frameworks: RecommendedFramework[];
+}> = ({ frameworks }) => {
+  if (frameworks.length === 0) return null;
+
+  return (
+    <div className="task-framework-links">
+      <span className="task-framework-links-label">Recommended frameworks</span>
+      {frameworks.map((framework) => (
+        <Link
+          key={framework.framework_id}
+          to={`/papers?framework=${encodeURIComponent(framework.framework_slug)}`}
+          className="task-framework-link"
+        >
+          <span>{framework.framework_name}</span>
+          <span className="task-framework-link-stars">
+            ★ {formatStarCount(framework.num_stars)}
+          </span>
+        </Link>
+      ))}
+    </div>
+  );
+};
 
 const sortSubtasksForDisplay = (subtasks: Task[]) =>
   [...subtasks].sort((a, b) => {
@@ -318,31 +341,7 @@ const TagBrowseView: React.FC = () => {
               <span className="num">{commonMethods.length}+</span>METHODS USED
             </span>
           </div>
-          {recommendedFrameworks.length > 0 && (
-            <div className="task-framework-links">
-              <span className="task-framework-links-label">Recommended frameworks</span>
-              {recommendedFrameworks.map((framework) => {
-                const label = framework.owner && framework.name
-                  ? `${framework.owner}/${framework.name}`
-                  : framework.name || framework.url.replace(/^https?:\/\/github\.com\//, "");
-                return (
-                  <a
-                    key={framework.id}
-                    href={safeExternalHref(framework.url) ?? undefined}
-                    className="task-framework-link"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Github size={13} strokeWidth={1.8} aria-hidden="true" />
-                    <span>{label}</span>
-                    <span className="task-framework-link-stars">
-                      ★ {formatStarCount(framework.num_stars)}
-                    </span>
-                  </a>
-                );
-              })}
-            </div>
-          )}
+          <RecommendedFrameworkLinks frameworks={recommendedFrameworks} />
         </div>
         {task.image_url && (
           <figure

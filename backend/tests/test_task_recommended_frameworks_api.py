@@ -2,7 +2,7 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import BigInteger, create_engine
+from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -42,6 +42,11 @@ engine = create_engine(
     poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@event.listens_for(engine, "connect")
+def _register_jsonb_typeof(connection, _connection_record):
+    connection.create_function("jsonb_typeof", 1, lambda _value: "array")
 
 
 def override_get_database_session():
@@ -120,6 +125,9 @@ def test_task_page_returns_frameworks_in_display_order_with_stars(client):
     assert response.json()["recommended_frameworks"] == [
         {
             "id": "10",
+            "framework_id": "30",
+            "framework_slug": "transformers",
+            "framework_name": "Transformers",
             "url": "https://github.com/huggingface/transformers",
             "owner": "huggingface",
             "name": "transformers",
@@ -127,6 +135,9 @@ def test_task_page_returns_frameworks_in_display_order_with_stars(client):
         },
         {
             "id": "11",
+            "framework_id": "31",
+            "framework_slug": "timm",
+            "framework_name": "timm",
             "url": "https://github.com/huggingface/pytorch-image-models",
             "owner": "huggingface",
             "name": "pytorch-image-models",
