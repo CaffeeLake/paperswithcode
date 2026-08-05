@@ -57,6 +57,7 @@ describe("PapersListView repository scopes", () => {
             framework_name: "LeRobot",
             repository: "huggingface/lerobot",
             github_url: "https://github.com/huggingface/lerobot",
+            num_stars: 26_414,
             introducing_paper_arxiv_id: "2602.22818",
             recommended_tasks: [{ id: "9", slug: "robotics", name: "Robotics" }],
           },
@@ -90,11 +91,11 @@ describe("PapersListView repository scopes", () => {
       "href",
       "/frameworks",
     );
-    expect(screen.getByText(/GitHub repository/)).toHaveTextContent("huggingface/lerobot");
+    expect(screen.queryByText(/GitHub repository/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
     expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();
     expect(screen.queryByText("Top Domains")).toBeNull();
-    expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "huggingface/lerobot ★ 26.4K" })).toHaveAttribute(
       "href",
       "https://github.com/huggingface/lerobot",
     );

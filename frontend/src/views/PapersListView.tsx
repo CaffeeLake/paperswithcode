@@ -21,6 +21,12 @@ const SORT_OPTIONS: Array<[SortKey, string]> = [
   ["cited", "most cited"],
 ];
 
+const formatStarCount = (stars: number) =>
+  new Intl.NumberFormat("en", {
+    notation: stars >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(stars);
+
 const PapersListView: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const framework = searchParams.get("framework") || undefined;
@@ -150,7 +156,9 @@ const PapersListView: React.FC = () => {
           </h1>
           <div className="feed-subtitle">
             {isRepositoryFeed
-              ? scope?.repository
+              ? scope?.kind === "framework"
+                ? totalCount > 0 && `${totalCount.toLocaleString()} papers.`
+                : scope?.repository
                 ? <>GitHub repository <strong>{scope.repository}</strong>. {totalCount > 0 && `${totalCount.toLocaleString()} papers.`}</>
                 : "Repository-scoped paper feed."
               : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
@@ -165,10 +173,19 @@ const PapersListView: React.FC = () => {
                   href={scope.github_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="framework-link"
+                  className={scope.kind === "framework" ? "task-framework-link" : "framework-link"}
                 >
                   <Icon name="github" size={13} />
-                  GitHub
+                  {scope.kind === "framework" ? (
+                    <>
+                      <span>{scope.repository || "GitHub"}</span>
+                      {scope.num_stars != null && (
+                        <span className="task-framework-link-stars">
+                          ★ {formatStarCount(scope.num_stars)}
+                        </span>
+                      )}
+                    </>
+                  ) : "GitHub"}
                 </a>
               )}
               {scope.kind === "framework" && scope.introducing_paper_arxiv_id && (

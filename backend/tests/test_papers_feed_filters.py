@@ -245,6 +245,7 @@ def test_framework_scope_includes_resource_links():
         owner="huggingface",
         name="lerobot",
         url="https://github.com/huggingface/lerobot",
+        num_stars=26_414,
     )
     framework = SimpleNamespace(
         id=7,
@@ -266,6 +267,7 @@ def test_framework_scope_includes_resource_links():
 
     assert repository_id == 41
     assert scope.github_url == repository.url
+    assert scope.num_stars == repository.num_stars
     assert scope.introducing_paper_arxiv_id == introducing_paper.arxiv_id
     assert [task.slug for task in scope.recommended_tasks] == ["robotics"]
 

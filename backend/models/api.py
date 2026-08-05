@@ -287,6 +287,7 @@ class PaperFeedScope(BaseModel):
     framework_slug: Optional[str] = None
     framework_name: Optional[str] = None
     github_url: Optional[str] = None
+    num_stars: Optional[int] = None
     introducing_paper_arxiv_id: Optional[str] = None
     recommended_tasks: List["TaskSummary"] = Field(
         default_factory=list,

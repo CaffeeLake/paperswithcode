@@ -1150,6 +1150,7 @@ class PaperService:
                 framework_slug=db_framework.slug,
                 framework_name=db_framework.name,
                 github_url=db_repository.url if db_repository else None,
+                num_stars=db_repository.num_stars if db_repository else None,
                 introducing_paper_arxiv_id=(
                     introducing_paper.arxiv_id if introducing_paper else None
                 ),

@@ -662,6 +662,7 @@ export interface PaginatedResponse<T> {
     framework_slug?: string | null;
     framework_name?: string | null;
     github_url?: string | null;
+    num_stars?: number | null;
     introducing_paper_arxiv_id?: string | null;
     recommended_tasks?: Task[];
   } | null;
