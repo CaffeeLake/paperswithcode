@@ -1242,6 +1242,12 @@ class Task(BaseModel):
     paper_count: Optional[int] = Field(
         None, description="Number of papers for this task"
     )
+    benchmark_count: Optional[int] = Field(
+        None, description="Number of benchmarks directly linked to this task"
+    )
+    evaluation_count: Optional[int] = Field(
+        None, description="Number of stored evaluation rows for this task"
+    )
     image_url: Optional[str] = Field(
         None, description="URL to task image/visual representation"
     )

@@ -146,6 +146,48 @@ def tasks_with_uneven_paper_counts():
         PaperTask(paper_id=paper_id, task_id=task_id)
         for paper_id, task_id in associations
     )
+    db.add_all(
+        [
+            DBDataset(id=1, name="LM Benchmark A", slug="lm-benchmark-a"),
+            DBDataset(id=2, name="LM Benchmark B", slug="lm-benchmark-b"),
+            DBDataset(id=3, name="Robotics Benchmark", slug="robotics-benchmark"),
+        ]
+    )
+    db.add_all(
+        [
+            TaskDataset(task_id=1, dataset_id=1),
+            TaskDataset(task_id=1, dataset_id=2),
+            TaskDataset(task_id=2, dataset_id=3),
+        ]
+    )
+    db.add_all(
+        [
+            DBEvaluation(
+                id=1,
+                paper_id=1,
+                task_id=1,
+                dataset_id=1,
+                model_name="LM A",
+                metrics={"Accuracy": 1},
+            ),
+            DBEvaluation(
+                id=2,
+                paper_id=2,
+                task_id=1,
+                dataset_id=2,
+                model_name="LM B",
+                metrics={"Accuracy": 2},
+            ),
+            DBEvaluation(
+                id=3,
+                paper_id=5,
+                task_id=2,
+                dataset_id=3,
+                model_name="Robot A",
+                metrics={"Success": 3},
+            ),
+        ]
+    )
     db.commit()
     db.close()
 
@@ -194,6 +236,14 @@ def test_tasks_default_ordering_unaffected(client, tasks_with_uneven_paper_count
     assert counts_by_name["Robotics"] == 3
     assert counts_by_name["Object Detection"] == 1
     assert counts_by_name["Speech Recognition"] == 0
+
+    tasks_by_name = {task["name"]: task for task in data["results"]}
+    assert tasks_by_name["Language Modeling"]["benchmark_count"] == 2
+    assert tasks_by_name["Language Modeling"]["evaluation_count"] == 2
+    assert tasks_by_name["Robotics"]["benchmark_count"] == 1
+    assert tasks_by_name["Robotics"]["evaluation_count"] == 1
+    assert tasks_by_name["Speech Recognition"]["benchmark_count"] == 0
+    assert tasks_by_name["Speech Recognition"]["evaluation_count"] == 0
 
 
 def test_task_page_returns_research_trends(client):
@@ -261,6 +311,30 @@ def parent_task_with_popular_subtask():
 
     db.add(PaperTask(paper_id=1, task_id=10))
     db.add_all(PaperTask(paper_id=i, task_id=11) for i in range(2, 7))
+    db.add_all(
+        [
+            DBDataset(id=10, name="Graph Benchmark", slug="graph-benchmark"),
+            DBDataset(id=11, name="Node Benchmark", slug="node-benchmark"),
+            TaskDataset(task_id=10, dataset_id=10),
+            TaskDataset(task_id=11, dataset_id=11),
+            DBEvaluation(
+                id=10,
+                paper_id=1,
+                task_id=10,
+                dataset_id=10,
+                model_name="Graph Model",
+                metrics={"Accuracy": 1},
+            ),
+            DBEvaluation(
+                id=11,
+                paper_id=2,
+                task_id=11,
+                dataset_id=11,
+                model_name="Node Model",
+                metrics={"Accuracy": 2},
+            ),
+        ]
+    )
     db.commit()
     db.close()
 
@@ -280,6 +354,8 @@ def test_public_domain_lists_hide_child_subtasks(
     area = taxonomy_response.json()["results"][0]
     taxonomy_slugs = [task["slug"] for task in area["tasks"]]
     assert taxonomy_slugs == ["graph-machine-learning"]
+    assert area["tasks"][0]["benchmark_count"] == 1
+    assert area["tasks"][0]["evaluation_count"] == 1
 
 
 def test_grouped_task_benchmarks_are_bounded_and_popular_first(client):

@@ -18,7 +18,9 @@ from backend.models.database import (
     PaperTask,
     PaperRepository as DBPaperRepository,
     Repository as DBRepository,
+    Evaluation as DBEvaluation,
     Framework as DBFramework,
+    TaskDataset,
     TaskFramework as DBTaskFramework,
     TaskSisterTask as DBTaskSisterTask,
 )
@@ -107,7 +109,11 @@ class TaskService:
         return query.filter(~newer_for_shared_repo)
 
     def _build_task_model(
-        self, db_task: DBTask, paper_count: int | None = None
+        self,
+        db_task: DBTask,
+        paper_count: int | None = None,
+        benchmark_count: int | None = None,
+        evaluation_count: int | None = None,
     ) -> Task:
         return Task(
             id=str(db_task.id),
@@ -120,6 +126,8 @@ class TaskService:
             area_id=str(db_task.area_id) if db_task.area_id else None,
             level=db_task.level,
             paper_count=paper_count or 0,
+            benchmark_count=benchmark_count,
+            evaluation_count=evaluation_count,
             image_url=entity_image_url(
                 "tasks",
                 db_task.slug,
@@ -197,13 +205,53 @@ class TaskService:
             return self.search_tasks(query=search, page=page, page_size=page_size)
 
         try:
-            # Base query: aggregate paper count per task via outer join so tasks
-            # with zero papers are still represented.
-            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            # Pre-aggregate each relation independently so joining all three
+            # count sources cannot multiply rows. This keeps the list endpoint
+            # to one bounded query while returning exact direct-association
+            # counts for papers, benchmarks, and stored evaluation rows.
+            paper_counts = (
+                self.db.query(
+                    PaperTask.task_id.label("task_id"),
+                    func.count(PaperTask.paper_id).label("paper_count"),
+                )
+                .group_by(PaperTask.task_id)
+                .subquery()
+            )
+            benchmark_counts = (
+                self.db.query(
+                    TaskDataset.task_id.label("task_id"),
+                    func.count(TaskDataset.dataset_id).label("benchmark_count"),
+                )
+                .group_by(TaskDataset.task_id)
+                .subquery()
+            )
+            evaluation_counts = (
+                self.db.query(
+                    DBEvaluation.task_id.label("task_id"),
+                    func.count(DBEvaluation.id).label("evaluation_count"),
+                )
+                .group_by(DBEvaluation.task_id)
+                .subquery()
+            )
+            paper_count_col = func.coalesce(paper_counts.c.paper_count, 0).label(
+                "paper_count"
+            )
+            benchmark_count_col = func.coalesce(
+                benchmark_counts.c.benchmark_count, 0
+            ).label("benchmark_count")
+            evaluation_count_col = func.coalesce(
+                evaluation_counts.c.evaluation_count, 0
+            ).label("evaluation_count")
             query = (
-                self.db.query(DBTask, paper_count_col)
-                .outerjoin(PaperTask, DBTask.id == PaperTask.task_id)
-                .group_by(DBTask.id)
+                self.db.query(
+                    DBTask,
+                    paper_count_col,
+                    benchmark_count_col,
+                    evaluation_count_col,
+                )
+                .outerjoin(paper_counts, paper_counts.c.task_id == DBTask.id)
+                .outerjoin(benchmark_counts, benchmark_counts.c.task_id == DBTask.id)
+                .outerjoin(evaluation_counts, evaluation_counts.c.task_id == DBTask.id)
             )
 
             # Apply filters
@@ -250,8 +298,15 @@ class TaskService:
 
             # Convert to API models
             tasks = []
-            for db_task, paper_count in results:
-                tasks.append(self._build_task_model(db_task, int(paper_count or 0)))
+            for db_task, paper_count, benchmark_count, evaluation_count in results:
+                tasks.append(
+                    self._build_task_model(
+                        db_task,
+                        int(paper_count or 0),
+                        int(benchmark_count or 0),
+                        int(evaluation_count or 0),
+                    )
+                )
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None

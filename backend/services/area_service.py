@@ -227,15 +227,14 @@ class AreaService:
 
     def get_areas_with_tasks(self) -> AreasWithTasks:
         """
-        Return every area together with its tasks (and per-task paper counts)
+        Return every area together with its tasks and direct association counts
         in a single response.
 
         Uses two queries:
           1. All areas, ordered by name.
-          2. All top-level tasks LEFT JOIN paper_tasks GROUP BY task.id,
-             fetching paper_count in one aggregate pass instead of one count
-             per task. Subtasks stay on their parent task pages rather than
-             appearing as peer domains in the top-level browse index.
+          2. All top-level tasks joined to independent paper, benchmark, and
+             evaluation aggregates. Subtasks stay on their parent task pages
+             rather than appearing as peer domains in the top-level browse index.
 
         This collapses what used to be `1 + N_areas` HTTP requests from the
         frontend (one for `/areas/`, then one `/areas/{id}/tasks` per area) into
@@ -244,19 +243,48 @@ class AreaService:
         try:
             area_rows = self.db.query(DBArea).order_by(DBArea.name).all()
 
-            paper_count_col = func.count(PaperTask.paper_id).label("paper_count")
+            paper_counts = (
+                self.db.query(
+                    PaperTask.task_id.label("task_id"),
+                    func.count(PaperTask.paper_id).label("paper_count"),
+                )
+                .group_by(PaperTask.task_id)
+                .subquery()
+            )
+            benchmark_counts = (
+                self.db.query(
+                    TaskDataset.task_id.label("task_id"),
+                    func.count(TaskDataset.dataset_id).label("benchmark_count"),
+                )
+                .group_by(TaskDataset.task_id)
+                .subquery()
+            )
+            evaluation_counts = (
+                self.db.query(
+                    DBEvaluation.task_id.label("task_id"),
+                    func.count(DBEvaluation.id).label("evaluation_count"),
+                )
+                .group_by(DBEvaluation.task_id)
+                .subquery()
+            )
             task_rows = (
-                self.db.query(DBTask, paper_count_col)
-                .outerjoin(PaperTask, DBTask.id == PaperTask.task_id)
+                self.db.query(
+                    DBTask,
+                    func.coalesce(paper_counts.c.paper_count, 0),
+                    func.coalesce(benchmark_counts.c.benchmark_count, 0),
+                    func.coalesce(evaluation_counts.c.evaluation_count, 0),
+                )
+                .outerjoin(paper_counts, paper_counts.c.task_id == DBTask.id)
+                .outerjoin(benchmark_counts, benchmark_counts.c.task_id == DBTask.id)
+                .outerjoin(evaluation_counts, evaluation_counts.c.task_id == DBTask.id)
                 .filter(DBTask.parent_id.is_(None))
                 .filter(DBTask.level == 0)
-                .group_by(DBTask.id)
                 .order_by(DBTask.name)
                 .all()
             )
 
             tasks_by_area: dict[Optional[int], list[Task]] = {}
-            for db_task, paper_count in task_rows:
+            for db_task, paper_count, benchmark_count, evaluation_count in task_rows:
                 api_task = Task(
                     id=str(db_task.id),
                     name=db_task.name,
@@ -267,6 +295,8 @@ class AreaService:
                     area_id=str(db_task.area_id) if db_task.area_id else None,
                     level=db_task.level,
                     paper_count=paper_count or 0,
+                    benchmark_count=benchmark_count or 0,
+                    evaluation_count=evaluation_count or 0,
                     image_url=entity_image_url(
                         "tasks",
                         db_task.slug,
