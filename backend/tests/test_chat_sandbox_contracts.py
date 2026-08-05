@@ -1699,7 +1699,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-6hCHYzh2hW9qy7cRPTVm7h"
+    assert MODAL_IMAGE_ID == "im-INcgYKyuRtx2tbZzAkeBFq"
     assert WORKER_CONTRACT_VERSION == "34"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
