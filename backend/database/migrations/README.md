@@ -61,6 +61,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_task_recommended_frameworks.sql` | Ordered task-to-repository framework recommendations, with initial image-classification and object-detection data |
 | `add_framework_catalog.sql` | First-class framework domains, categories, entities, platforms, canonical papers, repositories, and task links |
 | `add_embedding_models_frameworks.sql` | Sentence Transformers and Text Embeddings Inference catalog entries plus ordered Embedding models task recommendations |
+| `add_nemo_speech_framework.sql` | NVIDIA NeMo Speech catalog entry plus recommendations for its supported speech and audio tasks |
 | `add_paper_tasks_source.sql` | `paper_tasks.source` |
 | `add_methods_scanned_at_to_papers.sql` | `papers.methods_scanned_at` |
 | `add_method_source_paper_id.sql` | `methods.source_paper_id` |
