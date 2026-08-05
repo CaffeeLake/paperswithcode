@@ -246,6 +246,23 @@ def test_delete_session_reports_success_only_after_durable_and_workspace_verific
     assert events == ["delete", "verify-workspace", "commit", "verify-db"]
 
 
+def test_deletion_verifier_uses_the_persisted_share_foreign_key():
+    class EmptyResult:
+        @staticmethod
+        def first():
+            return None
+
+    class EmptyDB:
+        @staticmethod
+        def execute(_query):
+            return EmptyResult()
+
+    service = ChatSessionService(EmptyDB(), Settings())
+    receipt = ChatDeletionReceipt(uuid.uuid4(), None, None, None, None)
+
+    assert service.deletion_complete(receipt) is True
+
+
 @pytest.mark.parametrize("failure", ["database", "workspace"])
 def test_delete_session_never_reports_success_when_removal_is_unverified(
     monkeypatch, failure: str

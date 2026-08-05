@@ -1045,7 +1045,7 @@ class ChatSessionService:
             select(ChatMessageRecord.id).where(
                 ChatMessageRecord.session_id == receipt.session_id
             ),
-            select(ChatShare.id).where(ChatShare.session_id == receipt.session_id),
+            select(ChatShare.id).where(ChatShare.chat_session_id == receipt.session_id),
             select(ChatSandboxLease.chat_session_id).where(
                 ChatSandboxLease.chat_session_id == receipt.session_id
             ),
