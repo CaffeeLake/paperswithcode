@@ -164,37 +164,43 @@ const PapersListView: React.FC = () => {
               : <>Search the full corpus. {totalCount > 0 && `${totalCount.toLocaleString()} papers indexed.`}</>}
           </div>
           {isRepositoryFeed && scope && (
-            <div className="framework-card-links paper-feed-scope-links">
-              {scope.kind === "framework" && scope.recommended_tasks?.map((task) =>
-                task.slug ? <TagChip key={task.id} slug={task.slug} label={task.name} /> : null
-              )}
-              {scope.github_url && (
-                <a
-                  href={scope.github_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={scope.kind === "framework" ? "task-framework-link" : "framework-link"}
-                >
-                  <Icon name="github" size={13} />
-                  {scope.kind === "framework" ? (
-                    <>
-                      <span>{scope.repository || "GitHub"}</span>
-                      {scope.num_stars != null && (
-                        <span className="task-framework-link-stars">
-                          ★ {formatStarCount(scope.num_stars)}
-                        </span>
-                      )}
-                    </>
-                  ) : "GitHub"}
-                </a>
-              )}
-              {scope.kind === "framework" && scope.introducing_paper_arxiv_id && (
-                <Link
-                  to={`/paper/${scope.introducing_paper_arxiv_id}`}
-                  className="framework-link"
-                >
-                  Introducing paper
-                </Link>
+            <div className="paper-feed-scope-links">
+              <div className="paper-feed-primary-links">
+                {scope.github_url && (
+                  <a
+                    href={scope.github_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={scope.kind === "framework" ? "task-framework-link" : "framework-link"}
+                  >
+                    <Icon name="github" size={13} />
+                    {scope.kind === "framework" ? (
+                      <>
+                        <span>{scope.repository || "GitHub"}</span>
+                        {scope.num_stars != null && (
+                          <span className="task-framework-link-stars">
+                            ★ {formatStarCount(scope.num_stars)}
+                          </span>
+                        )}
+                      </>
+                    ) : "GitHub"}
+                  </a>
+                )}
+                {scope.kind === "framework" && scope.introducing_paper_arxiv_id && (
+                  <Link
+                    to={`/paper/${scope.introducing_paper_arxiv_id}`}
+                    className="framework-link"
+                  >
+                    Introducing paper
+                  </Link>
+                )}
+              </div>
+              {scope.kind === "framework" && scope.recommended_tasks && scope.recommended_tasks.length > 0 && (
+                <div className="paper-feed-task-tags">
+                  {scope.recommended_tasks.map((task) =>
+                    task.slug ? <TagChip key={task.id} slug={task.slug} label={task.name} /> : null
+                  )}
+                </div>
               )}
             </div>
           )}

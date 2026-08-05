@@ -2664,6 +2664,17 @@ a.paper-resource.is-link:focus-visible {
 }
 .paper-feed-scope-links {
   margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.paper-feed-primary-links,
+.paper-feed-task-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 .papers-feed-layout-scoped {
   display: block;

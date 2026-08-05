@@ -95,18 +95,30 @@ describe("PapersListView repository scopes", () => {
     expect(screen.queryByRole("button", { name: "Has code" })).toBeNull();
     expect(screen.getByRole("button", { name: "Has artifacts" })).toBeInTheDocument();
     expect(screen.queryByText("Top Domains")).toBeNull();
-    expect(screen.getByRole("link", { name: "huggingface/lerobot ★ 26.4K" })).toHaveAttribute(
+    const githubLink = screen.getByRole("link", { name: "huggingface/lerobot ★ 26.4K" });
+    expect(githubLink).toHaveAttribute(
       "href",
       "https://github.com/huggingface/lerobot",
     );
-    expect(screen.getByRole("link", { name: "Introducing paper" })).toHaveAttribute(
+    const introducingPaperLink = screen.getByRole("link", { name: "Introducing paper" });
+    expect(introducingPaperLink).toHaveAttribute(
       "href",
       "/paper/2602.22818",
     );
-    expect(screen.getByRole("link", { name: "Robotics" })).toHaveAttribute(
+    const taskLink = screen.getByRole("link", { name: "Robotics" });
+    expect(taskLink).toHaveAttribute(
       "href",
       "/tasks/robotics",
     );
+    const scopeLinks = githubLink.closest(".paper-feed-scope-links");
+    expect(scopeLinks).not.toBeNull();
+    expect(Array.from(scopeLinks!.querySelectorAll("a"))).toEqual([
+      githubLink,
+      introducingPaperLink,
+      taskLink,
+    ]);
+    expect(githubLink.parentElement).toHaveClass("paper-feed-primary-links");
+    expect(taskLink.parentElement).toHaveClass("paper-feed-task-tags");
   });
 
   it("preserves framework scope when sort, time, artifact, and search controls change", async () => {
