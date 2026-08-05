@@ -166,6 +166,8 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(reconcile_stale_chat_turns)
 
         async def replenish_pool_at_startup() -> None:
+            if not deployment_lifecycle.owns_active_slot():
+                return
             try:
                 await manager.reconcile()
                 await reconcile_stale_latency()
@@ -181,6 +183,8 @@ async def lifespan(app: FastAPI):
             openrouter_maintenance_date = None
             while True:
                 await asyncio.sleep(settings.chat_sandbox_watchdog_seconds)
+                if not deployment_lifecycle.owns_active_slot():
+                    continue
                 operations = [
                     manager.enforce_spend_cap,
                     manager.deliver_spend_alerts,

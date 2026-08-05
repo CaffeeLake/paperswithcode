@@ -188,6 +188,36 @@ def test_incompatible_release_cannot_be_claimed():
     assert row.state == "blank_ready"
 
 
+def test_inactive_slot_cannot_maintain_or_replenish_pool():
+    factory = _database()
+    settings = _settings(release_id="current-release")
+    current = _blank(settings)
+    with factory() as db, db.begin():
+        db.add(current)
+    manager = SandboxSessionManager(
+        _settings(release_id="previous-release"),
+        session_factory=factory,
+        pool_maintenance_owner=lambda: False,
+    )
+    manager._lock_capacity = lambda _db, wait=True: True
+    manager._lock_pool_maintenance = lambda _db: True
+
+    result = asyncio.run(manager.maintain_pool())
+
+    assert result == {
+        "drained": 0,
+        "lost": 0,
+        "orphaned": 0,
+        "abandoned": 0,
+        "cleaned": 0,
+        "replenished": 0,
+    }
+    assert asyncio.run(manager.replenish_pool()) == 0
+    with factory() as db:
+        row = db.get(ChatSandboxPool, current.id)
+    assert row.state == "blank_ready"
+
+
 def test_incompatible_resource_envelope_cannot_be_claimed():
     factory = _database()
     settings = _settings()

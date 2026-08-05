@@ -8,7 +8,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import ClassVar
+
+
+DEPLOYED_ENVIRONMENTS_ROOT = Path("/srv/paperswithcode/environments")
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,23 @@ class DeploymentLifecycle:
     def status(self) -> DeploymentStatus:
         with self._lock:
             return self._status_locked()
+
+    def owns_active_slot(
+        self, environments_root: Path = DEPLOYED_ENVIRONMENTS_ROOT
+    ) -> bool:
+        """Return whether this process owns environment-wide background work."""
+
+        status = self.status()
+        if status.slot == "legacy":
+            return True
+        if status.slot not in {"blue", "green"} or not status.environment:
+            return False
+        active = environments_root / status.environment / "active"
+        expected = environments_root / status.environment / "slots" / status.slot
+        try:
+            return active.resolve(strict=True) == expected.resolve(strict=True)
+        except OSError:
+            return False
 
     def _status_locked(self) -> DeploymentStatus:
         return DeploymentStatus(

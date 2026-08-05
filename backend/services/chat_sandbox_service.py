@@ -323,9 +323,11 @@ class SandboxSessionManager:
         *,
         session_factory: Callable[[], Session] | None = None,
         snapshot_provider: WorkspaceSnapshotProvider | None = None,
+        pool_maintenance_owner: Callable[[], bool] | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
+        self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
         )
@@ -474,7 +476,7 @@ class SandboxSessionManager:
         }
 
     def _spawn_pool_replenishment(self) -> None:
-        if not self.blank_pool_enabled:
+        if not self.blank_pool_enabled or not self.pool_maintenance_owner():
             return
         task = asyncio.create_task(self.replenish_pool())
         self._background_tasks.add(task)
@@ -806,6 +808,7 @@ class SandboxSessionManager:
             self.blank_pool_enabled
             and self.settings.chat_persistent_worker_enabled
             and self.settings.chat_blank_pool_min > 0
+            and self.pool_maintenance_owner()
         ):
             return 0
         now = datetime.now(UTC)
@@ -1122,6 +1125,15 @@ class SandboxSessionManager:
     async def maintain_pool(self) -> dict[str, int]:
         """Drain stale blanks, reconcile provider loss, and replenish safely."""
 
+        if not self.pool_maintenance_owner():
+            return {
+                "drained": 0,
+                "lost": 0,
+                "orphaned": 0,
+                "abandoned": 0,
+                "cleaned": 0,
+                "replenished": 0,
+            }
         enabled = self.blank_pool_enabled
         now = datetime.now(UTC)
         drain: list[tuple[uuid.UUID, str | None, str | None]] = []

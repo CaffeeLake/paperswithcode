@@ -140,7 +140,12 @@ def shared_sandbox_manager(settings: Settings) -> SandboxSessionManager:
     global _manager, _manager_settings
     with _manager_lock:
         if _manager is None or _manager_settings is not settings:
-            _manager = SandboxSessionManager(settings)
+            from backend.services.deployment_lifecycle import deployment_lifecycle
+
+            _manager = SandboxSessionManager(
+                settings,
+                pool_maintenance_owner=deployment_lifecycle.owns_active_slot,
+            )
             _manager_settings = settings
         return _manager
 

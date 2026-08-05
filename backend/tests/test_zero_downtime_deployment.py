@@ -78,6 +78,32 @@ def test_drain_is_idempotent_and_blocks_only_new_admission():
     assert lifecycle.undrain().accepting_chat_turns
 
 
+def test_only_active_slot_owns_environment_background_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    environment_root = tmp_path / "environments"
+    slots = environment_root / "staging" / "slots"
+    (slots / "blue").mkdir(parents=True)
+    (slots / "green").mkdir()
+    (environment_root / "staging" / "active").symlink_to(slots / "blue")
+    monkeypatch.setenv("PWC_ENVIRONMENT", "staging")
+    monkeypatch.setenv("PWC_DEPLOYMENT_SLOT", "blue")
+
+    assert DeploymentLifecycle().owns_active_slot(environment_root)
+
+    monkeypatch.setenv("PWC_DEPLOYMENT_SLOT", "green")
+    assert not DeploymentLifecycle().owns_active_slot(environment_root)
+
+
+def test_slot_without_active_pointer_does_not_own_background_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PWC_ENVIRONMENT", "staging")
+    monkeypatch.setenv("PWC_DEPLOYMENT_SLOT", "blue")
+
+    assert not DeploymentLifecycle().owns_active_slot(tmp_path / "environments")
+
+
 def test_draining_chat_endpoint_returns_retry_after(
     monkeypatch: pytest.MonkeyPatch,
 ):
