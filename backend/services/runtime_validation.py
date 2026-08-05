@@ -361,9 +361,9 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 raise RuntimeError(
                     "server-funded OpenRouter chat requires an OpenRouter key"
                 )
-            if settings.chat_openrouter_workspace_monthly_budget_usd > 5:
+            if settings.chat_openrouter_workspace_monthly_budget_usd != 200:
                 raise RuntimeError(
-                    "staging OpenRouter workspace budget must not exceed $5"
+                    "staging OpenRouter workspace budget must equal $200"
                 )
             if settings.chat_openrouter_monthly_user_budget_usd > 1:
                 raise RuntimeError(

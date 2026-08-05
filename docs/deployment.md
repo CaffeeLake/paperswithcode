@@ -243,10 +243,10 @@ active release, and keeps insufficient pre-soak samples distinct from failures.
 Ordinary chat models require the signed-in user's Hugging Face billing. Staging
 may additionally enable the shared OpenRouter-backed Luna and Terra preview.
 Admission checks provider-authoritative monthly usage before each turn, and the
-provider key must prove an exact monthly `$5` staging workspace limit. Durable
+provider key must prove an exact monthly `$200` staging workspace limit. Durable
 PostgreSQL reservations enforce the separate `$1` per-user ceiling before each
 funded gateway dispatch. Production continues to prohibit shared OpenRouter
-credentials.
+credentials and must use a distinct key if separately authorized later.
 
 Provision the staging-only credential without printing it:
 
