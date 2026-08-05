@@ -14,7 +14,6 @@ from backend.models.database import (
     Paper,
     PaperOrganization,
 )
-from backend.services.organization_sync_service import HF_ORG_PAPERS_SOURCE
 from backend.services.trending_ranking_service import active_paper_score_components
 
 ROLLING_DAYS = 30
@@ -37,8 +36,7 @@ class OrganizationTrendingService:
             )
             .outerjoin(
                 PaperOrganization,
-                (PaperOrganization.organization_id == Organization.id)
-                & (PaperOrganization.source == HF_ORG_PAPERS_SOURCE),
+                PaperOrganization.organization_id == Organization.id,
             )
             .outerjoin(
                 Paper,

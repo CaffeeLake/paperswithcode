@@ -285,15 +285,6 @@ class SitemapService:
             .order_by(model.id)
             .yield_per(SITEMAP_BATCH_SIZE)
         )
-        if kind == "organizations":
-            query = query.filter(
-                exists().where(
-                    PaperOrganization.organization_id == model.id,
-                    PaperOrganization.source == "hf_org_papers",
-                    PaperOrganization.paper_id == DBPaper.id,
-                    eligible_paper_filter(),
-                )
-            )
         for entity in query:
             updated = entity.updated_at
             if updated.tzinfo is None:

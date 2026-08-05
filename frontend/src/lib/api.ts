@@ -175,7 +175,7 @@ export interface Paper {
    *  paper detail view. */
   successor_papers?: RelatedPaperSummary[];
   /** Organizations (labs/companies) this paper is attributed to, e.g. NVIDIA.
-   *  Powers the org logo tags on the paper page. */
+   *  Includes association provenance and the manual curator when known. */
   organizations?: OrganizationSummary[];
   /** Top-3 leaderboard placements (best_rank <= 3) for this paper, deduped by
    *  dataset. Powers the SOTA/#2/#3 badges on feed cards. */
@@ -311,6 +311,8 @@ export interface OrganizationSummary {
   name: string;
   slug: string;
   logo_url?: string | null;
+  source: 'manual' | 'hf_org_papers';
+  added_by_hf_username?: string | null;
 }
 
 export interface Organization {

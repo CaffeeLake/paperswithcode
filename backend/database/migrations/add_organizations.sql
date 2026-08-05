@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS paper_organizations (
     paper_id BIGINT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
     organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     source VARCHAR(32) NOT NULL DEFAULT 'manual',
+    added_by_hf_subject VARCHAR(255),
+    added_by_hf_username VARCHAR(255),
     PRIMARY KEY (paper_id, organization_id)
 );
 

@@ -70,9 +70,7 @@ def test_cold_start_writes_snapshot_and_rolling_score_with_autoflush_disabled(
             trending_score_updated_at=datetime.now(timezone.utc),
         )
     )
-    session.add(
-        PaperOrganization(paper_id=1, organization_id=1, source="hf_org_papers")
-    )
+    session.add(PaperOrganization(paper_id=1, organization_id=1, source="manual"))
     session.commit()
 
     service = OrganizationTrendingService(session)

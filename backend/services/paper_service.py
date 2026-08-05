@@ -427,7 +427,7 @@ class PaperService:
                     relation_data["conferences"][paper_id] = conference
 
             organization_rows = (
-                self.db.query(DBPaperOrganization.paper_id, DBOrganization)
+                self.db.query(DBPaperOrganization, DBOrganization)
                 .join(
                     DBOrganization,
                     DBPaperOrganization.organization_id == DBOrganization.id,
@@ -436,8 +436,8 @@ class PaperService:
                 .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
                 .all()
             )
-            for paper_id, organization in organization_rows:
-                relation_data["organizations"][paper_id].append(
+            for link, organization in organization_rows:
+                relation_data["organizations"][link.paper_id].append(
                     OrganizationSummary(
                         id=str(organization.id),
                         name=organization.name,
@@ -451,6 +451,8 @@ class PaperService:
                             if organization.logo_mime_type
                             else organization.logo_url
                         ),
+                        source=link.source,
+                        added_by_hf_username=link.added_by_hf_username,
                     )
                 )
 
@@ -2135,13 +2137,20 @@ class PaperService:
             raise DatabaseError(f"Error updating paper tasks: {str(e)}")
 
     def update_paper_organizations(
-        self, paper_id: int, organization_ids: List[int], *, commit: bool = True
+        self,
+        paper_id: int,
+        organization_ids: List[int],
+        *,
+        manual_added_by_hf_subject: Optional[str] = None,
+        manual_added_by_hf_username: Optional[str] = None,
+        commit: bool = True,
     ) -> Paper | DBPaper:
         """
         Update the organizations associated with a paper.
 
-        Replaces all existing paper_organizations associations with the
-        provided list. Rows inserted here are marked source='manual'.
+        Makes the provided list the desired set of organization associations.
+        Existing rows retain their provenance; newly inserted rows are marked
+        source='manual' and attributed to the authenticated HF user when known.
 
         Args:
             paper_id: Database paper ID
@@ -2169,16 +2178,26 @@ class PaperService:
             if invalid_org_ids:
                 raise DatabaseError(f"Invalid organization IDs: {invalid_org_ids}")
 
-            self.db.query(DBPaperOrganization).filter(
-                DBPaperOrganization.paper_id == paper_id
-            ).delete()
+            links = (
+                self.db.query(DBPaperOrganization)
+                .filter(DBPaperOrganization.paper_id == paper_id)
+                .all()
+            )
+            links_by_organization = {link.organization_id: link for link in links}
+            requested_ids = set(organization_ids)
 
-            for organization_id in organization_ids:
+            for organization_id, link in links_by_organization.items():
+                if organization_id not in requested_ids:
+                    self.db.delete(link)
+
+            for organization_id in requested_ids - links_by_organization.keys():
                 self.db.add(
                     DBPaperOrganization(
                         paper_id=paper_id,
                         organization_id=organization_id,
                         source="manual",
+                        added_by_hf_subject=manual_added_by_hf_subject,
+                        added_by_hf_username=manual_added_by_hf_username,
                     )
                 )
 

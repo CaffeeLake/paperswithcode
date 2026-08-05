@@ -248,7 +248,8 @@ class Paper(BaseModel):
         None,
         description=(
             "Organizations (labs/companies) this paper is attributed to, "
-            "e.g. NVIDIA. Powers the org logo tags on the paper page."
+            "e.g. NVIDIA, including association source and manual curator. "
+            "Powers the org logo tags on the paper page."
         ),
     )
     leaderboard_ranks: Optional[List["LeaderboardRankSummary"]] = Field(
@@ -1651,6 +1652,14 @@ class OrganizationSummary(BaseModel):
     name: str = Field(..., description="Organization name (e.g., 'NVIDIA')")
     slug: str = Field(..., description="URL-friendly slug (e.g., 'nvidia')")
     logo_url: Optional[str] = Field(None, description="Organization logo image URL")
+    source: Literal["manual", "hf_org_papers"] = Field(
+        ...,
+        description="Association provenance: 'manual' or 'hf_org_papers'",
+    )
+    added_by_hf_username: Optional[str] = Field(
+        None,
+        description="HF username that manually added this association, when known",
+    )
 
     @field_validator("id", mode="before")
     @classmethod

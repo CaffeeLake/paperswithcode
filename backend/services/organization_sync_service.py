@@ -182,6 +182,8 @@ class OrganizationSyncService:
                 else:
                     if link.source != HF_ORG_PAPERS_SOURCE:
                         link.source = HF_ORG_PAPERS_SOURCE
+                    link.added_by_hf_subject = None
+                    link.added_by_hf_username = None
                     stats.already_linked += 1
 
             if stats.failed == 0:
@@ -264,6 +266,8 @@ def link_daily_paper_organizations(
         else:
             if link.source != HF_ORG_PAPERS_SOURCE:
                 link.source = HF_ORG_PAPERS_SOURCE
+            link.added_by_hf_subject = None
+            link.added_by_hf_username = None
             stats["already_linked"] += 1
     db.commit()
     return stats

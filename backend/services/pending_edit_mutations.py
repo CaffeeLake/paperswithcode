@@ -54,15 +54,27 @@ class PendingEditMutationService:
             "methods": self._paper_methods,
             "repositories": self._paper_repositories,
             "project_pages": self._paper_project_pages,
-            "organizations": self._paper_organizations,
             "source_url": self._paper_source_url,
             "hf_artifacts": self._paper_hf_artifacts,
             "evaluations": self._paper_evaluations,
         }
 
     def apply(
-        self, edit_type: str, paper_id: int | None, payload: Payload
+        self,
+        edit_type: str,
+        paper_id: int | None,
+        payload: Payload,
+        *,
+        actor_hf_subject: str | None = None,
+        actor_username: str | None = None,
     ) -> tuple[str, str]:
+        if edit_type == "organizations":
+            return self._paper_organizations(
+                paper_id,
+                payload,
+                actor_hf_subject=actor_hf_subject,
+                actor_username=actor_username,
+            )
         try:
             handler = self._handlers[edit_type]
         except KeyError:
@@ -243,11 +255,20 @@ class PendingEditMutationService:
         return "paper", str(paper_id)
 
     def _paper_organizations(
-        self, paper_id: int | None, payload: Payload
+        self,
+        paper_id: int | None,
+        payload: Payload,
+        *,
+        actor_hf_subject: str | None,
+        actor_username: str | None,
     ) -> tuple[str, str]:
         paper_id = self._require_paper(paper_id)
         PaperService(self.db).update_paper_organizations(
-            paper_id, list(payload["organization_ids"]), commit=False
+            paper_id,
+            list(payload["organization_ids"]),
+            manual_added_by_hf_subject=actor_hf_subject,
+            manual_added_by_hf_username=actor_username,
+            commit=False,
         )
         return "paper", str(paper_id)
 

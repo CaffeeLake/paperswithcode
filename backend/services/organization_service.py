@@ -26,7 +26,6 @@ from backend.models.database import PaperOrganization
 from backend.models.database import PaperTask
 from backend.models.database import Task as DBTask
 from backend.models.database import OrganizationTrendingHistory
-from backend.services.organization_sync_service import HF_ORG_PAPERS_SOURCE
 from backend.services.sitemap_service import eligible_paper_filter
 from backend.services.trending_ranking_service import active_paper_score_components
 from backend.config import get_settings
@@ -64,7 +63,6 @@ class OrganizationService:
                 .join(DBPaper, DBPaper.id == PaperOrganization.paper_id)
                 .filter(
                     PaperOrganization.organization_id == db_org.id,
-                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     eligible_paper_filter(),
                 )
                 .scalar()
@@ -136,10 +134,7 @@ class OrganizationService:
                 )
                 .outerjoin(
                     PaperOrganization,
-                    and_(
-                        DBOrganization.id == PaperOrganization.organization_id,
-                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
-                    ),
+                    DBOrganization.id == PaperOrganization.organization_id,
                 )
                 .outerjoin(
                     DBPaper,
@@ -187,7 +182,6 @@ class OrganizationService:
                     .outerjoin(repo_stats, repo_stats.c.paper_id == DBPaper.id)
                     .filter(
                         PaperOrganization.organization_id.in_(org_ids),
-                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                         eligible_paper_filter(),
                     )
                     .order_by(
@@ -252,7 +246,6 @@ class OrganizationService:
                 )
                 .filter(
                     PaperOrganization.organization_id == organization.id,
-                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     DBPaper.date_published.between(start_date, end_date),
                     eligible_paper_filter(),
                 )
@@ -291,7 +284,6 @@ class OrganizationService:
                 .join(PaperOrganization, PaperOrganization.paper_id == DBPaper.id)
                 .filter(
                     PaperOrganization.organization_id == organization.id,
-                    PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     eligible_paper_filter(),
                 )
                 .scalar()
@@ -315,7 +307,6 @@ class OrganizationService:
                     and_(
                         PaperTask.paper_id == PaperOrganization.paper_id,
                         PaperOrganization.organization_id == organization.id,
-                        PaperOrganization.source == HF_ORG_PAPERS_SOURCE,
                     ),
                 )
                 .filter(eligible_paper_filter())
@@ -394,7 +385,6 @@ class OrganizationService:
                     DBPaper.id == PaperOrganization.paper_id,
                 )
                 .filter(PaperOrganization.organization_id == organization.id)
-                .filter(PaperOrganization.source == HF_ORG_PAPERS_SOURCE)
             )
 
             if task_slug:

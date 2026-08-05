@@ -314,7 +314,11 @@ class PendingEditService:
         before = self.snapshots.approval_event(row.edit_type, row.paper_id)
         try:
             result_type, result_id = self.mutations.apply(
-                row.edit_type, row.paper_id, applied_payload
+                row.edit_type,
+                row.paper_id,
+                applied_payload,
+                actor_hf_subject=row.hf_subject,
+                actor_username=row.hf_username,
             )
         except Exception as exc:
             self._record_apply_failure(edit_id, row.edit_type, exc)

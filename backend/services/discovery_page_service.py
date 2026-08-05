@@ -369,10 +369,7 @@ class DiscoveryPageService:
             return None
         papers = self._papers_for_relation(
             PaperOrganization,
-            (
-                (PaperOrganization.organization_id == entity.id)
-                & (PaperOrganization.source == "hf_org_papers")
-            ),
+            PaperOrganization.organization_id == entity.id,
             f"Attributed to {entity.name}",
         )
         description = entity.description or (
@@ -390,7 +387,6 @@ class DiscoveryPageService:
             )
             .filter(
                 PaperOrganization.organization_id == entity.id,
-                PaperOrganization.source == "hf_org_papers",
                 Task.slug.is_not(None),
             )
             .distinct()
@@ -418,7 +414,6 @@ class DiscoveryPageService:
                 .filter(Organization.slug == slug)
                 .scalar_subquery(),
                 PaperTask.task_id == task.id,
-                PaperOrganization.source == "hf_org_papers",
                 eligible_paper_filter(),
             )
             .order_by(
@@ -458,7 +453,6 @@ class DiscoveryPageService:
             .join(PaperAuthor, PaperAuthor.paper_id == PaperOrganization.paper_id)
             .filter(
                 PaperAuthor.author_id == entity.id,
-                PaperOrganization.source == "hf_org_papers",
             )
             .distinct()
             .order_by(Organization.name)

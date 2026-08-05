@@ -1563,6 +1563,8 @@ class PaperOrganization(Base):
         BigInteger, ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
     )
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    added_by_hf_subject: Mapped[Optional[str]] = mapped_column(String(255))
+    added_by_hf_username: Mapped[Optional[str]] = mapped_column(String(255))
 
     __table_args__ = (
         Index("idx_paper_organizations_organization_id", "organization_id"),

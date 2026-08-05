@@ -1422,7 +1422,9 @@ def update_paper_organizations(
     """
     Update the organizations associated with a paper.
 
-    Replaces all existing organization associations with the provided list.
+    Makes the provided list the paper's organization associations. Existing
+    links retain whether they came from Hugging Face or manual curation. New
+    links are manual and record the authenticated HF user when available.
 
     **Example:**
     ```

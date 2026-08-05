@@ -31,6 +31,7 @@ from backend.models.database import (
     Repository as DBRepository,
     Task,
 )
+from backend.utils.auth import catalog_mutation_context
 
 
 @compiles(ARRAY, "sqlite")
@@ -198,7 +199,7 @@ def test_organization_papers_trending_composite_ranks_by_paper_score(
         "/api/v1/organizations/acme/papers?order_by=trending&page_size=10"
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     data = response.json()
     titles = [paper["title"] for paper in data["results"]]
 
@@ -225,12 +226,77 @@ def test_paper_detail_includes_manually_curated_organization(org_client):
 
     response = org_client.get("/api/v1/papers/2025.20001")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     organizations = response.json()["organizations"]
     assert len(organizations) == 1
     assert organizations[0]["id"] == "1"
     assert organizations[0]["name"] == "Acme"
     assert organizations[0]["slug"] == "acme"
+    assert organizations[0]["source"] == "manual"
+    assert organizations[0]["added_by_hf_username"] is None
+
+    organization = org_client.get("/api/v1/organizations/acme")
+    assert organization.status_code == 200
+    assert organization.json()["paper_count"] == 4
+    feed = org_client.get("/api/v1/organizations/acme/papers?page_size=10")
+    assert feed.status_code == 200
+    assert feed.json()["count"] == 4
+
+
+def test_organization_update_preserves_hf_source_and_attributes_new_manual_link(
+    org_client,
+):
+    db = TestingSessionLocal()
+    try:
+        db.add(Organization(id=2, name="Manual Lab", slug="manual-lab"))
+        db.commit()
+    finally:
+        db.close()
+
+    actor = {
+        "source": "cookie",
+        "hf_subject": "hf-user-123",
+        "username": "curator",
+        "role": "admin",
+    }
+    org_client.app.dependency_overrides[catalog_mutation_context] = lambda: {
+        "actor": actor,
+        "idempotency_key": None,
+        "expected_version": None,
+        "request_id": "organization-provenance-test",
+    }
+    try:
+        response = org_client.put(
+            "/api/v1/papers/1/organizations?organization_ids=1&organization_ids=2"
+        )
+    finally:
+        org_client.app.dependency_overrides.pop(catalog_mutation_context, None)
+
+    assert response.status_code == 200, response.text
+    associations = {
+        organization["slug"]: organization
+        for organization in response.json()["organizations"]
+    }
+    assert associations["acme"]["source"] == "hf_org_papers"
+    assert associations["acme"]["added_by_hf_username"] is None
+    assert associations["manual-lab"]["source"] == "manual"
+    assert associations["manual-lab"]["added_by_hf_username"] == "curator"
+
+    db = TestingSessionLocal()
+    try:
+        acme = db.get(PaperOrganization, (1, 1))
+        manual = db.get(PaperOrganization, (1, 2))
+        assert acme.source == "hf_org_papers"
+        assert manual.source == "manual"
+        assert manual.added_by_hf_subject == "hf-user-123"
+        assert manual.added_by_hf_username == "curator"
+    finally:
+        db.close()
+
+    manual_feed = org_client.get("/api/v1/organizations/manual-lab/papers")
+    assert manual_feed.status_code == 200
+    assert manual_feed.json()["count"] == 1
+    assert manual_feed.json()["results"][0]["title"] == "Paper 1"
 
 
 def test_organization_papers_trending_github_ranks_by_repo_velocity(
@@ -255,7 +321,9 @@ def test_organization_papers_trending_github_ranks_by_repo_velocity(
     assert data["count"] == 4
 
 
-def test_featured_list_uses_launch_source_and_card_projection(org_client, monkeypatch):
+def test_featured_list_uses_all_associations_and_card_projection(
+    org_client, monkeypatch
+):
     _pin_trending_mode(monkeypatch, "composite")
     response = org_client.get("/api/v1/organizations/?featured_only=true")
     assert response.status_code == 200

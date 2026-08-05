@@ -77,7 +77,18 @@ def test_hf_provenance_replaces_lower_confidence_existing_source():
         display_order=18,
     )
     session.add(organization)
-    session.add(PaperOrganization(paper_id=1, organization_id=1, source="manual"))
+    session.add(
+        PaperOrganization(
+            paper_id=1,
+            organization_id=1,
+            source="manual",
+            added_by_hf_subject="hf-user-123",
+            added_by_hf_username="curator",
+        )
+    )
     session.commit()
     link_daily_paper_organizations(session, 1, {"name": "openai"})
-    assert session.query(PaperOrganization).one().source == "hf_org_papers"
+    link = session.query(PaperOrganization).one()
+    assert link.source == "hf_org_papers"
+    assert link.added_by_hf_subject is None
+    assert link.added_by_hf_username is None

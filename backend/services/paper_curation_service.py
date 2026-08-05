@@ -131,12 +131,23 @@ class PaperCurationService:
         elif section == "organizations":
             rows = (
                 self.db.query(
-                    PaperOrganization.organization_id, PaperOrganization.source
+                    PaperOrganization.organization_id,
+                    PaperOrganization.source,
+                    PaperOrganization.added_by_hf_subject,
+                    PaperOrganization.added_by_hf_username,
                 )
                 .filter(PaperOrganization.paper_id == paper_id)
                 .all()
             )
-            value = _rows(rows, ("organization_id", "source"))
+            value = _rows(
+                rows,
+                (
+                    "organization_id",
+                    "source",
+                    "added_by_hf_subject",
+                    "added_by_hf_username",
+                ),
+            )
         elif section == "repositories":
             rows = (
                 self.db.query(
@@ -297,7 +308,11 @@ class PaperCurationService:
                 paper_id, payload["method_ids"], commit=False
             ),
             "organizations": lambda: self.paper_service.update_paper_organizations(
-                paper_id, payload["organization_ids"], commit=False
+                paper_id,
+                payload["organization_ids"],
+                manual_added_by_hf_subject=actor.get("hf_subject"),
+                manual_added_by_hf_username=actor.get("username"),
+                commit=False,
             ),
             "repositories": lambda: self.paper_service.update_paper_repositories(
                 paper_id, payload["repositories"], commit=False
@@ -514,6 +529,9 @@ class PaperCurationService:
             link = self.db.get(model, (paper_id, row[id_field]))
             if link is not None:
                 link.source = row["source"]
+                if section == "organizations":
+                    link.added_by_hf_subject = row.get("added_by_hf_subject")
+                    link.added_by_hf_username = row.get("added_by_hf_username")
 
     def _restore_source_url(self, paper_id: int, value: dict) -> None:
         paper = self.db.get(DBPaper, paper_id)
