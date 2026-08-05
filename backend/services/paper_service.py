@@ -37,6 +37,7 @@ from backend.models.database import (
     PaperHfArtifact as DBPaperHfArtifact,
     Evaluation as DBEvaluation,
     Framework as DBFramework,
+    TaskFramework as DBTaskFramework,
 )
 from backend.services.thumbnail_service import (
     ThumbnailService,
@@ -1135,6 +1136,13 @@ class PaperService:
             if not row:
                 raise PaperNotFoundError(f"Framework with slug '{framework}' not found")
             db_framework, db_repository, introducing_paper = row
+            recommended_tasks = (
+                self.db.query(DBTask)
+                .join(DBTaskFramework, DBTaskFramework.task_id == DBTask.id)
+                .filter(DBTaskFramework.framework_id == db_framework.id)
+                .order_by(asc(DBTaskFramework.display_order), asc(DBTask.name))
+                .all()
+            )
             repository_name = self._repository_identity(db_repository)
             return db_framework.repository_id, PaperFeedScope(
                 kind="framework",
@@ -1145,6 +1153,9 @@ class PaperService:
                 introducing_paper_arxiv_id=(
                     introducing_paper.arxiv_id if introducing_paper else None
                 ),
+                recommended_tasks=[
+                    TaskSummary.model_validate(task) for task in recommended_tasks
+                ],
             )
 
         if repository is None:

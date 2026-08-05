@@ -26,6 +26,9 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@/components", () => ({
   Icon: () => <span />,
   PaperCard: () => <article />,
+  TagChip: ({ slug, label }: { slug: string; label: string }) => (
+    <a href={`/tasks/${slug}`}>{label}</a>
+  ),
 }));
 
 const Location = () => <div data-testid="location">{useLocation().search}</div>;
@@ -55,6 +58,7 @@ describe("PapersListView repository scopes", () => {
             repository: "huggingface/lerobot",
             github_url: "https://github.com/huggingface/lerobot",
             introducing_paper_arxiv_id: "2602.22818",
+            recommended_tasks: [{ id: "9", slug: "robotics", name: "Robotics" }],
           },
         }],
       },
@@ -97,6 +101,10 @@ describe("PapersListView repository scopes", () => {
     expect(screen.getByRole("link", { name: "Introducing paper" })).toHaveAttribute(
       "href",
       "/paper/2602.22818",
+    );
+    expect(screen.getByRole("link", { name: "Robotics" })).toHaveAttribute(
+      "href",
+      "/tasks/robotics",
     );
   });
 

@@ -11,6 +11,7 @@ from backend.models.database import (
     Framework as DBFramework,
     Paper as DBPaper,
     Repository as DBRepository,
+    Task as DBTask,
 )
 from backend.utils.exceptions import PaperNotFoundError
 from backend.services.conference_service import ConferenceService
@@ -169,12 +170,18 @@ class ScopeQuery:
 
 class ScopeDatabase:
     def __init__(
-        self, repository=None, framework=None, introducing_paper=None, papers=None
+        self,
+        repository=None,
+        framework=None,
+        introducing_paper=None,
+        papers=None,
+        tasks=None,
     ):
         self.repository = repository
         self.framework = framework
         self.introducing_paper = introducing_paper
         self.paper_query = ScopeQuery(papers=papers)
+        self.tasks = tasks or []
         self.repository_query = None
 
     def query(self, *entities):
@@ -191,6 +198,8 @@ class ScopeDatabase:
             return self.repository_query
         if entities == (DBPaper,):
             return self.paper_query
+        if entities == (DBTask,):
+            return ScopeQuery(papers=self.tasks)
         raise AssertionError(f"Unexpected query: {entities}")
 
 
@@ -238,23 +247,27 @@ def test_framework_scope_includes_resource_links():
         url="https://github.com/huggingface/lerobot",
     )
     framework = SimpleNamespace(
+        id=7,
         repository_id=41,
         slug="lerobot",
         name="LeRobot",
     )
     introducing_paper = SimpleNamespace(arxiv_id="2602.22818")
+    tasks = [SimpleNamespace(id=9, slug="robotics", name="Robotics")]
 
     repository_id, scope = PaperService(
         ScopeDatabase(
             repository=repository,
             framework=framework,
             introducing_paper=introducing_paper,
+            tasks=tasks,
         )
     )._resolve_paper_feed_scope(framework="lerobot", repository=None)
 
     assert repository_id == 41
     assert scope.github_url == repository.url
     assert scope.introducing_paper_arxiv_id == introducing_paper.arxiv_id
+    assert [task.slug for task in scope.recommended_tasks] == ["robotics"]
 
 
 def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch):

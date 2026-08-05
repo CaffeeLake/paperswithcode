@@ -660,6 +660,7 @@ export interface PaginatedResponse<T> {
     framework_name?: string | null;
     github_url?: string | null;
     introducing_paper_arxiv_id?: string | null;
+    recommended_tasks?: Task[];
   } | null;
 }
 

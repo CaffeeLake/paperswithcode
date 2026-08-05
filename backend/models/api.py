@@ -288,6 +288,10 @@ class PaperFeedScope(BaseModel):
     framework_name: Optional[str] = None
     github_url: Optional[str] = None
     introducing_paper_arxiv_id: Optional[str] = None
+    recommended_tasks: List["TaskSummary"] = Field(
+        default_factory=list,
+        description="Tasks that recommend this framework",
+    )
 
 
 class Papers(BaseModel):

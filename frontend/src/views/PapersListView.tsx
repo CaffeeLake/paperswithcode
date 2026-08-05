@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { Icon, PaperCard } from "@/components";
+import { Icon, PaperCard, TagChip } from "@/components";
 import { apiClient } from "@/lib/api";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
@@ -157,6 +157,9 @@ const PapersListView: React.FC = () => {
           </div>
           {isRepositoryFeed && scope && (
             <div className="framework-card-links paper-feed-scope-links">
+              {scope.kind === "framework" && scope.recommended_tasks?.map((task) =>
+                task.slug ? <TagChip key={task.id} slug={task.slug} label={task.name} /> : null
+              )}
               {scope.github_url && (
                 <a
                   href={scope.github_url}
