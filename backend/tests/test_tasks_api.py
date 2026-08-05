@@ -494,6 +494,55 @@ def test_task_papers_trending_ignores_non_official_repos(
     assert titles.index("Paper 1") < titles.index("Paper 4")
 
 
+def test_task_papers_trending_deduplicates_shared_official_repository(
+    client, task_with_trending_papers, monkeypatch
+):
+    """A repository's trend signal belongs only to its newest task paper."""
+    db = TestingSessionLocal()
+    db.query(DBPaper).filter(DBPaper.id == 1).update(
+        {DBPaper.date_published: date(2025, 1, 1)}
+    )
+    db.add(
+        DBPaper(
+            id=6,
+            title="Paper 6 follow-up",
+            abstract="A newer paper for repo-1",
+            arxiv_id="2025.00006",
+            version="v1",
+            is_latest_version=True,
+            date_published=date(2025, 2, 1),
+        )
+    )
+    db.flush()
+    db.add_all(
+        [
+            PaperTask(paper_id=6, task_id=1),
+            DBPaperRepository(paper_id=6, repository_id=1, is_official=True),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    _pin_trending_mode(monkeypatch, "github")
+    response = client.get(
+        "/api/v1/tasks/audio-classification/papers?order_by=trending&page_size=10"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    titles = [paper["title"] for paper in data["results"]]
+    assert titles[0] == "Paper 6 follow-up"
+    assert "Paper 1" not in titles
+    assert data["count"] == 5
+
+    default_response = client.get(
+        "/api/v1/tasks/audio-classification/papers?page_size=10"
+    )
+    default_titles = [paper["title"] for paper in default_response.json()["results"]]
+    assert {"Paper 1", "Paper 6 follow-up"}.issubset(default_titles)
+    assert default_response.json()["count"] == 6
+
+
 def test_task_papers_default_ordering_unchanged(client, task_with_trending_papers):
     """Default ordering (date_published desc) is unaffected by trending logic."""
     response = client.get("/api/v1/tasks/audio-classification/papers?page_size=10")

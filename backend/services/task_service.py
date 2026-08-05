@@ -8,14 +8,15 @@ including pagination, filtering, hierarchical relationships, and paper associati
 from datetime import date, datetime, timedelta, timezone
 import math
 from typing import Optional, List
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, case, and_, cast, Float
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, desc, asc, case, and_, cast, Float, or_, select
 
 from backend.models.database import (
     Task as DBTask,
     Area as DBArea,
     Paper as DBPaper,
     PaperTask,
+    PaperRepository as DBPaperRepository,
     Repository as DBRepository,
     Framework as DBFramework,
     TaskFramework as DBTaskFramework,
@@ -53,6 +54,57 @@ class TaskService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    @staticmethod
+    def _deduplicate_task_trending_repositories(query, task_id: int):
+        """Keep the newest task paper for each shared official repository.
+
+        The global trending feed attributes a repository's activity to only
+        its newest linked paper. Apply the same rule to task-scoped trending
+        feeds so a project that publishes a follow-up paper does not occupy
+        multiple cards with one repository signal. Papers without an official
+        repository remain independent.
+        """
+        current_repo = aliased(DBPaperRepository)
+        other_repo = aliased(DBPaperRepository)
+        other_paper = aliased(DBPaper)
+        other_task = aliased(PaperTask)
+
+        same_date = or_(
+            other_paper.date_published == DBPaper.date_published,
+            and_(
+                other_paper.date_published.is_(None),
+                DBPaper.date_published.is_(None),
+            ),
+        )
+        newer_paper = or_(
+            and_(
+                DBPaper.date_published.is_(None),
+                other_paper.date_published.is_not(None),
+            ),
+            other_paper.date_published > DBPaper.date_published,
+            and_(same_date, other_paper.id > DBPaper.id),
+        )
+        newer_for_shared_repo = (
+            select(1)
+            .select_from(current_repo)
+            .join(
+                other_repo,
+                other_repo.repository_id == current_repo.repository_id,
+            )
+            .join(other_paper, other_paper.id == other_repo.paper_id)
+            .join(other_task, other_task.paper_id == other_paper.id)
+            .where(
+                current_repo.paper_id == DBPaper.id,
+                current_repo.is_official.is_(True),
+                other_repo.is_official.is_(True),
+                other_task.task_id == task_id,
+                other_paper.is_latest_version.is_(True),
+                newer_paper,
+            )
+            .exists()
+        )
+        return query.filter(~newer_for_shared_repo)
 
     def _build_task_model(
         self, db_task: DBTask, paper_count: int | None = None
@@ -996,6 +1048,7 @@ class TaskService:
                 # but sort after scored papers.
                 from backend.services.paper_service import PaperService
 
+                query = self._deduplicate_task_trending_repositories(query, task.id)
                 query = PaperService(self.db).apply_scoped_trending_order(query)
             else:
                 if order_by == "date_published":
