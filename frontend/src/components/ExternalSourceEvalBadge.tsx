@@ -4,6 +4,7 @@
  */
 
 import React from "react";
+import { Link } from "react-router-dom";
 
 import {
   HoverCard,
@@ -35,6 +36,10 @@ function sourceLabel(sourceUrl?: string | null): string {
 
 export const ExternalSourceEvalBadge: React.FC<Props> = ({ sourceUrl }) => {
   const safeSourceUrl = safeExternalHref(sourceUrl);
+  const internalPaperUrl =
+    typeof sourceUrl === "string" && sourceUrl.startsWith("/paper/")
+      ? sourceUrl
+      : null;
   const label = sourceLabel(sourceUrl);
   return (
     <HoverCard openDelay={120} closeDelay={120}>
@@ -53,11 +58,24 @@ export const ExternalSourceEvalBadge: React.FC<Props> = ({ sourceUrl }) => {
         className="w-auto max-w-[280px] p-3 text-sm leading-snug"
       >
         This score was sourced outside this paper.
-        {sourceUrl ? (
+        {internalPaperUrl ? (
+          <>
+            {" "}
+            <Link
+              to={internalPaperUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="external-eval-tooltip-link"
+            >
+              {label}
+            </Link>
+            .
+          </>
+        ) : safeSourceUrl ? (
           <>
             {" "}
             <a
-              href={safeSourceUrl ?? undefined}
+              href={safeSourceUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="external-eval-tooltip-link"
