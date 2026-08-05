@@ -1,0 +1,19 @@
+{
+  "skill_name": "complete-task-based-on-hf",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Run a read-only test of the complete-task-based-on-hf workflow on https://huggingface.co/models?pipeline_tag=image-text-to-text&sort=trending. Query both trending and downloads, deduplicate model families, resolve canonical release papers, and identify missing evaluations that exactly match existing Papers With Code benchmarks. Do not modify the database. Save a concise audit report.",
+      "expected_output": "A source-grounded, read-only report that uses live hf CLI rankings, distinguishes official releases from mirrors and finetunes, proves paper ownership, checks exact local benchmark/metric compatibility and existing coverage, and prioritizes safe imports without making database writes.",
+      "files": [],
+      "expectations": [
+        "The report states that both trending and downloads rankings were queried for image-text-to-text.",
+        "The report deduplicates quantizations, mirrors, finetunes, and sibling variants into release families.",
+        "Every recommended import names an owning technical report and an exact existing benchmark and metric.",
+        "For a high-priority family whose model-card metadata lacks an exact release report, the audit searches Hugging Face Papers by family name before assigning no-report status.",
+        "The report distinguishes already-covered, missing-benchmark, missing-metric, non-comparable, and no-report cases.",
+        "The database remains unmodified during this read-only test."
+      ]
+    }
+  ]
+}
