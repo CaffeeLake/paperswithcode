@@ -256,6 +256,12 @@ sudo python deploy/configure_host_env.py \
   --staging-openrouter-only
 ```
 
+When the provider-enforced workspace limit changes, retain a protected copy of
+the prior staging environment until two distinct staging releases accept the
+new exact limit. Deploy the first compatible release with the new environment,
+then deploy a second compatible release before retiring the protected copy. This
+keeps both `current` and `previous` directly restartable through `pwc-rollback`.
+
 The application fails closed if OpenRouter cannot prove the exact provider
 guardrail, or if durable per-user accounting is unavailable. Staging runs
 bounded reconciliation and retention maintenance daily. An operator can also
