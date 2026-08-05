@@ -15,10 +15,12 @@ import { AskAssistant } from "@/views/FeedView";
 
 beforeEach(() => {
   sessionStorage.clear();
+  vi.stubEnv("MODE", "staging");
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 const renderAskAssistant = () => render(
@@ -34,7 +36,7 @@ describe("AskAssistant", () => {
   it("offers the Hugging Face DeepSeek and staging OpenRouter models", () => {
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
       id: "deepseek-ai/DeepSeek-V4-Flash-0731",
-      label: "DeepSeek V4 Flash 0731",
+      label: "DeepSeek V4 Flash",
       provider: "huggingface",
     });
     expect(FALLBACK_CHAT_MODELS).toContainEqual({
@@ -47,6 +49,17 @@ describe("AskAssistant", () => {
       label: "GPT-5.6 Terra (medium)",
       provider: "openrouter",
     });
+  });
+
+  it("shows only a read-only DeepSeek label in the production preview", () => {
+    vi.stubEnv("MODE", "production");
+    renderAskAssistant();
+
+    expect(screen.getByLabelText("Research model")).toHaveTextContent(
+      "DeepSeek V4 Flash",
+    );
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Luna|Terra|OpenRouter/)).not.toBeInTheDocument();
   });
 
   it("types, holds, erases, and rotates the suggested placeholder", () => {

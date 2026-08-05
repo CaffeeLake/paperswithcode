@@ -4,7 +4,11 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import Composer from "@/components/chat/Composer";
-import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
+import {
+  AssistantMessage,
+  UserMessage,
+  type HfBillingGuidance,
+} from "@/components/chat/ChatMessage";
 import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons";
 import { hfLoginUrl } from "@/components/HfSignInButton";
 import { useToast } from "@/components/ui/use-toast";
@@ -12,6 +16,7 @@ import { useChat } from "@/hooks/useChat";
 import { isChatLive } from "@/lib/chat";
 import {
   CHAT_AUTO_SEND_KEY,
+  CHAT_AUTH_ATTEMPTED_KEY,
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
   clearQueuedChatLaunch,
@@ -30,7 +35,8 @@ import {
 } from "@/lib/openrouter";
 import {
   DEFAULT_CHAT_MODEL,
-  FALLBACK_CHAT_MODELS,
+  PRODUCTION_FALLBACK_CHAT_MODELS,
+  STAGING_FALLBACK_CHAT_MODELS,
   type ChatModelChoice,
   type ChatSession,
   archiveOldChats,
@@ -202,7 +208,20 @@ const ChatView: React.FC = () => {
     queryFn: () => apiClient.getChatAvailability(),
     refetchInterval: 30000,
     retry: false,
-    enabled: isChatLive() && staging,
+    enabled: isChatLive(),
+  });
+  const billingQuery = useQuery({
+    queryKey: ["inference-billing", user?.hf_subject],
+    queryFn: async (): Promise<HfBillingGuidance & { connected: boolean }> => {
+      const response = await fetch(apiUrl("/api/v1/me/inference-billing"), {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("Could not load Hugging Face billing status.");
+      return response.json();
+    },
+    enabled: isChatLive() && Boolean(user),
+    retry: false,
   });
   const chatPaused = availabilityQuery.data?.status === "paused";
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -214,7 +233,9 @@ const ChatView: React.FC = () => {
   const [routeLoadAttempt, setRouteLoadAttempt] = useState(0);
   const queuedLaunchRef = useRef(readQueuedChatLaunch());
   const requestedModelRef = useRef(searchParams.get("model") || queuedLaunchRef.current?.model);
-  const [models, setModels] = useState<ChatModelChoice[]>(FALLBACK_CHAT_MODELS);
+  const [models, setModels] = useState<ChatModelChoice[]>(
+    staging ? STAGING_FALLBACK_CHAT_MODELS : PRODUCTION_FALLBACK_CHAT_MODELS,
+  );
   const [selectedModel, setSelectedModel] = useState(
     requestedModelRef.current || DEFAULT_CHAT_MODEL,
   );
@@ -346,7 +367,18 @@ const ChatView: React.FC = () => {
     sessionStorage.setItem(CHAT_DRAFT_KEY, text);
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
+    sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
     window.location.href = hfLoginUrl("/chat", true);
+  }, [selectedModel]);
+
+  const restoreAuthorizationPrompt = useCallback((text: string, message: string) => {
+    sessionStorage.setItem(CHAT_DRAFT_KEY, text);
+    sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
+    sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
+    sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
+    setPendingAutoPrompt("");
+    setDraft(text);
+    setSessionError(message);
   }, [selectedModel]);
 
   const send = useCallback(async (text: string) => {
@@ -365,13 +397,20 @@ const ChatView: React.FC = () => {
         if (!response.ok) throw new Error("Could not check Hugging Face authorization.");
         const billing = (await response.json()) as { connected: boolean };
         if (!billing.connected) {
+          if (sessionStorage.getItem(CHAT_AUTH_ATTEMPTED_KEY) === "1") {
+            restoreAuthorizationPrompt(
+              text,
+              "Hugging Face inference authorization was not completed. Your prompt is ready to retry.",
+            );
+            return;
+          }
           authorizeInference(text);
           return;
         }
         inferenceConnectedRef.current = true;
       } catch (error) {
-        setDraft(text);
-        setSessionError(
+        restoreAuthorizationPrompt(
+          text,
           error instanceof Error
             ? error.message
             : "Could not check Hugging Face authorization.",
@@ -382,12 +421,18 @@ const ChatView: React.FC = () => {
       }
     }
     const streamRouteSessionId = routeSessionIdRef.current ?? null;
-    if (!sendChat(text)) return;
+    if (!sendChat(text)) {
+      restoreAuthorizationPrompt(
+        text,
+        "Your prompt was not sent. It is ready to retry.",
+      );
+      return;
+    }
     activeStreamRouteSessionIdRef.current = streamRouteSessionId;
     activeStreamSessionIdRef.current = streamRouteSessionId;
     clearQueuedChatLaunch();
     setDraft("");
-  }, [authorizeInference, selectedProvider, sendChat, user]);
+  }, [authorizeInference, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -830,6 +875,7 @@ const ChatView: React.FC = () => {
                   onArchiveOldChats={() => void archiveOld()}
                   onArchiveOldestChats={() => void archiveOldest()}
                   archivePending={archivePending}
+                  hfBilling={billingQuery.data ?? null}
                 />)}
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">
@@ -860,7 +906,10 @@ const ChatView: React.FC = () => {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2 id="chat-share-dialog-title">Public link created</h2>
-            <p>It could not be copied automatically. Copy this link manually:</p>
+            <p>
+              Anyone with this link can see this conversation. It could not be
+              copied automatically, so copy it manually:
+            </p>
             <input
               readOnly
               value={manualShareUrl}

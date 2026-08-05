@@ -96,6 +96,7 @@ def test_gateway_fails_closed_instead_of_using_shared_token():
 def test_gateway_routes_luna_to_server_funded_openrouter():
     settings = Settings(
         _env_file=None,
+        environment="staging",
         chat_openrouter_api_key="openrouter-token",
         chat_openrouter_server_funded_enabled=True,
     )
@@ -115,6 +116,7 @@ def test_gateway_routes_luna_to_server_funded_openrouter():
 def test_gateway_rejects_shared_openrouter_when_preview_is_disabled():
     settings = Settings(
         _env_file=None,
+        environment="staging",
         chat_openrouter_api_key="openrouter-token",
         chat_openrouter_server_funded_enabled=False,
     )
@@ -146,7 +148,7 @@ def test_gateway_keeps_hugging_face_models_on_user_billing():
     settings = Settings(_env_file=None, jwt_secret="x" * 32)
     owner_hash = "a" * 64
     row = SimpleNamespace(
-        model=settings.chat_glm_route,
+        model=settings.chat_deepseek_v4_flash_route,
         owner_hash=owner_hash,
         provider_token_encrypted=encrypt_credential(
             HfInferenceCredential("connected-user-token", "huggingface"),

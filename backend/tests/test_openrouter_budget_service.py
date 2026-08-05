@@ -40,9 +40,11 @@ def _client(
         response_payload = (
             credits_payload
             if request.url.path.endswith("/credits") and credits_payload is not None
-            else {"data": {"total_credits": 10, "total_usage": 1}}
-            if request.url.path.endswith("/credits")
-            else payload
+            else (
+                {"data": {"total_credits": 10, "total_usage": 1}}
+                if request.url.path.endswith("/credits")
+                else payload
+            )
         )
         return httpx.Response(status_code, json=response_payload)
 
@@ -74,7 +76,7 @@ def test_staging_exposes_explicitly_enabled_shared_provider():
 
 
 def test_development_keeps_model_available_for_explicit_local_testing():
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, environment="development")
 
     assert {"openai/gpt-5.6-luna", "openai/gpt-5.6-terra"} <= {
         choice["id"] for choice in settings.chat_model_choices

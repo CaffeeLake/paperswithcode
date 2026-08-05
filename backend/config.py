@@ -253,6 +253,8 @@ class Settings(BaseSettings):
 
     # Research chat (disabled until the isolated live qualification passes).
     chat_enabled: bool = Field(default=False)
+    # Read-only compatibility inputs for sessions created before the DeepSeek-only
+    # registry. They are never exposed in current model discovery.
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")
     chat_gemma_route: str = Field(default="google/gemma-4-31B-it:cerebras")
     chat_kimi_route: str = Field(default="moonshotai/Kimi-K3:fastest")
@@ -311,6 +313,18 @@ class Settings(BaseSettings):
     chat_title_provider: str = Field(default="cerebras")
     chat_title_timeout_seconds: float = Field(default=5, gt=0, le=30)
     chat_title_max_tokens: int = Field(default=64, ge=8, le=64)
+    chat_title_generation_enabled: bool = Field(default=False)
+    chat_title_hf_token: str = Field(
+        default="",
+        description="Environment-specific server credential used only for chat titles",
+    )
+    chat_title_credential_owner: str = Field(default="", max_length=128)
+    chat_title_credential_environment: str = Field(default="", max_length=32)
+    chat_title_monthly_cap_microusd: int = Field(default=25_000_000, ge=1)
+    chat_title_warning_microusd: int = Field(default=20_000_000, ge=1)
+    chat_title_max_call_microusd: int = Field(default=10_000, ge=1)
+    chat_title_input_microusd_per_token: int = Field(default=1, ge=1)
+    chat_title_output_microusd_per_token: int = Field(default=2, ge=1)
     chat_session_limit: int = Field(default=100, ge=1, le=1000)
     chat_session_message_limit: int = Field(default=200, ge=2, le=2000)
     chat_session_byte_limit: int = Field(default=25 * 1024 * 1024, ge=1024)
@@ -322,6 +336,9 @@ class Settings(BaseSettings):
     chat_max_search_calls: int = Field(default=2, ge=1, le=5)
     chat_timeout_seconds: float = Field(default=180, gt=0, le=300)
     chat_max_concurrency: int = Field(default=1, ge=1, le=8)
+    chat_user_max_concurrency: int = Field(default=2, ge=1, le=8)
+    chat_public_admission_enabled: bool = Field(default=True)
+    chat_sandbox_admission_enabled: bool = Field(default=True)
     chat_default_backend: str = Field(
         default="local_mcp", pattern=r"^(local_mcp|modal_cli)$"
     )
@@ -401,31 +418,17 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_registry(self) -> tuple[dict[str, str], ...]:
-        return (
-            {
-                "id": "google/gemma-4-31B-it",
-                "label": "Gemma 4 31B",
-                "route": self.chat_gemma_route,
-                "provider": "huggingface",
-            },
-            {
-                "id": "zai-org/GLM-5.2",
-                "label": "GLM 5.2",
-                "route": self.chat_glm_route,
-                "provider": "huggingface",
-            },
-            {
-                "id": "moonshotai/Kimi-K3",
-                "label": "Kimi K3",
-                "route": self.chat_kimi_route,
-                "provider": "huggingface",
-            },
+        huggingface = (
             {
                 "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-                "label": "DeepSeek V4 Flash 0731",
+                "label": "DeepSeek V4 Flash",
                 "route": self.chat_deepseek_v4_flash_route,
                 "provider": "huggingface",
             },
+        )
+        if self.environment == "production":
+            return huggingface
+        return huggingface + (
             {
                 "id": "openai/gpt-5.6-luna",
                 "label": "GPT-5.6 Luna (medium)",
@@ -463,10 +466,17 @@ class Settings(BaseSettings):
     @property
     def chat_model_routes(self) -> dict[str, str]:
         routes = {choice["id"]: choice["route"] for choice in self.chat_model_choices}
-        # Existing staging sessions keep their stable selected-model ID while
-        # following the replacement route.
-        routes["openai/gpt-oss-120b"] = self.chat_gemma_route
-        routes["deepseek-ai/DeepSeek-V4-Flash"] = self.chat_gemma_route
+        # Existing sessions keep their persisted selected-model IDs but move to
+        # the sole qualified Hugging Face route. These aliases are intentionally
+        # absent from discovery and frontend defaults.
+        for legacy_model in (
+            "google/gemma-4-31B-it",
+            "zai-org/GLM-5.2",
+            "moonshotai/Kimi-K3",
+            "openai/gpt-oss-120b",
+            "deepseek-ai/DeepSeek-V4-Flash",
+        ):
+            routes[legacy_model] = self.chat_deepseek_v4_flash_route
         return routes
 
     @property
@@ -474,8 +484,14 @@ class Settings(BaseSettings):
         providers = {
             choice["id"]: choice["provider"] for choice in self.chat_model_registry
         }
-        providers["openai/gpt-oss-120b"] = "huggingface"
-        providers["deepseek-ai/DeepSeek-V4-Flash"] = "huggingface"
+        for legacy_model in (
+            "google/gemma-4-31B-it",
+            "zai-org/GLM-5.2",
+            "moonshotai/Kimi-K3",
+            "openai/gpt-oss-120b",
+            "deepseek-ai/DeepSeek-V4-Flash",
+        ):
+            providers[legacy_model] = "huggingface"
         return providers
 
     @property

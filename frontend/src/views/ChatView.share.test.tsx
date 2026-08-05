@@ -241,6 +241,53 @@ describe("ChatView inference authorization", () => {
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith("Explain this benchmark"));
     expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
   });
+
+  it("auto-sends an authorized prompt exactly once across remounts", async () => {
+    sessionStorage.setItem("pwc:chat-oauth-draft", "Exactly once prompt");
+    sessionStorage.setItem("pwc:chat-oauth-model", session.selected_model);
+    sessionStorage.setItem("pwc:chat-oauth-auto-send", "1");
+    sessionStorage.setItem("pwc:chat-oauth-attempted", "1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ connected: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const first = renderChat("/chat");
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith("Exactly once prompt"));
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem("pwc:chat-oauth-auto-send")).toBeNull();
+    expect(sessionStorage.getItem("pwc:chat-oauth-attempted")).toBeNull();
+
+    first.unmount();
+    renderChat("/chat");
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the prompt instead of looping after authorization cancellation", async () => {
+    sessionStorage.setItem("pwc:chat-oauth-draft", "Restore this prompt");
+    sessionStorage.setItem("pwc:chat-oauth-model", session.selected_model);
+    sessionStorage.setItem("pwc:chat-oauth-auto-send", "1");
+    sessionStorage.setItem("pwc:chat-oauth-attempted", "1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ connected: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    renderChat("/chat");
+
+    const composer = await screen.findByRole("textbox");
+    await waitFor(() => expect(composer).toHaveValue("Restore this prompt"));
+    expect(screen.getByText(/authorization was not completed/i)).toBeVisible();
+    expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("pwc:chat-oauth-auto-send")).toBeNull();
+    expect(sessionStorage.getItem("pwc:chat-oauth-attempted")).toBeNull();
+  });
 });
 
 describe("ChatView billing notice", () => {
@@ -310,6 +357,7 @@ describe("ChatView sharing", () => {
     expect(screen.getByRole("textbox", { name: "Public conversation link" })).toHaveValue(
       `${window.location.origin}/share/22222222-2222-4222-8222-222222222222`,
     );
+    expect(screen.getByText(/Anyone with this link can see this conversation/)).toBeVisible();
     expect(mocks.createShare).toHaveBeenCalledTimes(1);
     expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({
       title: "Public link copied to your clipboard",

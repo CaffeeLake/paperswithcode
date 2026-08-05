@@ -61,6 +61,7 @@ describe("SettingsView organization billing", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    vi.stubEnv("MODE", "staging");
     mockAuth.state = {
       user: { username: "nielsr", hf_subject: "hf-user-1" },
       isLoading: false,
@@ -316,5 +317,27 @@ describe("SettingsView production boundary", () => {
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Evaluations" })).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows Hugging Face and retention policy but no OpenRouter when production chat is previewed", async () => {
+    vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    vi.stubEnv("MODE", "production");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(personalStatus), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    renderSettings();
+
+    expect(await screen.findByRole("heading", { name: "Inference Providers" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "OpenRouter" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Monthly OpenRouter usage/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("OpenRouter API key")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chat privacy & retention" })).toBeVisible();
+    expect(screen.getByText(/retained until you delete them/i)).toBeVisible();
+    expect(screen.getByText(/no dedicated private-chat export format/i)).toBeVisible();
+    expect(screen.getByText(/Archiving.*does not delete/i)).toBeVisible();
   });
 });

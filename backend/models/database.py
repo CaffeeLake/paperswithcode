@@ -2470,6 +2470,125 @@ class ChatSandboxCircuitEvent(Base):
     )
 
 
+class ChatTitleBudgetState(Base):
+    """Environment-isolated monthly circuit for server-funded chat titles."""
+
+    __tablename__ = "chat_title_budget_states"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    billing_cycle: Mapped[date] = mapped_column(Date, nullable=False)
+    cycle_end_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    warning_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    application_cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spent_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    reserved_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    circuit_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="armed"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "environment", "billing_cycle", name="uq_chat_title_budget_cycle"
+        ),
+        CheckConstraint(
+            "spent_microusd >= 0 AND reserved_microusd >= 0 "
+            "AND circuit_state IN ('armed','warning','tripped')",
+            name="chat_title_budget_state_check",
+        ),
+    )
+
+
+class ChatTitleProviderCall(Base):
+    """Idempotent reservation and settlement for one title-generation attempt."""
+
+    __tablename__ = "chat_title_provider_calls"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    budget_state_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_title_budget_states.id"), nullable=False
+    )
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    billing_cycle: Mapped[date] = mapped_column(Date, nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger)
+    input_tokens: Mapped[Optional[int]] = mapped_column(BigInteger)
+    output_tokens: Mapped[Optional[int]] = mapped_column(BigInteger)
+    provider_generation_id: Mapped[Optional[str]] = mapped_column(Text)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('reserved','dispatched','settled','released')",
+            name="chat_title_provider_calls_state_check",
+        ),
+        CheckConstraint(
+            "reserved_microusd >= 0 AND "
+            "(actual_microusd IS NULL OR actual_microusd >= 0) AND "
+            "(input_tokens IS NULL OR input_tokens >= 0) AND "
+            "(output_tokens IS NULL OR output_tokens >= 0)",
+            name="chat_title_provider_calls_nonnegative_check",
+        ),
+        Index(
+            "idx_chat_title_calls_cycle",
+            "environment",
+            "billing_cycle",
+            "state",
+        ),
+    )
+
+
+class ChatTitleBudgetEvent(Base):
+    """Content-free title-circuit transition and alert-delivery record."""
+
+    __tablename__ = "chat_title_budget_events"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    budget_state_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_title_budget_states.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    details: Mapped[dict] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, server_default="{}"
+    )
+    delivery_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    fallback_delivery_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default="pending"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "budget_state_id", "event_type", name="uq_chat_title_budget_event"
+        ),
+        Index("idx_chat_title_budget_events_delivery", "delivery_state", "created_at"),
+    )
+
+
 class ChatTurnLatency(Base):
     """Content-free latency telemetry for one admitted staging chat turn."""
 

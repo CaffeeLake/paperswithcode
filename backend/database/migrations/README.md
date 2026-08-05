@@ -41,6 +41,7 @@ uv run --env-file backend/keys.env python backend/database/migrations/run_<name>
 | `add_chat_turn_latency.sql` | Staging-only, content-free per-turn server/browser latency telemetry with 30-day application retention; apply after `add_chat_sandbox_runtime.sql` |
 | `add_chat_sandbox_pool.sql` | Staging-only blank-worker pool lifecycle, generation binding, resource/cost accounting, and 35-day audit state; apply with `search_path=staging,public` before deploying pool-aware readiness |
 | `add_chat_sandbox_spend_cap.sql` | Staging-only append-only full sandbox lifecycle meter, monthly circuit state, and deduplicated operator event ledger |
+| `add_chat_title_budget.sql` | Environment-owned, persistent monthly reservation/reconciliation ledger and alert events for the independent staging and production $25 server-funded title circuits |
 | `add_chat_shares.sql` | Staging-only self-contained public chat capability snapshots and durable assistant finish reasons; run as PostgreSQL superuser with `search_path=staging,public` before activating chat sharing |
 | `add_chat_openrouter_user_budget.sql` | Staging-owned per-HF-user funded OpenRouter monthly aggregates and provider-call ledger, AES-256-GCM BYOK records, bounded non-secret audit events, and capability revision/error fields; apply with `search_path=staging,public` before enabling any OpenRouter model |
 | `add_paper_curation_jobs.sql` | durable admin-triggered Hugging Face paper-curation Jobs |

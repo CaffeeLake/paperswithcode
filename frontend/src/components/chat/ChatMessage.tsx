@@ -19,6 +19,15 @@ import type {
   ToolBlock,
 } from "@/lib/chat";
 
+const HF_PRO_URL = "https://huggingface.co/pro";
+const HF_PRICING_URL = "https://huggingface.co/docs/inference-providers/pricing";
+
+export interface HfBillingGuidance {
+  account_type: "Free" | "PRO" | "Organization" | null;
+  bill_to: string | null;
+  usage_url: string;
+}
+
 const Caret: React.FC = () => <span className="chat-caret" />;
 
 const isWaitingForAssistant = (msg: ChatMessageType): boolean => {
@@ -340,7 +349,8 @@ export const AssistantMessage: React.FC<{
   onArchiveOldChats?: () => void;
   onArchiveOldestChats?: () => void;
   archivePending?: "old" | "oldest" | null;
-}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null }) => (
+  hfBilling?: HfBillingGuidance | null;
+}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null, hfBilling = null }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
       {msg.blocks?.map((b, i) => {
@@ -391,7 +401,7 @@ export const AssistantMessage: React.FC<{
           : msg.errorCode === "chat_session_quota_exceeded"
           ? msg.error
           : `The assistant hit an error: ${msg.error}`}</span>
-        {["hf_inference_billing_required", "hf_inference_billing_exhausted", "hf_inference_credential_expired"].includes(msg.errorCode ?? "") && (
+        {["hf_inference_billing_required", "hf_inference_credential_expired"].includes(msg.errorCode ?? "") && (
           <a href="/settings">
             {msg.errorCode === "hf_inference_billing_required"
               ? "Authorize HF in Settings"
@@ -400,6 +410,18 @@ export const AssistantMessage: React.FC<{
                 : "Review billing settings"}
           </a>
         )}
+        {msg.errorCode === "hf_inference_billing_exhausted" && <>
+          {hfBilling?.account_type === "Free" && !hfBilling.bill_to
+            ? <a href={HF_PRO_URL} target="_blank" rel="noreferrer">
+                Upgrade to Hugging Face PRO — $9/month for 20× more included credits
+              </a>
+            : <a href={hfBilling?.usage_url ?? "/settings"} target={hfBilling ? "_blank" : undefined} rel={hfBilling ? "noreferrer" : undefined}>
+                Review Hugging Face usage and billing
+              </a>}
+          <a href={HF_PRICING_URL} target="_blank" rel="noreferrer">
+            Inference Providers pricing and billing details
+          </a>
+        </>}
         {msg.errorCode === "openrouter_monthly_budget_exhausted" && <>
           <a href="/settings#openrouter-byok">Use your own OpenRouter key</a>
           <span>Or select a Hugging Face-backed model and explicitly retry.</span>

@@ -163,7 +163,7 @@ async def resolve_modal_image(image_reference: str):
 def sandbox_environment(settings: Settings) -> dict[str, str]:
     return {
         "PWC_CHAT_GATEWAY_URL": settings.chat_gateway_url,
-        "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_gemma_route,
+        "PWC_CHAT_PREFLIGHT_MODEL": settings.chat_deepseek_v4_flash_route,
         "PWC_CHAT_MAX_TURNS": str(settings.chat_max_turns),
         "PWC_CHAT_MAX_TOOL_CALLS": str(settings.chat_max_tool_calls),
         "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": str(settings.chat_max_direct_search_calls),
@@ -314,6 +314,10 @@ class WorkspaceSnapshotProvider:
         return
 
 
+class SandboxCleanupUnverified(RuntimeError):
+    """The application could not confirm deletion of all provider state."""
+
+
 class SandboxSessionManager:
     MAINTENANCE_CONCURRENCY = 8
 
@@ -437,9 +441,11 @@ class SandboxSessionManager:
                     ).scalars()
                 )
                 accrued = sum(
-                    self._finalize_pool_cost(row, now)[1]
-                    if row.state in {"starting", "blank_ready", "draining"}
-                    else float(row.estimated_blank_cost_usd)
+                    (
+                        self._finalize_pool_cost(row, now)[1]
+                        if row.state in {"starting", "blank_ready", "draining"}
+                        else float(row.estimated_blank_cost_usd)
+                    )
                     for row in rows
                 )
             reported = float(self.settings.chat_blank_pool_reported_month_to_date_usd)
@@ -1299,7 +1305,10 @@ class SandboxSessionManager:
 
     @property
     def blank_pool_enabled(self) -> bool:
-        return bool(getattr(self.settings, "chat_blank_pool_enabled", False))
+        return bool(
+            getattr(self.settings, "chat_blank_pool_enabled", False)
+            and getattr(self.settings, "chat_sandbox_admission_enabled", True)
+        )
 
     async def validate_image_reference(self) -> None:
         if self.settings.chat_sandbox_spend_enforcement_enabled:
@@ -2547,16 +2556,23 @@ class SandboxSessionManager:
     async def cleanup_deleted(
         self, sandbox_id: str | None, snapshot_id: str | None
     ) -> None:
+        termination_confirmed = True
         if sandbox_id:
             self._drop_control_by_sandbox(sandbox_id)
-            confirmed = await self._terminate_provider_sandbox(sandbox_id)
+            termination_confirmed = await self._terminate_provider_sandbox(sandbox_id)
             if self.settings.chat_sandbox_spend_enforcement_enabled:
                 with self.session_factory() as db, db.begin():
                     ChatSandboxSpendService(db, self.settings).terminate(
-                        sandbox_id, "session_deleted", confirmed=confirmed
+                        sandbox_id,
+                        "session_deleted",
+                        confirmed=termination_confirmed,
                     )
         if snapshot_id:
             await self.snapshots.delete(snapshot_id)
+        if not termination_confirmed:
+            raise SandboxCleanupUnverified(
+                "Sandbox termination could not be confirmed after chat deletion"
+            )
 
     async def reap_idle(self) -> int:
         cutoff = datetime.now(UTC) - timedelta(

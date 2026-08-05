@@ -370,9 +370,7 @@ def main() -> int:
             "session_cookie_name": environment.session_cookie_name,
             "jwt_secret": environment.jwt_secret,
             "hf_token": environment.hf_token,
-            "chat_gemma_route": environment.chat_gemma_route,
-            "chat_glm_route": environment.chat_glm_route,
-            "chat_kimi_route": environment.chat_kimi_route,
+            "chat_deepseek_v4_flash_route": environment.chat_deepseek_v4_flash_route,
         }
     )
     if settings.environment != "staging":

@@ -149,6 +149,14 @@ const PrivacyView: React.FC = () => {
       <section>
         <h2>6. Retention and deletion</h2>
         <p>
+          Private chats are retained until you delete them, subject to limits of 100
+          active chats and 100 MB of chat data per user. Archiving hides a chat and
+          frees active-chat quota but does not delete it. You may deliberately share an
+          unlisted snapshot; deleting its private chat removes the durable transcript,
+          workspace reference, and share link after deletion is verified. No dedicated
+          private-chat export format is currently offered.
+        </p>
+        <p>
           We keep information for as long as reasonably needed for the purposes described
           here, including providing the Service, maintaining security and audit records,
           resolving disputes, and meeting legal obligations. Retention periods vary by

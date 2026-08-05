@@ -79,6 +79,15 @@ three pointers. A successful activation drains the displaced slot without
 blocking transcript callbacks; if streams remain at the reporting deadline the
 result is `success-with-draining` and `pwc-reap` finishes cleanup later.
 
+Production chat remains disabled when source is merely landed or deployed with
+`PWC_CHAT_ENABLED=false`. A separately authorized protected configuration
+change to `true` causes the next new exact-SHA production release to build chat
+into both backend and frontend manifests with the active immutable runtime
+descriptor. The deploy rejects an existing same-SHA release whose activation
+mode differs, so operators must use a new exact source SHA rather than mutate an
+immutable bundle. Runtime readiness still fails closed until every production
+chat prerequisite is configured; OpenRouter remains prohibited in either mode.
+
 For the one-time migration from a legacy service, install the committed tools
 and slot units. A source-only compatibility landing may use the explicit
 staging-only bridge mode before any slot exists, but only when `uv.lock`
@@ -240,15 +249,28 @@ uv run --env-file /etc/paperswithcode/staging.env python \
 The auditor reads all legacy and blue/green staging journal units, reports only
 content-free error codes and aggregates, scopes health and SLO gates to the
 active release, and keeps insufficient pre-soak samples distinct from failures.
-Ordinary chat models require the signed-in user's Hugging Face billing. Staging
-may additionally enable the shared OpenRouter-backed Luna and Terra preview.
+Ordinary chat models require the signed-in user's Hugging Face billing. Both
+profiles use `deepseek-ai/DeepSeek-V4-Flash-0731:fastest`; staging additionally
+exposes the shared OpenRouter-backed Luna and Terra preview.
 Admission checks provider-authoritative monthly usage before each turn, and the
 provider key must prove an exact monthly `$200` staging workspace limit. Durable
 PostgreSQL reservations enforce the separate `$1` per-user ceiling before each
-funded gateway dispatch. Production continues to prohibit shared OpenRouter
-credentials and must use a distinct key if separately authorized later.
+funded gateway dispatch. Production permanently prohibits shared OpenRouter
+models, credentials, allowance state, percentage UI, and BYOK controls.
 
-Provision the staging-only credential without printing it:
+Automatic title generation is the sole server-funded Hugging Face exception.
+Staging uses a staging-specific `nielsr` credential, pins
+`openai/gpt-oss-120b` to Cerebras, and reserves against a persistent,
+environment-isolated `$25/month` circuit before dispatch. The research prompt
+path never receives this credential. Missing credentials, ledger uncertainty,
+provider failure, or exhaustion falls back to a local prompt-derived title.
+Production requires a different credential and ledger and remains disabled.
+The two environments may share the same `$1,000/month` account-level backstop,
+but neither may read or borrow the other's `$25` application budget; aggregate
+account monitoring must cover their combined title spend.
+
+The existing staging credential helper configures only the staging OpenRouter
+provider key and does not install or copy a title token:
 
 ```bash
 sudo python deploy/configure_host_env.py \

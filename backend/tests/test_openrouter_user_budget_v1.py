@@ -39,6 +39,7 @@ from backend.services.openrouter_user_budget_service import (
 
 def _settings(**overrides) -> Settings:
     values = {
+        "environment": "staging",
         "chat_openrouter_credential_keyring": '{"1":"%s"}'
         % base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("="),
         "chat_openrouter_credential_active_key_version": 1,

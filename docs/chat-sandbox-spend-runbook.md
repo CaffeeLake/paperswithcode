@@ -6,7 +6,7 @@ This runbook covers the application circuit. The current Starter policy uses the
 
 - Workspace: `$250` enforced monthly budget and native account-email notifications.
 - Current Starter staging: dedicated `pwc-chat-staging` namespace with the sole owner's personal token, no Environment cap, and application warning/trip `$75`/`$100`.
-- Future Team upgrade: add separate environment-scoped service users and `$125`/`$225` staging/production Environment caps. Before production chat is approved, reduce staging to `$25` with `$15`/`$20` warning/trip and attest production `$175`/`$200`/`$225` beneath the shared Workspace cap.
+- Future production activation retains the same `$75` warning, `$100` application trip, no Environment cap, and `$250` Workspace outer cap. It requires a distinct protected runtime and separately verified alerts, but production chat remains disabled until explicitly authorized.
 - In Team mode, Environment-scoped service credentials must not list or terminate the other chat Environment's sandboxes.
 
 ## Incident response

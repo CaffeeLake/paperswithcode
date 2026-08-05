@@ -6,10 +6,15 @@ import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
 import { apiClient } from "@/lib/api";
-import { isChatEnabled } from "@/lib/apiUrl";
+import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
-import { createSession, DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
+import {
+  createSession,
+  DEFAULT_CHAT_MODEL,
+  PRODUCTION_FALLBACK_CHAT_MODELS,
+  STAGING_FALLBACK_CHAT_MODELS,
+} from "@/lib/chatSessions";
 import { displayTaskName, transformPaperForCard } from "@/lib/transform";
 import { useInfinitePapers } from "@/hooks/usePapers";
 import { useIntersectionObserver } from "@/hooks/useIntersectionObserver";
@@ -114,6 +119,9 @@ const parseTime = (value: string | null): TimeWindow => {
 // Submitting hands the question off to the dedicated chat page.
 export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
+  const models = isStagingEnvironment()
+    ? STAGING_FALLBACK_CHAT_MODELS
+    : PRODUCTION_FALLBACK_CHAT_MODELS;
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
   const [launching, setLaunching] = useState(false);
@@ -163,7 +171,7 @@ export const AskAssistant: React.FC = () => {
       <div className="ask-home-foot">
         <div className="ask-home-provider-tools">
           <ModelPicker
-            models={FALLBACK_CHAT_MODELS}
+            models={models}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
           />

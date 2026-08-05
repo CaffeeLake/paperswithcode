@@ -444,7 +444,7 @@ def test_turn_runners_share_session_manager_for_one_settings_instance(monkeypatc
     created: list[object] = []
 
     class Manager:
-        def __init__(self, settings):
+        def __init__(self, settings, **_kwargs):
             self.settings = settings
             created.append(settings)
 

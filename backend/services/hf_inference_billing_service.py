@@ -148,6 +148,13 @@ def _organizations(payload: dict) -> tuple[HfInferenceOrganization, ...]:
     for raw in payload.get("orgs") or []:
         if not isinstance(raw, dict):
             continue
+        raw_plan = raw.get("plan")
+        plan = raw_plan.get("name") if isinstance(raw_plan, dict) else raw_plan
+        if not isinstance(plan, str) or plan.strip().lower() not in {
+            "team",
+            "enterprise",
+        }:
+            continue
         name = raw.get("preferred_username") or raw.get("name")
         if not isinstance(name, str) or not name:
             continue

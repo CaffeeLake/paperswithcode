@@ -60,16 +60,16 @@ export interface ChatModelChoice {
   provider: "huggingface" | "openrouter";
 }
 
-export const DEFAULT_CHAT_MODEL = "google/gemma-4-31B-it";
-export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
-  { id: DEFAULT_CHAT_MODEL, label: "Gemma 4 31B", provider: "huggingface" },
-  { id: "zai-org/GLM-5.2", label: "GLM 5.2", provider: "huggingface" },
-  { id: "moonshotai/Kimi-K3", label: "Kimi K3", provider: "huggingface" },
+export const DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
+export const PRODUCTION_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
   {
-    id: "deepseek-ai/DeepSeek-V4-Flash-0731",
-    label: "DeepSeek V4 Flash 0731",
+    id: DEFAULT_CHAT_MODEL,
+    label: "DeepSeek V4 Flash",
     provider: "huggingface",
   },
+];
+export const STAGING_FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
+  ...PRODUCTION_FALLBACK_CHAT_MODELS,
   {
     id: "openai/gpt-5.6-luna",
     label: "GPT-5.6 Luna (medium)",
@@ -81,6 +81,9 @@ export const FALLBACK_CHAT_MODELS: ChatModelChoice[] = [
     provider: "openrouter",
   },
 ];
+// Compatibility export for staging-focused consumers and tests. Deployed UI
+// code must choose the environment-specific list explicitly.
+export const FALLBACK_CHAT_MODELS = STAGING_FALLBACK_CHAT_MODELS;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), {

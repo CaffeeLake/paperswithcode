@@ -11,6 +11,19 @@ const models = [
 ];
 
 describe("ModelPicker", () => {
+  it("renders one production model as a read-only label", () => {
+    render(
+      <ModelPicker
+        models={[models[0]]}
+        selectedModel="hf-a"
+        onModelChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByLabelText("Research model")).toHaveTextContent("HF Model A");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
   it("groups models by inference provider", () => {
     render(
       <ModelPicker

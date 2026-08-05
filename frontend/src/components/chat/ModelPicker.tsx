@@ -29,6 +29,10 @@ const ModelPicker: React.FC<ModelPickerProps> = ({
   const widthInCharacters = Math.min(Math.max(selectedLabel.length + 5, 12), 32);
   const ungroupedModels = models.filter((model) => !model.provider);
 
+  if (models.length === 1 && models[0]?.id === selectedModel) {
+    return <span className="chat-model-label" aria-label="Research model">{selectedLabel}</span>;
+  }
+
   return (
     <select
       className="chat-model-select"

@@ -260,11 +260,14 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_APP_DOMAIN` | paperswithcode.ai | Domain for URL generation |
 | `PWC_HF_TOKEN` | | Hugging Face API token (increases rate limits) |
 | `PWC_CHAT_ENABLED` | false | Enable the authenticated SSE research-chat endpoint |
-| `PWC_CHAT_MODEL` | zai-org/GLM-5.2:together | Exact HF Inference Providers model and provider route |
+| `PWC_CHAT_DEEPSEEK_V4_FLASH_ROUTE` | deepseek-ai/DeepSeek-V4-Flash-0731:fastest | Qualified user-funded HF Inference Providers route |
+| `PWC_CHAT_TITLE_HF_TOKEN` | | Environment-specific server credential used only for automatic titles |
+| `PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD` | 25000000 | Persistent per-environment title-generation application cap |
 | `PWC_CHAT_MAX_TURNS` | 8 | Maximum Agent SDK tool-use round trips |
 | `PWC_CHAT_MAX_SEARCH_CALLS` | 2 | Maximum paper searches per chat request |
 | `PWC_CHAT_TIMEOUT_SECONDS` | 180 | Legacy local-MCP request timeout |
-| `PWC_CHAT_MAX_CONCURRENCY` | 1 | PostgreSQL-enforced global active-turn ceiling |
+| `PWC_CHAT_MAX_CONCURRENCY` | 1 | PostgreSQL-enforced global active-turn ceiling (deployed policy: 2) |
+| `PWC_CHAT_USER_MAX_CONCURRENCY` | 2 | PostgreSQL-enforced active-turn ceiling per user |
 | `PWC_CHAT_GATEWAY_URL` | | Dedicated capability-authenticated sandbox gateway |
 | `PWC_CHAT_MAX_TOOL_CALLS` | 12 | Maximum built-in tool calls per Modal turn |
 | `PWC_CHAT_MAX_DIRECT_SEARCH_CALLS` | 4 | Maximum direct `pwc search` calls per Modal turn |

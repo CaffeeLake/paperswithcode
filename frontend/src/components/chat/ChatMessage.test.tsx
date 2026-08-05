@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -148,8 +149,16 @@ describe("UserMessage", () => {
 });
 
 describe("AssistantMessage", () => {
-  const renderAssistant = (msg: ChatMessageType) => render(
-    <AssistantMessage msg={msg} papers={{}} onToggleBlock={() => undefined} />,
+  const renderAssistant = (
+    msg: ChatMessageType,
+    hfBilling: ComponentProps<typeof AssistantMessage>["hfBilling"] = null,
+  ) => render(
+    <AssistantMessage
+      msg={msg}
+      papers={{}}
+      onToggleBlock={() => undefined}
+      hfBilling={hfBilling}
+    />,
   );
 
   it("renders completed reasoning as Markdown", () => {
@@ -169,18 +178,47 @@ describe("AssistantMessage", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 
-  it("links billing failures to the per-user settings page", () => {
+  it("offers PRO only for an exhausted personal Free account", () => {
     renderAssistant({
       id: "assistant-1",
       role: "assistant",
       error: "Review pay-as-you-go billing.",
       errorCode: "hf_inference_billing_exhausted",
+    }, {
+      account_type: "Free",
+      bill_to: null,
+      usage_url: "https://huggingface.co/settings/inference-providers",
     });
 
     expect(screen.getByText(/Review pay-as-you-go billing/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "Review billing settings" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Upgrade to Hugging Face PRO/ })).toHaveAttribute(
       "href",
-      "/settings",
+      "https://huggingface.co/pro",
+    );
+    expect(screen.getByRole("link", { name: /pricing and billing details/i })).toHaveAttribute(
+      "href",
+      "https://huggingface.co/docs/inference-providers/pricing",
+    );
+  });
+
+  it.each([
+    { account_type: "PRO" as const, bill_to: null },
+    { account_type: "Organization" as const, bill_to: "huggingface" },
+  ])("directs $account_type billing exhaustion to account usage", (target) => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "Included usage is exhausted.",
+      errorCode: "hf_inference_billing_exhausted",
+    }, {
+      ...target,
+      usage_url: "https://huggingface.co/settings/inference-providers",
+    });
+
+    expect(screen.queryByRole("link", { name: /Upgrade to Hugging Face PRO/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review Hugging Face usage and billing" })).toHaveAttribute(
+      "href",
+      "https://huggingface.co/settings/inference-providers",
     );
   });
 

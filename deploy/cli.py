@@ -179,8 +179,11 @@ def _extract_commit(sha: str, destination: Path) -> None:
         tar.extractall(destination, filter="data")
 
 
-def _chat_descriptor_from_source(source: Path, environment: str) -> dict | None:
-    if environment != "staging":
+def _chat_descriptor_from_source(
+    source: Path, environment: str, *, chat_enabled: bool | None = None
+) -> dict | None:
+    enabled = environment == "staging" if chat_enabled is None else chat_enabled
+    if not enabled:
         return None
     script = """
 import json
@@ -220,8 +223,33 @@ print(json.dumps({
     return descriptor
 
 
-def frontend_feature_environment(environment: str) -> dict[str, str]:
-    features = profile_features(environment)
+def _configured_chat_enabled(environment: str) -> bool:
+    if environment == "staging":
+        return True
+    config_path = CONFIG_ROOT / f"{environment}.env"
+    if not config_path.is_file():
+        return False
+    configured: str | None = None
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "PWC_CHAT_ENABLED":
+            configured = value.strip().strip('"').strip("'").lower()
+    if configured is None:
+        return False
+    if configured not in {"true", "false"}:
+        raise DeployError(f"{config_path} must set PWC_CHAT_ENABLED to true or false")
+    return configured == "true"
+
+
+def frontend_feature_environment(
+    environment: str, *, production_chat_enabled: bool = False
+) -> dict[str, str]:
+    features = profile_features(
+        environment, production_chat_enabled=production_chat_enabled
+    )
     return {
         "VITE_AUTH_URL": (
             "https://paperswithcode.co" if environment == "staging" else ""
@@ -236,10 +264,21 @@ def frontend_feature_environment(environment: str) -> dict[str, str]:
 
 
 def prepare_release(sha: str, environment: str) -> Path:
+    production_chat_enabled = (
+        _configured_chat_enabled(environment) if environment == "production" else False
+    )
+    expected_features = profile_features(
+        environment, production_chat_enabled=production_chat_enabled
+    )
     target = RELEASES / release_id(sha, environment)
     if target.exists():
         make_release_readable(target)
-        validate_manifest(target, environment)
+        manifest = validate_manifest(target, environment)
+        if manifest["backend_features"] != expected_features:
+            raise DeployError(
+                "existing immutable release does not match protected chat activation "
+                "configuration; use a new exact source SHA"
+            )
         return target
     check_capacity()
     RELEASES.mkdir(parents=True, exist_ok=True)
@@ -250,7 +289,12 @@ def prepare_release(sha: str, environment: str) -> Path:
         _extract_commit(sha, source)
         frontend = source / "frontend"
         build_env = os.environ.copy()
-        build_env.update(frontend_feature_environment(environment))
+        build_env.update(
+            frontend_feature_environment(
+                environment,
+                production_chat_enabled=production_chat_enabled,
+            )
+        )
         run(["npm", "ci"], cwd=frontend, env=build_env)
         run(
             ["npm", "run", "build", "--", "--mode", environment],
@@ -277,10 +321,17 @@ def prepare_release(sha: str, environment: str) -> Path:
                 "release contains forbidden artifacts: "
                 + ", ".join(str(path.relative_to(source)) for path in forbidden[:10])
             )
-        descriptor = _chat_descriptor_from_source(source, environment)
+        descriptor = _chat_descriptor_from_source(
+            source, environment, chat_enabled=expected_features["chat"]
+        )
         (source / "release.json").write_text(
             json.dumps(
-                build_manifest(sha, environment, chat_descriptor=descriptor),
+                build_manifest(
+                    sha,
+                    environment,
+                    chat_descriptor=descriptor,
+                    production_chat_enabled=production_chat_enabled,
+                ),
                 indent=2,
             )
             + "\n",
@@ -1344,7 +1395,9 @@ def deploy(args: argparse.Namespace) -> int:
                     "candidate_sha": sha,
                     "candidate_runtime": runtime.name,
                     "runtime_built": runtime_built,
-                    "features": profile_features(args.environment),
+                    "features": validate_manifest(release, args.environment)[
+                        "backend_features"
+                    ],
                     "active_slot": _active_slot(args.environment),
                 },
                 indent=2,

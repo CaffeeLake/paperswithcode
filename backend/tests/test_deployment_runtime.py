@@ -23,7 +23,11 @@ from backend.chat_sandbox_worker.contract import MODAL_IMAGE_ID
 from backend.config import Settings
 from backend.services import openrouter_budget_service as deploy_openrouter
 from backend.services.runtime_validation import validate_chat_schema, validate_runtime
-from deploy.cli import _chat_descriptor_from_source, parser_for
+from deploy.cli import (
+    _chat_descriptor_from_source,
+    _configured_chat_enabled,
+    parser_for,
+)
 from deploy.install_deploy_tools import (
     RUNTIME_CONTRACT_PATHS,
     bundle_runtime_contract,
@@ -47,6 +51,13 @@ from deploy.release import (
 )
 from deploy.run_backend import RELEASE_ROOT, configure_release_environment
 from deploy.smoke_test import validate_local_bundle
+
+
+@pytest.fixture(autouse=True)
+def _avoid_live_openrouter_guardrail(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        deploy_openrouter, "validate_openrouter_guardrail", lambda _settings: None
+    )
 
 
 def test_deployment_tool_bundle_includes_chat_runtime_contract(tmp_path: Path):
@@ -281,13 +292,25 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         auth_return_origins=(
             "https://paperswithcode.co,https://staging.paperswithcode.co"
         ),
+        hf_oauth_client_id="test-oauth-client",
+        hf_oauth_client_secret="test-oauth-secret",
+        hf_oauth_credential_secret="test-oauth-credential-secret",
         chat_enabled=environment == "staging",
+        chat_public_admission_enabled=environment == "staging",
+        chat_sandbox_admission_enabled=environment == "staging",
         chat_default_backend=runtime["default_backend"],
         chat_new_chat_modal_percentage=runtime["new_chat_modal_percentage"],
         chat_modal_image_version=runtime["modal_image_version"],
         chat_pwc_cli_version=runtime["pwc_cli_version"],
         chat_worker_contract_version=runtime["worker_contract_version"],
         chat_system_prompt_sha256=runtime["system_prompt_sha256"],
+        chat_max_concurrency=2 if environment == "staging" else 1,
+        chat_user_max_concurrency=2,
+        chat_sandbox_total_live_cap=3,
+        chat_blank_pool_enabled=environment == "staging",
+        chat_blank_pool_min=1,
+        chat_blank_pool_max=1,
+        chat_persistent_worker_enabled=environment == "staging",
         chat_sandbox_spend_enforcement_enabled=environment == "staging",
         chat_sandbox_provider_mode="starter_workspace",
         chat_sandbox_budget_attestation=(
@@ -317,6 +340,14 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
             if environment == "staging"
             else ""
         ),
+        chat_title_generation_enabled=environment == "staging",
+        chat_title_hf_token=(
+            "test-only-isolated-title-token" if environment == "staging" else ""
+        ),
+        chat_title_credential_owner=("nielsr" if environment == "staging" else ""),
+        chat_title_credential_environment=(
+            "staging" if environment == "staging" else ""
+        ),
         codex_jobs_enabled=True,
         codex_add_evals_enabled=True,
         codex_enrich_paper_enabled=True,
@@ -333,12 +364,17 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_openrouter_api_key=(
             "test-only-openrouter-token" if environment == "staging" else ""
         ),
+        chat_openrouter_server_funded_enabled=environment == "staging",
         chat_openrouter_monthly_user_budget_usd=1,
         chat_openrouter_workspace_monthly_budget_usd=200,
-        chat_openrouter_credential_keyring=json.dumps(
-            {"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()}
+        chat_openrouter_credential_keyring=(
+            json.dumps({"1": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode()})
+            if environment == "staging"
+            else ""
         ),
-        chat_openrouter_user_tracking_secret="test-only-tracking-secret",
+        chat_openrouter_user_tracking_secret=(
+            "test-only-tracking-secret" if environment == "staging" else ""
+        ),
         catalog_mutations_enabled=environment == "production",
         thumbnail_mutations_enabled=False,
         cron_enabled=environment == "production",
@@ -374,12 +410,30 @@ def test_deployed_runtime_validation(tmp_path: Path, environment: str):
     assert validate_runtime(settings) == profile_features(environment)
 
 
-def test_staging_runtime_preserves_future_team_environment_policy(tmp_path: Path):
+def test_staging_runtime_rejects_unapproved_team_environment_policy(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_sandbox_provider_mode = "team_environments"
     settings.chat_sandbox_environment_cap_microusd = 125_000_000
     settings.chat_sandbox_budget_attestation = "modal-workspace-250-staging-125-v1"
+
+    with pytest.raises(RuntimeError, match=r"\$75/\$100/\$250"):
+        validate_runtime(settings)
+
+
+def test_enabled_chat_rejects_missing_hf_inference_credential_path(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.hf_oauth_credential_secret = ""
+
+    with pytest.raises(RuntimeError, match="OAuth inference credential path"):
+        validate_runtime(settings)
+
+
+def test_enabled_chat_does_not_require_general_server_hf_token(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.hf_token = ""
 
     assert validate_runtime(settings) == profile_features("staging")
 
@@ -389,20 +443,17 @@ def test_starter_runtime_rejects_unenforced_environment_cap(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_sandbox_environment_cap_microusd = 125_000_000
 
-    with pytest.raises(RuntimeError, match="no Environment cap"):
+    with pytest.raises(RuntimeError, match="no environment cap"):
         validate_runtime(settings)
 
 
-def test_starter_initial_rollout_defers_alerts_until_blank_pool(tmp_path: Path):
+def test_staging_requires_alerts_even_when_blank_pool_is_disabled(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_sandbox_slack_webhook_url = ""
     settings.chat_sandbox_alert_fallback_webhook_url = ""
     settings.chat_blank_pool_enabled = False
-    assert validate_runtime(settings) == profile_features("staging")
-
-    settings.chat_blank_pool_enabled = True
-    with pytest.raises(RuntimeError, match="before blank-pool activation"):
+    with pytest.raises(RuntimeError, match="alert destinations are required"):
         validate_runtime(settings)
 
 
@@ -458,7 +509,7 @@ def test_staging_rejects_openrouter_request_bound_above_user_budget(tmp_path: Pa
     settings.chat_openrouter_server_funded_enabled = True
     settings.chat_openrouter_monthly_user_budget_usd = 0.1
 
-    with pytest.raises(RuntimeError, match="request bound exceeds"):
+    with pytest.raises(RuntimeError, match=r"per-user budget must equal \$1"):
         validate_runtime(settings)
 
 
@@ -519,7 +570,7 @@ def test_production_rejects_server_funded_openrouter(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "production")
     settings.chat_openrouter_server_funded_enabled = True
 
-    with pytest.raises(RuntimeError, match="prohibited in production"):
+    with pytest.raises(RuntimeError, match="production OpenRouter.*prohibited"):
         validate_runtime(settings)
 
 
@@ -592,11 +643,12 @@ def test_deployed_runtime_rejects_relative_path(tmp_path: Path):
         validate_runtime(settings)
 
 
-def test_staging_runtime_accepts_directory_snapshot_feature(tmp_path: Path):
+def test_staging_runtime_rejects_directory_snapshot_feature(tmp_path: Path):
     release = make_bundle(tmp_path, chat=True)
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_workspace_snapshots_enabled = True
-    assert validate_runtime(settings) == profile_features("staging")
+    with pytest.raises(RuntimeError, match="snapshots must remain disabled"):
+        validate_runtime(settings)
 
 
 def test_staging_blank_pool_requires_persistent_workers(tmp_path: Path):
@@ -604,7 +656,7 @@ def test_staging_blank_pool_requires_persistent_workers(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_blank_pool_enabled = True
     settings.chat_persistent_worker_enabled = False
-    with pytest.raises(RuntimeError, match="requires persistent workers"):
+    with pytest.raises(RuntimeError, match="blank pool requires persistent workers"):
         validate_runtime(settings)
 
 
@@ -613,7 +665,7 @@ def test_staging_blank_pool_rejects_inverted_capacity(tmp_path: Path):
     settings = deployed_settings(tmp_path, release, "staging")
     settings.chat_blank_pool_min = 2
     settings.chat_blank_pool_max = 1
-    with pytest.raises(RuntimeError, match="minimum exceeds"):
+    with pytest.raises(RuntimeError, match="capacity must be"):
         validate_runtime(settings)
 
 
@@ -672,6 +724,12 @@ class _ChatSchemaDB:
                 "chat_shares",
                 "chat_sandbox_leases",
                 "chat_sandbox_pool",
+                "chat_sandbox_compute_intervals",
+                "chat_sandbox_budget_states",
+                "chat_sandbox_circuit_events",
+                "chat_title_budget_states",
+                "chat_title_provider_calls",
+                "chat_title_budget_events",
                 "chat_turn_capabilities",
                 "chat_turn_latency",
                 "chat_openrouter_credentials",
@@ -684,6 +742,23 @@ class _ChatSchemaDB:
             rows = [
                 ("chat_sessions", "execution_backend"),
                 ("chat_messages", "finish_reason"),
+                ("chat_sandbox_compute_intervals", "accrued_microusd"),
+                ("chat_sandbox_budget_states", "circuit_state"),
+                ("chat_sandbox_budget_states", "provider_floor_microusd"),
+                (
+                    "chat_sandbox_budget_states",
+                    "last_reconciliation_attempt_at",
+                ),
+                ("chat_sandbox_circuit_events", "fallback_delivery_state"),
+                (
+                    "chat_sandbox_circuit_events",
+                    "fallback_next_delivery_attempt_at",
+                ),
+                ("chat_title_budget_states", "reserved_microusd"),
+                ("chat_title_budget_states", "spent_microusd"),
+                ("chat_title_provider_calls", "actual_microusd"),
+                ("chat_title_provider_calls", "provider_generation_id"),
+                ("chat_title_budget_events", "fallback_delivery_state"),
                 ("chat_turn_capabilities", "provider_mode"),
                 ("chat_turn_capabilities", "provider_credential_revision"),
                 ("chat_turn_capabilities", "provider_error_code"),
@@ -741,41 +816,88 @@ class _ChatSchemaDB:
 
 def test_chat_schema_rejects_read_only_staging_connection():
     with pytest.raises(RuntimeError, match="database connection is read-only"):
-        validate_chat_schema(_ChatSchemaDB("on"))
+        validate_chat_schema(
+            _ChatSchemaDB("on"),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_accepts_writable_staging_connection():
-    validate_chat_schema(_ChatSchemaDB("off"))
+    validate_chat_schema(
+        _ChatSchemaDB("off"),
+        Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+    )
+
+
+def test_chat_schema_production_profile_does_not_require_openrouter_tables():
+    db = _ChatSchemaDB("off")
+    original_execute = db.execute
+
+    def without_openrouter(statement):
+        result = original_execute(statement)
+        if "to_regclass" in str(statement):
+            result._rows = [
+                row for row in result._rows if not row[0].startswith("chat_openrouter_")
+            ]
+        elif "information_schema.columns" in str(statement):
+            result._rows = [
+                row for row in result._rows if not row[0].startswith("chat_openrouter_")
+            ]
+        return result
+
+    db.execute = without_openrouter
+    validate_chat_schema(
+        db,
+        Settings(environment="production", chat_openrouter_server_funded_enabled=False),
+    )
 
 
 def test_chat_schema_requires_qualification_metadata_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_qualification_columns=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_qualification_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_requires_typed_edit_preparation_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_edit_columns=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_edit_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_requires_self_contained_share_snapshot_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_share_columns=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_share_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_requires_share_snapshot_array_constraint():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_share_constraint=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_share_constraint=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_requires_blank_pool_accounting_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_pool_columns=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_pool_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_chat_schema_requires_latency_telemetry_columns():
     with pytest.raises(RuntimeError, match="required chat sandbox schema is missing"):
-        validate_chat_schema(_ChatSchemaDB("off", include_latency_columns=False))
+        validate_chat_schema(
+            _ChatSchemaDB("off", include_latency_columns=False),
+            Settings(environment="staging", chat_openrouter_server_funded_enabled=True),
+        )
 
 
 def test_deployed_runtime_rejects_source_shell(tmp_path: Path):
@@ -853,6 +975,117 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
     assert descriptor["worker_contract_version"] == "34"
     assert _chat_descriptor_from_source(source, "production") is None
+    production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
+    assert production == descriptor
+
+
+def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    sha = "a" * 40
+    descriptor = _chat_descriptor_from_source(
+        Path(__file__).resolve().parents[2],
+        "production",
+        chat_enabled=True,
+    )
+    assert descriptor is not None
+    descriptor["modal_image_version"] = "im-test-immutable"
+    features = profile_features("production", production_chat_enabled=True)
+    manifest = build_manifest(
+        sha,
+        "production",
+        chat_descriptor=descriptor,
+        production_chat_enabled=True,
+    )
+    (release / "release.json").write_text(json.dumps(manifest))
+    (release / "frontend-dist" / "features.json").write_text(json.dumps(features))
+
+    validated = validate_manifest(release, "production")
+
+    assert validated["backend_features"] == features
+    assert validated["frontend_features"] == features
+    assert validated["chat_runtime"]["enabled"] is True
+    assert validate_local_bundle(release, validated["frontend_features"]) == []
+
+
+def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    sha = "a" * 40
+    descriptor = _chat_descriptor_from_source(
+        Path(__file__).resolve().parents[2],
+        "production",
+        chat_enabled=True,
+    )
+    assert descriptor is not None
+    descriptor["modal_image_version"] = "im-test-immutable"
+    features = profile_features("production", production_chat_enabled=True)
+    (release / "release.json").write_text(
+        json.dumps(
+            build_manifest(
+                sha,
+                "production",
+                chat_descriptor=descriptor,
+                production_chat_enabled=True,
+            )
+        )
+    )
+    (release / "frontend-dist" / "features.json").write_text(json.dumps(features))
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_enabled = True
+    settings.chat_public_admission_enabled = True
+    settings.chat_sandbox_admission_enabled = True
+    settings.chat_max_concurrency = 2
+    settings.chat_blank_pool_enabled = True
+    settings.chat_persistent_worker_enabled = True
+    settings.chat_sandbox_spend_enforcement_enabled = True
+    settings.chat_sandbox_modal_environment = "pwc-chat-production"
+    settings.chat_sandbox_modal_workspace = "nielsrogge"
+    settings.chat_sandbox_modal_owner_username = "nielsrogge"
+    settings.chat_sandbox_budget_attestation = (
+        "modal-workspace-nielsrogge-250-production-starter-v1"
+    )
+    settings.chat_sandbox_slack_webhook_url = (
+        "https://hooks.slack.test/services/production"
+    )
+    settings.chat_sandbox_alert_fallback_webhook_url = (
+        "https://alerts.test/production-fallback"
+    )
+    settings.chat_sandbox_runbook_url = "https://example.test/production-runbook"
+    settings.chat_sandbox_operator_usernames = "nielsr"
+    settings.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+    )
+    settings.chat_title_generation_enabled = True
+    settings.chat_title_hf_token = "test-only-production-title-token"
+    settings.chat_title_credential_owner = "nielsr"
+    settings.chat_title_credential_environment = "production"
+
+    assert validate_runtime(settings) == features
+
+
+def test_production_chat_activation_requires_protected_environment_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    monkeypatch.setattr(deploy_cli, "CONFIG_ROOT", config_root)
+
+    assert _configured_chat_enabled("production") is False
+    (config_root / "production.env").write_text("PWC_CHAT_ENABLED=false\n")
+    assert _configured_chat_enabled("production") is False
+    (config_root / "production.env").write_text("PWC_CHAT_ENABLED='true'\n")
+    assert _configured_chat_enabled("production") is True
+
+
+def test_production_chat_activation_rejects_invalid_protected_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "production.env").write_text("PWC_CHAT_ENABLED=maybe\n")
+    monkeypatch.setattr(deploy_cli, "CONFIG_ROOT", config_root)
+
+    with pytest.raises(deploy_cli.DeployError, match="true or false"):
+        _configured_chat_enabled("production")
 
 
 def test_staging_runtime_rejects_public_gateway_origin(tmp_path: Path):
@@ -984,6 +1217,18 @@ def test_production_profile_enables_admin_catalog_actions():
 )
 def test_frontend_build_flags_follow_release_profile(environment: str, expected: dict):
     assert deploy_cli.frontend_feature_environment(environment) == expected
+
+
+def test_production_activation_frontend_flags_are_enabled_together():
+    assert deploy_cli.frontend_feature_environment(
+        "production", production_chat_enabled=True
+    ) == {
+        "VITE_AUTH_URL": "",
+        "VITE_CHAT_ENABLED": "1",
+        "VITE_CHAT_LIVE": "1",
+        "VITE_CODEX_ADD_EVALS_ENABLED": "1",
+        "VITE_CODEX_ENRICH_PAPER_ENABLED": "1",
+    }
 
 
 @pytest.mark.parametrize("environment", ["production", "staging"])
@@ -1532,6 +1777,27 @@ def test_chat_archiving_migration_is_additive_and_idempotent():
     assert "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ" in migration
     assert "WHERE archived_at IS NULL" in migration
     assert "DROP " not in migration
+
+
+def test_chat_title_budget_migration_is_environment_isolated_and_idempotent():
+    repository = Path(__file__).resolve().parents[2]
+    migration = (
+        repository / "backend/database/migrations/add_chat_title_budget.sql"
+    ).read_text()
+
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_title_budget_states" in migration
+    assert "UNIQUE (environment, billing_cycle)" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_title_provider_calls" in migration
+    assert "CREATE TABLE IF NOT EXISTS chat_title_budget_events" in migration
+    assert (
+        "ALTER TABLE chat_title_budget_states OWNER TO pwc_staging_owner" in migration
+    )
+    assert (
+        "ALTER TABLE chat_title_budget_states OWNER TO paperswithcode_user" in migration
+    )
+    assert "FROM paperswithcode_user" in migration
+    assert "FROM pwc_staging" in migration
 
 
 def test_atomic_symlink_replaces_pointer(tmp_path: Path):

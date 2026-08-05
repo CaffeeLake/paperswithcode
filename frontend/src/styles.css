@@ -4927,6 +4927,15 @@ html { scroll-behavior: smooth; }
   cursor: pointer;
 }
 .chat-model-select:disabled { cursor: default; opacity: 0.65; }
+.chat-model-label {
+  max-width: 190px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
 .chat-session-context-menu {
   position: fixed;
   z-index: 1000;

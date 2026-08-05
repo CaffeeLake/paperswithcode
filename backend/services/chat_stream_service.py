@@ -33,7 +33,12 @@ from backend.services.chat_session_service import (
     ChatSessionService,
     TurnAdmission,
 )
+from backend.services.chat_title_budget_service import (
+    ChatTitleBudgetService,
+    ChatTitleBudgetUnavailable,
+)
 from backend.services.chat_title_service import (
+    TitleProviderUsage,
     fallback_title,
     normalize_title,
     stream_title,
@@ -352,7 +357,8 @@ async def _prepare_replacement(
                 admission.session_id,
                 old_id,
             )
-        except Exception as exc:  # noqa: BLE001 - cleanup leaks must not undo activation
+        # Cleanup leaks must be recorded without undoing an activated edit.
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "chat edit transcript cleanup session_id=%s source_sdk_id=%s outcome=leaked error=%s",
                 admission.session_id,
@@ -375,21 +381,78 @@ async def _title_events(
     await queue.put({"type": "session_title_start"})
     pieces: list[str] = []
     fallback = False
+    reserved = False
+    dispatched = False
+    usage = TitleProviderUsage()
     try:
-        if not owner.hf_inference_token:
-            raise RuntimeError("Hugging Face user billing is not connected")
+        if not settings.chat_title_generation_enabled:
+            raise ChatTitleBudgetUnavailable(
+                "Server-funded title generation is disabled"
+            )
+        if not settings.chat_title_hf_token:
+            raise ChatTitleBudgetUnavailable(
+                "The isolated title credential is unavailable"
+            )
+        with db_manager.session_local() as db:
+            try:
+                ChatTitleBudgetService(db, settings).reserve_call(token)
+            except ChatTitleBudgetUnavailable:
+                db.commit()
+                raise
+            db.commit()
+        reserved = True
+        with db_manager.session_local() as db:
+            ChatTitleBudgetService(db, settings).mark_dispatched(token)
+            db.commit()
+        dispatched = True
         async for delta in stream_title(
             prompt,
             settings,
-            provider_token=owner.hf_inference_token,
-            bill_to=owner.hf_inference_bill_to,
+            provider_token=settings.chat_title_hf_token,
+            bill_to=None,
+            usage=usage,
         ):
             pieces.append(delta)
-            await queue.put({"type": "session_title_delta", "text": delta})
         title = normalize_title("".join(pieces))
         if not title:
             raise ValueError("empty title")
+        with db_manager.session_local() as db:
+            ChatTitleBudgetService(db, settings).settle_call(
+                token,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                provider_generation_id=usage.generation_id,
+            )
+            db.commit()
+        await queue.put({"type": "session_title_delta", "text": title})
     except Exception:
+        if dispatched:
+            try:
+                with db_manager.session_local() as db:
+                    ChatTitleBudgetService(db, settings).settle_call(
+                        token,
+                        input_tokens=None,
+                        output_tokens=None,
+                        provider_generation_id=usage.generation_id,
+                    )
+                    db.commit()
+            except Exception as accounting_error:
+                logger.error(
+                    "chat title settlement failed session_id=%s error=%s",
+                    admission.session_id,
+                    type(accounting_error).__name__,
+                )
+        elif reserved:
+            try:
+                with db_manager.session_local() as db:
+                    ChatTitleBudgetService(db, settings).release_call(token)
+                    db.commit()
+            except Exception as accounting_error:
+                logger.error(
+                    "chat title reservation release failed session_id=%s error=%s",
+                    admission.session_id,
+                    type(accounting_error).__name__,
+                )
         fallback = True
         title = fallback_title(prompt)
     final = None

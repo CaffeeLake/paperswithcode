@@ -25,8 +25,8 @@ from backend.services.deployment_lifecycle import (
     operator_socket_allowed,
 )
 from backend.services.runtime_validation import validate_runtime
-from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.csrf import cookie_request_passes_csrf
+from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 
 # Requests slower than this (in milliseconds) are logged so production slow
 # pages can be correlated without ad-hoc instrumentation. Tune via the
@@ -123,21 +123,18 @@ async def lifespan(app: FastAPI):
     print(f"🌍 Environment: {settings.environment}")
     print(f"📦 Release: {settings.release_id}")
     validate_runtime(settings)
-    if settings.chat_enabled:
-        if not settings.chat_require_auth:
-            raise RuntimeError("PWC_CHAT_REQUIRE_AUTH must remain enabled")
-        if not settings.hf_token:
-            raise RuntimeError("PWC_HF_TOKEN is required when chat is enabled")
+    if settings.chat_enabled and not settings.chat_require_auth:
+        raise RuntimeError("PWC_CHAT_REQUIRE_AUTH must remain enabled")
 
     maintenance_task = None
     pool_startup_task = None
-    if (
-        settings.is_deployed
-        and settings.environment == "staging"
-        and settings.chat_enabled
-    ):
+    if settings.is_deployed and settings.chat_enabled:
         from backend.database.connection import db_manager
         from backend.services.chat_latency_service import ChatLatencyService
+        from backend.services.chat_title_budget_service import (
+            deliver_title_budget_alerts,
+            reconcile_stale_title_calls,
+        )
         from backend.services.chat_turn_runner import shared_sandbox_manager
         from backend.services.openrouter_budget_service import (
             OpenRouterBudgetUnavailable,
@@ -165,6 +162,9 @@ async def lifespan(app: FastAPI):
         async def reconcile_stale_latency() -> None:
             await asyncio.to_thread(reconcile_stale_chat_turns)
 
+        async def reconcile_title_budget() -> None:
+            await asyncio.to_thread(reconcile_stale_title_calls, settings)
+
         async def replenish_pool_at_startup() -> None:
             if not deployment_lifecycle.owns_active_slot():
                 return
@@ -188,6 +188,8 @@ async def lifespan(app: FastAPI):
                 operations = [
                     manager.enforce_spend_cap,
                     manager.deliver_spend_alerts,
+                    lambda: deliver_title_budget_alerts(settings),
+                    reconcile_title_budget,
                     manager.reconcile_spend_provider,
                     manager.reconcile,
                     reconcile_stale_latency,
@@ -208,7 +210,10 @@ async def lifespan(app: FastAPI):
 
                     operations.append(cleanup_latency)
 
-                if openrouter_maintenance_date != today:
+                if (
+                    settings.chat_openrouter_server_funded_enabled
+                    and openrouter_maintenance_date != today
+                ):
 
                     async def maintain_openrouter_accounting(
                         operation_date=today,
@@ -532,7 +537,7 @@ def create_app() -> FastAPI:
             )
         try:
             features = validate_runtime(settings)
-            if settings.environment == "staging" and settings.chat_enabled:
+            if settings.chat_enabled:
                 from backend.database.connection import db_manager
                 from backend.services.chat_sandbox_service import (
                     SandboxSessionManager,
@@ -540,7 +545,7 @@ def create_app() -> FastAPI:
                 from backend.services.runtime_validation import validate_chat_schema
 
                 with db_manager.session_local() as db:
-                    validate_chat_schema(db)
+                    validate_chat_schema(db, settings)
                 await SandboxSessionManager(settings).validate_image_reference()
         except Exception as error:
             return JSONResponse(

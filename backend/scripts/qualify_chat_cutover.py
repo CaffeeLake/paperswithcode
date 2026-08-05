@@ -155,9 +155,7 @@ def main() -> int:
     settings = settings_for_release(args.release_dir).model_copy(
         update={
             "session_cookie_name": environment.session_cookie_name,
-            "chat_gemma_route": environment.chat_gemma_route,
-            "chat_glm_route": environment.chat_glm_route,
-            "chat_kimi_route": environment.chat_kimi_route,
+            "chat_deepseek_v4_flash_route": environment.chat_deepseek_v4_flash_route,
         }
     )
     if settings.environment != "staging":

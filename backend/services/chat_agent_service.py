@@ -347,7 +347,7 @@ def build_agent_options(
     resume: str | None = None,
 ) -> tuple[ClaudeAgentOptions, SearchCallLimiter]:
     limiter = SearchCallLimiter(settings.chat_max_search_calls)
-    model = model_route or settings.chat_glm_route
+    model = model_route or settings.chat_deepseek_v4_flash_route
     env = {
         "ANTHROPIC_BASE_URL": provider_base_url,
         "ANTHROPIC_AUTH_TOKEN": provider_token,

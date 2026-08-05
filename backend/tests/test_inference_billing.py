@@ -81,8 +81,12 @@ def test_verify_token_detects_pro_account(monkeypatch):
                     "name": "alice",
                     "isPro": True,
                     "orgs": [
-                        {"name": "zeta"},
-                        {"name": "huggingface", "fullname": "Hugging Face"},
+                        {"name": "zeta", "plan": "team"},
+                        {
+                            "name": "huggingface",
+                            "fullname": "Hugging Face",
+                            "plan": {"name": "enterprise"},
+                        },
                     ],
                 },
             )
@@ -163,7 +167,6 @@ def test_verify_oauth_token_reads_authorized_organizations(monkeypatch):
 
     assert account.is_pro is True
     assert account.organizations == (
-        billing.HfInferenceOrganization("community", "Community"),
         billing.HfInferenceOrganization("huggingface", "Hugging Face"),
     )
 

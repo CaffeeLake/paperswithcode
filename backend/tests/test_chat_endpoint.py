@@ -20,7 +20,7 @@ from claude_agent_sdk import (
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from backend.config import get_settings
+from backend.config import Settings, get_settings
 from backend.main import create_app
 from backend.models.chat import (
     DISPLAY_BLOCKS_ADAPTER,
@@ -38,7 +38,9 @@ from backend.services.chat_agent_service import (
     build_agent_options,
     stream_agent_events,
 )
+from backend.services.chat_sandbox_service import SandboxCleanupUnverified
 from backend.services.chat_session_service import (
+    ChatDeletionReceipt,
     ChatOwner,
     ChatServiceError,
     ChatSessionService,
@@ -88,11 +90,11 @@ def test_require_user_returns_immutable_oauth_subject(monkeypatch):
         "decode_session_cookie",
         lambda _token: {"sub": "hf-immutable-123", "username": "Alice"},
     )
-    assert require_user(_cookie_request()) == {
-        "source": "cookie",
-        "username": "alice",
-        "hf_user_id": "hf-immutable-123",
-    }
+    user = require_user(_cookie_request())
+    assert user["source"] == "cookie"
+    assert user["username"] == "alice"
+    assert user["hf_user_id"] == "hf-immutable-123"
+    assert user["hf_subject"] == "hf-immutable-123"
 
 
 def test_require_user_rejects_legacy_cookie_without_subject(monkeypatch):
@@ -165,6 +167,176 @@ def test_cancel_endpoint_uses_owner_checked_active_turn(monkeypatch):
 
     assert response.status_code == 204
     assert calls == [(session_id, turn_id)]
+
+
+def test_create_session_fails_closed_when_public_admission_is_disabled():
+    settings = Settings(chat_public_admission_enabled=False)
+
+    with pytest.raises(Exception) as exc_info:
+        chat_router.create_session(
+            SimpleNamespace(selected_model=None),
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=SimpleNamespace(),
+            settings=settings,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "chat_temporarily_disabled"
+
+
+def test_production_openrouter_api_is_absent():
+    with pytest.raises(Exception) as exc_info:
+        chat_router.get_openrouter_key_status(
+            user={"hf_user_id": "owner-1"},
+            db=SimpleNamespace(),
+            settings=Settings(environment="production"),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_delete_session_reports_success_only_after_durable_and_workspace_verification(
+    monkeypatch,
+):
+    session_id = uuid.uuid4()
+    receipt = ChatDeletionReceipt(session_id, "sb-1", None, None, None)
+    events: list[str] = []
+
+    class DB:
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def delete_session(self, *_args):
+            events.append("delete")
+            return receipt
+
+        def deletion_complete(self, requested):
+            assert requested == receipt
+            events.append("verify-db")
+            return True
+
+    class Manager:
+        def __init__(self, _settings):
+            pass
+
+        async def cleanup_deleted(self, sandbox_id, snapshot_id):
+            assert (sandbox_id, snapshot_id) == ("sb-1", None)
+            events.append("verify-workspace")
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "SandboxSessionManager", Manager)
+
+    response = asyncio.run(
+        chat_router.delete_session(
+            session_id,
+            user={"hf_user_id": "owner-1", "username": "owner"},
+            db=DB(),
+            settings=Settings(),
+        )
+    )
+
+    assert response.status_code == 204
+    assert events == ["delete", "verify-workspace", "commit", "verify-db"]
+
+
+@pytest.mark.parametrize("failure", ["database", "workspace"])
+def test_delete_session_never_reports_success_when_removal_is_unverified(
+    monkeypatch, failure: str
+):
+    session_id = uuid.uuid4()
+    receipt = ChatDeletionReceipt(session_id, "sb-1", None, None, None)
+
+    class DB:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def delete_session(self, *_args):
+            return receipt
+
+        def deletion_complete(self, _receipt):
+            return failure != "database"
+
+    class Manager:
+        def __init__(self, _settings):
+            pass
+
+        async def cleanup_deleted(self, *_args):
+            if failure == "workspace":
+                raise SandboxCleanupUnverified("uncertain")
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "SandboxSessionManager", Manager)
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            chat_router.delete_session(
+                session_id,
+                user={"hf_user_id": "owner-1", "username": "owner"},
+                db=DB(),
+                settings=Settings(),
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "chat_deletion_unverified"
+
+
+def test_delete_session_workspace_failure_rolls_back_before_commit(monkeypatch):
+    session_id = uuid.uuid4()
+    receipt = ChatDeletionReceipt(session_id, "sb-1", None, None, None)
+    events: list[str] = []
+
+    class DB:
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+    class Service:
+        def __init__(self, *_args):
+            pass
+
+        def delete_session(self, *_args):
+            events.append("delete")
+            return receipt
+
+    class Manager:
+        def __init__(self, _settings):
+            pass
+
+        async def cleanup_deleted(self, *_args):
+            events.append("verify-workspace")
+            raise SandboxCleanupUnverified("uncertain")
+
+    monkeypatch.setattr(chat_router, "ChatSessionService", Service)
+    monkeypatch.setattr(chat_router, "SandboxSessionManager", Manager)
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            chat_router.delete_session(
+                session_id,
+                user={"hf_user_id": "owner-1", "username": "owner"},
+                db=DB(),
+                settings=Settings(),
+            )
+        )
+
+    assert events == ["delete", "verify-workspace", "rollback"]
 
 
 def test_archive_old_sessions_endpoint_commits_owner_scoped_archive(monkeypatch):
@@ -392,36 +564,39 @@ def test_stream_boundary_normalizer_repairs_nested_and_extra_reasoning_events():
 
 
 def test_model_registry_exposes_stable_ids_not_provider_routes():
-    settings = get_settings()
-    assert [choice["id"] for choice in settings.chat_model_choices] == [
-        "google/gemma-4-31B-it",
-        "zai-org/GLM-5.2",
-        "moonshotai/Kimi-K3",
+    production = Settings(environment="production")
+    assert [choice["id"] for choice in production.chat_model_choices] == [
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+    ]
+    staging = Settings(
+        environment="staging", chat_openrouter_server_funded_enabled=True
+    )
+    assert [choice["id"] for choice in staging.chat_model_choices] == [
         "deepseek-ai/DeepSeek-V4-Flash-0731",
         "openai/gpt-5.6-luna",
         "openai/gpt-5.6-terra",
     ]
-    assert settings.chat_model_routes["google/gemma-4-31B-it"].endswith(":cerebras")
-    assert (
-        settings.chat_model_routes["openai/gpt-oss-120b"]
-        == settings.chat_model_routes["google/gemma-4-31B-it"]
-    )
-    assert (
-        settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash"]
-        == settings.chat_model_routes["google/gemma-4-31B-it"]
-    )
-    assert settings.chat_model_routes["zai-org/GLM-5.2"].endswith(":together")
-    assert settings.chat_model_routes["moonshotai/Kimi-K3"].endswith(":fastest")
-    assert settings.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
+    assert production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"] == (
         "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
     )
+    for legacy_id in (
+        "google/gemma-4-31B-it",
+        "zai-org/GLM-5.2",
+        "moonshotai/Kimi-K3",
+        "openai/gpt-oss-120b",
+        "deepseek-ai/DeepSeek-V4-Flash",
+    ):
+        assert (
+            production.chat_model_routes[legacy_id]
+            == production.chat_model_routes["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        )
     assert (
-        settings.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        production.chat_model_providers["deepseek-ai/DeepSeek-V4-Flash-0731"]
         == "huggingface"
     )
-    assert settings.chat_model_routes["openai/gpt-5.6-luna"] == "openai/gpt-5.6-luna"
-    assert settings.chat_model_routes["openai/gpt-5.6-terra"] == "openai/gpt-5.6-terra"
-    assert settings.chat_route_providers[settings.chat_luna_route] == "openrouter"
+    assert staging.chat_model_routes["openai/gpt-5.6-luna"] == "openai/gpt-5.6-luna"
+    assert staging.chat_model_routes["openai/gpt-5.6-terra"] == "openai/gpt-5.6-terra"
+    assert staging.chat_route_providers[staging.chat_luna_route] == "openrouter"
 
 
 def test_title_and_display_projection_bounds():
@@ -1146,6 +1321,8 @@ def test_chat_endpoint_stream_contract(monkeypatch):
 
     async def fake_title(_prompt, _settings, **_kwargs):
         # Let research finish first: title events must still reach the client.
+        assert _kwargs["provider_token"] == "title-test-token"
+        assert _kwargs["bill_to"] is None
         await asyncio.sleep(0.01)
         yield "Research chat"
 
@@ -1194,6 +1371,8 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_enabled", True)
     monkeypatch.setattr(settings, "hf_token", "test-token")
+    monkeypatch.setattr(settings, "chat_title_generation_enabled", True)
+    monkeypatch.setattr(settings, "chat_title_hf_token", "title-test-token")
     monkeypatch.setattr(
         chat_router,
         "inference_credential_for_request",
@@ -1218,6 +1397,21 @@ def test_chat_endpoint_stream_contract(monkeypatch):
         lambda **_kwargs: FakeRunner(),
     )
     monkeypatch.setattr(chat_stream_service, "stream_title", fake_title)
+
+    class FakeTitleBudget:
+        def __init__(self, *_args):
+            pass
+
+        def reserve_call(self, *_args):
+            return None
+
+        def mark_dispatched(self, *_args):
+            return None
+
+        def settle_call(self, *_args, **_kwargs):
+            return 1
+
+    monkeypatch.setattr(chat_stream_service, "ChatTitleBudgetService", FakeTitleBudget)
     monkeypatch.setattr(chat_router, "ChatSessionService", FakeService)
     monkeypatch.setattr(chat_stream_service, "ChatSessionService", FakeService)
     monkeypatch.setattr(chat_router.db_manager, "_session_local", FakeDB)
@@ -1394,3 +1588,39 @@ def test_new_chat_capacity_rejection_precedes_session_creation(monkeypatch):
     assert error.value.code == "chat_capacity"
     assert error.value.active_count == 2
     assert created == []
+
+
+def test_one_user_can_admit_two_concurrent_active_turns(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.counts = iter((1, 1))
+
+        def execute(self, _query):
+            return None
+
+        def scalar(self, _query):
+            return next(self.counts)
+
+    class ReachedSessionCreation(Exception):
+        pass
+
+    def reached_creation(*_args, **_kwargs):
+        raise ReachedSessionCreation
+
+    settings = get_settings().model_copy(
+        update={"chat_max_concurrency": 2, "chat_user_max_concurrency": 2}
+    )
+    service = ChatSessionService(FakeDB(), settings)
+    monkeypatch.setattr(
+        service,
+        "create_session",
+        reached_creation,
+    )
+
+    with pytest.raises(ReachedSessionCreation):
+        service.begin_turn(
+            ChatOwner(hf_user_id="same-user", hf_username="same"),
+            session_id=None,
+            client_message_id="second-request",
+            text="A second concurrent turn is allowed",
+        )

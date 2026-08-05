@@ -14,7 +14,7 @@ import { useTheme } from "next-themes";
 import HfSignInButton from "@/components/HfSignInButton";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/api";
-import { apiUrl, isChatEnabled } from "@/lib/apiUrl";
+import { apiUrl, isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
 import { DEFAULT_SITE_SUFFIX, formatPageTitle } from "@/lib/latexPlainText";
 import {
@@ -59,6 +59,7 @@ const SettingsView: React.FC = () => {
   const { theme, setTheme } = useTheme();
   const selectedTheme = theme ?? "system";
   const chatEnabled = isChatEnabled();
+  const staging = isStagingEnvironment();
   const [billingError, setBillingError] = React.useState("");
   const [openRouterError, setOpenRouterError] = React.useState("");
   const [openRouterErrorCode, setOpenRouterErrorCode] = React.useState("");
@@ -77,8 +78,10 @@ const SettingsView: React.FC = () => {
     },
   });
   const billing = billingQuery.data ?? null;
-  const usageQuery = useOpenRouterUsage(chatEnabled && Boolean(user));
-  const credentialQuery = useOpenRouterCredential(chatEnabled && Boolean(user));
+  const usageQuery = useOpenRouterUsage(chatEnabled && staging && Boolean(user));
+  const credentialQuery = useOpenRouterCredential(
+    chatEnabled && staging && Boolean(user),
+  );
   const usage = usageQuery.data;
   const credential = credentialQuery.data;
   const resetLabels = usage ? resetTimeLabels(usage.resets_at) : null;
@@ -269,7 +272,7 @@ const SettingsView: React.FC = () => {
             </div>}
           </section>
 
-          <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
+          {staging && <section className="settings-provider-card" id="openrouter-byok" aria-labelledby="openrouter-heading">
             <div className="settings-provider-heading">
               <div>
                 <h3 id="openrouter-heading">OpenRouter</h3>
@@ -383,8 +386,23 @@ const SettingsView: React.FC = () => {
                 </div>}
               </div>}
             </div>
-          </section>
+          </section>}
         </div>}
+      </section>}
+
+      {chatEnabled && <section className="settings-section">
+        <h2 className="settings-section-title">Chat privacy &amp; retention</h2>
+        <div className="settings-note settings-note-flush">
+          <span>
+            Chats are private and retained until you delete them. You can keep up
+            to 100 active chats and 100 MB of chat data. Archiving removes chats
+            from the active list and frees active-chat quota, but does not delete
+            them. Deleting a chat permanently removes its durable transcript,
+            workspace reference, and any public share link after deletion is
+            verified. You can deliberately share an unlisted snapshot, but no
+            dedicated private-chat export format is currently offered.
+          </span>
+        </div>
       </section>}
 
       <section className="settings-section">

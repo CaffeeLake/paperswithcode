@@ -1,6 +1,7 @@
 export const CHAT_DRAFT_KEY = "pwc:chat-oauth-draft";
 export const CHAT_MODEL_KEY = "pwc:chat-oauth-model";
 export const CHAT_AUTO_SEND_KEY = "pwc:chat-oauth-auto-send";
+export const CHAT_AUTH_ATTEMPTED_KEY = "pwc:chat-oauth-attempted";
 
 export interface QueuedChatLaunch {
   prompt: string;
@@ -37,4 +38,5 @@ export function clearQueuedChatLaunch(): void {
   sessionStorage.removeItem(CHAT_DRAFT_KEY);
   sessionStorage.removeItem(CHAT_MODEL_KEY);
   sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
+  sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
 }

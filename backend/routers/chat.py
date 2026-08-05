@@ -41,7 +41,10 @@ from backend.models.chat import (
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_latency_service import ChatLatencyService
-from backend.services.chat_sandbox_service import SandboxSessionManager
+from backend.services.chat_sandbox_service import (
+    SandboxCleanupUnverified,
+    SandboxSessionManager,
+)
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
@@ -117,6 +120,11 @@ OPENROUTER_UNAVAILABLE_MESSAGE = (
     "OpenRouter is currently unavailable. However, you can still bring your own "
     "key in Settings."
 )
+
+
+def _require_staging_openrouter(settings: Settings) -> None:
+    if settings.environment != "staging":
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 def _selected_byok(db: Session, settings: Settings, owner_id: str):
@@ -325,6 +333,15 @@ def chat_availability():
     """Content-free public state; internal warning and accounting stay private."""
     settings = get_settings()
     if (
+        not settings.chat_public_admission_enabled
+        or not settings.chat_sandbox_admission_enabled
+    ):
+        return {
+            "status": "paused",
+            "reason": "chat_temporarily_disabled",
+            "expected_recovery_at": None,
+        }
+    if (
         settings.chat_default_backend != "modal_cli"
         or not settings.chat_sandbox_spend_enforcement_enabled
     ):
@@ -367,6 +384,7 @@ async def get_openrouter_usage(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_staging_openrouter(settings)
     try:
         user_status = OpenRouterUserBudgetService(db, settings).status_percentage(
             user["hf_user_id"]
@@ -406,6 +424,7 @@ def get_openrouter_key_status(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_staging_openrouter(settings)
     try:
         return (
             OpenRouterBYOKService(db, settings).status(user["hf_user_id"]).public_dict()
@@ -431,6 +450,7 @@ async def connect_openrouter_key(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_staging_openrouter(settings)
     _require_recent_auth(request, user, settings)
     try:
         status = await OpenRouterBYOKService(db, settings).connect(
@@ -457,6 +477,7 @@ def set_openrouter_fallback(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_staging_openrouter(settings)
     if body.enabled:
         _require_recent_auth(request, user, settings)
     else:
@@ -479,6 +500,7 @@ def disconnect_openrouter_key(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    _require_staging_openrouter(settings)
     _require_recent_auth(request, user, settings)
     OpenRouterBYOKService(db, settings).disconnect(user["hf_user_id"])
     db.commit()
@@ -492,6 +514,14 @@ def create_session(
     db: Session = Depends(get_database_session),
     settings: Settings = Depends(get_settings),
 ):
+    if not settings.chat_public_admission_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "chat_temporarily_disabled",
+                "message": "Chat is temporarily disabled. No chat was created.",
+            },
+        )
     try:
         session = ChatSessionService(db, settings).create_session(
             owner_from_user(user), body.selected_model
@@ -674,13 +704,25 @@ async def delete_session(
     settings: Settings = Depends(get_settings),
 ):
     try:
-        sandbox_id, snapshot_id = ChatSessionService(db, settings).delete_session(
-            owner_from_user(user), session_id
-        )
+        service = ChatSessionService(db, settings)
+        receipt = service.delete_session(owner_from_user(user), session_id)
+        if receipt.sandbox_id or receipt.snapshot_id:
+            try:
+                await SandboxSessionManager(settings).cleanup_deleted(
+                    receipt.sandbox_id, receipt.snapshot_id
+                )
+            except SandboxCleanupUnverified as exc:
+                raise ChatServiceError(
+                    "chat_deletion_unverified",
+                    503,
+                    "Chat workspace deletion could not be verified. Retry before relying on removal.",
+                ) from exc
         db.commit()
-        if sandbox_id or snapshot_id:
-            await SandboxSessionManager(settings).cleanup_deleted(
-                sandbox_id, snapshot_id
+        if not service.deletion_complete(receipt):
+            raise ChatServiceError(
+                "chat_deletion_unverified",
+                503,
+                "Chat deletion could not be verified. Retry before relying on removal.",
             )
         return Response(status_code=204)
     except ChatServiceError as exc:
@@ -695,6 +737,17 @@ async def stream_chat(
     settings = get_settings()
     if not settings.chat_enabled:
         raise HTTPException(status_code=503, detail="Chat is not configured")
+    if (
+        not settings.chat_public_admission_enabled
+        or not settings.chat_sandbox_admission_enabled
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "chat_temporarily_disabled",
+                "message": "Chat is temporarily disabled. Your message was not sent.",
+            },
+        )
     if (
         settings.chat_default_backend == "modal_cli"
         and settings.chat_sandbox_spend_enforcement_enabled

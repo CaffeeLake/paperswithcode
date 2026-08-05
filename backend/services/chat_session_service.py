@@ -17,9 +17,11 @@ from backend.config import Settings
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, CitationSnapshot
 from backend.models.database import (
     ChatMessageRecord,
+    ChatSandboxLease,
     ChatSDKSessionSummary,
     ChatSDKTranscriptEntry,
     ChatSession,
+    ChatShare,
 )
 from backend.services.chat_edit_service import (
     INACTIVE_STATUSES,
@@ -90,6 +92,15 @@ class TurnAdmission:
     worker_contract_version: str = ""
     pwc_cli_version: str = ""
     system_prompt_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class ChatDeletionReceipt:
+    session_id: uuid.UUID
+    sandbox_id: str | None
+    snapshot_id: str | None
+    sdk_session_id: uuid.UUID | None
+    sdk_project_key: str | None
 
 
 def owner_from_user(
@@ -492,11 +503,11 @@ class ChatSessionService:
             )
             or 0
         )
-        if other_active:
+        if other_active >= self.settings.chat_user_max_concurrency:
             raise ChatServiceError(
                 "chat_capacity",
                 429,
-                "Another research response is already running",
+                "This account already has the maximum active research responses",
                 active_count=active_total,
             )
         if active_total >= self.settings.chat_max_concurrency:
@@ -978,7 +989,7 @@ class ChatSessionService:
 
     def delete_session(
         self, owner: ChatOwner, session_id: uuid.UUID
-    ) -> tuple[str | None, str | None]:
+    ) -> ChatDeletionReceipt:
         session = self.db.execute(
             select(ChatSession)
             .where(
@@ -987,7 +998,7 @@ class ChatSessionService:
             .with_for_update()
         ).scalar_one_or_none()
         if session is None:
-            return None, None
+            return ChatDeletionReceipt(session_id, None, None, None, None)
         if (
             session.active_turn_id
             and session.active_turn_expires_at
@@ -1017,5 +1028,39 @@ class ChatSessionService:
             if session.sandbox_lease
             else None
         )
+        receipt = ChatDeletionReceipt(
+            session_id=session.id,
+            sandbox_id=sandbox_id,
+            snapshot_id=snapshot_id,
+            sdk_session_id=session.sdk_session_id,
+            sdk_project_key=session.sdk_project_key,
+        )
         self.db.delete(session)
-        return sandbox_id, snapshot_id
+        return receipt
+
+    def deletion_complete(self, receipt: ChatDeletionReceipt) -> bool:
+        """Verify durable transcript, share, lease, and SDK state disappeared."""
+        checks = [
+            select(ChatSession.id).where(ChatSession.id == receipt.session_id),
+            select(ChatMessageRecord.id).where(
+                ChatMessageRecord.session_id == receipt.session_id
+            ),
+            select(ChatShare.id).where(ChatShare.session_id == receipt.session_id),
+            select(ChatSandboxLease.chat_session_id).where(
+                ChatSandboxLease.chat_session_id == receipt.session_id
+            ),
+        ]
+        if receipt.sdk_session_id and receipt.sdk_project_key:
+            checks.extend(
+                [
+                    select(ChatSDKTranscriptEntry.id).where(
+                        ChatSDKTranscriptEntry.project_key == receipt.sdk_project_key,
+                        ChatSDKTranscriptEntry.sdk_session_id == receipt.sdk_session_id,
+                    ),
+                    select(ChatSDKSessionSummary.id).where(
+                        ChatSDKSessionSummary.project_key == receipt.sdk_project_key,
+                        ChatSDKSessionSummary.sdk_session_id == receipt.sdk_session_id,
+                    ),
+                ]
+            )
+        return all(self.db.execute(query).first() is None for query in checks)

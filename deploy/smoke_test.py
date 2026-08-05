@@ -24,9 +24,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 try:
-    from deploy.release import profile_features
+    from deploy.release import validate_manifest
 except ModuleNotFoundError:
-    from release import profile_features  # type: ignore[no-redef]
+    from release import validate_manifest  # type: ignore[no-redef]
 
 ASSET_RE = re.compile(
     r"""(?:src|href)=["'](?P<url>/assets/[^"'?#]+\.(?P<kind>js|css))(?:[?#][^"']*)?["']"""
@@ -478,8 +478,9 @@ def main() -> int:
     _UNIX_SOCKET = args.unix_socket
     failures = []
     if args.release_dir:
+        manifest = validate_manifest(args.release_dir, args.environment)
         failures.extend(
-            validate_local_bundle(args.release_dir, profile_features(args.environment))
+            validate_local_bundle(args.release_dir, manifest["frontend_features"])
         )
     failures.extend(
         run_http_smoke(

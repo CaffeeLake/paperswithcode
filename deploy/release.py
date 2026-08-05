@@ -33,11 +33,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def profile_features(environment: str) -> dict[str, bool]:
+def profile_features(
+    environment: str, *, production_chat_enabled: bool = False
+) -> dict[str, bool]:
     if environment not in ENVIRONMENTS:
         raise ValueError(f"unsupported environment: {environment}")
     return {
-        "chat": environment == "staging",
+        "chat": environment == "staging" or production_chat_enabled,
         # Staging inherits production capabilities and layers preview features
         # such as chat on top.
         "codex_add_evals": True,
@@ -80,6 +82,8 @@ def chat_runtime(
 ) -> dict[str, object]:
     if environment not in ENVIRONMENTS:
         raise ValueError(f"unsupported environment: {environment}")
+    if descriptor is not None:
+        return descriptor
     if environment == "production":
         return {
             "enabled": False,
@@ -93,8 +97,6 @@ def chat_runtime(
             "database_contract_version": DATABASE_CONTRACT_VERSION,
             "system_prompt_sha256": "",
         }
-    if descriptor is not None:
-        return descriptor
     from backend.chat_sandbox_worker.prompt import sha256
 
     return {
@@ -124,8 +126,13 @@ def build_manifest(
     environment: str,
     *,
     chat_descriptor: dict[str, object] | None = None,
+    production_chat_enabled: bool = False,
 ) -> dict[str, object]:
-    features = profile_features(environment)
+    if production_chat_enabled and environment != "production":
+        raise ValueError("production chat activation is production-only")
+    features = profile_features(
+        environment, production_chat_enabled=production_chat_enabled
+    )
     return {
         "release_id": release_id(git_sha, environment),
         "git_sha": git_sha,
@@ -134,7 +141,10 @@ def build_manifest(
         "feature_contract_version": FEATURE_CONTRACT_VERSION,
         "backend_features": features,
         "frontend_features": features,
-        "chat_runtime": chat_runtime(environment, chat_descriptor),
+        "chat_runtime": chat_runtime(
+            environment,
+            chat_descriptor if features["chat"] else None,
+        ),
         "frontend_entrypoint": "frontend-dist/index.html",
     }
 
@@ -161,9 +171,19 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
             profile, manifest["feature_contract_version"]
         )
     elif set(manifest) == bridge_required:
-        expected = _profile_features_for_version(
-            profile, manifest["feature_contract_version"]
-        )
+        version = manifest["feature_contract_version"]
+        if version == FEATURE_CONTRACT_VERSION and profile == "production":
+            backend_features = manifest.get("backend_features")
+            declared_chat = (
+                backend_features.get("chat")
+                if isinstance(backend_features, dict)
+                else None
+            )
+            if not isinstance(declared_chat, bool):
+                raise ValueError("production chat feature flag must be boolean")
+            expected = profile_features(profile, production_chat_enabled=declared_chat)
+        else:
+            expected = _profile_features_for_version(profile, version)
     else:
         raise ValueError("release.json has an unexpected schema")
     if environment is not None and profile != environment:
@@ -200,7 +220,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         frozenset(rolling_runtime_keys),
     }:
         raise ValueError("release chat_runtime has an unexpected schema")
-    if profile == "production":
+    if not expected["chat"]:
         expected_production = chat_runtime("production")
         if set(runtime) == legacy_runtime_keys:
             expected_production = {
@@ -209,7 +229,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
                 if key in legacy_runtime_keys
             }
         if runtime != expected_production:
-            raise ValueError("production release contains an active chat runtime")
+            raise ValueError("disabled release contains an active chat runtime")
     else:
         percentage = runtime["new_chat_modal_percentage"]
         if not isinstance(percentage, int) or not 0 <= percentage <= 100:
@@ -235,7 +255,7 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         ):
             raise ValueError("chat runtime system prompt hash is invalid")
         if runtime["enabled"] is not True:
-            raise ValueError("staging chat runtime must be enabled")
+            raise ValueError("enabled chat runtime must be active")
     if set(runtime) == rolling_runtime_keys and runtime["enabled"]:
         gateway_version = runtime["gateway_contract_version"]
         compatible_from = runtime["gateway_compatible_from"]
