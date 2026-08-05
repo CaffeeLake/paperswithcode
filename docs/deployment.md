@@ -261,16 +261,29 @@ models, credentials, allowance state, percentage UI, and BYOK controls.
 Automatic title generation is the sole server-funded Hugging Face exception.
 Staging uses a staging-specific `nielsr` credential, pins
 `openai/gpt-oss-120b` to Cerebras, and reserves against a persistent,
-environment-isolated `$25/month` circuit before dispatch. The research prompt
-path never receives this credential. Missing credentials, ledger uncertainty,
-provider failure, or exhaustion falls back to a local prompt-derived title.
-Production requires a different credential and ledger and remains disabled.
+environment-isolated `$25/month` circuit before dispatch. The title request
+also names the reviewed `huggingface` organization as its explicit billing
+target; it must not silently fall back to personal billing. The research prompt
+path never receives this credential or billing target. Missing credentials,
+ledger uncertainty, provider failure, or exhaustion falls back to a local
+prompt-derived title. Production requires a different credential and ledger and
+remains disabled.
 The two environments may share the same `$1,000/month` account-level backstop,
 but neither may read or borrow the other's `$25` application budget; aggregate
 account monitoring must cover their combined title spend.
 
-The existing staging credential helper configures only the staging OpenRouter
-provider key and does not install or copy a title token:
+Install the already-provisioned staging title credential from a protected local
+environment file through the narrow staging-only helper. It validates the exact
+owner, environment, billing target, model, provider, and `$25` circuit, rejects
+reuse of a general or production title token, and does not write production:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/staging.env \
+  --staging-title-only
+```
+
+The separate staging OpenRouter helper configures only its provider key:
 
 ```bash
 sudo python deploy/configure_host_env.py \

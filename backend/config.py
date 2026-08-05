@@ -318,6 +318,11 @@ class Settings(BaseSettings):
         default="",
         description="Environment-specific server credential used only for chat titles",
     )
+    chat_title_bill_to: str = Field(
+        default="",
+        max_length=128,
+        description="Hugging Face organization billed for server-funded chat titles",
+    )
     chat_title_credential_owner: str = Field(default="", max_length=128)
     chat_title_credential_environment: str = Field(default="", max_length=32)
     chat_title_monthly_cap_microusd: int = Field(default=25_000_000, ge=1)

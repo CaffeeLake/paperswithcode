@@ -344,6 +344,7 @@ def deployed_settings(tmp_path: Path, release: Path, environment: str) -> Settin
         chat_title_hf_token=(
             "test-only-isolated-title-token" if environment == "staging" else ""
         ),
+        chat_title_bill_to=("huggingface" if environment == "staging" else ""),
         chat_title_credential_owner=("nielsr" if environment == "staging" else ""),
         chat_title_credential_environment=(
             "staging" if environment == "staging" else ""
@@ -436,6 +437,15 @@ def test_enabled_chat_does_not_require_general_server_hf_token(tmp_path: Path):
     settings.hf_token = ""
 
     assert validate_runtime(settings) == profile_features("staging")
+
+
+def test_enabled_chat_requires_title_organization_billing(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=True)
+    settings = deployed_settings(tmp_path, release, "staging")
+    settings.chat_title_bill_to = ""
+
+    with pytest.raises(RuntimeError, match="billed to the huggingface organization"):
+        validate_runtime(settings)
 
 
 def test_starter_runtime_rejects_unenforced_environment_cap(tmp_path: Path):
@@ -1056,6 +1066,7 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     )
     settings.chat_title_generation_enabled = True
     settings.chat_title_hf_token = "test-only-production-title-token"
+    settings.chat_title_bill_to = "huggingface"
     settings.chat_title_credential_owner = "nielsr"
     settings.chat_title_credential_environment = "production"
 
@@ -2100,6 +2111,8 @@ def test_staging_chat_runtime_credentials_are_preserved():
             "MODAL_TOKEN_ID": "MODAL_TOKEN_ID=id",
             "MODAL_TOKEN_SECRET": "MODAL_TOKEN_SECRET=secret",
             "PWC_CHAT_MODAL_IMAGE_VERSION": "PWC_CHAT_MODAL_IMAGE_VERSION=im-123",
+            "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=title-secret",
+            "PWC_CHAT_TITLE_BILL_TO": "PWC_CHAT_TITLE_BILL_TO=huggingface",
             "PWC_CHAT_GATEWAY_URL": "PWC_CHAT_GATEWAY_URL=https://stale.example",
             "PWC_DB_PASSWORD": "PWC_DB_PASSWORD=secret",
         }
@@ -2109,7 +2122,50 @@ def test_staging_chat_runtime_credentials_are_preserved():
         "MODAL_TOKEN_ID": "MODAL_TOKEN_ID=id",
         "MODAL_TOKEN_SECRET": "MODAL_TOKEN_SECRET=secret",
         "PWC_CHAT_MODAL_IMAGE_VERSION": "PWC_CHAT_MODAL_IMAGE_VERSION=im-123",
+        "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=title-secret",
+        "PWC_CHAT_TITLE_BILL_TO": "PWC_CHAT_TITLE_BILL_TO=huggingface",
     }
+
+
+def test_staging_title_values_are_exact_and_isolated():
+    source = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": ("PWC_CHAT_TITLE_GENERATION_ENABLED=true"),
+        "PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=title-secret",
+        "PWC_CHAT_TITLE_BILL_TO": "PWC_CHAT_TITLE_BILL_TO=huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "PWC_CHAT_TITLE_CREDENTIAL_OWNER=nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": (
+            "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT=staging"
+        ),
+    }
+
+    values = configure_host_env.staging_title_values(
+        source,
+        {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=production-secret"},
+    )
+
+    assert values == {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_HF_TOKEN": "title-secret",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "staging",
+        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
+        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MAX_TOKENS": "64",
+        "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
+        "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
+        "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+    }
+
+    reused = dict(source)
+    reused["PWC_CHAT_TITLE_HF_TOKEN"] = "PWC_CHAT_TITLE_HF_TOKEN=general-secret"
+    with pytest.raises(ValueError, match="distinct from general and production"):
+        configure_host_env.staging_title_values(
+            reused,
+            {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+            {},
+        )
 
 
 def test_staging_langfuse_credentials_are_bounded_and_preserved():

@@ -409,7 +409,7 @@ async def _title_events(
             prompt,
             settings,
             provider_token=settings.chat_title_hf_token,
-            bill_to=None,
+            bill_to=settings.chat_title_bill_to or None,
             usage=usage,
         ):
             pieces.append(delta)

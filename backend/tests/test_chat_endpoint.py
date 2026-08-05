@@ -1322,7 +1322,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     async def fake_title(_prompt, _settings, **_kwargs):
         # Let research finish first: title events must still reach the client.
         assert _kwargs["provider_token"] == "title-test-token"
-        assert _kwargs["bill_to"] is None
+        assert _kwargs["bill_to"] == "huggingface"
         await asyncio.sleep(0.01)
         yield "Research chat"
 
@@ -1373,6 +1373,7 @@ def test_chat_endpoint_stream_contract(monkeypatch):
     monkeypatch.setattr(settings, "hf_token", "test-token")
     monkeypatch.setattr(settings, "chat_title_generation_enabled", True)
     monkeypatch.setattr(settings, "chat_title_hf_token", "title-test-token")
+    monkeypatch.setattr(settings, "chat_title_bill_to", "huggingface")
     monkeypatch.setattr(
         chat_router,
         "inference_credential_for_request",

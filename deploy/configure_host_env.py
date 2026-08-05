@@ -98,6 +98,17 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_SANDBOX_RUNBOOK_URL",
     "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES",
     "PWC_CHAT_SYSTEM_PROMPT_SHA256",
+    "PWC_CHAT_TITLE_BILL_TO",
+    "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
+    "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
+    "PWC_CHAT_TITLE_GENERATION_ENABLED",
+    "PWC_CHAT_TITLE_HF_TOKEN",
+    "PWC_CHAT_TITLE_MAX_CALL_MICROUSD",
+    "PWC_CHAT_TITLE_MAX_TOKENS",
+    "PWC_CHAT_TITLE_MODEL",
+    "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD",
+    "PWC_CHAT_TITLE_PROVIDER",
+    "PWC_CHAT_TITLE_WARNING_MICROUSD",
     "PWC_CHAT_WORKER_CONTRACT_VERSION",
     "PWC_CHAT_WORKER_READY_TIMEOUT_SECONDS",
     "PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED",
@@ -286,6 +297,60 @@ def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
     }
 
 
+def staging_title_values(
+    source: dict[str, str],
+    current_staging: dict[str, str],
+    current_production: dict[str, str],
+) -> dict[str, str]:
+    """Validate and isolate the staging-only server-funded title credential."""
+
+    required = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED",
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_TITLE_BILL_TO",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
+    }
+    missing = sorted(required - source.keys())
+    if missing:
+        raise ValueError("title environment is missing: " + ", ".join(missing))
+    values = {key: decoded_value(source[key]).strip() for key in required}
+    expected = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "staging",
+    }
+    for key, value in expected.items():
+        if values[key] != value:
+            raise ValueError(f"{key} must be {value}")
+    token = values["PWC_CHAT_TITLE_HF_TOKEN"]
+    if not token:
+        raise ValueError("PWC_CHAT_TITLE_HF_TOKEN must be non-empty")
+    forbidden_tokens = {
+        decoded_value(lines[key])
+        for lines, key in (
+            (source, "PWC_HF_TOKEN"),
+            (current_staging, "PWC_HF_TOKEN"),
+            (current_production, "PWC_CHAT_TITLE_HF_TOKEN"),
+        )
+        if key in lines and decoded_value(lines[key])
+    }
+    if token in forbidden_tokens:
+        raise ValueError(
+            "the staging title token must be distinct from general and production tokens"
+        )
+    return {
+        **values,
+        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
+        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MAX_TOKENS": "64",
+        "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
+        "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
+        "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+    }
+
+
 def without_staging_openrouter(lines: dict[str, str]) -> dict[str, str]:
     """Remove shared-provider credentials and explicitly keep the preview off."""
     updated = dict(lines)
@@ -434,6 +499,7 @@ def main() -> int:
     parser.add_argument("--production-codex-only", action="store_true")
     parser.add_argument("--staging-codex-too", action="store_true")
     parser.add_argument("--staging-langfuse-only", action="store_true")
+    parser.add_argument("--staging-title-only", action="store_true")
     parser.add_argument("--staging-openrouter-only", action="store_true")
     parser.add_argument("--staging-openrouter-disable-only", action="store_true")
     parser.add_argument("--staging-openrouter-secrets-rotate-only", action="store_true")
@@ -445,6 +511,34 @@ def main() -> int:
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_title_only:
+        if any(
+            (
+                args.production_codex_only,
+                args.staging_codex_too,
+                args.staging_langfuse_only,
+                args.staging_openrouter_only,
+                args.staging_openrouter_disable_only,
+                args.staging_openrouter_secrets_rotate_only,
+                args.staging_chat_capacity_only,
+                args.staging_chat_alerts_only,
+                args.staging_chat_pool_enable_only,
+                args.staging_chat_pool_disable_only,
+            )
+        ):
+            parser.error("--staging-title-only cannot be combined with other modes")
+        try:
+            values = staging_title_values(
+                legacy,
+                read_lines(CONFIG_ROOT / "staging.env"),
+                read_lines(CONFIG_ROOT / "production.env"),
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed isolated staging title credential")
+        return 0
     if args.staging_chat_pool_enable_only or args.staging_chat_pool_disable_only:
         if (
             args.staging_chat_pool_enable_only and args.staging_chat_pool_disable_only

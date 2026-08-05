@@ -397,10 +397,14 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         if (
             not settings.chat_title_generation_enabled
             or not settings.chat_title_hf_token
+            or settings.chat_title_bill_to != "huggingface"
             or settings.chat_title_credential_owner != "nielsr"
             or settings.chat_title_credential_environment != settings.environment
         ):
-            raise RuntimeError("an isolated nielsr title credential is required")
+            raise RuntimeError(
+                "an isolated nielsr title credential billed to the huggingface "
+                "organization is required"
+            )
         if settings.chat_title_hf_token == settings.hf_token:
             raise RuntimeError("the title credential must not reuse PWC_HF_TOKEN")
         if (
