@@ -120,7 +120,7 @@ const OpenRouterUsageNotice: React.FC<{
     </span>
     {(!usage.available || byokExpected) && <span>
       {fallbackEnabled
-        ? "Your OpenRouter account will be billed on this explicit send."
+        ? "Your connected OpenRouter key will be used on your next explicit send."
         : <><a href="/settings#openrouter-byok">Connect your own key in Settings</a> to continue.</>}
     </span>}
   </div>;
@@ -893,6 +893,7 @@ const ChatView: React.FC = () => {
                   onArchiveOldestChats={() => void archiveOldest()}
                   archivePending={archivePending}
                   hfBilling={billingQuery.data ?? null}
+                  openRouterFallbackEnabled={Boolean(openRouterCredentialQuery.data?.fallback_enabled)}
                 />)}
           </div></div>
           <div className="chat-composer-wrap"><div className="chat-composer-inner">

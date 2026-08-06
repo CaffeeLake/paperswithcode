@@ -275,9 +275,10 @@ async def _authorize_openrouter(
             raise ChatServiceError(
                 "openrouter_monthly_budget_exhausted",
                 429,
-                "You have used this month's Papers With Code OpenRouter allowance.",
+                "The remaining shared Papers With Code OpenRouter allowance is not enough for another model call.",
                 details={
-                    "used_percent": 100,
+                    "used_percent": status.used_percent,
+                    "remaining_percent": status.remaining_percent,
                     "resets_at": status.resets_at.isoformat().replace("+00:00", "Z"),
                 },
             )

@@ -848,8 +848,10 @@ class ChatStreamOrchestrator:
                                     "+00:00", "Z"
                                 )
                                 event["message"] = (
-                                    "You have used this month's Papers With Code "
-                                    f"OpenRouter allowance. It resets at {reset}."
+                                    f"{usage.remaining_percent}% of your monthly shared "
+                                    "OpenRouter allowance remains, but that is not enough "
+                                    "to reserve another model call for this response. "
+                                    f"It resets at {reset}."
                                 )
                             elif funded_code == "openrouter_unavailable":
                                 event["message"] = (

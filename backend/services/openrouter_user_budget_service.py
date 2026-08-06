@@ -37,7 +37,9 @@ class OpenRouterUserBudgetError(RuntimeError):
 
 class OpenRouterMonthlyBudgetExhausted(OpenRouterUserBudgetError):
     def __init__(self, resets_at: datetime):
-        super().__init__("The monthly OpenRouter allowance is exhausted")
+        super().__init__(
+            "The remaining monthly OpenRouter allowance cannot fund this call"
+        )
         self.resets_at = resets_at
 
 

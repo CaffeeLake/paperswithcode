@@ -177,12 +177,14 @@ describe("AssistantMessage", () => {
   const renderAssistant = (
     msg: ChatMessageType,
     hfBilling: ComponentProps<typeof AssistantMessage>["hfBilling"] = null,
+    openRouterFallbackEnabled = false,
   ) => render(
     <AssistantMessage
       msg={msg}
       papers={{}}
       onToggleBlock={() => undefined}
       hfBilling={hfBilling}
+      openRouterFallbackEnabled={openRouterFallbackEnabled}
     />,
   );
 
@@ -261,21 +263,35 @@ describe("AssistantMessage", () => {
     );
   });
 
-  it("keeps monthly OpenRouter exhaustion distinct and offers explicit alternatives", () => {
+  it("explains an insufficient shared reservation and offers explicit alternatives", () => {
     renderAssistant({
       id: "assistant-1",
       role: "assistant",
-      error: "You have used this month's Papers With Code OpenRouter allowance. It resets at 2026-09-01T00:00:00Z.",
+      error: "40% of your monthly shared OpenRouter allowance remains, but that is not enough to reserve another model call for this response. It resets at 2026-09-01T00:00:00Z.",
       errorCode: "openrouter_monthly_budget_exhausted",
     });
 
+    expect(screen.getByText(/40%.*remains.*not enough to reserve/i)).toBeVisible();
     expect(screen.getByText(/resets at 2026-09-01T00:00:00Z/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "Use your own OpenRouter key" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Connect your own OpenRouter key" })).toHaveAttribute(
       "href",
       "/settings#openrouter-byok",
     );
     expect(screen.getByText(/select a Hugging Face-backed model and explicitly retry/)).toBeVisible();
     expect(screen.queryByText(/capacity|provider rate/i)).not.toBeInTheDocument();
+  });
+
+  it("explains that an enabled OpenRouter fallback applies on explicit retry", () => {
+    renderAssistant({
+      id: "assistant-1",
+      role: "assistant",
+      error: "The remaining shared Papers With Code OpenRouter allowance is not enough for another model call.",
+      errorCode: "openrouter_monthly_budget_exhausted",
+    }, null, true);
+
+    expect(screen.getByText(/response started on the shared allowance/i)).toBeVisible();
+    expect(screen.getByText(/connected OpenRouter key will be used when you explicitly retry/i)).toBeVisible();
+    expect(screen.queryByRole("link", { name: /OpenRouter key/i })).not.toBeInTheDocument();
   });
 
   it("uses the generic OpenRouter-unavailable contract without pool details", () => {

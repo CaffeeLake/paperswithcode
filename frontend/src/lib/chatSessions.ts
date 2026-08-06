@@ -209,7 +209,7 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
     if (code === "hf_inference_credential_expired") return "Your Hugging Face authorization expired. Reconnect in Settings.";
     if (code === "provider_rate_limit") return "The selected model is temporarily rate-limited. Try again shortly.";
     if (code === "provider_timeout") return "The model provider timed out. Try again shortly.";
-    if (code === "openrouter_monthly_budget_exhausted") return "You have used this month's Papers With Code OpenRouter allowance. Review the reset time or enable your own key in Settings.";
+    if (code === "openrouter_monthly_budget_exhausted") return "The remaining shared Papers With Code OpenRouter allowance was not enough to continue this response.";
     if (code === "openrouter_unavailable") return "OpenRouter is currently unavailable. However, you can still bring your own key in Settings.";
     if (code === "openrouter_byok_credential_invalid") return "Your OpenRouter API key is no longer valid. Reconnect it in Settings, then try again.";
     if (code === "openrouter_byok_billing_error") return "Your OpenRouter key is connected, but OpenRouter rejected billing for the account behind it. A key spending limit is not an account credit balance. Add credits or enable pay-as-you-go in OpenRouter, then try again.";

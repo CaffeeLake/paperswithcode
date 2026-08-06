@@ -424,7 +424,8 @@ export const AssistantMessage: React.FC<{
   onArchiveOldestChats?: () => void;
   archivePending?: "old" | "oldest" | null;
   hfBilling?: HfBillingGuidance | null;
-}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null, hfBilling = null }) => (
+  openRouterFallbackEnabled?: boolean;
+}> = ({ msg, papers, onToggleBlock, onArchiveOldChats, onArchiveOldestChats, archivePending = null, hfBilling = null, openRouterFallbackEnabled = false }) => (
   <div className="chat-msg chat-msg-assistant">
     <div className="chat-msg-blocks">
       {msg.blocks?.map((b, i) => {
@@ -497,7 +498,9 @@ export const AssistantMessage: React.FC<{
           </a>
         </>}
         {msg.errorCode === "openrouter_monthly_budget_exhausted" && <>
-          <a href="/settings#openrouter-byok">Use your own OpenRouter key</a>
+          {openRouterFallbackEnabled
+            ? <span>This response started on the shared allowance. Your connected OpenRouter key will be used when you explicitly retry.</span>
+            : <a href="/settings#openrouter-byok">Connect your own OpenRouter key</a>}
           <span>Or select a Hugging Face-backed model and explicitly retry.</span>
         </>}
         {msg.errorCode === "openrouter_unavailable" && <>

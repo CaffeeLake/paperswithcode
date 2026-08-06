@@ -478,14 +478,19 @@ async def messages(
         except OpenRouterMonthlyBudgetExhausted as error:
             db.rollback()
             _record_provider_error(capability_id, "openrouter_monthly_budget_exhausted")
+            usage = OpenRouterUserBudgetService(db, settings).status_percentage(
+                owner_id
+            )
             raise HTTPException(
                 status_code=429,
                 detail={
                     "code": "openrouter_monthly_budget_exhausted",
                     "message": (
-                        "You have used this month's Papers With Code OpenRouter allowance."
+                        "The remaining shared Papers With Code OpenRouter allowance "
+                        "is not enough for another model call."
                     ),
-                    "used_percent": 100,
+                    "used_percent": usage.used_percent,
+                    "remaining_percent": usage.remaining_percent,
                     "resets_at": error.resets_at.isoformat().replace("+00:00", "Z"),
                 },
             ) from None

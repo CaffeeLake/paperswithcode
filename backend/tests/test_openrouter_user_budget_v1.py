@@ -470,7 +470,11 @@ def test_allowance_and_workspace_failures_have_distinct_secret_safe_contracts(
             return False
 
         def status_percentage(self, _owner):
-            return SimpleNamespace(resets_at=reset)
+            return SimpleNamespace(
+                used_percent=60,
+                remaining_percent=40,
+                resets_at=reset,
+            )
 
     monkeypatch.setattr(chat_router, "OpenRouterUserBudgetService", ExhaustedBudget)
     monkeypatch.setattr(
@@ -488,7 +492,8 @@ def test_allowance_and_workspace_failures_have_distinct_secret_safe_contracts(
     assert exhausted.value.status_code == 429
     assert exhausted.value.code == "openrouter_monthly_budget_exhausted"
     assert exhausted.value.details == {
-        "used_percent": 100,
+        "used_percent": 60,
+        "remaining_percent": 40,
         "resets_at": "2026-09-01T00:00:00Z",
     }
     assert not any("usd" in key or "dollar" in key for key in exhausted.value.details)
