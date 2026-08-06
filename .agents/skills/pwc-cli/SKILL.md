@@ -39,7 +39,9 @@ than silently selecting a paper.
 - `pwc paper info PAPER` — Show metadata, the abstract, predecessors, and successors.
   `--include-resources` adds Markdown sections for GitHub repositories, project pages,
   and Hugging Face artifacts, with official links marked explicitly.
-  `[--include-resources --json]`
+  `--include-evals` fetches every evaluation for the resolved paper and adds an
+  Evaluations Markdown table (or structured `evaluations` in JSON output).
+  `[--include-resources --include-evals --json]`
 - `pwc paper read PAPER` — Print stored paper Markdown. The resolved paper must
   have a modern arXiv record. `[--json]`
 - `pwc paper list` — List and filter the paper catalog in a paginated manner.
@@ -57,8 +59,13 @@ than silently selecting a paper.
   `[--limit 1-20 --json]`
 - `pwc paper lineage list PAPER` — Render linked Markdown sections for a paper,
   its predecessors, and its successors. `[--json]`
+- `pwc task --name NAME` — Show a task page in CLI form, including its area,
+  description, hierarchy, research trends, recommended frameworks, sister
+  tasks, subtasks, common methods, benchmarks, and trending papers. `NAME`
+  must exactly match a task name, slug, or ID. `[--json]`
 - `pwc task list` — List research tasks, optionally filtering by a
   case-insensitive exact area name such as Vision, Audio, or General.
+  Rows include direct paper, benchmark, and evaluation counts for each task.
   Interactive output groups visible top-level tasks into Markdown area sections;
   `--group-by-area` forces that view when output is captured, while `--flat`
   forces the paginated table.
@@ -123,8 +130,9 @@ than silently selecting a paper.
    titles as sufficient support for detailed claims.
 5. Expand the literature with `pwc paper related` and use
    `pwc paper lineage list` when model or method ancestry matters.
-6. Explore the catalog taxonomy with `pwc task list --group-by-area`,
-   `pwc method list`, and `pwc conference list`; use `--area` or `--year` to
+6. Explore the catalog taxonomy with `pwc task list --group-by-area`, inspect a
+   specific task with `pwc task --name NAME`, then use
+   `pwc method list` and `pwc conference list`; use `--area` or `--year` to
    narrow broad lists.
 7. Synthesize only after gathering enough primary evidence. Preserve paper
    titles, identifiers, and URLs in the answer so claims remain traceable.
@@ -144,6 +152,8 @@ than silently selecting a paper.
 - Use `pwc conference list --year YEAR` for a specific conference edition year.
 - Use `--include-resources` for linked repositories, project pages, and Hugging
   Face artifacts. Add `--json` when their structured metadata also matters.
+- Use `--include-evals` with `pwc paper info` when benchmark scores reported by
+  the paper matter.
 - Use `--all-versions` only when individual arXiv versions are relevant.
 - Use `--is-open true` to restrict benchmark results to open models.
 - Paginate when stderr reports more results. Do not silently treat the first
@@ -153,8 +163,8 @@ than silently selecting a paper.
 
 - Interactive list and search output uses aligned text columns. When stdout is
   piped or captured, the same rows use lossless TSV for agent and script
-  processing. Paper info uses labeled metadata and Markdown sections; benchmark
-  details use Markdown.
+  processing. Paper info uses labeled metadata and Markdown sections. Benchmark
+  details use an aligned table interactively and Markdown when piped or captured.
 - `--json` wraps responses as
   `{"schema_version":"v1","data":...}` for stable agent consumption.
 - Stable exit codes are `0` success, `2` invalid usage, `3` network/server
