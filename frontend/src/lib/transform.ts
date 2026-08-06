@@ -32,6 +32,8 @@ export interface PaperCardProps {
   tags: string[];
   /** paper.methods[*] reduced to the fields MethodChip needs */
   methods: { id?: string; name: string; slug?: string }[];
+  /** Organizations displayed as compact linked logos beside the paper title. */
+  organizations: { name: string; slug: string; logoUrl: string | null }[];
   citations: number;
   /** stars for the featured repo; null when no repo */
   github: number | null;
@@ -155,6 +157,11 @@ export function transformPaperForCard(paper: Paper): PaperCardProps {
     authors: paper.authors || [],
     tags,
     methods,
+    organizations: (paper.organizations || []).map((organization) => ({
+      name: organization.name,
+      slug: organization.slug,
+      logoUrl: assetUrl(organization.logo_url) || null,
+    })),
     citations: paper.citation_count || 0,
     github,
     githubUrl,
@@ -186,6 +193,7 @@ export function transformTrendingForCard(t: TrendingPaper): PaperCardProps {
     authors: t.authors || [],
     tags: (t.tasks || []).map((x) => x.slug).filter(Boolean),
     methods: [],
+    organizations: [],
     citations: 0,
     github: t.repository?.num_stars ?? null,
     githubUrl: t.repository?.url ?? null,

@@ -318,7 +318,12 @@ export const OrganizationPaperFeed: React.FC<{
         <>
           <div className="paper-list">
             {cards.map((paper, index) => (
-              <PaperCard key={paper.id} paper={paper} rank={index + 1} />
+              <PaperCard
+                key={paper.id}
+                paper={paper}
+                rank={index + 1}
+                showInstitution={false}
+              />
             ))}
           </div>
           <div ref={targetRef} style={{ height: 1 }} />

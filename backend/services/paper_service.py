@@ -168,11 +168,11 @@ class PaperService:
         Load paper relationships in batches for API serialization.
 
         When `card_view` is True, only the relations the paper-card UI actually
-        renders are loaded (authors, tasks, methods, and — when
+        renders are loaded (authors, tasks, methods, organizations, and — when
         `include_resources` is set — repositories and project pages). The
         heavier detail-only relations (author links, introduced benchmarks,
-        paper lineage, conference, organizations) are skipped to cut both SQL
-        round-trips and serialized payload size for list endpoints.
+        paper lineage, and conference) are skipped to cut both SQL round-trips
+        and serialized payload size for list endpoints.
         """
         unique_ids = list(dict.fromkeys(int(paper_id) for paper_id in paper_ids))
         relation_data = {
@@ -335,9 +335,41 @@ class PaperService:
                 )
             )
 
+        # Organization logos are rendered beside titles on paper cards as well
+        # as on paper detail pages, so load them for both response shapes.
+        organization_rows = (
+            self.db.query(DBPaperOrganization, DBOrganization)
+            .join(
+                DBOrganization,
+                DBPaperOrganization.organization_id == DBOrganization.id,
+            )
+            .filter(DBPaperOrganization.paper_id.in_(unique_ids))
+            .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
+            .all()
+        )
+        for link, organization in organization_rows:
+            relation_data["organizations"][link.paper_id].append(
+                OrganizationSummary(
+                    id=str(organization.id),
+                    name=organization.name,
+                    slug=organization.slug,
+                    logo_url=(
+                        organization_logo_path(
+                            organization.slug,
+                            organization.logo_mime_type,
+                            organization.logo_sha256,
+                        )
+                        if organization.logo_mime_type
+                        else organization.logo_url
+                    ),
+                    source=link.source,
+                    added_by_hf_username=link.added_by_hf_username,
+                )
+            )
+
         # Detail-only relations. Paper cards never render introduced
-        # benchmarks, lineage banners, the conference badge, or organizations,
-        # so list endpoints skip these queries and payloads via `card_view`.
+        # benchmarks, lineage banners, or the conference badge, so list
+        # endpoints skip these queries and payloads via `card_view`.
         if not card_view:
             introduced_dataset_rows = (
                 self.db.query(DBDataset)
@@ -426,36 +458,6 @@ class PaperService:
             for paper_id, conference in conference_rows:
                 if paper_id not in relation_data["conferences"]:
                     relation_data["conferences"][paper_id] = conference
-
-            organization_rows = (
-                self.db.query(DBPaperOrganization, DBOrganization)
-                .join(
-                    DBOrganization,
-                    DBPaperOrganization.organization_id == DBOrganization.id,
-                )
-                .filter(DBPaperOrganization.paper_id.in_(unique_ids))
-                .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
-                .all()
-            )
-            for link, organization in organization_rows:
-                relation_data["organizations"][link.paper_id].append(
-                    OrganizationSummary(
-                        id=str(organization.id),
-                        name=organization.name,
-                        slug=organization.slug,
-                        logo_url=(
-                            organization_logo_path(
-                                organization.slug,
-                                organization.logo_mime_type,
-                                organization.logo_sha256,
-                            )
-                            if organization.logo_mime_type
-                            else organization.logo_url
-                        ),
-                        source=link.source,
-                        added_by_hf_username=link.added_by_hf_username,
-                    )
-                )
 
         if include_resources:
             repository_rows = (
@@ -1426,7 +1428,7 @@ class PaperService:
 
             # The homepage feed renders paper cards, so only fetch the relations
             # the card UI needs (card_view=True) instead of the full detail-page
-            # relation set (lineage, introduced benchmarks, conferences, orgs).
+            # relation set (lineage, introduced benchmarks, and conferences).
             relation_data = self._get_paper_relation_data(
                 [paper.id for paper in db_papers],
                 include_resources=include_resources,

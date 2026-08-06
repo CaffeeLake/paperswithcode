@@ -823,7 +823,30 @@ function visibleFeedMethods(paper: PaperCardProps): PaperCardProps["methods"] {
   return paper.methods.filter((m) => !isLargeLanguageModelMethod(m));
 }
 
-export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onClickTag }) => {
+const PaperOrganizationLogo: React.FC<
+  PaperCardProps["organizations"][number]
+> = ({ name, slug, logoUrl }) => {
+  const [failed, setFailed] = React.useState(false);
+  if (!logoUrl || failed) return null;
+
+  return (
+    <Link
+      to={`/orgs/${slug}`}
+      className="paper-organization-logo"
+      aria-label={`View ${name} organization`}
+      title={name}
+    >
+      <img src={logoUrl} alt="" onError={() => setFailed(true)} />
+    </Link>
+  );
+};
+
+export const PaperCard: React.FC<PaperCardComponentProps> = ({
+  paper,
+  rank,
+  showInstitution = true,
+  onClickTag,
+}) => {
   const queryClient = useQueryClient();
   const paperHref = `/paper/${paper.id}`;
   const prefetchPaper = React.useCallback(() => {
@@ -854,6 +877,13 @@ export const PaperCard: React.FC<PaperCardComponentProps> = ({ paper, rank, onCl
             <Link to={paperHref} onFocus={prefetchPaper} onMouseEnter={prefetchPaper}>
               <LatexTitle title={paper.title} />
             </Link>
+            {showInstitution && paper.organizations.length > 0 && (
+              <span className="paper-organization-logos">
+                {paper.organizations.map((organization) => (
+                  <PaperOrganizationLogo key={organization.slug} {...organization} />
+                ))}
+              </span>
+            )}
           </h3>
           <div className="paper-authors">
             {visibleAuthors}

@@ -241,6 +241,7 @@ def test_paper_detail_includes_manually_curated_organization(org_client):
     feed = org_client.get("/api/v1/organizations/acme/papers?page_size=10")
     assert feed.status_code == 200
     assert feed.json()["count"] == 4
+    assert feed.json()["results"][0]["organizations"][0]["slug"] == "acme"
 
 
 def test_organization_update_preserves_hf_source_and_attributes_new_manual_link(
