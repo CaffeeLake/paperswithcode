@@ -1,4 +1,4 @@
-"""Daily append-only synchronization of the 21 featured HF organizations."""
+"""Daily append-only synchronization of the featured HF organizations."""
 
 import asyncio
 

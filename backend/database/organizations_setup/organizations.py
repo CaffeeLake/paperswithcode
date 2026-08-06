@@ -35,6 +35,7 @@ FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
     FeaturedOrganization("apple", "apple", 19),
     FeaturedOrganization("tencent", "tencent", 20),
     FeaturedOrganization("MiniMaxAI", "minimaxai", 21),
+    FeaturedOrganization("baidu", "baidu", 22),
 )
 
 

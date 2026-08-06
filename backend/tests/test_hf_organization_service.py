@@ -27,9 +27,10 @@ def _page(payload) -> str:
 
 
 def test_manifest_is_strict_unique_and_case_insensitive():
-    assert len(FEATURED_ORGANIZATIONS) == 21
-    assert len({item.slug for item in FEATURED_ORGANIZATIONS}) == 21
-    assert len({item.hf_slug.lower() for item in FEATURED_ORGANIZATIONS}) == 21
+    assert len(FEATURED_ORGANIZATIONS) == 22
+    assert len({item.slug for item in FEATURED_ORGANIZATIONS}) == 22
+    assert len({item.hf_slug.lower() for item in FEATURED_ORGANIZATIONS}) == 22
+    assert featured_for_hf_handle("baidu").slug == "baidu"
     assert featured_for_hf_handle("ByteDance-Seed").slug == "bytedance-seed"
     assert featured_for_hf_handle("  ANTHROPIC ").slug == "anthropic"
     assert featured_for_hf_handle("unlisted-lab") is None
