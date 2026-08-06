@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "36"
+WORKER_CONTRACT_VERSION = "37"
 # A release emits this gateway protocol and accepts workers back to the
 # compatible-from floor while an old slot drains or a rollback is qualified.
 GATEWAY_CONTRACT_VERSION = 26
@@ -17,6 +17,6 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-OlX4N2XnTjBJt0X2eGIQT5"
+MODAL_IMAGE_ID = "im-Vx4ahl25ZBS2fu4AKvK6y5"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100

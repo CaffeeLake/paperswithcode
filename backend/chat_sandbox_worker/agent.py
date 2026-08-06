@@ -26,6 +26,7 @@ from backend.chat_sandbox_worker.config import WorkerSettings
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
+    MAX_WIRE_FRAME_BYTES,
     decode_frame,
     encode_frame,
 )
@@ -231,6 +232,10 @@ def _validate_run_frame(frame: dict[str, Any]) -> tuple[str, str, str]:
     if not request_id or not model:
         raise ValueError("Invalid run frame")
     return prompt, request_id, model
+
+
+def _persistent_stdin_reader() -> asyncio.StreamReader:
+    return asyncio.StreamReader(limit=MAX_WIRE_FRAME_BYTES)
 
 
 def _options(
@@ -583,7 +588,7 @@ async def main_async() -> int:
 
 
 async def persistent_main_async() -> int:
-    reader = asyncio.StreamReader()
+    reader = _persistent_stdin_reader()
     protocol = asyncio.StreamReaderProtocol(reader)
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: protocol, sys.stdin.buffer

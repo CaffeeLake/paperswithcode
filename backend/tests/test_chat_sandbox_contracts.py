@@ -1645,6 +1645,26 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         agent._validate_run_frame(frame)
 
 
+def test_persistent_worker_stdin_accepts_inline_paper_frame():
+    frame = encode_frame(
+        {
+            "v": 1,
+            "type": "run_turn",
+            "request_id": "request-1",
+            "prompt": "x" * (80 * 1024),
+            "model": "model-a",
+        }
+    )
+
+    async def read_frame():
+        reader = agent._persistent_stdin_reader()
+        reader.feed_data(frame)
+        reader.feed_eof()
+        return await reader.readline()
+
+    assert asyncio.run(read_frame()) == frame
+
+
 def test_worker_protocol_rejects_invalid_result_and_terminal_sequences():
     validator = WorkerEventValidator()
     with pytest.raises(ProtocolError, match="Uncorrelated"):
@@ -1718,8 +1738,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-OlX4N2XnTjBJt0X2eGIQT5"
-    assert WORKER_CONTRACT_VERSION == "36"
+    assert MODAL_IMAGE_ID == "im-Vx4ahl25ZBS2fu4AKvK6y5"
+    assert WORKER_CONTRACT_VERSION == "37"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
