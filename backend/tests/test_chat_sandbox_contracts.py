@@ -2055,7 +2055,11 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert manifest["chat_runtime"]["new_chat_modal_percentage"] == 100
     production = build_manifest("b" * 40, "production")
     assert production["chat_runtime"]["enabled"] is False
-    assert json.dumps(production["chat_runtime"]).count("pwc-chat") == 0
+    assert production["chat_runtime"]["new_chat_modal_percentage"] == 0
+    assert production["chat_runtime"]["default_backend"] == "modal_cli"
+    assert (
+        production["chat_runtime"]["worker_contract_version"] == WORKER_CONTRACT_VERSION
+    )
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
@@ -2683,14 +2687,14 @@ def test_qualification_summary_uses_nearest_rank_p95():
     assert result["snapshot_ms"]["count"] == 3
 
 
-def test_sandbox_migration_is_staging_scoped():
+def test_sandbox_migration_is_environment_scoped():
     migration = (
         Path(__file__).parents[1]
         / "database"
         / "migrations"
         / "add_chat_sandbox_runtime.sql"
     ).read_text()
-    assert "current_schema() <> 'staging'" in migration
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "OWNER TO pwc_staging_owner" in migration
     assert "TO pwc_staging;" in migration
     assert "FROM paperswithcode_user;" in migration

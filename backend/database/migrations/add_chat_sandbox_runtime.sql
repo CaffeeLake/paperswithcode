@@ -2,16 +2,19 @@ BEGIN;
 
 DO $$
 BEGIN
-    IF current_schema() <> 'staging' THEN
+    IF current_schema() NOT IN ('staging', 'public') THEN
         RAISE EXCEPTION
-            'add_chat_sandbox_runtime.sql must run with search_path staging,public';
+            'add_chat_sandbox_runtime.sql must run with search_path staging,public or public';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging')
-       OR NOT EXISTS (
-           SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging_owner'
-       ) THEN
+    IF current_schema() = 'staging'
+       AND (NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging')
+            OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging_owner')) THEN
         RAISE EXCEPTION
             'pwc_staging and pwc_staging_owner roles must exist before this migration';
+    END IF;
+    IF current_schema() = 'public'
+       AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+        RAISE EXCEPTION 'production chat migration requires paperswithcode_user';
     END IF;
 END $$;
 
@@ -84,17 +87,22 @@ ALTER TABLE chat_turn_capabilities
 CREATE INDEX IF NOT EXISTS idx_chat_turn_capabilities_scope
     ON chat_turn_capabilities (chat_session_id, turn_id, expires_at);
 
-ALTER TABLE chat_sandbox_leases OWNER TO pwc_staging_owner;
-ALTER TABLE chat_turn_capabilities OWNER TO pwc_staging_owner;
-GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sandbox_leases,
-    chat_turn_capabilities TO pwc_staging;
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user'
-    ) THEN
+    IF current_schema() = 'staging' THEN
+        ALTER TABLE chat_sandbox_leases OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_turn_capabilities OWNER TO pwc_staging_owner;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sandbox_leases,
+            chat_turn_capabilities TO pwc_staging;
         REVOKE ALL ON chat_sandbox_leases, chat_turn_capabilities
             FROM paperswithcode_user;
+    ELSE
+        ALTER TABLE chat_sandbox_leases OWNER TO paperswithcode_user;
+        ALTER TABLE chat_turn_capabilities OWNER TO paperswithcode_user;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sandbox_leases,
+            chat_turn_capabilities TO paperswithcode_user;
+        REVOKE ALL ON chat_sandbox_leases, chat_turn_capabilities
+            FROM pwc_staging;
     END IF;
 END $$;
 

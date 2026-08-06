@@ -147,15 +147,37 @@ def validate(production: str, staging: str) -> list[str]:
         for requirement in stream_requirements:
             if requirement not in stream_block:
                 failures.append(f"staging chat stream route misses: {requirement}")
-    gateway_host = "server_name chat-gateway-staging.paperswithcode.co;"
-    if gateway_host not in staging:
-        failures.append("staging chat gateway hostname is missing")
-    for endpoint in ("catalog", "session-store", "web-fetch", "v1/messages"):
-        location = f"location = /api/internal/chat-gateway/{endpoint}"
-        if location not in staging:
-            failures.append(f"staging chat gateway {endpoint} route is missing")
-    if "client_max_body_size 512k;" not in staging:
-        failures.append("staging chat gateway body limit is missing")
+    for config, environment, hostname, backend in (
+        (
+            production,
+            "production",
+            "chat-gateway.paperswithcode.co",
+            "pwc_production_backend",
+        ),
+        (
+            staging,
+            "staging",
+            "chat-gateway-staging.paperswithcode.co",
+            "pwc_staging_backend",
+        ),
+    ):
+        if f"server_name {hostname};" not in config:
+            failures.append(f"{environment} chat gateway hostname is missing")
+        if f"/etc/letsencrypt/live/{hostname}/fullchain.pem" not in config:
+            failures.append(f"{environment} chat gateway TLS certificate is missing")
+        for endpoint in ("catalog", "session-store", "web-fetch", "v1/messages"):
+            location = f"location = /api/internal/chat-gateway/{endpoint}"
+            block = location_block(config, location)
+            if not block:
+                failures.append(
+                    f"{environment} chat gateway {endpoint} route is missing"
+                )
+            elif f"proxy_pass http://{backend};" not in block:
+                failures.append(
+                    f"{environment} chat gateway {endpoint} misses {backend}"
+                )
+        if "client_max_body_size 512k;" not in config:
+            failures.append(f"{environment} chat gateway body limit is missing")
     if staging.count("location / {") != 1 or production.count("location / {") != 1:
         failures.append("ambiguous catch-all location")
     failures.extend(

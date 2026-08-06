@@ -24,6 +24,7 @@ from backend.models.database import (
 )
 from backend.scripts.qualify_chat_sandbox import settings_for_release
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_operational_alert_service import RUNTIME_FAILURE_PATTERNS
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.openrouter_budget_service import (
@@ -40,21 +41,8 @@ JOURNAL_UNITS = (
     "paperswithcode-staging-backend@green",
 )
 JOURNAL_FAILURE_PATTERNS = {
-    "pool_replenishment_failure": "chat blank pool replenishment failed",
-    "pool_budget_block": "chat blank pool budget blocked",
-    "turn_cleanup_failure": "chat cleanup failed",
-    "edit_cleanup_failure": "chat edit preparation cleanup failed",
-    "background_task_failure": "chat background task failed",
-    "stream_persistence_failure": "chat stream persistence failed",
+    **RUNTIME_FAILURE_PATTERNS,
     "research_producer_failure": "chat research producer failed",
-    "transcript_mirror_failure": "chat transcript mirror failed",
-    "transcript_reconciliation_failure": "chat transcript reconciliation failed",
-    "latency_finalize_failure": "chat latency finalize failed",
-    "latency_phase_failure": "chat latency phase failed",
-    "stale_turn_reconciliation": "chat stale turns reconciled",
-    "langfuse_initialization_failure": "chat Langfuse trace initialization failed",
-    "langfuse_finalization_failure": "chat Langfuse trace finalization failed",
-    "langfuse_client_failure": "chat Langfuse client initialization failed",
 }
 
 

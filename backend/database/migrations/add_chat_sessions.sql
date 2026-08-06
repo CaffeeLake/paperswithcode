@@ -1,5 +1,13 @@
 BEGIN;
 
+DO $$
+BEGIN
+    IF current_schema() NOT IN ('staging', 'public') THEN
+        RAISE EXCEPTION
+            'add_chat_sessions.sql must run with search_path staging,public or public';
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY,
     hf_user_id VARCHAR(255) NOT NULL,
@@ -99,11 +107,47 @@ CREATE TABLE IF NOT EXISTS chat_sdk_session_summaries (
 
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+    IF current_schema() = 'staging' THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging')
+           OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging_owner') THEN
+            RAISE EXCEPTION 'staging chat migration requires staging roles';
+        END IF;
+        ALTER TABLE chat_sessions OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_messages OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_sdk_transcript_entries OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_sdk_session_summaries OWNER TO pwc_staging_owner;
+        ALTER SEQUENCE chat_sdk_transcript_entries_id_seq OWNER TO pwc_staging_owner;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sessions, chat_messages,
+            chat_sdk_transcript_entries, chat_sdk_session_summaries TO pwc_staging;
+        GRANT USAGE, SELECT ON SEQUENCE chat_sdk_transcript_entries_id_seq
+            TO pwc_staging;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+            REVOKE ALL ON chat_sessions, chat_messages,
+                chat_sdk_transcript_entries, chat_sdk_session_summaries
+                FROM paperswithcode_user;
+            REVOKE ALL ON SEQUENCE chat_sdk_transcript_entries_id_seq
+                FROM paperswithcode_user;
+        END IF;
+    ELSE
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+            RAISE EXCEPTION 'production chat migration requires paperswithcode_user';
+        END IF;
+        ALTER TABLE chat_sessions OWNER TO paperswithcode_user;
+        ALTER TABLE chat_messages OWNER TO paperswithcode_user;
+        ALTER TABLE chat_sdk_transcript_entries OWNER TO paperswithcode_user;
+        ALTER TABLE chat_sdk_session_summaries OWNER TO paperswithcode_user;
+        ALTER SEQUENCE chat_sdk_transcript_entries_id_seq OWNER TO paperswithcode_user;
         GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sessions, chat_messages,
             chat_sdk_transcript_entries, chat_sdk_session_summaries TO paperswithcode_user;
         GRANT USAGE, SELECT ON SEQUENCE chat_sdk_transcript_entries_id_seq
             TO paperswithcode_user;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging') THEN
+            REVOKE ALL ON chat_sessions, chat_messages,
+                chat_sdk_transcript_entries, chat_sdk_session_summaries
+                FROM pwc_staging;
+            REVOKE ALL ON SEQUENCE chat_sdk_transcript_entries_id_seq
+                FROM pwc_staging;
+        END IF;
     END IF;
 END $$;
 

@@ -2,9 +2,9 @@ BEGIN;
 
 DO $$
 BEGIN
-    IF current_schema() <> 'staging' THEN
+    IF current_schema() NOT IN ('staging', 'public') THEN
         RAISE EXCEPTION
-            'add_chat_edit_preparation_state.sql must run with search_path staging,public';
+            'add_chat_edit_preparation_state.sql must run with search_path staging,public or public';
     END IF;
 END $$;
 

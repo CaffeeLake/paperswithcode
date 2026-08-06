@@ -237,21 +237,48 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         raise RuntimeError("production OpenRouter chat credentials are prohibited")
 
     if not settings.chat_enabled:
-        if settings.environment == "production" and (
-            settings.chat_default_backend != "local_mcp"
-            or settings.chat_new_chat_modal_percentage != 0
-            or settings.chat_modal_image_version
-            or settings.chat_persistent_worker_enabled
-            or settings.chat_blank_pool_enabled
-            or settings.chat_public_admission_enabled
-            or settings.chat_sandbox_admission_enabled
-            or settings.chat_title_generation_enabled
-            or settings.chat_sandbox_cpu_limit is not None
-            or settings.chat_sandbox_memory_limit_mib is not None
-        ):
-            raise RuntimeError(
-                "disabled production contains an active chat runtime descriptor"
+        if settings.environment == "production":
+            active_controls = (
+                settings.chat_new_chat_modal_percentage != 0
+                or settings.chat_persistent_worker_enabled
+                or settings.chat_blank_pool_enabled
+                or settings.chat_public_admission_enabled
+                or settings.chat_sandbox_admission_enabled
+                or settings.chat_title_generation_enabled
+                or settings.chat_sandbox_cpu_limit is not None
+                or settings.chat_sandbox_memory_limit_mib is not None
             )
+            legacy_descriptor = (
+                settings.chat_default_backend == "local_mcp"
+                and not settings.chat_modal_image_version
+                and not settings.chat_pwc_cli_version
+                and not settings.chat_worker_contract_version
+                and not settings.chat_system_prompt_sha256
+            )
+            dormant_descriptor = (
+                settings.chat_default_backend == "modal_cli"
+                and bool(settings.chat_modal_image_version)
+                and bool(settings.chat_pwc_cli_version)
+                and bool(settings.chat_worker_contract_version)
+                and bool(settings.chat_system_prompt_sha256)
+            )
+            if active_controls or not (legacy_descriptor or dormant_descriptor):
+                raise RuntimeError(
+                    "disabled production contains an active or incomplete chat runtime descriptor"
+                )
+            if dormant_descriptor:
+                try:
+                    require_immutable_image_id(settings.chat_modal_image_version)
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"dormant production chat runtime is invalid: {error}"
+                    ) from error
+                from backend.chat_sandbox_worker.prompt import sha256
+
+                if settings.chat_system_prompt_sha256 != sha256():
+                    raise RuntimeError(
+                        "dormant production prompt and execution limits disagree"
+                    )
     else:
         if not all(
             (
@@ -361,6 +388,16 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError("PWC_CHAT_SANDBOX_RUNBOOK_URL is required")
         if not settings.chat_sandbox_operator_username_set:
             raise RuntimeError("PWC_CHAT_SANDBOX_OPERATOR_USERNAMES is required")
+        if settings.environment == "production" and (
+            not settings.chat_operational_alerts_enabled
+            or settings.chat_provider_alert_window_seconds != 300
+            or settings.chat_provider_alert_min_failures != 5
+            or settings.chat_provider_alert_failure_percent != 50
+        ):
+            raise RuntimeError(
+                "production operational alerts require the reviewed 5-minute, "
+                "5-failure, 50-percent provider policy"
+            )
         rate = (settings.chat_sandbox_cpu_limit or settings.chat_sandbox_cpu) * 40 + (
             settings.chat_sandbox_memory_limit_mib or settings.chat_sandbox_memory_mib
         ) / 1024 * 7

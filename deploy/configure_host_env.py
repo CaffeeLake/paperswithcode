@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 CONFIG_ROOT = Path("/etc/paperswithcode")
+PRODUCTION_CHAT_SEALED_CONFIG = CONFIG_ROOT / "production-chat-prepared.env"
 
 STAGING_EXCLUDED_PREFIXES = (
     "PWC_POSTGRES_BACKUP_",
@@ -385,6 +386,60 @@ def staging_title_values(
     }
 
 
+def production_title_values(
+    source: dict[str, str],
+    current_production: dict[str, str],
+    current_staging: dict[str, str],
+) -> dict[str, str]:
+    """Validate the distinct production-only server-funded title credential."""
+
+    required = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED",
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_TITLE_BILL_TO",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT",
+    }
+    missing = sorted(required - source.keys())
+    if missing:
+        raise ValueError("title environment is missing: " + ", ".join(missing))
+    values = {key: decoded_value(source[key]).strip() for key in required}
+    expected = {
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
+    }
+    for key, value in expected.items():
+        if values[key] != value:
+            raise ValueError(f"{key} must be {value}")
+    token = values["PWC_CHAT_TITLE_HF_TOKEN"]
+    if not token:
+        raise ValueError("PWC_CHAT_TITLE_HF_TOKEN must be non-empty")
+    forbidden_tokens = {
+        decoded_value(lines[key])
+        for lines, key in (
+            (source, "PWC_HF_TOKEN"),
+            (current_production, "PWC_HF_TOKEN"),
+            (current_staging, "PWC_CHAT_TITLE_HF_TOKEN"),
+        )
+        if key in lines and decoded_value(lines[key])
+    }
+    if token in forbidden_tokens:
+        raise ValueError(
+            "the production title token must be distinct from general and staging tokens"
+        )
+    return {
+        **values,
+        "PWC_CHAT_TITLE_MODEL": "openai/gpt-oss-120b",
+        "PWC_CHAT_TITLE_PROVIDER": "cerebras",
+        "PWC_CHAT_TITLE_MAX_TOKENS": "64",
+        "PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD": "25000000",
+        "PWC_CHAT_TITLE_WARNING_MICROUSD": "20000000",
+        "PWC_CHAT_TITLE_MAX_CALL_MICROUSD": "10000",
+    }
+
+
 def without_staging_openrouter(lines: dict[str, str]) -> dict[str, str]:
     """Remove shared-provider credentials and explicitly keep the preview off."""
     updated = dict(lines)
@@ -491,14 +546,18 @@ def staging_chat_spend_values() -> dict[str, str]:
 
 
 def staging_chat_alert_values(legacy: dict[str, str]) -> dict[str, str]:
+    return chat_alert_values(legacy, environment="staging")
+
+
+def chat_alert_values(source: dict[str, str], *, environment: str) -> dict[str, str]:
     keys = (
         "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL",
         "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL",
     )
-    missing = [key for key in keys if key not in legacy]
+    missing = [key for key in keys if key not in source]
     if missing:
-        raise ValueError("legacy environment is missing: " + ", ".join(missing))
-    values = {key: decoded_value(legacy[key]).strip() for key in keys}
+        raise ValueError("chat alert environment is missing: " + ", ".join(missing))
+    values = {key: decoded_value(source[key]).strip() for key in keys}
     for key, value in values.items():
         parsed = urlsplit(value)
         if (
@@ -509,8 +568,93 @@ def staging_chat_alert_values(legacy: dict[str, str]) -> dict[str, str]:
         ):
             raise ValueError(f"{key} must be a non-empty HTTPS webhook URL")
     if values[keys[0]] == values[keys[1]]:
-        raise ValueError("staging chat alert webhooks must be distinct")
+        raise ValueError(f"{environment} chat alert webhooks must be distinct")
     return values
+
+
+def production_chat_preparation_values(
+    source: dict[str, str],
+    current_production: dict[str, str],
+    current_staging: dict[str, str],
+) -> dict[str, str]:
+    """Build a validated, non-loaded production chat preparation bundle."""
+
+    required = {
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION",
+        "PWC_CHAT_SANDBOX_MODAL_WORKSPACE",
+        "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME",
+        "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES",
+    }
+    missing = sorted(required - source.keys())
+    if missing:
+        raise ValueError(
+            "production chat environment is missing: " + ", ".join(missing)
+        )
+    protected = {key: decoded_value(source[key]).strip() for key in required}
+    empty = sorted(key for key, value in protected.items() if not value)
+    if empty:
+        raise ValueError("production chat environment is empty: " + ", ".join(empty))
+    forbidden_openrouter = sorted(
+        key
+        for key in (
+            "PWC_CHAT_OPENROUTER_API_KEY",
+            "PWC_CHAT_OPENROUTER_CREDENTIAL_KEYRING",
+            "PWC_CHAT_OPENROUTER_USER_TRACKING_SECRET",
+        )
+        if key in source and decoded_value(source[key]).strip()
+    )
+    if forbidden_openrouter:
+        raise ValueError(
+            "production chat preparation prohibits: " + ", ".join(forbidden_openrouter)
+        )
+    workspace = protected["PWC_CHAT_SANDBOX_MODAL_WORKSPACE"]
+    expected_attestation = f"modal-workspace-{workspace}-250-production-starter-v1"
+    if protected["PWC_CHAT_SANDBOX_BUDGET_ATTESTATION"] != expected_attestation:
+        raise ValueError(
+            "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match the production policy"
+        )
+    return {
+        **protected,
+        **production_title_values(source, current_production, current_staging),
+        **chat_alert_values(source, environment="production"),
+        **staging_chat_capacity_values(),
+        "PWC_CHAT_ENABLED": "true",
+        "PWC_CHAT_PUBLIC_ADMISSION_ENABLED": "false",
+        "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "false",
+        "PWC_CHAT_BLANK_POOL_ENABLED": "false",
+        "PWC_CHAT_PERSISTENT_WORKER_ENABLED": "true",
+        "PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED": "false",
+        "PWC_CHAT_GATEWAY_URL": (
+            "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+        ),
+        "PWC_CHAT_HF_BILL_TO": "huggingface",
+        "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "false",
+        "PWC_CHAT_SANDBOX_WARNING_MICROUSD": "75000000",
+        "PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED": "true",
+        "PWC_CHAT_SANDBOX_PROVIDER_MODE": "starter_workspace",
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": expected_attestation,
+        "PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD": "100000000",
+        "PWC_CHAT_SANDBOX_ENVIRONMENT_CAP_MICROUSD": "0",
+        "PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD": "250000000",
+        "PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT": "pwc-chat-production",
+        "MODAL_ENVIRONMENT": "pwc-chat-production",
+        "PWC_CHAT_SANDBOX_WATCHDOG_SECONDS": "15",
+        "PWC_CHAT_SANDBOX_DRAIN_GRACE_SECONDS": "30",
+        "PWC_CHAT_SANDBOX_TERMINATION_GRACE_SECONDS": "30",
+        "PWC_CHAT_SANDBOX_RECONCILIATION_ALLOWANCE_MICROUSD": "1000000",
+        "PWC_CHAT_SANDBOX_RECONCILIATION_INTERVAL_SECONDS": "3600",
+        "PWC_CHAT_SANDBOX_RECONCILIATION_STALE_SECONDS": "7200",
+        "PWC_CHAT_OPERATIONAL_ALERTS_ENABLED": "true",
+        "PWC_CHAT_PROVIDER_ALERT_WINDOW_SECONDS": "300",
+        "PWC_CHAT_PROVIDER_ALERT_MIN_FAILURES": "5",
+        "PWC_CHAT_PROVIDER_ALERT_FAILURE_PERCENT": "50",
+        "PWC_CHAT_SANDBOX_RUNBOOK_URL": (
+            "https://github.com/huggingface/paperswithcode/blob/main/"
+            "docs/chat-sandbox-spend-runbook.md"
+        ),
+    }
 
 
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
@@ -542,10 +686,52 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
+    parser.add_argument("--production-chat-seal-only", action="store_true")
+    parser.add_argument("--confirm")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.production_chat_seal_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+        )
+        if any(other_modes):
+            parser.error(
+                "--production-chat-seal-only cannot be combined with other modes"
+            )
+        confirmation = "SEAL_PRODUCTION_CHAT_PREPARATION"
+        if args.confirm != confirmation:
+            parser.error(f"--confirm must be {confirmation}")
+        try:
+            values = production_chat_preparation_values(
+                legacy,
+                read_lines(CONFIG_ROOT / "production.env"),
+                read_lines(CONFIG_ROOT / "staging.env"),
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        write_env(
+            PRODUCTION_CHAT_SEALED_CONFIG,
+            assign({}, values),
+            "pwc-production",
+        )
+        print(
+            "sealed non-loaded production chat preparation; "
+            "the active production environment was not changed"
+        )
+        return 0
     if args.staging_web_search_only:
         other_modes = (
             args.production_codex_only,
@@ -559,6 +745,7 @@ def main() -> int:
             args.staging_chat_alerts_only,
             args.staging_chat_pool_enable_only,
             args.staging_chat_pool_disable_only,
+            args.production_chat_seal_only,
         )
         if any(other_modes):
             parser.error(

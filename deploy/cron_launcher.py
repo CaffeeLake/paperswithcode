@@ -31,17 +31,28 @@ def job(
     timeout: str,
     idempotency: str,
     health_job: str | None = None,
+    mutates_shared_data: bool = True,
 ) -> Job:
     return Job(
         command=command,
         timeout=timeout,
-        mutates_shared_data=True,
+        mutates_shared_data=mutates_shared_data,
         idempotency=idempotency,
         health_job=health_job or command[-1].rsplit(".", 1)[-1],
     )
 
 
 COMMANDS: dict[str, Job] = {
+    "monitor_chat_operational_alerts": job(
+        "-m",
+        "backend.scripts.monitor_chat_operational_alerts",
+        timeout="1m",
+        idempotency=(
+            "advance one content-free journal cursor and deliver each durable "
+            "operational event through at most one alert route"
+        ),
+        mutates_shared_data=False,
+    ),
     "update_hot_github_trending": job(
         "-m",
         "scripts.hourly.update_hot_github_trending",

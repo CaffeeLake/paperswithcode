@@ -244,6 +244,23 @@ def _configured_chat_enabled(environment: str) -> bool:
     return configured == "true"
 
 
+def require_production_chat_monitor(environment: str) -> None:
+    """Fail closed before building an enabled production chat release."""
+
+    if environment != "production" or not _configured_chat_enabled(environment):
+        return
+    enabled = subprocess.run(
+        ["systemctl", "is-enabled", "--quiet", "pwc-chat-alert-monitor.timer"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if enabled.returncode:
+        raise DeployError(
+            "enabled production chat requires the operational alert monitor timer"
+        )
+
+
 def frontend_feature_environment(
     environment: str, *, production_chat_enabled: bool = False
 ) -> dict[str, str]:
@@ -1342,6 +1359,7 @@ def deploy(args: argparse.Namespace) -> int:
         )
     with deployment_lock():
         _recover_interrupted_activation(args.environment)
+        require_production_chat_monitor(args.environment)
         sha = resolve_sha(args.source, args.environment)
         release = prepare_release(sha, args.environment)
         if args.legacy_bridge:
@@ -1579,6 +1597,13 @@ def _systemctl_state(unit: str) -> str:
     return result.stdout.strip() or "unknown"
 
 
+def _systemctl_enabled_state(unit: str) -> str:
+    result = subprocess.run(
+        ["systemctl", "is-enabled", unit], text=True, capture_output=True, check=False
+    )
+    return result.stdout.strip() or "unknown"
+
+
 def status(_: argparse.Namespace) -> int:
     result: dict[str, object] = {
         "runtime_lock_sha256": (
@@ -1603,6 +1628,12 @@ def status(_: argparse.Namespace) -> int:
             "nginx_active_slot": _nginx_uses_active_slot(environment),
             "slots": {},
         }
+        if environment == "production":
+            monitor_unit = "pwc-chat-alert-monitor.timer"
+            item["chat_alert_monitor"] = {
+                "enabled": _systemctl_enabled_state(monitor_unit),
+                "active": _systemctl_state(monitor_unit),
+            }
         for name, path in (
             ("current", pointers.current),
             ("previous", pointers.previous),

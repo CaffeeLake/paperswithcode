@@ -2,16 +2,19 @@ BEGIN;
 
 DO $$
 BEGIN
-    IF current_schema() <> 'staging' THEN
+    IF current_schema() NOT IN ('staging', 'public') THEN
         RAISE EXCEPTION
-            'add_chat_shares.sql must run with search_path staging,public';
+            'add_chat_shares.sql must run with search_path staging,public or public';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging')
-       OR NOT EXISTS (
-           SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging_owner'
-       ) THEN
+    IF current_schema() = 'staging'
+       AND (NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging')
+            OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pwc_staging_owner')) THEN
         RAISE EXCEPTION
             'pwc_staging and pwc_staging_owner roles must exist before this migration';
+    END IF;
+    IF current_schema() = 'public'
+       AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user') THEN
+        RAISE EXCEPTION 'production chat migration requires paperswithcode_user';
     END IF;
 END $$;
 
@@ -68,16 +71,18 @@ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE chat_shares OWNER TO pwc_staging_owner;
-GRANT SELECT, INSERT, UPDATE, DELETE ON chat_shares TO pwc_staging;
-GRANT SELECT, UPDATE (finish_reason) ON chat_messages TO pwc_staging;
-
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname = 'paperswithcode_user'
-    ) THEN
+    IF current_schema() = 'staging' THEN
+        ALTER TABLE chat_shares OWNER TO pwc_staging_owner;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON chat_shares TO pwc_staging;
+        GRANT SELECT, UPDATE (finish_reason) ON chat_messages TO pwc_staging;
         REVOKE ALL ON chat_shares FROM paperswithcode_user;
+    ELSE
+        ALTER TABLE chat_shares OWNER TO paperswithcode_user;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON chat_shares TO paperswithcode_user;
+        GRANT SELECT, UPDATE (finish_reason) ON chat_messages TO paperswithcode_user;
+        REVOKE ALL ON chat_shares FROM pwc_staging;
     END IF;
 END $$;
 

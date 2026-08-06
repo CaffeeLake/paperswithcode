@@ -294,6 +294,50 @@ The two environments may share the same `$1,000/month` account-level backstop,
 but neither may read or borrow the other's `$25` application budget; aggregate
 account monitoring must cover their combined title spend.
 
+Production additionally uses the allowlisted
+`monitor_chat_operational_alerts` job once per minute. It advances a protected
+journald cursor without persisting raw log lines and emits only signal names,
+counts, release identity, timestamps, and runbook metadata. Critical runtime
+patterns alert immediately. DeepSeek provider failures alert after at least
+five failures and a 50% failure rate in a five-minute window, then send one
+recovery event after a fully clean five-minute window. Primary failure routes
+the same content-free event to the fallback destination. The timer is safe to
+enable while production chat is disabled because the job reports `dormant`
+without reading chat state or sending alerts.
+
+The committed timer is installed with the deployment tools but is never enabled
+implicitly. Enabling it is a reviewed production preparation mutation:
+
+```bash
+sudo systemctl enable --now pwc-chat-alert-monitor.timer
+```
+
+An enabled production-chat deployment fails closed unless this timer is
+enabled. The timer invokes only the `pwc-cron` allowlist, and only this job's
+transient unit receives read access to the system journal.
+
+After a disabled production bridge release contains the qualification tooling,
+exercise all sandbox, title, provider-health, and runtime-alert transitions
+without creating provider compute. The sealed overlay must have been produced
+by the protected preparation helper and is loaded only into this transient
+process:
+
+```bash
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=pwc-production --gid=pwc-production \
+  --working-directory=/srv/paperswithcode/environments/production/current \
+  --property=EnvironmentFile=/etc/paperswithcode/production.env \
+  --property=EnvironmentFile=/etc/paperswithcode/production-chat-prepared.env \
+  /srv/paperswithcode/.venv/bin/python \
+  -m backend.scripts.qualify_chat_sandbox_spend \
+  --environment production --qualification-id <unique-id> \
+  --confirm QUALIFY_PRODUCTION_CHAT_SPEND
+```
+
+Record human acknowledgement from both independently routed destinations. The
+synthetic rows remain environment-qualified and contain no prompt, answer,
+credential, capability, or provider compute.
+
 Install the already-provisioned staging title credential from a protected local
 environment file through the narrow staging-only helper. It validates the exact
 owner, environment, billing target, model, provider, and `$25` circuit, rejects

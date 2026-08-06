@@ -1,0 +1,12 @@
+[Unit]
+Description=Monitor production Papers With Code chat operational alerts
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pwc-cron monitor_chat_operational_alerts
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

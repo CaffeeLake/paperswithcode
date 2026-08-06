@@ -8,6 +8,7 @@ import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -27,10 +28,12 @@ from deploy.cli import (
     _chat_descriptor_from_source,
     _configured_chat_enabled,
     parser_for,
+    require_production_chat_monitor,
 )
 from deploy.install_deploy_tools import (
     RUNTIME_CONTRACT_PATHS,
     bundle_runtime_contract,
+    cron_wrapper,
     deployment_wrapper,
 )
 from deploy.nginx_validate import (
@@ -48,6 +51,7 @@ from deploy.release import (
     build_manifest,
     profile_features,
     validate_manifest,
+    validate_rolling_compatibility,
 )
 from deploy.run_backend import RELEASE_ROOT, configure_release_environment
 from deploy.smoke_test import validate_local_bundle
@@ -116,6 +120,27 @@ def test_installed_wrapper_preserves_command_parser(
     assert exc.value.code == 0
     assert f"usage: {command}" in output
     assert expected in output
+
+
+def test_cron_wrapper_grants_journal_access_only_to_chat_monitor():
+    wrapper = cron_wrapper()
+
+    assert 'if [ "$1" = "monitor_chat_operational_alerts" ]' in wrapper
+    assert wrapper.count("SupplementaryGroups=systemd-journal") == 1
+    assert wrapper.count("cron_launcher.py") == 2
+
+
+def test_chat_alert_timer_uses_only_the_allowlisted_cron_interface():
+    systemd = Path(__file__).resolve().parents[2] / "deploy" / "systemd"
+    service = (systemd / "pwc-chat-alert-monitor.service").read_text()
+    timer = (systemd / "pwc-chat-alert-monitor.timer").read_text()
+
+    assert (
+        "ExecStart=/usr/local/sbin/pwc-cron monitor_chat_operational_alerts" in service
+    )
+    assert "backend.scripts" not in service
+    assert "OnUnitActiveSec=1m" in timer
+    assert "WantedBy=timers.target" in timer
 
 
 def test_production_sha_resolves_from_bare_main_ref(
@@ -683,8 +708,41 @@ def test_production_rejects_blank_pool_activation(tmp_path: Path):
     release = make_bundle(tmp_path, chat=False)
     settings = deployed_settings(tmp_path, release, "production")
     settings.chat_blank_pool_enabled = True
-    with pytest.raises(RuntimeError, match="active chat runtime descriptor"):
+    with pytest.raises(
+        RuntimeError, match="active or incomplete chat runtime descriptor"
+    ):
         validate_runtime(settings)
+
+
+def test_disabled_production_accepts_complete_dormant_worker_descriptor(
+    tmp_path: Path,
+):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+
+    assert settings.chat_enabled is False
+    assert settings.chat_public_admission_enabled is False
+    assert settings.chat_sandbox_admission_enabled is False
+    assert settings.chat_blank_pool_enabled is False
+    assert settings.chat_new_chat_modal_percentage == 0
+    assert settings.chat_default_backend == "modal_cli"
+    assert validate_runtime(settings) == profile_features("production")
+
+
+def test_disabled_bridge_releases_can_replace_legacy_production_safely():
+    legacy = {
+        "chat_runtime": {
+            "enabled": False,
+            "gateway_contract_version": 1,
+            "gateway_compatible_from": 1,
+            "database_contract_version": 1,
+        }
+    }
+    first_bridge = build_manifest("a" * 40, "production")
+    second_bridge = build_manifest("b" * 40, "production")
+
+    validate_rolling_compatibility(legacy, first_bridge)
+    validate_rolling_compatibility(first_bridge, second_bridge)
 
 
 class _ChatSchemaResult:
@@ -1064,6 +1122,7 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     )
     settings.chat_sandbox_runbook_url = "https://example.test/production-runbook"
     settings.chat_sandbox_operator_usernames = "nielsr"
+    settings.chat_operational_alerts_enabled = True
     settings.chat_gateway_url = (
         "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
     )
@@ -1074,6 +1133,33 @@ def test_fully_configured_production_chat_runtime_can_start(tmp_path: Path):
     settings.chat_title_credential_environment = "production"
 
     assert validate_runtime(settings) == features
+    settings.chat_operational_alerts_enabled = False
+    with pytest.raises(RuntimeError, match="operational alerts"):
+        validate_runtime(settings)
+
+
+def test_production_chat_activation_requires_enabled_operational_monitor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(deploy_cli, "CONFIG_ROOT", tmp_path)
+    (tmp_path / "production.env").write_text("PWC_CHAT_ENABLED=true\n")
+    observed = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(deploy_cli.subprocess, "run", fake_run)
+    with pytest.raises(deploy_cli.DeployError, match="operational alert"):
+        require_production_chat_monitor("production")
+    assert observed == [
+        ["systemctl", "is-enabled", "--quiet", "pwc-chat-alert-monitor.timer"]
+    ]
+
+    observed.clear()
+    (tmp_path / "production.env").write_text("PWC_CHAT_ENABLED=false\n")
+    require_production_chat_monitor("production")
+    assert observed == []
 
 
 def test_production_chat_activation_requires_protected_environment_switch(
@@ -1664,6 +1750,35 @@ def test_staging_nginx_requires_an_unbuffered_chat_stream_route():
         assert f"staging chat stream route misses: {directive}" in failures
 
 
+def test_nginx_requires_isolated_production_and_staging_gateways():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    failures = validate_nginx(
+        production.replace(
+            "server_name chat-gateway.paperswithcode.co;",
+            "server_name missing-production-gateway.paperswithcode.co;",
+        ),
+        staging,
+    )
+    assert "production chat gateway hostname is missing" in failures
+
+    failures = validate_nginx(
+        production,
+        staging.replace(
+            "location = /api/internal/chat-gateway/catalog {\n"
+            "        limit_except POST { deny all; }\n"
+            "        proxy_pass http://pwc_staging_backend;",
+            "location = /api/internal/chat-gateway/catalog {\n"
+            "        limit_except POST { deny all; }\n"
+            "        proxy_pass http://missing_staging_backend;",
+        ),
+    )
+    assert "staging chat gateway catalog misses pwc_staging_backend" in failures
+
+
 def test_nginx_requires_backend_routes_for_seo_surfaces():
     repository = Path(__file__).resolve().parents[2]
     production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
@@ -1731,13 +1846,13 @@ def test_nginx_share_capability_bypasses_only_narrow_public_get_surfaces():
     assert "auth_request /_staging_access_check;" in catch_all
 
 
-def test_chat_share_migration_is_staging_owned_and_idempotent():
+def test_chat_share_migration_is_environment_owned_and_idempotent():
     repository = Path(__file__).resolve().parents[2]
     migration = (
         repository / "backend/database/migrations/add_chat_shares.sql"
     ).read_text()
 
-    assert "current_schema() <> 'staging'" in migration
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "CREATE TABLE IF NOT EXISTS chat_shares" in migration
     assert "snapshot_version SMALLINT NOT NULL DEFAULT 1" in migration
     assert "messages JSONB NOT NULL" in migration
@@ -1746,6 +1861,7 @@ def test_chat_share_migration_is_staging_owned_and_idempotent():
     assert migration.count("ON DELETE CASCADE") >= 1
     assert "ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(64)" in migration
     assert "ALTER TABLE chat_shares OWNER TO pwc_staging_owner" in migration
+    assert "ALTER TABLE chat_shares OWNER TO paperswithcode_user" in migration
     assert "DROP TABLE IF EXISTS chat_share_messages" in migration
     assert (
         "EXECUTE\n            "
@@ -1753,6 +1869,7 @@ def test_chat_share_migration_is_staging_owned_and_idempotent():
     )
     assert "AND EXISTS (SELECT FROM chat_share_messages LIMIT 1)" not in migration
     assert "TO pwc_staging;" in migration
+    assert "TO paperswithcode_user;" in migration
     assert "FROM paperswithcode_user;" in migration
 
 
@@ -1770,16 +1887,53 @@ def test_staging_role_defaults_to_read_only_outside_application_pool():
     assert 'read_only_default != "on"' in audit
 
 
-def test_chat_edit_preparation_migration_is_staging_only_and_typed():
+def test_chat_edit_preparation_migration_is_environment_scoped_and_typed():
     repository = Path(__file__).resolve().parents[2]
     migration = (
         repository / "backend/database/migrations/add_chat_edit_preparation_state.sql"
     ).read_text()
 
-    assert "current_schema() <> 'staging'" in migration
+    assert "current_schema() NOT IN ('staging', 'public')" in migration
     assert "prepared_fork_sdk_session_id UUID" in migration
     assert "prepared_fork_sdk_project_key TEXT" in migration
     assert "chat_messages_prepared_fork_pair_check" in migration
+
+
+def test_common_chat_migrations_support_isolated_production_schema():
+    repository = Path(__file__).resolve().parents[2]
+    migrations = (
+        "add_chat_sessions.sql",
+        "add_chat_sandbox_runtime.sql",
+        "add_chat_turn_latency.sql",
+        "add_chat_sandbox_pool.sql",
+        "add_chat_active_cost.sql",
+        "add_chat_user_billing.sql",
+        "add_chat_qualification_metadata.sql",
+        "add_chat_sandbox_spend_cap.sql",
+        "add_chat_shares.sql",
+        "add_chat_edit_preparation_state.sql",
+        "add_chat_paper_mentions.sql",
+        "add_chat_title_budget.sql",
+    )
+
+    for name in migrations:
+        migration = (repository / "backend/database/migrations" / name).read_text()
+        assert "current_schema() NOT IN ('staging', 'public')" in migration
+
+    sessions = (
+        repository / "backend/database/migrations/add_chat_sessions.sql"
+    ).read_text()
+    assert "ALTER TABLE chat_sessions OWNER TO pwc_staging_owner" in sessions
+    assert "ALTER TABLE chat_sessions OWNER TO paperswithcode_user" in sessions
+    assert "FROM paperswithcode_user" in sessions
+    assert "FROM pwc_staging" in sessions
+
+    billing = (
+        repository / "backend/database/migrations/add_chat_user_billing.sql"
+    ).read_text()
+    assert "provider_mode VARCHAR(32)" in billing
+    assert "provider_credential_revision UUID" in billing
+    assert "provider_error_code VARCHAR(64)" in billing
 
 
 def test_chat_archiving_migration_is_additive_and_idempotent():
@@ -2171,6 +2325,85 @@ def test_staging_title_values_are_exact_and_isolated():
         )
 
 
+def _production_chat_preparation_source() -> dict[str, str]:
+    values = {
+        "MODAL_TOKEN_ID": "modal-id",
+        "MODAL_TOKEN_SECRET": "modal-secret",
+        "PWC_CHAT_SANDBOX_MODAL_WORKSPACE": "nielsrogge",
+        "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME": "nielsrogge",
+        "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES": "root,nielsr",
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION": (
+            "modal-workspace-nielsrogge-250-production-starter-v1"
+        ),
+        "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL": (
+            "https://alerts-primary.test/production"
+        ),
+        "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL": (
+            "https://alerts-fallback.test/production"
+        ),
+        "PWC_CHAT_TITLE_GENERATION_ENABLED": "true",
+        "PWC_CHAT_TITLE_HF_TOKEN": "production-title-secret",
+        "PWC_CHAT_TITLE_BILL_TO": "huggingface",
+        "PWC_CHAT_TITLE_CREDENTIAL_OWNER": "nielsr",
+        "PWC_CHAT_TITLE_CREDENTIAL_ENVIRONMENT": "production",
+    }
+    return {key: f"{key}={value}" for key, value in values.items()}
+
+
+def test_production_chat_preparation_is_sealed_and_fail_closed():
+    values = configure_host_env.production_chat_preparation_values(
+        _production_chat_preparation_source(),
+        {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+    )
+
+    assert values["PWC_CHAT_ENABLED"] == "true"
+    assert values["PWC_CHAT_PUBLIC_ADMISSION_ENABLED"] == "false"
+    assert values["PWC_CHAT_SANDBOX_ADMISSION_ENABLED"] == "false"
+    assert values["PWC_CHAT_BLANK_POOL_ENABLED"] == "false"
+    assert values["PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED"] == "false"
+    assert values["PWC_CHAT_OPERATIONAL_ALERTS_ENABLED"] == "true"
+    assert values["PWC_CHAT_PROVIDER_ALERT_WINDOW_SECONDS"] == "300"
+    assert values["PWC_CHAT_PROVIDER_ALERT_MIN_FAILURES"] == "5"
+    assert values["PWC_CHAT_PROVIDER_ALERT_FAILURE_PERCENT"] == "50"
+    assert values["PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT"] == "pwc-chat-production"
+    assert values["PWC_CHAT_SANDBOX_APPLICATION_CAP_MICROUSD"] == "100000000"
+    assert values["PWC_CHAT_SANDBOX_WORKSPACE_CAP_MICROUSD"] == "250000000"
+    assert values["PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD"] == "25000000"
+    assert values["PWC_CHAT_TITLE_HF_TOKEN"] == "production-title-secret"
+    assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
+    assert values["PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP"] == "3"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("PWC_CHAT_TITLE_HF_TOKEN", "general-secret", "distinct"),
+        ("PWC_CHAT_OPENROUTER_API_KEY", "forbidden", "prohibits"),
+        (
+            "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL",
+            "https://alerts-primary.test/production",
+            "distinct",
+        ),
+        (
+            "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION",
+            "unattested",
+            "does not match",
+        ),
+    ],
+)
+def test_production_chat_preparation_rejects_unsafe_inputs(key, value, match):
+    source = _production_chat_preparation_source()
+    source[key] = f"{key}={value}"
+
+    with pytest.raises(ValueError, match=match):
+        configure_host_env.production_chat_preparation_values(
+            source,
+            {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+            {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+        )
+
+
 def test_staging_langfuse_credentials_are_bounded_and_preserved():
     legacy = {
         "LANGFUSE_BASE_URL": "LANGFUSE_BASE_URL=https://cloud.langfuse.com",
@@ -2274,10 +2507,10 @@ def test_staging_chat_latency_rollout_settings_are_preserved():
 
 def test_cron_jobs_declare_bounded_execution_contracts():
     assert cron_launcher.COMMANDS
-    for spec in cron_launcher.COMMANDS.values():
+    for name, spec in cron_launcher.COMMANDS.items():
         assert spec.command
-        assert spec.timeout in {"30m", "45m", "50m", "2h", "6h"}
-        assert spec.mutates_shared_data is True
+        assert spec.timeout in {"1m", "30m", "45m", "50m", "2h", "6h"}
+        assert spec.mutates_shared_data is (name != "monitor_chat_operational_alerts")
         assert spec.idempotency
         assert spec.health_job
 

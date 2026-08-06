@@ -1,7 +1,9 @@
+BEGIN;
+
 DO $$
 BEGIN
-    IF current_schema() <> 'staging' THEN
-        RAISE EXCEPTION 'add_chat_sandbox_spend_cap.sql must run with search_path staging,public';
+    IF current_schema() NOT IN ('staging', 'public') THEN
+        RAISE EXCEPTION 'add_chat_sandbox_spend_cap.sql must run with search_path staging,public or public';
     END IF;
 END $$;
 
@@ -53,8 +55,21 @@ ALTER TABLE chat_sandbox_circuit_events
  ADD COLUMN IF NOT EXISTS fallback_delivered_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_chat_sandbox_circuit_events_recent ON chat_sandbox_circuit_events(budget_state_id,created_at);
 
-ALTER TABLE chat_sandbox_compute_intervals OWNER TO pwc_staging_owner;
-ALTER TABLE chat_sandbox_budget_states OWNER TO pwc_staging_owner;
-ALTER TABLE chat_sandbox_circuit_events OWNER TO pwc_staging_owner;
-GRANT SELECT,INSERT,UPDATE ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events TO pwc_staging;
-REVOKE ALL ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events FROM paperswithcode_user;
+DO $$
+BEGIN
+    IF current_schema() = 'staging' THEN
+        ALTER TABLE chat_sandbox_compute_intervals OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_sandbox_budget_states OWNER TO pwc_staging_owner;
+        ALTER TABLE chat_sandbox_circuit_events OWNER TO pwc_staging_owner;
+        GRANT SELECT,INSERT,UPDATE ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events TO pwc_staging;
+        REVOKE ALL ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events FROM paperswithcode_user;
+    ELSE
+        ALTER TABLE chat_sandbox_compute_intervals OWNER TO paperswithcode_user;
+        ALTER TABLE chat_sandbox_budget_states OWNER TO paperswithcode_user;
+        ALTER TABLE chat_sandbox_circuit_events OWNER TO paperswithcode_user;
+        GRANT SELECT,INSERT,UPDATE ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events TO paperswithcode_user;
+        REVOKE ALL ON chat_sandbox_compute_intervals,chat_sandbox_budget_states,chat_sandbox_circuit_events FROM pwc_staging;
+    END IF;
+END $$;
+
+COMMIT;

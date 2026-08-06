@@ -48,6 +48,26 @@ def deployment_wrapper(command: str) -> str:
     )
 
 
+def cron_wrapper() -> str:
+    common = (
+        "systemd-run --quiet --wait --pipe --collect "
+        "--uid=pwc-cron --gid=pwc-cron "
+        "--working-directory=/srv/paperswithcode/environments/production/current "
+        "--property=EnvironmentFile=/etc/paperswithcode/production.env "
+        "--property=EnvironmentFile=/etc/paperswithcode/production-cron.env "
+    )
+    launcher = (
+        '/usr/bin/python3 /usr/local/lib/paperswithcode-deploy/cron_launcher.py "$@"\n'
+    )
+    return (
+        "#!/bin/sh\n"
+        'if [ "$1" = "monitor_chat_operational_alerts" ]; then\n'
+        f"  exec {common}--property=SupplementaryGroups=systemd-journal {launcher}"
+        "fi\n"
+        f"exec {common}{launcher}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="install-deploy-tools")
     parser.add_argument("source", help="exact commit or ref to install")
@@ -111,16 +131,7 @@ def main() -> int:
             )
             wrapper.chmod(0o755)
         wrapper = BIN_ROOT / "pwc-cron"
-        wrapper.write_text(
-            "#!/bin/sh\n"
-            "exec systemd-run --quiet --wait --pipe --collect "
-            "--uid=pwc-cron --gid=pwc-cron "
-            "--working-directory=/srv/paperswithcode/environments/production/current "
-            "--property=EnvironmentFile=/etc/paperswithcode/production.env "
-            "--property=EnvironmentFile=/etc/paperswithcode/production-cron.env "
-            "/usr/bin/python3 "
-            '/usr/local/lib/paperswithcode-deploy/cron_launcher.py "$@"\n'
-        )
+        wrapper.write_text(cron_wrapper())
         wrapper.chmod(0o755)
         for unit in (
             "paperswithcode-staging-backend@.service",
@@ -129,6 +140,8 @@ def main() -> int:
             "paperswithcode-production-backend@.socket",
             "pwc-curation-thumbnails.service",
             "pwc-curation-thumbnails.timer",
+            "pwc-chat-alert-monitor.service",
+            "pwc-chat-alert-monitor.timer",
         ):
             shutil.copy2(INSTALL_ROOT / "systemd" / unit, SYSTEMD_ROOT / unit)
         subprocess.run(["systemctl", "daemon-reload"], check=True)

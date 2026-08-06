@@ -25,6 +25,23 @@ ENVIRONMENTS = ("production", "staging")
 FEATURE_CONTRACT_VERSION = 4
 
 
+def legacy_production_chat_runtime() -> dict[str, object]:
+    """Descriptor accepted only for rollback from pre-bridge production releases."""
+
+    return {
+        "enabled": False,
+        "new_chat_modal_percentage": 0,
+        "default_backend": "local_mcp",
+        "modal_image_version": "",
+        "pwc_cli_version": "",
+        "worker_contract_version": "",
+        "gateway_contract_version": 1,
+        "gateway_compatible_from": 1,
+        "database_contract_version": DATABASE_CONTRACT_VERSION,
+        "system_prompt_sha256": "",
+    }
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -85,17 +102,19 @@ def chat_runtime(
     if descriptor is not None:
         return descriptor
     if environment == "production":
+        from backend.chat_sandbox_worker.prompt import sha256
+
         return {
             "enabled": False,
             "new_chat_modal_percentage": 0,
-            "default_backend": "local_mcp",
-            "modal_image_version": "",
-            "pwc_cli_version": "",
-            "worker_contract_version": "",
-            "gateway_contract_version": 1,
-            "gateway_compatible_from": 1,
+            "default_backend": DEFAULT_BACKEND,
+            "modal_image_version": MODAL_IMAGE_ID,
+            "pwc_cli_version": PWC_CLI_VERSION,
+            "worker_contract_version": WORKER_CONTRACT_VERSION,
+            "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
+            "gateway_compatible_from": GATEWAY_COMPATIBLE_FROM,
             "database_contract_version": DATABASE_CONTRACT_VERSION,
-            "system_prompt_sha256": "",
+            "system_prompt_sha256": sha256(),
         }
     from backend.chat_sandbox_worker.prompt import sha256
 
@@ -222,13 +241,19 @@ def validate_manifest(release_dir: Path, environment: str | None = None) -> dict
         raise ValueError("release chat_runtime has an unexpected schema")
     if not expected["chat"]:
         expected_production = chat_runtime("production")
+        expected_legacy = legacy_production_chat_runtime()
         if set(runtime) == legacy_runtime_keys:
             expected_production = {
                 key: value
                 for key, value in expected_production.items()
                 if key in legacy_runtime_keys
             }
-        if runtime != expected_production:
+            expected_legacy = {
+                key: value
+                for key, value in expected_legacy.items()
+                if key in legacy_runtime_keys
+            }
+        if runtime not in (expected_production, expected_legacy):
             raise ValueError("disabled release contains an active chat runtime")
     else:
         percentage = runtime["new_chat_modal_percentage"]
@@ -291,6 +316,12 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
 
     active_emits, active_accepts, active_database = rolling_contract(active)
     candidate_emits, candidate_accepts, candidate_database = rolling_contract(candidate)
+    active_enabled = bool((active.get("chat_runtime") or {}).get("enabled"))
+    candidate_enabled = bool((candidate.get("chat_runtime") or {}).get("enabled"))
+    if not active_enabled and not candidate_enabled:
+        if active_database != candidate_database:
+            raise ValueError("release database contracts are incompatible")
+        return
     if not candidate_accepts <= active_emits <= candidate_emits:
         raise ValueError("candidate cannot accept the active worker contract")
     if not active_accepts <= candidate_emits <= active_emits:
