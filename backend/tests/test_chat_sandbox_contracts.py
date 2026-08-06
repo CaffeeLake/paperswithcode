@@ -1066,11 +1066,11 @@ def test_supervisor_launch_read_does_not_consume_worker_frame():
         os.close(write_fd)
 
 
-def test_gateway_accepts_claude_output_token_limit_and_rejects_larger():
-    assert MAX_PROVIDER_OUTPUT_TOKENS == 32_000
+def test_gateway_accepts_configured_output_token_limit_and_rejects_larger():
+    assert MAX_PROVIDER_OUTPUT_TOKENS == 8_000
     assert MAX_PROVIDER_TURN_TOKENS >= 8 * MAX_PROVIDER_OUTPUT_TOKENS
-    assert _output_tokens_allowed(32_000)
-    assert not _output_tokens_allowed(32_001)
+    assert _output_tokens_allowed(8_000)
+    assert not _output_tokens_allowed(8_001)
 
 
 def test_gateway_catalog_returns_not_found_for_unknown_task(monkeypatch):
@@ -1741,8 +1741,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-2PmFC3T9K9SmijzKPo1PZD"
-    assert WORKER_CONTRACT_VERSION == "38"
+    assert MODAL_IMAGE_ID == ""
+    assert WORKER_CONTRACT_VERSION == "39"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2018,6 +2018,7 @@ def test_persistent_sandbox_uses_daemon_probe_and_request_limit_pairs(monkeypatc
     assert captured["options"]["inbound_cidr_allowlist"] is None
     assert captured["options"]["encrypted_ports"] == []
     assert captured["options"]["unencrypted_ports"] == []
+    assert captured["options"]["env"]["PWC_CHAT_MAX_OUTPUT_TOKENS"] == "8000"
 
 
 def test_supervisor_tolerates_unsupported_proc_remount(monkeypatch):
@@ -2045,6 +2046,7 @@ def test_supervisor_tolerates_unsupported_proc_remount(monkeypatch):
 
 def test_supervisor_child_environment_preserves_packaged_worker_path(monkeypatch):
     monkeypatch.setenv("PWC_CHAT_MAX_TURNS", "8")
+    monkeypatch.setenv("PWC_CHAT_MAX_OUTPUT_TOKENS", "8000")
     monkeypatch.setenv("PYTHONPATH", "/untrusted")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-pass")
 
@@ -2053,7 +2055,9 @@ def test_supervisor_child_environment_preserves_packaged_worker_path(monkeypatch
     assert environment["PYTHONPATH"] == "/opt/pwc"
     assert environment["PWC_CHAT_MAX_TURNS"] == "8"
     assert "ANTHROPIC_API_KEY" not in environment
+
     agent_environment = supervisor._agent_environment()
+    assert agent_environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8000"
     assert agent_environment["HTTPS_PROXY"] == "http://127.0.0.1:8766"
     assert agent_environment["NO_PROXY"] == "127.0.0.1,localhost"
     assert agent_environment["NODE_EXTRA_CA_CERTS"] == "/tmp/pwc-webfetch-ca.pem"

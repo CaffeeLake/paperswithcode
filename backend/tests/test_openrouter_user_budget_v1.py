@@ -76,10 +76,10 @@ def test_safe_maximum_is_integer_conservative_and_modality_closed():
     maximum = safe_maximum_microusd(
         settings,
         settings.chat_terra_route,
-        RequestBounds(512 * 1024, 32_000, payload),
+        RequestBounds(512 * 1024, 8_000, payload),
         now=datetime(2026, 8, 2, tzinfo=UTC),
     )
-    assert maximum == 512 * 1024 * 2 + 32_000 * 9 + 10_000
+    assert maximum == 512 * 1024 * 2 + 8_000 * 9 + 10_000
     assert maximum > 1_000_000
 
     with pytest.raises(OpenRouterPricingUnavailable):
@@ -88,7 +88,7 @@ def test_safe_maximum_is_integer_conservative_and_modality_closed():
             settings.chat_terra_route,
             RequestBounds(
                 100,
-                32_000,
+                8_000,
                 {"messages": [{"content": [{"type": "image_url"}]}]},
             ),
             now=datetime(2026, 8, 2, tzinfo=UTC),
@@ -113,16 +113,16 @@ def test_safe_maximum_accepts_nested_tool_schema_type_property():
     maximum = safe_maximum_microusd(
         settings,
         settings.chat_luna_route,
-        RequestBounds(100, 32_000, payload),
+        RequestBounds(100, 8_000, payload),
         now=datetime(2026, 8, 2, tzinfo=UTC),
     )
 
-    assert maximum == 100 * 2 + 32_000 * 9 + 10_000
+    assert maximum == 100 * 2 + 8_000 * 9 + 10_000
 
 
 def test_safe_maximum_fails_closed_for_stale_or_unknown_pricing():
     settings = _settings(chat_openrouter_pricing_verified_at="2026-01-01")
-    bounds = RequestBounds(100, 32_000, {"messages": []})
+    bounds = RequestBounds(100, 8_000, {"messages": []})
     with pytest.raises(OpenRouterPricingUnavailable):
         safe_maximum_microusd(
             settings,

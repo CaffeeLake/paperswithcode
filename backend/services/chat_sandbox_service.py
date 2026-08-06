@@ -30,6 +30,7 @@ from backend.chat_sandbox_worker.contract import (
     CHAT_SANDBOX_REGION,
     CONTROL_PORT,
     MODAL_APP_NAME,
+    PROVIDER_OUTPUT_TOKEN_LIMIT,
 )
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
@@ -174,6 +175,7 @@ def sandbox_environment(settings: Settings) -> dict[str, str]:
         "PWC_CHAT_BASH_TIMEOUT_SECONDS": str(settings.chat_bash_timeout_seconds),
         "PWC_CHAT_AGENT_TIMEOUT_SECONDS": str(settings.chat_agent_timeout_seconds),
         "PWC_CHAT_SANDBOX_PIDS_MAX": str(settings.chat_sandbox_pids_max),
+        "PWC_CHAT_MAX_OUTPUT_TOKENS": str(PROVIDER_OUTPUT_TOKEN_LIMIT),
     }
 
 

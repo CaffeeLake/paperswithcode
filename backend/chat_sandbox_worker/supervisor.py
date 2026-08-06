@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
+
 SUPERVISOR_PREFIX = b"@@PWC_SUPERVISOR_V1@@"
 PR_SET_DUMPABLE = 4
 
@@ -55,6 +57,9 @@ def _safe_environment(home: str) -> dict[str, str]:
 
 def _agent_environment() -> dict[str, str]:
     environment = _safe_environment("/home/pwc-chat")
+    environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = environment.get(
+        "PWC_CHAT_MAX_OUTPUT_TOKENS", str(PROVIDER_OUTPUT_TOKEN_LIMIT)
+    )
     environment["HTTPS_PROXY"] = "http://127.0.0.1:8766"
     environment["NO_PROXY"] = "127.0.0.1,localhost"
     environment["NODE_EXTRA_CA_CERTS"] = "/tmp/pwc-webfetch-ca.pem"

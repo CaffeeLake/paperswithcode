@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
+from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.database.connection import db_manager, get_database_session
 from backend.models.database import ChatSession, ChatTurnCapability
 from backend.services.chat_capability_service import (
@@ -59,7 +60,7 @@ from backend.utils.exceptions import PaperNotFoundError
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger(__name__)
-MAX_PROVIDER_OUTPUT_TOKENS = 32_000
+MAX_PROVIDER_OUTPUT_TOKENS = PROVIDER_OUTPUT_TOKEN_LIMIT
 MAX_PROVIDER_TURN_TOKENS = 512_000
 
 
