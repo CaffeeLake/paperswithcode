@@ -13,9 +13,11 @@ from websockets.sync.connection import Connection
 from websockets.sync.server import Server, serve
 
 from backend.chat_sandbox_worker.contract import CONTROL_PORT
+from backend.chat_sandbox_worker.protocol import MAX_WIRE_FRAME_BYTES
 
 CONTROL_SOCKET = "/run/pwc-chat/control.sock"
-MAX_MESSAGE_BYTES = 1024 * 1024
+# One backend WebSocket message carries the launch line and run frame together.
+MAX_MESSAGE_BYTES = MAX_WIRE_FRAME_BYTES + 64 * 1024
 VERIFIED_METADATA_HEADER = "X-Verified-User-Data"
 
 

@@ -6,7 +6,12 @@ import json
 from typing import Any
 
 FRAME_PREFIX = "@@PWC_CHAT_V1@@"
-MAX_FRAME_BYTES = 512 * 1024
+# Inline-paper turns can contain three independently bounded paper contexts.
+# Keep the transport ceiling above the server-built prompt ceiling while still
+# rejecting unexpectedly large worker frames before parsing them.
+MAX_RUN_PROMPT_BYTES = 2 * 1024 * 1024
+MAX_FRAME_BYTES = MAX_RUN_PROMPT_BYTES + 256 * 1024
+MAX_WIRE_FRAME_BYTES = MAX_FRAME_BYTES + len(FRAME_PREFIX.encode()) + 1
 
 
 class ProtocolError(RuntimeError):

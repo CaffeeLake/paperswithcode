@@ -13,7 +13,11 @@ import sys
 from pathlib import Path
 
 from backend.chat_sandbox_worker.control_websocket import start_server
-from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
+from backend.chat_sandbox_worker.protocol import (
+    MAX_WIRE_FRAME_BYTES,
+    decode_frame,
+    encode_frame,
+)
 from backend.chat_sandbox_worker.supervisor import (
     SUPERVISOR_PREFIX,
     _agent_environment,
@@ -210,7 +214,7 @@ def _serve_turn(
                 )
             )
         return assigned_session_id or ""
-    run_line = _readline(connection, 512 * 1024)
+    run_line = _readline(connection, MAX_WIRE_FRAME_BYTES)
     run = decode_frame(run_line)
     session_id = _validate_assignment(
         launch,

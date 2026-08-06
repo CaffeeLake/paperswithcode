@@ -51,6 +51,7 @@ from backend.chat_sandbox_worker.contract import (
 )
 from backend.chat_sandbox_worker.prompt import render, sha256
 from backend.chat_sandbox_worker.protocol import (
+    MAX_RUN_PROMPT_BYTES,
     ProtocolError,
     WorkerEventValidator,
     decode_frame,
@@ -1626,6 +1627,24 @@ def test_worker_protocol_accepts_complete_turn_after_one_terminal():
     validator.accept({"type": "worker_done", "status": "complete"})
 
 
+def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
+    prompt = "é" * (MAX_RUN_PROMPT_BYTES // 2)
+    frame = {
+        "v": 1,
+        "type": "run_turn",
+        "request_id": "request-1",
+        "prompt": prompt,
+        "model": "model-a",
+    }
+
+    assert agent._validate_run_frame(frame) == (prompt, "request-1", "model-a")
+    assert decode_frame(encode_frame(frame))["prompt"] == prompt
+
+    frame["prompt"] += "é"
+    with pytest.raises(ValueError, match="Invalid prompt"):
+        agent._validate_run_frame(frame)
+
+
 def test_worker_protocol_rejects_invalid_result_and_terminal_sequences():
     validator = WorkerEventValidator()
     with pytest.raises(ProtocolError, match="Uncorrelated"):
@@ -1699,8 +1718,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-q4XhjTJTqWdQUfeeQMaPiG"
-    assert WORKER_CONTRACT_VERSION == "35"
+    assert MODAL_IMAGE_ID == "im-OlX4N2XnTjBJt0X2eGIQT5"
+    assert WORKER_CONTRACT_VERSION == "36"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

@@ -24,7 +24,11 @@ from claude_agent_sdk import query as sdk_query
 
 from backend.chat_sandbox_worker.config import WorkerSettings
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
-from backend.chat_sandbox_worker.protocol import decode_frame, encode_frame
+from backend.chat_sandbox_worker.protocol import (
+    MAX_RUN_PROMPT_BYTES,
+    decode_frame,
+    encode_frame,
+)
 from backend.chat_sandbox_worker.remote_store import RemoteSessionStore
 from backend.chat_sandbox_worker.sdk_adapter import SDKEventAdapter
 from backend.chat_sandbox_worker.tool_policy import (
@@ -216,7 +220,11 @@ class WorkerToolHooks:
 
 def _validate_run_frame(frame: dict[str, Any]) -> tuple[str, str, str]:
     prompt = frame.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8_000:
+    if (
+        not isinstance(prompt, str)
+        or not prompt.strip()
+        or len(prompt.encode()) > MAX_RUN_PROMPT_BYTES
+    ):
         raise ValueError("Invalid prompt")
     request_id = str(frame.get("request_id") or "")
     model = str(frame.get("model") or "")

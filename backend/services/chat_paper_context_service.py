@@ -540,10 +540,10 @@ class ChatPaperContextService:
             f'content_sha256="{paper.content_sha256}"'
         )
         if paper.content_available:
-            body = f"<paper_info>\n{paper.paper_info}\n</paper_info>\n<paper_markdown_prefix>\n{paper.markdown}\n</paper_markdown_prefix>"
+            body = f"<paper_info>\n{_safe(paper.paper_info)}\n</paper_info>\n<paper_markdown_prefix>\n{paper.markdown}\n</paper_markdown_prefix>"
         else:
             body = (
-                f"<paper_info>\n{paper.paper_info}\n</paper_info>\n"
+                f"<paper_info>\n{_safe(paper.paper_info)}\n</paper_info>\n"
                 '<paper_markdown_prefix content_available="false"></paper_markdown_prefix>\n'
                 "<paper_content_notice>No stored paper body was available; use the metadata and abstract above.</paper_content_notice>"
             )
