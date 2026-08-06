@@ -1,4 +1,4 @@
-name: Sync chat prompt context
+name: Sync chat CLI skill
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: sync-chat-prompt-context
+  group: sync-chat-cli-skill
   cancel-in-progress: false
 
 permissions:
@@ -19,14 +19,12 @@ jobs:
       UPSTREAM_REPOSITORY: huggingface/pwc-cli
       UPSTREAM_PATH: standalone_cli/SKILL.md
       DESTINATION: backend/chat_sandbox_worker/PWC_CLI_SKILL.md
-      TAXONOMY_URL: https://paperswithcode.co/api/v1/areas/with-tasks/
-      TAXONOMY_DESTINATION: backend/chat_sandbox_worker/TASK_CATALOG.md
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Fetch and validate prompt context
+      - name: Fetch and validate skill
         id: sync
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,33 +51,15 @@ jobs:
           grep -qx 'name: pwc-cli' "$skill_temporary"
           grep -q 'The standalone parser contains no authentication' "$skill_temporary"
 
-          taxonomy_json="${RUNNER_TEMP}/pwc-task-taxonomy.json"
-          taxonomy_temporary="${RUNNER_TEMP}/TASK_CATALOG.md"
-          curl \
-            --fail \
-            --location \
-            --silent \
-            --show-error \
-            --max-filesize 4194304 \
-            "$TAXONOMY_URL" \
-            --output "$taxonomy_json"
-          python backend/chat_sandbox_worker/render_task_catalog.py \
-            < "$taxonomy_json" \
-            > "$taxonomy_temporary"
-          grep -qx '### Audio' "$taxonomy_temporary"
-          grep -qx '### Vision' "$taxonomy_temporary"
-
-          if cmp -s "$skill_temporary" "$DESTINATION" \
-            && cmp -s "$taxonomy_temporary" "$TAXONOMY_DESTINATION"; then
+          if cmp -s "$skill_temporary" "$DESTINATION"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           install -m 0644 "$skill_temporary" "$DESTINATION"
-          install -m 0644 "$taxonomy_temporary" "$TAXONOMY_DESTINATION"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
 
-      - name: Commit prompt context sync
+      - name: Commit skill sync
         if: steps.sync.outputs.changed == 'true'
         env:
           UPSTREAM_COMMIT: ${{ steps.sync.outputs.upstream_commit }}
@@ -88,9 +68,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$DESTINATION" "$TAXONOMY_DESTINATION"
+          git add "$DESTINATION"
           git commit \
-            -m "Sync chat prompt context" \
+            -m "Sync chat CLI skill" \
             -m "Upstream skill: ${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}"
           git pull --rebase origin main
           git push origin HEAD:main
