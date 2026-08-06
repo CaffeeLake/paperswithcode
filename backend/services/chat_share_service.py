@@ -75,7 +75,12 @@ def _public_projection(rows: list[ChatMessageRecord]) -> list[PublicChatMessage]
             continue
 
         public_messages.append(
-            PublicChatMessage(id=uuid.uuid4(), role="user", content=row.content)
+            PublicChatMessage(
+                id=uuid.uuid4(),
+                role="user",
+                content=row.content,
+                paper_mentions=getattr(row, "paper_mentions", None) or [],
+            )
         )
         if row.status not in {"error", "interrupted"}:
             continue

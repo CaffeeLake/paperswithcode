@@ -272,6 +272,28 @@ def _persist_preparation_failure(
             )
 
 
+def _persist_trace_id(
+    owner: ChatOwner,
+    settings: Settings,
+    admission: TurnAdmission,
+    trace_id: str,
+) -> None:
+    if not trace_id:
+        return
+    try:
+        with db_manager.session_local() as db:
+            ChatSessionService(db, settings).record_langfuse_trace_id(
+                owner, admission, trace_id
+            )
+            db.commit()
+    except Exception:
+        logger.warning(
+            "chat Langfuse trace correlation persistence failed session_id=%s",
+            admission.session_id,
+            exc_info=True,
+        )
+
+
 async def _prepare_replacement(
     owner: ChatOwner,
     settings: Settings,
@@ -504,11 +526,13 @@ class ChatStreamOrchestrator:
         title_token: uuid.UUID | None,
         is_disconnected: Callable[[], Awaitable[bool]],
         release_admission: Callable[[], Awaitable[None]],
+        display_message: str | None = None,
     ) -> None:
         self.settings = settings
         self.owner = owner
         self.admission = admission
         self.prompt = prompt
+        self.display_message = display_message or prompt
         self.request_id = request_id
         self.title_token = title_token
         self.is_disconnected = is_disconnected
@@ -537,11 +561,15 @@ class ChatStreamOrchestrator:
             session_id=str(self.admission.session_id),
             user_id=self.owner.hf_user_id,
             prompt=self.prompt,
+            display_prompt=self.display_message,
             model=self.admission.model_route,
             execution_backend=self.admission.execution_backend,
             is_replacement=self.admission.is_replacement,
         ) as trace:
             self.trace = trace
+            _persist_trace_id(
+                self.owner, self.settings, self.admission, self.trace.trace_id
+            )
             async for frame in self._events():
                 yield frame
 
@@ -600,7 +628,7 @@ class ChatStreamOrchestrator:
                         self.settings,
                         self.admission,
                         self.title_token,
-                        self.prompt,
+                        self.display_message,
                         queue,
                         self.trace,
                     )

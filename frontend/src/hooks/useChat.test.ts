@@ -101,15 +101,16 @@ const deferred = <T,>() => {
 const renderChat = (sessionId: string | null = "session-1") => {
   const onSessionId = vi.fn();
   const onSettled = vi.fn();
+  const onInterrupted = vi.fn();
   const result = renderHook(() => useChat({
     sessionId,
     initialModel: "zai-org/GLM-5.2",
     onSessionId,
     onTitle: vi.fn(),
     onSettled,
-    onInterrupted: vi.fn(),
+    onInterrupted,
   }));
-  return { ...result, onSessionId, onSettled };
+  return { ...result, onSessionId, onSettled, onInterrupted };
 };
 
 beforeEach(() => {
@@ -147,6 +148,37 @@ describe("useChat billing failures", () => {
 });
 
 describe("useChat durable capacity handling", () => {
+  it("restores the complete draft when paper hydration fails before admission", async () => {
+    streamChatMock.mockImplementation(() => (async function* () {
+      yield* stream()();
+      throw new ChatStreamError(
+        "Attached paper context could not be prepared.",
+        "paper_context_unavailable",
+        503,
+      );
+    })());
+    const original = uiTurn("user-1", "Earlier");
+    const draft = {
+      text: "Read @Attention Is All You Need",
+      paperMentions: [{
+        key: "mention-1",
+        route_id: "1706.03762",
+        title: "Attention Is All You Need",
+        source: "arxiv" as const,
+        start: 5,
+        end: 31,
+      }],
+    };
+    const { result, onInterrupted } = renderChat();
+    act(() => result.current.load(original));
+    act(() => expect(result.current.send(draft)).toBe(true));
+
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages).toEqual(original);
+    expect(result.current.sessionError).toBe("Attached paper context could not be prepared.");
+    expect(onInterrupted).toHaveBeenCalledWith(draft);
+  });
+
   it("preserves the draft without a timed retry when chat is disabled", async () => {
     streamChatMock.mockImplementation(() => (async function* () {
       yield* stream()();
@@ -215,17 +247,34 @@ describe("useChat durable capacity handling", () => {
     const { result } = renderChat();
     act(() => result.current.load(original));
 
-    act(() => expect(result.current.send("Follow up")).toBe(true));
+    const mention = {
+      key: "mention-1",
+      route_id: "1706.03762",
+      title: "Attention Is All You Need",
+      source: "arxiv" as const,
+      start: 10,
+      end: 36,
+    };
+    act(() => expect(result.current.send({
+      text: "Follow up @Attention Is All You Need",
+      paperMentions: [mention],
+    })).toBe(true));
     await waitFor(() => expect(result.current.capacityRequest).not.toBeNull());
 
     expect(result.current.messages).toEqual(original);
-    expect(result.current.capacityRequest?.question).toBe("Follow up");
+    expect(result.current.capacityRequest?.question).toBe("Follow up @Attention Is All You Need");
     act(() => expect(result.current.retryCapacity()).toBe(true));
     await waitFor(() => expect(result.current.busy).toBe(false));
 
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual(requests[0]);
     expect(requests[1].client_message_id).toBe(requests[0].client_message_id);
+    expect(requests[1].paper_mentions).toEqual([{
+      route_id: mention.route_id,
+      title: mention.title,
+      start: mention.start,
+      end: mention.end,
+    }]);
   });
 
   it("preserves edit-and-retry metadata and cancel performs no new request", async () => {

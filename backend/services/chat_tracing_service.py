@@ -95,9 +95,11 @@ class ChatTurnTrace:
         prompt: str,
         model: str,
         execution_backend: str,
+        display_prompt: str | None = None,
     ) -> None:
         self.root = root
         self.prompt = prompt
+        self.display_prompt = display_prompt or prompt
         self.execution_backend = execution_backend
         self.generation = root.start_observation(
             name="generate-research-response",
@@ -130,7 +132,7 @@ class ChatTurnTrace:
             self.title_generation = self.root.start_observation(
                 name="generate-session-title",
                 as_type="generation",
-                input=[{"role": "user", "content": self.prompt}],
+                input=[{"role": "user", "content": self.display_prompt}],
                 model=model,
             )
 
@@ -340,6 +342,7 @@ def trace_chat_turn(
     model: str,
     execution_backend: str,
     is_replacement: bool,
+    display_prompt: str | None = None,
 ) -> Iterator[ChatTurnTrace | NullChatTurnTrace]:
     """Create one trace per turn and one Langfuse session per conversation."""
 
@@ -378,6 +381,7 @@ def trace_chat_turn(
             trace = ChatTurnTrace(
                 root,
                 prompt=prompt,
+                display_prompt=display_prompt or prompt,
                 model=model,
                 execution_backend=execution_backend,
             )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -24,6 +25,44 @@ PREPARING_STATUS = "preparing"
 INACTIVE_STATUSES = ("superseded", PREPARING_STATUS)
 
 
+def _projection_bytes(message: ChatMessageRecord) -> int:
+    content = getattr(message, "content", "")
+    if message.role == "user":
+        effective_prompt = getattr(message, "effective_prompt", None)
+        if effective_prompt is None:
+            return len(content.encode())
+        mentions = len(
+            json.dumps(
+                getattr(message, "paper_mentions", None) or [],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        )
+        return len(content.encode()) + len(effective_prompt.encode()) + mentions
+    payload = len(
+        json.dumps(
+            getattr(message, "display_blocks", None) or [],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+    payload += len(
+        json.dumps(
+            getattr(message, "citations", None) or [],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+    payload += len(
+        json.dumps(
+            getattr(message, "followups", None) or [],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+    return len(content.encode()) + payload
+
+
 class ChatEditService:
     """Owns the durable preparation/activation state machine for message edits."""
 
@@ -34,6 +73,10 @@ class ChatEditService:
         self, session: ChatSession, message: ChatMessageRecord
     ) -> None:
         self._delete_recorded_fork(message)
+        if hasattr(session, "projection_bytes"):
+            session.projection_bytes = max(
+                0, session.projection_bytes - _projection_bytes(message)
+            )
         message.status = "superseded"
         message.error_code = "edit_prepare_lease_expired"
         if session.active_turn_id == message.turn_id:
@@ -87,6 +130,10 @@ class ChatEditService:
 
         for message in old_suffix:
             message.status = "superseded"
+            if hasattr(session, "projection_bytes"):
+                session.projection_bytes = max(
+                    0, session.projection_bytes - _projection_bytes(message)
+                )
         prepared.status = "generating"
         prepared.error_code = None
         self._clear_recorded_fork(prepared)
@@ -115,6 +162,10 @@ class ChatEditService:
         prepared = self.db.get(ChatMessageRecord, admission.user_message_id)
         if prepared and prepared.status == PREPARING_STATUS:
             self._delete_recorded_fork(prepared)
+            if hasattr(session, "projection_bytes"):
+                session.projection_bytes = max(
+                    0, session.projection_bytes - _projection_bytes(prepared)
+                )
             prepared.status = "superseded"
             prepared.error_code = code
         if session.active_turn_id == admission.turn_id:
@@ -130,6 +181,10 @@ class ChatEditService:
         if message.status != PREPARING_STATUS:
             return False
         self._delete_recorded_fork(message)
+        if hasattr(session, "projection_bytes"):
+            session.projection_bytes = max(
+                0, session.projection_bytes - _projection_bytes(message)
+            )
         message.status = "superseded"
         message.error_code = code
         self._release_turn(session)

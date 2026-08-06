@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import uuid
+from collections import deque
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -41,6 +44,10 @@ from backend.models.chat import (
 from backend.models.database import ChatMessageRecord, ChatSession
 from backend.routers.inference_billing import inference_credential_for_request
 from backend.services.chat_latency_service import ChatLatencyService
+from backend.services.chat_paper_context_service import (
+    ChatPaperContextService,
+    PreparedPaperTurn,
+)
 from backend.services.chat_sandbox_service import (
     SandboxCleanupUnverified,
     SandboxSessionManager,
@@ -74,6 +81,7 @@ from backend.services.openrouter_user_budget_service import (
     OpenRouterUserBudgetService,
 )
 from backend.utils.auth import require_admin, require_user
+from backend.utils.client_ip import get_client_ip
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -82,6 +90,43 @@ logger = logging.getLogger(__name__)
 CHAT_CAPACITY_RETRY_SECONDS = 5
 SSE_PROXY_FLUSH_PADDING_BYTES = 2048
 _capacity_denials = count(1)
+_prewarm_requests: dict[str, deque[float]] = {}
+_PREWARM_CLIENT_BUCKETS = 4096
+_prewarm_lock = asyncio.Lock()
+_prewarm_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+class PaperContextPrewarmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route_id: str = Field(min_length=1, max_length=200)
+
+
+def _prepare_paper_turn(
+    settings: Settings,
+    owner_id: str,
+    body: ChatRequest,
+) -> PreparedPaperTurn:
+    with db_manager.session_local() as db:
+        return ChatPaperContextService(db, settings).prepare_turn(
+            owner_id=owner_id,
+            display_message=body.message,
+            mentions=body.paper_mentions,
+            session_id=body.session_id,
+            replace_message_id=body.replace_message_id,
+        )
+
+
+def _prewarm_paper(settings: Settings, route_id: str) -> None:
+    with db_manager.session_local() as db:
+        ChatPaperContextService(db, settings).prewarm(route_id)
+
+
+async def _run_prewarm(settings: Settings, route_id: str) -> None:
+    try:
+        await asyncio.to_thread(_prewarm_paper, settings, route_id)
+    finally:
+        async with _prewarm_lock:
+            _prewarm_tasks.pop(route_id, None)
 
 
 async def _release_durable_admission() -> None:
@@ -298,6 +343,7 @@ def _message(row: ChatMessageRecord) -> ChatMessageResponse:
         sequence=row.sequence,
         role=row.role,
         content=row.content,
+        paper_mentions=row.paper_mentions or [],
         revision=row.revision,
         status=row.status,
         citations=row.citations or [],
@@ -340,12 +386,18 @@ def chat_availability():
             "status": "paused",
             "reason": "chat_temporarily_disabled",
             "expected_recovery_at": None,
+            "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
         }
     if (
         settings.chat_default_backend != "modal_cli"
         or not settings.chat_sandbox_spend_enforcement_enabled
     ):
-        return {"status": "available", "reason": None, "expected_recovery_at": None}
+        return {
+            "status": "available",
+            "reason": None,
+            "expected_recovery_at": None,
+            "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+        }
     try:
         with db_manager.session_local() as db:
             try:
@@ -354,12 +406,18 @@ def chat_availability():
                 db.commit()
                 raise
             db.commit()
-        return {"status": "available", "reason": None, "expected_recovery_at": None}
+        return {
+            "status": "available",
+            "reason": None,
+            "expected_recovery_at": None,
+            "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+        }
     except ChatComputeDisabled:
         return {
             "status": "paused",
             "reason": "chat_temporarily_disabled",
             "expected_recovery_at": None,
+            "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
         }
 
 
@@ -730,6 +788,83 @@ async def delete_session(
         _raise(exc)
 
 
+@router.post("/paper-context/prewarm")
+async def prewarm_paper_context(body: PaperContextPrewarmRequest, request: Request):
+    """Best-effort public warming; paper content never leaves the server."""
+    settings = get_settings()
+    if not settings.chat_paper_mentions_enabled:
+        return {"status": "disabled"}
+    started = time.perf_counter()
+    client_ip = get_client_ip(request) or "unknown"
+    now = time.monotonic()
+    async with _prewarm_lock:
+        if (
+            client_ip not in _prewarm_requests
+            and len(_prewarm_requests) >= _PREWARM_CLIENT_BUCKETS
+        ):
+            _prewarm_requests.pop(next(iter(_prewarm_requests)))
+        recent = _prewarm_requests.setdefault(client_ip, deque())
+        while recent and recent[0] <= now - 60:
+            recent.popleft()
+        if len(recent) >= 30:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "paper_context_rate_limited",
+                    "message": "Try again shortly.",
+                },
+                headers={"Retry-After": "5"},
+            )
+        recent.append(now)
+        existing = _prewarm_tasks.get(body.route_id)
+        coalesced = existing is not None
+        if existing is None:
+            if len(_prewarm_tasks) >= 4:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "paper_context_busy",
+                        "message": "Try again shortly.",
+                    },
+                    headers={"Retry-After": "2"},
+                )
+            existing = asyncio.create_task(_run_prewarm(settings, body.route_id))
+            _prewarm_tasks[body.route_id] = existing
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(existing),
+            timeout=settings.chat_paper_context_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        logger.info(
+            "chat paper prewarm outcome=timeout coalesced=%s elapsed_ms=%s",
+            coalesced,
+            round((time.perf_counter() - started) * 1000),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "paper_context_unavailable",
+                "message": "Paper context preparation timed out.",
+            },
+            headers={"Retry-After": "2"},
+        ) from exc
+    except ChatServiceError as exc:
+        logger.info(
+            "chat paper prewarm outcome=%s coalesced=%s elapsed_ms=%s",
+            exc.code,
+            coalesced,
+            round((time.perf_counter() - started) * 1000),
+        )
+        _raise(exc)
+    logger.info(
+        "chat paper prewarm outcome=ready coalesced=%s elapsed_ms=%s",
+        coalesced,
+        round((time.perf_counter() - started) * 1000),
+    )
+    return {"status": "ready"}
+
+
 @router.post("/stream", summary="Stream a durable research-assistant response")
 async def stream_chat(
     body: ChatRequest, request: Request, user: dict = Depends(require_user)
@@ -780,6 +915,53 @@ async def stream_chat(
         ),
     )
     request_id = str(uuid.uuid4())
+    prepared = PreparedPaperTurn(body.message, body.message, [], 0, 0, 0)
+    existing_prompt: str | None = None
+    if body.session_id is not None:
+        with db_manager.session_local() as replay_db:
+            existing_prompt = ChatSessionService(
+                replay_db, settings
+            ).existing_effective_prompt(owner, body.session_id, body.client_message_id)
+    if existing_prompt is not None:
+        prepared = PreparedPaperTurn(body.message, existing_prompt, [], 0, 0, 0)
+    elif body.paper_mentions:
+        started = time.perf_counter()
+        try:
+            prepared = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _prepare_paper_turn, settings, owner.hf_user_id, body
+                ),
+                timeout=settings.chat_paper_context_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            logger.info(
+                "chat paper context outcome=timeout elapsed_ms=%s",
+                round((time.perf_counter() - started) * 1000),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "paper_context_unavailable",
+                    "message": "Attached paper context could not be prepared. Please retry.",
+                },
+                headers={"Retry-After": "2"},
+            ) from exc
+        except ChatServiceError as exc:
+            logger.info(
+                "chat paper context outcome=%s elapsed_ms=%s",
+                exc.code,
+                round((time.perf_counter() - started) * 1000),
+            )
+            _raise(exc, {"Retry-After": "2"} if exc.status_code == 503 else None)
+        logger.info(
+            "chat paper context prepared request_id=%s papers=%s occurrences=%s bytes=%s truncated=%s elapsed_ms=%s",
+            request_id,
+            prepared.distinct_papers,
+            len(prepared.mentions),
+            prepared.included_bytes,
+            prepared.truncated_papers,
+            round((time.perf_counter() - started) * 1000),
+        )
     try:
         with db_manager.session_local() as db:
             try:
@@ -788,7 +970,9 @@ async def stream_chat(
                     owner,
                     session_id=body.session_id,
                     client_message_id=body.client_message_id,
-                    text=body.message,
+                    text=prepared.display_message,
+                    effective_prompt=prepared.effective_prompt,
+                    paper_mentions=prepared.mentions,
                     initial_model=body.initial_model,
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,
@@ -859,7 +1043,8 @@ async def stream_chat(
         settings=settings,
         owner=owner,
         admission=admission,
-        prompt=body.message,
+        prompt=prepared.effective_prompt,
+        display_message=prepared.display_message,
         request_id=request_id,
         title_token=title_token,
         is_disconnected=request.is_disconnected,

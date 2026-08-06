@@ -1575,6 +1575,74 @@ def test_chat_endpoint_rejects_when_capacity_is_occupied(monkeypatch, caplog):
     assert "hello" not in caplog.text
 
 
+def test_paper_hydration_failure_precedes_turn_admission_and_runner(monkeypatch):
+    from backend.routers import chat as chat_router
+
+    calls = {"begin_turn": 0, "runner": 0}
+
+    class NoAdmission:
+        def __init__(self, *_args):
+            pass
+
+        def begin_turn(self, *_args, **_kwargs):
+            calls["begin_turn"] += 1
+            raise AssertionError("turn admission must not run")
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "chat_enabled", True)
+    monkeypatch.setattr(settings, "chat_default_backend", "local_mcp")
+    monkeypatch.setattr(settings, "chat_paper_mentions_enabled", True)
+    monkeypatch.setattr(
+        chat_router,
+        "inference_credential_for_request",
+        lambda *_args: SimpleNamespace(token="user-inference-token", bill_to=None),
+    )
+
+    def fail_preparation(*_args):
+        raise ChatServiceError(
+            "paper_context_unavailable",
+            503,
+            "Attached paper context could not be prepared.",
+        )
+
+    monkeypatch.setattr(
+        chat_router,
+        "_prepare_paper_turn",
+        fail_preparation,
+    )
+    monkeypatch.setattr(chat_router, "ChatSessionService", NoAdmission)
+    monkeypatch.setattr(
+        chat_router,
+        "ChatStreamOrchestrator",
+        lambda **_kwargs: calls.__setitem__("runner", calls["runner"] + 1),
+    )
+    app = create_app()
+    app.dependency_overrides[require_user] = lambda: {
+        "source": "cookie",
+        "username": "tester",
+        "hf_user_id": "hf-test-sub",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/chat/stream",
+            json={
+                "message": "Read @Paper",
+                "client_message_id": "paper-client-id",
+                "paper_mentions": [
+                    {
+                        "route_id": "2501.00001",
+                        "title": "Paper",
+                        "start": 5,
+                        "end": 11,
+                    }
+                ],
+            },
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "paper_context_unavailable"
+    assert calls == {"begin_turn": 0, "runner": 0}
+
+
 def test_new_chat_capacity_rejection_precedes_session_creation(monkeypatch):
     class FakeDB:
         def __init__(self):

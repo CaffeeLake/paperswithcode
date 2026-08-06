@@ -752,6 +752,9 @@ class _ChatSchemaDB:
             rows = [
                 ("chat_sessions", "execution_backend"),
                 ("chat_messages", "finish_reason"),
+                ("chat_messages", "paper_mentions"),
+                ("chat_messages", "effective_prompt"),
+                ("chat_messages", "langfuse_trace_id"),
                 ("chat_sandbox_compute_intervals", "accrued_microusd"),
                 ("chat_sandbox_budget_states", "circuit_state"),
                 ("chat_sandbox_budget_states", "provider_floor_microusd"),
@@ -983,7 +986,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "34"
+    assert descriptor["worker_contract_version"] == "35"
     assert _chat_descriptor_from_source(source, "production") is None
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production == descriptor

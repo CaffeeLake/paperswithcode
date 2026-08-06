@@ -677,6 +677,8 @@ def test_begin_turn_admits_completed_middle_message_without_superseding_it():
         session_id=session_id,
         client_message_id="edit-client-id",
         text="edited middle prompt",
+        effective_prompt="<paper_context>exact bytes</paper_context>\nedited middle prompt",
+        paper_mentions=[{"route_id": "2501.00001", "title": "Paper"}],
         replace_message_id=target.id,
         prior_revision=4,
     )
@@ -684,6 +686,12 @@ def test_begin_turn_admits_completed_middle_message_without_superseding_it():
     prepared = db.added[-1]
     assert target.status == "complete"
     assert prepared.status == "preparing"
+    assert prepared.content == "edited middle prompt"
+    assert (
+        prepared.effective_prompt
+        == "<paper_context>exact bytes</paper_context>\nedited middle prompt"
+    )
+    assert prepared.paper_mentions == [{"route_id": "2501.00001", "title": "Paper"}]
     assert prepared.turn_id != target.turn_id
     assert prepared.sequence == 7
     assert prepared.revision == 5

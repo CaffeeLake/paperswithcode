@@ -5,16 +5,21 @@
  */
 
 import React from "react";
-import { Pencil } from "lucide-react";
+import { FileText, Pencil } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
+import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons";
+import { usePaperMentions } from "@/components/chat/usePaperMentions";
+import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import { authorsLine, excerpt, venueLine } from "@/components/chat/paperDisplay";
 import type {
   AnswerBlock,
   ChatMessage as ChatMessageType,
   ChatCitation,
   ChatPaperHit,
+  ChatDraft,
+  PaperMentionDraft,
   ReasoningBlock,
   ToolBlock,
 } from "@/lib/chat";
@@ -68,6 +73,30 @@ const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
   range.setEnd(node, end);
   selection.removeAllRanges();
   selection.addRange(range);
+};
+
+const InlinePaperMentions: React.FC<{
+  text: string;
+  mentions: PaperMentionDraft[];
+}> = ({ text, mentions }) => {
+  const pieces: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const mention of [...mentions].sort((a, b) => a.start - b.start)) {
+    const marker = text.slice(mention.start, mention.end);
+    if (mention.start < cursor || mention.end > text.length || !marker.startsWith("@")) continue;
+    pieces.push(text.slice(cursor, mention.start));
+    pieces.push(
+      <span className="chat-inline-paper-mention" key={mention.key}>
+        <FileText size={13} aria-hidden="true" />
+        <PaperPreviewLink routeId={mention.route_id} className="chat-inline-paper-link">
+          {marker.slice(1)}
+        </PaperPreviewLink>
+      </span>,
+    );
+    cursor = mention.end;
+  }
+  pieces.push(text.slice(cursor));
+  return <>{pieces}</>;
 };
 
 const ReasoningBlockView: React.FC<{
@@ -230,30 +259,17 @@ const AnswerBlockView: React.FC<{
   </div>
 );
 
-export const UserMessage: React.FC<{
+interface UserEditorProps {
   id?: string;
   text: string;
-  isInitial?: boolean;
-  editingAllowed?: boolean;
-  editing?: boolean;
   editNotice?: string;
-  onEdit?: () => void;
   onCancel?: () => void;
   onResend?: (text: string) => boolean;
-}> = ({
-  id,
-  text,
-  editingAllowed = false,
-  editing = false,
-  editNotice,
-  onEdit,
-  onCancel,
-  onResend,
-}) => {
-  const [value, setValue] = React.useState(text);
-  const [submitting, setSubmitting] = React.useState(false);
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  onResendDraft?: (draft: ChatDraft) => boolean;
+}
 
+const useEditorTextarea = (text: string) => {
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const resize = React.useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -262,67 +278,125 @@ export const UserMessage: React.FC<{
     textarea.style.height = `${Math.min(textarea.scrollHeight, maximum)}px`;
     textarea.style.overflowY = textarea.scrollHeight > maximum ? "auto" : "hidden";
   }, []);
-
   React.useLayoutEffect(() => {
-    if (!editing) return;
-    setValue(text);
-    setSubmitting(false);
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(text.length, text.length);
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(text.length, text.length);
     resize();
-  }, [editing, resize, text]);
+  }, [resize, text.length]);
+  return { textareaRef, resize };
+};
 
+const PlainUserEditor: React.FC<UserEditorProps> = ({ id, text, editNotice, onCancel, onResend, onResendDraft }) => {
+  const [value, setValue] = React.useState(text);
+  const [submitting, setSubmitting] = React.useState(false);
+  const { textareaRef, resize } = useEditorTextarea(text);
   React.useLayoutEffect(resize, [resize, value]);
-
   const valid = Boolean(value.trim()) && value.length <= 8_000;
   const resend = () => {
     if (!valid || submitting) return;
     setSubmitting(true);
-    if (!onResend?.(value)) setSubmitting(false);
+    const accepted = onResendDraft?.({ text: value, paperMentions: [] }) ?? onResend?.(value) ?? false;
+    if (!accepted) setSubmitting(false);
   };
-
-  if (editing) {
-    return (
-      <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
-        <div className="chat-inline-editor">
-          <textarea
-            ref={textareaRef}
-            className="chat-inline-editor-textarea"
-            aria-label="Edit message"
-            value={value}
-            maxLength={8_000}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                onCancel?.();
-              } else if (
-                event.key === "Enter"
-                && !event.shiftKey
-                && !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                resend();
-              }
-            }}
-          />
-          {editNotice && <div className="chat-inline-editor-notice">{editNotice}</div>}
-          <div className="chat-inline-editor-actions">
-            <button type="button" onClick={onCancel}>Cancel</button>
-            <button type="button" className="chat-inline-editor-send" disabled={!valid || submitting} onClick={resend}>Send</button>
-          </div>
-        </div>
+  return <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
+    <div className="chat-inline-editor">
+      <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value} maxLength={8_000}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); onCancel?.(); }
+          else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); resend(); }
+        }} />
+      {editNotice && <div className="chat-inline-editor-notice">{editNotice}</div>}
+      <div className="chat-inline-editor-actions">
+        <button type="button" onClick={onCancel}>Cancel</button>
+        <button type="button" className="chat-inline-editor-send" disabled={!valid || submitting} onClick={resend}>Send</button>
       </div>
-    );
+    </div>
+  </div>;
+};
+
+const MentionUserEditor: React.FC<UserEditorProps & { paperMentions: PaperMentionDraft[]; enabled: boolean }> = ({
+  id, text, paperMentions, enabled, editNotice, onCancel, onResend, onResendDraft,
+}) => {
+  const [value, setValue] = React.useState<ChatDraft>({ text, paperMentions });
+  const [submitting, setSubmitting] = React.useState(false);
+  const { textareaRef, resize } = useEditorTextarea(text);
+  const editor = usePaperMentions({ draft: value, onChange: setValue, enabled, textareaRef });
+  React.useLayoutEffect(resize, [resize, value.text]);
+  const valid = Boolean(value.text.trim()) && value.text.length <= 8_000 && (enabled || value.paperMentions.length === 0);
+  const resend = () => {
+    if (!valid || submitting) return;
+    setSubmitting(true);
+    const accepted = onResendDraft?.(value) ?? onResend?.(value.text) ?? false;
+    if (!accepted) setSubmitting(false);
+  };
+  return <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
+    <div className="chat-inline-editor">
+      <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value.text} maxLength={8_000}
+        role="combobox" aria-autocomplete="list" aria-expanded={editor.open}
+        aria-controls={editor.open ? editor.pickerId : undefined}
+        aria-activedescendant={editor.open && editor.results.length ? `${editor.optionIdPrefix}-${editor.activeIndex}` : undefined}
+        onChange={(event) => editor.updateText(event.target.value, event.target.selectionStart)}
+        onSelect={(event) => editor.refresh(event.currentTarget.selectionStart)}
+        onKeyDown={(event) => {
+          if (editor.keyDown(event)) return;
+          if (event.key === "Escape") { event.preventDefault(); onCancel?.(); }
+          else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); resend(); }
+        }} />
+      <PaperMentionPicker open={editor.open} query={editor.query} results={editor.results} activeIndex={editor.activeIndex} loading={editor.loading} error={editor.error} onSelect={editor.select} id={editor.pickerId} optionIdPrefix={editor.optionIdPrefix} />
+      {value.paperMentions.length > 0 && <div className="chat-paper-chips">{value.paperMentions.map((mention) => <span className="chat-paper-chip" key={mention.key}>
+        <FileText aria-hidden="true" />{mention.title}<button type="button" onClick={() => editor.remove(mention.key)} aria-label={`Remove ${mention.title}`}>×</button>
+      </span>)}</div>}
+      {!enabled && value.paperMentions.length > 0 && <div className="chat-inline-editor-notice" role="status">Paper mentions are currently disabled. Remove them before sending.</div>}
+      {editNotice && <div className="chat-inline-editor-notice">{editNotice}</div>}
+      <div className="chat-inline-editor-actions">
+        <button type="button" onClick={onCancel}>Cancel</button>
+        <button type="button" className="chat-inline-editor-send" disabled={!valid || submitting} onClick={resend}>Send</button>
+      </div>
+    </div>
+  </div>;
+};
+
+export const UserMessage: React.FC<{
+  id?: string;
+  text: string;
+  paperMentions?: PaperMentionDraft[];
+  paperMentionsEnabled?: boolean;
+  isInitial?: boolean;
+  editingAllowed?: boolean;
+  editing?: boolean;
+  editNotice?: string;
+  onEdit?: () => void;
+  onCancel?: () => void;
+  onResend?: (text: string) => boolean;
+  onResendDraft?: (draft: ChatDraft) => boolean;
+}> = ({
+  id,
+  text,
+  paperMentions = [],
+  paperMentionsEnabled = false,
+  editingAllowed = false,
+  editing = false,
+  editNotice,
+  onEdit,
+  onCancel,
+  onResend,
+  onResendDraft,
+}) => {
+  if (editing) {
+    if (!paperMentionsEnabled && paperMentions.length === 0) {
+      return <PlainUserEditor id={id} text={text} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
+    }
+    return <MentionUserEditor id={id} text={text} paperMentions={paperMentions} enabled={paperMentionsEnabled} editNotice={editNotice} onCancel={onCancel} onResend={onResend} onResendDraft={onResendDraft} />;
   }
 
   return (
     <div className="chat-msg chat-msg-user" data-message-id={id}>
       <div className="chat-user-message-wrap">
         <div className="chat-bubble">
-          <span className="chat-bubble-text" onMouseDown={selectClickedWord}>{text}</span>
+          <span className="chat-bubble-text" onMouseDown={selectClickedWord}>
+            <InlinePaperMentions text={text} mentions={paperMentions} />
+          </span>
         </div>
         {editingAllowed && (
           <div className="chat-user-actions">

@@ -138,6 +138,18 @@ def _payload_bytes(*values: object) -> int:
     )
 
 
+def _message_projection_bytes(message: ChatMessageRecord) -> int:
+    if message.role == "user":
+        if message.effective_prompt is None:
+            return len(message.content.encode())
+        return (
+            len(message.content.encode())
+            + len(message.effective_prompt.encode())
+            + _payload_bytes(message.paper_mentions or [])
+        )
+    return len(message.content.encode())
+
+
 class ChatSessionService:
     def __init__(self, db: Session, settings: Settings):
         self.db = db
@@ -156,6 +168,39 @@ class ChatSessionService:
         if session is None:
             raise ChatServiceError("session_not_found", 404, "Chat session not found")
         return session
+
+    def existing_effective_prompt(
+        self,
+        owner: ChatOwner,
+        session_id: uuid.UUID | None,
+        client_message_id: str,
+    ) -> str | None:
+        """Return an already-admitted turn input without preparing it again."""
+        if session_id is None:
+            return None
+        return self.db.scalar(
+            select(ChatMessageRecord.effective_prompt)
+            .join(ChatSession, ChatSession.id == ChatMessageRecord.session_id)
+            .where(
+                ChatMessageRecord.session_id == session_id,
+                ChatMessageRecord.client_message_id == client_message_id,
+                ChatSession.hf_user_id == owner.hf_user_id,
+            )
+        )
+
+    def record_langfuse_trace_id(
+        self, owner: ChatOwner, admission: TurnAdmission, trace_id: str
+    ) -> None:
+        if not trace_id:
+            return
+        session = self._owned(owner, admission.session_id, lock=True)
+        message = self.db.get(ChatMessageRecord, admission.user_message_id)
+        if (
+            message
+            and message.session_id == session.id
+            and message.turn_id == admission.turn_id
+        ):
+            message.langfuse_trace_id = trace_id
 
     def _validate_model(self, model: str | None) -> tuple[str, str]:
         selected = model or self.settings.chat_model_choices[0]["id"]
@@ -388,6 +433,8 @@ class ChatSessionService:
         session_id: uuid.UUID | None,
         client_message_id: str,
         text: str,
+        effective_prompt: str | None = None,
+        paper_mentions: list[dict] | None = None,
         initial_model: str | None = None,
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
@@ -565,6 +612,13 @@ class ChatSessionService:
                 "Retry or edit the interrupted prompt first",
                 commit_changes=recovered_expired_lease,
             )
+        effective_prompt = effective_prompt if effective_prompt is not None else text
+        paper_mentions = paper_mentions or []
+        new_projection_bytes = (
+            len(text.encode())
+            + len(effective_prompt.encode())
+            + _payload_bytes(paper_mentions)
+        )
         total = (
             self.db.scalar(
                 select(
@@ -578,15 +632,6 @@ class ChatSessionService:
             )
             or 0
         )
-        if (
-            session.transcript_bytes + session.projection_bytes
-            >= self.settings.chat_session_byte_limit
-            or total >= self.settings.chat_user_byte_limit
-        ):
-            raise ChatServiceError(
-                "chat_storage_quota_exceeded", 409, "Chat storage quota exceeded"
-            )
-
         model, route = self._validate_model(session.selected_model)
         prior: ChatMessageRecord | None = None
         active_suffix_ids: tuple[uuid.UUID, ...] = ()
@@ -641,6 +686,38 @@ class ChatSessionService:
         else:
             turn_id = uuid.uuid4()
             revision = 1
+        reclaimed_projection_bytes = 0
+        if active_suffix_ids and isinstance(self.db, Session):
+            suffix_rows = list(
+                self.db.execute(
+                    select(ChatMessageRecord).where(
+                        ChatMessageRecord.id.in_(active_suffix_ids)
+                    )
+                ).scalars()
+            )
+            reclaimed_projection_bytes = sum(
+                _message_projection_bytes(row)
+                + _payload_bytes(
+                    row.display_blocks or [], row.citations or [], row.followups or []
+                )
+                for row in suffix_rows
+            )
+        resulting_session_bytes = (
+            session.transcript_bytes
+            + session.projection_bytes
+            - reclaimed_projection_bytes
+            + new_projection_bytes
+        )
+        resulting_owner_bytes = (
+            total - reclaimed_projection_bytes + new_projection_bytes
+        )
+        if (
+            resulting_session_bytes > self.settings.chat_session_byte_limit
+            or resulting_owner_bytes > self.settings.chat_user_byte_limit
+        ):
+            raise ChatServiceError(
+                "chat_storage_quota_exceeded", 409, "Chat storage quota exceeded"
+            )
         if prior is not None:
             prefix_count = (
                 self.db.scalar(
@@ -693,14 +770,16 @@ class ChatSessionService:
         )
         session.hf_username = owner.hf_username
         session.updated_at = now
-        session.projection_bytes += len(text.strip().encode())
+        session.projection_bytes += new_projection_bytes
         message = ChatMessageRecord(
             id=message_id,
             session_id=session.id,
             turn_id=turn_id,
             sequence=session.last_sequence,
             role="user",
-            content=text.strip(),
+            content=text,
+            paper_mentions=paper_mentions,
+            effective_prompt=effective_prompt,
             client_message_id=client_message_id,
             revision=revision,
             supersedes_message_id=prior.id if prior else None,

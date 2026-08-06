@@ -1,5 +1,5 @@
 import { apiUrl } from "@/lib/apiUrl";
-import type { ChatBlock, ChatCitation, ChatMessage } from "@/lib/chat";
+import type { ChatBlock, ChatCitation, ChatMessage, PaperMentionDraft } from "@/lib/chat";
 
 export interface ChatSession {
   id: string;
@@ -19,6 +19,7 @@ export interface ChatSessionDetail extends ChatSession {
     sequence: number;
     role: "user" | "assistant";
     content: string;
+    paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
     revision: number;
     status: string;
     display_blocks: ChatBlock[];
@@ -40,6 +41,7 @@ export interface PublicChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
   display_blocks: ChatBlock[];
   citations: ChatCitation[];
   display_state: "complete" | "interrupted" | "failed";
@@ -234,6 +236,10 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
       id: message.id,
       role: "user",
       text: message.content,
+      paperMentions: (message.paper_mentions ?? []).map((mention) => ({
+        ...mention,
+        key: mention.occurrence_id,
+      })),
       revision: message.revision,
       status: message.status,
       error: message.status === "complete" ? undefined : message.error_code || message.status,
@@ -254,7 +260,15 @@ export function toUiMessages(detail: ChatSessionDetail): ChatMessage[] {
 
 export function publicShareToUiMessages(detail: ChatShareDetail): ChatMessage[] {
   return detail.messages.map((message): ChatMessage => message.role === "user"
-    ? { id: message.id, role: "user", text: message.content }
+    ? {
+        id: message.id,
+        role: "user",
+        text: message.content,
+        paperMentions: (message.paper_mentions ?? []).map((mention) => ({
+          ...mention,
+          key: mention.occurrence_id,
+        })),
+      }
     : {
         id: message.id,
         role: "assistant",

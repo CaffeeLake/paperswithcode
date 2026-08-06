@@ -928,6 +928,7 @@ export interface ChatAvailability {
   status: 'available' | 'paused';
   reason: 'chat_temporarily_disabled' | null;
   expected_recovery_at: string | null;
+  paper_mentions_enabled: boolean;
 }
 
 export interface ChatSandboxSpendStatus {
@@ -1032,13 +1033,14 @@ class ApiClient {
     page: number = 1,
     pageSize: number = 10,
     mode?: PaperSearchMode,
+    signal?: AbortSignal,
   ): Promise<SearchPage<Paper>> {
     const searchParams = new URLSearchParams();
     searchParams.append('q', query);
     searchParams.append('page', page.toString());
     searchParams.append('page_size', pageSize.toString());
     if (mode) searchParams.append('mode', mode);
-    return this.request<SearchPage<Paper>>(`/papers/search?${searchParams.toString()}`);
+    return this.request<SearchPage<Paper>>(`/papers/search?${searchParams.toString()}`, { signal });
   }
 
   async getPaper(id: string, includeResources: boolean = true): Promise<Paper> {
@@ -2039,6 +2041,17 @@ class ApiClient {
 
   async getChatAvailability(): Promise<ChatAvailability> {
     return this.request<ChatAvailability>('/chat/availability', { cache: 'no-store' });
+  }
+
+  async prewarmChatPaperContext(routeId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/chat/paper-context/prewarm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ route_id: routeId }),
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`Paper context prewarm failed (${response.status})`);
   }
 
   async getChatSandboxSpend(environment?: string): Promise<ChatSandboxSpendStatus> {

@@ -13,7 +13,7 @@ import { PanelIcon, PlusIcon, Spinner, TrashIcon } from "@/components/chat/icons
 import { hfLoginUrl } from "@/components/HfSignInButton";
 import { useToast } from "@/components/ui/use-toast";
 import { useChat } from "@/hooks/useChat";
-import { isChatLive } from "@/lib/chat";
+import { isChatLive, type ChatDraft } from "@/lib/chat";
 import {
   CHAT_AUTO_SEND_KEY,
   CHAT_AUTH_ATTEMPTED_KEY,
@@ -53,6 +53,16 @@ import {
 
 const HF_INFERENCE_USAGE_URL = "https://huggingface.co/settings/inference-providers";
 const BILLING_NOTICE_DISMISSED_KEY = "pwc.chat.billing-notice-dismissed.v1";
+const emptyDraft = (text = ""): ChatDraft => ({ text, paperMentions: [] });
+const readStoredDraft = (): ChatDraft | null => {
+  const raw = sessionStorage.getItem(CHAT_DRAFT_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as ChatDraft;
+    if (typeof parsed.text === "string" && Array.isArray(parsed.paperMentions)) return parsed;
+  } catch { /* Legacy storage contained only the text. */ }
+  return emptyDraft(raw);
+};
 
 const BillingNotice: React.FC<{ provider: ChatModelChoice["provider"] }> = ({
   provider,
@@ -247,10 +257,10 @@ const ChatView: React.FC = () => {
   const selectedProviderRef = useRef(selectedProvider);
   selectedProviderRef.current = selectedProvider;
   const [liveTitle, setLiveTitle] = useState("");
-  const [draft, setDraft] = useState("");
-  const [pendingAutoPrompt, setPendingAutoPrompt] = useState(
-    () => searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
-  );
+  const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
+  const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => emptyDraft(
+    searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
+  ));
   const autoSendStartedRef = useRef(false);
   const inferenceConnectedRef = useRef(false);
   const inferenceCheckPendingRef = useRef(false);
@@ -348,42 +358,42 @@ const ChatView: React.FC = () => {
         void queryClient.invalidateQueries({ queryKey: OPENROUTER_CREDENTIAL_QUERY_KEY });
       }
     },
-    onInterrupted: (text) => {
-      setDraft(text);
+    onInterrupted: (interruptedDraft) => {
+      setDraft(interruptedDraft);
     },
   });
   const loadChat = chat.load;
   const sendChat = chat.send;
 
   useEffect(() => {
-    if (chat.capacityRequest) setDraft(chat.capacityRequest.question);
+    if (chat.capacityRequest) setDraft(chat.capacityRequest.draft);
   }, [chat.capacityRequest]);
 
   useEffect(() => {
     if (chat.busy) setEditingMessageId(null);
   }, [chat.busy]);
 
-  const authorizeInference = useCallback((text: string) => {
-    sessionStorage.setItem(CHAT_DRAFT_KEY, text);
+  const authorizeInference = useCallback((nextDraft: ChatDraft) => {
+    sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
     window.location.href = hfLoginUrl("/chat", true);
   }, [selectedModel]);
 
-  const restoreAuthorizationPrompt = useCallback((text: string, message: string) => {
-    sessionStorage.setItem(CHAT_DRAFT_KEY, text);
+  const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
+    sessionStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(nextDraft));
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
     sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
-    setPendingAutoPrompt("");
-    setDraft(text);
+    setPendingAutoDraft(emptyDraft());
+    setDraft(nextDraft);
     setSessionError(message);
   }, [selectedModel]);
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (nextDraft: ChatDraft) => {
     if (!user) {
-      authorizeInference(text);
+      authorizeInference(nextDraft);
       return;
     }
     if (selectedProvider === "huggingface" && !inferenceConnectedRef.current) {
@@ -399,18 +409,18 @@ const ChatView: React.FC = () => {
         if (!billing.connected) {
           if (sessionStorage.getItem(CHAT_AUTH_ATTEMPTED_KEY) === "1") {
             restoreAuthorizationPrompt(
-              text,
+              nextDraft,
               "Hugging Face inference authorization was not completed. Your prompt is ready to retry.",
             );
             return;
           }
-          authorizeInference(text);
+          authorizeInference(nextDraft);
           return;
         }
         inferenceConnectedRef.current = true;
       } catch (error) {
         restoreAuthorizationPrompt(
-          text,
+          nextDraft,
           error instanceof Error
             ? error.message
             : "Could not check Hugging Face authorization.",
@@ -421,17 +431,21 @@ const ChatView: React.FC = () => {
       }
     }
     const streamRouteSessionId = routeSessionIdRef.current ?? null;
-    if (!sendChat(text)) {
+    sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
+    if (!sendChat(nextDraft)) {
       restoreAuthorizationPrompt(
-        text,
+        nextDraft,
         "Your prompt was not sent. It is ready to retry.",
       );
       return;
     }
     activeStreamRouteSessionIdRef.current = streamRouteSessionId;
     activeStreamSessionIdRef.current = streamRouteSessionId;
+    sessionStorage.removeItem(CHAT_DRAFT_KEY);
+    sessionStorage.removeItem(CHAT_MODEL_KEY);
+    sessionStorage.removeItem(CHAT_AUTH_ATTEMPTED_KEY);
     clearQueuedChatLaunch();
-    setDraft("");
+    setDraft(emptyDraft());
   }, [authorizeInference, restoreAuthorizationPrompt, selectedProvider, sendChat, user]);
 
   useEffect(() => {
@@ -450,10 +464,10 @@ const ChatView: React.FC = () => {
         );
       }
     });
-    const savedDraft = sessionStorage.getItem(CHAT_DRAFT_KEY);
+    const savedDraft = readStoredDraft();
     const shouldAutoSend = sessionStorage.getItem(CHAT_AUTO_SEND_KEY) === "1";
     if (savedDraft) {
-      if (shouldAutoSend) setPendingAutoPrompt(savedDraft);
+      if (shouldAutoSend) setPendingAutoDraft(savedDraft);
       else setDraft(savedDraft);
     }
   }, [authLoading, refreshSessions, user]);
@@ -505,7 +519,7 @@ const ChatView: React.FC = () => {
     autoSendStartedRef.current = false;
     const requestedModel = searchParams.get("model");
     if (requestedModel) setSelectedModel(requestedModel);
-    setPendingAutoPrompt(prompt);
+    setPendingAutoDraft(emptyDraft(prompt));
     const next = new URLSearchParams(searchParams);
     next.delete("q");
     next.delete("model");
@@ -516,7 +530,7 @@ const ChatView: React.FC = () => {
     if (
       authLoading
       || chat.busy
-      || !pendingAutoPrompt
+      || !pendingAutoDraft.text
       || autoSendStartedRef.current
       || (routeSessionId && routeSessionState?.status !== "loaded")
     ) return;
@@ -525,11 +539,11 @@ const ChatView: React.FC = () => {
     const timer = window.setTimeout(() => {
       if (autoSendStartedRef.current) return;
       autoSendStartedRef.current = true;
-      const prompt = pendingAutoPrompt;
-      void send(prompt).finally(() => setPendingAutoPrompt(""));
+      const nextDraft = pendingAutoDraft;
+      void send(nextDraft).finally(() => setPendingAutoDraft(emptyDraft()));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [authLoading, chat.busy, pendingAutoPrompt, routeSessionId, routeSessionState?.status, send]);
+  }, [authLoading, chat.busy, pendingAutoDraft, routeSessionId, routeSessionState?.status, send]);
 
   useEffect(() => {
     const onFocus = () => {
@@ -552,7 +566,7 @@ const ChatView: React.FC = () => {
   const newChat = () => {
     activeStreamSessionIdRef.current = null;
     chat.reset();
-    setDraft("");
+    setDraft(emptyDraft());
     setLiveTitle("");
     navigate("/chat");
   };
@@ -598,9 +612,9 @@ const ChatView: React.FC = () => {
         });
         return;
       }
-      const failedPrompt = [...chat.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+      const failedMessage = [...chat.messages].reverse().find((message) => message.role === "user");
       chat.reset();
-      setDraft(failedPrompt);
+      setDraft({ text: failedMessage?.text ?? "", paperMentions: failedMessage?.paperMentions ?? [] });
       setLiveTitle("");
       toast({
         title: `${result.archived_count} ${result.archived_count === 1 ? "chat" : "chats"} archived`,
@@ -622,9 +636,9 @@ const ChatView: React.FC = () => {
     try {
       const result = await archiveOldestChats();
       await refreshSessions();
-      const failedPrompt = [...chat.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+      const failedMessage = [...chat.messages].reverse().find((message) => message.role === "user");
       chat.reset();
-      setDraft(failedPrompt);
+      setDraft({ text: failedMessage?.text ?? "", paperMentions: failedMessage?.paperMentions ?? [] });
       setLiveTitle("");
       toast({
         title: `${result.archived_count} ${result.archived_count === 1 ? "chat" : "chats"} archived`,
@@ -811,7 +825,7 @@ const ChatView: React.FC = () => {
           )}
         </div>
 
-        {isRouteSessionLoading && !pendingAutoPrompt ? <div className="chat-session-loading" role="status" aria-live="polite">
+        {isRouteSessionLoading && !pendingAutoDraft.text ? <div className="chat-session-loading" role="status" aria-live="polite">
           <Spinner />
           <span>Loading conversation…</span>
         </div> : routeSessionError ? <div className="chat-session-load-error" role="alert">
@@ -820,7 +834,7 @@ const ChatView: React.FC = () => {
             setRouteSessionState({ id: routeSessionId!, status: "loading" });
             setRouteLoadAttempt((attempt) => attempt + 1);
           }}>Try again</button>
-        </div> : isEmpty && !pendingAutoPrompt ? <div className="chat-empty"><div className="chat-empty-inner">
+        </div> : isEmpty && !pendingAutoDraft.text ? <div className="chat-empty"><div className="chat-empty-inner">
           <div className="chat-empty-eyebrow">AI research assistant · Staging preview</div>
           <h1 className="chat-empty-title">Ask <em>Papers With Code</em></h1>
           <p className="chat-empty-sub">Answers are grounded in a live hybrid search over papers, tasks, and benchmarks — with citations you can follow.</p>
@@ -834,14 +848,15 @@ const ChatView: React.FC = () => {
             byokExpected={byokExpected}
           />
           {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} />
-          <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" disabled={chatPaused} onClick={() => send(example)}>{example}</button>)}</div>
+          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} />
+          <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" disabled={chatPaused} onClick={() => send(emptyDraft(example))}>{example}</button>)}</div>
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
           <div className="chat-conversation" ref={scrollRef}><div className="chat-conversation-inner">
-            {isEmpty && pendingAutoPrompt && <UserMessage
+            {isEmpty && pendingAutoDraft.text && <UserMessage
               id="queued-launch-preview"
-              text={pendingAutoPrompt}
+              text={pendingAutoDraft.text}
+              paperMentions={pendingAutoDraft.paperMentions}
               isInitial
             />}
             {chat.messages.map((message) => message.role === "user"
@@ -849,6 +864,8 @@ const ChatView: React.FC = () => {
                   key={message.id}
                   id={message.id}
                   text={message.text ?? ""}
+                  paperMentions={message.paperMentions ?? []}
+                  paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)}
                   isInitial={message.id === firstUserId}
                   editingAllowed={!chat.busy && Boolean(message.revision)}
                   editing={editingMessageId === message.id}
@@ -859,9 +876,9 @@ const ChatView: React.FC = () => {
                       : "Sending will replace the response and all messages after it."}
                   onEdit={() => setEditingMessageId(message.id)}
                   onCancel={() => setEditingMessageId(null)}
-                  onResend={(text) => {
+                  onResendDraft={(nextDraft) => {
                     if (message.id !== firstUserId) editScrollAnchorRef.current = message.id;
-                    const accepted = chat.editAndResend(message.id, text);
+                    const accepted = chat.editAndResend(message.id, nextDraft);
                     if (accepted) setEditingMessageId(null);
                     else editScrollAnchorRef.current = null;
                     return accepted;
@@ -886,7 +903,7 @@ const ChatView: React.FC = () => {
               byokExpected={byokExpected}
             />
             {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} />
+            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft.text ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               {selectedProvider === "openrouter"
                 ? <span className="chat-provider-attribution">Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>.</span>
@@ -926,12 +943,12 @@ const ChatView: React.FC = () => {
           retryAt={chat.capacityRequest.retryAt}
           onCancel={chat.cancelCapacity}
           onRetry={() => {
-            if (chat.retryCapacity()) setDraft("");
+            if (chat.retryCapacity()) setDraft(emptyDraft());
           }}
         />
       )}
       {chat.disabledRequest && <ChatDisabledDialog onClose={() => {
-        setDraft(chat.disabledRequest?.question ?? draft);
+        setDraft(chat.disabledRequest?.draft ?? draft);
         chat.dismissDisabled();
         void availabilityQuery.refetch();
       }} />}

@@ -1,4 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import type { ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +15,29 @@ afterEach(() => {
 });
 
 describe("UserMessage", () => {
+  it("keeps historical paper mentions linked when new mentions are disabled", () => {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><UserMessage
+        text="Compare @Attention Is All You Need today"
+        paperMentions={[{
+          key: "mention-1",
+          route_id: "1706.03762",
+          title: "Attention Is All You Need",
+          source: "arxiv",
+          start: 8,
+          end: 34,
+        }]}
+        paperMentionsEnabled={false}
+        /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("link", { name: "Attention Is All You Need" }))
+      .toHaveAttribute("href", "/paper/1706.03762");
+    expect(screen.getByText(/Compare/)).toHaveTextContent("Compare Attention Is All You Need today");
+  });
+
   it("cancels Safari's second mousedown and selects only the clicked word", () => {
     render(<UserMessage text="What's the SOTA for image classification?" />);
     const message = screen.getByText("What's the SOTA for image classification?");

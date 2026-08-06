@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   type ChatBlock,
   type ChatBrowserLatencyUpdate,
+  type ChatDraft,
   type ChatEvent,
   type ChatMessage,
   type ChatPaperHit,
@@ -46,7 +47,7 @@ interface UseChatOptions {
   onTitle: (title: string) => void;
   onSettled: (sessionId: string | null) => void;
   onProviderTerminal?: () => void;
-  onInterrupted: (text: string) => void;
+  onInterrupted: (draft: ChatDraft) => void;
 }
 
 interface EditRequest {
@@ -57,6 +58,7 @@ interface EditRequest {
 
 interface PendingGeneration {
   question: string;
+  draft: ChatDraft;
   request: ChatStreamRequest;
   optimistic: ChatMessage[];
   original: ChatMessage[];
@@ -77,12 +79,12 @@ export function useChat(options: UseChatOptions) {
   const pendingCapacityRef = useRef<PendingGeneration | null>(null);
   const [capacityRequest, setCapacityRequest] = useState<Pick<
     PendingGeneration,
-    "question" | "retryAt" | "retryAfterSeconds"
+    "question" | "draft" | "retryAt" | "retryAfterSeconds"
   > | null>(null);
-  const [disabledRequest, setDisabledRequest] = useState<{ question: string } | null>(null);
+  const [disabledRequest, setDisabledRequest] = useState<{ question: string; draft: ChatDraft } | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const optionsRef = useRef(options);
-  const promptRef = useRef("");
+  const promptRef = useRef<ChatDraft>({ text: "", paperMentions: [] });
   const titleRef = useRef("");
   const idRef = useRef(0);
   const messagesGenerationRef = useRef(0);
@@ -325,7 +327,7 @@ export function useChat(options: UseChatOptions) {
   };
 
   const run = (
-    question: string,
+    draft: ChatDraft,
     request: Parameters<typeof streamChat>[0],
     optimistic: ChatMessage[],
     original: ChatMessage[],
@@ -335,7 +337,8 @@ export function useChat(options: UseChatOptions) {
     busyRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
-    promptRef.current = question;
+    const question = draft.text;
+    promptRef.current = draft;
     activeSessionIdRef.current = request.session_id;
     setSessionError("");
     setMessages(optimistic);
@@ -375,7 +378,7 @@ export function useChat(options: UseChatOptions) {
       let providerStatusChanged = false;
       let sawTerminalEvent = false;
       let streamFailed = false;
-      let capacityDenied = false;
+      let admissionRejected = false;
       try {
         for await (const event of streamChat(request, { signal: controller.signal })) {
           if (event.type === "stream_start") {
@@ -409,7 +412,7 @@ export function useChat(options: UseChatOptions) {
               ].includes(event.code ?? "")
             ) {
               providerStatusChanged = true;
-              optionsRef.current.onInterrupted(question);
+              optionsRef.current.onInterrupted(draft);
             }
           }
           const projectsToVisibleConversation = messagesGenerationRef.current === messagesGeneration;
@@ -429,18 +432,19 @@ export function useChat(options: UseChatOptions) {
         if (!controller.signal.aborted) {
           clearWorkspaceStatus(controller);
           if (error instanceof ChatStreamError && error.code === "chat_temporarily_disabled") {
-            capacityDenied = true;
-            setDisabledRequest({ question });
+            admissionRejected = true;
+            setDisabledRequest({ question, draft });
             if (messagesGenerationRef.current === messagesGeneration) {
               setMessages(original);
               messagesRef.current = original;
               setSessionError("");
             }
           } else if (error instanceof ChatStreamError && error.code === "chat_capacity") {
-            capacityDenied = true;
+            admissionRejected = true;
             const retryAfterSeconds = error.retryAfterSeconds ?? 5;
             const pending: PendingGeneration = {
               question,
+              draft,
               request,
               optimistic,
               original,
@@ -451,6 +455,7 @@ export function useChat(options: UseChatOptions) {
             pendingCapacityRef.current = pending;
             setCapacityRequest({
               question,
+              draft,
               retryAt: pending.retryAt,
               retryAfterSeconds,
             });
@@ -464,6 +469,23 @@ export function useChat(options: UseChatOptions) {
             if (
               error instanceof ChatStreamError
               && [
+                "paper_context_unavailable",
+                "paper_mention_unavailable",
+                "paper_mentions_disabled",
+                "chat_storage_quota_exceeded",
+              ].includes(error.code ?? "")
+            ) {
+              admissionRejected = true;
+              optionsRef.current.onInterrupted(draft);
+              if (messagesGenerationRef.current === messagesGeneration) {
+                setMessages(original);
+                messagesRef.current = original;
+                setSessionError(error.message);
+              }
+            }
+            if (
+              error instanceof ChatStreamError
+              && [
                 "openrouter_monthly_budget_exhausted",
                 "openrouter_unavailable",
                 "openrouter_byok_credential_invalid",
@@ -472,10 +494,10 @@ export function useChat(options: UseChatOptions) {
               ].includes(error.code ?? "")
             ) {
               providerStatusChanged = true;
-              optionsRef.current.onInterrupted(question);
+              optionsRef.current.onInterrupted(draft);
             }
           }
-          if (!capacityDenied && messagesGenerationRef.current === messagesGeneration) {
+          if (!admissionRejected && messagesGenerationRef.current === messagesGeneration) {
             applyEvent({
               type: "error",
               message: error instanceof Error ? error.message : "The assistant stream failed.",
@@ -491,7 +513,7 @@ export function useChat(options: UseChatOptions) {
           }
           busyRef.current = false;
           setBusy(false);
-          if (capacityDenied) {
+          if (admissionRejected) {
             optionsRef.current.onSettled(request.session_id);
           } else if (!controller.signal.aborted) {
             if ((sawStreamStart && providerExecuted) || providerStatusChanged) {
@@ -540,15 +562,16 @@ export function useChat(options: UseChatOptions) {
     return true;
   };
 
-  const send = useCallback((text: string) => {
-    const question = text.trim();
+  const send = useCallback((input: ChatDraft | string) => {
+    const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
+    const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const current = messagesRef.current;
     const latestUser = [...current].reverse().find((message) => message.role === "user");
     const replacement = latestUser?.status && latestUser.status !== "complete" && latestUser.revision
       ? { replace_message_id: latestUser.id, prior_revision: latestUser.revision }
       : null;
-    const nextUser: ChatMessage = { id: nextId(), role: "user", text: question };
+    const nextUser: ChatMessage = { id: nextId(), role: "user", text: question, paperMentions: draft.paperMentions };
     const nextAssistant: ChatMessage = { id: nextId(), role: "assistant", streaming: true, blocks: [] };
     const replaceIndex = replacement && latestUser
       ? findLastMatchingIndex(current, (message) => message.id === latestUser.id)
@@ -556,8 +579,9 @@ export function useChat(options: UseChatOptions) {
     const optimistic = replaceIndex < 0
       ? [...current, nextUser, nextAssistant]
       : [...current.slice(0, replaceIndex), nextUser, nextAssistant];
-    return run(question, {
+    return run(draft, {
       message: question,
+      paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
       session_id: optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
@@ -565,8 +589,9 @@ export function useChat(options: UseChatOptions) {
     }, optimistic, current);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const editAndResend = useCallback((messageId: string, text: string) => {
-    const question = text.trim();
+  const editAndResend = useCallback((messageId: string, input: ChatDraft | string) => {
+    const draft = typeof input === "string" ? { text: input.trim(), paperMentions: [] } : input;
+    const question = draft.text;
     if (!question || question.length > 8_000 || busyRef.current || pendingCapacityRef.current) return false;
     const snapshot = messagesRef.current.slice();
     const targetIndex = snapshot.findIndex(
@@ -581,6 +606,7 @@ export function useChat(options: UseChatOptions) {
       id: target.id,
       role: "user",
       text: question,
+      paperMentions: draft.paperMentions,
       revision: first ? undefined : target.revision! + 1,
       status: "generating",
     };
@@ -593,8 +619,9 @@ export function useChat(options: UseChatOptions) {
     const optimistic = first
       ? [nextUser, nextAssistant]
       : [...snapshot.slice(0, targetIndex), nextUser, nextAssistant];
-    return run(question, {
+    return run(draft, {
       message: question,
+      paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
       session_id: first ? null : optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
       ...(first && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
@@ -620,7 +647,7 @@ export function useChat(options: UseChatOptions) {
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
     return run(
-      pending.question,
+      pending.draft,
       pending.request,
       pending.optimistic,
       pending.original,

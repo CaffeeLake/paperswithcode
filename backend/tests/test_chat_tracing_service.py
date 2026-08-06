@@ -59,12 +59,14 @@ def test_chat_trace_captures_hierarchy_usage_and_context(monkeypatch):
         chat_langfuse_enabled=True,
     )
 
+    effective_prompt = "<paper_context>exact context</paper_context>\nFind papers"
     with tracing.trace_chat_turn(
         settings=settings,
         request_id="request-1",
         session_id="session-1",
         user_id="private-user",
-        prompt="Find papers",
+        prompt=effective_prompt,
+        display_prompt="Find papers",
         model="provider/model",
         execution_backend="modal_cli",
         is_replacement=False,
@@ -134,6 +136,12 @@ def test_chat_trace_captures_hierarchy_usage_and_context(monkeypatch):
         "fetch-web-page",
     }
     generation = children["generate-research-response"]
+    expected_effective_input = [{"role": "user", "content": effective_prompt}]
+    assert client.root.fields["input"] == expected_effective_input
+    assert generation.fields["input"] == expected_effective_input
+    assert children["generate-session-title"].fields["input"] == [
+        {"role": "user", "content": "Find papers"}
+    ]
     assert generation.fields["usage_details"] == {"input": 10, "output": 4}
     assert generation.fields["cost_details"] == {"total": 0.02}
     assert generation.fields["model"] == "provider/model"

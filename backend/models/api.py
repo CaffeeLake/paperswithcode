@@ -2600,6 +2600,7 @@ class ChatAvailabilityResponse(BaseModel):
     status: Literal["available", "paused"]
     reason: Literal["chat_temporarily_disabled"] | None = None
     expected_recovery_at: datetime | None = None
+    paper_mentions_enabled: bool = False
 
 
 class ChatSandboxSpendEventResponse(BaseModel):

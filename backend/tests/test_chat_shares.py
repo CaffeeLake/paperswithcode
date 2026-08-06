@@ -83,6 +83,8 @@ def _row(
     citations=None,
     finish_reason=None,
     error_code=None,
+    paper_mentions=None,
+    effective_prompt=None,
 ):
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -94,6 +96,8 @@ def _row(
         citations=citations or [],
         finish_reason=finish_reason,
         error_code=error_code,
+        paper_mentions=paper_mentions or [],
+        effective_prompt=effective_prompt,
     )
 
 
@@ -209,7 +213,25 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     }
     user = _row(
         1,
-        content="private-title-is-not-here",
+        content="Read @A paper",
+        paper_mentions=[
+            {
+                "occurrence_id": "mention-1",
+                "route_id": "2501.00001",
+                "paper_id": "42",
+                "arxiv_id": "2501.00001",
+                "title": "A paper",
+                "source": "arxiv",
+                "source_url": "https://arxiv.org/abs/2501.00001",
+                "start": 5,
+                "end": 13,
+                "content_sha256": "a" * 64,
+                "content_truncated": False,
+                "content_available": True,
+                "included_bytes": 100,
+            }
+        ],
+        effective_prompt="private exact model input",
     )
     user.id = user_id
     assistant = _row(
@@ -245,7 +267,9 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
 
     assert payload["messages"][1]["finish_reason"] == "tool_limit"
     assert payload["messages"][1]["display_blocks"][1]["status"] == "error"
+    assert payload["messages"][0]["paper_mentions"][0]["route_id"] == "2501.00001"
     serialized = str(payload)
+    assert "private exact model input" not in serialized
     assert "secret-provider-route" not in serialized
     assert "private followup" not in serialized
     assert set(payload) == {"share_id", "created_at", "updated_at", "messages"}

@@ -253,6 +253,8 @@ class Settings(BaseSettings):
 
     # Research chat (disabled until the isolated live qualification passes).
     chat_enabled: bool = Field(default=False)
+    chat_paper_mentions_enabled: bool = Field(default=False)
+    chat_paper_context_timeout_seconds: float = Field(default=20, gt=0, le=60)
     # Read-only compatibility inputs for sessions created before the DeepSeek-only
     # registry. They are never exposed in current model discovery.
     chat_glm_route: str = Field(default="zai-org/GLM-5.2:together")

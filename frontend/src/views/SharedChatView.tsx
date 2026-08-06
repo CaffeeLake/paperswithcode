@@ -46,7 +46,7 @@ const SharedTranscript: React.FC<{ detail: ChatShareDetail }> = ({ detail }) => 
   return (
     <div className="shared-chat-transcript">
       {messages.map((message) => message.role === "user"
-        ? <UserMessage key={message.id} id={message.id} text={message.text ?? ""} />
+        ? <UserMessage key={message.id} id={message.id} text={message.text ?? ""} paperMentions={message.paperMentions ?? []} />
         : <AssistantMessage key={message.id} msg={message} papers={papers} onToggleBlock={toggleBlock} />)}
     </div>
   );
@@ -120,7 +120,7 @@ const SharedChatView: React.FC = () => {
             permission granted during sign-in; choose personal or organization billing in{" "}
             <a href="/settings">Settings</a>.
           </div>}
-          <Composer onSend={launchFreshChat} placeholder="Ask a new research question…" />
+          <Composer onSend={(draft) => launchFreshChat(draft.text)} placeholder="Ask a new research question…" />
         </section>
       </div>
     </div>

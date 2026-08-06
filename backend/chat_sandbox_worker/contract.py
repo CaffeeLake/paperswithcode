@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "34"
+WORKER_CONTRACT_VERSION = "35"
 # A release emits this gateway protocol and accepts workers back to the
 # compatible-from floor while an old slot drains or a rollback is qualified.
 GATEWAY_CONTRACT_VERSION = 26

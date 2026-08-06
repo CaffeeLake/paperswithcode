@@ -22,6 +22,52 @@ AuthorName = Annotated[str, StringConstraints(max_length=300)]
 FinishReason = Literal["success", "max_turns", "tool_limit"]
 
 
+class PaperMentionRequest(BaseModel):
+    """One browser-selected occurrence in UTF-16 textarea coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route_id: Annotated[
+        str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)
+    ]
+    title: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    start: int = Field(ge=0, le=16_000)
+    end: int = Field(gt=0, le=16_000)
+
+
+class PaperMentionSnapshot(BaseModel):
+    """Safe durable/UI projection of one server-resolved paper mention."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_id: str = Field(min_length=1, max_length=32)
+    route_id: str = Field(min_length=1, max_length=200)
+    paper_id: str = Field(min_length=1, max_length=64)
+    arxiv_id: str | None = Field(default=None, max_length=50)
+    title: str = Field(min_length=1, max_length=500)
+    source: Literal["arxiv", "external"]
+    source_url: str | None = Field(default=None, max_length=2000)
+    start: int = Field(ge=0, le=16_000)
+    end: int = Field(gt=0, le=16_000)
+    paper_version: str | None = Field(default=None, max_length=32)
+    metadata_updated_at: str | None = Field(default=None, max_length=64)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_truncated: bool
+    content_available: bool
+    included_bytes: int = Field(ge=0, le=81_920)
+    context_reference: dict[str, str] | None = None
+
+
+def _utf16_slice(value: str, start: int, end: int) -> str:
+    raw = value.encode("utf-16-le")
+    if end * 2 > len(raw):
+        raise ValueError("Paper mention range is outside the message")
+    try:
+        return raw[start * 2 : end * 2].decode("utf-16-le")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Paper mention range must align to UTF-16 characters") from exc
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -33,6 +79,9 @@ class ChatRequest(BaseModel):
     initial_model: str | None = None
     replace_message_id: uuid.UUID | None = None
     prior_revision: int | None = Field(default=None, ge=1)
+    paper_mentions: list[PaperMentionRequest] = Field(
+        default_factory=list, max_length=10
+    )
 
     @model_validator(mode="after")
     def validate_message(self) -> "ChatRequest":
@@ -42,6 +91,22 @@ class ChatRequest(BaseModel):
             raise ValueError(
                 "Replacement message and revision must be supplied together"
             )
+        previous_end = -1
+        distinct: set[str] = set()
+        for mention in self.paper_mentions:
+            if mention.start < previous_end or mention.end <= mention.start:
+                raise ValueError(
+                    "Paper mention ranges must be ordered and non-overlapping"
+                )
+            marker = _utf16_slice(self.message, mention.start, mention.end)
+            if marker != f"@{mention.title}":
+                raise ValueError(
+                    "Paper mention range does not match its visible marker"
+                )
+            previous_end = mention.end
+            distinct.add(mention.route_id)
+        if len(distinct) > 3:
+            raise ValueError("A message may mention at most three distinct papers")
         return self
 
 
@@ -187,6 +252,7 @@ class ChatMessageResponse(BaseModel):
     sequence: int
     role: Literal["user", "assistant"]
     content: str
+    paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
     revision: int
     status: str
     citations: list[CitationSnapshot] = Field(default_factory=list)
@@ -213,6 +279,7 @@ class PublicChatMessage(BaseModel):
     id: uuid.UUID
     role: Literal["user", "assistant"]
     content: str = Field(max_length=256_000)
+    paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
     display_blocks: list[DisplayBlock] = Field(default_factory=list)
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
     display_state: Literal["complete", "interrupted", "failed"] = "complete"

@@ -109,6 +109,24 @@ export interface ChatStreamRequest {
   initial_model?: string;
   replace_message_id?: string;
   prior_revision?: number;
+  paper_mentions?: PaperMentionWire[];
+}
+
+export interface PaperMentionDraft {
+  key: string;
+  route_id: string;
+  title: string;
+  source: "arxiv" | "external";
+  start: number;
+  end: number;
+  unavailable?: boolean;
+}
+
+export type PaperMentionWire = Pick<PaperMentionDraft, "route_id" | "title" | "start" | "end">;
+
+export interface ChatDraft {
+  text: string;
+  paperMentions: PaperMentionDraft[];
 }
 
 /* ---------- UI message model (also persisted for session history) ---------- */
@@ -163,6 +181,7 @@ export interface ChatMessage {
   errorCode?: string;
   revision?: number;
   status?: string;
+  paperMentions?: PaperMentionDraft[];
 }
 
 export const isChatLive = (): boolean => {

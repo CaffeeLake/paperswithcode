@@ -194,7 +194,7 @@ describe("ChatView inference authorization", () => {
     }));
 
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(
-      "Compare recent vision-language models",
+      { text: "Compare recent vision-language models", paperMentions: [] },
     ));
   });
 
@@ -208,7 +208,7 @@ describe("ChatView inference authorization", () => {
     const user = userEvent.setup();
     renderChat("/chat");
 
-    const composer = await screen.findByRole("textbox");
+    const composer = await screen.findByRole("combobox");
     await user.type(composer, "What is new in vision-language models?");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -217,9 +217,10 @@ describe("ChatView inference authorization", () => {
       expect.stringContaining("/api/v1/me/inference-billing"),
       expect.objectContaining({ credentials: "include" }),
     );
-    expect(sessionStorage.getItem("pwc:chat-oauth-draft")).toBe(
-      "What is new in vision-language models?",
-    );
+    expect(JSON.parse(sessionStorage.getItem("pwc:chat-oauth-draft") ?? "null")).toEqual({
+      text: "What is new in vision-language models?",
+      paperMentions: [],
+    });
     expect(sessionStorage.getItem("pwc:chat-oauth-auto-send")).toBe("1");
     expect(mocks.send).not.toHaveBeenCalled();
   });
@@ -234,11 +235,14 @@ describe("ChatView inference authorization", () => {
     const user = userEvent.setup();
     renderChat("/chat");
 
-    const composer = await screen.findByRole("textbox");
+    const composer = await screen.findByRole("combobox");
     await user.type(composer, "Explain this benchmark");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith("Explain this benchmark"));
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith({
+      text: "Explain this benchmark",
+      paperMentions: [],
+    }));
     expect(mocks.hfLoginUrl).not.toHaveBeenCalled();
   });
 
@@ -255,7 +259,10 @@ describe("ChatView inference authorization", () => {
     );
 
     const first = renderChat("/chat");
-    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith("Exactly once prompt"));
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith({
+      text: "Exactly once prompt",
+      paperMentions: [],
+    }));
     expect(mocks.send).toHaveBeenCalledTimes(1);
     expect(sessionStorage.getItem("pwc:chat-oauth-auto-send")).toBeNull();
     expect(sessionStorage.getItem("pwc:chat-oauth-attempted")).toBeNull();
@@ -280,7 +287,7 @@ describe("ChatView inference authorization", () => {
 
     renderChat("/chat");
 
-    const composer = await screen.findByRole("textbox");
+    const composer = await screen.findByRole("combobox");
     await waitFor(() => expect(composer).toHaveValue("Restore this prompt"));
     expect(screen.getByText(/authorization was not completed/i)).toBeVisible();
     expect(mocks.hfLoginUrl).not.toHaveBeenCalled();

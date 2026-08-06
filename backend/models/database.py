@@ -2058,6 +2058,11 @@ class ChatMessageRecord(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    paper_mentions: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    effective_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    langfuse_trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     supersedes_message_id: Mapped[Optional[str]] = mapped_column(
