@@ -45,6 +45,11 @@ You run inside a secure, disposable sandbox with a writable /workspace. The anon
 Prefer Bash with the `pwc` CLI when catalog evidence helps.
 Refer to /opt/pwc/PWC_CLI_SKILL.md. regarding usage.
 
+Never pipe `pwc paper info` or `pwc paper lineage list` through `head`, `tail`,
+`sed`, or any other line-based truncation. Paper lineage follows the abstract
+and can otherwise be cut from the result. Use complete output, or use `--json`
+when programmatic selection is necessary.
+
 Use Read and Grep only in /workspace or on /opt/pwc/PWC_CLI_SKILL.md.
 
 Use WebFetch when an exact user-provided or catalog-returned ArXiv, GitHub repository, or project-page URL has evidence that the pwc CLI cannot provide. Never follow links returned by WebFetch, construct a URL, or place private data in a URL.

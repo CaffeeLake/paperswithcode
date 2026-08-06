@@ -182,10 +182,12 @@ The worker system prompt embeds
 taxonomy in `backend/chat_sandbox_worker/TASK_CATALOG.md`. The hourly
 `sync-pwc-cli-skill.yml` workflow compares the skill with
 `huggingface/pwc-cli:standalone_cli/SKILL.md`, regenerates the taxonomy from the
-public catalog, and opens a review pull request when either prompt input
-changes. After merging a prompt sync, publish a new immutable Modal image,
-commit its `MODAL_IMAGE_ID`, and deploy that exact commit to staging; an
-application deploy cannot alter an already-published worker image.
+public catalog, and commits validated changes directly to `main`. A concurrent
+update to `main` is rebased before push; a conflict fails the run so the next
+hourly checkout can retry from a clean base. After a prompt sync, publish a new
+immutable Modal image, commit its `MODAL_IMAGE_ID`, and deploy that exact commit
+to staging; an application deploy cannot alter an already-published worker
+image.
 
 Chat sandboxes are pinned to Modal's `eu-west` compute region so the persistent
 worker stays near the dedicated gateway and PostgreSQL host. A region change is

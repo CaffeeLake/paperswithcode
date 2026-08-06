@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   sync:
@@ -77,37 +76,21 @@ jobs:
           fi
           install -m 0644 "$skill_temporary" "$DESTINATION"
           install -m 0644 "$taxonomy_temporary" "$TAXONOMY_DESTINATION"
-          context_sha="$(
-            sha256sum "$skill_temporary" "$taxonomy_temporary" \
-              | sha256sum \
-              | cut -d ' ' -f 1
-          )"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
-          echo "context_sha=$context_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Open sync pull request
+      - name: Commit prompt context sync
         if: steps.sync.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
           UPSTREAM_COMMIT: ${{ steps.sync.outputs.upstream_commit }}
-          CONTEXT_SHA: ${{ steps.sync.outputs.context_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          branch="automation/sync-chat-prompt-context-${CONTEXT_SHA:0:12}"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            echo "Sync branch already exists: $branch"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
           git add "$DESTINATION" "$TAXONOMY_DESTINATION"
-          git commit -m "Sync chat prompt context"
-          git push --set-upstream origin "$branch"
-          gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "Sync chat prompt context" \
-            --body "Syncs \`${UPSTREAM_PATH}\` from \`${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}\` and refreshes the bounded public area/task catalog embedded in the staging sandbox system prompt. Review the prompt changes before merging and publishing a new sandbox image."
+          git commit \
+            -m "Sync chat prompt context" \
+            -m "Upstream skill: ${UPSTREAM_REPOSITORY}@${UPSTREAM_COMMIT}"
+          git pull --rebase origin main
+          git push origin HEAD:main

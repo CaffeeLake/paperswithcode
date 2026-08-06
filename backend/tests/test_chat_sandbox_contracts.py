@@ -1571,6 +1571,9 @@ def test_system_prompt_prevents_unsupported_method_search_flags():
     assert "use `--page-size`, never `--limit`" in prompt
     assert "This subcommand has no `--search` or `--limit` flag" in prompt
     assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
+    assert "Never pipe `pwc paper info` or `pwc paper lineage list`" in prompt
+    assert "Paper lineage follows the abstract" in prompt
+    assert "Use complete output, or use `--json`" in prompt
     assert "[repo_id](https://huggingface.co/datasets/<repo_id>)" in prompt
 
 
@@ -1739,7 +1742,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-Vx4ahl25ZBS2fu4AKvK6y5"
-    assert WORKER_CONTRACT_VERSION == "37"
+    assert WORKER_CONTRACT_VERSION == "38"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
