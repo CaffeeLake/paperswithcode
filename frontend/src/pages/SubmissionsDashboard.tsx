@@ -163,11 +163,6 @@ function SubmissionCard({
   submission: PendingPaperEdit;
   paper?: Paper;
 }) {
-  const [adminNote, setAdminNote] = React.useState(submission.admin_note ?? "");
-  const [userReviewReason, setUserReviewReason] = React.useState(submission.user_review_reason ?? "");
-  const [resolvedPayload, setResolvedPayload] = React.useState(
-    JSON.stringify(submission.applied_payload ?? submission.proposed_payload, null, 2),
-  );
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const isDirectorySuggestion = submission.paper_id == null;
@@ -179,20 +174,6 @@ function SubmissionCard({
     : paper?.title || `Paper #${submission.paper_id}`;
   const avatarUrl = `https://huggingface.co/${encodeURIComponent(submission.hf_username)}/avatar`;
   const isPending = submission.status === "pending";
-
-  React.useEffect(() => {
-    setAdminNote(submission.admin_note ?? "");
-    setUserReviewReason(submission.user_review_reason ?? "");
-    setResolvedPayload(
-      JSON.stringify(submission.applied_payload ?? submission.proposed_payload, null, 2),
-    );
-  }, [
-    submission.admin_note,
-    submission.applied_payload,
-    submission.id,
-    submission.proposed_payload,
-    submission.user_review_reason,
-  ]);
 
   const invalidateAfterReview = React.useCallback(
     (reviewed: PendingPaperEdit) => {
@@ -213,19 +194,7 @@ function SubmissionCard({
   );
 
   const approveMutation = useMutation<PendingPaperEdit, unknown, void>({
-    mutationFn: () => {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(resolvedPayload) as Record<string, unknown>;
-      } catch {
-        throw new Error("Resolved payload must be valid JSON.");
-      }
-      return approvePendingPaperEdit(submission.id, {
-        admin_note: adminNote.trim() || undefined,
-        user_review_reason: userReviewReason.trim() || undefined,
-        resolved_payload: parsed,
-      });
-    },
+    mutationFn: () => approvePendingPaperEdit(submission.id),
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
       toast({
@@ -243,11 +212,7 @@ function SubmissionCard({
   });
 
   const rejectMutation = useMutation<PendingPaperEdit, unknown, void>({
-    mutationFn: () =>
-      rejectPendingPaperEdit(submission.id, {
-        admin_note: adminNote.trim() || undefined,
-        user_review_reason: userReviewReason.trim() || undefined,
-      }),
+    mutationFn: () => rejectPendingPaperEdit(submission.id),
     onSuccess: (reviewed) => {
       invalidateAfterReview(reviewed);
       toast({
@@ -344,29 +309,6 @@ function SubmissionCard({
       <footer className="submission-actions">
         {isPending ? (
           <>
-            <textarea
-              value={adminNote}
-              onChange={(event) => setAdminNote(event.target.value)}
-              placeholder="Optional admin note"
-              className="submission-note"
-              disabled={isMutating}
-            />
-            <textarea
-              value={userReviewReason}
-              onChange={(event) => setUserReviewReason(event.target.value)}
-              placeholder="Submitter-visible review reason"
-              className="submission-note"
-              disabled={isMutating}
-            />
-            <label className="text-sm">
-              Resolved payload (the original remains in audit history)
-              <textarea
-                value={resolvedPayload}
-                onChange={(event) => setResolvedPayload(event.target.value)}
-                className="submission-note mt-2 min-h-40 font-mono text-xs"
-                disabled={isMutating}
-              />
-            </label>
             <div className="submission-action-buttons">
               <button
                 type="button"
