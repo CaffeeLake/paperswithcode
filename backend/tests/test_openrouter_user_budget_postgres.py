@@ -40,6 +40,7 @@ NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
 def _settings() -> Settings:
     return Settings(
         _env_file=None,
+        environment="staging",
         chat_openrouter_server_funded_enabled=True,
         chat_openrouter_monthly_user_budget_usd="0.40",
         chat_openrouter_pricing_verified_at="2026-08-02",
@@ -101,7 +102,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
             ChatOpenRouterMonthlyUsage(
                 hf_user_id=owner,
                 month_start=month,
-                limit_microusd=400_000,
+                limit_microusd=300_000,
                 reserved_microusd=0,
                 spent_microusd=200_000,
                 unknown_cost_calls=0,
@@ -111,7 +112,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
     identities = [(uuid.uuid4(), uuid.uuid4()), (uuid.uuid4(), uuid.uuid4())]
     bounds = RequestBounds(
         request_bytes=100,
-        maximum_output_tokens=32_000,
+        maximum_output_tokens=8_000,
         payload={"messages": [{"role": "user", "content": "race"}]},
     )
 
@@ -143,7 +144,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
     with session_factory.begin() as db:
         service = OpenRouterUserBudgetService(db, _settings())
         usage = db.get(ChatOpenRouterMonthlyUsage, (owner, month))
-        assert usage.reserved_microusd == 170_100
+        assert usage.reserved_microusd == 82_200
         assert service.can_fund_call(owner, NOW) is False
         winning_identity = next(item for item in identities if item[1] == accepted[0])
         replay = service.reserve_call(
@@ -156,7 +157,7 @@ def test_final_budget_race_restart_idempotency_and_unknown_cost(session_factory)
             NOW,
         )
         assert replay.idempotent_replay is True
-        assert usage.reserved_microusd == 170_100
+        assert usage.reserved_microusd == 82_200
         service.mark_dispatched(accepted[0], NOW)
         service.mark_cost_unknown(accepted[0], "generation-1", NOW)
 

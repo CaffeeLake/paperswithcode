@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from sqlalchemy import text
 
+from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.config import Settings
 from backend.services.chat_runtime_contract import (
     dedicated_gateway_hostname,
@@ -456,7 +457,7 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                         route,
                         RequestBounds(
                             request_bytes=1,
-                            maximum_output_tokens=32_000,
+                            maximum_output_tokens=PROVIDER_OUTPUT_TOKEN_LIMIT,
                             payload={"messages": [{"role": "user", "content": "x"}]},
                         ),
                     )
