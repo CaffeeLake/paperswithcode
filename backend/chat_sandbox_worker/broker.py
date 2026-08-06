@@ -31,6 +31,7 @@ _PAPER_READ = re.compile(r"^/api/v1/research/papers/([^/]+)/read$")
 _PAPER_LINEAGE = re.compile(r"^/api/v1/research/papers/([^/]+)/lineage$")
 _BENCHMARK_TRENDS = re.compile(r"^/api/v1/tasks/([^/]+)/trending-benchmarks$")
 _BENCHMARK_EVALUATIONS = re.compile(r"^/api/v1/datasets/([^/]+)/evaluations/$")
+_EVALUATIONS = re.compile(r"^/api/v1/evaluations/$")
 CONTROL_SOCKET = Path("/var/empty/pwc-broker/control.sock")
 CAPABILITY_DRAIN_QUIET_SECONDS = 0.5
 CAPABILITY_DRAIN_TIMEOUT_SECONDS = 20.0
@@ -397,6 +398,14 @@ class Handler(BaseHTTPRequestHandler):
                 "page": query.get("page", 1),
                 "page_size": query.get("page_size", 100),
                 "is_open": query.get("is_open"),
+            }
+        elif _EVALUATIONS.match(parsed.path):
+            operation = "paper_evaluations"
+            arguments = {
+                "paper": query.get("paper_id"),
+                "page": query.get("page", 1),
+                "page_size": query.get("page_size", 100),
+                "ordering": query.get("ordering", "-benchmark_popularity"),
             }
         elif match := _PAPER_RELATED.match(parsed.path):
             operation = "paper_related"

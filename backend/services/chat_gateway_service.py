@@ -29,6 +29,7 @@ CATALOG_OPERATIONS = frozenset(
         "paper_trending",
         "paper_related",
         "paper_lineage_list",
+        "paper_evaluations",
         "area_list",
         "area_tasks",
         "task_list",
@@ -146,6 +147,25 @@ class ChatGatewayService:
             )
         if operation == "paper_lineage_list":
             return get_paper_lineage(self.db, str(arguments["paper"])[:200]).to_dict()
+        if operation == "paper_evaluations":
+            ordering = str(arguments.get("ordering") or "-benchmark_popularity")
+            order_by = ordering.lstrip("-")
+            if order_by not in {
+                "created_at",
+                "best_rank",
+                "evaluated_on",
+                "benchmark_popularity",
+            }:
+                order_by = "benchmark_popularity"
+            return _dump(
+                EvaluationService(self.db).get_evaluations(
+                    page=max(1, min(int(arguments.get("page", 1)), 100)),
+                    page_size=max(1, min(int(arguments.get("page_size", 100)), 100)),
+                    paper_id=int(arguments["paper"]),
+                    order_by=order_by,
+                    order_dir="desc" if ordering.startswith("-") else "asc",
+                )
+            )
         if operation == "area_list":
             ordering = str(arguments.get("ordering") or "name")
             return _dump(

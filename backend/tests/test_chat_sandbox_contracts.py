@@ -987,6 +987,67 @@ def test_broker_routes_taxonomy_cli_reads_to_catalog(monkeypatch, path, operatio
     assert payload["operation"] == operation
 
 
+def test_broker_routes_paper_evaluations_to_catalog(monkeypatch):
+    broker = _import_broker(monkeypatch)
+
+    class Response:
+        status = 200
+
+        def read(self, _size):
+            return b'{"result":{"count":0,"results":[]}}'
+
+    class Connection:
+        requests: list[tuple[str, str, bytes]] = []
+
+        def request(self, method, request_path, body, headers):
+            del headers
+            self.requests.append((method, request_path, body))
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return
+
+    class Request:
+        path = (
+            "/api/v1/evaluations/?page=2&page_size=100&paper_id=42"
+            "&ordering=-benchmark_popularity"
+        )
+        wfile = BytesIO()
+        status = None
+
+        def _connection(self):
+            return Connection()
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, _name, _value):
+            return
+
+        def end_headers(self):
+            return
+
+        def send_error(self, status):
+            self.status = status
+
+    request = Request()
+    broker.Handler.do_GET(request)
+
+    assert request.status == 200
+    payload = json.loads(Connection.requests[-1][2])
+    assert payload == {
+        "operation": "paper_evaluations",
+        "arguments": {
+            "paper": "42",
+            "page": "2",
+            "page_size": "100",
+            "ordering": "-benchmark_popularity",
+        },
+    }
+
+
 def test_proxy_routes_only_claude_model_posts_to_gateway(monkeypatch):
     broker = _import_broker(monkeypatch)
 
@@ -1178,6 +1239,43 @@ def test_gateway_paper_info_includes_normalized_hf_artifacts(monkeypatch):
         "https://huggingface.co/org/model-b",
     ]
     assert result["hf_datasets"] == ["https://huggingface.co/datasets/org/data"]
+
+
+def test_gateway_paper_evaluations_uses_bounded_service_arguments(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_evaluations(self, **options):
+            calls.append(options)
+            return {"count": 0, "results": []}
+
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.EvaluationService", Service
+    )
+
+    result = ChatGatewayService("db", SimpleNamespace()).catalog(
+        "paper_evaluations",
+        {
+            "paper": "42",
+            "page": "2",
+            "page_size": "500",
+            "ordering": "-benchmark_popularity",
+        },
+    )
+
+    assert result == {"count": 0, "results": []}
+    assert calls == [
+        {
+            "page": 2,
+            "page_size": 100,
+            "paper_id": 42,
+            "order_by": "benchmark_popularity",
+            "order_dir": "desc",
+        }
+    ]
 
 
 def test_gateway_method_list_uses_bounded_service_arguments(monkeypatch):
@@ -1742,7 +1840,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-rfHnWnc4Ta1QT8l8U6OPFF"
-    assert WORKER_CONTRACT_VERSION == "40"
+    assert WORKER_CONTRACT_VERSION == "41"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
