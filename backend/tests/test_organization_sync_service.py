@@ -1,5 +1,8 @@
-"""Strict-allowlist and idempotency tests for daily HF organization links."""
+"""Strict-allowlist and idempotency tests for HF organization links."""
 
+import asyncio
+
+import pytest
 from sqlalchemy import BigInteger, create_engine
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.compiler import compiles
@@ -7,6 +10,11 @@ from sqlalchemy.orm import Session
 
 from backend.models.database import Base, Organization, Paper, PaperOrganization
 from backend.services.organization_sync_service import link_daily_paper_organizations
+from backend.services.hf_organization_service import (
+    HFOrganizationData,
+    HFOrganizationPaper,
+)
+from backend.services.organization_sync_service import OrganizationSyncService
 
 
 @compiles(BigInteger, "sqlite")
@@ -92,3 +100,51 @@ def test_hf_provenance_replaces_lower_confidence_existing_source():
     assert link.source == "hf_org_papers"
     assert link.added_by_hf_subject is None
     assert link.added_by_hf_username is None
+
+
+def test_arbitrary_hf_organization_sync_creates_featured_row_and_links_paper():
+    session = _session()
+
+    class FakeHFClient:
+        def fetch(self, hf_slug):
+            assert hf_slug == "HKUST"
+            return HFOrganizationData(
+                hf_slug=hf_slug,
+                name="HKUST",
+                logo_url=None,
+                website_url="https://hkust.edu.hk",
+                upstream_paper_count=1,
+                papers=(HFOrganizationPaper("2501.00001", "Paper"),),
+            )
+
+    service = OrganizationSyncService(session, hf_client=FakeHFClient())
+    stats = asyncio.run(service.sync_hf_slug("HKUST"))
+
+    organization = session.query(Organization).one()
+    assert organization.slug == "hkust"
+    assert organization.hf_slug == "HKUST"
+    assert organization.is_featured is True
+    assert organization.display_order == 1
+    assert stats.linked == 1
+    assert session.query(PaperOrganization).one().source == "hf_org_papers"
+
+
+def test_arbitrary_hf_organization_sync_rejects_slug_collision():
+    session = _session()
+    session.add(
+        Organization(
+            name="Existing Lab",
+            slug="existing-lab",
+            hf_slug="existing.lab",
+        )
+    )
+    session.commit()
+
+    class UnusedHFClient:
+        def fetch(self, _hf_slug):
+            raise AssertionError("Hub must not be called for a slug collision")
+
+    service = OrganizationSyncService(session, hf_client=UnusedHFClient())
+
+    with pytest.raises(ValueError, match="already belongs"):
+        asyncio.run(service.sync_hf_slug("existing-lab"))

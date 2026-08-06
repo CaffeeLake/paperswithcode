@@ -2,10 +2,10 @@
 FastAPI router for organization endpoints.
 """
 
+import hashlib
 from typing import Optional
 
-import hashlib
-
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from sqlalchemy.orm import Session
 
@@ -14,11 +14,16 @@ from backend.models.api import (
     Organization,
     OrganizationAreasWithTasks,
     OrganizationContributions,
+    OrganizationSyncRequest,
+    OrganizationSyncResult,
     Organizations,
     Papers,
 )
 from backend.services.organization_service import OrganizationService
+from backend.services.organization_sync_service import OrganizationSyncService
+from backend.services.hf_organization_service import HFOrganizationError
 from backend.models.database import Organization as DBOrganization
+from backend.utils.auth import require_catalog_mutator
 from backend.utils.exceptions import DatabaseError, PaperNotFoundError
 from backend.utils.organization_logos import organization_logo_extension
 
@@ -50,6 +55,32 @@ def get_organizations(
         return service.get_organizations(featured_only=featured_only)
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/sync",
+    response_model=OrganizationSyncResult,
+    dependencies=[Depends(require_catalog_mutator)],
+    summary="Synchronize an organization and its papers from Hugging Face",
+)
+async def sync_organization(
+    payload: OrganizationSyncRequest,
+    db: Session = Depends(get_database_session),
+):
+    service = OrganizationSyncService(db)
+    try:
+        stats = await service.sync_hf_slug(
+            payload.hf_slug,
+            slug=payload.slug,
+            skip_missing_papers=payload.skip_missing_papers,
+        )
+        return stats.to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (HFOrganizationError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        service.close()
 
 
 @router.get(

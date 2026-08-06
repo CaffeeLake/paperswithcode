@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import socket
+import time
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
@@ -125,10 +126,29 @@ class HFOrganizationClient:
         if self._owns_client:
             self.client.close()
 
+    def _get(self, url: str) -> httpx.Response:
+        response = None
+        for attempt in range(6):
+            response = self.client.get(url)
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                return response
+            if attempt < 5:
+                retry_after = response.headers.get("retry-after")
+                reset_match = re.search(
+                    r"(?:^|;)t=(\d+)", response.headers.get("ratelimit", "")
+                )
+                if retry_after and retry_after.isdigit():
+                    delay = int(retry_after) + 1
+                elif reset_match:
+                    delay = int(reset_match.group(1)) + 1
+                else:
+                    delay = min(2**attempt, 60)
+                time.sleep(delay)
+        assert response is not None
+        return response
+
     def fetch(self, hf_slug: str) -> HFOrganizationData:
-        overview_response = self.client.get(
-            f"{HF_BASE}/api/organizations/{hf_slug}/overview"
-        )
+        overview_response = self._get(f"{HF_BASE}/api/organizations/{hf_slug}/overview")
         overview_response.raise_for_status()
         overview = overview_response.json()
         if not isinstance(overview, dict) or not isinstance(
@@ -136,7 +156,7 @@ class HFOrganizationClient:
         ):
             raise HFOrganizationError("Organization overview is missing numPapers")
 
-        papers_response = self.client.get(f"{HF_BASE}/{hf_slug}/papers")
+        papers_response = self._get(f"{HF_BASE}/{hf_slug}/papers")
         papers_response.raise_for_status()
         papers, website_url = parse_org_papers_html(papers_response.text)
         if len(papers) != overview["numPapers"]:

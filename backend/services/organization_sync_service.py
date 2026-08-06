@@ -1,4 +1,4 @@
-"""Idempotent, append-only synchronization of the featured HF organizations."""
+"""Idempotent, append-only synchronization of Hugging Face organizations."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.database.organizations_setup.organizations import (
@@ -24,6 +25,7 @@ from backend.services.paper_ingestion_service import (
     PaperIngestionError,
     PaperIngestionService,
 )
+from backend.utils.slug_utils import slugify
 
 logger = logging.getLogger(__name__)
 HF_ORG_PAPERS_SOURCE = "hf_org_papers"
@@ -102,6 +104,89 @@ class OrganizationSyncService:
         if manifest is None:
             raise ValueError(f"Organization {slug!r} is not in the featured manifest")
         data = self.hf_client.fetch(manifest.hf_slug)
+        return await self._sync_manifest(
+            manifest,
+            data,
+            dry_run=dry_run,
+            skip_missing_papers=skip_missing_papers,
+        )
+
+    async def sync_hf_slug(
+        self,
+        hf_slug: str,
+        *,
+        slug: str | None = None,
+        dry_run: bool = False,
+        skip_missing_papers: bool = False,
+    ) -> OrganizationSyncStats:
+        """Synchronize an arbitrary HF organization through the admin API path."""
+        normalized_hf_slug = hf_slug.strip()
+        if not normalized_hf_slug:
+            raise ValueError("Hugging Face organization handle must not be empty")
+        requested_slug = slugify(slug or normalized_hf_slug)
+        if not requested_slug:
+            raise ValueError("Organization slug must not be empty")
+
+        slug_match = (
+            self.db.query(Organization)
+            .filter(Organization.slug == requested_slug)
+            .one_or_none()
+        )
+        hf_match = (
+            self.db.query(Organization)
+            .filter(func.lower(Organization.hf_slug) == normalized_hf_slug.lower())
+            .one_or_none()
+        )
+        if (
+            slug_match is not None
+            and slug_match.hf_slug
+            and slug_match.hf_slug.lower() != normalized_hf_slug.lower()
+        ):
+            raise ValueError(
+                f"Organization slug {requested_slug!r} already belongs to Hugging "
+                f"Face handle {slug_match.hf_slug!r}"
+            )
+        if (
+            slug_match is not None
+            and hf_match is not None
+            and slug_match.id != hf_match.id
+        ):
+            raise ValueError(
+                f"Organization slug {requested_slug!r} and Hugging Face handle "
+                f"{normalized_hf_slug!r} identify different rows"
+            )
+        existing = hf_match or slug_match
+        if existing is not None:
+            requested_slug = existing.slug
+            display_order = existing.display_order
+        else:
+            display_order = None
+        if display_order is None:
+            display_order = (
+                self.db.query(func.max(Organization.display_order)).scalar() or 0
+            ) + 1
+
+        manifest = FeaturedOrganization(
+            hf_slug=normalized_hf_slug,
+            slug=requested_slug,
+            display_order=display_order,
+        )
+        data = self.hf_client.fetch(normalized_hf_slug)
+        return await self._sync_manifest(
+            manifest,
+            data,
+            dry_run=dry_run,
+            skip_missing_papers=skip_missing_papers,
+        )
+
+    async def _sync_manifest(
+        self,
+        manifest: FeaturedOrganization,
+        data: HFOrganizationData,
+        *,
+        dry_run: bool,
+        skip_missing_papers: bool,
+    ) -> OrganizationSyncStats:
         stats = OrganizationSyncStats(
             organization=manifest.slug, fetched=len(data.papers)
         )

@@ -1724,6 +1724,37 @@ class Organization(BaseModel):
         return str(v)
 
 
+class OrganizationSyncRequest(BaseModel):
+    """Request an idempotent synchronization from a Hugging Face namespace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hf_slug: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    slug: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    )
+    skip_missing_papers: bool = False
+
+
+class OrganizationSyncResult(BaseModel):
+    organization: str
+    fetched: int = 0
+    existing: int = 0
+    imported: int = 0
+    linked: int = 0
+    already_linked: int = 0
+    failed: int = 0
+    unknown_organizations_seen: int = 0
+    upstream_local_delta: int = 0
+
+
 class Organizations(BaseModel):
     """Container for a list of organizations."""
 

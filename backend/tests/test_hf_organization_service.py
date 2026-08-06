@@ -93,3 +93,34 @@ def test_fetch_validates_overview_count():
     client = HFOrganizationClient(httpx.Client(transport=httpx.MockTransport(handler)))
     with pytest.raises(HFOrganizationError, match="differs"):
         client.fetch("test")
+
+
+def test_fetch_retries_rate_limit_using_reset_header(monkeypatch):
+    attempts = 0
+    delays = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        if request.url.path.endswith("/overview"):
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(429, headers={"ratelimit": '"pages";r=0;t=2'})
+            return httpx.Response(
+                200,
+                json={"name": "test", "fullname": "Test Lab", "numPapers": 1},
+            )
+        return httpx.Response(
+            200,
+            text=_page([{"paper": {"id": "2501.00001"}, "title": "Paper"}]),
+        )
+
+    monkeypatch.setattr(
+        "backend.services.hf_organization_service.time.sleep", delays.append
+    )
+    client = HFOrganizationClient(httpx.Client(transport=httpx.MockTransport(handler)))
+
+    data = client.fetch("test")
+
+    assert data.upstream_paper_count == 1
+    assert attempts == 2
+    assert delays == [3]
