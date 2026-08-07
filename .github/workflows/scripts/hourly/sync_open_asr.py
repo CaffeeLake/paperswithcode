@@ -1,9 +1,11 @@
 """Refresh paper-linked evaluations from the living Open ASR Leaderboard."""
 
 import argparse
+import asyncio
 
 from backend.database.connection import db_manager
 from backend.services.open_asr_sync_service import (
+    OpenAsrPaperDiscoveryService,
     OpenAsrSyncService,
     fetch_open_asr_leaderboard,
 )
@@ -19,7 +21,19 @@ class SyncOpenAsrJob(CronJobBase):
         entries = fetch_open_asr_leaderboard()
         session = db_manager.session_local()
         try:
-            stats = OpenAsrSyncService(session).sync(entries, commit=not self.dry_run)
+            sync_service = OpenAsrSyncService(session)
+            discovery = asyncio.run(
+                OpenAsrPaperDiscoveryService(session).discover(
+                    sync_service.models_needing_discovery(entries),
+                    persist=not self.dry_run,
+                )
+            )
+            self.logger.info("open_asr_discovery %s", discovery.to_dict())
+            stats = sync_service.sync(
+                entries,
+                discovery=discovery,
+                commit=not self.dry_run,
+            )
             self.logger.info("open_asr_sync %s", stats.to_dict())
             self.logger.info("Papers processed: %s", stats.matched)
             if stats.unmatched_models:

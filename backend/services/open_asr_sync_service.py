@@ -4,22 +4,34 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 from gradio_client import Client
+from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy.orm import Session
 
+from backend.config import get_settings
 from backend.models.database import (
     Dataset,
     Evaluation,
     Metric,
     Paper,
+    PaperTask,
     Task,
     TaskDatasetMetric,
 )
+from backend.services.arxiv_service import ArxivService
 from backend.services.evaluation_service import EvaluationService
+from backend.services.paper_ingestion_service import (
+    PaperIngestionError,
+    PaperIngestionService,
+    canonical_arxiv_id,
+)
+from backend.utils.urls import validate_arxiv_id
 
 SPACE_APP_URL = "https://hf-audio-open-asr-leaderboard.hf.space"
 SPACE_SOURCE_URL = "https://huggingface.co/spaces/hf-audio/open_asr_leaderboard"
@@ -103,6 +115,38 @@ MODEL_PAPER_ARXIV_IDS: dict[str, str] = {
 _TAG_RE = re.compile(r"<[^>]+>")
 _NUMBER_RE = re.compile(r"^-?\d+(?:\.\d+)?")
 _LEGACY_MODEL_RE = re.compile(r"sourced from ([^/]+/[^/]+)/\.eval_results")
+_MODEL_TOKEN_RE = re.compile(r"[a-z][a-z0-9]*")
+_MODEL_SIZE_RE = re.compile(r"(?<![a-z0-9])\d+(?:\.\d+)?[bm](?![a-z0-9])")
+_MODEL_VERSION_RE = re.compile(r"(?<![a-z0-9])v\d+(?:\.\d+)*(?![a-z0-9])")
+_GENERIC_MODEL_TOKENS = {
+    "asr",
+    "audio",
+    "base",
+    "batch",
+    "ctc",
+    "english",
+    "en",
+    "fast",
+    "flash",
+    "hf",
+    "instruct",
+    "large",
+    "llm",
+    "medium",
+    "model",
+    "multilingual",
+    "preview",
+    "realtime",
+    "rnnt",
+    "small",
+    "speech",
+    "streaming",
+    "stt",
+    "tdt",
+    "tiny",
+    "transcribe",
+    "transducer",
+}
 
 
 @dataclass(frozen=True)
@@ -112,6 +156,38 @@ class OpenAsrEntry:
     wer: float
     rtfx: float | None
     is_open: bool
+
+
+@dataclass(frozen=True)
+class OpenAsrDiscoveredPaper:
+    paper_id: int
+    arxiv_id: str
+    hf_model_url: str | None = None
+    num_parameters: int | None = None
+
+
+@dataclass
+class OpenAsrPaperDiscoveryResult:
+    resolved: dict[str, OpenAsrDiscoveredPaper] = field(default_factory=dict)
+    discovered_models: list[str] = field(default_factory=list)
+    indexed_papers: list[str] = field(default_factory=list)
+    would_index: list[str] = field(default_factory=list)
+    ambiguous_models: list[str] = field(default_factory=list)
+    rejected_papers: list[str] = field(default_factory=list)
+    unavailable_models: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resolved": len(self.resolved),
+            "discovered_models": self.discovered_models,
+            "indexed_papers": self.indexed_papers,
+            "would_index": self.would_index,
+            "ambiguous_models": self.ambiguous_models,
+            "rejected_papers": self.rejected_papers,
+            "unavailable_models": self.unavailable_models,
+            "failures": self.failures,
+        }
 
 
 @dataclass
@@ -145,6 +221,45 @@ def _number(value: Any, *, optional: bool = False) -> float | None:
     if match is None:
         raise ValueError(f"invalid numeric leaderboard value: {value!r}")
     return float(match.group())
+
+
+def _model_identity_matches_paper(
+    model_id: str, paper_title: str, paper_abstract: str | None
+) -> bool:
+    """Require a distinctive model token and every explicit size/version marker."""
+    model_name = model_id.rsplit("/", 1)[-1].casefold()
+    paper_text = f"{paper_title}\n{paper_abstract or ''}".casefold()
+    distinctive_tokens = [
+        token
+        for token in _MODEL_TOKEN_RE.findall(model_name)
+        if token not in _GENERIC_MODEL_TOKENS
+        and not _MODEL_SIZE_RE.fullmatch(token)
+        and not _MODEL_VERSION_RE.fullmatch(token)
+        and len(token) >= 3
+    ]
+    if not distinctive_tokens:
+        return False
+    family_token = distinctive_tokens[0]
+    if (
+        re.search(rf"(?<![a-z0-9]){re.escape(family_token)}(?![a-z0-9])", paper_text)
+        is None
+    ):
+        return False
+    markers = _MODEL_SIZE_RE.findall(model_name) + _MODEL_VERSION_RE.findall(model_name)
+    return all(
+        re.search(rf"(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])", paper_text)
+        is not None
+        for marker in markers
+    )
+
+
+def _safetensors_total(model_info: Any) -> int | None:
+    safetensors = getattr(model_info, "safetensors", None)
+    if isinstance(safetensors, dict):
+        total = safetensors.get("total")
+    else:
+        total = getattr(safetensors, "total", None)
+    return int(total) if isinstance(total, int) and total >= 0 else None
 
 
 def parse_open_asr_leaderboard(payload: Any) -> list[OpenAsrEntry]:
@@ -219,6 +334,123 @@ def fetch_open_asr_leaderboard(
     return parse_open_asr_leaderboard(payload)
 
 
+class OpenAsrPaperDiscoveryService:
+    """Resolve only high-confidence arXiv papers declared by exact HF models."""
+
+    def __init__(
+        self,
+        db: Session,
+        *,
+        hf_api: HfApi | None = None,
+        arxiv_service: ArxivService | None = None,
+        ingestion_service: PaperIngestionService | None = None,
+    ):
+        settings = get_settings()
+        self.db = db
+        self.hf_api = hf_api or HfApi(token=settings.hf_token or None)
+        self.arxiv_service = arxiv_service or ArxivService()
+        self.ingestion_service = ingestion_service or PaperIngestionService(db)
+
+    async def discover(
+        self, model_ids: list[str], *, persist: bool = True
+    ) -> OpenAsrPaperDiscoveryResult:
+        result = OpenAsrPaperDiscoveryResult()
+        for model_id in model_ids:
+            reviewed_arxiv_id = MODEL_PAPER_ARXIV_IDS.get(model_id)
+            try:
+                model_info = self.hf_api.model_info(
+                    model_id,
+                    timeout=10,
+                    expand=["safetensors", "tags"],
+                )
+            except HfHubHTTPError as exc:
+                if reviewed_arxiv_id is None:
+                    result.unavailable_models.append(model_id)
+                    continue
+                model_info = None
+                result.failures.append(f"{model_id}:hub_{type(exc).__name__}")
+
+            if reviewed_arxiv_id is not None:
+                arxiv_id = reviewed_arxiv_id
+            else:
+                arxiv_ids = {
+                    canonical_arxiv_id(tag.split(":", 1)[1])
+                    for tag in (getattr(model_info, "tags", None) or [])
+                    if tag.casefold().startswith("arxiv:")
+                    and validate_arxiv_id(tag.split(":", 1)[1])
+                }
+                if len(arxiv_ids) != 1:
+                    if len(arxiv_ids) > 1:
+                        result.ambiguous_models.append(model_id)
+                    else:
+                        result.unavailable_models.append(model_id)
+                    continue
+                arxiv_id = arxiv_ids.pop()
+
+            paper = (
+                self.db.query(Paper)
+                .filter(Paper.arxiv_id == arxiv_id, Paper.is_latest_version)
+                .order_by(Paper.id.desc())
+                .first()
+            )
+            metadata = None
+            if paper is None:
+                metadata = await self.arxiv_service.get_paper_metadata(arxiv_id)
+                if not metadata.success:
+                    result.failures.append(
+                        f"{model_id}:{arxiv_id}:{metadata.error_type or 'arxiv_error'}"
+                    )
+                    continue
+                paper_title = metadata.title
+                paper_abstract = metadata.abstract
+            else:
+                paper_title = paper.title
+                paper_abstract = paper.abstract
+
+            if reviewed_arxiv_id is None and not _model_identity_matches_paper(
+                model_id, paper_title, paper_abstract
+            ):
+                result.rejected_papers.append(f"{model_id}:{arxiv_id}")
+                continue
+
+            canonical_model_id = (
+                getattr(model_info, "id", None) if model_info is not None else None
+            ) or model_id
+            hf_model_url = f"https://huggingface.co/{canonical_model_id}"
+            num_parameters = (
+                _safetensors_total(model_info) if model_info is not None else None
+            )
+            if not persist:
+                result.would_index.append(f"{model_id}:{arxiv_id}")
+                continue
+
+            if paper is None:
+                try:
+                    (
+                        paper,
+                        created,
+                    ) = await self.ingestion_service.get_or_import_arxiv_paper(arxiv_id)
+                except PaperIngestionError as exc:
+                    result.failures.append(
+                        f"{model_id}:{arxiv_id}:{exc.error_type or 'ingestion_error'}"
+                    )
+                    continue
+                if created:
+                    result.indexed_papers.append(arxiv_id)
+
+            hf_models = list(paper.hf_models or [])
+            if hf_model_url not in hf_models:
+                paper.hf_models = [*hf_models, hf_model_url]
+            result.resolved[model_id.casefold()] = OpenAsrDiscoveredPaper(
+                paper_id=paper.id,
+                arxiv_id=arxiv_id,
+                hf_model_url=hf_model_url,
+                num_parameters=num_parameters,
+            )
+            result.discovered_models.append(f"{model_id}:{arxiv_id}")
+        return result
+
+
 class OpenAsrSyncService:
     """Replace only live and legacy-imported Open ASR evaluation rows."""
 
@@ -260,10 +492,54 @@ class OpenAsrSyncService:
         match = _LEGACY_MODEL_RE.search(row.methodology or "")
         return match.group(1) if match else None
 
+    def models_needing_discovery(self, entries: list[OpenAsrEntry]) -> list[str]:
+        """Return upstream model ids not already resolvable without Hub lookup."""
+        task, dataset = self._leaderboard_identity()
+        candidate_rows = (
+            self.db.query(Evaluation)
+            .filter(
+                Evaluation.task_id == task.id,
+                Evaluation.dataset_id == dataset.id,
+            )
+            .all()
+        )
+        resolved_names = {
+            row.model_name.casefold()
+            for row in candidate_rows
+            if row.external_source_url == SPACE_SOURCE_URL
+            and (row.methodology or "").startswith(MANAGED_METHODOLOGY_PREFIX)
+        }
+        resolved_names.update(
+            legacy_model_id.casefold()
+            for row in candidate_rows
+            if row.external_source_url == LEGACY_SOURCE_URL
+            and (row.methodology or "").startswith("Open ASR Leaderboard rank ")
+            and (legacy_model_id := self._legacy_model_id(row)) is not None
+        )
+        existing_arxiv_ids = {
+            arxiv_id
+            for (arxiv_id,) in self.db.query(Paper.arxiv_id)
+            .filter(
+                Paper.arxiv_id.in_(set(MODEL_PAPER_ARXIV_IDS.values())),
+                Paper.is_latest_version,
+            )
+            .all()
+        }
+        return [
+            entry.model_id
+            for entry in entries
+            if entry.model_id.casefold() not in resolved_names
+            and (
+                entry.model_id not in MODEL_PAPER_ARXIV_IDS
+                or MODEL_PAPER_ARXIV_IDS[entry.model_id] not in existing_arxiv_ids
+            )
+        ]
+
     def sync(
         self,
         entries: list[OpenAsrEntry],
         *,
+        discovery: OpenAsrPaperDiscoveryResult | None = None,
         fetched_at: datetime | None = None,
         commit: bool = True,
     ) -> OpenAsrSyncStats:
@@ -317,12 +593,16 @@ class OpenAsrSyncService:
                 key = entry.model_id.casefold()
                 row = managed_by_name.get(key)
                 paper_id = row.paper_id if row is not None else legacy_papers.get(key)
+                discovered = discovery.resolved.get(key) if discovery else None
                 if paper_id is None:
                     arxiv_id = MODEL_PAPER_ARXIV_IDS.get(entry.model_id)
-                    if arxiv_id is None:
+                    if arxiv_id is not None:
+                        paper_id = papers_by_arxiv.get(arxiv_id)
+                    if paper_id is None and discovered is not None:
+                        paper_id = discovered.paper_id
+                    if paper_id is None and arxiv_id is None:
                         stats.unmatched_models.append(entry.model_id)
                         continue
-                    paper_id = papers_by_arxiv.get(arxiv_id)
                     if paper_id is None:
                         stats.missing_papers.append(f"{entry.model_id}:{arxiv_id}")
                         continue
@@ -356,6 +636,25 @@ class OpenAsrSyncService:
                 row.source_url = SPACE_SOURCE_URL
                 row.external = True
                 row.updated_at = now
+                if discovered is not None:
+                    row.hf_model_url = discovered.hf_model_url
+                    row.num_parameters = discovered.num_parameters
+                    if (
+                        self.db.query(PaperTask)
+                        .filter(
+                            PaperTask.paper_id == paper_id,
+                            PaperTask.task_id == task.id,
+                        )
+                        .first()
+                        is None
+                    ):
+                        self.db.add(
+                            PaperTask(
+                                paper_id=paper_id,
+                                task_id=task.id,
+                                source="auto",
+                            )
+                        )
                 stats.matched += 1
 
             for row in managed_rows:
