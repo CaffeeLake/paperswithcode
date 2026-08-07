@@ -856,7 +856,47 @@ class ChatStreamOrchestrator:
                     acquisition_outcome=event.get("acquisition_outcome"),
                 )
                 continue
+            if kind == "_execution_telemetry":
+                logger.info(
+                    "chat execution recovery request_id=%s turn_id=%s "
+                    "rounds=%s/%s denied_rounds=%s calls=%s/%s denied_calls=%s "
+                    "tooling_closed=%s limit_reached=%s finalizer_attempted=%s "
+                    "finalizer_outcome=%s finalization_latency_ms=%s",
+                    self.request_id,
+                    self.admission.turn_id,
+                    event.get("tool_rounds_executed"),
+                    event.get("maximum_tool_rounds"),
+                    event.get("tool_rounds_denied"),
+                    event.get("tool_calls_allowed"),
+                    event.get("maximum_tool_calls"),
+                    event.get("tool_calls_denied"),
+                    event.get("tooling_close_reason"),
+                    event.get("execution_limit_reached"),
+                    event.get("finalizer_attempted"),
+                    event.get("finalizer_outcome"),
+                    event.get("finalization_latency_ms"),
+                )
+                continue
             if kind == "usage":
+                usage = event.get("usage") or {}
+                token_count = (
+                    sum(
+                        int(value)
+                        for key, value in usage.items()
+                        if isinstance(value, (int, float)) and "token" in str(key)
+                    )
+                    if isinstance(usage, dict)
+                    else 0
+                )
+                logger.info(
+                    "chat provider usage request_id=%s turn_id=%s phase=%s "
+                    "provider_requests=%s tokens=%s",
+                    self.request_id,
+                    self.admission.turn_id,
+                    event.get("phase") or "research",
+                    event.get("provider_requests") or 0,
+                    token_count,
+                )
                 self.trace.record_usage(event)
                 continue
 

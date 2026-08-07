@@ -160,7 +160,9 @@ describe("CopyToBucketCard", () => {
     expect(artifactCheckboxes).toHaveLength(2);
     artifactCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
 
-    await user.click(screen.getByRole("button", { name: "Deselect all" }));
+    const deselectAllButton = screen.getByRole("button", { name: "Deselect all" });
+    expect(deselectAllButton).toHaveClass("border");
+    await user.click(deselectAllButton);
     artifactCheckboxes.forEach((checkbox) => expect(checkbox).not.toBeChecked());
 
     await user.click(screen.getByRole("button", { name: "Select all" }));

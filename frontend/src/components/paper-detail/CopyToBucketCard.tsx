@@ -560,8 +560,9 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                   <Label>Artifacts</Label>
                   <Button
                     type="button"
-                    variant="link"
-                    className="h-auto p-0 text-xs"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
                     onClick={() =>
                       setSelectedIds(
                         allArtifactsSelected

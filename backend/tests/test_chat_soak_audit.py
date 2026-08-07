@@ -112,3 +112,39 @@ def test_journal_counts_ignore_only_qualification_forced_failure_sessions(
 
     assert counts["research_producer_failure"] == 1
     assert counts["turn_cleanup_failure"] == 1
+
+
+def test_journal_counts_report_content_free_execution_recovery_aggregates(monkeypatch):
+    monkeypatch.setattr(
+        audit_chat_soak.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=(
+                "chat execution recovery request_id=a turn_id=b rounds=6/6 "
+                "denied_rounds=1 calls=9/12 denied_calls=2 tooling_closed=answer_now "
+                "limit_reached=True finalizer_attempted=True finalizer_outcome=success "
+                "finalization_latency_ms=1200\n"
+                "chat execution recovery request_id=c turn_id=d rounds=6/6 "
+                "denied_rounds=0 calls=8/12 denied_calls=0 tooling_closed=None "
+                "limit_reached=True finalizer_attempted=True finalizer_outcome=success "
+                "finalization_latency_ms=800\n"
+                "chat provider usage request_id=a turn_id=b phase=finalization "
+                "provider_requests=1 tokens=400\n"
+            )
+        ),
+    )
+
+    counts = _journal_counts(datetime(2026, 8, 4, 10, 32, tzinfo=UTC))
+
+    assert counts["execution_limits_raw"] == 2
+    assert counts["execution_limits_recovered"] == 2
+    assert counts["repeated_denials_after_closure"] == 1
+    assert counts["finalization_latency_ms"] == {
+        "count": 2,
+        "mean": 1000,
+        "p95": 1200,
+    }
+    assert counts["finalization_provider_usage"] == {
+        "provider_requests": 1,
+        "tokens": 400,
+    }

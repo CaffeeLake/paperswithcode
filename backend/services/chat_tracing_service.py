@@ -118,6 +118,7 @@ class ChatTurnTrace:
         self.model_dispatch: Any | None = None
         self.first_worker_delta_recorded = False
         self.usage: dict[str, int] = {}
+        self.usage_by_phase: dict[str, dict[str, int]] = {}
         self.cost: dict[str, float] = {}
         self.answer = ""
         self.status = "interrupted"
@@ -147,10 +148,17 @@ class ChatTurnTrace:
         self.title_generation = None
 
     def record_usage(self, event: dict[str, Any]) -> None:
-        self.usage = _usage_details(event.get("usage"))
+        details = _usage_details(event.get("usage"))
+        for key, value in details.items():
+            self.usage[key] = self.usage.get(key, 0) + value
+        phase = str(event.get("phase") or "research")
+        phase_usage = self.usage_by_phase.setdefault(phase, {})
+        for key, value in details.items():
+            phase_usage[key] = phase_usage.get(key, 0) + value
         cost = event.get("total_cost_usd")
         if isinstance(cost, (int, float)) and cost >= 0:
-            self.cost = {"total": float(cost)}
+            self.cost["total"] = self.cost.get("total", 0.0) + float(cost)
+        self.generation.update(metadata={"usage_by_phase": self.usage_by_phase})
 
     def record_event(self, kind: str, event: dict[str, Any]) -> None:
         """Advance operational spans from sanitized worker lifecycle events."""
@@ -175,6 +183,14 @@ class ChatTurnTrace:
             return
         if kind in {"reasoning_delta", "tool_call", "answer_delta"}:
             self._record_first_worker_delta()
+            return
+        if kind == "_execution_telemetry":
+            self.generation.update(
+                metadata={
+                    "aggregation": "agent-run",
+                    "execution_policy": event,
+                }
+            )
             return
         if kind != "_latency":
             return

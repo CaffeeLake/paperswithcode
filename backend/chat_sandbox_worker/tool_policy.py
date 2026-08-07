@@ -5,10 +5,14 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
+
+from backend.chat_execution_policy import (
+    ANSWER_NOW_REASON,
+    normalize_public_https_url,
+)
 
 WEB_SEARCH_TOOL = "mcp__web__search_web"
 ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep", "WebFetch", WEB_SEARCH_TOOL})
@@ -16,6 +20,10 @@ _HINT = "\n[output truncated; narrow, filter, or paginate the request and try ag
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
 _SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)
 _URL = re.compile(r'https?://[^\s<>"\\]+', re.IGNORECASE)
+_HARD_FAILURE = re.compile(
+    r"(?:\b429\b|execution limit|tool limit reached|search limit reached)",
+    re.IGNORECASE,
+)
 _ALWAYS_FETCHABLE_HOSTS = frozenset({"arxiv.org"})
 
 
@@ -54,34 +62,7 @@ def _inside(value: Path, root: Path) -> bool:
 
 
 def _public_url(value: str) -> str | None:
-    try:
-        parsed = urlsplit(value.rstrip(".,;:!?)\\]}'\""))
-        host = parsed.hostname
-        if (
-            parsed.scheme != "https"
-            or not host
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.port not in {None, 443}
-            or not host.isascii()
-        ):
-            return None
-        lowered = host.lower().rstrip(".")
-        if lowered == "localhost" or lowered.endswith(
-            (".local", ".internal", ".localhost")
-        ):
-            return None
-        try:
-            address = ip_address(lowered)
-        except ValueError:
-            pass
-        else:
-            if not address.is_global:
-                return None
-        netloc = lowered
-        return urlunsplit(("https", netloc, parsed.path or "/", parsed.query, ""))
-    except ValueError:
-        return None
+    return normalize_public_https_url(value)
 
 
 @dataclass(frozen=True)
@@ -96,6 +77,7 @@ class ToolBudget:
     maximum_direct_searches: int
     maximum_result_bytes: int
     maximum_turn_output_bytes: int
+    maximum_rounds: int = 6
     maximum_web_searches: int = 3
     web_search_enabled: bool = False
     calls: int = 0
@@ -106,6 +88,36 @@ class ToolBudget:
     started: dict[str, float] = field(default_factory=dict)
     started_names: dict[str, str] = field(default_factory=dict)
     fetchable_urls: set[str] = field(default_factory=set)
+    tool_rounds_started: int = 0
+    tool_rounds_denied: int = 0
+    tool_rounds_executed: int = 0
+    executed_round_numbers: set[int] = field(default_factory=set)
+    round_by_tool_id: dict[str, int] = field(default_factory=dict)
+    tooling_closed: bool = False
+    close_reason: str | None = None
+    denied_calls: int = 0
+    completed_calls: int = 0
+
+    def seed_urls(self, urls: list[str]) -> None:
+        self.fetchable_urls = set(urls)
+
+    def register_round(self, tool_ids: list[str]) -> None:
+        pending = [
+            tool_id for tool_id in tool_ids if tool_id not in self.round_by_tool_id
+        ]
+        if not pending:
+            return
+        self.tool_rounds_started += 1
+        round_number = self.tool_rounds_started
+        for tool_id in pending:
+            self.round_by_tool_id[tool_id] = round_number
+        if round_number > self.maximum_rounds:
+            self.tool_rounds_denied += 1
+            self.close(ANSWER_NOW_REASON)
+
+    def close(self, reason: str = ANSWER_NOW_REASON) -> None:
+        self.tooling_closed = True
+        self.close_reason = reason
 
     def observe_urls(self, payload: str) -> None:
         for match in _URL.finditer(payload):
@@ -120,10 +132,21 @@ class ToolBudget:
         workspace: Path = Path("/workspace"),
         guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
     ) -> Decision:
+        if tool_id not in self.round_by_tool_id:
+            # Compatibility fallback for callers that do not expose an SDK
+            # assistant-message boundary. Normal execution registers first.
+            self.register_round([tool_id])
+        if self.tooling_closed:
+            self.denied_calls += 1
+            return Decision(False, self.close_reason or ANSWER_NOW_REASON)
         if name not in ALLOWED_TOOLS:
-            return Decision(False, "That tool is not available.")
+            self.close()
+            self.denied_calls += 1
+            return Decision(False, "That tool is not available. " + ANSWER_NOW_REASON)
         if self.calls >= self.maximum_calls:
-            return Decision(False, "Tool limit reached. Answer from existing evidence.")
+            self.close()
+            self.denied_calls += 1
+            return Decision(False, ANSWER_NOW_REASON)
         if name == WEB_SEARCH_TOOL:
             query = args.get("query")
             if (
@@ -133,31 +156,32 @@ class ToolBudget:
                 or len(query) > 500
                 or set(args) != {"query"}
             ):
-                return Decision(False, "Web search is not authorized for this turn.")
+                self.close()
+                self.denied_calls += 1
+                return Decision(False, ANSWER_NOW_REASON)
             if self.web_search_failed:
-                return Decision(
-                    False,
-                    "Web search failed. Answer from the evidence already gathered.",
-                )
+                self.close()
+                self.denied_calls += 1
+                return Decision(False, ANSWER_NOW_REASON)
             if self.web_searches >= self.maximum_web_searches:
-                return Decision(
-                    False, "Web search limit reached. Use results already found."
-                )
+                self.close()
+                self.denied_calls += 1
+                return Decision(False, ANSWER_NOW_REASON)
         if name == "WebFetch":
             url = args.get("url")
             normalized = _public_url(url) if isinstance(url, str) else None
             if normalized is None:
-                return Decision(False, "WebFetch requires a public HTTPS URL.")
+                self.close()
+                self.denied_calls += 1
+                return Decision(False, ANSWER_NOW_REASON)
             hostname = urlsplit(normalized).hostname
             if (
                 normalized not in self.fetchable_urls
                 and hostname not in _ALWAYS_FETCHABLE_HOSTS
             ):
-                return Decision(
-                    False,
-                    "WebFetch is limited to arxiv.org URLs, URLs supplied by "
-                    "the user, or URLs returned by a tool.",
-                )
+                self.close()
+                self.denied_calls += 1
+                return Decision(False, ANSWER_NOW_REASON)
         if name in {"Read", "Grep"}:
             path = args.get("file_path") or args.get("path")
             if isinstance(path, str):
@@ -166,24 +190,27 @@ class ToolBudget:
                     _inside(candidate, workspace)
                     or candidate.resolve(strict=False) == guide
                 ):
-                    return Decision(
-                        False,
-                        "Read and Grep are limited to the workspace and CLI guide.",
-                    )
+                    self.close()
+                    self.denied_calls += 1
+                    return Decision(False, ANSWER_NOW_REASON)
         search = (
             name == "Bash"
             and isinstance(args.get("command"), str)
             and bool(_SEARCH.search(args["command"]))
         )
         if search and self.searches >= self.maximum_direct_searches:
-            return Decision(
-                False, "Direct pwc search limit reached. Use papers already found."
-            )
+            self.close()
+            self.denied_calls += 1
+            return Decision(False, ANSWER_NOW_REASON)
         self.calls += 1
         self.searches += int(search)
         self.web_searches += int(name == WEB_SEARCH_TOOL)
         self.started[tool_id] = time.monotonic()
         self.started_names[tool_id] = name
+        round_number = self.round_by_tool_id[tool_id]
+        if round_number not in self.executed_round_numbers:
+            self.executed_round_numbers.add(round_number)
+            self.tool_rounds_executed += 1
         return Decision(True)
 
     def result(
@@ -202,9 +229,14 @@ class ToolBudget:
         name = self.started_names.pop(tool_id, None)
         if name == WEB_SEARCH_TOOL and status != "success":
             self.web_search_failed = True
+            self.close()
+        elif status == "error" and _HARD_FAILURE.search(text):
+            self.close()
         if name not in {"WebFetch", WEB_SEARCH_TOOL}:
             self.observe_urls(text)
         started = self.started.pop(tool_id, None)
+        if started is not None:
+            self.completed_calls += 1
         took_ms = round((time.monotonic() - started) * 1000) if started else 0
         return {
             "type": "tool_result",

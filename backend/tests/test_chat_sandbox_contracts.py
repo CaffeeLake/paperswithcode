@@ -19,6 +19,7 @@ from claude_agent_sdk import (
     MirrorErrorMessage,
     ResultMessage,
     StreamEvent,
+    TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -32,6 +33,12 @@ from backend.chat_gateway_app import (
     CatalogRequest,
     _output_tokens_allowed,
     catalog,
+)
+from backend.chat_execution_policy import (
+    FINALIZER_MAX_TURNS,
+    MAX_FETCHABLE_URLS,
+    effective_tool_rounds,
+    validate_url_seed,
 )
 from backend.chat_sandbox_worker import (
     agent,
@@ -615,14 +622,119 @@ def test_persistent_agent_reuses_client_and_applies_model_changes(monkeypatch):
         return first, second
 
     first, second = asyncio.run(run())
-    assert [event["type"] for event in first] == ["workspace_ready", "done"]
-    assert [event["type"] for event in second] == ["workspace_ready", "done"]
+    assert [event["type"] for event in first] == [
+        "workspace_ready",
+        "_execution_telemetry",
+        "done",
+    ]
+    assert [event["type"] for event in second] == [
+        "workspace_ready",
+        "_execution_telemetry",
+        "done",
+    ]
     assert [call[0] for call in calls].count("init") == 1
     assert ("model", "model-b") in calls
     assert calls.count(("connect", None)) == 1
     assert calls.count(("wait_for_flush",)) == 2
     assert calls.count(("flush",)) == 2
     assert calls[-1] == ("disconnect",)
+
+
+def test_persistent_agent_recovers_max_turns_with_tool_free_same_session(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        agent, "GUIDE", Path(agent.__file__).with_name("PWC_CLI_SKILL.md")
+    )
+
+    class Client:
+        def __init__(self, options):
+            self.options = options
+            created.append(self)
+            self._query = SimpleNamespace(
+                _transcript_mirror_batcher=SimpleNamespace(
+                    _flush_task=SimpleNamespace(wait=self.wait), flush=self.flush
+                )
+            )
+
+        async def connect(self, prompt):
+            return None
+
+        async def query(self, prompt):
+            self.prompt = prompt
+
+        async def receive_messages(self):
+            if len(created) == 1:
+                yield ResultMessage(
+                    subtype="error_max_turns",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=True,
+                    num_turns=9,
+                    session_id="session-a",
+                )
+            else:
+                yield AssistantMessage(
+                    model="test", content=[TextBlock(text="Recovered answer")]
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session-a",
+                )
+
+        async def wait(self):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def interrupt(self):
+            return None
+
+        async def set_model(self, _model):
+            return None
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", Client)
+    worker = agent.PersistentAgent(agent.WorkerSettings.from_environment())
+
+    async def collect():
+        events = [
+            event
+            async for event in worker.stream(
+                {
+                    "type": "run_turn",
+                    "request_id": "request-1",
+                    "prompt": "research",
+                    "model": "model-a",
+                    "fetchable_urls": [],
+                }
+            )
+        ]
+        await worker.close()
+        return events
+
+    events = asyncio.run(collect())
+    assert len(created) == 2
+    assert created[1].options.resume == "session-a"
+    assert created[1].options.tools == []
+    assert created[1].options.allowed_tools == []
+    assert created[1].prompt == agent.FINALIZER_PROMPT
+    assert [event["type"] for event in events] == [
+        "workspace_ready",
+        "_sdk_session",
+        "usage",
+        "answer_delta",
+        "usage",
+        "_execution_telemetry",
+        "done",
+    ]
+    assert events[-1]["finish_reason"] == "success"
 
 
 def test_persistent_agent_preflight_keeps_initialized_client(monkeypatch):
@@ -1518,6 +1630,101 @@ def test_tool_budget_counts_parallel_calls_and_fifth_search_is_denied():
     assert budget.calls == 4
 
 
+def test_tool_budget_counts_parallel_batches_and_denies_seventh_round_in_full():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=12,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+        maximum_rounds=effective_tool_rounds(8),
+    )
+    call_count = 0
+    for round_index, batch_size in enumerate((2, 2, 2, 2, 1, 1), start=1):
+        ids = [f"r{round_index}-{item}" for item in range(batch_size)]
+        budget.register_round(ids)
+        for tool_id in ids:
+            assert budget.authorize(
+                tool_id, "Bash", {"command": "pwc tasks list"}
+            ).allowed
+            call_count += 1
+    assert call_count == 10
+    assert budget.tool_rounds_started == 6
+    assert budget.tool_rounds_executed == 6
+
+    denied_ids = ["r7-a", "r7-b"]
+    budget.register_round(denied_ids)
+    assert all(
+        not budget.authorize(tool_id, "Bash", {"command": "pwc tasks list"}).allowed
+        for tool_id in denied_ids
+    )
+    assert budget.calls == 10
+    assert budget.tool_rounds_denied == 1
+    assert budget.tooling_closed
+
+
+def test_fetchable_url_seed_is_strict_sorted_and_bounded():
+    urls = sorted(f"https://example.com/{index}" for index in range(MAX_FETCHABLE_URLS))
+    assert validate_url_seed(urls) == urls
+    with pytest.raises(ValueError, match="Invalid fetchable URL seed"):
+        validate_url_seed([*urls, "https://example.com/overflow"])
+    with pytest.raises(ValueError, match="Invalid fetchable URL seed"):
+        validate_url_seed(["https://127.0.0.1/private"])
+    with pytest.raises(ValueError, match="Invalid fetchable URL seed"):
+        validate_url_seed(["https://example.com/b", "https://example.com/a"])
+
+
+def test_worker_adapter_surfaces_recoverable_execution_limit_internally():
+    events = WorkerSDKAdapter(show_reasoning=False).feed(
+        ResultMessage(
+            subtype="error_max_turns",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=True,
+            num_turns=9,
+            session_id="session-a",
+        )
+    )
+    assert [event["type"] for event in events] == ["usage", "_execution_limit"]
+
+
+def test_worker_adapter_registers_complete_parallel_batch_before_returning_calls():
+    batches = []
+    adapter = WorkerSDKAdapter(show_reasoning=False, on_tool_batch=batches.append)
+    events = adapter.feed(
+        AssistantMessage(
+            model="test",
+            content=[
+                ToolUseBlock(id="a", name="Bash", input={"command": "one"}),
+                ToolUseBlock(id="b", name="Read", input={"file_path": "/workspace/x"}),
+            ],
+        )
+    )
+    assert batches == [["a", "b"]]
+    assert [event["id"] for event in events] == ["a", "b"]
+
+
+def test_worker_finalizer_options_are_tool_free_and_single_turn(monkeypatch):
+    monkeypatch.setattr(
+        agent, "GUIDE", Path(agent.__file__).with_name("PWC_CLI_SKILL.md")
+    )
+    settings = agent.WorkerSettings.from_environment()
+    hooks = agent.WorkerToolHooks(settings)
+    options = agent._options(
+        settings,
+        hooks,
+        model="model-a",
+        resume="session-a",
+        finalizing=True,
+    )
+    assert options.tools == []
+    assert options.allowed_tools == []
+    assert options.mcp_servers == {}
+    assert options.max_turns == FINALIZER_MAX_TURNS
+    assert {"Bash", "Read", "Grep", "WebFetch", "mcp__web__search_web"} <= set(
+        options.disallowed_tools
+    )
+
+
 def test_web_fetch_allows_arxiv_or_observed_public_urls():
     budget = ToolBudget(
         maximum_calls=12,
@@ -1655,7 +1862,7 @@ def test_catalog_web_fetch_rejects_private_dns_redirects_and_unsupported_content
 
 def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
     source = Path(agent.__file__).read_text()
-    assert 'tools=["Bash", "Read", "Grep", "WebFetch"]' in source
+    assert 'else ["Bash", "Read", "Grep", "WebFetch"]' in source
     assert '"skipWebFetchPreflight": True' in source
     assert '"HTTPS_PROXY": "http://127.0.0.1:8766"' in source
     assert '"NO_PROXY": "127.0.0.1,localhost"' in source
@@ -1701,6 +1908,13 @@ def test_tool_policy_rejects_traversal_and_enforces_aggregate_bytes(tmp_path):
         guide=guide,
     )
     assert not denied.allowed
+    assert budget.tooling_closed
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=4,
+        maximum_result_bytes=24,
+        maximum_turn_output_bytes=48,
+    )
     for index in range(3):
         tool_id = f"tool-{index}"
         assert budget.authorize(
@@ -1743,6 +1957,7 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         "request-1",
         "model-a",
         False,
+        [],
     )
     assert decode_frame(encode_frame(frame))["prompt"] == prompt
 
@@ -1817,13 +2032,13 @@ def test_worker_protocol_allows_terminal_less_correlated_cancellation():
         validator.accept({"type": "done"})
 
 
-def test_prompt_and_manifest_share_eight_round_contract():
+def test_prompt_and_manifest_share_six_round_contract():
     prompt = render(current_date=date(2026, 7, 28))
     assert "The current UTC date is 2026-07-28." in prompt
     assert "Judge publication recency relative to this date." in prompt
-    assert "at most 8 tool-use round trips" in prompt
+    assert "at most 6 executed tool-use rounds" in prompt
     assert "hard failure ceilings, not retrieval targets" in prompt
-    assert "within 6 round trips and 3 searches" in prompt
+    assert "within 5 rounds and 3 searches" in prompt
     assert "title-based `pwc paper info` lookup can consume a search" in prompt
     assert "If any tool reports a 429" in prompt
     assert "secure, disposable sandbox" in prompt
@@ -1845,7 +2060,7 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-tpIDnMOT4GLNdlADvqXwCg"
-    assert WORKER_CONTRACT_VERSION == "43"
+    assert WORKER_CONTRACT_VERSION == "44"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
