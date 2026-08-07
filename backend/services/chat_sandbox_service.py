@@ -1576,19 +1576,25 @@ class SandboxSessionManager:
                     and self._unexpired(lease, now)
                 ):
                     waiting_for_owner = True
-                elif lease is None or lease.state not in {
-                    "starting",
-                    "ready",
-                    "busy",
-                    "idle",
-                    "terminating",
-                }:
+                elif (
+                    lease is None
+                    or not compatible
+                    or lease.state
+                    not in {
+                        "starting",
+                        "ready",
+                        "busy",
+                        "idle",
+                        "terminating",
+                    }
+                ):
                     if self.blank_pool_enabled:
                         live_assigned = (
                             db.scalar(
                                 select(func.count())
                                 .select_from(ChatSandboxLease)
                                 .where(
+                                    ChatSandboxLease.chat_session_id != chat_session_id,
                                     ChatSandboxLease.state.in_(
                                         [
                                             "starting",
@@ -1597,7 +1603,7 @@ class SandboxSessionManager:
                                             "idle",
                                             "terminating",
                                         ]
-                                    )
+                                    ),
                                 )
                             )
                             or 0

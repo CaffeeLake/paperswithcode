@@ -677,6 +677,64 @@ def test_pool_miss_evicts_oldest_idle_worker_at_total_capacity(monkeypatch):
     assert new_lease.modal_sandbox_id == "sb-new"
 
 
+def test_incompatible_session_lease_is_replaced_without_consuming_capacity(
+    monkeypatch,
+):
+    factory = _database()
+    settings = _settings()
+    session_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    with factory() as db, db.begin():
+        db.add_all(
+            [
+                _session(session_id),
+                _blank(settings),
+                ChatSandboxLease(
+                    chat_session_id=session_id,
+                    modal_sandbox_id="sb-old",
+                    app_release_id="release-old",
+                    image_version="im-old",
+                    worker_contract_version="13",
+                    worker_generation="generation-old",
+                    state="ready",
+                    last_activity_at=now - timedelta(minutes=1),
+                    created_at=now - timedelta(minutes=2),
+                    updated_at=now,
+                ),
+            ]
+        )
+    manager = _manager(factory, settings)
+    manager._lock_start_claim = lambda *_args: None
+    terminated: list[str] = []
+
+    async def terminate(sandbox_id: str):
+        terminated.append(sandbox_id)
+        return True
+
+    manager._terminate_provider_sandbox = terminate
+    manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+
+    class Sandbox:
+        object_id = "sb-new"
+        terminate = SimpleNamespace(aio=lambda **_kwargs: asyncio.sleep(0))
+
+    async def create(*_args, **_kwargs):
+        return Sandbox()
+
+    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
+
+    result = asyncio.run(manager.ensure_ready(session_id, allow_pool=False))
+
+    assert terminated == ["sb-old"]
+    assert result[0].object_id == "sb-new"
+    with factory() as db:
+        lease = db.get(ChatSandboxLease, session_id)
+    assert lease.state == "ready"
+    assert lease.image_version == settings.chat_modal_image_version
+    assert lease.worker_contract_version == settings.chat_worker_contract_version
+    assert lease.modal_sandbox_id == "sb-new"
+
+
 def test_terminated_session_resume_evicts_oldest_idle_at_total_capacity(monkeypatch):
     factory = _database()
     settings = _settings()
