@@ -44,6 +44,18 @@ describe("ModelPicker", () => {
       .toEqual(["or-a"]);
   });
 
+  it("reserves enough width for the full label and native select arrow", () => {
+    render(
+      <ModelPicker
+        models={models}
+        selectedModel="or-a"
+        onModelChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("combobox")).toHaveStyle({ width: "25ch" });
+  });
+
   it("keeps model selection behavior unchanged", async () => {
     const onModelChange = vi.fn();
     const user = userEvent.setup();

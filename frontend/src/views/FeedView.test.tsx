@@ -148,6 +148,7 @@ describe("AskAssistant", () => {
     renderAskAssistant();
 
     const toggle = await screen.findByRole("switch", { name: "Web search" });
+    expect(screen.getByLabelText("Research model")).toHaveStyle({ width: "24ch" });
     await user.click(toggle);
     await user.type(
       screen.getByRole("textbox", { name: "Ask the assistant" }),

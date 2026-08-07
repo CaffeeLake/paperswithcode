@@ -26,7 +26,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({
 }) => {
   const selectedLabel = models.find((model) => model.id === selectedModel)?.label
     ?? `${selectedModel} (unavailable)`;
-  const widthInCharacters = Math.min(Math.max(selectedLabel.length + 5, 12), 32);
+  const widthInCharacters = Math.min(Math.max(selectedLabel.length + 7, 12), 32);
   const ungroupedModels = models.filter((model) => !model.provider);
 
   if (models.length === 1 && models[0]?.id === selectedModel) {
