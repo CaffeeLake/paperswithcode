@@ -26,6 +26,7 @@ class WorkerEventValidator:
         "workspace_ready",
         "_sdk_session",
         "_mirror_error",
+        "_execution_telemetry",
         "usage",
         "reasoning_start",
         "reasoning_delta",

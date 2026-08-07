@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from claude_agent_sdk import (
@@ -18,7 +19,12 @@ from backend.chat_sandbox_worker.tool_policy import WEB_SEARCH_TOOL
 
 
 class SDKEventAdapter:
-    def __init__(self, *, show_reasoning: bool):
+    def __init__(
+        self,
+        *,
+        show_reasoning: bool,
+        on_tool_batch: Callable[[list[str]], None] | None = None,
+    ):
         self.show_reasoning = show_reasoning
         self.reasoning_open = False
         self.answer_started = False
@@ -31,6 +37,7 @@ class SDKEventAdapter:
         self.pending_tool_ids: dict[str, list[str]] = {}
         self.tool_id_occurrences: dict[str, int] = {}
         self.allocated_tool_ids: set[str] = set()
+        self.on_tool_batch = on_tool_batch
 
     def _close_reasoning(self) -> list[dict[str, Any]]:
         if not self.reasoning_open:
@@ -144,6 +151,14 @@ class SDKEventAdapter:
                 events.extend(self._tool_call(self.tool_blocks.get(index, {})))
         elif kind == "message_stop":
             events.extend(self._close_reasoning())
+            if self.on_tool_batch:
+                self.on_tool_batch(
+                    [
+                        str(block.get("id") or "")
+                        for block in self.tool_blocks.values()
+                        if block.get("id")
+                    ]
+                )
         return events
 
     def feed(self, message: Any) -> list[dict[str, Any]]:
@@ -194,6 +209,11 @@ class SDKEventAdapter:
                         "message": text,
                     }
                 ]
+            tool_ids = [
+                block.id for block in message.content if isinstance(block, ToolUseBlock)
+            ]
+            if tool_ids and self.on_tool_batch:
+                self.on_tool_batch(tool_ids)
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     events.extend(
@@ -224,6 +244,7 @@ class SDKEventAdapter:
                     "usage": message.usage or {},
                     "model_usage": message.model_usage or {},
                     "total_cost_usd": message.total_cost_usd,
+                    "provider_requests": message.num_turns,
                 }
             )
             limited = "max_turn" in message.subtype
@@ -236,11 +257,10 @@ class SDKEventAdapter:
                     }
                 )
             else:
-                events.append(
-                    {
-                        "type": "done",
-                        "followups": [],
-                        "finish_reason": "tool_limit" if limited else "success",
-                    }
-                )
+                if limited:
+                    events.append({"type": "_execution_limit", "reason": "max_turns"})
+                else:
+                    events.append(
+                        {"type": "done", "followups": [], "finish_reason": "success"}
+                    )
         return events

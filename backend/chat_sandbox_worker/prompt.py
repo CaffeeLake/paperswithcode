@@ -6,6 +6,8 @@ import hashlib
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from backend.chat_execution_policy import effective_tool_rounds, prompt_contract_digest
+
 _CURRENT_DATE_PLACEHOLDER = "{current_date}"
 
 TEMPLATE = """
@@ -56,7 +58,7 @@ Use WebFetch when an exact user-provided or catalog-returned ArXiv, GitHub repos
 
 {web_search_guidance}
 
-In order to limit latency, you have at most {max_turns} tool-use round trips, {max_calls} total tool calls, and {max_searches} direct pwc searches. These are hard failure ceilings, not retrieval targets. Normally finish retrieval within {retrieval_turns} round trips and {planned_searches} searches, reserving at least two model turns and one search for correction and final synthesis.
+In order to limit latency, you have at most {max_turns} executed tool-use rounds, {max_calls} total tool calls, and {max_searches} direct pwc searches. Parallel calls in one assistant response count as one round and as individual calls. These are hard failure ceilings, not retrieval targets. Normally finish retrieval within {retrieval_turns} rounds and {planned_searches} searches, reserving at least two model turns and one search for correction and final synthesis.
 
 For recommendation or overview questions, 3-5 well-supported examples are enough unless the user asks for exhaustive coverage. A title-based `pwc paper info` lookup can consume a search while resolving the title, so prefer exact arXiv or numeric IDs as soon as a result or closest-match message supplies one. Never spend another search rediscovering an ID already returned by a tool. If any tool reports a 429, denial, or execution limit, make no more tool calls and answer immediately from the evidence already gathered.
 
@@ -115,10 +117,10 @@ def render(
         )
     return (
         _render_template(rendered_date.isoformat()).format(
-            max_turns=max_turns,
+            max_turns=effective_tool_rounds(max_turns),
             max_calls=max_calls,
             max_searches=max_searches,
-            retrieval_turns=max(1, max_turns - 2),
+            retrieval_turns=max(1, effective_tool_rounds(max_turns) - 1),
             planned_searches=max(1, max_searches - 1),
             web_search_guidance=web_search_guidance,
         )
@@ -138,6 +140,7 @@ def sha256(**kwargs) -> str:
             **kwargs,
         ).replace("2000-01-01", _CURRENT_DATE_PLACEHOLDER, 1)
         variants.append(prompt)
-    return hashlib.sha256(
+    research_digest = hashlib.sha256(
         "\n\n---web-search-variant---\n\n".join(variants).encode()
     ).hexdigest()
+    return prompt_contract_digest(research_digest)

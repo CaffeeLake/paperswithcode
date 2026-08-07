@@ -115,6 +115,7 @@ class ModalChatTurnRunner:
             resume=str(self.resume_id) if self.resume_id else None,
             capability=self.capability,
             web_search_enabled=self.admission.web_search_enabled,
+            fetchable_urls=list(self.admission.fetchable_urls),
         )
 
     def _revoke(self) -> None:

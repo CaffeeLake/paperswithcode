@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,13 @@ from claude_agent_sdk import (
 from claude_agent_sdk import query as sdk_query
 
 from backend.chat_sandbox_worker.config import WorkerSettings
+from backend.chat_execution_policy import (
+    FINALIZER_MAX_TURNS,
+    FINALIZER_MIN_REMAINING_SECONDS,
+    FINALIZER_PROMPT,
+    effective_tool_rounds,
+    validate_url_seed,
+)
 from backend.chat_sandbox_worker.prompt import render as render_system_prompt
 from backend.chat_sandbox_worker.protocol import (
     MAX_RUN_PROMPT_BYTES,
@@ -185,6 +193,7 @@ class WorkerToolHooks:
     ):
         self.budget = ToolBudget(
             maximum_calls=settings.chat_max_tool_calls,
+            maximum_rounds=effective_tool_rounds(settings.chat_max_turns),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
             maximum_result_bytes=settings.chat_tool_result_max_bytes,
             maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
@@ -204,6 +213,7 @@ class WorkerToolHooks:
     ) -> None:
         self.budget = ToolBudget(
             maximum_calls=settings.chat_max_tool_calls,
+            maximum_rounds=effective_tool_rounds(settings.chat_max_turns),
             maximum_direct_searches=settings.chat_max_direct_search_calls,
             maximum_result_bytes=settings.chat_tool_result_max_bytes,
             maximum_turn_output_bytes=settings.chat_turn_tool_output_max_bytes,
@@ -238,6 +248,8 @@ class WorkerToolHooks:
                 _authorize_web_fetch_proxy(normalized_url)
             except (KeyError, OSError, RuntimeError):
                 reason = "WebFetch secure transport is unavailable."
+                self.budget.close()
+                self.budget.denied_calls += 1
                 self.results[tool_id] = self.budget.result(
                     tool_id, reason, status="denied"
                 )
@@ -324,7 +336,9 @@ class WorkerToolHooks:
         }
 
 
-def _validate_run_frame(frame: dict[str, Any]) -> tuple[str, str, str, bool]:
+def _validate_run_frame(
+    frame: dict[str, Any],
+) -> tuple[str, str, str, bool, list[str]]:
     prompt = frame.get("prompt")
     if (
         not isinstance(prompt, str)
@@ -339,7 +353,8 @@ def _validate_run_frame(frame: dict[str, Any]) -> tuple[str, str, str, bool]:
     web_search_enabled = frame.get("web_search_enabled", False)
     if not isinstance(web_search_enabled, bool):
         raise ValueError("Invalid web search authorization")
-    return prompt, request_id, model, web_search_enabled
+    fetchable_urls = validate_url_seed(frame.get("fetchable_urls", []))
+    return prompt, request_id, model, web_search_enabled, fetchable_urls
 
 
 def _persistent_stdin_reader() -> asyncio.StreamReader:
@@ -353,6 +368,7 @@ def _options(
     model: str,
     resume: str | None,
     web_search_enabled: bool = False,
+    finalizing: bool = False,
 ) -> ClaudeAgentOptions:
     prompt_text = render_system_prompt(
         max_turns=settings.chat_max_turns,
@@ -362,27 +378,50 @@ def _options(
         max_web_searches=settings.chat_max_web_search_calls,
         web_search_enabled=web_search_enabled,
     )
-    web_tools = [WEB_SEARCH_TOOL] if web_search_enabled else []
-    web_servers = {"web": _create_web_mcp_server(hooks)} if web_search_enabled else {}
+    web_tools = [WEB_SEARCH_TOOL] if web_search_enabled and not finalizing else []
+    web_servers = (
+        {"web": _create_web_mcp_server(hooks)}
+        if web_search_enabled and not finalizing
+        else {}
+    )
     hook_matcher = "|".join(["Bash", "Read", "Grep", "WebFetch", *web_tools])
+    research_tools = ["Bash", "Read", "Grep", "WebFetch"]
+    disallowed = [
+        "Bash",
+        "Read",
+        "Grep",
+        "Glob",
+        "WebFetch",
+        "WebSearch",
+        "Write",
+        "Edit",
+        "Task",
+        "AskUserQuestion",
+        WEB_SEARCH_TOOL,
+        "mcp__papers__search_papers",
+    ]
     return ClaudeAgentOptions(
-        tools=["Bash", "Read", "Grep", "WebFetch"],
-        allowed_tools=["Bash", "Read", "Grep", "WebFetch", *web_tools],
-        disallowed_tools=[
-            "Glob",
-            "Write",
-            "Edit",
-            "WebSearch",
-            "Task",
-            "AskUserQuestion",
-            *([] if web_search_enabled else [WEB_SEARCH_TOOL]),
-        ],
+        tools=[] if finalizing else ["Bash", "Read", "Grep", "WebFetch"],
+        allowed_tools=[] if finalizing else [*research_tools, *web_tools],
+        disallowed_tools=(
+            disallowed
+            if finalizing
+            else [
+                "Glob",
+                "Write",
+                "Edit",
+                "WebSearch",
+                "Task",
+                "AskUserQuestion",
+                *([] if web_search_enabled else [WEB_SEARCH_TOOL]),
+            ]
+        ),
         system_prompt=prompt_text,
         settings=json.dumps({"skipWebFetchPreflight": True}),
         mcp_servers=web_servers,
         strict_mcp_config=True,
         permission_mode="dontAsk",
-        max_turns=settings.chat_max_turns,
+        max_turns=FINALIZER_MAX_TURNS if finalizing else settings.chat_max_turns,
         model=model,
         fallback_model=None,
         env={
@@ -404,21 +443,25 @@ def _options(
         plugins=[],
         include_partial_messages=True,
         stderr=lambda _line: None,
-        hooks={
-            "PreToolUse": [
-                HookMatcher(matcher=hook_matcher, hooks=[hooks.pre], timeout=5)
-            ],
-            "PostToolUse": [
-                HookMatcher(matcher=hook_matcher, hooks=[hooks.post], timeout=5)
-            ],
-            "PostToolUseFailure": [
-                HookMatcher(
-                    matcher=hook_matcher,
-                    hooks=[hooks.failure],
-                    timeout=5,
-                )
-            ],
-        },
+        hooks=(
+            {}
+            if finalizing
+            else {
+                "PreToolUse": [
+                    HookMatcher(matcher=hook_matcher, hooks=[hooks.pre], timeout=5)
+                ],
+                "PostToolUse": [
+                    HookMatcher(matcher=hook_matcher, hooks=[hooks.post], timeout=5)
+                ],
+                "PostToolUseFailure": [
+                    HookMatcher(
+                        matcher=hook_matcher,
+                        hooks=[hooks.failure],
+                        timeout=5,
+                    )
+                ],
+            }
+        ),
         session_store=RemoteSessionStore(),
         session_store_flush="eager",
         resume=resume,
@@ -432,6 +475,7 @@ async def _adapt_messages(
     hooks: WorkerToolHooks,
     adapter: SDKEventAdapter,
     on_session_id=None,
+    emit_session_event: bool = True,
 ):
     terminal_events: list[dict[str, Any]] = []
     async for message in messages:
@@ -452,7 +496,7 @@ async def _adapt_messages(
         if session_id:
             if on_session_id is not None:
                 on_session_id(str(session_id))
-            if not terminal_events:
+            if emit_session_event and not terminal_events:
                 yield {
                     "v": 1,
                     "type": "_sdk_session",
@@ -520,9 +564,16 @@ async def _adapt_messages(
 async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
     if frame.get("type") != "run_turn":
         raise ValueError("Expected run_turn")
-    prompt, request_id, model, web_search_enabled = _validate_run_frame(frame)
+    prompt, request_id, model, web_search_enabled, fetchable_urls = _validate_run_frame(
+        frame
+    )
     hooks = WorkerToolHooks(settings, prompt, web_search_enabled=web_search_enabled)
-    adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+    hooks.budget.seed_urls(fetchable_urls)
+    hooks.budget.observe_urls(prompt)
+    adapter = SDKEventAdapter(
+        show_reasoning=settings.chat_show_reasoning,
+        on_tool_batch=hooks.budget.register_round,
+    )
     options = _options(
         settings,
         hooks,
@@ -535,13 +586,136 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
         "type": "workspace_ready",
         "request_id": request_id,
     }
+    deadline = time.monotonic() + settings.chat_agent_timeout_seconds
     stream = sdk_query(prompt=prompt, options=options)
+    session_id: str | None = None
+    limited = False
+    research_done: dict[str, Any] | None = None
+    research_failure: dict[str, Any] | None = None
+
+    def record_session(value: str) -> None:
+        nonlocal session_id
+        session_id = value
+
     try:
-        async with asyncio.timeout(settings.chat_agent_timeout_seconds):
+        async with asyncio.timeout_at(deadline):
             async for event in _adapt_messages(
-                stream, request_id=request_id, hooks=hooks, adapter=adapter
+                stream,
+                request_id=request_id,
+                hooks=hooks,
+                adapter=adapter,
+                on_session_id=record_session,
             ):
-                yield event
+                if event.get("type") == "_execution_limit":
+                    limited = True
+                elif event.get("type") == "done":
+                    research_done = event
+                elif event.get("type") in {"error", "_mirror_error"}:
+                    research_failure = event
+                else:
+                    if event.get("type") == "usage":
+                        event["phase"] = "research"
+                    yield event
+        await stream.aclose()
+        if research_failure is not None:
+            yield _telemetry_event(request_id, hooks, limited, False, "mirror_error")
+            yield research_failure
+            return
+        if limited:
+            remaining = deadline - time.monotonic()
+            if remaining < FINALIZER_MIN_REMAINING_SECONDS or not session_id:
+                outcome = "insufficient_time" if remaining < 10 else "mirror_error"
+                yield _telemetry_event(request_id, hooks, True, False, outcome)
+                yield _done_event(request_id, "tool_limit")
+                return
+            final_stream = sdk_query(
+                prompt=FINALIZER_PROMPT,
+                options=_options(
+                    settings,
+                    hooks,
+                    model=model,
+                    resume=session_id,
+                    web_search_enabled=False,
+                    finalizing=True,
+                ),
+            )
+            finalizer_started = time.monotonic()
+            final_adapter = SDKEventAdapter(show_reasoning=settings.chat_show_reasoning)
+            final_limited = False
+            final_done: dict[str, Any] | None = None
+            final_failure: dict[str, Any] | None = None
+            try:
+                async with asyncio.timeout_at(deadline):
+                    async for event in _adapt_messages(
+                        final_stream,
+                        request_id=request_id,
+                        hooks=hooks,
+                        adapter=final_adapter,
+                        emit_session_event=False,
+                    ):
+                        if event.get("type") == "_execution_limit":
+                            final_limited = True
+                        elif event.get("type") == "done":
+                            final_done = event
+                        elif event.get("type") in {"error", "_mirror_error"}:
+                            final_failure = event
+                        else:
+                            if event.get("type") == "usage":
+                                event["phase"] = "finalization"
+                            yield event
+            finally:
+                await final_stream.aclose()
+            if final_limited:
+                yield _telemetry_event(
+                    request_id,
+                    hooks,
+                    True,
+                    True,
+                    "capability_exhausted",
+                    round((time.monotonic() - finalizer_started) * 1000),
+                )
+                yield _done_event(request_id, "tool_limit")
+            elif final_failure is not None:
+                outcome = (
+                    "mirror_error"
+                    if final_failure.get("type") == "_mirror_error"
+                    else "provider_error"
+                )
+                yield _telemetry_event(
+                    request_id,
+                    hooks,
+                    True,
+                    True,
+                    outcome,
+                    round((time.monotonic() - finalizer_started) * 1000),
+                )
+                yield final_failure
+            elif final_done is not None:
+                yield _telemetry_event(
+                    request_id,
+                    hooks,
+                    True,
+                    True,
+                    "success",
+                    round((time.monotonic() - finalizer_started) * 1000),
+                )
+                yield final_done
+            else:
+                yield _telemetry_event(
+                    request_id,
+                    hooks,
+                    True,
+                    True,
+                    "provider_error",
+                    round((time.monotonic() - finalizer_started) * 1000),
+                )
+                yield _done_event(request_id, "tool_limit")
+        else:
+            yield _telemetry_event(request_id, hooks, False, False, "not_attempted")
+            if research_failure is not None:
+                yield research_failure
+            elif research_done is not None:
+                yield research_done
     except TimeoutError:
         yield {
             "v": 1,
@@ -551,7 +725,48 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
             "message": "The research run timed out.",
         }
     finally:
-        await stream.aclose()
+        with contextlib.suppress(Exception):
+            await stream.aclose()
+
+
+def _done_event(request_id: str, reason: str) -> dict[str, Any]:
+    return {
+        "v": 1,
+        "type": "done",
+        "request_id": request_id,
+        "followups": [],
+        "finish_reason": reason,
+    }
+
+
+def _telemetry_event(
+    request_id: str,
+    hooks: WorkerToolHooks,
+    limit_reached: bool,
+    finalizer_attempted: bool,
+    finalizer_outcome: str,
+    finalization_latency_ms: int | None = None,
+) -> dict[str, Any]:
+    budget = hooks.budget
+    return {
+        "v": 1,
+        "type": "_execution_telemetry",
+        "request_id": request_id,
+        "maximum_tool_rounds": budget.maximum_rounds,
+        "maximum_tool_calls": budget.maximum_calls,
+        "tool_rounds_emitted": budget.tool_rounds_started,
+        "tool_rounds_executed": budget.tool_rounds_executed,
+        "tool_rounds_denied": budget.tool_rounds_denied,
+        "tool_calls_attempted": budget.calls + budget.denied_calls,
+        "tool_calls_allowed": budget.calls,
+        "tool_calls_denied": budget.denied_calls,
+        "tool_calls_completed": budget.completed_calls,
+        "tooling_close_reason": "answer_now" if budget.tooling_closed else None,
+        "execution_limit_reached": limit_reached,
+        "finalizer_attempted": finalizer_attempted,
+        "finalizer_outcome": finalizer_outcome,
+        "finalization_latency_ms": finalization_latency_ms,
+    }
 
 
 class PersistentAgent:
@@ -565,11 +780,20 @@ class PersistentAgent:
         self.resume: str | None = None
         self.sdk_session_id: str | None = None
         self.web_search_enabled = False
+        self.finalizing = False
 
     async def connect(
-        self, *, model: str, resume: str | None, web_search_enabled: bool = False
+        self,
+        *,
+        model: str,
+        resume: str | None,
+        web_search_enabled: bool = False,
+        finalizing: bool = False,
     ) -> None:
-        if self.client is not None and web_search_enabled != self.web_search_enabled:
+        if self.client is not None and (
+            web_search_enabled != self.web_search_enabled
+            or finalizing != self.finalizing
+        ):
             resume = self.sdk_session_id or resume
             await self.client.disconnect()
             self.client = None
@@ -597,6 +821,7 @@ class PersistentAgent:
         self.model = model
         self.resume = resume
         self.web_search_enabled = web_search_enabled
+        self.finalizing = finalizing
         self.client = ClaudeSDKClient(
             _options(
                 self.settings,
@@ -604,6 +829,7 @@ class PersistentAgent:
                 model=model,
                 resume=resume,
                 web_search_enabled=web_search_enabled,
+                finalizing=finalizing,
             )
         )
         await self.client.connect(prompt=None)
@@ -614,7 +840,10 @@ class PersistentAgent:
         await self.connect(model=model, resume=None, web_search_enabled=False)
 
     async def stream(self, frame: dict[str, Any]):
-        prompt, request_id, model, web_search_enabled = _validate_run_frame(frame)
+        prompt, request_id, model, web_search_enabled, fetchable_urls = (
+            _validate_run_frame(frame)
+        )
+        deadline = time.monotonic() + self.settings.chat_agent_timeout_seconds
         await self.connect(
             model=model,
             resume=frame.get("resume"),
@@ -622,10 +851,18 @@ class PersistentAgent:
         )
         assert self.client is not None
         self.hooks.reset(self.settings, prompt, web_search_enabled=web_search_enabled)
-        adapter = SDKEventAdapter(show_reasoning=self.settings.chat_show_reasoning)
+        self.hooks.budget.seed_urls(fetchable_urls)
+        self.hooks.budget.observe_urls(prompt)
+        adapter = SDKEventAdapter(
+            show_reasoning=self.settings.chat_show_reasoning,
+            on_tool_batch=self.hooks.budget.register_round,
+        )
         yield {"v": 1, "type": "workspace_ready", "request_id": request_id}
         await self.client.query(prompt)
-        async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
+        limited = False
+        research_done: dict[str, Any] | None = None
+        research_failure: dict[str, Any] | None = None
+        async with asyncio.timeout_at(deadline):
             async for event in _adapt_messages(
                 self._response_messages(),
                 request_id=request_id,
@@ -633,7 +870,107 @@ class PersistentAgent:
                 adapter=adapter,
                 on_session_id=self._record_session_id,
             ):
-                yield event
+                if event.get("type") == "_execution_limit":
+                    limited = True
+                elif event.get("type") == "done":
+                    research_done = event
+                elif event.get("type") in {"error", "_mirror_error"}:
+                    research_failure = event
+                else:
+                    if event.get("type") == "usage":
+                        event["phase"] = "research"
+                    yield event
+        if research_failure is not None:
+            yield _telemetry_event(
+                request_id, self.hooks, limited, False, "mirror_error"
+            )
+            yield research_failure
+            return
+        if not limited:
+            yield _telemetry_event(
+                request_id, self.hooks, False, False, "not_attempted"
+            )
+            if research_failure is not None:
+                yield research_failure
+            elif research_done is not None:
+                yield research_done
+            return
+        remaining = deadline - time.monotonic()
+        if remaining < FINALIZER_MIN_REMAINING_SECONDS or not self.sdk_session_id:
+            outcome = "insufficient_time" if remaining < 10 else "mirror_error"
+            yield _telemetry_event(request_id, self.hooks, True, False, outcome)
+            yield _done_event(request_id, "tool_limit")
+            return
+        await self.connect(
+            model=model,
+            resume=self.sdk_session_id,
+            web_search_enabled=False,
+            finalizing=True,
+        )
+        assert self.client is not None
+        await self.client.query(FINALIZER_PROMPT)
+        finalizer_started = time.monotonic()
+        final_adapter = SDKEventAdapter(
+            show_reasoning=self.settings.chat_show_reasoning
+        )
+        final_limited = False
+        final_done: dict[str, Any] | None = None
+        final_failure: dict[str, Any] | None = None
+        async with asyncio.timeout_at(deadline):
+            async for event in _adapt_messages(
+                self._response_messages(),
+                request_id=request_id,
+                hooks=self.hooks,
+                adapter=final_adapter,
+                on_session_id=self._record_session_id,
+                emit_session_event=False,
+            ):
+                if event.get("type") == "_execution_limit":
+                    final_limited = True
+                elif event.get("type") == "done":
+                    final_done = event
+                elif event.get("type") in {"error", "_mirror_error"}:
+                    final_failure = event
+                else:
+                    if event.get("type") == "usage":
+                        event["phase"] = "finalization"
+                    yield event
+        if final_failure is not None:
+            outcome = (
+                "mirror_error"
+                if final_failure.get("type") == "_mirror_error"
+                else "provider_error"
+            )
+            yield _telemetry_event(
+                request_id,
+                self.hooks,
+                True,
+                True,
+                outcome,
+                round((time.monotonic() - finalizer_started) * 1000),
+            )
+            yield final_failure
+            return
+        if final_limited or final_done is None:
+            yield _telemetry_event(
+                request_id,
+                self.hooks,
+                True,
+                True,
+                "capability_exhausted",
+                round((time.monotonic() - finalizer_started) * 1000),
+            )
+            yield _done_event(request_id, "tool_limit")
+            return
+        yield _telemetry_event(
+            request_id,
+            self.hooks,
+            True,
+            True,
+            "success",
+            round((time.monotonic() - finalizer_started) * 1000),
+        )
+        yield final_done
 
     async def _response_messages(self):
         """Hold terminal success until the SDK reaches its idle mirror barrier."""

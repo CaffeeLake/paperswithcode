@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -109,7 +110,7 @@ def _journal_counts(
     start: datetime,
     *,
     expected_failure_session_ids: set[str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, object]:
     command = ["journalctl"]
     for unit in JOURNAL_UNITS:
         command.extend(["-u", unit])
@@ -152,6 +153,50 @@ def _journal_counts(
         and "403 Forbidden" in line
         for line in lines
     )
+    recovery_lines = [line for line in lines if "chat execution recovery" in line]
+
+    def field(line: str, name: str) -> str | None:
+        match = re.search(rf"(?:^|\s){re.escape(name)}=([^\s]+)", line)
+        return match.group(1) if match else None
+
+    finalizer_latencies = [
+        int(value)
+        for line in recovery_lines
+        if (value := field(line, "finalization_latency_ms")) not in {None, "None"}
+    ]
+    ordered_latencies = sorted(finalizer_latencies)
+    p95_index = max(0, (95 * len(ordered_latencies) + 99) // 100 - 1)
+    finalizer_usage_lines = [
+        line
+        for line in lines
+        if "chat provider usage" in line and "phase=finalization" in line
+    ]
+    counts["execution_limits_raw"] = sum(
+        field(line, "limit_reached") == "True" for line in recovery_lines
+    )
+    counts["execution_limits_recovered"] = sum(
+        field(line, "finalizer_outcome") == "success" for line in recovery_lines
+    )
+    counts["repeated_denials_after_closure"] = sum(
+        int(field(line, "denied_calls") or 0) > 1 for line in recovery_lines
+    )
+    counts["finalization_latency_ms"] = {
+        "count": len(ordered_latencies),
+        "mean": (
+            round(sum(ordered_latencies) / len(ordered_latencies))
+            if ordered_latencies
+            else None
+        ),
+        "p95": ordered_latencies[p95_index] if ordered_latencies else None,
+    }
+    counts["finalization_provider_usage"] = {
+        "provider_requests": sum(
+            int(field(line, "provider_requests") or 0) for line in finalizer_usage_lines
+        ),
+        "tokens": sum(
+            int(field(line, "tokens") or 0) for line in finalizer_usage_lines
+        ),
+    }
     return counts
 
 
@@ -290,6 +335,23 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
                 .group_by(ChatMessageRecord.error_code)
             ).all()
         }
+        visible_tool_limits = int(
+            db.scalar(
+                select(func.count(func.distinct(ChatTurnLatency.turn_id)))
+                .select_from(ChatTurnLatency)
+                .join(
+                    ChatMessageRecord,
+                    (ChatMessageRecord.session_id == ChatTurnLatency.chat_session_id)
+                    & (ChatMessageRecord.turn_id == ChatTurnLatency.turn_id),
+                )
+                .where(
+                    *scope,
+                    ChatMessageRecord.role == "assistant",
+                    ChatMessageRecord.finish_reason == "tool_limit",
+                )
+            )
+            or 0
+        )
         new_chat_pre_provider = _percentile(
             db,
             ChatTurnLatency.provider_gateway_received_ms,
@@ -455,6 +517,7 @@ def audit(start: datetime, release_dir: Path) -> tuple[dict, bool]:
             "unexpected_errors": unexpected_errors,
             "stale_turns": stale_turns,
             "degraded_transcripts": degraded_transcripts,
+            "visible_tool_limits": visible_tool_limits,
         },
         "error_codes": error_codes,
         "latency_ms": {

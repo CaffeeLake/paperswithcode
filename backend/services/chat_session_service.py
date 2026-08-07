@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.config import Settings
+from backend.chat_execution_policy import bounded_url_seed
 from backend.models.chat import DISPLAY_BLOCKS_ADAPTER, CitationSnapshot
 from backend.models.database import (
     ChatMessageRecord,
@@ -93,6 +94,7 @@ class TurnAdmission:
     pwc_cli_version: str = ""
     system_prompt_sha256: str = ""
     web_search_enabled: bool = False
+    fetchable_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,69 @@ class ChatSessionService:
                 ChatSession.hf_user_id == owner.hf_user_id,
             )
         )
+
+    def fetchable_url_seed(
+        self,
+        session_id: uuid.UUID,
+        *,
+        current_message_id: uuid.UUID | None = None,
+        replacement_target_sequence: int | None = None,
+    ) -> list[str]:
+        """Derive URL authorization only from the active application lineage."""
+
+        active_status = ChatMessageRecord.status.notin_(INACTIVE_STATUSES)
+        if current_message_id is not None:
+            active_status = or_(
+                active_status, ChatMessageRecord.id == current_message_id
+            )
+        query = select(ChatMessageRecord).where(
+            ChatMessageRecord.session_id == session_id, active_status
+        )
+        if replacement_target_sequence is not None:
+            boundary = ChatMessageRecord.sequence < replacement_target_sequence
+            if current_message_id is not None:
+                query = query.where(
+                    or_(boundary, ChatMessageRecord.id == current_message_id)
+                )
+            else:
+                query = query.where(boundary)
+        rows = self.db.execute(query.order_by(ChatMessageRecord.sequence)).scalars()
+        payloads: list[str] = []
+        for row in rows:
+            if row.status in INACTIVE_STATUSES and row.id != current_message_id:
+                continue
+            if (
+                replacement_target_sequence is not None
+                and row.sequence >= replacement_target_sequence
+                and row.id != current_message_id
+            ):
+                continue
+            if row.role == "user":
+                payloads.append(row.effective_prompt or row.content)
+                continue
+            if row.role != "assistant":
+                continue
+            for block in row.display_blocks or []:
+                if not isinstance(block, dict) or block.get("kind") != "tool":
+                    continue
+                if block.get("status") not in {"done", "success"}:
+                    continue
+                name = block.get("name")
+                if name in {"Bash", "Read", "Grep"}:
+                    for item in block.get("content") or []:
+                        if isinstance(item, dict) and isinstance(item.get("text"), str):
+                            payloads.append(item["text"])
+                elif name == "search_papers":
+                    # The validated legacy catalog projection is an explicitly
+                    # approved source. WebFetch/search_web blocks are excluded.
+                    payloads.append(
+                        json.dumps(
+                            block.get("results") or [],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
+        return bounded_url_seed(payloads)
 
     def record_langfuse_trace_id(
         self, owner: ChatOwner, admission: TurnAdmission, trace_id: str
@@ -826,6 +891,13 @@ class ChatSessionService:
         )
         self.db.add(message)
         self.db.flush()
+        fetchable_urls = tuple(
+            self.fetchable_url_seed(
+                session.id,
+                current_message_id=message.id,
+                replacement_target_sequence=prior.sequence if prior else None,
+            )
+        )
         return TurnAdmission(
             session.id,
             turn_id,
@@ -854,6 +926,7 @@ class ChatSessionService:
             pwc_cli_version=self.settings.chat_pwc_cli_version,
             system_prompt_sha256=self.settings.chat_system_prompt_sha256,
             web_search_enabled=web_search_enabled,
+            fetchable_urls=fetchable_urls,
         )
 
     def bind_sdk_session(

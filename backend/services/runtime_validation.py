@@ -524,7 +524,18 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 >= settings.chat_persistent_sandbox_lifetime_seconds
             ):
                 raise RuntimeError("blank pool rotation window is invalid")
+        from backend.chat_execution_policy import validate_execution_limits
         from backend.chat_sandbox_worker.prompt import sha256 as prompt_sha256
+
+        try:
+            validate_execution_limits(
+                max_turns=settings.chat_max_turns,
+                max_tool_calls=settings.chat_max_tool_calls,
+                max_direct_searches=settings.chat_max_direct_search_calls,
+                max_web_searches=settings.chat_web_search_max_calls,
+            )
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
 
         effective_prompt_hash = prompt_sha256(
             max_turns=settings.chat_max_turns,
