@@ -640,7 +640,10 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
 
               <div className="space-y-2">
                 <Label htmlFor="bucket-copy-commands">CLI fallback</Label>
-                <pre id="bucket-copy-commands" className="bucket-copy-commands">
+                <pre
+                  id="bucket-copy-commands"
+                  className="bucket-copy-commands h-[190px]"
+                >
                   {bucketIdIsValid
                     ? commands
                     : "Enter a bucket name above to prepare the copy commands."}

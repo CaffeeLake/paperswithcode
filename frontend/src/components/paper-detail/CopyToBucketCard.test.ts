@@ -161,11 +161,16 @@ describe("CopyToBucketCard", () => {
     const artifactCheckboxes = screen.getAllByRole("checkbox");
     expect(artifactCheckboxes).toHaveLength(2);
     artifactCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
+    const commandPanel = document.getElementById("bucket-copy-commands");
+    expect(commandPanel).toHaveClass("h-[190px]");
+    expect(commandPanel).toHaveTextContent("hf cp 'hf://openai/test-model/'");
 
     const deselectAllButton = screen.getByRole("button", { name: "Deselect all" });
     expect(deselectAllButton).toHaveClass("border");
     await user.click(deselectAllButton);
     artifactCheckboxes.forEach((checkbox) => expect(checkbox).not.toBeChecked());
+    expect(commandPanel).toHaveClass("h-[190px]");
+    expect(commandPanel).not.toHaveTextContent("hf cp 'hf://openai/test-model/'");
 
     await user.click(screen.getByRole("button", { name: "Select all" }));
     artifactCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
