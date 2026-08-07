@@ -2074,7 +2074,6 @@ class SandboxSessionManager:
         resume: str | None,
         capability: IssuedCapability,
         web_search_enabled: bool = False,
-        fetchable_urls: list[str] | None = None,
     ) -> AsyncIterator[dict]:
         if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
             with self.session_factory() as db:
@@ -2096,7 +2095,6 @@ class SandboxSessionManager:
                     resume=resume,
                     capability=capability,
                     web_search_enabled=web_search_enabled,
-                    fetchable_urls=fetchable_urls or [],
                     allow_pool=not retrying_pool_assignment,
                     forced_pool_miss=retrying_pool_assignment,
                 ):
@@ -2123,7 +2121,6 @@ class SandboxSessionManager:
         resume: str | None,
         capability: IssuedCapability,
         web_search_enabled: bool = False,
-        fetchable_urls: list[str] | None = None,
         allow_pool: bool,
         forced_pool_miss: bool,
     ) -> AsyncIterator[dict]:
@@ -2269,7 +2266,6 @@ class SandboxSessionManager:
                 "model": model,
                 "resume": resume,
                 "web_search_enabled": web_search_enabled,
-                "fetchable_urls": fetchable_urls or [],
             }
             if persistent:
                 run.update(

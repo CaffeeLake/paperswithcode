@@ -265,13 +265,13 @@ All configuration is handled through environment variables with the `PWC_` prefi
 | `PWC_CHAT_TITLE_HF_TOKEN` | | Environment-specific server credential used only for automatic titles |
 | `PWC_CHAT_TITLE_BILL_TO` | | Explicit Hugging Face organization billed for automatic titles |
 | `PWC_CHAT_TITLE_MONTHLY_CAP_MICROUSD` | 25000000 | Persistent per-environment title-generation application cap |
-| `PWC_CHAT_MAX_TURNS` | 8 | Agent SDK model-turn ceiling; execution reserves two turns for synthesis |
+| `PWC_CHAT_MAX_TURNS` | 8 | Maximum Agent SDK tool-use round trips |
 | `PWC_CHAT_MAX_SEARCH_CALLS` | 2 | Maximum paper searches per chat request |
 | `PWC_CHAT_TIMEOUT_SECONDS` | 180 | Legacy local-MCP request timeout |
 | `PWC_CHAT_MAX_CONCURRENCY` | 1 | PostgreSQL-enforced global active-turn ceiling (deployed policy: 2) |
 | `PWC_CHAT_USER_MAX_CONCURRENCY` | 2 | PostgreSQL-enforced active-turn ceiling per user |
 | `PWC_CHAT_GATEWAY_URL` | | Dedicated capability-authenticated sandbox gateway |
-| `PWC_CHAT_MAX_TOOL_CALLS` | 12 | Maximum individual research tool calls; parallel calls each count |
+| `PWC_CHAT_MAX_TOOL_CALLS` | 12 | Maximum built-in tool calls per Modal turn |
 | `PWC_CHAT_MAX_DIRECT_SEARCH_CALLS` | 4 | Maximum direct `pwc search` calls per Modal turn |
 | `PWC_CHAT_SANDBOX_READY_TIMEOUT_SECONDS` | 30 | Modal sandbox readiness deadline |
 | `PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED` | false | Enable durable full-lifecycle sandbox spend enforcement (required for deployed Modal chat) |

@@ -20,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
-from backend.chat_execution_policy import MAX_PROVIDER_REQUESTS
 from backend.chat_sandbox_worker.contract import PROVIDER_OUTPUT_TOKEN_LIMIT
 from backend.database.connection import db_manager, get_database_session
 from backend.models.database import ChatSession, ChatTurnCapability
@@ -460,7 +459,7 @@ async def messages(
         ChatCapabilityService(db).meter_provider(
             row,
             request_tokens=max(1, len(raw) // 4) + maximum_tokens,
-            maximum_requests=MAX_PROVIDER_REQUESTS,
+            maximum_requests=16,
             maximum_tokens=MAX_PROVIDER_TURN_TOKENS,
         )
         call_sequence = row.provider_requests

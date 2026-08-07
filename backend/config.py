@@ -339,7 +339,7 @@ class Settings(BaseSettings):
     chat_agent_cwd: str = Field(default="/tmp/pwc-chat-agent")
     chat_recovery_spool_dir: str = Field(default="/tmp/pwc-chat-recovery")
     chat_recovery_spool_max_sessions: int = Field(default=20, ge=1, le=100)
-    chat_max_turns: int = Field(default=8, ge=3, le=12)
+    chat_max_turns: int = Field(default=8, ge=1, le=12)
     chat_max_search_calls: int = Field(default=2, ge=1, le=5)
     chat_timeout_seconds: float = Field(default=180, gt=0, le=300)
     chat_max_concurrency: int = Field(default=1, ge=1, le=8)

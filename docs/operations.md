@@ -343,26 +343,3 @@ Treat filesystem use at or above 85%, any `transcript_status='degraded'`, or a
 recovery-spool entry as an alert. The recovery spool is private, bounded by
 `PWC_CHAT_RECOVERY_SPOOL_MAX_SESSIONS`, and exists only to reconcile SDK mirror
 failures; it is not a second session store.
-
-### Chat execution-limit recovery
-
-The default eight-model-turn contract permits at most six executed research
-tool-use rounds and twelve individual tool calls. Parallel calls in one
-assistant response consume one round and multiple call slots. A policy denial,
-hard tool/search limit, 429, explicit execution limit, or open web-search
-failure circuit closes tooling for that research phase. If the SDK nevertheless
-ends at `max_turns`, the worker may make one same-session, tool-free finalizer
-request (`max_turns=1`) only when at least ten seconds remain on the original
-turn deadline. Successful recovery remains an ordinary `finish_reason=success`;
-failed bounded recovery retains `tool_limit` or an existing actionable provider
-error.
-
-Operational logs and chat traces record only counts, outcomes, request/token
-usage, and latency. Search for `chat execution recovery` and aggregate
-`execution_limit_reached`, `finalizer_outcome`, and the round/call fields. Never
-log prompts, URLs, tool inputs/results, answers, credentials, or transcript
-bodies. Useful staging aggregates are raw limit rate, recovered-limit rate,
-visible `tool_limit` rate, finalizer latency/request/token overhead, and denied
-attempts after closure. The initial implementation intentionally adds no
-database migration; introduce durable latency columns only after a separate
-review demonstrates that structured logs and traces are insufficient.

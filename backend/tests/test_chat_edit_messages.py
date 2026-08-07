@@ -396,92 +396,6 @@ class FakeResult:
         return self.rows[0] if self.rows else None
 
 
-def test_fetchable_url_seed_uses_only_active_eligible_lineage_blocks():
-    session_id = uuid.uuid4()
-    current_id = uuid.uuid4()
-    rows = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            sequence=1,
-            role="user",
-            status="complete",
-            content="Use https://USER.example/paper",
-            effective_prompt=None,
-            display_blocks=[],
-        ),
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            sequence=2,
-            role="assistant",
-            status="complete",
-            content="Assistant prose https://assistant.example/denied",
-            effective_prompt=None,
-            display_blocks=[
-                {
-                    "kind": "tool",
-                    "name": "Bash",
-                    "status": "success",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Project https://catalog.example/project",
-                        }
-                    ],
-                },
-                {
-                    "kind": "tool",
-                    "name": "WebFetch",
-                    "status": "success",
-                    "content": [
-                        {"type": "text", "text": "https://follow.example/denied"}
-                    ],
-                },
-                {
-                    "kind": "tool",
-                    "name": "search_web",
-                    "status": "success",
-                    "content": [
-                        {"type": "text", "text": "https://search.example/denied"}
-                    ],
-                },
-            ],
-        ),
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            sequence=3,
-            role="user",
-            status="superseded",
-            content="https://discarded.example/denied",
-            effective_prompt=None,
-            display_blocks=[],
-        ),
-        SimpleNamespace(
-            id=current_id,
-            sequence=4,
-            role="user",
-            status="preparing",
-            content="https://current.example/request",
-            effective_prompt=None,
-            display_blocks=[],
-        ),
-    ]
-
-    class SeedDB:
-        def execute(self, _query):
-            return FakeResult(rows=rows)
-
-    urls = ChatSessionService(SeedDB(), get_settings()).fetchable_url_seed(
-        session_id,
-        current_message_id=current_id,
-        replacement_target_sequence=3,
-    )
-    assert urls == [
-        "https://catalog.example/project",
-        "https://current.example/request",
-        "https://user.example/paper",
-    ]
-
-
 def _activation_fixture():
     session_id = uuid.uuid4()
     source_id = uuid.uuid4()
@@ -738,7 +652,6 @@ def test_begin_turn_admits_completed_middle_message_without_superseding_it():
                     FakeResult(),
                     FakeResult(one=target),
                     FakeResult(rows=suffix_ids),
-                    FakeResult(rows=[]),
                 ]
             )
             self.scalars = iter([0, 0, 300, 2])

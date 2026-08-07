@@ -5,8 +5,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from backend.chat_execution_policy import validate_execution_limits
-
 
 def _integer(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
@@ -27,14 +25,6 @@ class WorkerSettings:
     chat_turn_tool_output_max_bytes: int = 96 * 1024
     chat_bash_timeout_seconds: float = 30
     chat_agent_timeout_seconds: float = 180
-
-    def __post_init__(self) -> None:
-        validate_execution_limits(
-            max_turns=self.chat_max_turns,
-            max_tool_calls=self.chat_max_tool_calls,
-            max_direct_searches=self.chat_max_direct_search_calls,
-            max_web_searches=self.chat_max_web_search_calls,
-        )
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
