@@ -187,17 +187,22 @@ def _chat_descriptor_from_source(
         return None
     script = """
 import json
+import os
 from backend.chat_sandbox_worker.contract import (
     DATABASE_CONTRACT_VERSION, DEFAULT_BACKEND, GATEWAY_COMPATIBLE_FROM,
     GATEWAY_CONTRACT_VERSION, MODAL_IMAGE_ID, NEW_CHAT_MODAL_PERCENTAGE,
-    PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
+    PRODUCTION_MODAL_IMAGE_ID, PWC_CLI_VERSION, WORKER_CONTRACT_VERSION,
 )
 from backend.chat_sandbox_worker.prompt import sha256
 print(json.dumps({
     "enabled": True,
     "new_chat_modal_percentage": NEW_CHAT_MODAL_PERCENTAGE,
     "default_backend": DEFAULT_BACKEND,
-    "modal_image_version": MODAL_IMAGE_ID,
+    "modal_image_version": (
+        PRODUCTION_MODAL_IMAGE_ID
+        if os.environ["PWC_RELEASE_ENVIRONMENT"] == "production"
+        else MODAL_IMAGE_ID
+    ),
     "pwc_cli_version": PWC_CLI_VERSION,
     "worker_contract_version": WORKER_CONTRACT_VERSION,
     "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
@@ -210,6 +215,7 @@ print(json.dumps({
         "PATH": os.defpath,
         "PYTHONPATH": str(source),
         "PYTHONNOUSERSITE": "1",
+        "PWC_RELEASE_ENVIRONMENT": environment,
     }
     output = subprocess.check_output(
         [sys.executable, "-c", script],

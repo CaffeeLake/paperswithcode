@@ -16,6 +16,7 @@ from backend.chat_sandbox_worker.contract import (
     GATEWAY_CONTRACT_VERSION,
     MODAL_IMAGE_ID,
     NEW_CHAT_MODAL_PERCENTAGE,
+    PRODUCTION_MODAL_IMAGE_ID,
     PWC_CLI_VERSION,
     WORKER_CONTRACT_VERSION,
 )
@@ -108,7 +109,7 @@ def chat_runtime(
             "enabled": False,
             "new_chat_modal_percentage": 0,
             "default_backend": DEFAULT_BACKEND,
-            "modal_image_version": MODAL_IMAGE_ID,
+            "modal_image_version": PRODUCTION_MODAL_IMAGE_ID,
             "pwc_cli_version": PWC_CLI_VERSION,
             "worker_contract_version": WORKER_CONTRACT_VERSION,
             "gateway_contract_version": GATEWAY_CONTRACT_VERSION,
@@ -316,9 +317,12 @@ def validate_rolling_compatibility(active: dict, candidate: dict) -> None:
 
     active_emits, active_accepts, active_database = rolling_contract(active)
     candidate_emits, candidate_accepts, candidate_database = rolling_contract(candidate)
-    active_enabled = bool((active.get("chat_runtime") or {}).get("enabled"))
-    candidate_enabled = bool((candidate.get("chat_runtime") or {}).get("enabled"))
-    if not active_enabled and not candidate_enabled:
+    active_runtime = active.get("chat_runtime") or {}
+    candidate_runtime = candidate.get("chat_runtime") or {}
+    if (
+        active_runtime.get("enabled") is False
+        and candidate_runtime.get("enabled") is False
+    ):
         if active_database != candidate_database:
             raise ValueError("release database contracts are incompatible")
         return

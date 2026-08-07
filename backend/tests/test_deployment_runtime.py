@@ -20,7 +20,10 @@ import deploy.configure_role_allowlists as configure_role_allowlists
 import deploy.cron_launcher as cron_launcher
 import deploy.run_backend as run_backend
 import deploy.smoke_test as smoke_test
-from backend.chat_sandbox_worker.contract import MODAL_IMAGE_ID
+from backend.chat_sandbox_worker.contract import (
+    MODAL_IMAGE_ID,
+    PRODUCTION_MODAL_IMAGE_ID,
+)
 from backend.config import Settings
 from backend.services import openrouter_budget_service as deploy_openrouter
 from backend.services.runtime_validation import validate_chat_schema, validate_runtime
@@ -1047,7 +1050,12 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     assert descriptor["worker_contract_version"] == "45"
     assert _chat_descriptor_from_source(source, "production") is None
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
-    assert production == descriptor
+    assert production["modal_image_version"] == PRODUCTION_MODAL_IMAGE_ID
+    assert {
+        key: value for key, value in production.items() if key != "modal_image_version"
+    } == {
+        key: value for key, value in descriptor.items() if key != "modal_image_version"
+    }
 
 
 def test_production_chat_activation_builds_one_consistent_manifest(tmp_path: Path):

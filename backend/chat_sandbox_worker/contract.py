@@ -19,5 +19,9 @@ BASE_IMAGE = (
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
 MODAL_IMAGE_ID = "im-Oxtltn8XnYtmmqPW2P7PdJ"
+# The same worker contract published into the production Modal Environment.
+# Keep this distinct so future Environment RBAC never requires a cross-
+# Environment image lookup.
+PRODUCTION_MODAL_IMAGE_ID = "im-VQOejtQi7gum630StpJ4ci"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
