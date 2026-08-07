@@ -84,6 +84,9 @@ export function useChat(options: UseChatOptions) {
   > | null>(null);
   const [disabledRequest, setDisabledRequest] = useState<{ question: string; draft: ChatDraft } | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const activeMessagesRef = useRef<ChatMessage[] | null>(null);
+  const activeMessagesGenerationRef = useRef<number | null>(null);
+  const activeProjectionVisibleRef = useRef(false);
   const optionsRef = useRef(options);
   const promptRef = useRef<ChatDraft>({ text: "", paperMentions: [] });
   const titleRef = useRef("");
@@ -111,6 +114,18 @@ export function useChat(options: UseChatOptions) {
   useEffect(() => {
     if (!busyRef.current) activeSessionIdRef.current = options.sessionId;
   }, [options.sessionId]);
+  useEffect(() => {
+    const visible = (
+      busyRef.current
+      && options.sessionId === activeSessionIdRef.current
+      && activeMessagesRef.current
+    );
+    activeProjectionVisibleRef.current = Boolean(visible);
+    if (visible) {
+      setMessages(activeMessagesRef.current);
+      messagesRef.current = activeMessagesRef.current;
+    }
+  }, [options.sessionId]);
 
   const papers = useMemo(() => {
     const map: Record<string, ChatPaperHit> = {};
@@ -125,23 +140,36 @@ export function useChat(options: UseChatOptions) {
   }, [messages]);
 
   const nextId = () => `m${++idRef.current}_${Date.now().toString(36)}`;
-  const patchLast = (fn: (message: ChatMessage) => ChatMessage) => setMessages((previous) => {
-    if (!previous.length) return previous;
+  const patchLast = (
+    fn: (message: ChatMessage) => ChatMessage,
+    projectToVisible = true,
+  ) => {
+    const previous = activeMessagesRef.current ?? messagesRef.current;
+    if (!previous.length) return;
     const copy = previous.slice();
     copy[copy.length - 1] = fn(copy[copy.length - 1]);
-    return copy;
-  });
-  const addBlock = (block: ChatBlock) => patchLast((message) => {
+    if (activeMessagesRef.current) activeMessagesRef.current = copy;
+    if (projectToVisible) {
+      messagesRef.current = copy;
+      setMessages(copy);
+    }
+  };
+  const addBlock = (block: ChatBlock, projectToVisible = true) => patchLast((message) => {
     const visible = withoutWorkspaceStatus(message);
     return { ...visible, blocks: [...(visible.blocks ?? []), block] };
-  });
-  const patchBlock = (match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean, patch: (block: ChatBlock) => ChatBlock) =>
+  }, projectToVisible);
+  const patchBlock = (match: (block: ChatBlock, index: number, blocks: ChatBlock[]) => boolean, patch: (block: ChatBlock) => ChatBlock, projectToVisible = true) =>
     patchLast((message) => {
       const visible = withoutWorkspaceStatus(message);
       return { ...visible, blocks: (visible.blocks ?? []).map((block, index, all) => match(block, index, all) ? patch(block) : block) };
-    });
+    }, projectToVisible);
   const isLastOfKind = (kind: ChatBlock["kind"]) => (block: ChatBlock, index: number, blocks: ChatBlock[]) =>
     block.kind === kind && findLastMatchingIndex(blocks, (candidate) => candidate.kind === kind) === index;
+
+  const projectsActiveStream = () => (
+    activeMessagesGenerationRef.current === messagesGenerationRef.current
+    || activeProjectionVisibleRef.current
+  );
 
   const clearWorkspaceStatus = (controller: AbortController) => {
     if (abortRef.current !== controller) return;
@@ -153,7 +181,7 @@ export function useChat(options: UseChatOptions) {
     const wasShown = workspaceStatusStateRef.current === "shown";
     workspaceStatusStateRef.current = "cleared";
     if (!wasShown) return;
-    patchLast(withoutWorkspaceStatus);
+    patchLast(withoutWorkspaceStatus, projectsActiveStream());
   };
 
   const reportTiming = (
@@ -217,7 +245,7 @@ export function useChat(options: UseChatOptions) {
     }
   }, [messages]);
 
-  const applyEvent = (event: ChatEvent) => {
+  const applyEvent = (event: ChatEvent, projectToVisible = true) => {
     switch (event.type) {
       case "stream_start":
         if (event.session_id) {
@@ -252,10 +280,10 @@ export function useChat(options: UseChatOptions) {
               { kind: "reasoning", text: "", active: true, open: true },
             ],
           };
-        });
+        }, projectToVisible);
         break;
       case "reasoning_delta":
-        patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block);
+        patchBlock(isLastOfKind("reasoning"), (block) => block.kind === "reasoning" ? { ...block, text: block.text + event.text } : block, projectToVisible);
         break;
       case "reasoning_end":
         patchLast((message) => {
@@ -280,17 +308,17 @@ export function useChat(options: UseChatOptions) {
               ? { ...current, active: false, open: false }
               : block),
           };
-        });
+        }, projectToVisible);
         break;
       case "tool_call":
-        addBlock({ kind: "tool", id: event.id, name: event.name, args: event.args, status: "running", open: false });
+        addBlock({ kind: "tool", id: event.id, name: event.name, args: event.args, status: "running", open: false }, projectToVisible);
         break;
       case "tool_result":
         patchBlock((block) => block.kind === "tool" && block.id === event.id, (block) => block.kind === "tool"
           ? event.status
             ? { ...block, schema_version: 2, status: event.status, took_ms: event.took_ms, content: event.content, metadata: event.metadata, open: event.status !== "success" }
             : { ...block, status: "done", hits: event.hits, took_ms: event.took_ms, results: event.results }
-          : block);
+          : block, projectToVisible);
         break;
       case "answer_delta":
         patchLast((message) => {
@@ -299,10 +327,10 @@ export function useChat(options: UseChatOptions) {
           const last = blocks.at(-1);
           if (last?.kind === "answer" && !last.done) return { ...visible, blocks: [...blocks.slice(0, -1), { ...last, text: last.text + event.text }] };
           return { ...visible, blocks: [...blocks, { kind: "answer", text: event.text, done: false }] };
-        });
+        }, projectToVisible);
         break;
       case "done":
-        patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block.kind === "reasoning" && block.active ? { ...block, active: false, open: false } : block) }));
+        patchLast((message) => ({ ...message, streaming: false, followups: event.followups, finishReason: event.finish_reason, citations: event.citations, blocks: (message.blocks ?? []).map((block) => block.kind === "answer" ? { ...block, done: true } : block.kind === "reasoning" && block.active ? { ...block, active: false, open: false } : block) }), projectToVisible);
         break;
       case "error":
         patchLast((message) => ({
@@ -313,7 +341,7 @@ export function useChat(options: UseChatOptions) {
           blocks: (message.blocks ?? []).map((block) => block.kind === "reasoning" && block.active
             ? { ...block, active: false, open: false }
             : block),
-        }));
+        }), projectToVisible);
         break;
     }
   };
@@ -321,9 +349,17 @@ export function useChat(options: UseChatOptions) {
   const reloadCanonical = async (sessionId: string, generation: number) => {
     const detail = await getSession(sessionId);
     const restored = toUiMessages(detail);
-    if (messagesGenerationRef.current !== generation) return null;
+    if (
+      messagesGenerationRef.current !== generation
+      && !(
+        activeMessagesGenerationRef.current === generation
+        && activeProjectionVisibleRef.current
+        && optionsRef.current.sessionId === sessionId
+      )
+    ) return null;
     setMessages(restored);
     messagesRef.current = restored;
+    activeMessagesRef.current = restored;
     return restored;
   };
 
@@ -335,6 +371,8 @@ export function useChat(options: UseChatOptions) {
     edit?: EditRequest,
   ) => {
     const messagesGeneration = ++messagesGenerationRef.current;
+    activeMessagesGenerationRef.current = messagesGeneration;
+    activeProjectionVisibleRef.current = true;
     busyRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -343,6 +381,7 @@ export function useChat(options: UseChatOptions) {
     activeSessionIdRef.current = request.session_id;
     setSessionError("");
     setMessages(optimistic);
+    activeMessagesRef.current = optimistic;
     setBusy(true);
     browserTimingRef.current = {
       controller,
@@ -371,7 +410,7 @@ export function useChat(options: UseChatOptions) {
         && !message.error
           ? { ...message, status: WORKSPACE_STATUS }
           : message
-      ));
+      ), projectsActiveStream());
     }, WORKSPACE_STATUS_DELAY_MS);
     void (async () => {
       let sawStreamStart = false;
@@ -416,7 +455,7 @@ export function useChat(options: UseChatOptions) {
               optionsRef.current.onInterrupted(draft);
             }
           }
-          const projectsToVisibleConversation = messagesGenerationRef.current === messagesGeneration;
+          const projectsToVisibleConversation = projectsActiveStream();
           if (
             !controller.signal.aborted
             && (projectsToVisibleConversation
@@ -425,7 +464,9 @@ export function useChat(options: UseChatOptions) {
               || event.type === "session_title_delta"
               || event.type === "session_title_done")
           ) {
-            applyEvent(event);
+            applyEvent(event, projectsToVisibleConversation);
+          } else if (!controller.signal.aborted) {
+            applyEvent(event, false);
           }
         }
       } catch (error) {
@@ -714,11 +755,14 @@ export function useChat(options: UseChatOptions) {
     setCapacityRequest(null);
     busyRef.current = false;
     activeSessionIdRef.current = null;
+    activeMessagesRef.current = null;
+    activeMessagesGenerationRef.current = null;
+    activeProjectionVisibleRef.current = false;
     setMessages([]);
     setBusy(false);
     setSessionError("");
   }, []);
-  const load = useCallback((restored: ChatMessage[]) => {
+  const load = useCallback((restored: ChatMessage[], sessionId?: string | null) => {
     messagesGenerationRef.current += 1;
     if (preparingTimerRef.current !== null) {
       window.clearTimeout(preparingTimerRef.current);
@@ -728,12 +772,28 @@ export function useChat(options: UseChatOptions) {
     browserTimingRef.current = null;
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
+    if (
+      busyRef.current
+      && sessionId !== undefined
+      && sessionId === activeSessionIdRef.current
+      && activeMessagesRef.current
+    ) {
+      activeProjectionVisibleRef.current = true;
+      setMessages(activeMessagesRef.current);
+      messagesRef.current = activeMessagesRef.current;
+      setSessionError("");
+      return;
+    }
+    activeProjectionVisibleRef.current = false;
     // A route change may replace the visible transcript while another chat is
-    // still generating. Keep that stream alive, but its generation token above
-    // prevents subsequent events from being projected into this transcript.
+    // still generating. Keep buffering that stream so it can be reattached if
+    // the user returns, without projecting its events into this transcript.
     if (!busyRef.current) {
       abortRef.current?.abort();
       abortRef.current = null;
+      activeMessagesRef.current = null;
+      activeMessagesGenerationRef.current = null;
+      activeProjectionVisibleRef.current = false;
     }
     setMessages(restored);
     if (!busyRef.current) setBusy(false);

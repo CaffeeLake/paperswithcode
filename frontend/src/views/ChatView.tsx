@@ -384,7 +384,10 @@ const ChatView: React.FC = () => {
     sessionStorage.setItem(CHAT_MODEL_KEY, selectedModel);
     sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
     sessionStorage.setItem(CHAT_AUTH_ATTEMPTED_KEY, "1");
-    window.location.href = hfLoginUrl("/chat", true);
+    const returnTo = routeSessionIdRef.current
+      ? `/chat/${routeSessionIdRef.current}`
+      : "/chat";
+    window.location.href = hfLoginUrl(returnTo, true);
   }, [selectedModel]);
 
   const restoreAuthorizationPrompt = useCallback((nextDraft: ChatDraft, message: string) => {
@@ -502,7 +505,7 @@ const ChatView: React.FC = () => {
     setSessionError("");
     void getSession(routeSessionId).then((detail) => {
       if (cancelled) return;
-      chat.load(toUiMessages(detail));
+      chat.load(toUiMessages(detail), routeSessionId);
       setSelectedModel(detail.selected_model);
       setWebSearchEnabled(
         queuedLaunchRef.current && detail.messages.length === 0

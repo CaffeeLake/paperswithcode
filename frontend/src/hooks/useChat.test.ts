@@ -540,6 +540,55 @@ describe("useChat editAndResend", () => {
 });
 
 describe("useChat canonical reloads", () => {
+  it("resumes projecting a buffered stream after navigating away and back", async () => {
+    const firstDelta = deferred<void>();
+    const secondDelta = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: "session-1" };
+      await firstDelta.promise;
+      yield { type: "tool_call", id: "tool-1", name: "search", args: {} };
+      await secondDelta.promise;
+      yield { type: "answer_delta", text: "Finished answer" };
+      yield { type: "done", finish_reason: "success" };
+    });
+    getSessionMock.mockResolvedValue(sessionDetail("session-1", [
+      persistedUser("active-user", 1, "Active conversation"),
+      persistedAssistant("active-answer", 2, "Finished answer"),
+    ]));
+    let sessionId = "session-1";
+    const onSessionId = vi.fn();
+    const onSettled = vi.fn();
+    const { result, rerender } = renderHook(() => useChat({
+      sessionId,
+      initialModel: "zai-org/GLM-5.2",
+      onSessionId,
+      onTitle: vi.fn(),
+      onSettled,
+      onInterrupted: vi.fn(),
+    }));
+
+    act(() => expect(result.current.send("Active conversation")).toBe(true));
+    await waitFor(() => expect(result.current.busy).toBe(true));
+
+    sessionId = "session-2";
+    rerender();
+    act(() => result.current.load(uiTurn("other-user", "Other conversation")));
+    await act(async () => firstDelta.resolve());
+    expect(result.current.messages).toEqual(uiTurn("other-user", "Other conversation"));
+
+    sessionId = "session-1";
+    rerender();
+    await waitFor(() => expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "tool", id: "tool-1" }),
+    ]));
+
+    await act(async () => secondDelta.resolve());
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "answer", text: "Finished answer" }),
+    ]);
+  });
+
   it("keeps a stream running without projecting it into a conversation loaded during navigation", async () => {
     const continueStream = deferred<void>();
     streamChatMock.mockImplementation(async function* () {

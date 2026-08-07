@@ -170,6 +170,26 @@ beforeEach(() => {
 });
 
 describe("ChatView inference authorization", () => {
+  it("returns inference authorization to the reserved homepage session", async () => {
+    mocks.messages.length = 0;
+    sessionStorage.setItem(CHAT_DRAFT_KEY, "Compare recent vision-language models");
+    sessionStorage.setItem(CHAT_MODEL_KEY, session.selected_model);
+    sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      connected: false,
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    renderChat();
+
+    await waitFor(() => expect(mocks.hfLoginUrl).toHaveBeenCalledWith(
+      `/chat/${sessionId}`,
+      true,
+    ));
+  });
+
   it("loads a reserved chat before auto-sending its queued home-page prompt", async () => {
     mocks.messages.length = 0;
     let resolveSession!: (value: typeof session & { transcript_status: string; messages: never[] }) => void;
@@ -475,7 +495,10 @@ describe("ChatView navigation", () => {
     await user.click(await screen.findByText("Earlier chat", { selector: ".chat-session-title" }));
 
     await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(earlierSession.id));
-    await waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledWith(
+      mocks.messages,
+      earlierSession.id,
+    ));
     expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument();
   });
 });
