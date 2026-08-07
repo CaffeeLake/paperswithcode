@@ -2059,8 +2059,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-HBretdwKJomZFO0vCUfUGF"
-    assert WORKER_CONTRACT_VERSION == "44"
+    assert MODAL_IMAGE_ID == "im-Oxtltn8XnYtmmqPW2P7PdJ"
+    assert WORKER_CONTRACT_VERSION == "45"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
@@ -2108,8 +2108,15 @@ def test_image_makes_copied_worker_readable_and_installs_skill():
     ).read_text()
 
     assert 'WORKER / "PWC_CLI_SKILL.md", "/opt/pwc/PWC_CLI_SKILL.md"' in source
+    assert (
+        'BACKEND / "chat_execution_policy.py",\n'
+        '        "/opt/pwc/backend/chat_execution_policy.py"'
+    ) in source
     assert '"chmod -R a+rX /opt/pwc/backend"' in source
     assert '"chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py"' in source
+    assert (
+        "\"PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'\""
+    ) in source
     assert '"chown pwc-broker:pwc-broker /var/empty/pwc-broker"' in source
     assert '"websockets==16.0"' in source
 

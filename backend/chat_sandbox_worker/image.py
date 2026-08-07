@@ -41,6 +41,11 @@ image = (
         "chmod 0700 /workspace /home/pwc-chat /home/pwc-chat/.claude /var/empty/pwc-broker",
     )
     .add_local_file(BACKEND / "__init__.py", "/opt/pwc/backend/__init__.py", copy=True)
+    .add_local_file(
+        BACKEND / "chat_execution_policy.py",
+        "/opt/pwc/backend/chat_execution_policy.py",
+        copy=True,
+    )
     .add_local_dir(
         WORKER,
         "/opt/pwc/backend/chat_sandbox_worker",
@@ -54,6 +59,7 @@ image = (
     .run_commands(
         "chmod -R a+rX /opt/pwc/backend",
         "chmod 0644 /opt/pwc/PWC_CLI_SKILL.md /opt/pwc/install-pwc.py",
+        "PYTHONPATH=/opt/pwc python -c 'import backend.chat_execution_policy'",
         f"python /opt/pwc/install-pwc.py --version {PWC_CLI_VERSION} --prefix /usr/local",
         "pwc version",
         "pwc --help >/dev/null",
