@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { apiClient } from "@/lib/api";
+
 const mocks = vi.hoisted(() => ({
   busy: false,
   authUser: { username: "owner", hf_user_id: "hf-owner" },
@@ -87,6 +89,7 @@ const session = {
   updated_at: "2026-07-28T20:00:00Z",
   message_count: 1,
   is_busy: false,
+  web_search_enabled: false,
 };
 
 let queryClient: QueryClient;
@@ -493,5 +496,62 @@ describe("ChatView new-session sidebar", () => {
 
     act(() => mocks.chatOptions?.onTitle("Good OCR Models"));
     expect(screen.getByText("Good OCR Models", { selector: ".chat-session-title" })).toBeInTheDocument();
+  });
+});
+
+describe("ChatView web search", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ connected: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  });
+
+  it("keeps web search enabled when a new session starts generating", async () => {
+    const user = userEvent.setup();
+    const rendered = renderChat("/chat");
+    const toggle = await screen.findByRole("switch", { name: "Web search" });
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    mocks.busy = true;
+    rendered.rerender(chatElement("/chat"));
+
+    expect(screen.getByRole("switch", { name: "Web search" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("resets web search when the user starts a new chat", async () => {
+    mocks.getSession.mockResolvedValueOnce({
+      ...session,
+      web_search_enabled: true,
+      transcript_status: "ready",
+      messages: [],
+    });
+    const user = userEvent.setup();
+    renderChat();
+    const toggle = await screen.findByRole("switch", { name: "Web search" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+
+    expect(screen.getByTestId("chat-location")).toHaveTextContent("/chat");
+    expect(screen.getByRole("switch", { name: "Web search" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
   });
 });

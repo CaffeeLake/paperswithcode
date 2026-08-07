@@ -485,9 +485,9 @@ const ChatView: React.FC = () => {
       if (loadedRouteSessionIdRef.current !== null) {
         loadedRouteSessionIdRef.current = null;
         chat.reset();
+        setWebSearchEnabled(false);
       }
       setRouteSessionState(null);
-      setWebSearchEnabled(false);
       return;
     }
     if (loadedRouteSessionIdRef.current === routeSessionId) return;
@@ -573,6 +573,7 @@ const ChatView: React.FC = () => {
     activeStreamSessionIdRef.current = null;
     chat.reset();
     setDraft(emptyDraft());
+    setWebSearchEnabled(false);
     setLiveTitle("");
     navigate("/chat");
   };
