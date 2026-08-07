@@ -316,6 +316,25 @@ An enabled production-chat deployment fails closed unless this timer is
 enabled. The timer invokes only the `pwc-cron` allowlist, and only this job's
 transient unit receives read access to the system journal.
 
+Seal the reviewed production preparation inputs into a root-owned, non-loaded
+overlay. The named mode-`0600` Modal profile is imported in memory, so its token
+pair is never printed or copied into the local source input:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/production.env \
+  --production-chat-seal-only \
+  --modal-profile nielsrogge \
+  --confirm SEAL_PRODUCTION_CHAT_PREPARATION
+```
+
+The helper rejects a missing or group/world-readable Modal profile, incomplete
+credentials, conflicts with an explicitly configured pair, unsafe alert URLs,
+title-token reuse, an invalid budget attestation, and any production-chat
+OpenRouter secret. It writes only
+`/etc/paperswithcode/production-chat-prepared.env`; no service loads that file
+implicitly.
+
 After a disabled production bridge release contains the qualification tooling,
 exercise all sandbox, title, provider-health, and runtime-alert transitions
 without creating provider compute. The sealed overlay must have been produced

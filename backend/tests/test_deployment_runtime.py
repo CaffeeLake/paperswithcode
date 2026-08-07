@@ -2474,6 +2474,63 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP"] == "3"
 
 
+def test_production_modal_profile_is_imported_without_persisting_a_copy(
+    tmp_path: Path,
+):
+    config = tmp_path / ".modal.toml"
+    config.write_text(
+        '[nielsrogge]\ntoken_id = "modal-id"\n'
+        'token_secret = "modal-secret"\nactive = true\n'
+    )
+    config.chmod(0o600)
+    source = {"PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=false"}
+
+    updated = configure_host_env.production_modal_profile_source(
+        source,
+        config,
+        "nielsrogge",
+    )
+
+    assert source == {"PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=false"}
+    assert updated["MODAL_TOKEN_ID"] == "MODAL_TOKEN_ID=modal-id"
+    assert updated["MODAL_TOKEN_SECRET"] == "MODAL_TOKEN_SECRET=modal-secret"
+
+
+@pytest.mark.parametrize(
+    ("mode", "profile", "source", "match"),
+    [
+        (0o644, "nielsrogge", {}, "group/world readable"),
+        (0o600, "missing", {}, "profile is missing"),
+        (
+            0o600,
+            "nielsrogge",
+            {"MODAL_TOKEN_ID": "MODAL_TOKEN_ID=other"},
+            "conflicts",
+        ),
+    ],
+)
+def test_production_modal_profile_rejects_unsafe_import(
+    tmp_path: Path,
+    mode: int,
+    profile: str,
+    source: dict[str, str],
+    match: str,
+):
+    config = tmp_path / ".modal.toml"
+    config.write_text(
+        '[nielsrogge]\ntoken_id = "modal-id"\n'
+        'token_secret = "modal-secret"\nactive = true\n'
+    )
+    config.chmod(mode)
+
+    with pytest.raises(ValueError, match=match):
+        configure_host_env.production_modal_profile_source(
+            source,
+            config,
+            profile,
+        )
+
+
 def test_production_chat_install_revalidates_exact_sealed_bundle():
     values = configure_host_env.production_chat_preparation_values(
         _production_chat_preparation_source(),

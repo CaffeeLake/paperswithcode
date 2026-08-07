@@ -13,6 +13,7 @@ import os
 import pwd
 import secrets
 import subprocess
+import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -658,6 +659,40 @@ def production_chat_preparation_values(
     }
 
 
+def production_modal_profile_source(
+    source: dict[str, str],
+    config_path: Path,
+    profile: str,
+) -> dict[str, str]:
+    """Import one protected Modal profile without exposing or duplicating it."""
+
+    if not config_path.is_file():
+        raise ValueError("Modal profile configuration is missing")
+    if config_path.stat().st_mode & 0o077:
+        raise ValueError("Modal profile configuration must not be group/world readable")
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError("Modal profile configuration is invalid") from error
+    selected = config.get(profile)
+    if not isinstance(selected, dict):
+        raise ValueError("requested Modal profile is missing")
+    values = {
+        "MODAL_TOKEN_ID": selected.get("token_id"),
+        "MODAL_TOKEN_SECRET": selected.get("token_secret"),
+    }
+    if any(
+        not isinstance(value, str) or not value.strip() for value in values.values()
+    ):
+        raise ValueError("requested Modal profile has incomplete credentials")
+    normalized = {key: value.strip() for key, value in values.items()}
+    for key, value in normalized.items():
+        existing = decoded_value(source[key]).strip() if key in source else ""
+        if existing and existing != value:
+            raise ValueError(f"{key} conflicts with the requested Modal profile")
+    return assign(source, normalized)
+
+
 def production_chat_install_values(
     sealed: dict[str, str],
     current_production: dict[str, str],
@@ -721,11 +756,19 @@ def main() -> int:
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
     parser.add_argument("--production-chat-install-only", action="store_true")
+    parser.add_argument("--modal-profile")
+    parser.add_argument(
+        "--modal-profile-config",
+        type=Path,
+        default=Path("/root/.modal.toml"),
+    )
     parser.add_argument("--confirm")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.modal_profile and not args.production_chat_seal_only:
+        parser.error("--modal-profile requires --production-chat-seal-only")
     if args.production_chat_seal_only or args.production_chat_install_only:
         other_modes = (
             args.production_codex_only,
@@ -774,6 +817,15 @@ def main() -> int:
         confirmation = "SEAL_PRODUCTION_CHAT_PREPARATION"
         if args.confirm != confirmation:
             parser.error(f"--confirm must be {confirmation}")
+        if args.modal_profile:
+            try:
+                legacy = production_modal_profile_source(
+                    legacy,
+                    args.modal_profile_config,
+                    args.modal_profile,
+                )
+            except ValueError as error:
+                parser.error(str(error))
         try:
             values = production_chat_preparation_values(
                 legacy,
