@@ -621,6 +621,7 @@ def production_chat_preparation_values(
         **chat_alert_values(source, environment="production"),
         **staging_chat_capacity_values(),
         "PWC_CHAT_ENABLED": "true",
+        "PWC_CHAT_NEW_CHAT_MODAL_PERCENTAGE": "100",
         "PWC_CHAT_PUBLIC_ADMISSION_ENABLED": "false",
         "PWC_CHAT_SANDBOX_ADMISSION_ENABLED": "false",
         "PWC_CHAT_BLANK_POOL_ENABLED": "false",
@@ -657,6 +658,38 @@ def production_chat_preparation_values(
     }
 
 
+def production_chat_install_values(
+    sealed: dict[str, str],
+    current_production: dict[str, str],
+    current_staging: dict[str, str],
+) -> dict[str, str]:
+    """Revalidate the sealed bundle before a separately authorized install."""
+
+    if not sealed:
+        raise ValueError("sealed production chat preparation is missing")
+    values = production_chat_preparation_values(
+        sealed,
+        current_production,
+        current_staging,
+    )
+    normalized = {key: decoded_value(line).strip() for key, line in sealed.items()}
+    unexpected = sorted(set(normalized) - set(values))
+    if unexpected:
+        raise ValueError(
+            "sealed production chat preparation contains unexpected keys: "
+            + ", ".join(unexpected)
+        )
+    mismatched = sorted(
+        key for key, value in values.items() if normalized.get(key) != value
+    )
+    if mismatched:
+        raise ValueError(
+            "sealed production chat preparation is incomplete or stale: "
+            + ", ".join(mismatched)
+        )
+    return values
+
+
 def production_codex_values(legacy: dict[str, str], namespace: str) -> dict[str, str]:
     return {
         # The immutable release launcher overrides these non-secret capability
@@ -687,12 +720,13 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
+    parser.add_argument("--production-chat-install-only", action="store_true")
     parser.add_argument("--confirm")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
-    if args.production_chat_seal_only:
+    if args.production_chat_seal_only or args.production_chat_install_only:
         other_modes = (
             args.production_codex_only,
             args.staging_codex_too,
@@ -707,10 +741,36 @@ def main() -> int:
             args.staging_chat_pool_disable_only,
             args.staging_web_search_only,
         )
-        if any(other_modes):
+        if any(other_modes) or (
+            args.production_chat_seal_only and args.production_chat_install_only
+        ):
             parser.error(
-                "--production-chat-seal-only cannot be combined with other modes"
+                "production chat preparation modes cannot be combined with other modes"
             )
+        if args.production_chat_install_only:
+            confirmation = "INSTALL_PRODUCTION_CHAT_PREPARATION"
+            if args.confirm != confirmation:
+                parser.error(f"--confirm must be {confirmation}")
+            current_production = read_lines(CONFIG_ROOT / "production.env")
+            current_staging = read_lines(CONFIG_ROOT / "staging.env")
+            try:
+                values = production_chat_install_values(
+                    read_lines(PRODUCTION_CHAT_SEALED_CONFIG),
+                    current_production,
+                    current_staging,
+                )
+            except ValueError as error:
+                parser.error(str(error))
+            write_env(
+                CONFIG_ROOT / "production.env",
+                assign(current_production, values),
+                "pwc-production",
+            )
+            print(
+                "installed sealed production chat preparation; "
+                "no service was restarted and admission remains disabled"
+            )
+            return 0
         confirmation = "SEAL_PRODUCTION_CHAT_PREPARATION"
         if args.confirm != confirmation:
             parser.error(f"--confirm must be {confirmation}")

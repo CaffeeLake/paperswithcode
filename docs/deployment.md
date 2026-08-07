@@ -338,6 +338,27 @@ Record human acknowledgement from both independently routed destinations. The
 synthetic rows remain environment-qualified and contain no prompt, answer,
 credential, capability, or provider compute.
 
+Only after the two disabled production bridge releases are active, the sealed
+bundle has passed qualification, and the exact activation SHA has separate
+production authorization, install the same revalidated bundle into the live
+production environment. This changes protected configuration but does not
+restart a service, deploy a release, open public or sandbox admission, or enable
+the blank pool:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env deploy/env/production.env \
+  --production-chat-install-only \
+  --confirm INSTALL_PRODUCTION_CHAT_PREPARATION
+```
+
+The installer reads only the previously sealed root-owned bundle, rejects
+missing, stale, or added keys, and revalidates title-token isolation, Modal
+policy, alert separation, capacity, and the OpenRouter prohibition before an
+atomic write. Disabled bridge manifests override chat and Modal rollout to
+zero, so the same installed configuration remains rollback-compatible without
+editing secrets during an incident.
+
 Install the already-provisioned staging title credential from a protected local
 environment file through the narrow staging-only helper. It validates the exact
 owner, environment, billing target, model, provider, and `$25` circuit, rejects

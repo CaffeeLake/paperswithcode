@@ -732,6 +732,62 @@ def test_disabled_production_accepts_complete_dormant_worker_descriptor(
     assert validate_runtime(settings) == profile_features("production")
 
 
+def test_disabled_production_accepts_armed_configuration_for_atomic_rollback(
+    tmp_path: Path,
+):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_max_concurrency = 2
+    settings.chat_persistent_worker_enabled = True
+    settings.chat_sandbox_spend_enforcement_enabled = True
+    settings.chat_sandbox_cpu_limit = 1
+    settings.chat_sandbox_memory_limit_mib = 2048
+    settings.chat_sandbox_modal_environment = "pwc-chat-production"
+    settings.chat_sandbox_modal_workspace = "nielsrogge"
+    settings.chat_sandbox_modal_owner_username = "nielsrogge"
+    settings.chat_sandbox_budget_attestation = (
+        "modal-workspace-nielsrogge-250-production-starter-v1"
+    )
+    settings.chat_sandbox_slack_webhook_url = (
+        "https://hooks.slack.test/services/production"
+    )
+    settings.chat_sandbox_alert_fallback_webhook_url = (
+        "https://alerts.test/production-fallback"
+    )
+    settings.chat_sandbox_runbook_url = "https://example.test/production-runbook"
+    settings.chat_sandbox_operator_usernames = "nielsr"
+    settings.chat_operational_alerts_enabled = True
+    settings.chat_gateway_url = (
+        "https://chat-gateway.paperswithcode.co/api/internal/chat-gateway"
+    )
+    settings.chat_title_generation_enabled = True
+    settings.chat_title_hf_token = "test-only-production-title-token"
+    settings.chat_title_bill_to = "huggingface"
+    settings.chat_title_credential_owner = "nielsr"
+    settings.chat_title_credential_environment = "production"
+
+    assert settings.chat_enabled is False
+    assert settings.chat_new_chat_modal_percentage == 0
+    assert settings.chat_public_admission_enabled is False
+    assert settings.chat_sandbox_admission_enabled is False
+    assert settings.chat_blank_pool_enabled is False
+    assert validate_runtime(settings) == profile_features("production")
+
+
+def test_disabled_legacy_production_rejects_armed_configuration(tmp_path: Path):
+    release = make_bundle(tmp_path, chat=False)
+    settings = deployed_settings(tmp_path, release, "production")
+    settings.chat_default_backend = "local_mcp"
+    settings.chat_modal_image_version = ""
+    settings.chat_pwc_cli_version = ""
+    settings.chat_worker_contract_version = ""
+    settings.chat_system_prompt_sha256 = ""
+    settings.chat_title_generation_enabled = True
+
+    with pytest.raises(RuntimeError, match="legacy production"):
+        validate_runtime(settings)
+
+
 def test_disabled_bridge_releases_can_replace_legacy_production_safely():
     legacy = {
         "chat_runtime": {
@@ -2366,6 +2422,7 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     )
 
     assert values["PWC_CHAT_ENABLED"] == "true"
+    assert values["PWC_CHAT_NEW_CHAT_MODAL_PERCENTAGE"] == "100"
     assert values["PWC_CHAT_PUBLIC_ADMISSION_ENABLED"] == "false"
     assert values["PWC_CHAT_SANDBOX_ADMISSION_ENABLED"] == "false"
     assert values["PWC_CHAT_BLANK_POOL_ENABLED"] == "false"
@@ -2381,6 +2438,48 @@ def test_production_chat_preparation_is_sealed_and_fail_closed():
     assert values["PWC_CHAT_TITLE_HF_TOKEN"] == "production-title-secret"
     assert values["PWC_CHAT_MAX_CONCURRENCY"] == "2"
     assert values["PWC_CHAT_SANDBOX_TOTAL_LIVE_CAP"] == "3"
+
+
+def test_production_chat_install_revalidates_exact_sealed_bundle():
+    values = configure_host_env.production_chat_preparation_values(
+        _production_chat_preparation_source(),
+        {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+    )
+    sealed = {key: f"{key}={value}" for key, value in values.items()}
+
+    assert (
+        configure_host_env.production_chat_install_values(
+            sealed,
+            {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+            {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+        )
+        == values
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ({"PWC_CHAT_ENABLED": "PWC_CHAT_ENABLED=false"}, "stale"),
+        ({"UNREVIEWED_SECRET": "UNREVIEWED_SECRET=value"}, "unexpected"),
+    ],
+)
+def test_production_chat_install_rejects_tampered_bundle(mutation, match):
+    values = configure_host_env.production_chat_preparation_values(
+        _production_chat_preparation_source(),
+        {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+        {"PWC_CHAT_TITLE_HF_TOKEN": "PWC_CHAT_TITLE_HF_TOKEN=staging-secret"},
+    )
+    sealed = {key: f"{key}={value}" for key, value in values.items()}
+    sealed.update(mutation)
+
+    with pytest.raises(ValueError, match=match):
+        configure_host_env.production_chat_install_values(
+            sealed,
+            {"PWC_HF_TOKEN": "PWC_HF_TOKEN=general-secret"},
+            {"PWC_CHAT_TITLE_HF_TOKEN": ("PWC_CHAT_TITLE_HF_TOKEN=staging-secret")},
+        )
 
 
 @pytest.mark.parametrize(

@@ -236,50 +236,64 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     ):
         raise RuntimeError("production OpenRouter chat credentials are prohibited")
 
-    if not settings.chat_enabled:
-        if settings.environment == "production":
-            active_controls = (
-                settings.chat_new_chat_modal_percentage != 0
-                or settings.chat_persistent_worker_enabled
-                or settings.chat_blank_pool_enabled
-                or settings.chat_public_admission_enabled
-                or settings.chat_sandbox_admission_enabled
+    validate_chat_configuration = settings.chat_enabled
+    if not settings.chat_enabled and settings.environment == "production":
+        admission_controls = (
+            settings.chat_new_chat_modal_percentage != 0
+            or settings.chat_blank_pool_enabled
+            or settings.chat_public_admission_enabled
+            or settings.chat_sandbox_admission_enabled
+        )
+        legacy_descriptor = (
+            settings.chat_default_backend == "local_mcp"
+            and not settings.chat_modal_image_version
+            and not settings.chat_pwc_cli_version
+            and not settings.chat_worker_contract_version
+            and not settings.chat_system_prompt_sha256
+        )
+        dormant_descriptor = (
+            settings.chat_default_backend == "modal_cli"
+            and bool(settings.chat_modal_image_version)
+            and bool(settings.chat_pwc_cli_version)
+            and bool(settings.chat_worker_contract_version)
+            and bool(settings.chat_system_prompt_sha256)
+        )
+        if admission_controls or not (legacy_descriptor or dormant_descriptor):
+            raise RuntimeError(
+                "disabled production contains an active or incomplete chat runtime descriptor"
+            )
+        if dormant_descriptor:
+            try:
+                require_immutable_image_id(settings.chat_modal_image_version)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"dormant production chat runtime is invalid: {error}"
+                ) from error
+            from backend.chat_sandbox_worker.prompt import sha256
+
+            if settings.chat_system_prompt_sha256 != sha256():
+                raise RuntimeError(
+                    "dormant production prompt and execution limits disagree"
+                )
+            prepared_controls = (
+                settings.chat_persistent_worker_enabled
                 or settings.chat_title_generation_enabled
                 or settings.chat_sandbox_cpu_limit is not None
                 or settings.chat_sandbox_memory_limit_mib is not None
+                or settings.chat_operational_alerts_enabled
             )
-            legacy_descriptor = (
-                settings.chat_default_backend == "local_mcp"
-                and not settings.chat_modal_image_version
-                and not settings.chat_pwc_cli_version
-                and not settings.chat_worker_contract_version
-                and not settings.chat_system_prompt_sha256
+            validate_chat_configuration = prepared_controls
+        elif (
+            settings.chat_persistent_worker_enabled
+            or settings.chat_title_generation_enabled
+            or settings.chat_sandbox_cpu_limit is not None
+            or settings.chat_sandbox_memory_limit_mib is not None
+            or settings.chat_operational_alerts_enabled
+        ):
+            raise RuntimeError(
+                "legacy production cannot contain armed chat preparation"
             )
-            dormant_descriptor = (
-                settings.chat_default_backend == "modal_cli"
-                and bool(settings.chat_modal_image_version)
-                and bool(settings.chat_pwc_cli_version)
-                and bool(settings.chat_worker_contract_version)
-                and bool(settings.chat_system_prompt_sha256)
-            )
-            if active_controls or not (legacy_descriptor or dormant_descriptor):
-                raise RuntimeError(
-                    "disabled production contains an active or incomplete chat runtime descriptor"
-                )
-            if dormant_descriptor:
-                try:
-                    require_immutable_image_id(settings.chat_modal_image_version)
-                except ValueError as error:
-                    raise RuntimeError(
-                        f"dormant production chat runtime is invalid: {error}"
-                    ) from error
-                from backend.chat_sandbox_worker.prompt import sha256
-
-                if settings.chat_system_prompt_sha256 != sha256():
-                    raise RuntimeError(
-                        "dormant production prompt and execution limits disagree"
-                    )
-    else:
+    if validate_chat_configuration:
         if not all(
             (
                 settings.hf_oauth_client_id,
@@ -313,7 +327,8 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 )
         if settings.chat_default_backend != "modal_cli":
             raise RuntimeError("deployed chat must use the isolated Modal backend")
-        if settings.chat_new_chat_modal_percentage != 100:
+        expected_modal_percentage = 100 if settings.chat_enabled else 0
+        if settings.chat_new_chat_modal_percentage != expected_modal_percentage:
             raise RuntimeError("chat must not spill new sessions to local execution")
         if settings.chat_web_search_enabled:
             web_search_url = urlsplit(settings.chat_web_search_exa_url)
