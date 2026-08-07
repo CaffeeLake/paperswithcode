@@ -44,7 +44,7 @@ describe("ModelPicker", () => {
       .toEqual(["or-a"]);
   });
 
-  it("reserves enough width for the full label and native select arrow", () => {
+  it("sizes the picker from the selected label", () => {
     render(
       <ModelPicker
         models={models}
@@ -53,7 +53,11 @@ describe("ModelPicker", () => {
       />,
     );
 
-    expect(screen.getByRole("combobox")).toHaveStyle({ width: "25ch" });
+    const select = screen.getByRole("combobox");
+    const sizer = select.closest(".chat-model-picker")?.querySelector(".chat-model-picker-sizer");
+
+    expect(select).not.toHaveAttribute("style");
+    expect(sizer).toHaveTextContent("OpenRouter Model A");
   });
 
   it("keeps model selection behavior unchanged", async () => {

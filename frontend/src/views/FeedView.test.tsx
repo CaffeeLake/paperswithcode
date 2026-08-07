@@ -148,7 +148,9 @@ describe("AskAssistant", () => {
     renderAskAssistant();
 
     const toggle = await screen.findByRole("switch", { name: "Web search" });
-    expect(screen.getByLabelText("Research model")).toHaveStyle({ width: "24ch" });
+    const modelPicker = screen.getByLabelText("Research model").closest(".chat-model-picker");
+    expect(modelPicker?.querySelector(".chat-model-picker-sizer"))
+      .toHaveTextContent("DeepSeek V4 Flash");
     await user.click(toggle);
     await user.type(
       screen.getByRole("textbox", { name: "Ask the assistant" }),
