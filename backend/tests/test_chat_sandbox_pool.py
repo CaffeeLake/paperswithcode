@@ -169,7 +169,7 @@ def test_failed_precommit_claim_leaves_worker_blank():
     assert lease_count == 0
 
 
-def test_incompatible_release_cannot_be_claimed():
+def test_compatible_blank_survives_release_cutover():
     factory = _database()
     settings = _settings()
     session_id = uuid.uuid4()
@@ -182,10 +182,38 @@ def test_incompatible_release_cannot_be_claimed():
         )
     manager = _manager(factory, settings)
 
-    assert asyncio.run(manager.claim_blank(session_id)) is None
+    assert asyncio.run(manager.claim_blank(session_id)) is not None
     with factory() as db:
         row = db.execute(select(ChatSandboxPool)).scalar_one()
+        lease = db.get(ChatSandboxLease, session_id)
+    assert lease is not None
+    assert row.state == "claimed"
+    assert row.app_release_id == "previous-release"
+    assert lease.app_release_id == settings.release_id
+
+
+def test_pool_maintenance_preserves_compatible_blank_from_previous_release(
+    monkeypatch,
+):
+    factory = _database()
+    settings = _settings(chat_sandbox_spend_enforcement_enabled=False)
+    blank = _blank(settings, release_id="previous-release")
+    with factory() as db, db.begin():
+        db.add(blank)
+    manager = _manager(factory, settings)
+    manager.reconcile_pool_orphans = lambda: asyncio.sleep(0, result=0)
+    monkeypatch.setattr(
+        ChatSandboxSpendService, "assert_available", lambda *_args: None
+    )
+
+    result = asyncio.run(manager.maintain_pool())
+
+    assert result["drained"] == 0
+    assert result["replenished"] == 0
+    with factory() as db:
+        row = db.get(ChatSandboxPool, blank.id)
     assert row.state == "blank_ready"
+    assert row.app_release_id == "previous-release"
 
 
 def test_inactive_slot_cannot_maintain_or_replenish_pool():

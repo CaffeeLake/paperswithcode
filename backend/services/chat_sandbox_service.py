@@ -675,6 +675,9 @@ class SandboxSessionManager:
         minimum_expiry = now + timedelta(
             seconds=self.settings.chat_blank_pool_min_remaining_seconds
         )
+        # app_release_id is audit provenance, not worker identity. Rolling deploys
+        # may reuse an unassigned blank when its immutable worker and resources
+        # still match; assigned leases remain scoped to their originating chat.
         with self.session_factory() as db:
             candidates = list(
                 db.execute(
@@ -689,7 +692,6 @@ class SandboxSessionManager:
                         == self.settings.chat_modal_image_version,
                         ChatSandboxPool.worker_contract_version
                         == self.settings.chat_worker_contract_version,
-                        ChatSandboxPool.app_release_id == self.settings.release_id,
                         ChatSandboxPool.cpu_request == self.settings.chat_sandbox_cpu,
                         ChatSandboxPool.cpu_limit
                         == (
@@ -744,7 +746,6 @@ class SandboxSessionManager:
                         == self.settings.chat_modal_image_version,
                         ChatSandboxPool.worker_contract_version
                         == self.settings.chat_worker_contract_version,
-                        ChatSandboxPool.app_release_id == self.settings.release_id,
                         ChatSandboxPool.cpu_request == self.settings.chat_sandbox_cpu,
                         ChatSandboxPool.cpu_limit
                         == (
@@ -1177,11 +1178,12 @@ class SandboxSessionManager:
             )
             for row in rows:
                 failure_code: str | None = None
+                # Preserve a compatible unassigned worker across app-only releases.
+                # Its creator release remains recorded on the pool row for audit.
                 incompatible = (
                     row.image_version != self.settings.chat_modal_image_version
                     or row.worker_contract_version
                     != self.settings.chat_worker_contract_version
-                    or row.app_release_id != self.settings.release_id
                     or row.cpu_request != self.settings.chat_sandbox_cpu
                     or row.cpu_limit
                     != (
