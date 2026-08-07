@@ -158,7 +158,11 @@ def normalize_exa_payload(raw: object, settings: Settings) -> dict[str, Any]:
         if len(results) >= settings.chat_web_search_result_count:
             break
     payload: dict[str, Any] = {"results": results}
-    maximum = settings.chat_web_search_max_result_bytes
+    return _bound_payload(payload, settings.chat_web_search_max_result_bytes)
+
+
+def _bound_payload(payload: dict[str, Any], maximum: int) -> dict[str, Any]:
+    results = payload["results"]
     for result in reversed(results):
         while result["excerpt"] and _serialized_size(payload) > maximum:
             raw_excerpt = str(result["excerpt"])
@@ -538,6 +542,9 @@ async def search_web(
                     last_failure = ProviderFailure(error.error_class, False)
                 else:
                     payload["took_ms"] = round((time.monotonic() - started) * 1_000)
+                    payload = _bound_payload(
+                        payload, settings.chat_web_search_max_result_bytes
+                    )
                     with db_manager.session_local() as budget_db:
                         ChatWebSearchBudgetService(budget_db, settings).record_success(
                             latency_ms=payload["took_ms"],

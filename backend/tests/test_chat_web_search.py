@@ -89,7 +89,7 @@ def test_provider_retry_is_one_visible_call_but_two_metered_attempts(monkeypatch
                         {
                             "title": "Primary source",
                             "url": "https://example.com/source",
-                            "highlights": ["Evidence"],
+                            "highlights": ["Evidence" * 1_000],
                         }
                     ],
                     "costDollars": {"total": 0.002},
@@ -102,13 +102,13 @@ def test_provider_retry_is_one_visible_call_but_two_metered_attempts(monkeypatch
         return next(responses)
 
     monkeypatch.setattr(web, "_dispatch_exa", dispatch)
+    settings = configured_settings(chat_web_search_max_result_bytes=4_096)
     result = asyncio.run(
-        web.search_web(
-            "current AI research", configured_settings(), owner_hash="a" * 64
-        )
+        web.search_web("current AI research", settings, owner_hash="a" * 64)
     )
 
     assert result["results"][0]["url"] == "https://example.com/source"
+    assert web._serialized_size(result) <= settings.chat_web_search_max_result_bytes
     with factory() as db:
         state = db.execute(select(ChatWebSearchBudgetState)).scalar_one()
         owner = db.execute(select(ChatWebSearchOwnerUsage)).scalar_one()
