@@ -45,6 +45,7 @@ export interface PublicChatMessage {
   paper_mentions?: Array<Omit<PaperMentionDraft, "key"> & { occurrence_id: string }>;
   display_blocks: ChatBlock[];
   citations: ChatCitation[];
+  model?: string | null;
   display_state: "complete" | "interrupted" | "failed";
   finish_reason: string | null;
   error: string | null;
@@ -54,6 +55,9 @@ export interface ChatShareDetail {
   share_id: string;
   created_at: string;
   updated_at: string;
+  model: string | null;
+  model_label: string | null;
+  model_provider: "huggingface" | "openrouter" | null;
   messages: PublicChatMessage[];
 }
 

@@ -66,6 +66,7 @@ def _session(*, busy=False):
     return SimpleNamespace(
         id=uuid.uuid4(),
         hf_user_id="hf-owner",
+        selected_model="deepseek-ai/DeepSeek-V4-Flash-0731",
         active_turn_id=uuid.uuid4() if busy else None,
         active_turn_expires_at=datetime.now(UTC) + timedelta(minutes=1)
         if busy
@@ -83,6 +84,7 @@ def _row(
     citations=None,
     finish_reason=None,
     error_code=None,
+    model=None,
     paper_mentions=None,
     effective_prompt=None,
 ):
@@ -96,6 +98,7 @@ def _row(
         citations=citations or [],
         finish_reason=finish_reason,
         error_code=error_code,
+        model=model,
         paper_mentions=paper_mentions or [],
         effective_prompt=effective_prompt,
     )
@@ -191,6 +194,10 @@ class _PublicDB:
             return _Result(None)
         return _Result(self.share)
 
+    def scalar(self, statement):
+        assert "chat_sessions.selected_model" in str(statement)
+        return "deepseek-ai/DeepSeek-V4-Flash-0731"
+
 
 def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     user_id = uuid.uuid4()
@@ -249,6 +256,7 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
             },
         ],
         citations=[citation],
+        model="deepseek-ai/DeepSeek-V4-Flash-0731",
         finish_reason="tool_limit",
     )
     assistant.id = assistant_id
@@ -265,6 +273,10 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     )
     payload = detail.model_dump(mode="json")
 
+    assert payload["model"] == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert payload["model_label"] == "DeepSeek V4 Flash"
+    assert payload["model_provider"] == "huggingface"
+    assert payload["messages"][1]["model"] == payload["model"]
     assert payload["messages"][1]["finish_reason"] == "tool_limit"
     assert payload["messages"][1]["display_blocks"][1]["status"] == "error"
     assert payload["messages"][0]["paper_mentions"][0]["route_id"] == "2501.00001"
@@ -272,7 +284,15 @@ def test_public_projection_preserves_bounded_blocks_and_omits_private_fields():
     assert "private exact model input" not in serialized
     assert "secret-provider-route" not in serialized
     assert "private followup" not in serialized
-    assert set(payload) == {"share_id", "created_at", "updated_at", "messages"}
+    assert set(payload) == {
+        "share_id",
+        "created_at",
+        "updated_at",
+        "model",
+        "model_label",
+        "model_provider",
+        "messages",
+    }
     assert "title" not in payload
     assert str(user_id) not in serialized
     assert str(assistant_id) not in serialized
@@ -364,7 +384,7 @@ def test_public_models_forbid_unexpected_private_fields():
             id=uuid.uuid4(),
             role="user",
             content="Question",
-            model="private",
+            model_route="private",
         )
     with pytest.raises(ValidationError):
         ChatShareDetail(

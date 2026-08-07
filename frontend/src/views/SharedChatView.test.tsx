@@ -17,6 +17,9 @@ const payload = {
   share_id: shareId,
   created_at: "2026-07-28T20:00:00Z",
   updated_at: "2026-07-28T20:00:00Z",
+  model: "deepseek-ai/DeepSeek-V4-Flash-0731",
+  model_label: "DeepSeek V4 Flash",
+  model_provider: "huggingface",
   messages: [
     {
       id: "22222222-2222-4222-8222-222222222222",
@@ -112,6 +115,14 @@ describe("SharedChatView", () => {
       "href",
       "/paper/2607.00001",
     );
+    expect(screen.getByText("Generated with DeepSeek V4 Flash")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Inference Providers" })).toHaveAttribute(
+      "href",
+      "https://huggingface.co/docs/inference-providers/en/index",
+    );
+    const attribution = screen.getByText("Generated with DeepSeek V4 Flash").parentElement;
+    const fresh = screen.getByRole("heading", { name: "Start a new conversation" }).closest("section");
+    expect(attribution?.nextElementSibling).toBe(fresh);
     const fetchInit = vi.mocked(fetch).mock.calls[0][1];
     expect(fetchInit).not.toHaveProperty("credentials");
     expect(document.title).toBe("Shared conversation");

@@ -111,6 +111,22 @@ const SharedChatView: React.FC = () => {
       </div>
       <div className="shared-chat-content">
         <SharedTranscript key={query.data.updated_at} detail={query.data} />
+        {query.data.model_label && <div className="shared-chat-attribution">
+          <span>Generated with {query.data.model_label}</span>
+          {query.data.model_provider === "huggingface" && <span>
+            Powered by <span aria-hidden="true">🤗</span>{" "}
+            <a
+              href="https://huggingface.co/docs/inference-providers/en/index"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Inference Providers
+            </a>
+          </span>}
+          {query.data.model_provider === "openrouter" && <span>
+            Powered by <a href="https://openrouter.ai/" target="_blank" rel="noreferrer">OpenRouter</a>
+          </span>}
+        </div>}
         <section className="shared-chat-fresh" aria-labelledby="shared-chat-fresh-title">
           <h2 id="shared-chat-fresh-title">Start a new conversation</h2>
           <p>Your new question starts with an empty context.</p>

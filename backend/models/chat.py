@@ -296,6 +296,7 @@ class PublicChatMessage(BaseModel):
     paper_mentions: list[PaperMentionSnapshot] = Field(default_factory=list)
     display_blocks: list[DisplayBlock] = Field(default_factory=list)
     citations: list[CitationSnapshot] = Field(default_factory=list, max_length=20)
+    model: str | None = Field(default=None, max_length=255)
     display_state: Literal["complete", "interrupted", "failed"] = "complete"
     finish_reason: FinishReason | Literal["stopped"] | None = None
     error: str | None = Field(default=None, max_length=500)
@@ -307,6 +308,9 @@ class ChatShareDetail(BaseModel):
     share_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    model: str | None = Field(default=None, max_length=255)
+    model_label: str | None = Field(default=None, max_length=255)
+    model_provider: Literal["huggingface", "openrouter"] | None = None
     messages: list[PublicChatMessage]
 
 

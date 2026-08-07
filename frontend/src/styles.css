@@ -6152,6 +6152,21 @@ html { scroll-behavior: smooth; }
   padding: 34px 28px 64px;
 }
 .shared-chat-transcript { padding: 0 0 26px; }
+.shared-chat-attribution {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px 12px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.shared-chat-attribution a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+.shared-chat-attribution a:hover { color: var(--accent-text); text-decoration: underline; }
 .shared-chat-fresh {
   margin-top: 26px;
   padding-top: 28px;

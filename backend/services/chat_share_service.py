@@ -18,6 +18,7 @@ from backend.models.chat import (
 from backend.models.database import (
     ChatMessageRecord,
     ChatShare,
+    ChatSession,
 )
 from backend.services.chat_session_service import (
     ChatOwner,
@@ -69,6 +70,7 @@ def _public_projection(rows: list[ChatMessageRecord]) -> list[PublicChatMessage]
                     content=row.content,
                     display_blocks=_public_blocks(row),
                     citations=row.citations or [],
+                    model=row.model,
                     finish_reason=row.finish_reason,
                 )
             )
@@ -91,6 +93,7 @@ def _public_projection(rows: list[ChatMessageRecord]) -> list[PublicChatMessage]
                 role="assistant",
                 content="",
                 display_blocks=_public_blocks(row),
+                model=getattr(row, "model", None),
                 display_state="interrupted" if interrupted else "failed",
                 finish_reason="stopped" if interrupted else None,
                 error=None if interrupted else _failure_message(row.error_code),
@@ -168,9 +171,41 @@ class ChatShareService:
                 "share_not_found", 404, "Shared conversation not found"
             ) from None
 
+        model = next(
+            (
+                message.model
+                for message in reversed(public_messages)
+                if message.role == "assistant" and message.model
+            ),
+            None,
+        )
+        # Snapshots created before model attribution was added do not contain
+        # this public-safe field. Keep those existing capability URLs useful.
+        if model is None and getattr(share, "chat_session_id", None) is not None:
+            model = self.db.scalar(
+                select(ChatSession.selected_model).where(
+                    ChatSession.id == share.chat_session_id
+                )
+            )
+        choice = next(
+            (
+                candidate
+                for candidate in self.sessions.settings.chat_model_registry
+                if candidate["id"] == model
+            ),
+            None,
+        )
+
         return ChatShareDetail(
             share_id=share.id,
             created_at=share.created_at,
             updated_at=share.updated_at,
+            model=model,
+            model_label=choice["label"] if choice else model,
+            model_provider=(
+                choice["provider"]
+                if choice
+                else self.sessions.settings.chat_model_providers.get(model)
+            ),
             messages=public_messages,
         )
