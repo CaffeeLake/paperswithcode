@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { ApiError, copyPaperToBucket } from "@/lib/api";
 import { authUrl } from "@/lib/apiUrl";
@@ -54,6 +55,7 @@ const KIND_LABEL: Record<BucketArtifactKind, string> = {
   github: "GitHub",
 };
 const REPO_PART_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const BUCKET_ID_RE = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 const DIRECT_COPY_BATCH_SIZE = 20;
 
 export interface DirectBucketArtifact {
@@ -70,6 +72,13 @@ interface PendingBucketAuthorization {
 }
 
 const BUCKET_AUTHORIZATION_PARAM = "copy_to_bucket";
+
+function huggingFaceBucketUrl(bucketId: string): string | null {
+  const normalized = bucketId.trim();
+  if (!BUCKET_ID_RE.test(normalized)) return null;
+  const [namespace, name] = normalized.split("/");
+  return `https://huggingface.co/buckets/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
+}
 
 function pendingBucketAuthorizationKey(paperId: string): string {
   return `pwc:bucket-copy:${paperId}`;
@@ -318,7 +327,8 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
 
   const selectedArtifacts = artifacts.filter((artifact) => selectedIds.has(artifact.id));
   const allArtifactsSelected = selectedArtifacts.length === artifacts.length;
-  const bucketIdIsValid = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(bucketId.trim());
+  const bucketPageUrl = huggingFaceBucketUrl(bucketId);
+  const bucketIdIsValid = bucketPageUrl !== null;
   const commands = buildBucketCopyCommands(bucketId, selectedArtifacts, {
     create: destinationMode === "new",
     isPrivate: visibility === "private",
@@ -417,6 +427,13 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
           githubCount ? "Use the generated commands below to copy GitHub repositories." : "",
         ].filter(Boolean).join(" "),
         variant: failedCount ? "destructive" : undefined,
+        action: bucketPageUrl ? (
+          <ToastAction altText="Open destination bucket" asChild>
+            <a href={bucketPageUrl} target="_blank" rel="noopener noreferrer">
+              Open bucket
+            </a>
+          </ToastAction>
+        ) : undefined,
       });
       if (!failedCount && !githubCount) setOpen(false);
     } catch (error) {
@@ -440,6 +457,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
   }, [
     authorizeBucket,
     bucketId,
+    bucketPageUrl,
     destinationMode,
     props.isSignedIn,
     props.paperId,
@@ -530,9 +548,22 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
                   placeholder={props.suggestedBucketId || "username/paper-artifacts"}
                   aria-invalid={bucketId.length > 0 && !bucketIdIsValid}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Use the full Hugging Face bucket ID: namespace/name.
-                </p>
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <p className="text-muted-foreground">
+                    Use the full Hugging Face bucket ID: namespace/name.
+                  </p>
+                  {bucketPageUrl && (
+                    <a
+                      href={bucketPageUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex shrink-0 items-center gap-1 underline underline-offset-4"
+                    >
+                      View bucket
+                      <Icon name="external" size={10} />
+                    </a>
+                  )}
+                </div>
               </div>
 
               {destinationMode === "new" && (

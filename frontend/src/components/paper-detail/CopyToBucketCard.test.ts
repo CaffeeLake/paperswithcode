@@ -3,6 +3,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { Toaster } from "@/components/ui/toaster";
+
 const { copyPaperToBucketMock } = vi.hoisted(() => ({
   copyPaperToBucketMock: vi.fn(),
 }));
@@ -189,6 +191,46 @@ describe("CopyToBucketCard", () => {
 
     expect(screen.getByLabelText("Bucket name")).toHaveValue(
       "nielsr/kimi-k3-artifacts",
+    );
+    expect(screen.getByRole("link", { name: /view bucket/i })).toHaveAttribute(
+      "href",
+      "https://huggingface.co/buckets/nielsr/kimi-k3-artifacts",
+    );
+  });
+
+  it("links the destination bucket from the completion toast", async () => {
+    copyPaperToBucketMock.mockResolvedValue({
+      bucket_id: "nielsr/paper-artifacts",
+      copied: ["model:openai/test-model"],
+      errors: [],
+    });
+    const user = userEvent.setup();
+    render(
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(CopyToBucketCard, {
+          githubUrls: [],
+          hfModelUrls: ["https://huggingface.co/openai/test-model"],
+          hfDatasetUrls: [],
+          hfSpaceUrls: [],
+          paperId: "42",
+          pdfName: "42",
+          pdfUrl: null,
+          isSignedIn: true,
+          suggestedBucketId: "nielsr/paper-artifacts",
+        }),
+        React.createElement(Toaster),
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: /copy to bucket/i }));
+    await user.click(screen.getByRole("button", { name: "Copy now" }));
+
+    expect(await screen.findByText("Copied to bucket")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open bucket" })).toHaveAttribute(
+      "href",
+      "https://huggingface.co/buckets/nielsr/paper-artifacts",
     );
   });
 
