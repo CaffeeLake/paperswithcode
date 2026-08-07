@@ -8,6 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -287,6 +288,23 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             raise RuntimeError("deployed chat must use the isolated Modal backend")
         if settings.chat_new_chat_modal_percentage != 100:
             raise RuntimeError("chat must not spill new sessions to local execution")
+        if settings.chat_web_search_enabled:
+            web_search_url = urlsplit(settings.chat_web_search_exa_url)
+            if (
+                settings.chat_web_search_provider != "exa"
+                or not settings.chat_web_search_exa_api_key
+                or web_search_url.scheme != "https"
+                or web_search_url.hostname != "api.exa.ai"
+                or web_search_url.path.rstrip("/") != "/search"
+                or settings.chat_web_search_max_calls != 3
+                or settings.chat_web_search_timeout_seconds != 3
+                or settings.chat_web_search_result_count != 5
+                or settings.chat_web_search_max_result_bytes != 16 * 1024
+                or settings.chat_web_search_query_max_chars != 500
+                or settings.chat_web_search_monthly_warning_calls != 1_000
+                or settings.chat_web_search_monthly_hard_calls != 1_200
+            ):
+                raise RuntimeError("web-search runtime descriptor is invalid")
         if not settings.chat_sandbox_spend_enforcement_enabled:
             raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
         if (
@@ -572,8 +590,19 @@ def validate_chat_schema(db, settings: Settings) -> None:
         "chat_openrouter_provider_calls",
         "chat_openrouter_credential_audit",
     }
-    required_tables = common_tables | (
-        openrouter_tables if settings.chat_openrouter_server_funded_enabled else set()
+    web_search_tables = {
+        "chat_web_search_budget_states",
+        "chat_web_search_circuit_events",
+        "chat_web_search_owner_usage",
+    }
+    required_tables = (
+        common_tables
+        | (
+            openrouter_tables
+            if settings.chat_openrouter_server_funded_enabled
+            else set()
+        )
+        | (web_search_tables if settings.chat_web_search_enabled else set())
     )
     rows = dict(
         db.execute(
@@ -597,6 +626,9 @@ def validate_chat_schema(db, settings: Settings) -> None:
                     ('chat_openrouter_monthly_usage'),
                     ('chat_openrouter_provider_calls'),
                     ('chat_openrouter_credential_audit')
+                    ,('chat_web_search_budget_states')
+                    ,('chat_web_search_circuit_events')
+                    ,('chat_web_search_owner_usage')
                 ) AS required(name)
                 """)
         ).all()
@@ -643,8 +675,20 @@ def validate_chat_schema(db, settings: Settings) -> None:
         ("chat_openrouter_monthly_usage", "reserved_microusd"),
         ("chat_openrouter_provider_calls", "actual_microusd"),
     }
-    expected_columns = common_columns | (
-        openrouter_columns if settings.chat_openrouter_server_funded_enabled else set()
+    web_search_columns = {
+        ("chat_sessions", "web_search_enabled"),
+        ("chat_messages", "web_search_enabled"),
+        ("chat_turn_capabilities", "web_search_calls"),
+        ("chat_turn_capabilities", "web_search_failed"),
+    }
+    expected_columns = (
+        common_columns
+        | (
+            openrouter_columns
+            if settings.chat_openrouter_server_funded_enabled
+            else set()
+        )
+        | (web_search_columns if settings.chat_web_search_enabled else set())
     )
     present_columns = set(
         db.execute(
@@ -689,6 +733,10 @@ def validate_chat_schema(db, settings: Settings) -> None:
                 ('chat_openrouter_credentials', 'credential_revision'),
                 ('chat_openrouter_monthly_usage', 'reserved_microusd'),
                 ('chat_openrouter_provider_calls', 'actual_microusd')
+                ,('chat_sessions', 'web_search_enabled')
+                ,('chat_messages', 'web_search_enabled')
+                ,('chat_turn_capabilities', 'web_search_calls')
+                ,('chat_turn_capabilities', 'web_search_failed')
             )
             """)
         ).all()

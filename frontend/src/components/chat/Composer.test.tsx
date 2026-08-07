@@ -45,4 +45,37 @@ describe("Composer paper mentions", () => {
       paperMentions: [expect.objectContaining({ route_id: "2501.00001", start: 0, end: 11 })],
     }));
   });
+
+  it("shows a directly accessible sticky web-search switch when available", () => {
+    const onWebSearchChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <Composer
+          onSend={vi.fn()}
+          webSearchAvailable
+          webSearchEnabled={false}
+          onWebSearchChange={onWebSearchChange}
+        />
+      </QueryClientProvider>,
+    );
+    const toggle = screen.getByRole("switch", { name: "Web search" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle).toHaveAttribute("title", expect.stringContaining("Exa"));
+    fireEvent.click(toggle);
+    expect(onWebSearchChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <Composer
+          onSend={vi.fn()}
+          busy
+          webSearchAvailable
+          webSearchEnabled
+          onWebSearchChange={onWebSearchChange}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("switch", { name: "Web search" })).toBeDisabled();
+  });
 });

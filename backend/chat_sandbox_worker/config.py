@@ -20,6 +20,7 @@ class WorkerSettings:
     chat_max_turns: int = 8
     chat_max_tool_calls: int = 12
     chat_max_direct_search_calls: int = 4
+    chat_max_web_search_calls: int = 3
     chat_tool_result_max_bytes: int = 24 * 1024
     chat_turn_tool_output_max_bytes: int = 96 * 1024
     chat_bash_timeout_seconds: float = 30
@@ -37,6 +38,7 @@ class WorkerSettings:
             chat_max_direct_search_calls=_integer(
                 "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS", 4
             ),
+            chat_max_web_search_calls=_integer("PWC_CHAT_MAX_WEB_SEARCH_CALLS", 3),
             chat_tool_result_max_bytes=_integer(
                 "PWC_CHAT_TOOL_RESULT_MAX_BYTES", 24 * 1024
             ),

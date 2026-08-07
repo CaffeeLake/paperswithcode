@@ -67,6 +67,7 @@ image = (
             "PWC_CHAT_MAX_TURNS": "8",
             "PWC_CHAT_MAX_TOOL_CALLS": "12",
             "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": "4",
+            "PWC_CHAT_MAX_WEB_SEARCH_CALLS": "3",
             "PWC_CHAT_TOOL_RESULT_MAX_BYTES": "24576",
             "PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES": "98304",
             "PWC_CHAT_BASH_TIMEOUT_SECONDS": "30",

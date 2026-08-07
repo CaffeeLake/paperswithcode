@@ -43,6 +43,7 @@ interface BrowserTiming {
 interface UseChatOptions {
   sessionId: string | null;
   initialModel?: string;
+  webSearchEnabled?: boolean;
   onSessionId: (id: string) => void;
   onTitle: (title: string) => void;
   onSettled: (sessionId: string | null) => void;
@@ -584,6 +585,7 @@ export function useChat(options: UseChatOptions) {
       paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
       session_id: optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
+      web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
       ...(!optionsRef.current.sessionId && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(replacement ?? {}),
     }, optimistic, current);
@@ -624,6 +626,7 @@ export function useChat(options: UseChatOptions) {
       paper_mentions: draft.paperMentions.map(({ route_id, title, start, end }) => ({ route_id, title, start, end })),
       session_id: first ? null : optionsRef.current.sessionId,
       client_message_id: crypto.randomUUID(),
+      web_search_enabled: Boolean(optionsRef.current.webSearchEnabled),
       ...(first && optionsRef.current.initialModel ? { initial_model: optionsRef.current.initialModel } : {}),
       ...(!first ? {
         replace_message_id: target.id,

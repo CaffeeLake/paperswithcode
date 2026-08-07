@@ -929,6 +929,7 @@ export interface ChatAvailability {
   reason: 'chat_temporarily_disabled' | null;
   expected_recovery_at: string | null;
   paper_mentions_enabled: boolean;
+  web_search_available: boolean;
 }
 
 export interface ChatSandboxSpendStatus {
@@ -965,6 +966,33 @@ export interface ChatSandboxSpendStatus {
   } | null;
   daily_spend: Array<{ date: string; blank_pool_microusd: number; assigned_microusd: number }>;
   events: Array<{ id: string; type: string; severity: string; reason: string | null; created_at: string; details: Record<string, unknown> }>;
+}
+
+export interface ChatWebSearchBudgetStatus {
+  environment: string;
+  billing_cycle: string;
+  cycle_end_at: string;
+  available: boolean;
+  warning_calls: number;
+  hard_limit_calls: number;
+  call_count: number;
+  remaining_calls: number;
+  success_count: number;
+  failure_count: number;
+  provider_cost_microusd: number;
+  last_latency_ms: number | null;
+  last_result_count: number | null;
+  circuit_state: 'armed' | 'warning' | 'cooldown' | 'tripped';
+  trip_reason: string | null;
+  cooldown_until: string | null;
+  last_provider_error_class: string | null;
+  events: Array<{
+    id: string;
+    type: string;
+    error_class: string | null;
+    created_at: string;
+    details: Record<string, unknown>;
+  }>;
 }
 
 class ApiClient {
@@ -2057,6 +2085,10 @@ class ApiClient {
   async getChatSandboxSpend(environment?: string): Promise<ChatSandboxSpendStatus> {
     const query = environment ? `?environment=${encodeURIComponent(environment)}` : '';
     return this.request<ChatSandboxSpendStatus>(`/chat/admin/sandbox-spend${query}`, { cache: 'no-store' });
+  }
+
+  async getChatWebSearchBudget(): Promise<ChatWebSearchBudgetStatus> {
+    return this.request<ChatWebSearchBudgetStatus>('/chat/admin/web-search-budget', { cache: 'no-store' });
   }
 
   async getOpenRouterCredential(): Promise<OpenRouterCredentialStatus> {

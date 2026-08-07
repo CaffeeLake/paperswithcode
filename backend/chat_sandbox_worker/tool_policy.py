@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep", "WebFetch"})
+WEB_SEARCH_TOOL = "mcp__web__search_web"
+ALLOWED_TOOLS = frozenset({"Bash", "Read", "Grep", "WebFetch", WEB_SEARCH_TOOL})
 _HINT = "\n[output truncated; narrow, filter, or paginate the request and try again]\n"
 _ANSI = re.compile(rb"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~])")
 _SEARCH = re.compile(r"(?:^|[;&|()\n]\s*)pwc\s+search(?:\s|$)", re.IGNORECASE)
@@ -95,8 +96,12 @@ class ToolBudget:
     maximum_direct_searches: int
     maximum_result_bytes: int
     maximum_turn_output_bytes: int
+    maximum_web_searches: int = 3
+    web_search_enabled: bool = False
     calls: int = 0
     searches: int = 0
+    web_searches: int = 0
+    web_search_failed: bool = False
     output_bytes: int = 0
     started: dict[str, float] = field(default_factory=dict)
     started_names: dict[str, str] = field(default_factory=dict)
@@ -116,9 +121,28 @@ class ToolBudget:
         guide: Path = Path("/opt/pwc/PWC_CLI_SKILL.md"),
     ) -> Decision:
         if name not in ALLOWED_TOOLS:
-            return Decision(False, "Only Bash, Read, Grep, and WebFetch are available.")
+            return Decision(False, "That tool is not available.")
         if self.calls >= self.maximum_calls:
             return Decision(False, "Tool limit reached. Answer from existing evidence.")
+        if name == WEB_SEARCH_TOOL:
+            query = args.get("query")
+            if (
+                not self.web_search_enabled
+                or not isinstance(query, str)
+                or not query.strip()
+                or len(query) > 500
+                or set(args) != {"query"}
+            ):
+                return Decision(False, "Web search is not authorized for this turn.")
+            if self.web_search_failed:
+                return Decision(
+                    False,
+                    "Web search failed. Answer from the evidence already gathered.",
+                )
+            if self.web_searches >= self.maximum_web_searches:
+                return Decision(
+                    False, "Web search limit reached. Use results already found."
+                )
         if name == "WebFetch":
             url = args.get("url")
             normalized = _public_url(url) if isinstance(url, str) else None
@@ -157,6 +181,7 @@ class ToolBudget:
             )
         self.calls += 1
         self.searches += int(search)
+        self.web_searches += int(name == WEB_SEARCH_TOOL)
         self.started[tool_id] = time.monotonic()
         self.started_names[tool_id] = name
         return Decision(True)
@@ -175,7 +200,9 @@ class ToolBudget:
         )
         self.output_bytes += len(text.encode())
         name = self.started_names.pop(tool_id, None)
-        if name != "WebFetch":
+        if name == WEB_SEARCH_TOOL and status != "success":
+            self.web_search_failed = True
+        if name not in {"WebFetch", WEB_SEARCH_TOOL}:
             self.observe_urls(text)
         started = self.started.pop(tool_id, None)
         took_ms = round((time.monotonic() - started) * 1000) if started else 0

@@ -55,7 +55,7 @@ class ChatCapabilityService:
         sdk_session_id: uuid.UUID | None = None,
         lifetime_seconds: int = 240,
     ) -> IssuedCapability:
-        allowed = {"model", "catalog", "session_store", "web_fetch"}
+        allowed = {"model", "catalog", "session_store", "web_fetch", "web_search"}
         if not scopes or not scopes <= allowed:
             raise ValueError("Capability scopes are invalid")
         token = secrets.token_urlsafe(32)
@@ -163,6 +163,18 @@ class ChatCapabilityService:
             if row.catalog_search_calls >= maximum_searches:
                 raise CapabilityError("Catalog search limit reached")
             row.catalog_search_calls += 1
+        self.db.flush()
+
+    def meter_web_search(
+        self, row: ChatTurnCapability, *, maximum_searches: int
+    ) -> None:
+        if row.web_search_failed or row.web_search_calls >= maximum_searches:
+            raise CapabilityError("Web search limit reached")
+        row.web_search_calls += 1
+        self.db.flush()
+
+    def fail_web_search(self, row: ChatTurnCapability) -> None:
+        row.web_search_failed = True
         self.db.flush()
 
     def revoke(self, capability_id: uuid.UUID) -> bool:

@@ -59,8 +59,11 @@ export interface ChatPaperHit {
 }
 
 export interface ChatCitation {
-  route_id: string;
+  kind?: "paper" | "web";
+  route_id: string | null;
+  url?: string | null;
   title: string;
+  excerpt?: string | null;
   source_url: string | null;
   thumbnail_url?: string | null;
   arxiv_id?: string | null;
@@ -110,6 +113,7 @@ export interface ChatStreamRequest {
   replace_message_id?: string;
   prior_revision?: number;
   paper_mentions?: PaperMentionWire[];
+  web_search_enabled: boolean;
 }
 
 export interface PaperMentionDraft {

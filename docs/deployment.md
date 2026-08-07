@@ -165,7 +165,7 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    `add_chat_sandbox_pool.sql`, `add_chat_active_cost.sql`,
    `add_chat_user_billing.sql`, `add_chat_qualification_metadata.sql`,
    `add_chat_openrouter_user_budget.sql`, and
-   `add_chat_sandbox_spend_cap.sql` as
+   `add_chat_sandbox_spend_cap.sql`, and `add_chat_web_search.sql` as
    PostgreSQL superuser with
    `search_path=staging,public`. The guarded migrations refuse any other schema,
    assign the new tables to `pwc_staging_owner`, grant `pwc_staging`, and
@@ -176,6 +176,27 @@ The sandbox chat bridge has additional fail-closed prerequisites:
    outside the latency project and requires a separate approved plan. V1 uses
    Modal's isolated, automatically reclaimed ephemeral disk; PID and memory
    ceilings remain hard qualification probes.
+
+Staging web search uses a server-owned Exa key and remains fail-closed unless
+the feature flag, protected credential, monthly circuit, database tables, and
+immutable worker contract are all ready. Install or rotate only the staging
+credential from a protected source without printing it:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env backend/keys.env --staging-web-search-only
+```
+
+The application records content-free attempt, success/failure, latency, result
+count, provider-reported cost, and opaque-owner concentration telemetry. The
+admin dashboard warns at 1,000 provider attempts and the application circuit
+opens at 1,200 per UTC month; configure Exa account-level paid-tier spend alerts
+as the outer backstop. For emergency abuse response, set
+`PWC_CHAT_WEB_SEARCH_DOMAIN_DENYLIST` to a comma-separated hostname list and
+redeploy the exact staging release. Key rotation is the same narrow operation
+followed by `pwc-deploy staging <exact-current-sha> --refresh-environment` when
+the active source SHA is unchanged. These staging steps never enable or mutate
+the production web-search feature.
 
 The worker system prompt embeds
 `backend/chat_sandbox_worker/PWC_CLI_SKILL.md` plus the bounded area/task

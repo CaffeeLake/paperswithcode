@@ -36,6 +36,7 @@ const sessionDetail = (
   updated_at: "2026-07-28T00:00:00Z",
   message_count: messages.length,
   is_busy: false,
+  web_search_enabled: false,
   transcript_status: "ready",
   messages,
 });
@@ -98,13 +99,17 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
-const renderChat = (sessionId: string | null = "session-1") => {
+const renderChat = (
+  sessionId: string | null = "session-1",
+  webSearchEnabled = false,
+) => {
   const onSessionId = vi.fn();
   const onSettled = vi.fn();
   const onInterrupted = vi.fn();
   const result = renderHook(() => useChat({
     sessionId,
     initialModel: "zai-org/GLM-5.2",
+    webSearchEnabled,
     onSessionId,
     onTitle: vi.fn(),
     onSettled,
@@ -124,6 +129,23 @@ afterEach(() => {
 });
 
 describe("useChat billing failures", () => {
+  it("submits explicit immutable web-search authorization", async () => {
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: "session-1" },
+      { type: "done", finish_reason: "success" },
+    )());
+    getSessionMock.mockRejectedValue(new Error("not persisted yet"));
+    const { result } = renderChat("session-1", true);
+
+    act(() => result.current.send("Find current evidence"));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+
+    expect(streamChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ web_search_enabled: true }),
+      expect.any(Object),
+    );
+  });
+
   it("preserves the billing error code for an actionable message", async () => {
     streamChatMock.mockImplementation(() => stream(
       { type: "stream_start", request_id: "r1", session_id: "session-1" },

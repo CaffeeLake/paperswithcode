@@ -17,6 +17,7 @@ from backend.services.chat_capability_service import (
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_session_service import ChatOwner, TurnAdmission
 from backend.services.postgres_sdk_session_store import PostgresSDKSessionStore
+from backend.services.chat_web_search_service import opaque_owner
 
 
 class ChatTurnRunner(Protocol):
@@ -68,6 +69,8 @@ class LocalChatTurnRunner:
             model_route=self.admission.model_route,
             session_store=self.store,
             resume=str(self.resume_id) if self.resume_id else None,
+            web_search_enabled=self.admission.web_search_enabled,
+            owner_hash=opaque_owner(self.owner.hf_user_id),
         ):
             yield event
             if event.get("type") in {"done", "error"}:
@@ -111,6 +114,7 @@ class ModalChatTurnRunner:
             model=self.admission.model_route,
             resume=str(self.resume_id) if self.resume_id else None,
             capability=self.capability,
+            web_search_enabled=self.admission.web_search_enabled,
         )
 
     def _revoke(self) -> None:
@@ -183,6 +187,9 @@ def create_chat_turn_runner(
             "openrouter_byok",
         }:
             raise ValueError("OpenRouter turn has no typed credential admission")
+        scopes = {"model", "catalog", "session_store", "web_fetch"}
+        if admission.web_search_enabled:
+            scopes.add("web_search")
         capability = ChatCapabilityService(db).issue(
             chat_session_id=admission.session_id,
             turn_id=admission.turn_id,
@@ -201,7 +208,7 @@ def create_chat_turn_runner(
             provider_mode=provider_mode,
             provider_credential_revision=owner.openrouter_credential_revision,
             model=admission.model_route,
-            scopes={"model", "catalog", "session_store", "web_fetch"},
+            scopes=scopes,
             sdk_session_id=resume_id,
             lifetime_seconds=round(settings.chat_agent_timeout_seconds + 60),
         )

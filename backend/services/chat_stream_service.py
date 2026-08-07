@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import re
 import time
@@ -99,6 +100,7 @@ class ChatTurnProjection:
     reasoning: dict[str, Any] | None = None
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     citations: list[dict[str, Any]] = field(default_factory=list)
+    web_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def completed_blocks(self) -> list[dict[str, Any]]:
         return [
@@ -173,6 +175,8 @@ class ChatTurnProjection:
                     or {"exit_code": None, "output_truncated": False},
                 }
             )
+            if tool.get("name") == "search_web" and event["status"] == "success":
+                self._remember_web_sources(event.get("content") or [])
         elif tool:
             tool.update(
                 {
@@ -202,6 +206,38 @@ class ChatTurnProjection:
                 }
             )
 
+    def _remember_web_sources(self, content: list[dict[str, Any]]) -> None:
+        text = "".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+        try:
+            payload = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            return
+        for result in results[:5]:
+            if not isinstance(result, dict):
+                continue
+            url = result.get("url")
+            if not isinstance(url, str) or not url.startswith("https://"):
+                continue
+            self.web_sources[url] = {
+                "kind": "web",
+                "position": 0,
+                "route_id": None,
+                "url": url,
+                "title": str(result.get("title") or "Web source")[:500],
+                "excerpt": str(result.get("excerpt") or "")[:4_000],
+                "source_url": None,
+                "authors": [],
+                "published": result.get("published_date"),
+                "conference": None,
+            }
+
     def finalize(self, db) -> tuple[str, list[dict[str, Any]]]:
         answer = "".join(self.answer_parts)
         if not any(block.get("kind") == "answer" for block in self.blocks):
@@ -217,21 +253,45 @@ class ChatTurnProjection:
         )
         resolved = resolve_citations(db, text)
         if resolved:
-            self.citations = resolved
+            self.citations = [{"kind": "paper", **item} for item in resolved]
         else:
             cited = set(re.findall(r"\]\(paper:([^) \t\n]{1,200})\)", text))
             self.citations = [
-                item for item in self.citations if item["route_id"] in cited
+                {"kind": "paper", **item}
+                for item in self.citations
+                if item["route_id"] in cited
             ]
-        citations_by_id = {item["route_id"]: item for item in self.citations}
+        web_urls = list(
+            dict.fromkeys(re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", text))
+        )
+        for url in web_urls:
+            source = self.web_sources.get(url)
+            if source is not None and len(self.citations) < 20:
+                self.citations.append({**source, "position": len(self.citations)})
+        citations_by_id = {
+            item["route_id"]: item
+            for item in self.citations
+            if item.get("kind", "paper") == "paper" and item.get("route_id")
+        }
+        citations_by_url = {
+            item["url"]: item
+            for item in self.citations
+            if item.get("kind") == "web" and item.get("url")
+        }
         for block in self.blocks:
             if block.get("kind") not in {"reasoning", "answer"}:
                 continue
-            block["citations"] = [
+            block_citations = [
                 citations_by_id[route_id]
                 for route_id in cited_route_ids(block.get("text", ""))
                 if route_id in citations_by_id
             ]
+            for url in dict.fromkeys(
+                re.findall(r"\]\((https://[^) \t\n]{1,2000})\)", block.get("text", ""))
+            ):
+                if url in citations_by_url:
+                    block_citations.append(citations_by_url[url])
+            block["citations"] = block_citations
         return answer, self.citations
 
 

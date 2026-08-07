@@ -694,6 +694,27 @@ def test_search_limiter_denies_third_call():
     assert third["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_search_limiter_latches_failed_web_search():
+    limiter = SearchCallLimiter(4, maximum_web=3, maximum_total=12)
+    request = {"tool_name": "mcp__web__search_web"}
+
+    assert (
+        asyncio.run(limiter(request, None, None))["hookSpecificOutput"][
+            "permissionDecision"
+        ]
+        == "allow"
+    )
+    asyncio.run(
+        limiter.post({**request, "tool_response": {"is_error": True}}, None, None)
+    )
+    assert (
+        asyncio.run(limiter(request, None, None))["hookSpecificOutput"][
+            "permissionDecision"
+        ]
+        == "deny"
+    )
+
+
 def test_sdk_adapter_streams_reasoning_tool_result_and_answer():
     adapter = SDKEventAdapter(show_reasoning=True)
     messages = [
@@ -1133,6 +1154,10 @@ def test_agent_options_expose_only_search(tmp_path):
     assert "HF_BILL_TO" not in options.env
     assert "ANTHROPIC_CUSTOM_HEADERS" not in options.env
     assert "at most 2 times" in options.system_prompt
+    assert "mcp__web__search_web" not in options.allowed_tools
+    assert "mcp__web__search_web" in options.disallowed_tools
+    assert "web" not in options.mcp_servers
+    assert "search_web" not in options.system_prompt
     assert (
         "[repo_id](https://huggingface.co/datasets/<repo_id>)" in options.system_prompt
     )
@@ -1147,6 +1172,18 @@ def test_agent_options_expose_only_search(tmp_path):
     assert openrouter.model == "openai/gpt-5.6-luna"
     assert openrouter.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert openrouter.env["ANTHROPIC_AUTH_TOKEN"] == "openrouter-token"
+
+    web, _ = build_agent_options(
+        settings,
+        tmp_path,
+        provider_token="connected-user-token",
+        web_search_enabled=True,
+        owner_hash="a" * 64,
+    )
+    assert "mcp__web__search_web" in web.allowed_tools
+    assert "mcp__web__search_web" not in web.disallowed_tools
+    assert "web" in web.mcp_servers
+    assert "search_web" in web.system_prompt
 
 
 def test_failed_turn_keeps_partial_tool_projection():

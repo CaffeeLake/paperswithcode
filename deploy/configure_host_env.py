@@ -112,6 +112,19 @@ STAGING_RUNTIME_PASSTHROUGH_KEYS = {
     "PWC_CHAT_WORKER_CONTRACT_VERSION",
     "PWC_CHAT_WORKER_READY_TIMEOUT_SECONDS",
     "PWC_CHAT_WORKSPACE_SNAPSHOTS_ENABLED",
+    "PWC_CHAT_WEB_SEARCH_ENABLED",
+    "PWC_CHAT_WEB_SEARCH_PROVIDER",
+    "PWC_CHAT_WEB_SEARCH_EXA_API_KEY",
+    "PWC_CHAT_WEB_SEARCH_EXA_URL",
+    "PWC_CHAT_WEB_SEARCH_MAX_CALLS",
+    "PWC_CHAT_WEB_SEARCH_TIMEOUT_SECONDS",
+    "PWC_CHAT_WEB_SEARCH_RESULT_COUNT",
+    "PWC_CHAT_WEB_SEARCH_MAX_RESULT_BYTES",
+    "PWC_CHAT_WEB_SEARCH_QUERY_MAX_CHARS",
+    "PWC_CHAT_WEB_SEARCH_MONTHLY_WARNING_CALLS",
+    "PWC_CHAT_WEB_SEARCH_MONTHLY_HARD_CALLS",
+    "PWC_CHAT_WEB_SEARCH_TRANSIENT_COOLDOWN_SECONDS",
+    "PWC_CHAT_WEB_SEARCH_DOMAIN_DENYLIST",
 }
 
 STAGING_LANGFUSE_KEYS = {
@@ -294,6 +307,27 @@ def staging_openrouter_values(legacy: dict[str, str]) -> dict[str, str]:
         **staging_openrouter_accounting_values(current),
         "PWC_CHAT_OPENROUTER_API_KEY": decoded_value(legacy[key]),
         "PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED": "true",
+    }
+
+
+def staging_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
+    key = "EXA_API_KEY"
+    if key not in legacy or not decoded_value(legacy[key]).strip():
+        raise ValueError(f"legacy environment is missing: {key}")
+    return {
+        "PWC_CHAT_WEB_SEARCH_ENABLED": "true",
+        "PWC_CHAT_WEB_SEARCH_PROVIDER": "exa",
+        "PWC_CHAT_WEB_SEARCH_EXA_API_KEY": decoded_value(legacy[key]).strip(),
+        "PWC_CHAT_WEB_SEARCH_EXA_URL": "https://api.exa.ai/search",
+        "PWC_CHAT_WEB_SEARCH_MAX_CALLS": "3",
+        "PWC_CHAT_WEB_SEARCH_TIMEOUT_SECONDS": "3",
+        "PWC_CHAT_WEB_SEARCH_RESULT_COUNT": "5",
+        "PWC_CHAT_WEB_SEARCH_MAX_RESULT_BYTES": "16384",
+        "PWC_CHAT_WEB_SEARCH_QUERY_MAX_CHARS": "500",
+        "PWC_CHAT_WEB_SEARCH_MONTHLY_WARNING_CALLS": "1000",
+        "PWC_CHAT_WEB_SEARCH_MONTHLY_HARD_CALLS": "1200",
+        "PWC_CHAT_WEB_SEARCH_TRANSIENT_COOLDOWN_SECONDS": "60",
+        "PWC_CHAT_WEB_SEARCH_DOMAIN_DENYLIST": "",
     }
 
 
@@ -507,10 +541,37 @@ def main() -> int:
     parser.add_argument("--staging-chat-alerts-only", action="store_true")
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
+    parser.add_argument("--staging-web-search-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run through sudo")
     legacy = read_lines(args.legacy_env)
+    if args.staging_web_search_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+        )
+        if any(other_modes):
+            parser.error(
+                "--staging-web-search-only cannot be combined with other modes"
+            )
+        try:
+            values = staging_web_search_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed staging web-search configuration")
+        return 0
     if args.staging_title_only:
         if any(
             (

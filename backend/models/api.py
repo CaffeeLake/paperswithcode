@@ -2632,6 +2632,36 @@ class ChatAvailabilityResponse(BaseModel):
     reason: Literal["chat_temporarily_disabled"] | None = None
     expected_recovery_at: datetime | None = None
     paper_mentions_enabled: bool = False
+    web_search_available: bool = False
+
+
+class ChatWebSearchEventResponse(BaseModel):
+    id: str
+    type: str
+    error_class: str | None = None
+    created_at: datetime
+    details: dict[str, object]
+
+
+class ChatWebSearchBudgetResponse(BaseModel):
+    environment: str
+    billing_cycle: str
+    cycle_end_at: datetime
+    available: bool
+    warning_calls: int
+    hard_limit_calls: int
+    call_count: int
+    remaining_calls: int
+    success_count: int
+    failure_count: int
+    provider_cost_microusd: int
+    last_latency_ms: int | None = None
+    last_result_count: int | None = None
+    circuit_state: Literal["armed", "warning", "cooldown", "tripped"]
+    trip_reason: str | None = None
+    cooldown_until: datetime | None = None
+    last_provider_error_class: str | None = None
+    events: list[ChatWebSearchEventResponse]
 
 
 class ChatSandboxSpendEventResponse(BaseModel):

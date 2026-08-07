@@ -301,4 +301,33 @@ describe("Markdown and chat policy", () => {
     expect(screen.getByText("settings")).toBeInTheDocument();
     expect(screen.getByText("external")).toBeInTheDocument();
   });
+
+  it("renders only exact authoritative HTTPS web citations as external links", () => {
+    const source = "https://example.com/official-release";
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[official](${source}) [unverified](https://other.example/item)`}
+        papers={{}}
+        citations={{}}
+        webCitations={{
+          [source]: {
+            kind: "web",
+            route_id: null,
+            url: source,
+            title: "Official release",
+            source_url: null,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "official" })).toHaveAttribute(
+      "rel",
+      "noopener noreferrer",
+    );
+    expect(screen.getByRole("link", { name: "official" })).toHaveClass(
+      "chat-web-citation",
+    );
+    expect(screen.queryByRole("link", { name: "unverified" })).not.toBeInTheDocument();
+  });
 });

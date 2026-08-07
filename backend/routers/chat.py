@@ -26,7 +26,11 @@ from sqlalchemy.orm import Session
 
 from backend.config import Settings, get_settings
 from backend.database.connection import db_manager, get_database_session
-from backend.models.api import ChatAvailabilityResponse, ChatSandboxSpendResponse
+from backend.models.api import (
+    ChatAvailabilityResponse,
+    ChatSandboxSpendResponse,
+    ChatWebSearchBudgetResponse,
+)
 from backend.models.chat import (
     ArchiveOldChatsResponse,
     ChatBrowserLatencyRequest,
@@ -64,6 +68,10 @@ from backend.services.chat_session_service import (
 from backend.services.chat_share_service import ChatShareService
 from backend.services.chat_stream_service import ChatStreamOrchestrator
 from backend.services.chat_turn_runner import shared_sandbox_manager
+from backend.services.chat_web_search_service import (
+    ChatWebSearchBudgetService,
+    web_search_available,
+)
 from backend.services.deployment_lifecycle import deployment_lifecycle
 from backend.services.openrouter_budget_service import (
     OpenRouterBudgetExceeded,
@@ -334,6 +342,7 @@ def _summary(session: ChatSession) -> ChatSessionSummary:
         updated_at=session.updated_at,
         message_count=session.message_count,
         is_busy=_busy(session),
+        web_search_enabled=session.web_search_enabled,
     )
 
 
@@ -376,9 +385,11 @@ def list_models(
 
 
 @router.get("/availability", response_model=ChatAvailabilityResponse)
-def chat_availability():
+def chat_availability(user: dict = Depends(require_user)):
     """Content-free public state; internal warning and accounting stay private."""
+    del user
     settings = get_settings()
+    search_available = web_search_available(settings)
     if (
         not settings.chat_public_admission_enabled
         or not settings.chat_sandbox_admission_enabled
@@ -388,6 +399,7 @@ def chat_availability():
             "reason": "chat_temporarily_disabled",
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+            "web_search_available": False,
         }
     if (
         settings.chat_default_backend != "modal_cli"
@@ -398,6 +410,7 @@ def chat_availability():
             "reason": None,
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+            "web_search_available": search_available,
         }
     try:
         with db_manager.session_local() as db:
@@ -412,6 +425,7 @@ def chat_availability():
             "reason": None,
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+            "web_search_available": search_available,
         }
     except ChatComputeDisabled:
         return {
@@ -419,7 +433,21 @@ def chat_availability():
             "reason": "chat_temporarily_disabled",
             "expected_recovery_at": None,
             "paper_mentions_enabled": settings.chat_paper_mentions_enabled,
+            "web_search_available": False,
         }
+
+
+@router.get(
+    "/admin/web-search-budget",
+    dependencies=[Depends(require_admin)],
+    response_model=ChatWebSearchBudgetResponse,
+)
+def chat_web_search_budget():
+    settings = get_settings()
+    if not settings.chat_web_search_enabled:
+        raise HTTPException(status_code=404, detail="Web search is not enabled")
+    with db_manager.session_local() as db, db.begin():
+        return ChatWebSearchBudgetService(db, settings).status()
 
 
 @router.get(
@@ -901,6 +929,15 @@ async def stream_chat(
                 status_code=503,
                 detail={"code": error.code, "message": str(error)},
             ) from error
+    search_is_available = web_search_available(settings)
+    if body.web_search_enabled and not search_is_available:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "web_search_unavailable",
+                "message": "Web search is temporarily unavailable. Turn Search off and retry.",
+            },
+        )
     inference_credential = inference_credential_for_request(request, user, settings)
     if not deployment_lifecycle.status().accepting_chat_turns:
         raise HTTPException(
@@ -977,6 +1014,8 @@ async def stream_chat(
                     initial_model=body.initial_model,
                     replace_message_id=body.replace_message_id,
                     prior_revision=body.prior_revision,
+                    web_search_enabled=body.web_search_enabled,
+                    update_web_search_preference=search_is_available,
                 )
                 provider = settings.chat_model_providers[admission.selected_model]
                 if provider == "huggingface" and not inference_credential:

@@ -56,6 +56,7 @@ describe("streamChat access failures", () => {
       message: "Capacity check",
       session_id: null,
       client_message_id: "message-capacity",
+      web_search_enabled: false,
     });
 
     await expect(events.next()).rejects.toMatchObject({
@@ -76,6 +77,7 @@ describe("streamChat access failures", () => {
       message: "Continue from a shared chat",
       session_id: null,
       client_message_id: "message-1",
+      web_search_enabled: false,
     });
 
     await expect(events.next()).rejects.toMatchObject({

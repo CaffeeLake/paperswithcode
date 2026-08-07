@@ -16,9 +16,10 @@ import { CronJobCard } from "@/components/cron/CronJobCard";
 import { CodexJobQueue } from "@/components/admin/CodexJobQueue";
 import { CatalogAuditPanel } from "@/components/admin/CatalogAuditPanel";
 import { apiClient } from "@/lib/api";
-import type { ChatSandboxSpendStatus, CronJobHealth, CronJobStatus } from "@/lib/api";
+import type { ChatSandboxSpendStatus, ChatWebSearchBudgetStatus, CronJobHealth, CronJobStatus } from "@/lib/api";
 import { formatCronDate } from "@/lib/cronStatus";
 import { useAuth } from "@/lib/authContext";
+import { isStagingEnvironment } from "@/lib/apiUrl";
 import "./CronDashboard.css";
 
 const categoryColors: Record<string, string> = {
@@ -76,7 +77,32 @@ export const ChatComputePanel = ({ data, loading, error }: {
   </div>;
 };
 
+export const WebSearchBudgetPanel = ({ data, loading, error }: {
+  data?: ChatWebSearchBudgetStatus;
+  loading: boolean;
+  error: unknown;
+}) => {
+  if (loading) return <div className="flex items-center py-8"><Loader2 className="h-5 w-5 animate-spin mr-3" />Loading web-search budget…</div>;
+  if (error || !data) return <Card className="cron-status--broken"><CardContent className="pt-6">Web-search budget accounting is unavailable.</CardContent></Card>;
+  const percent = Math.min(100, data.call_count / data.hard_limit_calls * 100);
+  return <Card className={data.circuit_state === "tripped" ? "cron-status--broken" : data.circuit_state === "warning" || data.circuit_state === "cooldown" ? "cron-status--degraded" : ""}>
+    <CardHeader><CardTitle>Web search</CardTitle><CardDescription>{data.environment} · UTC cycle {data.billing_cycle} · provider details are admin-only</CardDescription></CardHeader>
+    <CardContent className="space-y-4">
+      <div className="grid md:grid-cols-4 gap-4 text-sm">
+        <div><strong>Circuit</strong><br />{data.circuit_state}{data.trip_reason ? ` · ${data.trip_reason}` : ""}</div>
+        <div><strong>Calls</strong><br />{data.call_count} / {data.hard_limit_calls} · {data.success_count} successful</div>
+        <div><strong>Remaining</strong><br />{data.remaining_calls}</div>
+        <div><strong>Warning</strong><br />{data.warning_calls} calls</div>
+      </div>
+      <div role="progressbar" aria-label="Web-search monthly budget used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} className="h-2 rounded bg-muted"><div className="h-2 rounded bg-primary" style={{ width: `${percent}%` }} /></div>
+      <p className="text-xs cron-muted">Cycle ends {formatCronDate(data.cycle_end_at)} · provider-reported cost ${(data.provider_cost_microusd / 1_000_000).toFixed(4)}{data.last_latency_ms !== null ? ` · last ${data.last_latency_ms} ms / ${data.last_result_count ?? 0} results` : ""}{data.cooldown_until ? ` · cooldown until ${formatCronDate(data.cooldown_until)}` : ""}{data.last_provider_error_class ? ` · last provider error ${data.last_provider_error_class}` : ""}</p>
+      {data.events.length > 0 && <ul className="space-y-1 text-sm">{data.events.map((event) => <li key={event.id}>{event.type} · {formatCronDate(event.created_at)}{event.error_class ? ` · ${event.error_class}` : ""}</li>)}</ul>}
+    </CardContent>
+  </Card>;
+};
+
 const CronDashboard = () => {
+  const staging = isStagingEnvironment();
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
   const [chatEnvironmentDraft, setChatEnvironmentDraft] = useState("");
@@ -102,6 +128,13 @@ const CronDashboard = () => {
     queryKey: ["chatSandboxSpend", user?.username, chatEnvironment],
     queryFn: () => apiClient.getChatSandboxSpend(chatEnvironment || undefined),
     enabled: !!user?.is_admin,
+    refetchInterval: autoRefresh ? 30000 : false,
+    retry: false,
+  });
+  const webSearchBudgetQuery = useQuery({
+    queryKey: ["chatWebSearchBudget", user?.username],
+    queryFn: () => apiClient.getChatWebSearchBudget(),
+    enabled: !!user?.is_admin && staging,
     refetchInterval: autoRefresh ? 30000 : false,
     retry: false,
   });
@@ -330,6 +363,7 @@ const CronDashboard = () => {
           <TabsContent value="chat-compute" className="mt-6">
             <Card className="mb-6"><CardHeader><CardTitle>Environment record</CardTitle><CardDescription>Leave blank for live staging, or enter the isolated environment printed by the spend qualification command.</CardDescription></CardHeader><CardContent className="flex gap-2"><input aria-label="Chat compute environment record" value={chatEnvironmentDraft} onChange={(event) => setChatEnvironmentDraft(event.target.value)} placeholder="staging-q-example" className="flex-1 rounded border px-3 py-2" /><Button onClick={() => setChatEnvironment(chatEnvironmentDraft.trim())}>Load</Button></CardContent></Card>
             <ChatComputePanel data={chatSpendQuery.data} loading={chatSpendQuery.isLoading} error={chatSpendQuery.error} />
+            {staging && <div className="mt-6"><WebSearchBudgetPanel data={webSearchBudgetQuery.data} loading={webSearchBudgetQuery.isLoading} error={webSearchBudgetQuery.error} /></div>}
           </TabsContent>
         </Tabs>
       </div>

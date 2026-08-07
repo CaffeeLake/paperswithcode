@@ -1972,6 +1972,9 @@ class ChatSession(Base):
     execution_backend: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="local_mcp"
     )
+    web_search_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2064,6 +2067,9 @@ class ChatMessageRecord(Base):
     effective_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     langfuse_trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     client_message_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    web_search_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     supersedes_message_id: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=True),
@@ -2753,6 +2759,12 @@ class ChatTurnCapability(Base):
     catalog_search_calls: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
+    web_search_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    web_search_failed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2768,6 +2780,102 @@ class ChatTurnCapability(Base):
             "turn_id",
             "expires_at",
         ),
+    )
+
+
+class ChatWebSearchBudgetState(Base):
+    """UTC-month Exa request budget and fail-closed circuit state."""
+
+    __tablename__ = "chat_web_search_budget_states"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False)
+    billing_cycle: Mapped[date] = mapped_column(Date, nullable=False)
+    cycle_end_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    warning_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    hard_limit_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    success_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    provider_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    last_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_result_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    circuit_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="armed"
+    )
+    trip_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cooldown_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_provider_error_class: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "environment", "billing_cycle", name="uq_chat_web_search_budget_cycle"
+        ),
+        CheckConstraint(
+            "circuit_state IN ('armed','warning','cooldown','tripped')",
+            name="chat_web_search_budget_circuit_check",
+        ),
+        CheckConstraint(
+            "call_count >= 0 AND success_count >= 0 AND failure_count >= 0 AND "
+            "provider_cost_microusd >= 0 AND warning_calls > 0 AND "
+            "hard_limit_calls >= warning_calls",
+            name="chat_web_search_budget_counts_check",
+        ),
+    )
+
+
+class ChatWebSearchCircuitEvent(Base):
+    """Content-free operator event for the web-search circuit."""
+
+    __tablename__ = "chat_web_search_circuit_events"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    budget_state_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chat_web_search_budget_states.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    details: Mapped[dict] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, server_default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (
+        Index("idx_chat_web_search_events_recent", "budget_state_id", "created_at"),
+    )
+
+
+class ChatWebSearchOwnerUsage(Base):
+    """Opaque concentration telemetry; never a user-visible allowance."""
+
+    __tablename__ = "chat_web_search_owner_usage"
+
+    environment: Mapped[str] = mapped_column(String(32), primary_key=True)
+    billing_cycle: Mapped[date] = mapped_column(Date, primary_key=True)
+    owner_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

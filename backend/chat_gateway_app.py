@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -37,6 +38,7 @@ from backend.services.chat_web_fetch_service import (
     ChatWebFetchError,
     fetch_catalog_url,
 )
+from backend.services.chat_web_search_service import WebSearchError, search_web
 from backend.services.hf_inference_billing_service import HfInferenceCredential
 from backend.services.openrouter_budget_service import (
     OpenRouterBudgetExceeded,
@@ -299,19 +301,47 @@ def catalog(
     settings: Settings = Depends(get_settings),
 ):
     token = _bearer(authorization)
-    capability = _scope(token, "catalog", x_pwc_session, x_pwc_turn, db)
+    scope = "web_search" if body.operation == "web_search" else "catalog"
+    capability = _scope(token, scope, x_pwc_session, x_pwc_turn, db)
     try:
-        ChatCapabilityService(db).meter_catalog(
-            capability,
-            body.operation,
-            maximum_searches=settings.chat_max_direct_search_calls,
-        )
+        if body.operation == "web_search":
+            ChatCapabilityService(db).meter_web_search(
+                capability, maximum_searches=settings.chat_web_search_max_calls
+            )
+        else:
+            ChatCapabilityService(db).meter_catalog(
+                capability,
+                body.operation,
+                maximum_searches=settings.chat_max_direct_search_calls,
+            )
         db.commit()
     except CapabilityError:
         db.rollback()
         raise HTTPException(
-            status_code=429, detail="Catalog execution limit reached"
+            status_code=429, detail="Tool execution limit reached"
         ) from None
+    if body.operation == "web_search":
+        try:
+            query = body.arguments["query"]
+            if set(body.arguments) != {"query"} or not isinstance(query, str):
+                raise ValueError
+            result = asyncio.run(
+                search_web(query, settings, owner_hash=capability.owner_hash)
+            )
+            return {"result": result}
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=422, detail="Invalid web search request"
+            ) from None
+        except WebSearchError as error:
+            capability = db.get(ChatTurnCapability, capability.id)
+            if capability is not None:
+                ChatCapabilityService(db).fail_web_search(capability)
+                db.commit()
+            raise HTTPException(
+                status_code=503,
+                detail={"code": error.code, "message": str(error)},
+            ) from None
     try:
         result = ChatGatewayService(db, settings).catalog(
             body.operation, body.arguments

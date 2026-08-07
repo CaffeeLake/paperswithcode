@@ -1,6 +1,7 @@
 /** Native textarea chat composer with structured inline paper mentions. */
 
 import React, { useEffect, useRef, useState } from "react";
+import { Globe2 } from "lucide-react";
 
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { ArrowUpIcon, Spinner } from "@/components/chat/icons";
@@ -22,6 +23,9 @@ interface ComposerProps {
   disabled?: boolean;
   describedBy?: string;
   paperMentionsEnabled?: boolean;
+  webSearchAvailable?: boolean;
+  webSearchEnabled?: boolean;
+  onWebSearchChange?: (enabled: boolean) => void;
 }
 
 const EMPTY_DRAFT: ChatDraft = { text: "", paperMentions: [] };
@@ -30,6 +34,9 @@ const Composer: React.FC<ComposerProps> = ({
   onSend, busy, placeholder, autoFocus, draft, onDraftChange, onStop,
   models = [], selectedModel, onModelChange, disabled = false, describedBy,
   paperMentionsEnabled = false,
+  webSearchAvailable = false,
+  webSearchEnabled = false,
+  onWebSearchChange,
 }) => {
   const [localDraft, setLocalDraft] = useState<ChatDraft>(EMPTY_DRAFT);
   const value = draft ?? localDraft;
@@ -119,6 +126,21 @@ const Composer: React.FC<ComposerProps> = ({
       <div className="chat-composer-row">
         <div className="chat-composer-tools">
           {models.length > 0 && selectedModel && onModelChange && <ModelPicker models={models} selectedModel={selectedModel} onModelChange={onModelChange} disabled={busy} />}
+          {webSearchAvailable && onWebSearchChange && (
+            <button
+              type="button"
+              className={`chat-web-search-toggle${webSearchEnabled ? " is-enabled" : ""}`}
+              role="switch"
+              aria-checked={webSearchEnabled}
+              aria-label="Web search"
+              title="Allow public-web search when useful; enabled search queries are processed by Exa"
+              disabled={busy}
+              onClick={() => onWebSearchChange(!webSearchEnabled)}
+            >
+              <Globe2 size={15} aria-hidden="true" />
+              <span>Web</span>
+            </button>
+          )}
           <span className="chat-composer-hint">Enter to send · Shift+Enter for newline</span>
         </div>
         <button type="button" className={`chat-send${(busy || value.text.trim()) ? " chat-send-on" : ""}`} onClick={busy ? onStop : submit} disabled={disabled || (busy ? !onStop : !value.text.trim())} aria-label={busy ? "Stop generating" : "Send message"}>

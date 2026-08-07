@@ -1738,7 +1738,12 @@ def test_worker_accepts_bounded_inline_paper_prompt_by_utf8_bytes():
         "model": "model-a",
     }
 
-    assert agent._validate_run_frame(frame) == (prompt, "request-1", "model-a")
+    assert agent._validate_run_frame(frame) == (
+        prompt,
+        "request-1",
+        "model-a",
+        False,
+    )
     assert decode_frame(encode_frame(frame))["prompt"] == prompt
 
     frame["prompt"] += "é"
@@ -1839,8 +1844,8 @@ def test_prompt_and_manifest_share_eight_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-1T0KjEpbFDqf3LJDl6sbhh"
-    assert WORKER_CONTRACT_VERSION == "41"
+    assert MODAL_IMAGE_ID == "im-AWzNULw9QCnHfOgPrMEZy1"
+    assert WORKER_CONTRACT_VERSION == "42"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

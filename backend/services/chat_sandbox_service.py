@@ -168,6 +168,7 @@ def sandbox_environment(settings: Settings) -> dict[str, str]:
         "PWC_CHAT_MAX_TURNS": str(settings.chat_max_turns),
         "PWC_CHAT_MAX_TOOL_CALLS": str(settings.chat_max_tool_calls),
         "PWC_CHAT_MAX_DIRECT_SEARCH_CALLS": str(settings.chat_max_direct_search_calls),
+        "PWC_CHAT_MAX_WEB_SEARCH_CALLS": str(settings.chat_web_search_max_calls),
         "PWC_CHAT_TOOL_RESULT_MAX_BYTES": str(settings.chat_tool_result_max_bytes),
         "PWC_CHAT_TURN_TOOL_OUTPUT_MAX_BYTES": str(
             settings.chat_turn_tool_output_max_bytes
@@ -2064,6 +2065,7 @@ class SandboxSessionManager:
         model: str,
         resume: str | None,
         capability: IssuedCapability,
+        web_search_enabled: bool = False,
     ) -> AsyncIterator[dict]:
         if getattr(self.settings, "chat_sandbox_spend_enforcement_enabled", False):
             with self.session_factory() as db:
@@ -2084,6 +2086,7 @@ class SandboxSessionManager:
                     model=model,
                     resume=resume,
                     capability=capability,
+                    web_search_enabled=web_search_enabled,
                     allow_pool=not retrying_pool_assignment,
                     forced_pool_miss=retrying_pool_assignment,
                 ):
@@ -2109,6 +2112,7 @@ class SandboxSessionManager:
         model: str,
         resume: str | None,
         capability: IssuedCapability,
+        web_search_enabled: bool = False,
         allow_pool: bool,
         forced_pool_miss: bool,
     ) -> AsyncIterator[dict]:
@@ -2253,6 +2257,7 @@ class SandboxSessionManager:
                 "prompt": prompt,
                 "model": model,
                 "resume": resume,
+                "web_search_enabled": web_search_enabled,
             }
             if persistent:
                 run.update(

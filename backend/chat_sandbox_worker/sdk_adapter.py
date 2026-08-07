@@ -14,6 +14,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+from backend.chat_sandbox_worker.tool_policy import WEB_SEARCH_TOOL
+
 
 class SDKEventAdapter:
     def __init__(self, *, show_reasoning: bool):
@@ -64,7 +66,11 @@ class SDKEventAdapter:
             {
                 "type": "tool_call",
                 "id": tool_id,
-                "name": str(block.get("name") or ""),
+                "name": (
+                    "search_web"
+                    if str(block.get("name") or "") == WEB_SEARCH_TOOL
+                    else str(block.get("name") or "")
+                ),
                 "args": value,
             }
         ]

@@ -9,6 +9,7 @@ export interface ChatSession {
   updated_at: string;
   message_count: number;
   is_busy: boolean;
+  web_search_enabled: boolean;
 }
 
 export interface ChatSessionDetail extends ChatSession {

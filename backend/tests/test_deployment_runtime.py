@@ -986,7 +986,7 @@ def test_chat_descriptor_is_extracted_from_selected_source():
     source = Path(__file__).resolve().parents[2]
     descriptor = _chat_descriptor_from_source(source, "staging")
     assert descriptor["modal_image_version"] == MODAL_IMAGE_ID
-    assert descriptor["worker_contract_version"] == "40"
+    assert descriptor["worker_contract_version"] == "42"
     assert _chat_descriptor_from_source(source, "production") is None
     production = _chat_descriptor_from_source(source, "production", chat_enabled=True)
     assert production == descriptor
@@ -2210,6 +2210,23 @@ def test_staging_openrouter_credential_gets_a_chat_only_name(
 
     with pytest.raises(ValueError, match="PWC_OPENROUTER_API_KEY"):
         configure_host_env.staging_openrouter_values({})
+
+
+def test_staging_web_search_configuration_is_scoped_and_bounded():
+    values = configure_host_env.staging_web_search_values(
+        {"EXA_API_KEY": "EXA_API_KEY=server-secret"}
+    )
+
+    assert values["PWC_CHAT_WEB_SEARCH_EXA_API_KEY"] == "server-secret"
+    assert values["PWC_CHAT_WEB_SEARCH_ENABLED"] == "true"
+    assert values["PWC_CHAT_WEB_SEARCH_MAX_CALLS"] == "3"
+    assert values["PWC_CHAT_WEB_SEARCH_RESULT_COUNT"] == "5"
+    assert values["PWC_CHAT_WEB_SEARCH_MAX_RESULT_BYTES"] == "16384"
+    assert values["PWC_CHAT_WEB_SEARCH_MONTHLY_WARNING_CALLS"] == "1000"
+    assert values["PWC_CHAT_WEB_SEARCH_MONTHLY_HARD_CALLS"] == "1200"
+    assert set(values) <= configure_host_env.STAGING_RUNTIME_PASSTHROUGH_KEYS
+    with pytest.raises(ValueError, match="EXA_API_KEY"):
+        configure_host_env.staging_web_search_values({})
 
 
 def test_staging_openrouter_disable_removes_key_and_pins_flag_off():

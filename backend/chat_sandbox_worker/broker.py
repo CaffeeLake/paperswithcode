@@ -316,6 +316,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/session-store":
             self._forward("session-store", body)
             return
+        if path == "/web-search":
+            try:
+                payload = json.loads(body)
+                query = payload["query"]
+                if set(payload) != {"query"} or not isinstance(query, str):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self.send_error(422)
+                return
+            envelope = json.dumps(
+                {"operation": "web_search", "arguments": {"query": query}},
+                separators=(",", ":"),
+            ).encode()
+            self._forward("catalog", envelope)
+            return
         if path == "/v1/messages":
             self._forward(
                 "v1/messages",

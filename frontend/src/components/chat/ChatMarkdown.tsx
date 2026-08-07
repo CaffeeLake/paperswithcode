@@ -101,7 +101,8 @@ export const ChatMarkdown: React.FC<{
   streaming?: boolean;
   papers: Record<string, ChatPaperHit>;
   citations?: Record<string, ChatCitation>;
-}> = ({ text, streaming, papers, citations }) => {
+  webCitations?: Record<string, ChatCitation>;
+}> = ({ text, streaming, papers, citations, webCitations }) => {
   const source = streaming ? withholdPartialCitation(text) : text;
 
   return (
@@ -134,6 +135,19 @@ export const ChatMarkdown: React.FC<{
               <HuggingFacePreviewLink repo={huggingFaceRepo}>
                 {children}
               </HuggingFacePreviewLink>
+            );
+          }
+          if (href?.startsWith("https://") && webCitations?.[href]) {
+            return (
+              <a
+                href={href}
+                className="chat-web-citation"
+                target="_blank"
+                rel="noopener noreferrer"
+                title={webCitations[href].title}
+              >
+                {children}
+              </a>
             );
           }
           return <span>{children}</span>;

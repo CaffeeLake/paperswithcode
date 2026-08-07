@@ -18,6 +18,7 @@ describe("toUiMessages", () => {
       updated_at: "2026-07-31T00:00:00Z",
       message_count: 1,
       is_busy: false,
+      web_search_enabled: false,
       transcript_status: "ready",
       messages: [{
         id: "user-error",
@@ -47,6 +48,7 @@ describe("toUiMessages", () => {
       updated_at: "2026-07-31T00:00:00Z",
       message_count: 1,
       is_busy: false,
+      web_search_enabled: false,
       transcript_status: "ready",
       messages: [{
         id: "assistant-1",

@@ -79,6 +79,7 @@ class ChatRequest(BaseModel):
     initial_model: str | None = None
     replace_message_id: uuid.UUID | None = None
     prior_revision: int | None = Field(default=None, ge=1)
+    web_search_enabled: bool = False
     paper_mentions: list[PaperMentionRequest] = Field(
         default_factory=list, max_length=10
     )
@@ -161,9 +162,12 @@ class ChatPaperHit(BaseModel):
 
 class CitationSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    kind: Literal["paper", "web"] = "paper"
     position: int = Field(ge=0, le=100)
-    route_id: str = Field(max_length=200)
+    route_id: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
     title: str = Field(max_length=500)
+    excerpt: str | None = Field(default=None, max_length=4000)
     source_url: str | None = Field(default=None, max_length=2000)
     thumbnail_url: str | None = Field(default=None, max_length=1000)
     arxiv_id: str | None = Field(default=None, max_length=50)
@@ -171,6 +175,16 @@ class CitationSnapshot(BaseModel):
     published: str | None = Field(default=None, max_length=32)
     conference: str | None = Field(default=None, max_length=200)
     citation_count: int | None = None
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> "CitationSnapshot":
+        if self.kind == "paper" and not self.route_id:
+            raise ValueError("Paper citations require route_id")
+        if self.kind == "web" and (
+            not self.url or not self.url.startswith("https://") or self.route_id
+        ):
+            raise ValueError("Web citations require an HTTPS url and no route_id")
+        return self
 
 
 class ReasoningDisplayBlock(BaseModel):
@@ -226,7 +240,7 @@ class ToolDisplayBlock(BaseModel):
                 raise ValueError("Unsupported search tool arguments")
             if self.hits is None or self.results is None:
                 raise ValueError("Legacy search blocks require hits and results")
-        elif self.name not in {"Bash", "Read", "Grep", "WebFetch"}:
+        elif self.name not in {"Bash", "Read", "Grep", "WebFetch", "search_web"}:
             raise ValueError("Unsupported generic tool name")
         return self
 
@@ -304,6 +318,7 @@ class ChatSessionSummary(BaseModel):
     updated_at: datetime
     message_count: int
     is_busy: bool = False
+    web_search_enabled: bool = False
 
 
 class ChatSessionDetail(ChatSessionSummary):

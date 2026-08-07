@@ -92,6 +92,7 @@ class TurnAdmission:
     worker_contract_version: str = ""
     pwc_cli_version: str = ""
     system_prompt_sha256: str = ""
+    web_search_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -438,6 +439,8 @@ class ChatSessionService:
         initial_model: str | None = None,
         replace_message_id: uuid.UUID | None = None,
         prior_revision: int | None = None,
+        web_search_enabled: bool = False,
+        update_web_search_preference: bool = True,
     ) -> TurnAdmission:
         session = (
             None if session_id is None else self._owned(owner, session_id, lock=True)
@@ -454,6 +457,13 @@ class ChatSessionService:
             else None
         )
         if existing:
+            existing_web_search_enabled = getattr(existing, "web_search_enabled", False)
+            if existing_web_search_enabled != web_search_enabled:
+                raise ChatServiceError(
+                    "idempotency_conflict",
+                    409,
+                    "This request ID was already used with different Search permission",
+                )
             assistant = self.db.execute(
                 select(ChatMessageRecord).where(
                     ChatMessageRecord.session_id == session.id,
@@ -478,6 +488,7 @@ class ChatSessionService:
                     ),
                     prompt_revision=existing.revision,
                     execution_backend=session.execution_backend,
+                    web_search_enabled=existing_web_search_enabled,
                 )
             if (
                 existing.status in ("generating", PREPARING_STATUS)
@@ -769,6 +780,8 @@ class ChatSessionService:
             seconds=self.settings.chat_timeout_seconds + 30
         )
         session.hf_username = owner.hf_username
+        if update_web_search_preference:
+            session.web_search_enabled = web_search_enabled
         session.updated_at = now
         session.projection_bytes += new_projection_bytes
         message = ChatMessageRecord(
@@ -781,6 +794,7 @@ class ChatSessionService:
             paper_mentions=paper_mentions,
             effective_prompt=effective_prompt,
             client_message_id=client_message_id,
+            web_search_enabled=web_search_enabled,
             revision=revision,
             supersedes_message_id=prior.id if prior else None,
             sdk_resume_boundary_id=resume_boundary,
@@ -839,6 +853,7 @@ class ChatSessionService:
             worker_contract_version=self.settings.chat_worker_contract_version,
             pwc_cli_version=self.settings.chat_pwc_cli_version,
             system_prompt_sha256=self.settings.chat_system_prompt_sha256,
+            web_search_enabled=web_search_enabled,
         )
 
     def bind_sdk_session(

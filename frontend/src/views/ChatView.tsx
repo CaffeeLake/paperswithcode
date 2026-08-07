@@ -218,7 +218,7 @@ const ChatView: React.FC = () => {
     queryFn: () => apiClient.getChatAvailability(),
     refetchInterval: 30000,
     retry: false,
-    enabled: isChatLive(),
+    enabled: isChatLive() && Boolean(user),
   });
   const billingQuery = useQuery({
     queryKey: ["inference-billing", user?.hf_subject],
@@ -258,6 +258,8 @@ const ChatView: React.FC = () => {
   selectedProviderRef.current = selectedProvider;
   const [liveTitle, setLiveTitle] = useState("");
   const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
   const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => emptyDraft(
     searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
   ));
@@ -306,6 +308,7 @@ const ChatView: React.FC = () => {
   const chat = useChat({
     sessionId: routeSessionId ?? null,
     initialModel: selectedModel,
+    webSearchEnabled: webSearchAvailable && webSearchEnabled,
     onSessionId: (id) => {
       activeStreamSessionIdRef.current = id;
       const isNewSession = id !== routeSessionIdRef.current;
@@ -323,6 +326,7 @@ const ChatView: React.FC = () => {
             updated_at: now,
             message_count: 1,
             is_busy: true,
+            web_search_enabled: webSearchEnabled,
           }, ...previous]);
       if (isNewSession && shouldFollowStream) {
         setLiveTitle("New chat");
@@ -483,6 +487,7 @@ const ChatView: React.FC = () => {
         chat.reset();
       }
       setRouteSessionState(null);
+      setWebSearchEnabled(false);
       return;
     }
     if (loadedRouteSessionIdRef.current === routeSessionId) return;
@@ -497,6 +502,7 @@ const ChatView: React.FC = () => {
       if (cancelled) return;
       chat.load(toUiMessages(detail));
       setSelectedModel(detail.selected_model);
+      setWebSearchEnabled(detail.web_search_enabled);
       setLiveTitle(detail.title);
       loadedRouteSessionIdRef.current = routeSessionId;
       setRouteSessionState({ id: routeSessionId, status: "loaded" });
@@ -848,7 +854,7 @@ const ChatView: React.FC = () => {
             byokExpected={byokExpected}
           />
           {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} />
+          <Composer onSend={send} busy={chat.busy} onStop={chat.stop} autoFocus draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} />
           <div className="chat-examples">{SUGGESTED_CHAT_PROMPTS.map((example) => <button type="button" key={example} className="chat-example" disabled={chatPaused} onClick={() => send(emptyDraft(example))}>{example}</button>)}</div>
         </div></div> : <>
           {chat.sessionError && <div className="chat-session-error" role="alert">{chat.sessionError}</div>}
@@ -904,7 +910,7 @@ const ChatView: React.FC = () => {
               byokExpected={byokExpected}
             />
             {chatPaused && <div id="chat-paused-description" className="chat-paused-banner" role="status">Chat is temporarily disabled. You can keep browsing and editing your conversations. New research runs will return when chat is restored.</div>}
-            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft.text ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} />
+            <Composer onSend={send} busy={chat.busy} onStop={chat.stop} placeholder={draft.text ? "Edit and send again…" : "Ask a follow-up…"} draft={draft} onDraftChange={setDraft} models={models} selectedModel={selectedModel} onModelChange={(model) => void changeModel(model)} disabled={chatPaused} describedBy={chatPaused ? "chat-paused-description" : undefined} paperMentionsEnabled={Boolean(availabilityQuery.data?.paper_mentions_enabled)} webSearchAvailable={webSearchAvailable} webSearchEnabled={webSearchEnabled} onWebSearchChange={setWebSearchEnabled} />
             <div className="chat-composer-foot">{isChatLive() ? <>
               {selectedProvider === "openrouter"
                 ? <span className="chat-provider-attribution">Powered by <a href="https://openrouter.ai" target="_blank" rel="noreferrer">OpenRouter</a>.</span>

@@ -356,6 +356,23 @@ class Settings(BaseSettings):
     chat_system_prompt_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
     chat_max_tool_calls: int = Field(default=12, ge=1, le=24)
     chat_max_direct_search_calls: int = Field(default=4, ge=1, le=8)
+    chat_web_search_enabled: bool = Field(default=False)
+    chat_web_search_provider: str = Field(default="exa", pattern=r"^exa$")
+    chat_web_search_exa_api_key: str = Field(
+        default="", description="Server-only Exa credential for research chat"
+    )
+    chat_web_search_exa_url: str = Field(default="https://api.exa.ai/search")
+    chat_web_search_max_calls: int = Field(default=3, ge=1, le=3)
+    chat_web_search_timeout_seconds: float = Field(default=3, gt=0, le=3)
+    chat_web_search_result_count: int = Field(default=5, ge=1, le=5)
+    chat_web_search_max_result_bytes: int = Field(
+        default=16 * 1024, ge=4 * 1024, le=16 * 1024
+    )
+    chat_web_search_query_max_chars: int = Field(default=500, ge=1, le=500)
+    chat_web_search_monthly_warning_calls: int = Field(default=1000, ge=1)
+    chat_web_search_monthly_hard_calls: int = Field(default=1200, ge=1)
+    chat_web_search_transient_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
+    chat_web_search_domain_denylist: str = Field(default="")
     chat_sandbox_ready_timeout_seconds: float = Field(default=30, gt=0, le=120)
     chat_agent_timeout_seconds: float = Field(default=180, gt=0, le=600)
     chat_bash_timeout_seconds: float = Field(default=30, gt=0, le=120)

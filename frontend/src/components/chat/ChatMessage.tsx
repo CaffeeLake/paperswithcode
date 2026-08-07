@@ -103,8 +103,9 @@ const ReasoningBlockView: React.FC<{
   block: ReasoningBlock;
   papers: Record<string, ChatPaperHit>;
   citations: Record<string, ChatCitation>;
+  webCitations: Record<string, ChatCitation>;
   onToggle: () => void;
-}> = ({ block, papers, citations, onToggle }) => {
+}> = ({ block, papers, citations, webCitations, onToggle }) => {
   if (block.active) {
     return (
       <div className="chat-reason-live">
@@ -117,6 +118,7 @@ const ReasoningBlockView: React.FC<{
             streaming
             papers={papers}
             citations={citations}
+            webCitations={webCitations}
           />
           <Caret />
         </div>
@@ -141,6 +143,7 @@ const ReasoningBlockView: React.FC<{
             text={block.text}
             papers={papers}
             citations={citations}
+            webCitations={webCitations}
           />
         </div>
       )}
@@ -251,10 +254,11 @@ const AnswerBlockView: React.FC<{
   block: AnswerBlock;
   papers: Record<string, ChatPaperHit>;
   citations: Record<string, ChatCitation>;
+  webCitations: Record<string, ChatCitation>;
   streaming: boolean;
-}> = ({ block, papers, citations, streaming }) => (
+}> = ({ block, papers, citations, webCitations, streaming }) => (
   <div className="chat-answer">
-    <ChatMarkdown text={block.text} streaming={streaming} papers={papers} citations={citations} />
+    <ChatMarkdown text={block.text} streaming={streaming} papers={papers} citations={citations} webCitations={webCitations} />
     {streaming && Boolean(block.text.trim()) && <Caret />}
   </div>
 );
@@ -435,7 +439,14 @@ export const AssistantMessage: React.FC<{
             ? b.citations
             : msg.citations ?? [];
         const citations = Object.fromEntries(
-          citationSnapshot.map((citation) => [citation.route_id, citation]),
+          citationSnapshot
+            .filter((citation) => (citation.kind ?? "paper") === "paper" && citation.route_id)
+            .map((citation) => [citation.route_id as string, citation]),
+        );
+        const webCitations = Object.fromEntries(
+          citationSnapshot
+            .filter((citation) => citation.kind === "web" && citation.url)
+            .map((citation) => [citation.url as string, citation]),
         );
         if (b.kind === "reasoning") {
           return (
@@ -444,6 +455,7 @@ export const AssistantMessage: React.FC<{
               block={b}
               papers={papers}
               citations={citations}
+              webCitations={webCitations}
               onToggle={() => onToggleBlock(msg.id, i)}
             />
           );
@@ -459,6 +471,7 @@ export const AssistantMessage: React.FC<{
             block={b}
             papers={papers}
             citations={citations}
+            webCitations={webCitations}
             streaming={Boolean(msg.streaming && i === (msg.blocks?.length ?? 0) - 1)}
           />
         );
