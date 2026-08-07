@@ -1,9 +1,9 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "42"
-# A release emits this gateway protocol and accepts workers back to the
-# compatible-from floor while an old slot drains or a rollback is qualified.
-GATEWAY_CONTRACT_VERSION = 27
+WORKER_CONTRACT_VERSION = "43"
+# Web search extends the catalog operation set without changing its request or
+# response framing, so it remains on the rollback-compatible gateway protocol.
+GATEWAY_CONTRACT_VERSION = 26
 GATEWAY_COMPATIBLE_FROM = 26
 DATABASE_CONTRACT_VERSION = 1
 SDK_VERSION = "0.2.115"
@@ -18,6 +18,6 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-AWzNULw9QCnHfOgPrMEZy1"
+MODAL_IMAGE_ID = "im-tpIDnMOT4GLNdlADvqXwCg"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
