@@ -2414,6 +2414,40 @@ def _production_chat_preparation_source() -> dict[str, str]:
     return {key: f"{key}={value}" for key, value in values.items()}
 
 
+def test_production_environment_example_exposes_sealed_preparation_contract():
+    source = Path(__file__).resolve().parents[2]
+    values = configure_host_env.read_lines(
+        source / "deploy" / "env" / "production.env.example"
+    )
+
+    assert configure_host_env.decoded_value(values["PWC_CHAT_ENABLED"]) == "false"
+    assert (
+        configure_host_env.decoded_value(values["PWC_CHAT_PUBLIC_ADMISSION_ENABLED"])
+        == "false"
+    )
+    assert (
+        configure_host_env.decoded_value(values["PWC_CHAT_SANDBOX_ADMISSION_ENABLED"])
+        == "false"
+    )
+    assert (
+        configure_host_env.decoded_value(
+            values["PWC_CHAT_OPENROUTER_SERVER_FUNDED_ENABLED"]
+        )
+        == "false"
+    )
+    assert {
+        "PWC_CHAT_TITLE_HF_TOKEN",
+        "PWC_CHAT_SANDBOX_MODAL_WORKSPACE",
+        "PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME",
+        "PWC_CHAT_SANDBOX_OPERATOR_USERNAMES",
+        "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION",
+        "PWC_CHAT_SANDBOX_SLACK_WEBHOOK_URL",
+        "PWC_CHAT_SANDBOX_ALERT_FALLBACK_WEBHOOK_URL",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+    } <= values.keys()
+
+
 def test_production_chat_preparation_is_sealed_and_fail_closed():
     values = configure_host_env.production_chat_preparation_values(
         _production_chat_preparation_source(),
