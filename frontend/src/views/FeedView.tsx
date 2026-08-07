@@ -5,8 +5,10 @@ import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
+import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import { apiClient } from "@/lib/api";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
+import { useAuth } from "@/lib/authContext";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import {
@@ -119,14 +121,23 @@ const parseTime = (value: string | null): TimeWindow => {
 // Submitting hands the question off to the dedicated chat page.
 export const AskAssistant: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const models = isStagingEnvironment()
     ? STAGING_FALLBACK_CHAT_MODELS
     : PRODUCTION_FALLBACK_CHAT_MODELS;
   const [question, setQuestion] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [launching, setLaunching] = useState(false);
   const placeholder = useRotatingChatPlaceholder(!question);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const availabilityQuery = useQuery({
+    queryKey: ["chatAvailability"],
+    queryFn: () => apiClient.getChatAvailability(),
+    retry: false,
+    enabled: isChatEnabled() && Boolean(user),
+  });
+  const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
 
   useEffect(() => {
     const el = ref.current;
@@ -140,7 +151,9 @@ export const AskAssistant: React.FC = () => {
     const q = prompt.trim();
     if (!q || launching) return;
     setLaunching(true);
-    queueChatLaunch(q, selectedModel);
+    queueChatLaunch(q, selectedModel, {
+      webSearchEnabled: webSearchAvailable && webSearchEnabled,
+    });
     try {
       const session = await createSession(selectedModel);
       navigate(`/chat/${session.id}`);
@@ -175,6 +188,13 @@ export const AskAssistant: React.FC = () => {
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
           />
+          {webSearchAvailable && (
+            <WebSearchToggle
+              enabled={webSearchEnabled}
+              onChange={setWebSearchEnabled}
+              disabled={launching}
+            />
+          )}
           <span className="ask-home-hint">
             Via 🤗{" "}
             <a

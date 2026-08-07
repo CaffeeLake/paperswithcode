@@ -1,5 +1,6 @@
 import React from "react";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,10 +9,16 @@ import {
   CHAT_AUTO_SEND_KEY,
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
+  CHAT_WEB_SEARCH_KEY,
 } from "@/lib/chatLaunch";
+import { apiClient } from "@/lib/api";
 import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import { AskAssistant } from "@/views/FeedView";
+
+vi.mock("@/lib/authContext", () => ({
+  useAuth: () => ({ user: { username: "owner" }, isLoading: false }),
+}));
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -21,16 +28,24 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
-const renderAskAssistant = () => render(
-  <MemoryRouter initialEntries={["/"]}>
-    <Routes>
-      <Route path="/" element={<AskAssistant />} />
-      <Route path="/chat/:sessionId" element={<div>Dedicated chat launched</div>} />
-    </Routes>
-  </MemoryRouter>,
-);
+const renderAskAssistant = () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<AskAssistant />} />
+          <Route path="/chat/:sessionId" element={<div>Dedicated chat launched</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+};
 
 describe("AskAssistant", () => {
   it("offers the Hugging Face DeepSeek and staging OpenRouter models", () => {
@@ -108,5 +123,55 @@ describe("AskAssistant", () => {
     expect(sessionStorage.getItem(CHAT_DRAFT_KEY)).toBe(question);
     expect(sessionStorage.getItem(CHAT_MODEL_KEY)).toBe(DEFAULT_CHAT_MODEL);
     expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
+  });
+
+  it("offers available web search and carries the choice into the new chat", async () => {
+    vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "New chat",
+      selected_model: DEFAULT_CHAT_MODEL,
+      created_at: "2026-08-03T00:00:00Z",
+      updated_at: "2026-08-03T00:00:00Z",
+      message_count: 0,
+      is_busy: false,
+      web_search_enabled: false,
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    const user = userEvent.setup();
+    renderAskAssistant();
+
+    const toggle = await screen.findByRole("switch", { name: "Web search" });
+    await user.click(toggle);
+    await user.type(
+      screen.getByRole("textbox", { name: "Ask the assistant" }),
+      "Find the latest vision-language model release",
+    );
+    await user.click(screen.getByRole("button", { name: "Ask the assistant" }));
+
+    expect(await screen.findByText("Dedicated chat launched")).toBeInTheDocument();
+    expect(sessionStorage.getItem(CHAT_WEB_SEARCH_KEY)).toBe("1");
+  });
+
+  it("hides web search when the feature is unavailable", async () => {
+    vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    const availability = vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: false,
+    });
+    renderAskAssistant();
+
+    await waitFor(() => expect(availability).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("switch", { name: "Web search" })).not.toBeInTheDocument();
   });
 });

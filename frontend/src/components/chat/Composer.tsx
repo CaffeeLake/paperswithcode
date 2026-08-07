@@ -1,12 +1,12 @@
 /** Native textarea chat composer with structured inline paper mentions. */
 
 import React, { useEffect, useRef, useState } from "react";
-import { Globe2 } from "lucide-react";
 
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
 import { ArrowUpIcon, Spinner } from "@/components/chat/icons";
 import ModelPicker, { type ModelPickerOption } from "@/components/chat/ModelPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
+import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import type { ChatDraft } from "@/lib/chat";
 
 interface ComposerProps {
@@ -127,19 +127,11 @@ const Composer: React.FC<ComposerProps> = ({
         <div className="chat-composer-tools">
           {models.length > 0 && selectedModel && onModelChange && <ModelPicker models={models} selectedModel={selectedModel} onModelChange={onModelChange} disabled={busy} />}
           {webSearchAvailable && onWebSearchChange && (
-            <button
-              type="button"
-              className={`chat-web-search-toggle${webSearchEnabled ? " is-enabled" : ""}`}
-              role="switch"
-              aria-checked={webSearchEnabled}
-              aria-label="Web search"
-              title="Allow public-web search when useful; enabled search queries are processed by Exa"
+            <WebSearchToggle
+              enabled={webSearchEnabled}
+              onChange={onWebSearchChange}
               disabled={busy}
-              onClick={() => onWebSearchChange(!webSearchEnabled)}
-            >
-              <Globe2 size={15} aria-hidden="true" />
-              <span>Web</span>
-            </button>
+            />
           )}
           <span className="chat-composer-hint">Enter to send · Shift+Enter for newline</span>
         </div>

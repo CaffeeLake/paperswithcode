@@ -258,7 +258,9 @@ const ChatView: React.FC = () => {
   selectedProviderRef.current = selectedProvider;
   const [liveTitle, setLiveTitle] = useState("");
   const [draft, setDraft] = useState<ChatDraft>(() => emptyDraft());
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(
+    () => queuedLaunchRef.current?.webSearchEnabled ?? false,
+  );
   const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
   const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => emptyDraft(
     searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
@@ -502,7 +504,11 @@ const ChatView: React.FC = () => {
       if (cancelled) return;
       chat.load(toUiMessages(detail));
       setSelectedModel(detail.selected_model);
-      setWebSearchEnabled(detail.web_search_enabled);
+      setWebSearchEnabled(
+        queuedLaunchRef.current && detail.messages.length === 0
+          ? queuedLaunchRef.current.webSearchEnabled
+          : detail.web_search_enabled,
+      );
       setLiveTitle(detail.title);
       loadedRouteSessionIdRef.current = routeSessionId;
       setRouteSessionState({ id: routeSessionId, status: "loaded" });
@@ -538,6 +544,7 @@ const ChatView: React.FC = () => {
       || chat.busy
       || !pendingAutoDraft.text
       || autoSendStartedRef.current
+      || (Boolean(user) && webSearchEnabled && availabilityQuery.isFetching)
       || (routeSessionId && routeSessionState?.status !== "loaded")
     ) return;
     // Deferring avoids React StrictMode's development-only effect cleanup from
@@ -549,7 +556,17 @@ const ChatView: React.FC = () => {
       void send(nextDraft).finally(() => setPendingAutoDraft(emptyDraft()));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [authLoading, chat.busy, pendingAutoDraft, routeSessionId, routeSessionState?.status, send]);
+  }, [
+    authLoading,
+    availabilityQuery.isFetching,
+    chat.busy,
+    pendingAutoDraft,
+    routeSessionId,
+    routeSessionState?.status,
+    send,
+    user,
+    webSearchEnabled,
+  ]);
 
   useEffect(() => {
     const onFocus = () => {

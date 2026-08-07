@@ -6,6 +6,12 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiClient } from "@/lib/api";
+import {
+  CHAT_AUTO_SEND_KEY,
+  CHAT_DRAFT_KEY,
+  CHAT_MODEL_KEY,
+  CHAT_WEB_SEARCH_KEY,
+} from "@/lib/chatLaunch";
 
 const mocks = vi.hoisted(() => ({
   busy: false,
@@ -31,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   clipboardWrite: vi.fn(),
   hfLoginUrl: vi.fn(() => window.location.href),
   chatOptions: null as {
+    webSearchEnabled: boolean;
     onSessionId: (id: string) => void;
     onTitle: (title: string) => void;
     onSettled: (id: string | null) => void;
@@ -509,12 +516,12 @@ describe("ChatView web search", () => {
       paper_mentions_enabled: true,
       web_search_available: true,
     });
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => (
       new Response(JSON.stringify({ connected: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
-      }),
-    );
+      })
+    ));
   });
 
   it("keeps web search enabled when a new session starts generating", async () => {
@@ -553,5 +560,27 @@ describe("ChatView web search", () => {
       "aria-checked",
       "false",
     );
+  });
+
+  it("carries an enabled homepage launch into its reserved session", async () => {
+    sessionStorage.setItem(CHAT_DRAFT_KEY, "Find recent multimodal model releases");
+    sessionStorage.setItem(CHAT_MODEL_KEY, session.selected_model);
+    sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
+    sessionStorage.setItem(CHAT_WEB_SEARCH_KEY, "1");
+    mocks.getSession.mockResolvedValueOnce({
+      ...session,
+      transcript_status: "ready",
+      messages: [],
+    });
+
+    renderChat();
+
+    const toggle = await screen.findByRole("switch", { name: "Web search" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+    await waitFor(() => expect(mocks.chatOptions?.webSearchEnabled).toBe(true));
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith({
+      text: "Find recent multimodal model releases",
+      paperMentions: [],
+    }));
   });
 });
