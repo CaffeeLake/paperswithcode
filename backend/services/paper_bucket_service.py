@@ -8,13 +8,15 @@ import tempfile
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 BUCKET_OAUTH_COOKIE_NAME = "pwc_hf_bucket"
 BUCKET_MANAGE_OAUTH_COOKIE_NAME = "pwc_hf_bucket_manage"
 MAX_PDF_BYTES = 100 * 1024 * 1024
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
 _ARXIV_PDF_HOSTS = {"arxiv.org", "export.arxiv.org"}
+_ARXIV_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+MAX_ARXIV_REDIRECTS = 3
 
 
 def _configure_hugging_face_cache() -> None:
@@ -86,7 +88,7 @@ def _hub_error(error: HfHubHTTPError) -> PaperBucketError:
     return PaperBucketError("Hugging Face could not complete the Bucket operation.")
 
 
-def _download_arxiv_pdf(url: str, destination: Path) -> None:
+def _validate_arxiv_pdf_url(url: str) -> None:
     parsed = urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -96,30 +98,47 @@ def _download_arxiv_pdf(url: str, destination: Path) -> None:
             "Only arXiv-hosted paper PDFs can be copied automatically."
         )
 
+
+def _download_arxiv_pdf(url: str, destination: Path) -> None:
+    _validate_arxiv_pdf_url(url)
+
     try:
         with httpx.Client(
             timeout=httpx.Timeout(60, connect=10),
             follow_redirects=False,
             headers={"User-Agent": "paperswithcode.co paper bucket copy"},
         ) as client:
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
-                content_length = response.headers.get("content-length")
-                if content_length and int(content_length) > MAX_PDF_BYTES:
-                    raise PaperBucketError(
-                        "The paper PDF exceeds the 100 MB copy limit."
-                    )
-                total = 0
-                with destination.open("wb") as output:
-                    for chunk in response.iter_bytes():
-                        total += len(chunk)
-                        if total > MAX_PDF_BYTES:
+            current_url = url
+            for redirect_count in range(MAX_ARXIV_REDIRECTS + 1):
+                with client.stream("GET", current_url) as response:
+                    if response.status_code in _ARXIV_REDIRECT_STATUSES:
+                        location = response.headers.get("location")
+                        if not location or redirect_count == MAX_ARXIV_REDIRECTS:
                             raise PaperBucketError(
-                                "The paper PDF exceeds the 100 MB copy limit."
+                                "The paper PDF could not be downloaded from arXiv."
                             )
-                        output.write(chunk)
-                if total == 0:
-                    raise PaperBucketError("The paper PDF download was empty.")
+                        current_url = urljoin(current_url, location)
+                        _validate_arxiv_pdf_url(current_url)
+                        continue
+
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > MAX_PDF_BYTES:
+                        raise PaperBucketError(
+                            "The paper PDF exceeds the 100 MB copy limit."
+                        )
+                    total = 0
+                    with destination.open("wb") as output:
+                        for chunk in response.iter_bytes():
+                            total += len(chunk)
+                            if total > MAX_PDF_BYTES:
+                                raise PaperBucketError(
+                                    "The paper PDF exceeds the 100 MB copy limit."
+                                )
+                            output.write(chunk)
+                    if total == 0:
+                        raise PaperBucketError("The paper PDF download was empty.")
+                    return
     except PaperBucketError:
         raise
     except (httpx.HTTPError, ValueError) as error:

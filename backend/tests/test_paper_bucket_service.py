@@ -87,6 +87,59 @@ def test_rejects_non_arxiv_pdf_host(tmp_path):
         raise AssertionError("expected non-arXiv host to be rejected")
 
 
+def test_follows_redirects_within_arxiv_hosts(tmp_path, monkeypatch):
+    requested_urls = []
+
+    def handler(request):
+        requested_urls.append(str(request.url))
+        if request.url.path.endswith(".pdf"):
+            return httpx.Response(301, headers={"location": "/pdf/2606.03748"})
+        return httpx.Response(200, content=b"%PDF-test")
+
+    client = httpx.Client
+    monkeypatch.setattr(
+        bucket_service.httpx,
+        "Client",
+        lambda **kwargs: client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    destination = tmp_path / "paper.pdf"
+
+    bucket_service._download_arxiv_pdf(
+        "https://arxiv.org/pdf/2606.03748.pdf", destination
+    )
+
+    assert requested_urls == [
+        "https://arxiv.org/pdf/2606.03748.pdf",
+        "https://arxiv.org/pdf/2606.03748",
+    ]
+    assert destination.read_bytes() == b"%PDF-test"
+
+
+def test_rejects_redirects_away_from_arxiv(tmp_path, monkeypatch):
+    client = httpx.Client
+    monkeypatch.setattr(
+        bucket_service.httpx,
+        "Client",
+        lambda **kwargs: client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    301, headers={"location": "https://example.com/paper.pdf"}
+                )
+            ),
+            **kwargs,
+        ),
+    )
+
+    try:
+        bucket_service._download_arxiv_pdf(
+            "https://arxiv.org/pdf/2606.03748.pdf", tmp_path / "paper.pdf"
+        )
+    except bucket_service.PaperBucketError as error:
+        assert "arXiv-hosted" in str(error)
+    else:
+        raise AssertionError("expected cross-host redirect to be rejected")
+
+
 def test_permission_error_does_not_trigger_oauth_loop():
     response = httpx.Response(
         403, request=httpx.Request("POST", "https://huggingface.co")
