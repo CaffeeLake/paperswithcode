@@ -317,6 +317,7 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
   );
 
   const selectedArtifacts = artifacts.filter((artifact) => selectedIds.has(artifact.id));
+  const allArtifactsSelected = selectedArtifacts.length === artifacts.length;
   const bucketIdIsValid = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(bucketId.trim());
   const commands = buildBucketCopyCommands(bucketId, selectedArtifacts, {
     create: destinationMode === "new",
@@ -555,7 +556,23 @@ export function CopyToBucketCard(props: CopyToBucketCardProps) {
               )}
 
               <div className="space-y-2">
-                <Label>Artifacts</Label>
+                <div className="flex items-center justify-between gap-3">
+                  <Label>Artifacts</Label>
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto p-0 text-xs"
+                    onClick={() =>
+                      setSelectedIds(
+                        allArtifactsSelected
+                          ? new Set()
+                          : new Set(artifacts.map((artifact) => artifact.id)),
+                      )
+                    }
+                  >
+                    {allArtifactsSelected ? "Deselect all" : "Select all"}
+                  </Button>
+                </div>
                 <div className="bucket-artifact-list">
                   {artifacts.map((artifact) => (
                     <div key={artifact.id} className="bucket-artifact-row">

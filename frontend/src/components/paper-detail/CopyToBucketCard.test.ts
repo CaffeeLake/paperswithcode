@@ -138,6 +138,35 @@ describe("paperArtifactBucketName", () => {
 });
 
 describe("CopyToBucketCard", () => {
+  it("deselects and reselects all artifacts in one action", async () => {
+    const user = userEvent.setup();
+    render(
+      React.createElement(CopyToBucketCard, {
+        githubUrls: [],
+        hfModelUrls: ["https://huggingface.co/openai/test-model"],
+        hfDatasetUrls: [],
+        hfSpaceUrls: [],
+        paperId: "42",
+        pdfName: "42",
+        pdfUrl: "https://arxiv.org/pdf/42",
+        isSignedIn: true,
+        suggestedBucketId: "nielsr/paper-artifacts",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /copy to bucket/i }));
+
+    const artifactCheckboxes = screen.getAllByRole("checkbox");
+    expect(artifactCheckboxes).toHaveLength(2);
+    artifactCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
+
+    await user.click(screen.getByRole("button", { name: "Deselect all" }));
+    artifactCheckboxes.forEach((checkbox) => expect(checkbox).not.toBeChecked());
+
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    artifactCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
+  });
+
   it("prefills the suggested signed-in user destination when opened", async () => {
     const user = userEvent.setup();
     render(
