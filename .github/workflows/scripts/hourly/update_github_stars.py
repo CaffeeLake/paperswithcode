@@ -405,7 +405,6 @@ def run_queue(
     selection_only: bool = False,
 ) -> Dict:
     """Process one queue and return structured stage statistics."""
-    session = None
     started = time.monotonic()
     stats: Dict = {
         "queue": queue,
@@ -426,13 +425,16 @@ def run_queue(
         "oldest_eligible_age_days": None,
     }
     try:
-        session, repo_service = get_repository_service()
-        groups = get_repository_groups(
-            session,
-            queue,
-            max_updates,
-            hot_threshold_minutes=hot_threshold_minutes,
-        )
+        selection_session, _ = get_repository_service()
+        try:
+            groups = get_repository_groups(
+                selection_session,
+                queue,
+                max_updates,
+                hot_threshold_minutes=hot_threshold_minutes,
+            )
+        finally:
+            selection_session.close()
         stats["eligible_groups"] = groups[0]["eligible_group_count"] if groups else 0
         stats["selected_groups"] = len(groups)
         oldest_date = groups[0]["oldest_eligible_paper_date"] if groups else None
@@ -475,12 +477,16 @@ def run_queue(
                         stats["rate_limit_stops"] += 1
                         break
                 else:
-                    updated, snapshots = update_repository_group_stars(
-                        repo_service,
-                        session,
-                        group["repository_ids"],
-                        result.stars,
-                    )
+                    write_session, repo_service = get_repository_service()
+                    try:
+                        updated, snapshots = update_repository_group_stars(
+                            repo_service,
+                            write_session,
+                            group["repository_ids"],
+                            result.stars,
+                        )
+                    finally:
+                        write_session.close()
                     stats["successes"] += 1
                     stats["updated_repositories"] += updated
                     stats["snapshots_stored"] += snapshots
@@ -491,8 +497,6 @@ def run_queue(
                     time.sleep(delay)
     finally:
         stats["fetch_seconds"] = round(time.monotonic() - started, 3)
-        if session:
-            session.close()
 
     log(f"GITHUB_QUEUE_SUMMARY {stats}")
     return stats

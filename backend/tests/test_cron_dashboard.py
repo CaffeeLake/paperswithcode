@@ -133,7 +133,7 @@ def test_registry_includes_hf_artifacts_embeddings_and_method_backfills():
     assert keyword_job.workflow_file == "cron-backfill-method-keywords.yml"
     reference_job = _job("backfill_method_references")
     assert "method_reference_backfill_months" in reference_job.db_freshness_query
-    assert reference_job.schedule.startswith("15 */6")
+    assert reference_job.schedule.startswith("15 0")
     assert reference_job.workflow_file == "cron-backfill-method-references.yml"
 
 

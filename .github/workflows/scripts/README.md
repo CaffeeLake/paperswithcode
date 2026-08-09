@@ -22,7 +22,7 @@ directory with `uv run --env-file backend/keys.env ...`.
 | `cron-refresh-paper-embeddings.yml` | `15 * * * *` | `.github/workflows/scripts/run_refresh_paper_embeddings.sh` | `.github/workflows/scripts/hourly/refresh_paper_embeddings.py` |
 | `cron-update-hf-artifacts.yml` | `30 * * * *` | `pwc-cron update_hf_artifacts` | `.github/workflows/scripts/hourly/update_hf_artifacts.py` |
 | `cron-backfill-method-keywords.yml` | `10 1 * * *` | `pwc-cron backfill_method_keywords --resume --limit 10000 --max-runtime-seconds 3300` | `.github/workflows/scripts/backfill/backfill_method_keywords.py` |
-| `cron-backfill-method-references.yml` | `15 */6 * * *` | `pwc-cron backfill_method_references --provider openalex --resume --retry-failures --limit 10000 --max-runtime-seconds 19800` | `.github/workflows/scripts/backfill/backfill_method_references.py` |
+| `cron-backfill-method-references.yml` | `15 0 * * *` | `pwc-cron backfill_method_references --provider openalex --resume --retry-failures --limit 10000 --max-runtime-seconds 19800` | `.github/workflows/scripts/backfill/backfill_method_references.py` |
 | `cron-link-methods-by-references.yml` | `0 4 * * 0` | `.github/workflows/scripts/run_link_methods_by_references_weekly.sh` | `.github/workflows/scripts/weekly/link_methods_by_references.py` |
 | `cron-link-papers-by-task-keywords.yml` | `0 5 * * 0` | `.github/workflows/scripts/run_link_papers_by_task_keywords_weekly.sh` | `.github/workflows/scripts/weekly/link_papers_by_task_keywords.py` |
 
@@ -50,7 +50,9 @@ reserved for historical scans; hourly citation updates and the weekly
 incremental linker continue to own `PWC_SEMANTIC_SCHOLAR_API_KEY`.
 Alternatively, `--provider openalex` batches exact arXiv landing-page lookups
 and uses `PWC_OPENALEX_API_KEY` when configured, while retaining OpenAlex's
-smaller keyless allowance for bounded runs.
+smaller keyless allowance for bounded runs. The checked-in schedule runs once
+after the keyless allowance resets at midnight UTC. Increasing its cadence
+requires configuring `PWC_OPENALEX_API_KEY` first.
 After the first authorized bulk load, run `ANALYZE` only on
 `paper_method_evidence`, `paper_method_exclusions`,
 `method_reference_backfill_months`, and `method_keyword_backfill_runs`; do not

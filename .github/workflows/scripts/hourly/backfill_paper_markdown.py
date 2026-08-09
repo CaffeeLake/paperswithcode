@@ -64,6 +64,8 @@ class PaperMarkdownBackfillJob(CronJobBase):
         self.confirm = confirm
         self.max_jobs = max_jobs
         self.batch_size = batch_size
+        self.budget_projected_usd: float | None = None
+        self.budget_ceiling_usd: float | None = None
         self.api = HfApi(token=self.settings.hf_token or None)
 
     def _papers(self) -> list[dict[str, object]]:
@@ -150,9 +152,9 @@ class PaperMarkdownBackfillJob(CronJobBase):
         )
         return [job for job in jobs if job_stage(job) in ACTIVE_STAGES]
 
-    def _assert_budget(self, planned_jobs: int) -> None:
+    def _budget_available(self, planned_jobs: int) -> bool:
         if not planned_jobs:
-            return
+            return True
         hourly_rate = 1.80
         timeout_hours = 12.0
         now = datetime.now(UTC)
@@ -204,11 +206,15 @@ class PaperMarkdownBackfillJob(CronJobBase):
             if self.full
             else self.settings.paper_markdown_incremental_monthly_budget_usd
         )
+        self.budget_projected_usd = projected
+        self.budget_ceiling_usd = ceiling
         if projected > ceiling:
-            raise ValueError(
+            self.logger.warning(
                 f"paper Markdown GPU budget exhausted: projected ${projected:.2f} "
                 f"exceeds ${ceiling:.2f}"
             )
+            return False
+        return True
 
     def _launch(self, candidates: list[dict[str, object]]) -> list[dict[str, str]]:
         active = self._active_jobs() if self.should_execute else []
@@ -231,8 +237,8 @@ class PaperMarkdownBackfillJob(CronJobBase):
         plans = chunks(candidates, batch_size)[:available_slots]
         if self.should_execute and plans and not self.confirm:
             raise ValueError("paid GPU dispatch requires --confirm")
-        if self.should_execute:
-            self._assert_budget(len(plans))
+        if self.should_execute and not self._budget_available(len(plans)):
+            return []
 
         launched: list[dict[str, str]] = []
         run_id = f"{'backfill' if self.full else 'live'}-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -340,6 +346,13 @@ class PaperMarkdownBackfillJob(CronJobBase):
             "ocr_candidates": len(candidates),
             "jobs_planned_or_launched": len(launched),
             "papers_planned_or_launched": sum(int(item["papers"]) for item in launched),
+            "budget_exhausted": (
+                self.budget_projected_usd is not None
+                and self.budget_ceiling_usd is not None
+                and self.budget_projected_usd > self.budget_ceiling_usd
+            ),
+            "budget_projected_usd": self.budget_projected_usd,
+            "budget_ceiling_usd": self.budget_ceiling_usd,
             "hf_job_ids": ",".join(
                 item["hf_job_id"] for item in launched if item.get("hf_job_id")
             )

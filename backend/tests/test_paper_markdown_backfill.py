@@ -6,6 +6,7 @@ import subprocess
 import sys
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
@@ -60,6 +61,41 @@ def test_paid_dispatch_requires_confirmation(monkeypatch):
                 }
             ]
         )
+
+
+def test_budget_exhaustion_is_a_successful_noop(monkeypatch):
+    job = object.__new__(MODULE.PaperMarkdownBackfillJob)
+    job.settings = type(
+        "Settings",
+        (),
+        {
+            "paper_markdown_backfill_concurrency": 4,
+            "paper_markdown_incremental_batch_size": 100,
+            "paper_markdown_backfill_batch_size": 500,
+        },
+    )()
+    job.full = False
+    job.should_execute = True
+    job.confirm = True
+    job.max_jobs = None
+    job.batch_size = None
+    job.logger = Mock()
+    monkeypatch.setattr(job, "_active_jobs", list)
+    monkeypatch.setattr(job, "_budget_available", lambda _: False)
+
+    assert (
+        job._launch(
+            [
+                {
+                    "arxiv_id": "2607.24653",
+                    "version": "v1",
+                    "title": "Kimi K3",
+                    "output_key": "2607/2607.24653.md",
+                }
+            ]
+        )
+        == []
+    )
 
 
 def test_chandra_worker_stub_writes_canonical_markdown_and_checkpoint(tmp_path):

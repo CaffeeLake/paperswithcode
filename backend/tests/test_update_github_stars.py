@@ -13,6 +13,8 @@ if str(WORKFLOWS_DIR) not in sys.path:
     sys.path.append(str(WORKFLOWS_DIR))
 
 from scripts.hourly.update_github_stars import (  # noqa: E402
+    GitHubFetchResult,
+    RateLimit,
     fetch_github_stars,
     get_next_repository_group,
     rate_limit_reserve_reached,
@@ -220,3 +222,41 @@ def test_snapshot_write_is_idempotent_for_same_timestamp():
     statement = str(session.execute.call_args.args[0])
     assert "ON CONFLICT (repository_id, snapshot_at)" in statement
     assert "DO UPDATE SET num_stars = EXCLUDED.num_stars" in statement
+
+
+def test_run_queue_does_not_hold_database_session_during_github_fetch(monkeypatch):
+    selection_session = Mock()
+    write_session = Mock()
+    repo_service = Mock()
+    sessions = iter([(selection_session, Mock()), (write_session, repo_service)])
+    monkeypatch.setattr(
+        "scripts.hourly.update_github_stars.get_repository_service",
+        lambda: next(sessions),
+    )
+    monkeypatch.setattr(
+        "scripts.hourly.update_github_stars.get_repository_groups",
+        lambda *_args, **_kwargs: [
+            {
+                "owner": "huggingface",
+                "name": "transformers",
+                "repository_ids": [1],
+                "eligible_group_count": 1,
+                "oldest_eligible_paper_date": None,
+            }
+        ],
+    )
+
+    def fetch(*_args, **_kwargs):
+        selection_session.close.assert_called_once_with()
+        return GitHubFetchResult(42, 200, RateLimit(5000, 4999, 12345))
+
+    monkeypatch.setattr("scripts.hourly.update_github_stars.fetch_github_stars", fetch)
+    monkeypatch.setattr(
+        "scripts.hourly.update_github_stars.update_repository_group_stars",
+        lambda *_args, **_kwargs: (1, 1),
+    )
+
+    result = run_queue("fresh", "token", 1, 60, delay=0)
+
+    assert result["successes"] == 1
+    write_session.close.assert_called_once_with()

@@ -2,8 +2,9 @@ name: Cron - Backfill Method References
 
 on:
   schedule:
-    # Four bounded sweeps daily while historical coverage catches up; completed months no-op.
-    - cron: "15 */6 * * *"
+    # The production host uses OpenAlex's keyless daily allowance. Run once after
+    # its midnight UTC reset; additional sweeps only receive HTTP 429 responses.
+    - cron: "15 0 * * *"
   workflow_dispatch: {}
 
 concurrency:
