@@ -3,7 +3,7 @@ name: pwc-cli
 description: "Papers With Code CLI (`pwc`) for searching and reading AI/ML papers, discovering recent and trending research, finding related work and paper lineage, browsing tasks, methods, conferences, organizations, frameworks, and benchmark leaderboards through the public Papers With Code catalog. Use whenever the user asks to find papers, survey literature, compare research, inspect an arXiv paper, explore AI/ML taxonomy or conferences, discover benchmarks or state-of-the-art models, or mentions Papers With Code, `pwc`, or `pwc-cli`."
 ---
 
-Generated with `pwc v0.1.10`. Run `pwc skills add --force` to regenerate.
+Generated with `pwc v0.1.11`. Run `pwc skills add --force` to regenerate.
 
 The `pwc` CLI is anonymous and read-only. It queries the public
 [Papers With Code](https://paperswithcode.co) catalog and requires no token.
@@ -22,7 +22,7 @@ case-insensitive but exact; ambiguous titles fail with their matching IDs.
 - `pwc search QUERY [--limit LIMIT] [--page PAGE] [--mode hybrid|keyword|semantic] [--json]` — search papers.
 - `pwc paper info PAPER [--include-resources] [--include-evals] [--json]` — show paper metadata including abstract.
 - `pwc paper read PAPER [--json]` — print stored paper Markdown.
-- `pwc paper list [--page PAGE] [--page-size PAGE_SIZE] [--search SEARCH] [--published-after PUBLISHED_AFTER] [--published-before PUBLISHED_BEFORE] [--conference CONFERENCE] [--all-versions] [--order-by trending|date_published|citation_count] [--order-dir asc|desc] [--time today|week|month|all_time] [--include-resources] [--json]` — list and filter papers.
+- `pwc paper list [--page PAGE] [--page-size PAGE_SIZE] [--search SEARCH] [--published-after PUBLISHED_AFTER] [--published-before PUBLISHED_BEFORE] [--task TASK] [--method METHOD] [--conference CONFERENCE] [--framework FRAMEWORK] [--organization ORGANIZATION] [--all-versions] [--order-by trending|date_published|citation_count] [--order-dir asc|desc] [--time today|week|month|all_time] [--include-resources] [--json]` — list and filter papers.
 - `pwc paper recent [--limit LIMIT] [--json]` — list recent papers.
 - `pwc paper trending [--limit LIMIT] [--max-age-days MAX_AGE_DAYS] [--min-velocity MIN_VELOCITY] [--json]` — list trending papers.
 - `pwc paper related PAPER [--limit LIMIT] [--json]` — list related papers.
@@ -49,11 +49,14 @@ case-insensitive but exact; ambiguous titles fail with their matching IDs.
 2. Use `pwc paper info` to inspect promising results. Add
    `--include-resources` when repositories, project pages, or Hugging Face
    artifacts matter.
-3. Use `pwc search` for broader discovery, then `pwc paper read` for primary
+3. Use exact `pwc paper list --task`, `--method`, `--conference`, `--framework`,
+   and `--organization` filters for tagged or catalog-associated papers. Combine
+   them to require every association; do not substitute a keyword search.
+4. Use `pwc search` for broader discovery, then `pwc paper read` for primary
    evidence.
-4. Expand the literature with `pwc paper related` and use
+5. Expand the literature with `pwc paper related` and use
    `pwc paper lineage list` when model or method ancestry matters.
-5. Preserve paper titles, identifiers, and URLs so claims remain traceable.
+6. Preserve paper titles, identifiers, and URLs so claims remain traceable.
 
 ## Output and limits
 

@@ -18,6 +18,12 @@
       "prompt": "Replace paper 104054's explicit Hugging Face models with moonshotai/Kimi-K3 using the supported PwC command, then explain what must be verified for composite trending.",
       "expected_output": "Uses pwc paper update 104054 hf-artifacts --model https://huggingface.co/moonshotai/Kimi-K3 --json and verifies that both the paper array and normalized paper_hf_artifacts link exist; it does not suggest an arrays-only SQL update.",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Which papers were published by Qwen? Use the public Papers With Code catalog and do not use a paper keyword search as a proxy for organization tagging.",
+      "expected_output": "Uses pwc paper list --organization Qwen, optionally with an explicit ordering or pagination flag; it does not substitute pwc search Qwen.",
+      "files": []
     }
   ]
 }

@@ -1,13 +1,13 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "46"
+WORKER_CONTRACT_VERSION = "47"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 26
 GATEWAY_COMPATIBLE_FROM = 26
 DATABASE_CONTRACT_VERSION = 1
 SDK_VERSION = "0.2.115"
-PWC_CLI_VERSION = "0.1.10"
+PWC_CLI_VERSION = "0.1.11"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
 IMAGE_PUBLISH_NAME = "pwc-chat-v1"
 CHAT_SANDBOX_REGION = "eu-west"
@@ -18,7 +18,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-yh9n3xBPquaraDIprZyCLU"
+MODAL_IMAGE_ID = "im-SitG527YGfLkVFSfYWSquw"
 # The same worker contract published into the production Modal Environment.
 # Keep this distinct so future Environment RBAC never requires a cross-
 # Environment image lookup.
