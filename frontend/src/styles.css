@@ -6086,7 +6086,7 @@ html { scroll-behavior: smooth; }
   border-radius: 2px;
 }
 
-/* Hugging Face repository hover preview */
+/* Repository hover previews */
 .hf-preview-pop.hf-preview-pop {
   width: min(172px, calc(100vw - 24px));
   padding: 0;
@@ -6128,6 +6128,62 @@ html { scroll-behavior: smooth; }
   color: var(--ink-faint);
   font-size: 11.5px;
 }
+.github-preview-pop.github-preview-pop {
+  width: min(344px, calc(100vw - 24px));
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  color: var(--ink);
+  box-shadow: 0 14px 44px -12px rgba(30, 28, 20, 0.4);
+  overflow: hidden;
+}
+.github-preview-card {
+  display: flex;
+  gap: 14px;
+  padding: 14px;
+}
+.github-preview-image,
+.github-preview-fallback {
+  display: block;
+  width: 72px;
+  height: 72px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--bg-subtle);
+}
+.github-preview-fallback {
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(135deg, #24292f, #57606a);
+}
+.github-preview-fallback svg { width: 36px; height: 36px; }
+.github-preview-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.github-preview-meta strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.github-preview-kind,
+.github-preview-meta > span:last-child {
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+.github-preview-description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.github-preview-stats { font-variant-numeric: tabular-nums; }
 
 /* shared chat widgets */
 .chat-caret {

@@ -24,8 +24,10 @@ import {
   HuggingFacePreviewLink,
   parseHuggingFaceRepoUrl,
 } from "@/components/chat/HuggingFacePreviewLink";
+import { GitHubPreviewLink } from "@/components/chat/GitHubPreviewLink";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
+import { parseGitHubRepoUrl } from "@/lib/github";
 
 function citationPreviewData(
   routeId: string,
@@ -148,6 +150,14 @@ export const ChatMarkdown: React.FC<{
               <HuggingFacePreviewLink repo={huggingFaceRepo}>
                 {children}
               </HuggingFacePreviewLink>
+            );
+          }
+          const gitHubRepo = href ? parseGitHubRepoUrl(href) : null;
+          if (gitHubRepo) {
+            return (
+              <GitHubPreviewLink repo={gitHubRepo}>
+                {children}
+              </GitHubPreviewLink>
             );
           }
           if (href && isGitHubUrl(href)) {

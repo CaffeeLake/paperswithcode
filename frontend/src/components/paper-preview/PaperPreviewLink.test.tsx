@@ -85,6 +85,7 @@ async function hoverLink(name: string) {
 }
 
 beforeEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   mockedGetPaper.mockReset();
   mockedPreloadImage.mockClear();
@@ -302,8 +303,21 @@ describe("Markdown and chat policy", () => {
     expect(screen.getByText("external")).toBeInTheDocument();
   });
 
-  it("renders GitHub Markdown links with an icon in a new tab", () => {
+  it("renders and previews GitHub repository links in a new tab", async () => {
     const href = "https://github.com/google-research/vision_transformer";
+    const avatar = "https://avatars.githubusercontent.com/u/43830688?v=4";
+    const mockedFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        description: "Vision Transformer and MLP-Mixer architectures",
+        stargazers_count: 14_200,
+        forks_count: 2_100,
+        language: "Jupyter Notebook",
+        archived: false,
+        owner: { avatar_url: avatar },
+      }),
+    });
+    vi.stubGlobal("fetch", mockedFetch);
     renderWithProviders(
       <ChatMarkdown
         text={`[google-research/vision_transformer](${href})`}
@@ -320,6 +334,35 @@ describe("Markdown and chat policy", () => {
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveClass("chat-github-link");
     expect(link.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    await hoverLink("google-research/vision_transformer");
+    expect(await screen.findByText("GitHub repository")).toBeInTheDocument();
+    expect(await screen.findByText("Vision Transformer and MLP-Mixer architectures"))
+      .toBeInTheDocument();
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/google-research/vision_transformer",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(screen.getByTestId("github-preview-image")).toHaveAttribute(
+      "src",
+      avatar,
+    );
+  });
+
+  it("keeps deep GitHub links clickable without a repository preview", async () => {
+    const href = "https://github.com/google-research/vision_transformer/issues/1";
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[issue](${href})`}
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "issue" });
+    expect(link).toHaveAttribute("href", href);
+    await hoverLink("issue");
+    expect(screen.queryByText("GitHub repository")).not.toBeInTheDocument();
+    expect(mockedPreloadImage).not.toHaveBeenCalled();
   });
 
   it("does not allow lookalike GitHub hosts", () => {
