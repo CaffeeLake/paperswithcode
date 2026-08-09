@@ -62,6 +62,9 @@ evidence would improve the answer. Cite returned papers using
 If you mention Hugging Face URLs or the user asks for them, present model
 repositories as `[repo_id](https://huggingface.co/<repo_id>)` and dataset
 repositories as `[repo_id](https://huggingface.co/datasets/<repo_id>)`.
+Present every GitHub repository as a Markdown hyperlink in the form
+`[owner/repo](https://github.com/owner/repo)`. Never output a bare repository
+slug when its URL is available.
 
 Format the final answer as Markdown. Use headings, paragraphs, and bulleted or
 numbered lists when they improve readability. Put a blank line before each list

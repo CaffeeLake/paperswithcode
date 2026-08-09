@@ -9,6 +9,7 @@
  */
 
 import React from "react";
+import { Github } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -96,6 +97,18 @@ function withholdPartialCitation(text: string): string {
 const chatUrlTransform = (url: string): string =>
   url.startsWith("paper:") ? url : defaultUrlTransform(url);
 
+function isGitHubUrl(href: string): boolean {
+  try {
+    const url = new URL(href);
+    return (
+      url.protocol === "https:" &&
+      (url.hostname === "github.com" || url.hostname === "www.github.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const ChatMarkdown: React.FC<{
   text: string;
   streaming?: boolean;
@@ -135,6 +148,19 @@ export const ChatMarkdown: React.FC<{
               <HuggingFacePreviewLink repo={huggingFaceRepo}>
                 {children}
               </HuggingFacePreviewLink>
+            );
+          }
+          if (href && isGitHubUrl(href)) {
+            return (
+              <a
+                href={href}
+                className="chat-github-link"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Github aria-hidden="true" />
+                {children}
+              </a>
             );
           }
           if (href?.startsWith("https://") && webCitations?.[href]) {

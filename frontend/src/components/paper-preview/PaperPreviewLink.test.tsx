@@ -302,6 +302,38 @@ describe("Markdown and chat policy", () => {
     expect(screen.getByText("external")).toBeInTheDocument();
   });
 
+  it("renders GitHub Markdown links with an icon in a new tab", () => {
+    const href = "https://github.com/google-research/vision_transformer";
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[google-research/vision_transformer](${href})`}
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    const link = screen.getByRole("link", {
+      name: "google-research/vision_transformer",
+    });
+    expect(link).toHaveAttribute("href", href);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveClass("chat-github-link");
+    expect(link.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("does not allow lookalike GitHub hosts", () => {
+    renderWithProviders(
+      <ChatMarkdown
+        text="[fake](https://github.com.example.org/owner/repo)"
+        papers={{}}
+        citations={{}}
+      />,
+    );
+
+    expect(screen.queryByRole("link", { name: "fake" })).not.toBeInTheDocument();
+  });
+
   it("renders only exact authoritative HTTPS web citations as external links", () => {
     const source = "https://example.com/official-release";
     renderWithProviders(

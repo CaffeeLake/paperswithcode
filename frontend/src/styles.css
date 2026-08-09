@@ -5764,6 +5764,17 @@ html { scroll-behavior: smooth; }
   font-size: 0.85em;
   white-space: nowrap;
 }
+.chat-github-link {
+  color: var(--accent-text);
+  border-bottom: 1px solid color-mix(in oklch, var(--accent-text) 35%, transparent);
+}
+.chat-github-link:hover { border-bottom-color: var(--accent-text); }
+.chat-github-link svg {
+  width: 1em;
+  height: 1em;
+  margin-right: 0.3em;
+  vertical-align: -0.14em;
+}
 .chat-error {
   display: flex;
   align-items: center;
