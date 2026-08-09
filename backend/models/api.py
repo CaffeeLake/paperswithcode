@@ -313,6 +313,10 @@ class Papers(BaseModel):
     scope: Optional[PaperFeedScope] = Field(
         None, description="Resolved repository or framework feed context"
     )
+    applied_filters: dict[str, str] = Field(
+        default_factory=dict,
+        description="Exact catalog filters applied to this paper page",
+    )
 
 
 # Additional models for extended functionality

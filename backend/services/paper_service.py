@@ -1000,6 +1000,18 @@ class PaperService:
             if time_window != "all_time":
                 published_after = self._get_published_after_for_time_window(time_window)
 
+            applied_filters = {
+                name: value
+                for name, value in {
+                    "task": task,
+                    "method": method,
+                    "conference": conference,
+                    "framework": framework,
+                    "organization": organization,
+                }.items()
+                if value is not None
+            }
+
             if framework is not None and repository is not None:
                 raise ValueError("framework and repository are mutually exclusive")
 
@@ -1049,7 +1061,7 @@ class PaperService:
                 and not is_repository_feed
                 and not has_catalog_filter
             ):
-                return self._get_trending_papers(
+                response = self._get_trending_papers(
                     page=page,
                     page_size=page_size,
                     search=search,
@@ -1061,6 +1073,8 @@ class PaperService:
                     has_code=has_code,
                     has_hf_artifacts=has_hf_artifacts,
                 )
+                response.applied_filters = applied_filters
+                return response
 
             # Build base query
             query = self.db.query(DBPaper)
@@ -1073,6 +1087,7 @@ class PaperService:
                         previous_page=None,
                         results=[],
                         scope=scope,
+                        applied_filters=applied_filters,
                     )
                 query = query.join(
                     DBPaperRepository,
@@ -1172,6 +1187,7 @@ class PaperService:
                 previous_page=previous_page,
                 results=api_papers,
                 scope=scope,
+                applied_filters=applied_filters,
             )
 
         except PaperNotFoundError:

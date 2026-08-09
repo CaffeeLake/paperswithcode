@@ -276,6 +276,12 @@ def test_unknown_repository_is_an_empty_scoped_feed():
     )
 
     assert response.count == 0
+    assert response.applied_filters == {
+        "task": "Image Classification",
+        "method": "Vision Transformer",
+        "conference": "CVPR 2026",
+        "organization": "Qwen",
+    }
     assert response.scope.repository == "unknown/project"
 
 
