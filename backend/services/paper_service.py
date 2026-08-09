@@ -948,6 +948,9 @@ class PaperService:
         published_after: Optional[str] = None,
         published_before: Optional[str] = None,
         conference: Optional[str] = None,
+        task: Optional[str] = None,
+        method: Optional[str] = None,
+        organization: Optional[str] = None,
         latest_only: bool = True,
         order_by: str = "trending",
         order_dir: str = "desc",
@@ -968,6 +971,9 @@ class PaperService:
             published_after: Filter papers published after this date (YYYY-MM-DD)
             published_before: Filter papers published before this date (YYYY-MM-DD)
             conference: Filter by conference
+            task: Filter by an exact task name, slug, or ID
+            method: Filter by an exact method name, full name, slug, or ID
+            organization: Filter by an exact organization name, slug, or ID
             latest_only: Whether to only include latest versions of papers
             order_by: Field to order by (date_published, citation_count, trending)
             order_dir: Order direction (asc, desc)
@@ -1002,12 +1008,47 @@ class PaperService:
                 repository=repository,
             )
             is_repository_feed = framework is not None or repository is not None
+            task_id = self._resolve_paper_filter_entity(
+                DBTask, task, "Task", DBTask.slug, DBTask.name
+            )
+            method_id = self._resolve_paper_filter_entity(
+                DBMethod,
+                method,
+                "Method",
+                DBMethod.slug,
+                DBMethod.name,
+                DBMethod.full_name,
+            )
+            organization_id = self._resolve_paper_filter_entity(
+                DBOrganization,
+                organization,
+                "Organization",
+                DBOrganization.slug,
+                DBOrganization.name,
+            )
+            conference_id = self._resolve_paper_filter_entity(
+                DBConference,
+                conference,
+                "Conference",
+                DBConference.slug,
+                DBConference.name,
+                DBConference.short_name,
+                required=False,
+            )
+            has_catalog_filter = any(
+                value is not None
+                for value in (task_id, method_id, organization_id, conference_id)
+            )
             if is_repository_feed:
                 latest_only = True
 
             # The global trending SQL intentionally deduplicates by repository.
             # Repository-scoped feeds instead retain every linked paper.
-            if order_by == "trending" and not is_repository_feed:
+            if (
+                order_by == "trending"
+                and not is_repository_feed
+                and not has_catalog_filter
+            ):
                 return self._get_trending_papers(
                     page=page,
                     page_size=page_size,
@@ -1038,6 +1079,17 @@ class PaperService:
                     DBPaperRepository.paper_id == DBPaper.id,
                 ).filter(DBPaperRepository.repository_id == repository_id)
 
+            if task_id is not None:
+                query = query.filter(DBPaper.tasks.any(DBTask.id == task_id))
+
+            if method_id is not None:
+                query = query.filter(DBPaper.methods.any(DBMethod.id == method_id))
+
+            if organization_id is not None:
+                query = query.filter(
+                    DBPaper.organizations.any(DBOrganization.id == organization_id)
+                )
+
             # Filter for latest versions only
             if latest_only:
                 query = query.filter(DBPaper.is_latest_version)
@@ -1067,7 +1119,12 @@ class PaperService:
 
             # Apply conference filter
             if conference:
-                query = query.filter(DBPaper.conference.ilike(f"%{conference}%"))
+                conference_filters = [DBPaper.conference.ilike(f"%{conference}%")]
+                if conference_id is not None:
+                    conference_filters.append(
+                        DBPaper.conferences.any(DBConference.id == conference_id)
+                    )
+                query = query.filter(or_(*conference_filters))
 
             # Apply ordering
             if order_by == "trending":
@@ -1128,15 +1185,22 @@ class PaperService:
         repository: Optional[str],
     ) -> tuple[Optional[int], Optional[PaperFeedScope]]:
         if framework is not None:
+            reference = framework.strip()
+            identity_filters = [
+                func.lower(DBFramework.slug) == reference.lower(),
+                func.lower(DBFramework.name) == reference.lower(),
+            ]
+            if reference.isdigit():
+                identity_filters.append(DBFramework.id == int(reference))
             row = (
                 self.db.query(DBFramework, DBRepository, DBPaper)
                 .outerjoin(DBRepository, DBFramework.repository_id == DBRepository.id)
                 .outerjoin(DBPaper, DBFramework.introducing_paper_id == DBPaper.id)
-                .filter(func.lower(DBFramework.slug) == framework.lower())
+                .filter(or_(*identity_filters))
                 .first()
             )
             if not row:
-                raise PaperNotFoundError(f"Framework with slug '{framework}' not found")
+                raise PaperNotFoundError(f"Framework '{framework}' not found")
             db_framework, db_repository, introducing_paper = row
             recommended_tasks = (
                 self.db.query(DBTask)
@@ -1192,6 +1256,28 @@ class PaperService:
                 github_url=db_repository.url if db_repository else normalized_url,
             ),
         )
+
+    def _resolve_paper_filter_entity(
+        self,
+        model,
+        reference: Optional[str],
+        label: str,
+        *name_columns,
+        required: bool = True,
+    ) -> Optional[int]:
+        """Resolve one exact paper-list taxonomy filter to its database ID."""
+        if reference is None:
+            return None
+        value = reference.strip()
+        filters = [func.lower(column) == value.lower() for column in name_columns]
+        if value.isdigit():
+            filters.append(model.id == int(value))
+        entity = self.db.query(model).filter(or_(*filters)).first()
+        if not entity:
+            if required:
+                raise PaperNotFoundError(f"{label} '{reference}' not found")
+            return None
+        return int(entity.id)
 
     @staticmethod
     def _repository_identity(repository: Optional[DBRepository]) -> Optional[str]:

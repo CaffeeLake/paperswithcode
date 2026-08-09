@@ -312,6 +312,15 @@ def get_papers(
         None, description="Filter papers published before this date (YYYY-MM-DD)"
     ),
     conference: Optional[str] = Query(None, description="Filter by conference"),
+    task: Optional[str] = Query(
+        None, description="Filter by an exact task name, slug, or ID"
+    ),
+    method: Optional[str] = Query(
+        None, description="Filter by an exact method name, full name, slug, or ID"
+    ),
+    organization: Optional[str] = Query(
+        None, description="Filter by an exact organization name, slug, or ID"
+    ),
     latest_only: bool = Query(
         True, description="Whether to only include latest versions of papers"
     ),
@@ -331,7 +340,9 @@ def get_papers(
     has_hf_artifacts: bool = Query(
         False, description="Only include papers with linked Hugging Face artifacts"
     ),
-    framework: Optional[str] = Query(None, description="Filter by framework slug"),
+    framework: Optional[str] = Query(
+        None, description="Filter by an exact framework name, slug, or ID"
+    ),
     repository: Optional[str] = Query(
         None, description="Filter by GitHub owner/name or repository URL"
     ),
@@ -362,6 +373,9 @@ def get_papers(
             published_after=published_after,
             published_before=published_before,
             conference=conference,
+            task=task,
+            method=method,
+            organization=organization,
             latest_only=latest_only,
             order_by=order_by,
             order_dir=order_dir,

@@ -8,7 +8,10 @@ from backend.database.connection import get_database_session
 from backend.main import create_app
 from backend.models.api import Paper, Papers
 from backend.models.database import (
+    Conference as DBConference,
     Framework as DBFramework,
+    Method as DBMethod,
+    Organization as DBOrganization,
     Paper as DBPaper,
     Repository as DBRepository,
     Task as DBTask,
@@ -105,6 +108,34 @@ def test_papers_endpoint_forwards_repository_scope(client, monkeypatch):
     assert captured["framework"] is None
 
 
+def test_papers_endpoint_forwards_catalog_filters(client, monkeypatch):
+    captured = {}
+
+    def fake_get_papers(self, **kwargs):
+        captured.update(kwargs)
+        return Papers(count=0, next_page=None, previous_page=None, results=[])
+
+    monkeypatch.setattr(PaperService, "get_papers", fake_get_papers)
+
+    response = client.get(
+        "/api/v1/papers/",
+        params={
+            "task": "Image Classification",
+            "method": "Vision Transformer",
+            "conference": "CVPR 2026",
+            "framework": "vLLM",
+            "organization": "Qwen",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["task"] == "Image Classification"
+    assert captured["method"] == "Vision Transformer"
+    assert captured["conference"] == "CVPR 2026"
+    assert captured["framework"] == "vLLM"
+    assert captured["organization"] == "Qwen"
+
+
 def test_papers_endpoint_rejects_framework_and_repository(client):
     response = client.get(
         "/api/v1/papers/",
@@ -176,12 +207,20 @@ class ScopeDatabase:
         introducing_paper=None,
         papers=None,
         tasks=None,
+        task=None,
+        method=None,
+        organization=None,
+        conference=None,
     ):
         self.repository = repository
         self.framework = framework
         self.introducing_paper = introducing_paper
         self.paper_query = ScopeQuery(papers=papers)
         self.tasks = tasks or []
+        self.task = task
+        self.method = method
+        self.organization = organization
+        self.conference = conference
         self.repository_query = None
 
     def query(self, *entities):
@@ -199,7 +238,13 @@ class ScopeDatabase:
         if entities == (DBPaper,):
             return self.paper_query
         if entities == (DBTask,):
-            return ScopeQuery(papers=self.tasks)
+            return ScopeQuery(first_result=self.task, papers=self.tasks)
+        if entities == (DBMethod,):
+            return ScopeQuery(first_result=self.method)
+        if entities == (DBOrganization,):
+            return ScopeQuery(first_result=self.organization)
+        if entities == (DBConference,):
+            return ScopeQuery(first_result=self.conference)
         raise AssertionError(f"Unexpected query: {entities}")
 
 
@@ -270,6 +315,37 @@ def test_framework_scope_includes_resource_links():
     assert scope.num_stars == repository.num_stars
     assert scope.introducing_paper_arxiv_id == introducing_paper.arxiv_id
     assert [task.slug for task in scope.recommended_tasks] == ["robotics"]
+
+
+def test_paper_list_combines_exact_taxonomy_filters(monkeypatch):
+    database = ScopeDatabase(
+        task=SimpleNamespace(id=1),
+        method=SimpleNamespace(id=2),
+        organization=SimpleNamespace(id=3),
+        conference=SimpleNamespace(id=4),
+    )
+    service = PaperService(database)
+    monkeypatch.setattr(service, "_get_paper_relation_data", lambda *args, **kwargs: {})
+
+    response = service.get_papers(
+        task="Image Classification",
+        method="Vision Transformer",
+        organization="Qwen",
+        conference="CVPR 2026",
+        order_by="date_published",
+    )
+
+    assert response.count == 0
+    filter_sql = " ".join(str(item) for item in database.paper_query.filters)
+    assert "paper_tasks" in filter_sql
+    assert "paper_methods" in filter_sql
+    assert "paper_organizations" in filter_sql
+    assert "paper_conferences" in filter_sql
+
+
+def test_paper_list_rejects_unknown_exact_taxonomy_filter():
+    with pytest.raises(PaperNotFoundError, match="Organization 'Missing' not found"):
+        PaperService(ScopeDatabase()).get_papers(organization="Missing")
 
 
 def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch):
