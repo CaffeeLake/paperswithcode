@@ -18,7 +18,7 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-Oxtltn8XnYtmmqPW2P7PdJ"
+MODAL_IMAGE_ID = "im-yh9n3xBPquaraDIprZyCLU"
 # The same worker contract published into the production Modal Environment.
 # Keep this distinct so future Environment RBAC never requires a cross-
 # Environment image lookup.
