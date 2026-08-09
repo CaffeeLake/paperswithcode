@@ -3,7 +3,7 @@ name: pwc-cli
 description: "Papers With Code CLI (`pwc`) for searching and reading AI/ML papers, discovering recent and trending research, finding related work and paper lineage, browsing tasks, methods, conferences, organizations, frameworks, and benchmark leaderboards through the public Papers With Code catalog. Use whenever the user asks to find papers, survey literature, compare research, inspect an arXiv paper, explore AI/ML taxonomy or conferences, discover benchmarks or state-of-the-art models, or mentions Papers With Code, `pwc`, or `pwc-cli`."
 ---
 
-Generated with `pwc v0.1.11`. Run `pwc skills add --force` to regenerate.
+Generated with `pwc v0.1.12`. Run `pwc skills add --force` to regenerate.
 
 The `pwc` CLI is anonymous and read-only. It queries the public
 [Papers With Code](https://paperswithcode.co) catalog and requires no token.
@@ -66,6 +66,8 @@ case-insensitive but exact; ambiguous titles fail with their matching IDs.
   failure, and `4` invalid API response.
 - `PWC_API_URL` may select another compatible v1 endpoint. The default is
   `https://paperswithcode.co/api/v1`.
+- Catalog-filtered paper lists fail closed unless the server confirms every
+  requested filter; never treat results from an older server as filtered.
 
 The research commands contain no authentication, catalog mutation, ingestion,
 publication, image, embedding, CRON, or infrastructure-maintenance operations.
