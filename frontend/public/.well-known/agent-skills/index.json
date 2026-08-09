@@ -4,9 +4,9 @@
     {
       "name": "pwc-cli",
       "type": "skill-md",
-      "description": "Papers With Code CLI (`pwc`) for searching and reading AI/ML papers, discovering recent and trending research, finding related work and paper lineage, browsing tasks, methods, conferences, and benchmark leaderboards through the public Papers With Code catalog. Use whenever the user asks to find papers, survey literature, compare research, inspect an arXiv paper, explore AI/ML taxonomy or conferences, discover benchmarks or state-of-the-art models, or mentions Papers With Code, `pwc`, or the `pwc-cli`. Prefer this skill for grounded AI/ML research even when the user does not explicitly ask for a CLI command.",
+      "description": "Papers With Code CLI (`pwc`) for searching and reading AI/ML papers, discovering recent and trending research, finding related work and paper lineage, browsing tasks, methods, conferences, organizations, frameworks, and benchmark leaderboards through the public Papers With Code catalog. Use whenever the user asks to find papers, survey literature, compare research, inspect an arXiv paper, explore AI/ML taxonomy or conferences, discover benchmarks or state-of-the-art models, or mentions Papers With Code, `pwc`, or the `pwc-cli`. Prefer this skill for grounded AI/ML research even when the user does not explicitly ask for a CLI command.",
       "url": "https://raw.githubusercontent.com/huggingface/pwc-cli/main/standalone_cli/SKILL.md",
-      "digest": "sha256:508498de4a6a77f2f88327219d54265c507519a967e4902438e09ab4134cf8d5"
+      "digest": "sha256:3e0b1aa001bdfcae729ab2ceee97a1b544ffe1754d9baaab5a2db867ea7cf086"
     }
   ]
 }

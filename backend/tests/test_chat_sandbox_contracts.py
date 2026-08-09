@@ -2066,7 +2066,7 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
     assert MODAL_IMAGE_ID == "im-Oxtltn8XnYtmmqPW2P7PdJ"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-BsjRSDFfby2tHKljyvPxaU"
-    assert WORKER_CONTRACT_VERSION == "45"
+    assert WORKER_CONTRACT_VERSION == "46"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

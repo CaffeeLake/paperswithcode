@@ -1,13 +1,13 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "45"
+WORKER_CONTRACT_VERSION = "46"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 26
 GATEWAY_COMPATIBLE_FROM = 26
 DATABASE_CONTRACT_VERSION = 1
 SDK_VERSION = "0.2.115"
-PWC_CLI_VERSION = "0.1.9"
+PWC_CLI_VERSION = "0.1.10"
 MODAL_APP_NAME = "pwc-chat-sandbox-v1"
 IMAGE_PUBLISH_NAME = "pwc-chat-v1"
 CHAT_SANDBOX_REGION = "eu-west"
