@@ -45,37 +45,6 @@ const isWaitingForAssistant = (msg: ChatMessageType): boolean => {
   return false;
 };
 
-const selectClickedWord = (event: React.MouseEvent<HTMLSpanElement>) => {
-  if (event.button !== 0 || event.detail !== 2) return;
-  event.preventDefault();
-
-  const element = event.currentTarget;
-  const document = element.ownerDocument;
-  const point = document.caretPositionFromPoint?.(event.clientX, event.clientY);
-  const fallbackRange = point
-    ? null
-    : document.caretRangeFromPoint?.(event.clientX, event.clientY);
-  const node = point?.offsetNode ?? fallbackRange?.startContainer;
-  const rawOffset = point?.offset ?? fallbackRange?.startOffset;
-  if (!(node instanceof Text) || rawOffset === undefined || !element.contains(node)) return;
-
-  const text = node.data;
-  const wordCharacter = /[\p{L}\p{M}\p{N}_'-]/u;
-  let start = Math.min(rawOffset, text.length);
-  let end = start;
-  while (start > 0 && wordCharacter.test(text[start - 1])) start -= 1;
-  while (end < text.length && wordCharacter.test(text[end])) end += 1;
-  if (start === end) return;
-
-  const selection = document.getSelection();
-  if (!selection) return;
-  const range = document.createRange();
-  range.setStart(node, start);
-  range.setEnd(node, end);
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
-
 const InlinePaperMentions: React.FC<{
   text: string;
   mentions: PaperMentionDraft[];
@@ -405,9 +374,7 @@ export const UserMessage: React.FC<{
     <div className="chat-msg chat-msg-user" data-message-id={id}>
       <div className="chat-user-message-wrap">
         <div className="chat-bubble">
-          <span className="chat-bubble-text" onMouseDown={selectClickedWord}>
-            <InlinePaperMentions text={text} mentions={paperMentions} />
-          </span>
+          <InlinePaperMentions text={text} mentions={paperMentions} />
         </div>
         {editingAllowed && (
           <div className="chat-user-actions">

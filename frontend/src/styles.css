@@ -5337,10 +5337,6 @@ html { scroll-behavior: smooth; }
   line-height: 1.45;
   max-width: 100%;
   white-space: pre-wrap;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.chat-bubble-text {
   -webkit-user-select: text;
   user-select: text;
   cursor: text;
@@ -5353,6 +5349,8 @@ html { scroll-behavior: smooth; }
   opacity: 0;
   transform: translateY(-2px);
   transition: opacity 0.14s ease, transform 0.14s ease;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .chat-user-message-wrap:hover .chat-user-actions,
 .chat-user-message-wrap:focus-within .chat-user-actions {
