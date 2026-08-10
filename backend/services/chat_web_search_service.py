@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from html.parser import HTMLParser
 from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -25,8 +26,16 @@ from backend.models.database import (
     ChatWebSearchCircuitEvent,
     ChatWebSearchOwnerUsage,
 )
+from backend.services.safe_outbound_http_service import (
+    SafeOutboundHttpError,
+    fetch_public_resource,
+)
 
 logger = logging.getLogger(__name__)
+
+_HF_BLOG_HOSTS = frozenset({"huggingface.co", "www.huggingface.co"})
+_HTML_CONTENT_TYPES = frozenset({"text/html"})
+_HF_BLOG_METADATA_MAX_BYTES = 128 * 1024
 
 
 class WebSearchError(RuntimeError):
@@ -59,6 +68,20 @@ class ProviderFailure:
     retry_after: float | None = None
     opens_budget: bool = False
     opens_auth: bool = False
+
+
+class _SocialImageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.image_url: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "meta" or self.image_url:
+            return
+        values = {name.lower(): value for name, value in attrs if value}
+        key = (values.get("property") or values.get("name") or "").lower()
+        if key in {"og:image", "twitter:image"}:
+            self.image_url = values.get("content")
 
 
 def opaque_owner(owner_id: str) -> str:
@@ -167,6 +190,59 @@ def normalize_exa_payload(raw: object, settings: Settings) -> dict[str, Any]:
             break
     payload: dict[str, Any] = {"results": results}
     return _bound_payload(payload, settings.chat_web_search_max_result_bytes)
+
+
+def _is_hf_blog_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return (
+        parsed.hostname in _HF_BLOG_HOSTS
+        and parsed.path.startswith("/blog/")
+        and len(parsed.path.strip("/").split("/")) >= 2
+    )
+
+
+async def _fetch_hf_blog_image(url: str, timeout_seconds: float) -> str | None:
+    try:
+        response = await fetch_public_resource(
+            url,
+            allowed_content_types=_HTML_CONTENT_TYPES,
+            max_bytes=_HF_BLOG_METADATA_MAX_BYTES,
+            timeout_seconds=timeout_seconds,
+            max_redirects=0,
+            allowed_hosts=_HF_BLOG_HOSTS,
+        )
+    except SafeOutboundHttpError:
+        return None
+    parser = _SocialImageParser()
+    parser.feed(response.body.decode("utf-8", errors="replace"))
+    return parser.image_url
+
+
+async def _enrich_hf_blog_images(
+    payload: dict[str, Any], settings: Settings, timeout_seconds: float
+) -> None:
+    candidates = [
+        result
+        for result in payload["results"]
+        if not result.get("image_url") and _is_hf_blog_url(str(result.get("url")))
+    ]
+    if not candidates or timeout_seconds <= 0:
+        return
+    images = await asyncio.gather(
+        *(
+            _fetch_hf_blog_image(str(result["url"]), timeout_seconds)
+            for result in candidates
+        )
+    )
+    denylist = {
+        item.strip().lower().rstrip(".")
+        for item in settings.chat_web_search_domain_denylist.split(",")
+        if item.strip()
+    }
+    for result, image in zip(candidates, images, strict=True):
+        normalized = normalize_https_url(image, denylist)
+        if normalized and len(normalized) <= 1_000:
+            result["image_url"] = normalized
 
 
 def _bound_payload(payload: dict[str, Any], maximum: int) -> dict[str, Any]:
@@ -554,6 +630,11 @@ async def search_web(
                 except WebSearchError as error:
                     last_failure = ProviderFailure(error.error_class, False)
                 else:
+                    await _enrich_hf_blog_images(
+                        payload,
+                        settings,
+                        min(1.0, max(0.0, deadline - time.monotonic())),
+                    )
                     payload["took_ms"] = round((time.monotonic() - started) * 1_000)
                     payload = _bound_payload(
                         payload, settings.chat_web_search_max_result_bytes

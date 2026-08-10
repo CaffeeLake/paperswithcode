@@ -74,6 +74,38 @@ def test_normalized_results_are_https_denylisted_and_bounded():
     assert web._serialized_size(payload) <= 4_096
 
 
+def test_hugging_face_blog_social_image_fills_missing_provider_image(monkeypatch):
+    async def fetch(_url, **kwargs):
+        assert kwargs["allowed_hosts"] == web._HF_BLOG_HOSTS
+        return SimpleNamespace(
+            body=(
+                b'<html><head><meta property="og:image" '
+                b'content="https://huggingface.co/blog/assets/smollm3/image.png">'
+            )
+        )
+
+    monkeypatch.setattr(web, "fetch_public_resource", fetch)
+    payload = {
+        "results": [
+            {
+                "url": "https://huggingface.co/blog/smollm3",
+                "image_url": None,
+            },
+            {
+                "url": "https://example.com/post",
+                "image_url": None,
+            },
+        ]
+    }
+
+    asyncio.run(web._enrich_hf_blog_images(payload, configured_settings(), 1.0))
+
+    assert payload["results"][0]["image_url"] == (
+        "https://huggingface.co/blog/assets/smollm3/image.png"
+    )
+    assert payload["results"][1]["image_url"] is None
+
+
 def test_provider_retry_is_one_visible_call_but_two_metered_attempts(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(
