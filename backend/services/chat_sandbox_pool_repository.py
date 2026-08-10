@@ -1,0 +1,520 @@
+"""Transaction-scoped state transitions for the blank sandbox pool."""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from enum import StrEnum
+from typing import Protocol
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from backend.config import Settings
+from backend.models.database import ChatSandboxLease, ChatSandboxPool
+
+MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
+MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
+
+
+class CapacityLocker(Protocol):
+    def __call__(self, db: Session, *, wait: bool = True) -> bool: ...
+
+
+IntervalReserver = Callable[[str], uuid.UUID | None]
+AvailabilityAssertion = Callable[[], None]
+
+
+class LeaseLoader(Protocol):
+    def __call__(
+        self,
+        db: Session,
+        chat_session_id: uuid.UUID,
+        *,
+        lock: bool,
+    ) -> ChatSandboxLease | None: ...
+
+
+@dataclass(frozen=True)
+class PoolCompatibility:
+    image_version: str
+    worker_contract_version: str
+    cpu_request: float
+    cpu_limit: float
+    memory_request_mib: int
+    memory_limit_mib: int
+
+
+@dataclass(frozen=True)
+class BlankPoolCandidate:
+    pool_id: uuid.UUID
+    sandbox_id: str | None
+    worker_generation: str
+    claim_generation: int
+    token_hash: str | None
+
+
+@dataclass(frozen=True)
+class BlankPoolClaim:
+    pool_id: uuid.UUID
+    sandbox_id: str
+    worker_generation: str
+    claim_generation: int
+    token_hash: str
+
+
+@dataclass(frozen=True)
+class PoolStartReservation:
+    pool_id: uuid.UUID
+    worker_generation: str
+    token_hash: str
+    compatibility: PoolCompatibility
+    app_release_id: str
+    claim_generation: int
+    interval_id: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class PoolEvictionRequired:
+    chat_session_id: uuid.UUID
+
+
+class PoolReservationUnavailable(StrEnum):
+    CAPACITY_LOCKED = "capacity_locked"
+    TARGET_SATISFIED = "target_satisfied"
+
+
+class PoolLandingOutcome(StrEnum):
+    LANDED = "landed"
+    OWNERSHIP_CHANGED = "ownership_changed"
+
+
+@dataclass(frozen=True)
+class PoolTerminationClaim:
+    pool_id: uuid.UUID
+    sandbox_id: str | None
+    token_hash: str
+    failure_code: str | None
+
+
+class PoolTerminationFinishOutcome(StrEnum):
+    FINISHED = "finished"
+    OWNERSHIP_CHANGED = "ownership_changed"
+
+
+PoolReservationOutcome = (
+    PoolStartReservation | PoolEvictionRequired | PoolReservationUnavailable
+)
+
+
+class ChatSandboxPoolRepository:
+    """Mutate pool rows inside caller-owned transactions and lock scopes."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        capacity_locker: CapacityLocker,
+        lease_loader: LeaseLoader | None = None,
+        token_factory: Callable[[], str] | None = None,
+        worker_generation_factory: Callable[[], str] | None = None,
+        pool_id_factory: Callable[[], uuid.UUID] | None = None,
+    ):
+        self.settings = settings
+        self.capacity_locker = capacity_locker
+        self.lease_loader = lease_loader or self._load_lease
+        self.token_factory = token_factory or (lambda: secrets.token_urlsafe(24))
+        self.worker_generation_factory = worker_generation_factory or (
+            lambda: secrets.token_hex(16)
+        )
+        self.pool_id_factory = pool_id_factory or uuid.uuid4
+
+    def compatibility(self) -> PoolCompatibility:
+        return PoolCompatibility(
+            image_version=self.settings.chat_modal_image_version,
+            worker_contract_version=self.settings.chat_worker_contract_version,
+            cpu_request=self.settings.chat_sandbox_cpu,
+            cpu_limit=(
+                self.settings.chat_sandbox_cpu_limit or self.settings.chat_sandbox_cpu
+            ),
+            memory_request_mib=self.settings.chat_sandbox_memory_mib,
+            memory_limit_mib=(
+                self.settings.chat_sandbox_memory_limit_mib
+                or self.settings.chat_sandbox_memory_mib
+            ),
+        )
+
+    def list_claim_candidates(
+        self,
+        db: Session,
+        compatibility: PoolCompatibility,
+        *,
+        minimum_expires_at: datetime,
+        limit: int,
+    ) -> tuple[BlankPoolCandidate, ...]:
+        rows = db.execute(
+            select(
+                ChatSandboxPool.id,
+                ChatSandboxPool.modal_sandbox_id,
+                ChatSandboxPool.worker_generation,
+                ChatSandboxPool.claim_generation,
+                ChatSandboxPool.claim_token_hash,
+            )
+            .where(
+                ChatSandboxPool.state == "blank_ready",
+                *self._compatibility_conditions(compatibility),
+                ChatSandboxPool.expires_at > minimum_expires_at,
+            )
+            .order_by(ChatSandboxPool.ready_at)
+            .limit(limit)
+        ).all()
+        return tuple(
+            BlankPoolCandidate(
+                pool_id=pool_id,
+                sandbox_id=sandbox_id,
+                worker_generation=worker_generation,
+                claim_generation=claim_generation,
+                token_hash=token_hash,
+            )
+            for (
+                pool_id,
+                sandbox_id,
+                worker_generation,
+                claim_generation,
+                token_hash,
+            ) in rows
+        )
+
+    def claim_blank(
+        self,
+        db: Session,
+        candidate: BlankPoolCandidate,
+        chat_session_id: uuid.UUID,
+        compatibility: PoolCompatibility,
+        *,
+        minimum_expires_at: datetime,
+        now: datetime,
+        availability_assertion: AvailabilityAssertion | None = None,
+    ) -> BlankPoolClaim | None:
+        if not self.capacity_locker(db):
+            return None
+        if availability_assertion is not None:
+            availability_assertion()
+        existing_lease = self.lease_loader(db, chat_session_id, lock=True)
+        if existing_lease is not None or candidate.sandbox_id is None:
+            return None
+        token_condition = (
+            ChatSandboxPool.claim_token_hash.is_(None)
+            if candidate.token_hash is None
+            else ChatSandboxPool.claim_token_hash == candidate.token_hash
+        )
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(
+                ChatSandboxPool.id == candidate.pool_id,
+                ChatSandboxPool.state == "blank_ready",
+                ChatSandboxPool.modal_sandbox_id == candidate.sandbox_id,
+                ChatSandboxPool.worker_generation == candidate.worker_generation,
+                ChatSandboxPool.claim_generation == candidate.claim_generation,
+                token_condition,
+                *self._compatibility_conditions(compatibility),
+                ChatSandboxPool.expires_at > minimum_expires_at,
+            )
+            .with_for_update(skip_locked=True)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        token_hash = self._token_hash(self.token_factory())
+        row.state = "claimed"
+        row.claim_generation += 1
+        row.claim_token_hash = token_hash
+        row.claimed_at = now
+        row.last_health_checked_at = now
+        row.updated_at = now
+        self.finalize_cost(row, now)
+        db.add(
+            ChatSandboxLease(
+                chat_session_id=chat_session_id,
+                modal_sandbox_id=candidate.sandbox_id,
+                app_release_id=self.settings.release_id,
+                image_version=compatibility.image_version,
+                worker_contract_version=compatibility.worker_contract_version,
+                worker_generation=row.worker_generation,
+                state="ready",
+                last_activity_at=now,
+                workspace_dirty=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return BlankPoolClaim(
+            pool_id=row.id,
+            sandbox_id=candidate.sandbox_id,
+            worker_generation=row.worker_generation,
+            claim_generation=row.claim_generation,
+            token_hash=token_hash,
+        )
+
+    def reserve_starting_blank(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        interval_reserver: IntervalReserver | None = None,
+    ) -> PoolReservationOutcome:
+        """Reserve one row; the optional spend action runs before the row is added."""
+
+        if not self.capacity_locker(db, wait=False):
+            return PoolReservationUnavailable.CAPACITY_LOCKED
+        live_pool = (
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxPool)
+                .where(
+                    ChatSandboxPool.state.in_(["starting", "blank_ready", "draining"])
+                )
+            )
+            or 0
+        )
+        if (
+            live_pool >= self.settings.chat_blank_pool_min
+            or live_pool >= self.settings.chat_blank_pool_max
+        ):
+            return PoolReservationUnavailable.TARGET_SATISFIED
+        live_assigned = (
+            db.scalar(
+                select(func.count())
+                .select_from(ChatSandboxLease)
+                .where(
+                    ChatSandboxLease.state.in_(
+                        ["starting", "ready", "busy", "idle", "terminating"]
+                    )
+                )
+            )
+            or 0
+        )
+        if live_pool + live_assigned >= self.settings.chat_sandbox_total_live_cap:
+            session_id = db.execute(
+                select(ChatSandboxLease.chat_session_id)
+                .where(ChatSandboxLease.state == "idle")
+                .order_by(ChatSandboxLease.last_activity_at)
+                .limit(1)
+            ).scalar_one_or_none()
+            if session_id is None:
+                return PoolReservationUnavailable.TARGET_SATISFIED
+            return PoolEvictionRequired(session_id)
+
+        compatibility = self.compatibility()
+        worker_generation = self.worker_generation_factory()
+        interval_id = (
+            interval_reserver(worker_generation)
+            if interval_reserver is not None
+            else None
+        )
+        reservation = PoolStartReservation(
+            pool_id=self.pool_id_factory(),
+            worker_generation=worker_generation,
+            token_hash=self._token_hash(self.token_factory()),
+            compatibility=compatibility,
+            app_release_id=self.settings.release_id,
+            claim_generation=0,
+            interval_id=interval_id,
+        )
+        db.add(
+            ChatSandboxPool(
+                id=reservation.pool_id,
+                state="starting",
+                image_version=compatibility.image_version,
+                worker_contract_version=compatibility.worker_contract_version,
+                worker_generation=reservation.worker_generation,
+                app_release_id=reservation.app_release_id,
+                claim_generation=reservation.claim_generation,
+                claim_token_hash=reservation.token_hash,
+                created_at=now,
+                expires_at=now
+                + timedelta(
+                    seconds=self.settings.chat_persistent_sandbox_lifetime_seconds
+                ),
+                updated_at=now,
+                cpu_request=compatibility.cpu_request,
+                cpu_limit=compatibility.cpu_limit,
+                memory_request_mib=compatibility.memory_request_mib,
+                memory_limit_mib=compatibility.memory_limit_mib,
+                billing_month=self.billing_month(now),
+            )
+        )
+        return reservation
+
+    def land_provider_creation(
+        self,
+        db: Session,
+        reservation: PoolStartReservation,
+        sandbox_id: str,
+        *,
+        now: datetime,
+    ) -> PoolLandingOutcome:
+        if not self.capacity_locker(db):
+            return PoolLandingOutcome.OWNERSHIP_CHANGED
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(ChatSandboxPool.id == reservation.pool_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        compatibility = reservation.compatibility
+        if (
+            row is None
+            or row.state != "starting"
+            or row.modal_sandbox_id is not None
+            or row.claim_token_hash != reservation.token_hash
+            or row.claim_generation != reservation.claim_generation
+            or row.worker_generation != reservation.worker_generation
+            or row.image_version != compatibility.image_version
+            or row.worker_contract_version != compatibility.worker_contract_version
+            or row.app_release_id != reservation.app_release_id
+            or row.cpu_request != compatibility.cpu_request
+            or row.cpu_limit != compatibility.cpu_limit
+            or row.memory_request_mib != compatibility.memory_request_mib
+            or row.memory_limit_mib != compatibility.memory_limit_mib
+        ):
+            return PoolLandingOutcome.OWNERSHIP_CHANGED
+        row.modal_sandbox_id = sandbox_id
+        row.state = "blank_ready"
+        row.ready_at = now
+        row.last_health_checked_at = now
+        row.updated_at = now
+        self.finalize_cost(row, now)
+        return PoolLandingOutcome.LANDED
+
+    def claim_termination(
+        self,
+        db: Session,
+        pool_id: uuid.UUID,
+        expected_sandbox_id: str | None,
+        *,
+        failure_code: str | None,
+        now: datetime,
+        stale_draining_before: datetime,
+        capacity_locked: bool = False,
+    ) -> PoolTerminationClaim | None:
+        if not capacity_locked and not self.capacity_locker(db):
+            return None
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(ChatSandboxPool.id == pool_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if row is None or row.state not in {"starting", "blank_ready", "draining"}:
+            return None
+        if (
+            expected_sandbox_id is not None
+            and row.modal_sandbox_id != expected_sandbox_id
+        ):
+            return None
+        if row.state == "draining" and self._as_utc(row.updated_at) > self._as_utc(
+            stale_draining_before
+        ):
+            return None
+        effective_failure = self._termination_failure(row.failure_code, failure_code)
+        token_hash = self._token_hash(self.token_factory())
+        row.state = "draining"
+        row.claim_token_hash = token_hash
+        row.failure_code = effective_failure
+        row.updated_at = now
+        return PoolTerminationClaim(
+            pool_id=row.id,
+            sandbox_id=row.modal_sandbox_id,
+            token_hash=token_hash,
+            failure_code=effective_failure,
+        )
+
+    def finish_termination(
+        self,
+        db: Session,
+        claim: PoolTerminationClaim,
+        *,
+        confirmed: bool,
+        now: datetime,
+    ) -> PoolTerminationFinishOutcome:
+        if not self.capacity_locker(db):
+            return PoolTerminationFinishOutcome.OWNERSHIP_CHANGED
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(ChatSandboxPool.id == claim.pool_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if (
+            row is None
+            or row.state != "draining"
+            or row.claim_token_hash != claim.token_hash
+            or row.modal_sandbox_id != claim.sandbox_id
+        ):
+            return PoolTerminationFinishOutcome.OWNERSHIP_CHANGED
+        failure_code = claim.failure_code
+        if claim.sandbox_id is not None and not confirmed:
+            failure_code = "termination_uncertain"
+        self.finalize_cost(row, now)
+        row.state = "failed" if failure_code else "terminated"
+        row.failure_code = failure_code
+        row.terminated_at = now
+        row.updated_at = now
+        return PoolTerminationFinishOutcome.FINISHED
+
+    @staticmethod
+    def billing_month(now: datetime) -> date:
+        return now.date().replace(day=1)
+
+    @staticmethod
+    def finalize_cost(row: ChatSandboxPool, now: datetime) -> tuple[int, float]:
+        created_at = ChatSandboxPoolRepository._as_utc(row.created_at)
+        expires_at = ChatSandboxPoolRepository._as_utc(row.expires_at)
+        end = min(now, expires_at)
+        seconds = max(0, round((end - created_at).total_seconds()))
+        cost = seconds * (
+            float(row.cpu_request) * MODAL_CPU_USD_PER_CORE_SECOND
+            + (float(row.memory_request_mib) / 1024 * MODAL_MEMORY_USD_PER_GIB_SECOND)
+        )
+        row.blank_billable_seconds = seconds
+        row.estimated_blank_cost_usd = cost
+        return seconds, cost
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    @staticmethod
+    def _termination_failure(existing: str | None, requested: str | None) -> str | None:
+        return existing if existing is not None else requested
+
+    @staticmethod
+    def _compatibility_conditions(compatibility: PoolCompatibility) -> tuple:
+        return (
+            ChatSandboxPool.image_version == compatibility.image_version,
+            ChatSandboxPool.worker_contract_version
+            == compatibility.worker_contract_version,
+            ChatSandboxPool.cpu_request == compatibility.cpu_request,
+            ChatSandboxPool.cpu_limit == compatibility.cpu_limit,
+            ChatSandboxPool.memory_request_mib == compatibility.memory_request_mib,
+            ChatSandboxPool.memory_limit_mib == compatibility.memory_limit_mib,
+        )
+
+    @staticmethod
+    def _load_lease(
+        db: Session,
+        chat_session_id: uuid.UUID,
+        *,
+        lock: bool,
+    ) -> ChatSandboxLease | None:
+        query = select(ChatSandboxLease).where(
+            ChatSandboxLease.chat_session_id == chat_session_id
+        )
+        if lock:
+            query = query.with_for_update()
+        return db.execute(query).scalar_one_or_none()

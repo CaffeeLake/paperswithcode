@@ -477,6 +477,147 @@ def test_disabled_pool_drains_only_unassigned_workers(monkeypatch):
     assert assigned.modal_sandbox_id == "sb-assigned"
 
 
+def test_maintenance_commits_preclaim_before_provider_termination():
+    factory = _database()
+    settings = _settings(chat_blank_pool_enabled=False)
+    blank = _blank(settings)
+    with factory() as db, db.begin():
+        db.add(blank)
+    manager = _manager(factory, settings)
+    manager.reconcile_pool_orphans = lambda: asyncio.sleep(0, result=0)
+    manager.replenish_pool = lambda: asyncio.sleep(0, result=0)
+    events: list[str] = []
+    manager._lock_pool_maintenance = lambda _db: events.append("advisory") or True
+    manager._lock_capacity = lambda _db, wait=True: events.append("capacity") or True
+    repository = manager._pool_repository()
+    original_claim = repository.claim_termination
+    claims = []
+
+    def record_claim(*args, **kwargs):
+        events.append("preclaim")
+        claim = original_claim(*args, **kwargs)
+        claims.append(claim)
+        return claim
+
+    repository.claim_termination = record_claim
+    original_terminate_claim = manager._terminate_claimed_pool_row
+    received = []
+
+    async def terminate_claim(claim):
+        events.append("helper")
+        received.append(claim)
+        return await original_terminate_claim(claim)
+
+    manager._terminate_claimed_pool_row = terminate_claim
+
+    async def terminate_provider(sandbox_id, sandbox=None):
+        events.append("provider")
+        with factory() as db:
+            persisted = db.get(ChatSandboxPool, blank.id)
+        assert persisted.state == "draining"
+        assert persisted.modal_sandbox_id == sandbox_id
+        assert persisted.claim_token_hash == received[0].token_hash
+        return True
+
+    manager._terminate_provider_sandbox = terminate_provider
+
+    result = asyncio.run(manager.maintain_pool())
+
+    assert result["drained"] == 1
+    assert len(claims) == 1
+    assert received == [claims[0]]
+    assert events[:6] == [
+        "advisory",
+        "capacity",
+        "preclaim",
+        "helper",
+        "provider",
+        "capacity",
+    ]
+
+
+def test_pool_termination_claim_horizon_covers_provider_completion_window():
+    factory = _database()
+    settings = _settings(
+        chat_worker_ready_timeout_seconds=5,
+        chat_sandbox_termination_grace_seconds=120,
+    )
+    manager = _manager(factory, settings)
+    repository = manager._pool_repository()
+    captured = {}
+
+    def capture_claim(*_args, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    repository.claim_termination = capture_claim
+
+    assert (
+        asyncio.run(
+            manager._terminate_pool_row(
+                uuid.uuid4(),
+                "sb-termination",
+                failure_code="sandbox_lost",
+            )
+        )
+        is False
+    )
+    claim_horizon = captured["now"] - captured["stale_draining_before"]
+    minimum_provider_window = timedelta(
+        seconds=(
+            manager.ready_timeout_seconds
+            + settings.chat_sandbox_termination_grace_seconds
+        )
+    )
+    assert claim_horizon > minimum_provider_window
+    assert claim_horizon == timedelta(
+        seconds=manager.pool_termination_claim_timeout_seconds
+    )
+
+
+@pytest.mark.parametrize("successor_state", ["draining", "claimed"])
+def test_health_refresh_cannot_revive_a_successor_state(successor_state, monkeypatch):
+    factory = _database()
+    settings = _settings(chat_sandbox_spend_enforcement_enabled=False)
+    blank = _blank(settings)
+    checked_at = datetime.now(UTC) - timedelta(minutes=1)
+    blank.last_health_checked_at = checked_at
+    blank.blank_billable_seconds = 123
+    blank.estimated_blank_cost_usd = 1.25
+    with factory() as db, db.begin():
+        db.add(blank)
+    manager = _manager(factory, settings)
+    manager.reconcile_pool_orphans = lambda: asyncio.sleep(0, result=0)
+    manager.replenish_pool = lambda: asyncio.sleep(0, result=0)
+    monkeypatch.setattr(
+        ChatSandboxSpendService, "assert_available", lambda *_args, **_kwargs: None
+    )
+    successor_at = datetime.now(UTC) + timedelta(seconds=10)
+
+    async def race_health(sandbox_id, worker_generation):
+        assert sandbox_id == blank.modal_sandbox_id
+        assert worker_generation == blank.worker_generation
+        with factory() as db, db.begin():
+            successor = db.get(ChatSandboxPool, blank.id)
+            successor.state = successor_state
+            successor.claim_token_hash = "successor-token"
+            successor.updated_at = successor_at
+        return SimpleNamespace(object_id=sandbox_id)
+
+    manager._pool_sandbox_health = race_health
+
+    asyncio.run(manager.maintain_pool())
+
+    with factory() as db:
+        successor = db.get(ChatSandboxPool, blank.id)
+    assert successor.state == successor_state
+    assert successor.claim_token_hash == "successor-token"
+    assert successor.last_health_checked_at == checked_at.replace(tzinfo=None)
+    assert successor.updated_at == successor_at.replace(tzinfo=None)
+    assert successor.blank_billable_seconds == 123
+    assert float(successor.estimated_blank_cost_usd) == 1.25
+
+
 def test_provider_orphan_is_terminated_after_start_window():
     factory = _database()
     manager = _manager(factory, _settings())
