@@ -9,7 +9,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend import cli, cli_admin, cli_papers
-from backend.models.api import PaperSummary
+from backend.models.api import (
+    PaperSummary,
+    RepositoryTrendingPaper,
+    RepositoryTrendingRepository,
+    RepositoryTrendingScore,
+)
 from backend.models.database import (
     Base,
     Area,
@@ -106,6 +111,89 @@ def test_paper_read_commands_and_benchmark_list_parse():
     assert related.limit == 4
     assert external.handler is cli_papers.add_external_paper
     assert benchmarks.handler is cli_admin.list_benchmarks
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_trending_cli_uses_repository_trending_service(
+    monkeypatch, capsys, json_output
+):
+    result = RepositoryTrendingPaper(
+        paper_id="42",
+        arxiv_id="2601.12345",
+        source="arxiv",
+        source_url=None,
+        title="A Trending Paper",
+        abstract=None,
+        authors=["Ada Lovelace"],
+        date_published=None,
+        thumbnail_url=None,
+        tasks=[],
+        repository=RepositoryTrendingRepository(
+            id="7",
+            url="https://github.com/example/repository",
+            owner="example",
+            name="repository",
+            num_stars=100,
+        ),
+        trending=RepositoryTrendingScore(
+            velocity_24h=1.25,
+            trending_score=3.5,
+            stars_gained_24h=30,
+        ),
+        paper_age_days=2.0,
+    )
+    calls = []
+
+    class FakeSessionContext:
+        def __enter__(self):
+            return "database-session"
+
+        def __exit__(self, *_args):
+            return None
+
+    class FakePaperService:
+        def __init__(self, db):
+            calls.append(("init", db))
+
+        def get_repository_trending_papers(self, **kwargs):
+            calls.append(("trending", kwargs))
+            return [result]
+
+    monkeypatch.setattr(
+        cli_papers,
+        "db_manager",
+        SimpleNamespace(session_local=FakeSessionContext),
+    )
+    monkeypatch.setattr(cli_papers, "PaperService", FakePaperService)
+    command = [
+        "paper",
+        "trending",
+        "--limit",
+        "3",
+        "--max-age-days",
+        "30",
+        "--min-velocity",
+        "1.25",
+    ]
+    if json_output:
+        command.append("--json")
+    args = cli.build_parser().parse_args(command)
+
+    assert args.handler(args) == 0
+    assert calls == [
+        ("init", "database-session"),
+        (
+            "trending",
+            {"limit": 3, "max_age_days": 30, "min_velocity": 1.25},
+        ),
+    ]
+    output = capsys.readouterr().out
+    if json_output:
+        assert json.loads(output) == [result.model_dump(mode="json")]
+    else:
+        assert output == (
+            "1. A Trending Paper\n   2601.12345  score=3.500 velocity=1.250/h\n"
+        )
 
 
 def test_paper_info_prints_markdown_lineage_section(monkeypatch, capsys):

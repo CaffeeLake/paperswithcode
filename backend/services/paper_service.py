@@ -44,6 +44,10 @@ from backend.models.api import (
     PaperSummary,
     PaperSearchResults,
     RelatedPaperRecommendation,
+    RepositoryTrendingPaper,
+    RepositoryTrendingRepository,
+    RepositoryTrendingScore,
+    RepositoryTrendingTask,
     PaperVersion,
     PaperVersions,
     TaskSummary,
@@ -855,6 +859,211 @@ class PaperService:
             return None
         owner, name = parse_github_url(normalized_url)
         return f"{owner}/{name}" if owner and name else None
+
+    _REPOSITORY_TRENDING_SQL = text("""
+        WITH ranked_trending_papers AS (
+            SELECT
+                tp.paper_id,
+                tp.arxiv_id,
+                tp.title,
+                tp.date_published,
+                tp.repository_id,
+                tp.repository_url,
+                tp.owner,
+                tp.repo_name,
+                tp.current_stars,
+                COALESCE(tp.velocity_24h, 0) as velocity_24h,
+                COALESCE(tp.trending_score, 0) as trending_score,
+                COALESCE(tp.stars_gained_24h, 0) as stars_gained_24h,
+                tp.paper_age_days,
+                tp.abstract,
+                p.source,
+                p.source_url,
+                p.thumbnail_url,
+                p.version,
+                ROW_NUMBER() OVER (
+                    PARTITION BY tp.paper_id
+                    ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
+                ) as paper_repo_rank
+            FROM trending_papers_24h tp
+            JOIN papers p ON p.id = tp.paper_id
+            WHERE tp.paper_age_days <= :max_age_days
+            AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
+        ),
+        unique_repo_per_paper AS (
+            SELECT *
+            FROM ranked_trending_papers
+            WHERE paper_repo_rank = 1
+        ),
+        ranked_by_repo AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY repository_id
+                    ORDER BY date_published DESC NULLS LAST, paper_id DESC
+                ) as repo_paper_rank
+            FROM unique_repo_per_paper
+        )
+        SELECT
+            paper_id,
+            arxiv_id,
+            title,
+            date_published,
+            repository_id,
+            repository_url,
+            owner,
+            repo_name,
+            current_stars,
+            velocity_24h,
+            trending_score,
+            stars_gained_24h,
+            paper_age_days,
+            abstract,
+            source,
+            source_url,
+            thumbnail_url,
+            version
+        FROM ranked_by_repo
+        WHERE repo_paper_rank = 1
+        ORDER BY trending_score DESC NULLS LAST, current_stars DESC
+        LIMIT :limit
+    """)
+
+    _REPOSITORY_TRENDING_TASKS_SQL = text("""
+        SELECT pt.paper_id, t.name, t.slug
+        FROM paper_tasks pt
+        JOIN tasks t ON pt.task_id = t.id
+        WHERE pt.paper_id = ANY(:paper_ids)
+        ORDER BY pt.paper_id, t.name
+    """)
+
+    _REPOSITORY_TRENDING_AUTHORS_SQL = text("""
+        SELECT pa.paper_id, a.name
+        FROM paper_authors pa
+        JOIN authors a ON pa.author_id = a.id
+        WHERE pa.paper_id = ANY(:paper_ids)
+        ORDER BY pa.paper_id, pa.author_order
+    """)
+
+    def get_repository_trending_papers(
+        self,
+        limit: int = 20,
+        max_age_days: int = 180,
+        min_velocity: Optional[float] = None,
+    ) -> list[RepositoryTrendingPaper]:
+        """Return the repository-velocity trending projection.
+
+        This is intentionally distinct from the paginated paper feed's
+        configurable trending ranking. It reads ``trending_papers_24h``, keeps
+        the best repository per paper, then keeps the newest paper per
+        repository before loading only the authors and tasks rendered by this
+        endpoint.
+        """
+        try:
+            rows = self.db.execute(
+                self._REPOSITORY_TRENDING_SQL,
+                {
+                    "limit": limit,
+                    "max_age_days": max_age_days,
+                    "min_velocity": min_velocity,
+                },
+            ).fetchall()
+            paper_ids = [row[0] for row in rows]
+
+            tasks_by_paper: dict[Any, list[RepositoryTrendingTask]] = {}
+            authors_by_paper: dict[Any, list[str]] = {}
+            if paper_ids:
+                task_rows = self.db.execute(
+                    self._REPOSITORY_TRENDING_TASKS_SQL,
+                    {"paper_ids": paper_ids},
+                ).fetchall()
+                for paper_id, name, slug in task_rows:
+                    tasks_by_paper.setdefault(paper_id, []).append(
+                        RepositoryTrendingTask(name=name, slug=slug)
+                    )
+
+                author_rows = self.db.execute(
+                    self._REPOSITORY_TRENDING_AUTHORS_SQL,
+                    {"paper_ids": paper_ids},
+                ).fetchall()
+                for paper_id, name in author_rows:
+                    authors_by_paper.setdefault(paper_id, []).append(name)
+
+            return [
+                self._to_repository_trending_paper(
+                    row,
+                    authors=authors_by_paper.get(row[0], []),
+                    tasks=tasks_by_paper.get(row[0], []),
+                )
+                for row in rows
+            ]
+        except DatabaseError:
+            raise
+        except Exception as error:
+            raise DatabaseError(str(error)) from error
+
+    def _to_repository_trending_paper(
+        self,
+        row,
+        *,
+        authors: list[str],
+        tasks: list[RepositoryTrendingTask],
+    ) -> RepositoryTrendingPaper:
+        paper_id = row[0]
+        arxiv_id = row[1]
+        source = row[14]
+        thumbnail_url = self._resolve_repository_trending_thumbnail_url(
+            paper_id=paper_id,
+            arxiv_id=arxiv_id,
+            source=source,
+            explicit_thumbnail_url=row[16],
+            version=row[17],
+        )
+        return RepositoryTrendingPaper(
+            paper_id=str(paper_id),
+            arxiv_id=arxiv_id,
+            source=source,
+            source_url=row[15],
+            title=row[2],
+            abstract=row[13],
+            authors=authors,
+            date_published=row[3],
+            thumbnail_url=thumbnail_url,
+            tasks=tasks,
+            repository=RepositoryTrendingRepository(
+                id=str(row[4]),
+                url=row[5],
+                owner=row[6],
+                name=row[7],
+                num_stars=row[8],
+            ),
+            trending=RepositoryTrendingScore(
+                velocity_24h=float(row[9]) if row[9] else 0.0,
+                trending_score=float(row[10]) if row[10] else 0.0,
+                stars_gained_24h=int(row[11]) if row[11] else 0,
+            ),
+            paper_age_days=float(row[12]) if row[12] else 0.0,
+        )
+
+    def _resolve_repository_trending_thumbnail_url(
+        self,
+        *,
+        paper_id: int,
+        arxiv_id: Optional[str],
+        source: str,
+        explicit_thumbnail_url: Optional[str],
+        version: Optional[str],
+    ) -> Optional[str]:
+        """Preserve the repository-trending endpoint's thumbnail policy."""
+        if explicit_thumbnail_url is not None:
+            return explicit_thumbnail_url
+        if source == "arxiv" and arxiv_id:
+            return build_thumbnail_url(
+                build_thumbnail_filename(arxiv_id, version or "v1")
+            )
+        if source == "external":
+            return self._get_thumbnail_service().get_external_thumbnail_url(paper_id)
+        return None
 
     # GitHub-only ranking (default + rollback path): rank papers by the EMA
     # star velocity of their best official repository. Two-step dedup: pick the

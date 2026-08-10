@@ -130,27 +130,26 @@ def list_related_papers(args: argparse.Namespace) -> int:
 def list_trending_papers(args: argparse.Namespace) -> int:
     if args.min_velocity is not None and args.min_velocity < 0:
         raise ValueError("--min-velocity must be non-negative")
-    # This API ranking includes repository velocity metadata that the generic
-    # paper service does not expose.
-    from backend.routers.papers import get_trending_papers
-
     with db_manager.session_local() as db:
-        papers = get_trending_papers(
+        papers = PaperService(db).get_repository_trending_papers(
             limit=args.limit,
             max_age_days=args.max_age_days,
             min_velocity=args.min_velocity,
-            db=db,
         )
     if args.json:
-        print(json.dumps(papers, indent=2))
+        print(
+            json.dumps(
+                [paper.model_dump(mode="json") for paper in papers],
+                indent=2,
+            )
+        )
     else:
         for rank, paper in enumerate(papers, 1):
-            trending = paper["trending"]
-            reference = paper.get("arxiv_id") or paper.get("source_url")
-            print(f"{rank}. {paper['title']}")
+            reference = paper.arxiv_id or paper.source_url
+            print(f"{rank}. {paper.title}")
             print(
-                f"   {reference}  score={trending['trending_score']:.3f} "
-                f"velocity={trending['velocity_24h']:.3f}/h"
+                f"   {reference}  score={paper.trending.trending_score:.3f} "
+                f"velocity={paper.trending.velocity_24h:.3f}/h"
             )
     return 0
 

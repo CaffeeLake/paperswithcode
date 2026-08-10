@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from datetime import date
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Literal
 from urllib.parse import quote, urlencode
 
 from fastapi import (
@@ -26,7 +26,6 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
 from backend.config import get_settings
 from backend.database.connection import get_database_session
@@ -40,6 +39,7 @@ from backend.models.api import (
     VersionComparison,
     PaperBucketCopyRequest,
     PaperBucketCopyResponse,
+    RepositoryTrendingPaper,
 )
 from backend.models.database import (
     Paper as DBPaper,
@@ -55,11 +55,6 @@ from backend.services.badge_service import (
 from backend.services.paper_ingestion_service import (
     PaperIngestionError,
     PaperIngestionService,
-)
-from backend.services.thumbnail_service import (
-    ThumbnailService,
-    build_thumbnail_filename,
-    build_thumbnail_url,
 )
 from backend.utils.auth import (
     catalog_mutation_context,
@@ -481,7 +476,7 @@ def get_paper_stats(db: Session = Depends(get_database_session)):
 
 @router.get(
     "/papers/trending",
-    response_model=List[Dict[str, Any]],
+    response_model=List[RepositoryTrendingPaper],
     summary="Get trending papers based on GitHub star velocity",
 )
 def get_trending_papers(
@@ -519,184 +514,12 @@ def get_trending_papers(
     at least 1-2 hours to collect sufficient data for velocity calculations.
     """
     try:
-        # Source/source_url come from `papers` directly because the
-        # `trending_papers_24h` view does not yet expose them. `p.version` is
-        # also pulled in so the synthesised ArXiv thumbnail URL points at the
-        # exact filename the preload cron generated, not a hardcoded `_v1`.
-        # Two-step dedup:
-        # 1. `paper_repo_rank` keeps the best repository per paper (handles
-        #    papers with multiple official repos in `trending_papers_24h`).
-        # 2. `repo_paper_rank` keeps the most recently published paper per
-        #    repository so a single GitHub URL never produces two trending
-        #    cards (e.g. v1/v2 papers both flagged `is_latest_version=TRUE`,
-        #    or unrelated papers linked to the same code release).
-        query = text("""
-            WITH ranked_trending_papers AS (
-                SELECT
-                    tp.paper_id,
-                    tp.arxiv_id,
-                    tp.title,
-                    tp.date_published,
-                    tp.repository_id,
-                    tp.repository_url,
-                    tp.owner,
-                    tp.repo_name,
-                    tp.current_stars,
-                    COALESCE(tp.velocity_24h, 0) as velocity_24h,
-                    COALESCE(tp.trending_score, 0) as trending_score,
-                    COALESCE(tp.stars_gained_24h, 0) as stars_gained_24h,
-                    tp.paper_age_days,
-                    tp.abstract,
-                    p.source,
-                    p.source_url,
-                    p.thumbnail_url,
-                    p.version,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY tp.paper_id
-                        ORDER BY tp.trending_score DESC NULLS LAST, tp.current_stars DESC
-                    ) as paper_repo_rank
-                FROM trending_papers_24h tp
-                JOIN papers p ON p.id = tp.paper_id
-                WHERE tp.paper_age_days <= :max_age_days
-                AND (:min_velocity IS NULL OR COALESCE(tp.velocity_24h, 0) >= :min_velocity)
-            ),
-            unique_repo_per_paper AS (
-                SELECT *
-                FROM ranked_trending_papers
-                WHERE paper_repo_rank = 1
-            ),
-            ranked_by_repo AS (
-                SELECT
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY repository_id
-                        ORDER BY date_published DESC NULLS LAST, paper_id DESC
-                    ) as repo_paper_rank
-                FROM unique_repo_per_paper
-            )
-            SELECT
-                paper_id,
-                arxiv_id,
-                title,
-                date_published,
-                repository_id,
-                repository_url,
-                owner,
-                repo_name,
-                current_stars,
-                velocity_24h,
-                trending_score,
-                stars_gained_24h,
-                paper_age_days,
-                abstract,
-                source,
-                source_url,
-                thumbnail_url,
-                version
-            FROM ranked_by_repo
-            WHERE repo_paper_rank = 1
-            ORDER BY trending_score DESC NULLS LAST, current_stars DESC
-            LIMIT :limit
-        """)
-
-        results = db.execute(
-            query,
-            {
-                "limit": limit,
-                "max_age_days": max_age_days,
-                "min_velocity": min_velocity,
-            },
-        ).fetchall()
-
-        # Get paper IDs for fetching tasks
-        paper_ids = [row[0] for row in results]
-
-        # Fetch tasks for all papers in one query for efficiency
-        tasks_dict: Dict[Any, List[Dict[str, Any]]] = {}
-        authors_dict: Dict[Any, List[str]] = {}
-        if paper_ids:
-            tasks_query = text("""
-                SELECT pt.paper_id, t.name, t.slug
-                FROM paper_tasks pt
-                JOIN tasks t ON pt.task_id = t.id
-                WHERE pt.paper_id = ANY(:paper_ids)
-                ORDER BY pt.paper_id, t.name
-            """)
-
-            tasks_results = db.execute(tasks_query, {"paper_ids": paper_ids}).fetchall()
-
-            # Organize tasks by paper_id
-            for task_row in tasks_results:
-                paper_id = task_row[0]
-                tasks_dict.setdefault(paper_id, []).append(
-                    {"name": task_row[1], "slug": task_row[2]}
-                )
-
-            authors_query = text("""
-                SELECT pa.paper_id, a.name
-                FROM paper_authors pa
-                JOIN authors a ON pa.author_id = a.id
-                WHERE pa.paper_id = ANY(:paper_ids)
-                ORDER BY pa.paper_id, pa.author_order
-            """)
-
-            authors_results = db.execute(
-                authors_query, {"paper_ids": paper_ids}
-            ).fetchall()
-
-            for author_row in authors_results:
-                authors_dict.setdefault(author_row[0], []).append(author_row[1])
-
-        thumbnail_service = ThumbnailService()
-        papers = []
-        for row in results:
-            paper_id = row[0]
-            arxiv_id = row[1]
-            source = row[14]
-            source_url = row[15]
-            explicit_thumbnail_url = row[16]
-            paper_version = row[17] or "v1"
-            thumbnail_url = explicit_thumbnail_url
-            if thumbnail_url is None and source == "arxiv" and arxiv_id:
-                filename = build_thumbnail_filename(arxiv_id, paper_version)
-                thumbnail_url = build_thumbnail_url(filename)
-            elif thumbnail_url is None and source == "external":
-                thumbnail_url = thumbnail_service.get_external_thumbnail_url(paper_id)
-
-            # Get tasks for this paper
-            paper_tasks = tasks_dict.get(paper_id, [])
-
-            papers.append(
-                {
-                    "paper_id": str(paper_id),
-                    "arxiv_id": arxiv_id,
-                    "source": source,
-                    "source_url": source_url,
-                    "title": row[2],
-                    "abstract": row[13],
-                    "authors": authors_dict.get(paper_id, []),
-                    "date_published": row[3].isoformat() if row[3] else None,
-                    "thumbnail_url": thumbnail_url,
-                    "tasks": paper_tasks,  # Add tasks to the response
-                    "repository": {
-                        "id": str(row[4]),
-                        "url": row[5],
-                        "owner": row[6],
-                        "name": row[7],
-                        "num_stars": row[8],
-                    },
-                    "trending": {
-                        "velocity_24h": float(row[9]) if row[9] else 0.0,
-                        "trending_score": float(row[10]) if row[10] else 0.0,
-                        "stars_gained_24h": int(row[11]) if row[11] else 0,
-                    },
-                    "paper_age_days": float(row[12]) if row[12] else 0.0,
-                }
-            )
-
-        return papers
-
-    except Exception as e:
+        return PaperService(db).get_repository_trending_papers(
+            limit=limit,
+            max_age_days=max_age_days,
+            min_velocity=min_velocity,
+        )
+    except DatabaseError as e:
         raise HTTPException(
             status_code=500, detail=f"Error fetching trending papers: {str(e)}"
         )

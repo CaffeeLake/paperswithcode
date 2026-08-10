@@ -610,6 +610,49 @@ class Repository(BaseModel):
         return str(v)
 
 
+class RepositoryTrendingTask(BaseModel):
+    """Task projection embedded in a repository-trending paper."""
+
+    name: str
+    slug: Optional[str]
+
+
+class RepositoryTrendingRepository(BaseModel):
+    """Repository projection embedded in a repository-trending paper."""
+
+    id: str
+    url: str
+    owner: Optional[str]
+    name: Optional[str]
+    num_stars: int
+
+
+class RepositoryTrendingScore(BaseModel):
+    """GitHub activity metrics used by the repository-trending endpoint."""
+
+    velocity_24h: float
+    trending_score: float
+    stars_gained_24h: int
+
+
+class RepositoryTrendingPaper(BaseModel):
+    """One row returned by the repository-velocity trending endpoint."""
+
+    paper_id: str
+    arxiv_id: Optional[str]
+    source: str
+    source_url: Optional[str]
+    title: str
+    abstract: Optional[str]
+    authors: List[str]
+    date_published: Optional[date]
+    thumbnail_url: Optional[str]
+    tasks: List[RepositoryTrendingTask]
+    repository: RepositoryTrendingRepository
+    trending: RepositoryTrendingScore
+    paper_age_days: float
+
+
 class HfArtifactSummary(BaseModel):
     """
     Compact Hugging Face artifact summary for paper cards.
