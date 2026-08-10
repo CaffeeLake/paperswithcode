@@ -61,6 +61,17 @@ function formatEditTypeFilterLabel(value: PendingEditType | "all"): string {
   return value === "new_external_paper" ? "external paper" : formatLabel(value);
 }
 
+const DIRECTORY_SUGGESTION_LABELS: Partial<
+  Record<PendingEditType, { title: string; subtitle: string }>
+> = {
+  new_task: { title: "New task", subtitle: "Task suggestion" },
+  new_method: { title: "New method", subtitle: "Method suggestion" },
+  new_benchmark: { title: "New benchmark", subtitle: "Benchmark suggestion" },
+  new_metric: { title: "New metric", subtitle: "Metric suggestion" },
+  new_conference: { title: "New conference", subtitle: "Conference suggestion" },
+  new_external_paper: { title: "External paper", subtitle: "External paper submission" },
+};
+
 function formatRelativeTime(value: string | null | undefined): string {
   if (!value) return "unknown time";
   const date = new Date(value);
@@ -171,14 +182,15 @@ function SubmissionCard({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const isDirectorySuggestion = submission.paper_id == null;
-  const isExternalPaperSuggestion = submission.edit_type === "new_external_paper";
+  const directoryLabels = DIRECTORY_SUGGESTION_LABELS[submission.edit_type] ?? {
+    title: "Taxonomy directory",
+    subtitle: "Directory suggestion",
+  };
   const routeIdentifier = isDirectorySuggestion
     ? null
     : paperRouteIdentifier(paper, submission.paper_id);
   const paperTitle = isDirectorySuggestion
-    ? isExternalPaperSuggestion
-      ? "External paper"
-      : "Taxonomy directory"
+    ? directoryLabels.title
     : paper?.title || `Paper #${submission.paper_id}`;
   const avatarUrl = `https://huggingface.co/${encodeURIComponent(submission.hf_username)}/avatar`;
   const isPending = submission.status === "pending";
@@ -262,9 +274,7 @@ function SubmissionCard({
               <span>#{submission.id}</span>
               <span>
                 {isDirectorySuggestion
-                  ? isExternalPaperSuggestion
-                    ? "External paper submission"
-                    : "Directory suggestion"
+                  ? directoryLabels.subtitle
                   : `Paper #${submission.paper_id}`}
               </span>
               <span>{formatRelativeTime(submission.created_at)}</span>

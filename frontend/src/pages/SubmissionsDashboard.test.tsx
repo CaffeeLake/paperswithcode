@@ -43,6 +43,18 @@ const externalPaperSubmission: PendingPaperEdit = {
   updated_at: "2026-08-10T07:00:00Z",
 };
 
+function taxonomySubmission(
+  id: number,
+  editType: "new_task" | "new_method" | "new_benchmark" | "new_metric" | "new_conference",
+): PendingPaperEdit {
+  return {
+    ...externalPaperSubmission,
+    id,
+    edit_type: editType,
+    proposed_payload: { name: `Suggestion ${id}` },
+  };
+}
+
 function renderDashboard() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -80,5 +92,35 @@ describe("SubmissionsDashboard", () => {
         expect.objectContaining({ edit_type: "new_external_paper" }),
       ),
     );
+  });
+
+  it("uses type-specific titles for taxonomy suggestions", async () => {
+    const submissions = [
+      taxonomySubmission(1, "new_task"),
+      taxonomySubmission(2, "new_method"),
+      taxonomySubmission(3, "new_benchmark"),
+      taxonomySubmission(4, "new_metric"),
+      taxonomySubmission(5, "new_conference"),
+    ];
+    listPendingPaperEdits.mockResolvedValue({
+      count: submissions.length,
+      results: submissions,
+    });
+
+    renderDashboard();
+
+    for (const title of ["New task", "New method", "New benchmark", "New metric", "New conference"]) {
+      expect(await screen.findByText(title, { selector: ".submission-title" })).toBeInTheDocument();
+    }
+    for (const subtitle of [
+      "Task suggestion",
+      "Method suggestion",
+      "Benchmark suggestion",
+      "Metric suggestion",
+      "Conference suggestion",
+    ]) {
+      expect(screen.getByText(subtitle)).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Taxonomy directory")).not.toBeInTheDocument();
   });
 });
