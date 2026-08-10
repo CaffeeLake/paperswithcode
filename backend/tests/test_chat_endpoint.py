@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
@@ -1695,6 +1696,21 @@ def test_closing_stream_persists_interrupted_turn(monkeypatch):
         lambda *args: persisted.append(args),
     )
 
+    class Trace(chat_stream_service.NullChatTurnTrace):
+        def __init__(self):
+            self.finishes = []
+
+        def finish(self, answer, status, **details):
+            self.finishes.append((answer, status, details))
+
+    trace = Trace()
+
+    @contextmanager
+    def trace_turn(**_kwargs):
+        yield trace
+
+    monkeypatch.setattr(chat_stream_service, "trace_chat_turn", trace_turn)
+
     async def scenario():
         orchestrator = ChatStreamOrchestrator(
             settings=get_settings().model_copy(update={"environment": "development"}),
@@ -1717,6 +1733,11 @@ def test_closing_stream_persists_interrupted_turn(monkeypatch):
     assert persisted[0][2] == admission
     assert persisted[0][3:] == ("interrupted", True, [])
     assert orchestrator.terminal == "interrupted"
+    assert trace.finishes[-1] == (
+        "",
+        "interrupted",
+        {"interruption_reason": "stream_closed"},
+    )
     assert released == [True]
 
 

@@ -633,8 +633,27 @@ class ChatStreamOrchestrator:
             _persist_trace_id(
                 self.owner, self.settings, self.admission, self.trace.trace_id
             )
-            async for frame in self._events():
-                yield frame
+            try:
+                async for frame in self._events():
+                    yield frame
+            except GeneratorExit:
+                self.interruption_reason = self.interruption_reason or "stream_closed"
+                self.trace.finish(
+                    "".join(self.projection.answer_parts),
+                    "interrupted",
+                    interruption_reason=self.interruption_reason,
+                )
+                raise
+            except asyncio.CancelledError:
+                self.interruption_reason = (
+                    self.interruption_reason or "stream_cancelled"
+                )
+                self.trace.finish(
+                    "".join(self.projection.answer_parts),
+                    "interrupted",
+                    interruption_reason=self.interruption_reason,
+                )
+                raise
 
     async def _events(self) -> AsyncIterator[ChatStreamFrame]:
         try:
