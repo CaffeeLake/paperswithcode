@@ -12,6 +12,7 @@ class FeaturedOrganization:
     display_order: int
     name_override: str | None = None
     hf_aliases: tuple[str, ...] = ()
+    logo_url_override: str | None = None
 
 
 FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
@@ -31,6 +32,10 @@ FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
             "facebook-research",
             "metaresearch",
             "MetaSuperintelligenceLab",
+        ),
+        logo_url_override=(
+            "https://cdn-avatars.huggingface.co/v1/production/uploads/"
+            "64c115d1f661ace7c4022432/EbzfQisFJBEcKWDWLyV5O.png"
         ),
     ),
     FeaturedOrganization("Qwen", "qwen", 7),

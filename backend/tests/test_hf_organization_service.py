@@ -42,6 +42,9 @@ def test_manifest_is_strict_unique_and_case_insensitive():
     assert featured_for_hf_handle("metaresearch").slug == "facebook"
     assert featured_for_hf_handle("MetaSuperintelligenceLab").slug == "facebook"
     assert featured_for_hf_handle("facebook").name_override == "Meta"
+    assert "64c115d1f661ace7c4022432" in (
+        featured_for_hf_handle("facebook").logo_url_override or ""
+    )
     assert featured_for_hf_handle("unlisted-lab") is None
 
 

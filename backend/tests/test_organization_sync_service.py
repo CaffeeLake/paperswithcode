@@ -180,6 +180,10 @@ def test_featured_sync_combines_hf_alias_papers():
                 papers=(HFOrganizationPaper(arxiv_id, "Paper"),),
             )
 
+        def fetch_logo(self, url):
+            assert "64c115d1f661ace7c4022432" in url
+            return b"meta-models-logo", "image/webp"
+
     service = OrganizationSyncService(session, hf_client=FakeHFClient())
     stats = asyncio.run(service.sync("facebook"))
 
@@ -187,6 +191,9 @@ def test_featured_sync_combines_hf_alias_papers():
     assert organization.name == "Meta"
     assert organization.hf_slug == "facebook"
     assert organization.hf_paper_count == 2
+    assert "64c115d1f661ace7c4022432" in organization.logo_url
+    assert organization.logo_data == b"meta-models-logo"
+    assert organization.logo_mime_type == "image/webp"
     assert stats.fetched == 2
     assert stats.linked == 2
     assert seen_hf_slugs == [

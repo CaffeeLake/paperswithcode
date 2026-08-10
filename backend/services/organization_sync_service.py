@@ -113,9 +113,6 @@ class OrganizationSyncService:
 
     def _fetch_manifest(self, manifest: FeaturedOrganization) -> HFOrganizationData:
         primary = self.hf_client.fetch(manifest.hf_slug)
-        if not manifest.hf_aliases:
-            return primary
-
         papers = {paper.arxiv_id: paper for paper in primary.papers}
         for hf_alias in manifest.hf_aliases:
             alias_data = self.hf_client.fetch(hf_alias)
@@ -123,7 +120,7 @@ class OrganizationSyncService:
         return HFOrganizationData(
             hf_slug=primary.hf_slug,
             name=primary.name,
-            logo_url=primary.logo_url,
+            logo_url=manifest.logo_url_override or primary.logo_url,
             website_url=primary.website_url,
             upstream_paper_count=len(papers),
             papers=tuple(papers.values()),
