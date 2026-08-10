@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from backend.chat_sandbox_worker.protocol import encode_frame
+from backend.config import Settings
 from backend.services import chat_sandbox_service, chat_turn_runner
 from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
@@ -486,15 +487,18 @@ def test_cancel_control_write_failure_terminates_worker():
         async def _drain(self):
             raise RuntimeError("control closed")
 
-    manager = SandboxSessionManager.__new__(SandboxSessionManager)
-    manager._processes = {
-        turn_id: chat_sandbox_service.RunningWorker(
+    manager = SandboxSessionManager(
+        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+    )
+    manager._worker_transport_state.register_running_worker(
+        turn_id,
+        chat_sandbox_service.RunningWorker(
             process=SimpleNamespace(stdin=Input()),
             request_id="request",
             claim=claim,
             done=asyncio.Event(),
-        )
-    }
+        ),
+    )
 
     async def terminate(_session_id, _claim, *, failure_code):
         terminated.append(failure_code)

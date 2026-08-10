@@ -12,7 +12,6 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -76,6 +75,11 @@ from backend.services.chat_sandbox_state_repository import (
     WorkerClaim,
     WorkerGenerationUnavailable,
 )
+from backend.services.chat_sandbox_worker_transport import (
+    ChatSandboxWorkerTransport,
+    RunningWorker,
+    SessionControl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,50 +92,6 @@ MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
 
 
-@dataclass
-class RunningWorker:
-    process: object
-    request_id: str
-    claim: WorkerClaim
-    cancel_requested: bool = False
-    done: asyncio.Event | None = None
-
-
-class _WebSocketDrain:
-    def __init__(self, writer: _WebSocketWriter):
-        self._writer = writer
-
-    async def aio(self) -> None:
-        await self._writer.flush()
-
-
-class _WebSocketWriter:
-    def __init__(self, connection):
-        self._connection = connection
-        self._pending = bytearray()
-        self.drain = _WebSocketDrain(self)
-
-    def write(self, data: bytes) -> None:
-        self._pending.extend(data)
-
-    async def flush(self) -> None:
-        if not self._pending:
-            return
-        payload = bytes(self._pending)
-        self._pending.clear()
-        await self._connection.send(payload)
-
-
-class _WebSocketProcess:
-    def __init__(self, connection):
-        self._connection = connection
-        self.stdin = _WebSocketWriter(connection)
-        self.stdout = connection
-
-    async def aclose(self) -> None:
-        await self._connection.close()
-
-
 def _cancelled_terminal_event(running: RunningWorker | None) -> dict[str, str] | None:
     """Let an accepted user cancellation win over a concurrent worker exit."""
     if running is None or not running.cancel_requested:
@@ -139,17 +99,6 @@ def _cancelled_terminal_event(running: RunningWorker | None) -> dict[str, str] |
     if running.done is not None:
         running.done.set()
     return {"type": "_cancelled"}
-
-
-@dataclass
-class SessionControl:
-    process: object
-    sandbox: object
-    sandbox_id: str
-    stderr_task: asyncio.Task | None
-    reader_task: asyncio.Task | None
-    queues: dict[str, asyncio.Queue]
-    resume_id: str | None
 
 
 async def resolve_modal_image(image_reference: str):
@@ -245,10 +194,9 @@ class SandboxSessionManager:
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
         )
-        self._processes: dict[uuid.UUID, RunningWorker] = {}
-        self._controls: dict[uuid.UUID, SessionControl] = {}
-        self._blank_controls: dict[str, SessionControl] = {}
-        self._blank_health_at: dict[str, float] = {}
+        self._worker_transport_state = ChatSandboxWorkerTransport(
+            self._provider_adapter()
+        )
         self._background_tasks: set[asyncio.Task] = set()
         if settings.chat_workspace_snapshots_enabled and not self.snapshots.supported:
             raise SandboxError(
@@ -265,6 +213,49 @@ class SandboxSessionManager:
             image_resolver=resolve_modal_image,
             websocket_connector=_connect_provider_websocket,
         )
+
+    def _worker_transport(self) -> ChatSandboxWorkerTransport:
+        transport = getattr(self, "_worker_transport_state", None)
+        if transport is None:
+            transport = ChatSandboxWorkerTransport(self._provider_adapter())
+            self._worker_transport_state = transport
+        return transport
+
+    @property
+    def _processes(self) -> dict[uuid.UUID, RunningWorker]:
+        """Compatibility view for established manager tests and callers."""
+
+        return self._worker_transport().processes
+
+    @_processes.setter
+    def _processes(self, processes: dict[uuid.UUID, RunningWorker]) -> None:
+        self._worker_transport().processes = processes
+
+    @property
+    def _controls(self) -> dict[uuid.UUID, SessionControl]:
+        """Compatibility view; transport owns all production mutations."""
+
+        return self._worker_transport().session_controls
+
+    @_controls.setter
+    def _controls(self, controls: dict[uuid.UUID, SessionControl]) -> None:
+        self._worker_transport().session_controls = controls
+
+    @property
+    def _blank_controls(self) -> dict[str, SessionControl]:
+        return self._worker_transport().blank_controls
+
+    @_blank_controls.setter
+    def _blank_controls(self, controls: dict[str, SessionControl]) -> None:
+        self._worker_transport().blank_controls = controls
+
+    @property
+    def _blank_health_at(self) -> dict[str, float]:
+        return self._worker_transport().blank_health_at
+
+    @_blank_health_at.setter
+    def _blank_health_at(self, checked_at: dict[str, float]) -> None:
+        self._worker_transport().blank_health_at = checked_at
 
     def _state_repository(self) -> ChatSandboxStateRepository:
         repository = getattr(self, "_sandbox_state", None)
@@ -442,11 +433,12 @@ class SandboxSessionManager:
 
     async def _pool_sandbox_health(self, sandbox_id: str, worker_generation: str):
         try:
-            control = getattr(self, "_blank_controls", {}).get(sandbox_id)
+            transport = self._worker_transport()
+            control = transport.blank_control(sandbox_id)
             if control is not None:
                 if control.sandbox_id != sandbox_id:
                     return None
-                checked_at = getattr(self, "_blank_health_at", {}).get(sandbox_id)
+                checked_at = transport.blank_health_checked_at(sandbox_id)
                 if (
                     checked_at is not None
                     and time.monotonic() - checked_at
@@ -454,8 +446,23 @@ class SandboxSessionManager:
                 ):
                     return control.sandbox
                 if await self._ping_control(control, worker_generation):
-                    self._blank_health_at[sandbox_id] = time.monotonic()
-                    return control.sandbox
+                    if transport.mark_blank_healthy(
+                        sandbox_id,
+                        expected=control,
+                        checked_at=time.monotonic(),
+                    ):
+                        return control.sandbox
+                    replacement = transport.blank_control(sandbox_id)
+                    replacement_checked_at = transport.blank_health_checked_at(
+                        sandbox_id
+                    )
+                    if (
+                        replacement is not None
+                        and replacement_checked_at is not None
+                        and time.monotonic() - replacement_checked_at
+                        <= POOL_LOCAL_HEALTH_MAX_AGE_SECONDS
+                    ):
+                        return replacement.sandbox
                 return None
             provider = self._provider_adapter()
             sandbox = await provider.resolve(sandbox_id)
@@ -473,55 +480,14 @@ class SandboxSessionManager:
     async def _start_persistent_control(
         self, sandbox, worker_generation: str
     ) -> SessionControl:
-        connection = await self._provider_adapter().open_persistent_connection(
-            sandbox,
-            worker_generation,
+        return await self._worker_transport().open_persistent_control(
+            sandbox, worker_generation
         )
-        process = _WebSocketProcess(connection)
-        control = SessionControl(
-            process=process,
-            sandbox=sandbox,
-            sandbox_id=sandbox.object_id,
-            stderr_task=None,
-            reader_task=None,
-            queues={},
-            resume_id=None,
-        )
-        control.reader_task = asyncio.create_task(self._read_control(control))
-        return control
 
     async def _ping_control(
         self, control: SessionControl, worker_generation: str
     ) -> bool:
-        request_id = f"health-{uuid.uuid4()}"
-        queue: asyncio.Queue = asyncio.Queue()
-        control.queues[request_id] = queue
-        try:
-            control.process.stdin.write(
-                SUPERVISOR_PREFIX
-                + json.dumps(
-                    {
-                        "operation": "ping",
-                        "worker_generation": worker_generation,
-                        "request_id": request_id,
-                    },
-                    separators=(",", ":"),
-                ).encode()
-                + b"\n"
-            )
-            await control.process.stdin.drain.aio()
-            async with asyncio.timeout(5):
-                response = await queue.get()
-            return bool(
-                isinstance(response, dict)
-                and response.get("type") == "worker_health"
-                and response.get("request_id") == request_id
-                and response.get("assigned") is False
-            )
-        except Exception:
-            return False
-        finally:
-            control.queues.pop(request_id, None)
+        return await self._worker_transport().ping(control, worker_generation)
 
     async def _terminate_pool_row(
         self,
@@ -646,6 +612,7 @@ class SandboxSessionManager:
                     pool_id, sandbox_id, failure_code="sandbox_lost"
                 )
                 continue
+            local_control = self._worker_transport().blank_control(sandbox_id)
             claimed = False
             now = datetime.now(UTC)
             with self.session_factory() as db:
@@ -723,12 +690,12 @@ class SandboxSessionManager:
                     claimed = True
                 db.commit()
             if claimed:
-                blank_control = getattr(self, "_blank_controls", {}).pop(
-                    sandbox_id, None
-                )
-                getattr(self, "_blank_health_at", {}).pop(sandbox_id, None)
-                if blank_control is not None:
-                    self._controls[chat_session_id] = blank_control
+                if local_control is not None:
+                    self._worker_transport().promote_blank_control(
+                        sandbox_id,
+                        chat_session_id,
+                        expected=local_control,
+                    )
                 self._spawn_pool_replenishment()
                 return sandbox, round((time.perf_counter() - started) * 1000)
         return None
@@ -863,8 +830,11 @@ class SandboxSessionManager:
                     "sandbox_worker_not_ready",
                     "Persistent blank worker health check failed",
                 )
-            self._blank_controls[sandbox.object_id] = control
-            self._blank_health_at[sandbox.object_id] = time.monotonic()
+            self._worker_transport().register_blank_control(
+                sandbox.object_id,
+                control,
+                checked_at=time.monotonic(),
+            )
         except Exception:
             provider_sandbox = (
                 sandbox
@@ -1493,7 +1463,7 @@ class SandboxSessionManager:
             assert acquisition is not None
             if isinstance(acquisition, ReuseLease):
                 await self.enforce_warm_cap()
-                control = getattr(self, "_controls", {}).get(chat_session_id)
+                control = self._worker_transport().session_control(chat_session_id)
                 if (
                     getattr(
                         self.settings,
@@ -1788,68 +1758,19 @@ class SandboxSessionManager:
         return True
 
     def _drop_control(self, chat_session_id: uuid.UUID) -> None:
-        controls = getattr(self, "_controls", {})
-        control = controls.pop(chat_session_id, None)
-        if control is not None:
-            if control.stderr_task is not None:
-                control.stderr_task.cancel()
-            if control.reader_task is not None:
-                control.reader_task.cancel()
-            self._close_control_transport(control)
+        self._worker_transport().drop_session_control(chat_session_id)
 
     def _close_control_transport(self, control: SessionControl) -> None:
-        close = getattr(control.process, "aclose", None)
-        if close is None:
-            return
-        task = asyncio.create_task(close())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._worker_transport().schedule_close(control)
 
     def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
-        controls = getattr(self, "_controls", {})
-        for session_id, control in list(controls.items()):
-            if control.sandbox_id == sandbox_id:
-                self._drop_control(session_id)
+        self._worker_transport().drop_session_controls_by_sandbox(sandbox_id)
 
     def _drop_blank_control(self, sandbox_id: str) -> None:
-        control = getattr(self, "_blank_controls", {}).pop(sandbox_id, None)
-        getattr(self, "_blank_health_at", {}).pop(sandbox_id, None)
-        if control is not None:
-            if control.stderr_task is not None:
-                control.stderr_task.cancel()
-            if control.reader_task is not None:
-                control.reader_task.cancel()
-            self._close_control_transport(control)
+        self._worker_transport().drop_blank_control(sandbox_id)
 
     async def _read_control(self, control: SessionControl) -> None:
-        buffer = b""
-        failure: BaseException | None = None
-        try:
-            async for chunk in control.process.stdout:
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if not line or not line.startswith(FRAME_PREFIX.encode()):
-                        continue
-                    event = decode_frame(line)
-                    request_id = str(event.get("request_id") or "")
-                    queue = control.queues.get(request_id)
-                    if queue is None:
-                        raise ProtocolError("Uncorrelated persistent worker frame")
-                    await queue.put(event)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as error:
-            failure = error
-        finally:
-            if failure is None:
-                failure = SandboxError(
-                    "sandbox_worker_failed",
-                    "The persistent worker control stream ended",
-                    uncertain=True,
-                )
-            for queue in list(control.queues.values()):
-                await queue.put(failure)
+        await self._worker_transport().read_control(control)
 
     async def run_turn(
         self,
@@ -1916,8 +1837,9 @@ class SandboxSessionManager:
         forced_pool_miss: bool,
     ) -> AsyncIterator[dict]:
         turn_started = time.perf_counter()
+        transport = self._worker_transport()
         yield {"type": "sandbox_start", "session_id": str(chat_session_id)}
-        existing_control = getattr(self, "_controls", {}).get(chat_session_id)
+        existing_control = transport.session_control(chat_session_id)
         if (
             existing_control is not None
             and resume is not None
@@ -1931,7 +1853,7 @@ class SandboxSessionManager:
             getattr(self.settings, "chat_persistent_worker_enabled", False)
         )
         existing_control = (
-            getattr(self, "_controls", {}).get(chat_session_id) if persistent else None
+            transport.session_control(chat_session_id) if persistent else None
         )
         if existing_control is not None:
             sandbox = existing_control.sandbox
@@ -1998,12 +1920,12 @@ class SandboxSessionManager:
         try:
             claim = self._claim_worker(chat_session_id, sandbox.object_id)
 
-            controls = getattr(self, "_controls", None)
-            if controls is None:
-                controls = self._controls = {}
-            control = controls.get(chat_session_id) if persistent else None
+            control = transport.session_control(chat_session_id) if persistent else None
             if control is not None and control.sandbox_id != sandbox.object_id:
-                self._drop_control(chat_session_id)
+                transport.drop_session_control(
+                    chat_session_id,
+                    expected=control,
+                )
                 control = None
             if control is None:
                 if persistent:
@@ -2011,9 +1933,9 @@ class SandboxSessionManager:
                         sandbox, claim.worker_generation
                     )
                     process = control.process
-                    self._controls[chat_session_id] = control
+                    transport.register_session_control(chat_session_id, control)
                 else:
-                    process = await self._provider_adapter().open_turn_process(
+                    process = await transport.open_turn_process(
                         sandbox,
                         timeout_seconds=round(
                             self.settings.chat_agent_timeout_seconds + 15
@@ -2032,7 +1954,7 @@ class SandboxSessionManager:
             running_worker = RunningWorker(
                 process, request_id, claim, done=asyncio.Event()
             )
-            self._processes[turn_id] = running_worker
+            transport.register_running_worker(turn_id, running_worker)
             launch = {
                 "capability": capability.token,
                 "gateway_url": self.settings.chat_gateway_url,
@@ -2246,7 +2168,8 @@ class SandboxSessionManager:
                 stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await stderr_task
-            self._processes.pop(turn_id, None)
+            if running_worker is not None:
+                transport.remove_running_worker(turn_id, expected=running_worker)
             if not terminal:
                 if claim is not None:
                     await self._terminate_worker(
@@ -2267,7 +2190,7 @@ class SandboxSessionManager:
                 await self.enforce_warm_cap()
 
     async def cancel(self, chat_session_id: uuid.UUID, turn_id: uuid.UUID) -> bool:
-        running = self._processes.get(turn_id)
+        running = self._worker_transport().running_worker(turn_id)
         if running is None:
             return False
         running.cancel_requested = True
@@ -2562,7 +2485,7 @@ class SandboxSessionManager:
                 min(remaining, self.settings.chat_sandbox_watchdog_seconds)
             )
         if datetime.now(UTC) >= deadline:
-            for running in list(self._processes.values()):
+            for running in list(self._worker_transport().processes.values()):
                 running.cancel_requested = True
                 with contextlib.suppress(Exception):
                     running.process.stdin.write(
