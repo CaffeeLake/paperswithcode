@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import os
 import secrets
 import time
@@ -77,6 +76,14 @@ from backend.services.chat_sandbox_provider import (
 from backend.services.chat_sandbox_spend_alert_dispatcher import (
     ChatSandboxSpendAlertDispatcher,
 )
+from backend.services.chat_sandbox_spend_reconciler import (
+    ChatSandboxSpendReconciler,
+    ProviderReconciliationOutcome,
+)
+from backend.services.chat_sandbox_spend_reporter import (
+    ModalProviderSpendReporter,
+    ProviderSpendReporter,
+)
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
     ChatSandboxSpendService,
@@ -99,8 +106,6 @@ from backend.services.chat_sandbox_worker_transport import (
     WorkerTurnMode,
     WorkerTurnRequest,
 )
-
-logger = logging.getLogger(__name__)
 
 
 async def resolve_modal_image(image_reference: str):
@@ -188,6 +193,8 @@ class SandboxSessionManager:
         lease_maintenance_coordinator: ChatSandboxLeaseMaintenanceCoordinator
         | None = None,
         spend_alert_dispatcher: ChatSandboxSpendAlertDispatcher | None = None,
+        spend_reporter: ProviderSpendReporter | None = None,
+        spend_reconciler: ChatSandboxSpendReconciler | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
@@ -196,6 +203,19 @@ class SandboxSessionManager:
                 raise ValueError("Spend alert dispatcher settings must be shared")
             if spend_alert_dispatcher.session_factory is not self.session_factory:
                 raise ValueError("Spend alert dispatcher sessions must be shared")
+        if spend_reporter is not None and spend_reporter.settings is not settings:
+            raise ValueError("Spend reporter settings must be shared")
+        if spend_reconciler is not None:
+            if spend_reconciler.settings is not settings:
+                raise ValueError("Spend reconciler settings must be shared")
+            if spend_reconciler.session_factory is not self.session_factory:
+                raise ValueError("Spend reconciler sessions must be shared")
+            if (
+                spend_reporter is not None
+                and spend_reconciler.reporter is not spend_reporter
+            ):
+                raise ValueError("Spend reconciler reporter must be shared")
+            spend_reporter = spend_reconciler.reporter
         self._sandbox_provider = sandbox_provider
         self._sandbox_state = state_repository
         self._sandbox_capacity = capacity_repository
@@ -205,6 +225,8 @@ class SandboxSessionManager:
         self._sandbox_lease_lifecycle = lease_lifecycle_coordinator
         self._sandbox_lease_maintenance = lease_maintenance_coordinator
         self._sandbox_spend_alerts = spend_alert_dispatcher
+        self._sandbox_spend_reporter = spend_reporter
+        self._sandbox_spend_reconciler = spend_reconciler
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -378,6 +400,24 @@ class SandboxSessionManager:
             )
             self._sandbox_spend_alerts = dispatcher
         return dispatcher
+
+    def _spend_reporter(self) -> ProviderSpendReporter:
+        reporter = getattr(self, "_sandbox_spend_reporter", None)
+        if reporter is None:
+            reporter = ModalProviderSpendReporter(self.settings)
+            self._sandbox_spend_reporter = reporter
+        return reporter
+
+    def _spend_reconciler(self) -> ChatSandboxSpendReconciler:
+        reconciler = getattr(self, "_sandbox_spend_reconciler", None)
+        if reconciler is None:
+            reconciler = ChatSandboxSpendReconciler(
+                self.settings,
+                session_factory=self.session_factory,
+                reporter=self._spend_reporter(),
+            )
+            self._sandbox_spend_reconciler = reconciler
+        return reconciler
 
     async def _create_provider_sandbox(
         self,
@@ -1543,42 +1583,8 @@ class SandboxSessionManager:
         return await self._spend_alert_dispatcher().deliver_pending()
 
     async def reconcile_spend_provider(self) -> bool:
-        """Refresh the provider floor at most hourly; local metering remains authoritative."""
-        now = datetime.now(UTC)
-        with self.session_factory() as db, db.begin():
-            if not ChatSandboxSpendService(
-                db, self.settings
-            ).claim_provider_reconciliation(now):
-                return False
-        cycle = now.date().replace(day=1)
-        start = datetime(cycle.year, cycle.month, 1, tzinfo=UTC)
-        try:
-            items = await modal.Workspace.from_context().billing.report.aio(
-                start=start, end=now, resolution="h"
-            )
-            dollars = sum(
-                item.cost
-                for item in items
-                if item.description == MODAL_APP_NAME
-                and item.environment_name
-                in {"main", self.settings.chat_sandbox_modal_environment}
-            )
-            floor_microusd = round(dollars * 1_000_000)
-            with self.session_factory() as db, db.begin():
-                ChatSandboxSpendService(db, self.settings).reconcile_provider_floor(
-                    floor_microusd, now
-                )
-            return True
-        except Exception as error:
-            logger.error(
-                "chat spend provider reconciliation unavailable error=%s",
-                type(error).__name__,
-            )
-            with self.session_factory() as db, db.begin():
-                ChatSandboxSpendService(db, self.settings).reconciliation_unavailable(
-                    now
-                )
-            return False
+        outcome = await self._spend_reconciler().reconcile_provider()
+        return outcome is ProviderReconciliationOutcome.RECONCILED
 
     async def reconcile(self) -> int:
         """Converge expired creations and provider-lost sandbox leases."""

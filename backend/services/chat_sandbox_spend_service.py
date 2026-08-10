@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 
@@ -33,6 +34,15 @@ class ChatComputeDisabled(RuntimeError):
     def __init__(self, message: str, *, reason: str = "application_cap"):
         super().__init__(message)
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class ProviderReconciliationClaim:
+    """Exact budget-state generation allowed to finalize one provider report."""
+
+    owner_state_id: uuid.UUID
+    billing_cycle: date
+    attempted_at: datetime
 
 
 def billing_cycle(now: datetime) -> date:
@@ -813,8 +823,18 @@ class ChatSandboxSpendService:
         self, floor_microusd: int, reported_at: datetime
     ) -> ChatSandboxBudgetState:
         self._lock()
+        return self._reconcile_provider_floor(
+            floor_microusd,
+            reported_at,
+        )
+
+    def _reconcile_provider_floor(
+        self,
+        floor_microusd: int,
+        reported_at: datetime,
+    ) -> ChatSandboxBudgetState:
         self._state(reported_at, provider_cycle_confirmed=True)
-        state = self.refresh(reported_at)
+        state = self.refresh(reported_at, capacity_locked=True)
         was_degraded = state.reconciliation_state != "fresh" and (
             self.db.execute(
                 select(ChatSandboxCircuitEvent.id)
@@ -849,26 +869,151 @@ class ChatSandboxSpendService:
             )
         return state
 
-    def claim_provider_reconciliation(self, now: datetime) -> bool:
-        """Claim the workspace-wide hourly slot durably across workers/releases."""
+    def claim_provider_reconciliation_exact(
+        self,
+        now: datetime,
+    ) -> ProviderReconciliationClaim | None:
+        """Claim an exact hourly provider-report generation.
+
+        A tripped prior cycle owns the claim until a successful provider report
+        proves that creating the requested cycle is safe.
+        """
+
+        requested_cycle = billing_cycle(now)
+        attempted_at = now.astimezone(UTC)
         self._lock()
-        state = self.refresh(now)
-        attempted_at = state.last_reconciliation_attempt_at
-        if attempted_at is not None:
-            attempted_at = self._aware(attempted_at)
-            if (now - attempted_at).total_seconds() < (
+        current = self.db.execute(
+            select(ChatSandboxBudgetState)
+            .where(
+                ChatSandboxBudgetState.environment == self.settings.environment,
+                ChatSandboxBudgetState.billing_cycle == requested_cycle,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if current is None:
+            previous = self.db.execute(
+                select(ChatSandboxBudgetState)
+                .where(
+                    ChatSandboxBudgetState.environment == self.settings.environment,
+                    ChatSandboxBudgetState.billing_cycle < requested_cycle,
+                )
+                .order_by(ChatSandboxBudgetState.billing_cycle.desc())
+                .limit(1)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if previous is not None and previous.circuit_state == "tripped":
+                state = previous
+            else:
+                state = self.refresh(attempted_at, capacity_locked=True)
+        else:
+            state = self.refresh(attempted_at, capacity_locked=True)
+        prior_attempt = state.last_reconciliation_attempt_at
+        if prior_attempt is not None:
+            prior_attempt = self._aware(prior_attempt)
+            if (now - prior_attempt).total_seconds() < (
                 self.settings.chat_sandbox_reconciliation_interval_seconds
             ):
-                return False
-        state.last_reconciliation_attempt_at = now
-        state.updated_at = now
-        return True
+                return None
+        state.last_reconciliation_attempt_at = now.astimezone(UTC)
+        state.updated_at = now.astimezone(UTC)
+        return ProviderReconciliationClaim(
+            owner_state_id=state.id,
+            billing_cycle=requested_cycle,
+            attempted_at=now.astimezone(UTC),
+        )
 
-    def reconciliation_unavailable(
-        self, now: datetime | None = None
+    def claim_provider_reconciliation(self, now: datetime) -> bool:
+        """Compatibility wrapper for the established boolean claim API."""
+
+        return self.claim_provider_reconciliation_exact(now) is not None
+
+    def _provider_reconciliation_owner(
+        self,
+        claim: ProviderReconciliationClaim,
+    ) -> ChatSandboxBudgetState | None:
+        """Lock and match the exact unsuperseded claim owner."""
+
+        if billing_cycle(claim.attempted_at) != claim.billing_cycle:
+            return None
+        owner = self.db.execute(
+            select(ChatSandboxBudgetState)
+            .where(
+                ChatSandboxBudgetState.id == claim.owner_state_id,
+                ChatSandboxBudgetState.environment == self.settings.environment,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if (
+            owner is None
+            or owner.last_reconciliation_attempt_at is None
+            or self._aware(owner.last_reconciliation_attempt_at) != claim.attempted_at
+        ):
+            return None
+
+        latest_state_id = self.db.scalar(
+            select(ChatSandboxBudgetState.id)
+            .where(ChatSandboxBudgetState.environment == self.settings.environment)
+            .order_by(ChatSandboxBudgetState.billing_cycle.desc())
+            .limit(1)
+        )
+        latest_attempt = self.db.scalar(
+            select(
+                func.max(ChatSandboxBudgetState.last_reconciliation_attempt_at)
+            ).where(ChatSandboxBudgetState.environment == self.settings.environment)
+        )
+        if (
+            latest_state_id != owner.id
+            or latest_attempt is None
+            or self._aware(latest_attempt) != claim.attempted_at
+        ):
+            return None
+
+        if owner.billing_cycle == claim.billing_cycle:
+            return owner
+        if (
+            owner.billing_cycle < claim.billing_cycle
+            and owner.circuit_state == "tripped"
+        ):
+            return owner
+        return None
+
+    def reconcile_provider_floor_for_claim(
+        self,
+        claim: ProviderReconciliationClaim,
+        floor_microusd: int,
+    ) -> ChatSandboxBudgetState | None:
+        """Apply a provider floor only for the exact newest claim."""
+
+        self._lock()
+        if self._provider_reconciliation_owner(claim) is None:
+            return None
+        state = self._reconcile_provider_floor(
+            floor_microusd,
+            claim.attempted_at,
+        )
+        state.last_reconciliation_attempt_at = claim.attempted_at
+        state.updated_at = claim.attempted_at
+        return state
+
+    def reconciliation_unavailable_for_claim(
+        self,
+        claim: ProviderReconciliationClaim,
+    ) -> ChatSandboxBudgetState | None:
+        """Mark only the exact newest claim owner unavailable."""
+
+        self._lock()
+        owner = self._provider_reconciliation_owner(claim)
+        if owner is None:
+            return None
+        if owner.billing_cycle == claim.billing_cycle:
+            owner = self.refresh(claim.attempted_at, capacity_locked=True)
+        return self._mark_reconciliation_unavailable(owner, claim.attempted_at)
+
+    def _mark_reconciliation_unavailable(
+        self,
+        state: ChatSandboxBudgetState,
+        now: datetime,
     ) -> ChatSandboxBudgetState:
-        now = now or datetime.now(UTC)
-        state = self.refresh(now)
         was_unavailable = state.reconciliation_state == "unavailable"
         state.reconciliation_state = "unavailable"
         state.updated_at = now
@@ -882,6 +1027,13 @@ class ChatSandboxSpendService:
                 deduplicate=False,
             )
         return state
+
+    def reconciliation_unavailable(
+        self, now: datetime | None = None
+    ) -> ChatSandboxBudgetState:
+        now = now or datetime.now(UTC)
+        state = self.refresh(now)
+        return self._mark_reconciliation_unavailable(state, now)
 
     def record_kill_sweep(
         self, *, complete: bool, now: datetime | None = None
