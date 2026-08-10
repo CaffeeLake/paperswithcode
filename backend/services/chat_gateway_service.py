@@ -13,7 +13,9 @@ from backend.services.benchmark_trend_service import BenchmarkTrendService
 from backend.services.conference_service import ConferenceService
 from backend.services.dataset_service import DatasetService
 from backend.services.evaluation_service import EvaluationService
+from backend.services.framework_service import FrameworkService
 from backend.services.method_service import MethodService
+from backend.services.organization_service import OrganizationService
 from backend.services.paper_lineage_service import get_paper_lineage
 from backend.services.paper_markdown_service import read_paper_markdown_bounded
 from backend.services.paper_service import PaperService
@@ -33,8 +35,16 @@ CATALOG_OPERATIONS = frozenset(
         "area_list",
         "area_tasks",
         "task_list",
+        "task_detail",
+        "task_page",
+        "task_papers",
         "method_list",
+        "method_detail",
         "conference_list",
+        "conference_detail",
+        "organization_list",
+        "organization_detail",
+        "framework_list",
         "benchmark_list",
         "benchmark_trending",
         "benchmark_evaluations",
@@ -114,6 +124,11 @@ class ChatGatewayService:
                     published_after=arguments.get("published_after"),
                     published_before=arguments.get("published_before"),
                     conference=arguments.get("conference"),
+                    **{
+                        name: arguments[name]
+                        for name in ("task", "method", "organization", "framework")
+                        if arguments.get(name) is not None
+                    },
                     latest_only=not _boolean(arguments.get("all_versions")),
                     order_by=arguments.get("order_by", "trending"),
                     order_dir=arguments.get("order_dir", "desc"),
@@ -186,10 +201,42 @@ class ChatGatewayService:
                 TaskService(self.db).get_tasks(
                     page=max(1, min(int(arguments.get("page", 1)), 100)),
                     page_size=max(1, min(int(arguments.get("page_size", 50)), 100)),
+                    **(
+                        {"search": arguments["q"]}
+                        if arguments.get("q") is not None
+                        else {}
+                    ),
                     area_id=int(area_id) if area_id is not None else None,
                     level=int(level) if level is not None else None,
                     order_by=ordering.lstrip("-"),
                     order_dir="desc" if ordering.startswith("-") else "asc",
+                )
+            )
+        if operation == "task_detail":
+            task = str(arguments["task"])[:255]
+            service = TaskService(self.db)
+            return _dump(
+                service.get_task_by_id(task)
+                if task.isdigit()
+                else service.get_task_by_slug(task)
+            )
+        if operation == "task_page":
+            return _dump(
+                TaskService(self.db).get_task_page(
+                    str(arguments["task"])[:255],
+                    is_open=_optional_boolean(arguments.get("is_open")),
+                )
+            )
+        if operation == "task_papers":
+            return _dump(
+                TaskService(self.db).get_task_papers(
+                    str(arguments["task"])[:255],
+                    page=max(1, min(int(arguments.get("page", 1)), 100)),
+                    page_size=max(1, min(int(arguments.get("page_size", 20)), 100)),
+                    latest_only=not _boolean(arguments.get("all_versions")),
+                    order_by=str(arguments.get("order_by") or "date_published"),
+                    order_dir=str(arguments.get("order_dir") or "desc"),
+                    include_resources=_boolean(arguments.get("include_resources")),
                 )
             )
         if operation == "method_list":
@@ -200,6 +247,11 @@ class ChatGatewayService:
                 MethodService(self.db).get_methods(
                     page=max(1, min(int(arguments.get("page", 1)), 100)),
                     page_size=max(1, min(int(arguments.get("page_size", 50)), 500)),
+                    **(
+                        {"search": arguments["q"]}
+                        if arguments.get("q") is not None
+                        else {}
+                    ),
                     area_id=int(area_id) if area_id is not None else None,
                     introduced_year=(
                         int(introduced_year) if introduced_year is not None else None
@@ -208,8 +260,36 @@ class ChatGatewayService:
                     order_dir="desc" if ordering.startswith("-") else "asc",
                 )
             )
+        if operation == "method_detail":
+            method = str(arguments["method"])[:255]
+            service = MethodService(self.db)
+            return _dump(
+                service.get_method_by_id(method)
+                if method.isdigit()
+                else service.get_method_by_name(method)
+            )
         if operation == "conference_list":
             return _dump(ConferenceService(self.db).get_conferences())
+        if operation == "conference_detail":
+            return _dump(
+                ConferenceService(self.db).get_conference(
+                    str(arguments["conference"])[:255]
+                )
+            )
+        if operation == "organization_list":
+            return _dump(
+                OrganizationService(self.db).get_organizations(
+                    featured_only=_boolean(arguments.get("featured_only"))
+                )
+            )
+        if operation == "organization_detail":
+            return _dump(
+                OrganizationService(self.db).get_organization(
+                    str(arguments["organization"])[:255]
+                )
+            )
+        if operation == "framework_list":
+            return _dump(FrameworkService(self.db).get_catalog())
         if operation == "benchmark_list":
             task_id = None
             task = arguments.get("task")

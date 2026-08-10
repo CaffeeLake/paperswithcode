@@ -1044,6 +1044,14 @@ def test_persistent_agent_keeps_sdk_session_authoritative():
         ("/api/v1/tasks/?page_size=10", "task_list"),
         ("/api/v1/methods/?page_size=10", "method_list"),
         ("/api/v1/conferences/", "conference_list"),
+        ("/api/v1/organizations/?featured_only=true", "organization_list"),
+        ("/api/v1/frameworks/", "framework_list"),
+        ("/api/v1/tasks/17", "task_detail"),
+        ("/api/v1/tasks/17/page", "task_page"),
+        ("/api/v1/tasks/17/papers?page_size=10", "task_papers"),
+        ("/api/v1/methods/vision-transformer", "method_detail"),
+        ("/api/v1/conferences/cvpr-2026", "conference_detail"),
+        ("/api/v1/organizations/hugging-face", "organization_detail"),
     ],
 )
 def test_broker_routes_taxonomy_cli_reads_to_catalog(monkeypatch, path, operation):
@@ -1311,6 +1319,132 @@ def test_gateway_paper_read_uses_bounded_diskless_reader(monkeypatch):
             {"bucket_id": "papers", "token": "token", "max_bytes": 256 * 1024},
         )
     ]
+
+
+def test_gateway_paper_list_forwards_every_advertised_catalog_filter(monkeypatch):
+    calls = []
+
+    class Service:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_papers(self, **options):
+            calls.append(options)
+            return {"count": 0, "results": [], "applied_filters": options}
+
+    monkeypatch.setattr("backend.services.chat_gateway_service.PaperService", Service)
+
+    result = ChatGatewayService("db", SimpleNamespace()).catalog(
+        "paper_list",
+        {
+            "task": "Vision",
+            "method": "Transformer",
+            "conference": "CVPR 2026",
+            "framework": "PyTorch",
+            "organization": "Hugging Face",
+        },
+    )
+
+    assert result["count"] == 0
+    assert {
+        name: calls[0][name]
+        for name in ("task", "method", "conference", "framework", "organization")
+    } == {
+        "task": "Vision",
+        "method": "Transformer",
+        "conference": "CVPR 2026",
+        "framework": "PyTorch",
+        "organization": "Hugging Face",
+    }
+
+
+def test_gateway_exposes_advertised_taxonomy_detail_operations(monkeypatch):
+    class Tasks:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_task_by_id(self, task):
+            return {"kind": "task", "id": task}
+
+        def get_task_by_slug(self, task):
+            return {"kind": "task", "slug": task}
+
+        def get_task_page(self, task, *, is_open):
+            return {"kind": "task_page", "task": task, "is_open": is_open}
+
+        def get_task_papers(self, task, **options):
+            return {"kind": "task_papers", "task": task, "options": options}
+
+    class Methods:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_method_by_id(self, method):
+            return {"kind": "method", "id": method}
+
+        def get_method_by_name(self, method):
+            return {"kind": "method", "name": method}
+
+    class Conferences:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_conference(self, conference):
+            return {"kind": "conference", "slug": conference}
+
+    class Organizations:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_organizations(self, *, featured_only):
+            return {"kind": "organizations", "featured_only": featured_only}
+
+        def get_organization(self, organization):
+            return {"kind": "organization", "slug": organization}
+
+    class Frameworks:
+        def __init__(self, db):
+            assert db == "db"
+
+        def get_catalog(self):
+            return {"kind": "frameworks"}
+
+    monkeypatch.setattr("backend.services.chat_gateway_service.TaskService", Tasks)
+    monkeypatch.setattr("backend.services.chat_gateway_service.MethodService", Methods)
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.ConferenceService", Conferences
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.OrganizationService", Organizations
+    )
+    monkeypatch.setattr(
+        "backend.services.chat_gateway_service.FrameworkService", Frameworks
+    )
+    gateway = ChatGatewayService("db", SimpleNamespace())
+
+    assert gateway.catalog("task_detail", {"task": "17"})["id"] == "17"
+    assert (
+        gateway.catalog("task_page", {"task": "vision", "is_open": "true"})["is_open"]
+        is True
+    )
+    assert gateway.catalog("task_papers", {"task": "vision"})["kind"] == "task_papers"
+    assert (
+        gateway.catalog("method_detail", {"method": "transformer"})["name"]
+        == "transformer"
+    )
+    assert (
+        gateway.catalog("conference_detail", {"conference": "cvpr-2026"})["slug"]
+        == "cvpr-2026"
+    )
+    assert (
+        gateway.catalog("organization_list", {"featured_only": True})["featured_only"]
+        is True
+    )
+    assert (
+        gateway.catalog("organization_detail", {"organization": "hugging-face"})["slug"]
+        == "hugging-face"
+    )
+    assert gateway.catalog("framework_list", {}) == {"kind": "frameworks"}
 
 
 def test_gateway_paper_info_includes_normalized_hf_artifacts(monkeypatch):
@@ -1629,6 +1763,42 @@ def test_tool_budget_counts_parallel_calls_and_fifth_search_is_denied():
     denied = budget.authorize("tool-5", "Bash", {"command": "pwc search fifth"})
     assert not denied.allowed
     assert budget.calls == 4
+
+
+def test_worker_bash_hook_enables_fail_fast_pipeline_handling():
+    hooks = agent.WorkerToolHooks(agent.WorkerSettings.from_environment())
+
+    result = asyncio.run(
+        hooks.pre(
+            {"tool_name": "Bash", "tool_input": {"command": "pwc search test"}},
+            "tool-1",
+            None,
+        )
+    )
+
+    updated = result["hookSpecificOutput"]["updatedInput"]
+    assert updated["command"] == "set -eo pipefail\npwc search test"
+
+
+def test_successful_shell_result_with_execution_limit_is_reclassified():
+    budget = ToolBudget(
+        maximum_calls=12,
+        maximum_direct_searches=4,
+        maximum_result_bytes=1024,
+        maximum_turn_output_bytes=4096,
+    )
+    assert budget.authorize("tool-1", "Bash", {"command": "pwc search test"}).allowed
+
+    result = budget.result(
+        "tool-1",
+        'pwc: API request failed (429): {"detail":"Tool execution limit reached"}',
+        status="success",
+        exit_code=0,
+    )
+
+    assert result["status"] == "error"
+    assert result["metadata"]["exit_code"] == 1
+    assert budget.tooling_closed
 
 
 def test_tool_budget_counts_parallel_batches_and_denies_seventh_round_in_full():
@@ -2042,6 +2212,8 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert "within 5 rounds and 3 searches" in prompt
     assert "title-based `pwc paper info` lookup can consume a search" in prompt
     assert "If any tool reports a 429" in prompt
+    assert "Every Bash command runs with `set -eo pipefail`" in prompt
+    assert "do not place multiple `pwc search` executions" in prompt
     assert "secure, disposable sandbox" in prompt
     assert "anonymous, read-only `pwc` CLI" in prompt
     assert "already installed" in prompt
@@ -2066,9 +2238,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-NSuLq1YUiAyoZ6w7X7mKFT"
+    assert MODAL_IMAGE_ID == "im-4QZaMah1eNhptNRRmLrm2B"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "49"
+    assert WORKER_CONTRACT_VERSION == "50"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

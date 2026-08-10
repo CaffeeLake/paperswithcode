@@ -261,6 +261,9 @@ class WorkerToolHooks:
                     }
                 }
         if name == "Bash":
+            command = updated.get("command")
+            if isinstance(command, str):
+                updated["command"] = f"set -eo pipefail\n{command}"
             requested = updated.get("timeout")
             updated["timeout"] = min(
                 int(requested)

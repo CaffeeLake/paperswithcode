@@ -227,11 +227,15 @@ class ToolBudget:
         )
         self.output_bytes += len(text.encode())
         name = self.started_names.pop(tool_id, None)
+        hard_failure = bool(_HARD_FAILURE.search(text))
         if name == WEB_SEARCH_TOOL and status != "success":
             self.web_search_failed = True
             self.close()
-        elif status == "error" and _HARD_FAILURE.search(text):
+        elif hard_failure and (status == "error" or name == "Bash"):
             self.close()
+            if status == "success":
+                status = "error"
+                exit_code = exit_code or 1
         if name not in {"WebFetch", WEB_SEARCH_TOOL}:
             self.observe_urls(text)
         started = self.started.pop(tool_id, None)

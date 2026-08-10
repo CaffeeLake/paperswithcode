@@ -29,6 +29,12 @@ _PAPER_INFO = re.compile(r"^/api/v1/papers/([^/]+)$")
 _PAPER_RELATED = re.compile(r"^/api/v1/papers/([^/]+)/related$")
 _PAPER_READ = re.compile(r"^/api/v1/research/papers/([^/]+)/read$")
 _PAPER_LINEAGE = re.compile(r"^/api/v1/research/papers/([^/]+)/lineage$")
+_TASK_PAGE = re.compile(r"^/api/v1/tasks/([^/]+)/page$")
+_TASK_PAPERS = re.compile(r"^/api/v1/tasks/([^/]+)/papers$")
+_TASK_DETAIL = re.compile(r"^/api/v1/tasks/([^/]+)$")
+_METHOD_DETAIL = re.compile(r"^/api/v1/methods/([^/]+)$")
+_CONFERENCE_DETAIL = re.compile(r"^/api/v1/conferences/([^/]+)$")
+_ORGANIZATION_DETAIL = re.compile(r"^/api/v1/organizations/([^/]+)$")
 _BENCHMARK_TRENDS = re.compile(r"^/api/v1/tasks/([^/]+)/trending-benchmarks$")
 _BENCHMARK_EVALUATIONS = re.compile(r"^/api/v1/datasets/([^/]+)/evaluations/$")
 _EVALUATIONS = re.compile(r"^/api/v1/evaluations/$")
@@ -382,6 +388,11 @@ class Handler(BaseHTTPRequestHandler):
             operation = "method_list"
         elif parsed.path in {"/api/v1/conferences", "/api/v1/conferences/"}:
             operation = "conference_list"
+        elif parsed.path in {"/api/v1/organizations", "/api/v1/organizations/"}:
+            operation = "organization_list"
+            arguments = {"featured_only": query.get("featured_only") == "true"}
+        elif parsed.path in {"/api/v1/frameworks", "/api/v1/frameworks/"}:
+            operation = "framework_list"
         elif parsed.path in {"/api/v1/datasets", "/api/v1/datasets/"}:
             operation = "benchmark_list"
             arguments = {
@@ -422,6 +433,32 @@ class Handler(BaseHTTPRequestHandler):
                 "page_size": query.get("page_size", 100),
                 "ordering": query.get("ordering", "-benchmark_popularity"),
             }
+        elif match := _TASK_PAGE.match(parsed.path):
+            operation = "task_page"
+            arguments = {
+                "task": unquote(match.group(1)),
+                "is_open": query.get("is_open"),
+            }
+        elif match := _TASK_PAPERS.match(parsed.path):
+            operation = "task_papers"
+            arguments = {
+                "task": unquote(match.group(1)),
+                **query,
+                "include_resources": query.get("include_resources") == "true",
+                "all_versions": query.get("latest_only") == "false",
+            }
+        elif match := _TASK_DETAIL.match(parsed.path):
+            operation = "task_detail"
+            arguments = {"task": unquote(match.group(1))}
+        elif match := _METHOD_DETAIL.match(parsed.path):
+            operation = "method_detail"
+            arguments = {"method": unquote(match.group(1))}
+        elif match := _CONFERENCE_DETAIL.match(parsed.path):
+            operation = "conference_detail"
+            arguments = {"conference": unquote(match.group(1))}
+        elif match := _ORGANIZATION_DETAIL.match(parsed.path):
+            operation = "organization_detail"
+            arguments = {"organization": unquote(match.group(1))}
         elif match := _PAPER_RELATED.match(parsed.path):
             operation = "paper_related"
             arguments = {"paper": match.group(1), "limit": query.get("limit", 4)}
