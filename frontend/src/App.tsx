@@ -13,6 +13,7 @@ import {
   Navigate,
   Route,
   Routes,
+  useLocation,
   useParams,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -80,6 +81,7 @@ const UserProfileView = React.lazy(() => import("@/views/UserProfileView"));
 const RateLimitsView = React.lazy(() => import("@/views/RateLimitsView"));
 const NotFound = React.lazy(() => import("@/pages/NotFound"));
 const SearchOverlay = React.lazy(() => import("@/components/SearchOverlay"));
+const StagingAccessRequestView = React.lazy(() => import("@/views/StagingAccessRequestView"));
 
 // Visible page-shape skeleton shown while the route's lazy chunk is
 // downloading. A blank `aria-busy` div was confusing visitors on slow
@@ -206,6 +208,7 @@ const AdminDashboardRoute: React.FC = () => {
 
 const Shell: React.FC = () => {
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const location = useLocation();
 
   useScrollToTop();
   React.useLayoutEffect(() => {
@@ -222,6 +225,14 @@ const Shell: React.FC = () => {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  if (location.pathname === "/request-access") {
+    return (
+      <React.Suspense fallback={<RouteFallback />}>
+        <StagingAccessRequestView />
+      </React.Suspense>
+    );
+  }
 
   return (
     <>

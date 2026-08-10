@@ -19,6 +19,15 @@ from backend.utils.public_urls import (
 )
 
 
+class StagingAccessRequestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    hf_username: str
+    status: Literal["pending", "approved", "rejected"]
+    created_at: datetime
+    updated_at: datetime
+
+
 class GithubRepositoryPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

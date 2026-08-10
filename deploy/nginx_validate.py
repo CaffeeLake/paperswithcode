@@ -223,6 +223,25 @@ def validate(production: str, staging: str) -> list[str]:
     auth_me = staging.split("location = /api/v1/auth/me", 1)
     if len(auth_me) != 2 or "auth_request" in auth_me[1].split("}", 1)[0]:
         failures.append("staging auth status route is browser-authenticated")
+    access_page = location_block(staging, "location = /request-access")
+    if (
+        not access_page
+        or "auth_request" in access_page
+        or "try_files /index.html =404;" not in access_page
+        or 'X-Robots-Tag "noindex, nofollow" always' not in access_page
+    ):
+        failures.append("staging access request page is not a public noindex SPA route")
+    access_api = location_block(staging, "location = /api/v1/staging-access-request")
+    if (
+        not access_api
+        or "auth_request" in access_api
+        or "limit_except POST" not in access_api
+        or "proxy_pass http://pwc_staging_backend;" not in access_api
+    ):
+        failures.append("staging access request API contract is invalid")
+    forbidden = location_block(staging, "location @staging_forbidden")
+    if "return 302 /request-access;" not in forbidden:
+        failures.append("staging forbidden users are not sent to request access")
     return failures
 
 

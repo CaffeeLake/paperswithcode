@@ -459,6 +459,7 @@ def create_app() -> FastAPI:
         research_catalog,
         search_discovery,
         sitemaps,
+        staging_access,
         stats,
         tasks,
         thumbnails,
@@ -466,6 +467,7 @@ def create_app() -> FastAPI:
 
     app.include_router(agent_discovery.router, tags=["agent_discovery"])
     app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+    app.include_router(staging_access.router, prefix="/api/v1", tags=["staging-access"])
     app.include_router(bookmarks.router, prefix="/api/v1", tags=["bookmarks"])
     app.include_router(contributions.router, prefix="/api/v1", tags=["contributions"])
     app.include_router(preferences.router, prefix="/api/v1", tags=["preferences"])

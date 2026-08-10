@@ -1910,6 +1910,24 @@ def test_nginx_share_capability_bypasses_only_narrow_public_get_surfaces():
     assert "auth_request /_staging_access_check;" in catch_all
 
 
+def test_staging_access_request_surface_is_public_and_narrow():
+    repository = Path(__file__).resolve().parents[2]
+    production = (repository / "deploy/nginx/paperswithcode.co.conf").read_text()
+    staging = (repository / "deploy/nginx/staging.paperswithcode.co.conf").read_text()
+
+    assert validate_nginx(production, staging) == []
+    page = location_block(staging, "location = /request-access")
+    api = location_block(staging, "location = /api/v1/staging-access-request")
+    forbidden = location_block(staging, "location @staging_forbidden")
+
+    assert "auth_request" not in page + api
+    assert "try_files /index.html =404;" in page
+    assert 'X-Robots-Tag "noindex, nofollow" always' in page
+    assert "limit_except POST" in api
+    assert "proxy_pass http://pwc_staging_backend;" in api
+    assert "return 302 /request-access;" in forbidden
+
+
 def test_chat_share_migration_is_environment_owned_and_idempotent():
     repository = Path(__file__).resolve().parents[2]
     migration = (

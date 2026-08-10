@@ -3087,6 +3087,35 @@ class UserPreference(Base):
         )
 
 
+class StagingAccessRequest(Base):
+    """Verified Hugging Face accounts requesting contributor access."""
+
+    __tablename__ = "staging_access_requests"
+
+    hf_subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    hf_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')",
+            name="staging_access_requests_status_check",
+        ),
+        Index("idx_staging_access_requests_status_created", "status", "created_at"),
+    )
+
+
 class PendingPaperEdit(Base):
     """Edit submissions from non-admin Hugging Face users.
 
