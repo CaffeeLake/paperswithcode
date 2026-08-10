@@ -15,7 +15,7 @@ from backend.models.database import (
     PaperConference as DBPaperConference,
     PaperRelation as DBPaperRelation,
 )
-from backend.services.paper_service import PaperService
+from backend.services.paper_relation_loader import PaperRelationLoader, PaperRelations
 from backend.services.thumbnail_service import ThumbnailService
 
 
@@ -283,12 +283,12 @@ def _related_paper(paper_id, title):
 
 
 @pytest.mark.parametrize(
-    ("card_view", "include_resources", "expected_queries"),
+    ("loader_method", "include_resources", "expected_queries"),
     [
-        (True, False, 6),
-        (False, False, 11),
-        (True, True, 8),
-        (False, True, 13),
+        ("load_cards", False, 6),
+        ("load_details", False, 11),
+        ("load_cards", True, 8),
+        ("load_details", True, 13),
     ],
 )
 @pytest.mark.parametrize(
@@ -297,16 +297,16 @@ def _related_paper(paper_id, title):
     ids=["one-paper", "fifty-papers"],
 )
 def test_paper_relation_query_count_is_constant_in_paper_count(
-    paper_ids, card_view, include_resources, expected_queries
+    paper_ids, loader_method, include_resources, expected_queries
 ):
     db = _RelationDatabase()
+    loader = PaperRelationLoader(db)
 
-    PaperService(db)._get_paper_relation_data(
-        paper_ids,
-        card_view=card_view,
-        include_resources=include_resources,
-    )
+    relations = getattr(loader, loader_method)(paper_ids)
+    if include_resources:
+        loader.load_resources(paper_ids, relations)
 
+    assert isinstance(relations, PaperRelations)
     assert len(db.executed_entities) == expected_queries
 
 
@@ -314,27 +314,27 @@ def test_card_relations_exclude_detail_projection_but_details_include_author_lin
     card_db = _RelationDatabase()
     detail_db = _RelationDatabase()
 
-    card = PaperService(card_db)._get_paper_relation_data([1], card_view=True)
-    detail = PaperService(detail_db)._get_paper_relation_data([1], card_view=False)
+    card = PaperRelationLoader(card_db).load_cards([1])
+    detail = PaperRelationLoader(detail_db).load_details([1])
 
-    assert card["authors"][1] == ["Ada Lovelace"]
-    assert card["author_links"][1] == []
+    assert card.authors[1] == ["Ada Lovelace"]
+    assert card.author_links.get(1, []) == []
     assert all(entities[0] is not DBDataset for entities in card_db.executed_entities)
     assert all(entities[0] is not DBFramework for entities in card_db.executed_entities)
-    assert card["introduced_benchmarks"][1] == []
-    assert card["introduced_frameworks"][1] == []
-    assert card["predecessor_papers"][1] == []
-    assert card["successor_papers"][1] == []
-    assert card["conferences"].get(1) is None
+    assert card.introduced_benchmarks.get(1, []) == []
+    assert card.introduced_frameworks.get(1, []) == []
+    assert card.predecessor_papers.get(1, []) == []
+    assert card.successor_papers.get(1, []) == []
+    assert card.conferences.get(1) is None
 
-    assert [link.model_dump() for link in detail["author_links"][1]] == [
+    assert [link.model_dump() for link in detail.author_links[1]] == [
         {"id": "11", "name": "Ada Lovelace", "hf_username": "ada"}
     ]
-    assert detail["introduced_benchmarks"][1][0].name == "Characterized Benchmark"
-    assert detail["introduced_frameworks"][1][0].name == "Characterized Framework"
-    assert detail["predecessor_papers"][1][0].title == "Predecessor"
-    assert detail["successor_papers"][1][0].title == "Successor"
-    assert detail["conferences"][1].slug == "icml-2026"
+    assert detail.introduced_benchmarks[1][0].name == "Characterized Benchmark"
+    assert detail.introduced_frameworks[1][0].name == "Characterized Framework"
+    assert detail.predecessor_papers[1][0].title == "Predecessor"
+    assert detail.successor_papers[1][0].title == "Successor"
+    assert detail.conferences[1].slug == "icml-2026"
 
 
 # Fields declared by the frontend's public `Paper` interface and read by its

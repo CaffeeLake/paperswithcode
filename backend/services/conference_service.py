@@ -423,10 +423,8 @@ class ConferenceService:
             from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
-            relation_data = paper_service._get_paper_relation_data(
-                [paper.id for paper in db_papers],
-                include_resources=include_resources,
-                card_view=True,
+            papers = paper_service.hydrate_cards(
+                db_papers, include_resources=include_resources
             )
 
             award_by_paper_id: dict[int, Optional[str]] = {}
@@ -447,16 +445,9 @@ class ConferenceService:
                 )
                 award_by_paper_id = {paper_id: award for paper_id, award in award_rows}
 
-            papers = []
-            for db_paper in db_papers:
-                paper = paper_service._convert_db_paper_to_api(
-                    db_paper,
-                    include_resources=include_resources,
-                    relation_data=relation_data,
-                )
+            for paper in papers:
                 if presentation in ("outstanding", "best_paper_finalist"):
-                    paper.conference_award = award_by_paper_id.get(db_paper.id)
-                papers.append(paper)
+                    paper.conference_award = award_by_paper_id.get(int(paper.id))
 
             next_page = page + 1 if offset + page_size < total_count else None
             previous_page = page - 1 if page > 1 else None

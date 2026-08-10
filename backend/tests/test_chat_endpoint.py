@@ -1064,13 +1064,16 @@ class _FakeQuery:
 
 
 class _FakeSession:
-    def __init__(self, papers):
+    def __init__(self, papers, conference_rows=None):
         self.papers = papers
+        self.conference_rows = conference_rows or []
         self.closed = False
 
     def query(self, *entities):
         if len(entities) == 1 and entities[0] is chat_mcp.DBPaper:
             return _FakeQuery(self.papers)
+        if len(entities) == 2 and entities[1] is chat_mcp.DBConference:
+            return _FakeQuery(self.conference_rows)
         return _FakeQuery([])
 
     def close(self):
@@ -1087,19 +1090,12 @@ def test_search_payload_supports_external_rows_and_bounds_content(monkeypatch):
         title="Release",
         abstract="x" * 5_000,
         date_published=date(2026, 7, 1),
-        conference=None,
+        conference="Legacy Conference",
         citation_count=4,
     )
-    session = _FakeSession([paper])
-    relation_data = {
-        "authors": {9: ["Lab"]},
-        "tasks": {9: [SimpleNamespace(name="Language Modeling", slug="lm")]},
-        "methods": {9: [SimpleNamespace(name="Transformer", slug="transformer")]},
-        "repositories": {
-            9: [SimpleNamespace(url="https://github.com/acme/model", num_stars=10)]
-        },
-        "project_pages": {9: [SimpleNamespace(url="https://acme.example/model")]},
-    }
+    session = _FakeSession(
+        [paper], [(9, SimpleNamespace(name="Linked Conference", year=2026))]
+    )
 
     class FakePaperService:
         def __init__(self, _db):
@@ -1111,13 +1107,32 @@ def test_search_payload_supports_external_rows_and_bounds_content(monkeypatch):
             assert mode == "keyword"
             return [SimpleNamespace(id="9")]
 
-        def _get_paper_relation_data(self, ids, include_resources, card_view):
-            assert ids == [9]
-            assert include_resources and card_view
-            return relation_data
-
-        def _resolve_thumbnail_url(self, paper):
-            return paper.thumbnail_url
+        def hydrate_cards(self, papers, include_resources):
+            assert papers == [paper]
+            assert include_resources
+            return [
+                SimpleNamespace(
+                    id="9",
+                    arxiv_id=None,
+                    source="external",
+                    source_url="https://example.com/release",
+                    thumbnail_url="/api/thumbnails/custom/9.webp",
+                    title="Release",
+                    abstract="x" * 5_000,
+                    authors=["Lab"],
+                    published=date(2026, 7, 1),
+                    conference="Legacy Conference",
+                    citation_count=4,
+                    tasks=[SimpleNamespace(name="Language Modeling", slug="lm")],
+                    methods=[SimpleNamespace(name="Transformer", slug="transformer")],
+                    repositories=[
+                        SimpleNamespace(
+                            url="https://github.com/acme/model", num_stars=10
+                        )
+                    ],
+                    project_pages=[SimpleNamespace(url="https://acme.example/model")],
+                )
+            ]
 
     monkeypatch.setattr(chat_mcp, "PaperService", FakePaperService)
     payload = chat_mcp.search_papers_payload(
@@ -1128,6 +1143,7 @@ def test_search_payload_supports_external_rows_and_bounds_content(monkeypatch):
     assert hit["route_id"] == "9"
     assert hit["metadata"]["source"] == "external"
     assert hit["metadata"]["thumbnail_url"] == "/api/thumbnails/custom/9.webp"
+    assert hit["metadata"]["conference"] == "Linked Conference"
     assert len(hit["content"]) == 4_000
     assert hit["content_truncated"] is True
     assert chat_mcp._serialized_size(payload) <= 40_000

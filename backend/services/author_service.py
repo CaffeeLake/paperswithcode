@@ -250,11 +250,7 @@ class AuthorService:
             from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
-
-            papers = []
-            for db_paper in db_papers:
-                paper = paper_service._convert_db_paper_to_api(db_paper)
-                papers.append(paper)
+            papers = paper_service.hydrate_cards(db_papers, include_resources=False)
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None

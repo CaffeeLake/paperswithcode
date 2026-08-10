@@ -1143,20 +1143,9 @@ class TaskService:
             from backend.services.paper_service import PaperService
 
             paper_service = PaperService(self.db)
-            relation_data = paper_service._get_paper_relation_data(
-                [paper.id for paper in db_papers],
-                include_resources=include_resources,
-                card_view=True,
+            papers = paper_service.hydrate_cards(
+                db_papers, include_resources=include_resources
             )
-
-            papers = []
-            for db_paper in db_papers:
-                paper = paper_service._convert_db_paper_to_api(
-                    db_paper,
-                    include_resources=include_resources,
-                    relation_data=relation_data,
-                )
-                papers.append(paper)
 
             # Calculate pagination
             next_page = page + 1 if offset + page_size < total_count else None

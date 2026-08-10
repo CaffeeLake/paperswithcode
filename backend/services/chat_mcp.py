@@ -142,12 +142,10 @@ def search_papers_payload(
             else []
         )
         papers_by_id = {paper.id: paper for paper in rows}
-        papers = [
+        db_papers = [
             papers_by_id[paper_id] for paper_id in paper_ids if paper_id in papers_by_id
         ]
-        relations = service._get_paper_relation_data(
-            paper_ids, include_resources=True, card_view=True
-        )
+        papers = service.hydrate_cards(db_papers, include_resources=True)
         conference_rows = (
             db.query(DBPaperConference.paper_id, DBConference)
             .join(DBConference, DBPaperConference.conference_id == DBConference.id)
@@ -169,26 +167,20 @@ def search_papers_payload(
             content = original[:content_limit]
             remaining_content -= len(content)
 
-            authors = relations["authors"].get(paper.id, [])[:MAX_RELATION_ITEMS]
-            tasks = relations["tasks"].get(paper.id, [])[:MAX_RELATION_ITEMS]
-            methods = relations["methods"].get(paper.id, [])[:MAX_RELATION_ITEMS]
-            repositories = relations["repositories"].get(paper.id, [])[
-                :MAX_RELATION_ITEMS
-            ]
-            project_pages = relations["project_pages"].get(paper.id, [])[
-                :MAX_RELATION_ITEMS
-            ]
+            authors = paper.authors[:MAX_RELATION_ITEMS]
+            tasks = (paper.tasks or [])[:MAX_RELATION_ITEMS]
+            methods = (paper.methods or [])[:MAX_RELATION_ITEMS]
+            repositories = (paper.repositories or [])[:MAX_RELATION_ITEMS]
+            project_pages = (paper.project_pages or [])[:MAX_RELATION_ITEMS]
             source = "external" if paper.source == "external" else "arxiv"
-            linked_conference = conferences.get(paper.id)
+            linked_conference = conferences.get(int(paper.id))
             metadata = ChatPaperMetadata(
                 arxiv_id=_bounded(paper.arxiv_id, 50),
                 source=source,
                 source_url=_bounded(paper.source_url, 500),
-                thumbnail_url=_bounded(service._resolve_thumbnail_url(paper), 1_000),
+                thumbnail_url=_bounded(paper.thumbnail_url, 1_000),
                 authors=[{"name": _bounded(name, 200) or ""} for name in authors],
-                published=paper.date_published.isoformat()
-                if paper.date_published
-                else None,
+                published=paper.published.isoformat() if paper.published else None,
                 conference=_bounded(
                     linked_conference.name if linked_conference else paper.conference,
                     200,
@@ -212,7 +204,9 @@ def search_papers_payload(
             )
             hit = ChatPaperHit(
                 route_id=str(
-                    get_paper_route_identifier(paper.source, paper.arxiv_id, paper.id)
+                    get_paper_route_identifier(
+                        paper.source, paper.arxiv_id, int(paper.id)
+                    )
                 ),
                 title=_bounded(paper.title, 500) or "Untitled",
                 content=content,

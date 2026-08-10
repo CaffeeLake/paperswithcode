@@ -318,7 +318,7 @@ def test_framework_scope_includes_resource_links():
     assert [task.slug for task in scope.recommended_tasks] == ["robotics"]
 
 
-def test_paper_list_combines_exact_taxonomy_filters(monkeypatch):
+def test_paper_list_combines_exact_taxonomy_filters():
     database = ScopeDatabase(
         task=SimpleNamespace(id=1),
         method=SimpleNamespace(id=2),
@@ -326,7 +326,6 @@ def test_paper_list_combines_exact_taxonomy_filters(monkeypatch):
         conference=SimpleNamespace(id=4),
     )
     service = PaperService(database)
-    monkeypatch.setattr(service, "_get_paper_relation_data", lambda *args, **kwargs: {})
 
     response = service.get_papers(
         task="Image Classification",
@@ -365,11 +364,12 @@ def test_repository_trending_uses_scoped_order_and_keeps_all_papers(monkeypatch)
         "apply_scoped_trending_order",
         lambda query: scoped_order_calls.append(query) or query,
     )
-    monkeypatch.setattr(service, "_get_paper_relation_data", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         service,
-        "_convert_db_paper_to_api",
-        lambda paper, **kwargs: Paper.model_construct(id=str(paper.id)),
+        "hydrate_cards",
+        lambda papers, **kwargs: [
+            Paper.model_construct(id=str(paper.id)) for paper in papers
+        ],
     )
 
     response = service.get_papers(

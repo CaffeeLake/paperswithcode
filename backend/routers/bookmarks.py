@@ -9,6 +9,7 @@ Bucket. After migration, database rows are retained as a compatibility mirror.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
@@ -81,6 +82,21 @@ class SavedPapersResponse(BaseModel):
         False,
         description="Whether the response was read from the user's HF Bucket",
     )
+
+
+@dataclass
+class _SavedTaskBucket:
+    id: Optional[int]
+    slug: Optional[str]
+    name: str
+    papers: List[ApiPaper] = field(default_factory=list)
+
+
+@dataclass
+class _SavedAreaBucket:
+    id: Optional[int]
+    name: str
+    tasks: Dict[Optional[int], _SavedTaskBucket] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -270,21 +286,17 @@ def get_my_bookmarks(
     }
 
     service = PaperService(db)
-    relation_data = service._get_paper_relation_data(paper_ids, include_resources=False)
     api_papers: Dict[int, ApiPaper] = {
-        p.id: service._convert_db_paper_to_api(
-            p, include_resources=False, relation_data=relation_data
+        int(paper.id): paper
+        for paper in service.hydrate_cards(
+            ordered_papers,
+            include_resources=False,
         )
-        for p in ordered_papers
     }
 
     # Two-level grouping: area → task → papers. We use `None` keys for the
     # catch-all buckets (paper has no task, or task has no area).
-    AreaKey = Optional[int]
-    TaskKey = Optional[int]
-
-    areas: Dict[AreaKey, Dict[str, object]] = {}
-    area_order: List[AreaKey] = []
+    areas: Dict[Optional[int], _SavedAreaBucket] = {}
 
     for db_paper in ordered_papers:
         primary = primary_by_paper.get(db_paper.id)
@@ -298,51 +310,42 @@ def get_my_bookmarks(
             if task_id is None:
                 task_name = "Untagged"
 
-        if area_id not in areas:
-            areas[area_id] = {
-                "id": area_id,
-                "name": area_name or "Other",
-                "tasks": {},
-                "task_order": [],
-            }
-            area_order.append(area_id)
+        area_bucket = areas.get(area_id)
+        if area_bucket is None:
+            area_bucket = _SavedAreaBucket(
+                id=area_id,
+                name=area_name or "Other",
+            )
+            areas[area_id] = area_bucket
 
-        area_bucket = areas[area_id]
-        tasks_dict: Dict[TaskKey, Dict[str, object]] = area_bucket["tasks"]  # type: ignore[assignment]
-        task_order: List[TaskKey] = area_bucket["task_order"]  # type: ignore[assignment]
+        task_bucket = area_bucket.tasks.get(task_id)
+        if task_bucket is None:
+            task_bucket = _SavedTaskBucket(
+                id=task_id,
+                slug=task_slug,
+                name=task_name or "Untagged",
+            )
+            area_bucket.tasks[task_id] = task_bucket
 
-        if task_id not in tasks_dict:
-            tasks_dict[task_id] = {
-                "id": task_id,
-                "slug": task_slug,
-                "name": task_name or "Untagged",
-                "papers": [],
-            }
-            task_order.append(task_id)
-
-        tasks_dict[task_id]["papers"].append(api_papers[db_paper.id])  # type: ignore[index]
+        task_bucket.papers.append(api_papers[db_paper.id])
 
     # Materialise into Pydantic objects in deterministic order.
-    out_areas: List[SavedAreaGroup] = []
-    for area_id in area_order:
-        bucket = areas[area_id]
-        task_buckets: Dict[TaskKey, Dict[str, object]] = bucket["tasks"]  # type: ignore[assignment]
-        task_order_list: List[TaskKey] = bucket["task_order"]  # type: ignore[assignment]
-        out_areas.append(
-            SavedAreaGroup(
-                id=bucket["id"],  # type: ignore[arg-type]
-                name=str(bucket["name"]),
-                tasks=[
-                    SavedTaskGroup(
-                        id=task_buckets[tid]["id"],  # type: ignore[arg-type]
-                        slug=task_buckets[tid]["slug"],  # type: ignore[arg-type]
-                        name=str(task_buckets[tid]["name"]),
-                        papers=task_buckets[tid]["papers"],  # type: ignore[arg-type]
-                    )
-                    for tid in task_order_list
-                ],
-            )
+    out_areas = [
+        SavedAreaGroup(
+            id=area_bucket.id,
+            name=area_bucket.name,
+            tasks=[
+                SavedTaskGroup(
+                    id=task_bucket.id,
+                    slug=task_bucket.slug,
+                    name=task_bucket.name,
+                    papers=task_bucket.papers,
+                )
+                for task_bucket in area_bucket.tasks.values()
+            ],
         )
+        for area_bucket in areas.values()
+    ]
 
     return SavedPapersResponse(
         count=len(api_papers),

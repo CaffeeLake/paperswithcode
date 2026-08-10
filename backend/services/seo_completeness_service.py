@@ -130,18 +130,12 @@ class SeoCompletenessService:
             .all()
         )
         ids = [paper.id for paper in rows]
-        relations = self.paper_service._get_paper_relation_data(
-            ids, include_resources=True
-        )
+        papers = self.paper_service.hydrate_details(rows, include_resources=True)
         evaluated = self._evaluation_ids(ids)
         return [
             score_paper(
-                self.paper_service._convert_db_paper_to_api(
-                    paper,
-                    include_resources=True,
-                    relation_data=relations,
-                ),
-                has_evaluations=paper.id in evaluated,
+                paper,
+                has_evaluations=int(paper.id) in evaluated,
             )
-            for paper in rows
+            for paper in papers
         ]

@@ -62,6 +62,127 @@ def test_bookmark_reads_keep_legacy_data_visible_without_bucket_authorization():
     assert refs[0].title == "Existing saved paper"
 
 
+class BookmarkListingQuery:
+    def __init__(self, papers):
+        self.papers = papers
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def all(self):
+        return self.papers
+
+
+class BookmarkListingRows:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fetchall(self):
+        return self.rows
+
+
+class BookmarkListingDb:
+    def __init__(self, papers, primary_rows):
+        self.papers = papers
+        self.primary_rows = primary_rows
+        self.primary_params = None
+
+    def query(self, entity):
+        assert entity is DBPaper
+        return BookmarkListingQuery(self.papers)
+
+    def execute(self, _statement, params):
+        self.primary_params = params
+        return BookmarkListingRows(self.primary_rows)
+
+
+def test_bookmark_groups_preserve_first_seen_order_and_use_card_hydration(monkeypatch):
+    papers = [
+        SimpleNamespace(id=paper_id, title=f"Paper {paper_id}")
+        for paper_id in (10, 20, 30, 40, 50)
+    ]
+    db = BookmarkListingDb(
+        papers,
+        primary_rows=[
+            (40, 11, "classification", "Classification", 1, "Vision"),
+            (20, 21, "unscoped", "Unscoped", None, None),
+            (30, 12, "segmentation", "Segmentation", 1, "Vision"),
+            (50, 12, "segmentation", "Segmentation", 1, "Vision"),
+        ],
+    )
+    bookmark_ids = [50, 40, 30, 20, 10]
+    monkeypatch.setattr(
+        bookmarks,
+        "_bookmark_refs",
+        lambda *_args: (
+            [SimpleNamespace(paper_id=paper_id) for paper_id in bookmark_ids],
+            True,
+        ),
+    )
+    hydrate_calls = []
+
+    class HydratingPaperService:
+        def __init__(self, service_db):
+            assert service_db is db
+
+        def hydrate_cards(self, db_papers, *, include_resources):
+            hydrate_calls.append(([paper.id for paper in db_papers], include_resources))
+            return [
+                bookmarks.ApiPaper(
+                    id=str(paper.id),
+                    title=paper.title,
+                    authors=[],
+                )
+                for paper in db_papers
+            ]
+
+    monkeypatch.setattr(bookmarks, "PaperService", HydratingPaperService)
+
+    response = bookmarks.get_my_bookmarks(
+        _request(),
+        {"username": "alice", "hf_user_id": "hf-alice"},
+        db,
+    )
+
+    assert hydrate_calls == [(bookmark_ids, False)]
+    assert db.primary_params == {"paper_ids": bookmark_ids}
+    assert response.count == 5
+    assert response.bucket_connected is True
+    assert [
+        (
+            area.id,
+            area.name,
+            [
+                (
+                    task.id,
+                    task.slug,
+                    task.name,
+                    [paper.id for paper in task.papers],
+                )
+                for task in area.tasks
+            ],
+        )
+        for area in response.areas
+    ] == [
+        (
+            1,
+            "Vision",
+            [
+                (12, "segmentation", "Segmentation", ["50", "30"]),
+                (11, "classification", "Classification", ["40"]),
+            ],
+        ),
+        (
+            None,
+            "Other",
+            [
+                (21, "unscoped", "Unscoped", ["20"]),
+                (None, None, "Untagged", ["10"]),
+            ],
+        ),
+    ]
+
+
 def test_bookmark_mutations_request_bucket_authorization_dynamically():
     db = LegacyBookmarkDb([])
     user = {"username": "alice", "hf_user_id": "hf-alice"}

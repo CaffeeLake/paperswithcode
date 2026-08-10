@@ -9,9 +9,8 @@ This service handles all paper-related operations, including:
 """
 
 import re
-from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Sequence
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, asc, or_, func, text
 
@@ -21,21 +20,13 @@ from backend.models.database import (
     PaperAuthor,
     Task as DBTask,
     Method as DBMethod,
-    PaperTask,
-    PaperMethod,
-    PaperRelation as DBPaperRelation,
     Repository as DBRepository,
     PaperRepository as DBPaperRepository,
-    ProjectPage as DBProjectPage,
-    PaperProjectPage as DBPaperProjectPage,
-    Dataset as DBDataset,
     Conference as DBConference,
-    PaperConference as DBPaperConference,
     Organization as DBOrganization,
     PaperOrganization as DBPaperOrganization,
     HfArtifact as DBHfArtifact,
     PaperHfArtifact as DBPaperHfArtifact,
-    Evaluation as DBEvaluation,
     Framework as DBFramework,
     TaskFramework as DBTaskFramework,
 )
@@ -55,31 +46,20 @@ from backend.models.api import (
     RelatedPaperRecommendation,
     PaperVersion,
     PaperVersions,
-    Repository,
-    ProjectPage,
     TaskSummary,
-    MethodSummary,
-    BenchmarkSummary,
-    LeaderboardRankSummary,
-    RelatedPaperSummary,
     VersionComparison,
-    AuthorLink,
-    OrganizationSummary,
     HfArtifactSummary,
-    FrameworkSummary,
 )
 from backend.utils.urls import (
     get_arxiv_abs_url,
-    get_method_source_url,
     get_paper_abs_url,
     get_paper_pdf_url,
-    get_paper_route_identifier,
     get_paper_url,
 )
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.utils.organization_logos import organization_logo_path
 from backend.config import get_settings
 from backend.services.hf_artifact_service import sync_explicit_hf_artifact_links
+from backend.services.paper_relation_loader import PaperRelationLoader, PaperRelations
 from backend.services.paper_retrieval_service import PaperRetrievalService
 from backend.services.paper_version_refresh_service import (
     ArxivPaperRefreshResult,
@@ -121,413 +101,35 @@ class PaperService:
                 return build_custom_thumbnail_url(filename)
         return None
 
-    @staticmethod
-    def _convert_db_method_to_summary(
-        method: DBMethod, source_paper: Optional[DBPaper] = None
-    ) -> MethodSummary:
-        return MethodSummary(
-            id=str(method.id),
-            name=method.name,
-            slug=method.slug,
-            introduced_year=method.introduced_year,
-            source_paper_id=str(method.source_paper_id)
-            if method.source_paper_id is not None
-            else None,
-            source_url=get_method_source_url(method.source_url, source_paper),
-            source_title=method.source_title,
-            code_snippet_url=method.code_snippet_url,
-        )
-
-    @staticmethod
-    def _convert_db_paper_to_related_summary(
-        related: DBPaper,
-    ) -> RelatedPaperSummary:
-        """
-        Convert a related (predecessor/successor) paper row into the lightweight
-        summary used inside the paper detail response lineage banner.
-        """
-        return RelatedPaperSummary(
-            id=str(related.id),
-            title=related.title,
-            arxiv_id=related.arxiv_id,
-            source=related.source,
-            source_url=related.source_url,
-            published=related.date_published,
-            route_identifier=get_paper_route_identifier(
-                related.source, related.arxiv_id, related.id
-            ),
-        )
-
-    def _get_paper_relation_data(
+    def hydrate_cards(
         self,
-        paper_ids: List[int],
+        db_papers: Sequence[DBPaper],
+        *,
         include_resources: bool = False,
-        card_view: bool = False,
-    ) -> Dict[str, Dict[int, list]]:
-        """
-        Load paper relationships in batches for API serialization.
-
-        When `card_view` is True, only the relations the paper-card UI actually
-        renders are loaded (authors, tasks, methods, organizations, and — when
-        `include_resources` is set — repositories and project pages). The
-        heavier detail-only relations (author links, introduced benchmarks,
-        paper lineage, and conference) are skipped to cut both SQL round-trips
-        and serialized payload size for list endpoints.
-        """
-        unique_ids = list(dict.fromkeys(int(paper_id) for paper_id in paper_ids))
-        relation_data = {
-            "authors": defaultdict(list),
-            "author_links": defaultdict(list),
-            "tasks": defaultdict(list),
-            "methods": defaultdict(list),
-            "repositories": defaultdict(list),
-            "project_pages": defaultdict(list),
-            "introduced_benchmarks": defaultdict(list),
-            "introduced_frameworks": defaultdict(list),
-            "predecessor_papers": defaultdict(list),
-            "successor_papers": defaultdict(list),
-            "conferences": {},
-            "organizations": defaultdict(list),
-            "hf_artifact_counts": defaultdict(dict),
-            "leaderboard_ranks": defaultdict(list),
-        }
-
-        if not unique_ids:
-            return relation_data
-
-        author_rows = (
-            self.db.query(
-                PaperAuthor.paper_id,
-                DBAuthor.id,
-                DBAuthor.name,
-                DBAuthor.hf_username,
-            )
-            .join(DBAuthor, PaperAuthor.author_id == DBAuthor.id)
-            .filter(PaperAuthor.paper_id.in_(unique_ids))
-            .order_by(PaperAuthor.paper_id, PaperAuthor.author_order)
-            .all()
-        )
-        for paper_id, author_id, author_name, hf_username in author_rows:
-            relation_data["authors"][paper_id].append(author_name)
-            if not card_view:
-                relation_data["author_links"][paper_id].append(
-                    AuthorLink(
-                        id=str(author_id),
-                        name=author_name,
-                        hf_username=hf_username,
-                    )
-                )
-
-        task_rows = (
-            self.db.query(PaperTask.paper_id, DBTask)
-            .join(DBTask, PaperTask.task_id == DBTask.id)
-            .filter(PaperTask.paper_id.in_(unique_ids))
-            .order_by(PaperTask.paper_id, DBTask.name)
-            .all()
-        )
-        for paper_id, task in task_rows:
-            relation_data["tasks"][paper_id].append(
-                TaskSummary(id=str(task.id), name=task.name, slug=task.slug)
-            )
-
-        method_rows = (
-            self.db.query(PaperMethod.paper_id, DBMethod)
-            .join(DBMethod, PaperMethod.method_id == DBMethod.id)
-            .filter(PaperMethod.paper_id.in_(unique_ids))
-            .order_by(PaperMethod.paper_id, DBMethod.name)
-            .all()
-        )
-        source_paper_ids = [
-            method.source_paper_id
-            for _, method in method_rows
-            if method.source_paper_id is not None
-        ]
-        source_papers_by_id = {}
-        if source_paper_ids:
-            source_papers_by_id = {
-                paper.id: paper
-                for paper in self.db.query(DBPaper)
-                .filter(DBPaper.id.in_(set(source_paper_ids)))
-                .all()
-            }
-        for paper_id, method in method_rows:
-            relation_data["methods"][paper_id].append(
-                self._convert_db_method_to_summary(
-                    method,
-                    source_papers_by_id.get(method.source_paper_id),
-                )
-            )
-
-        # Hugging Face artifact counts per paper, grouped by kind. Powers the
-        # feed-card HF link, which points at the most populated category. One
-        # batched aggregate query keeps round-trips at O(1) for list views.
-        hf_count_rows = (
-            self.db.query(
-                DBPaperHfArtifact.paper_id,
-                DBHfArtifact.kind,
-                func.count().label("cnt"),
-            )
-            .join(
-                DBHfArtifact,
-                DBPaperHfArtifact.hf_artifact_id == DBHfArtifact.id,
-            )
-            .filter(DBPaperHfArtifact.paper_id.in_(unique_ids))
-            .group_by(DBPaperHfArtifact.paper_id, DBHfArtifact.kind)
-            .all()
-        )
-        for paper_id, kind, cnt in hf_count_rows:
-            relation_data["hf_artifact_counts"][paper_id][kind] = int(cnt)
-
-        # Top-3 leaderboard placements per paper, powering the SOTA/#2/#3 badges
-        # on feed cards. `best_rank` is precomputed per (task, dataset, metric),
-        # so this is one batched indexed query. A paper can rank on the same
-        # dataset under multiple tasks/metrics; we dedupe by dataset keeping the
-        # best (lowest) rank. Loaded for card views too since cards render it.
-        rank_rows = (
-            self.db.query(
-                DBEvaluation.paper_id,
-                DBEvaluation.dataset_id,
-                DBEvaluation.id,
-                DBEvaluation.best_rank,
-                DBEvaluation.best_metric,
-                DBDataset.name,
-                DBDataset.slug,
-                DBTask.slug,
-            )
-            .join(DBDataset, DBEvaluation.dataset_id == DBDataset.id)
-            .join(DBTask, DBEvaluation.task_id == DBTask.id)
-            .filter(
-                DBEvaluation.paper_id.in_(unique_ids),
-                DBEvaluation.best_rank.isnot(None),
-                DBEvaluation.best_rank <= 3,
-            )
-            .order_by(
-                DBEvaluation.paper_id,
-                DBEvaluation.best_rank.asc(),
-                DBDataset.name,
-                DBEvaluation.id,
-            )
-            .all()
-        )
-        seen_paper_datasets: set = set()
-        for (
-            paper_id,
-            dataset_id,
-            evaluation_id,
-            best_rank,
-            best_metric,
-            name,
-            slug,
-            task_slug,
-        ) in rank_rows:
-            key = (paper_id, dataset_id)
-            if key in seen_paper_datasets:
-                continue
-            seen_paper_datasets.add(key)
-            relation_data["leaderboard_ranks"][paper_id].append(
-                LeaderboardRankSummary(
-                    evaluation_id=str(evaluation_id),
-                    dataset_name=name,
-                    dataset_slug=slug,
-                    best_rank=int(best_rank),
-                    best_metric=best_metric,
-                    task_slug=task_slug,
-                )
-            )
-
-        # Organization logos are rendered beside titles on paper cards as well
-        # as on paper detail pages, so load them for both response shapes.
-        organization_rows = (
-            self.db.query(DBPaperOrganization, DBOrganization)
-            .join(
-                DBOrganization,
-                DBPaperOrganization.organization_id == DBOrganization.id,
-            )
-            .filter(DBPaperOrganization.paper_id.in_(unique_ids))
-            .order_by(DBPaperOrganization.paper_id, DBOrganization.name)
-            .all()
-        )
-        for link, organization in organization_rows:
-            relation_data["organizations"][link.paper_id].append(
-                OrganizationSummary(
-                    id=str(organization.id),
-                    name=organization.name,
-                    slug=organization.slug,
-                    logo_url=(
-                        organization_logo_path(
-                            organization.slug,
-                            organization.logo_mime_type,
-                            organization.logo_sha256,
-                        )
-                        if organization.logo_mime_type
-                        else organization.logo_url
-                    ),
-                    source=link.source,
-                    added_by_hf_username=link.added_by_hf_username,
-                )
-            )
-
-        # Detail-only relations. Paper cards never render introduced
-        # benchmarks, lineage banners, or the conference badge, so list
-        # endpoints skip these queries and payloads via `card_view`.
-        if not card_view:
-            introduced_dataset_rows = (
-                self.db.query(DBDataset)
-                .filter(DBDataset.introducing_paper_id.in_(unique_ids))
-                .order_by(DBDataset.introducing_paper_id, DBDataset.name)
-                .all()
-            )
-            for dataset in introduced_dataset_rows:
-                relation_data["introduced_benchmarks"][
-                    dataset.introducing_paper_id
-                ].append(
-                    BenchmarkSummary(
-                        id=str(dataset.id),
-                        name=dataset.name,
-                        slug=dataset.slug,
-                        full_name=dataset.full_name,
-                        introduced_year=dataset.introduced_year,
-                    )
-                )
-
-            introduced_framework_rows = (
-                self.db.query(DBFramework)
-                .filter(DBFramework.introducing_paper_id.in_(unique_ids))
-                .order_by(DBFramework.introducing_paper_id, DBFramework.name)
-                .all()
-            )
-            for framework in introduced_framework_rows:
-                relation_data["introduced_frameworks"][
-                    framework.introducing_paper_id
-                ].append(
-                    FrameworkSummary(
-                        id=str(framework.id),
-                        slug=framework.slug,
-                        name=framework.name,
-                    )
-                )
-
-            # Directed paper lineage edges. For each requested paper, load
-            # successors (outgoing edges where the requested paper is the
-            # predecessor) and predecessors (incoming edges where the requested
-            # paper is the successor). Two batched queries with eager-loaded
-            # related Paper rows keep round-trips at O(1) per detail call.
-            successor_rows = (
-                self.db.query(DBPaperRelation.source_paper_id, DBPaper)
-                .join(DBPaper, DBPaperRelation.target_paper_id == DBPaper.id)
-                .filter(DBPaperRelation.source_paper_id.in_(unique_ids))
-                .order_by(
-                    DBPaperRelation.source_paper_id,
-                    DBPaper.date_published.asc().nullslast(),
-                    DBPaper.id,
-                )
-                .all()
-            )
-            for paper_id, related in successor_rows:
-                relation_data["successor_papers"][paper_id].append(
-                    self._convert_db_paper_to_related_summary(related)
-                )
-
-            predecessor_rows = (
-                self.db.query(DBPaperRelation.target_paper_id, DBPaper)
-                .join(DBPaper, DBPaperRelation.source_paper_id == DBPaper.id)
-                .filter(DBPaperRelation.target_paper_id.in_(unique_ids))
-                .order_by(
-                    DBPaperRelation.target_paper_id,
-                    DBPaper.date_published.asc().nullslast(),
-                    DBPaper.id,
-                )
-                .all()
-            )
-            for paper_id, related in predecessor_rows:
-                relation_data["predecessor_papers"][paper_id].append(
-                    self._convert_db_paper_to_related_summary(related)
-                )
-
-            conference_rows = (
-                self.db.query(DBPaperConference.paper_id, DBConference)
-                .join(DBConference, DBPaperConference.conference_id == DBConference.id)
-                .filter(DBPaperConference.paper_id.in_(unique_ids))
-                .order_by(
-                    DBPaperConference.paper_id,
-                    desc(DBConference.year),
-                    DBConference.name,
-                )
-                .all()
-            )
-            for paper_id, conference in conference_rows:
-                if paper_id not in relation_data["conferences"]:
-                    relation_data["conferences"][paper_id] = conference
-
+    ) -> list[Paper]:
+        """Hydrate paper rows with the relations rendered by card surfaces."""
+        papers = list(db_papers)
+        paper_ids = [paper.id for paper in papers]
+        loader = PaperRelationLoader(self.db)
+        relations = loader.load_cards(paper_ids)
         if include_resources:
-            repository_rows = (
-                self.db.query(
-                    DBPaperRepository.paper_id,
-                    DBPaperRepository.is_official,
-                    DBRepository,
-                )
-                .join(
-                    DBRepository,
-                    DBPaperRepository.repository_id == DBRepository.id,
-                )
-                .filter(DBPaperRepository.paper_id.in_(unique_ids))
-                .order_by(
-                    DBPaperRepository.paper_id,
-                    desc(DBPaperRepository.is_official),
-                    desc(DBRepository.num_stars),
-                )
-                .all()
-            )
-            for paper_id, is_official, repository in repository_rows:
-                relation_data["repositories"][paper_id].append(
-                    Repository(
-                        id=str(repository.id),
-                        url=repository.url,
-                        owner=repository.owner,
-                        name=repository.name,
-                        num_stars=repository.num_stars,
-                        is_official=is_official,
-                        source=repository.source,
-                        trending_score=float(repository.trending_score)
-                        if repository.trending_score is not None
-                        else None,
-                        trending_score_updated_at=repository.trending_score_updated_at,
-                        created_at=repository.created_at.date()
-                        if repository.created_at
-                        else None,
-                        updated_at=repository.updated_at.date()
-                        if repository.updated_at
-                        else None,
-                    )
-                )
+            loader.load_resources(paper_ids, relations)
+        return [self._to_api_paper(paper, relations) for paper in papers]
 
-            project_page_rows = (
-                self.db.query(DBPaperProjectPage.paper_id, DBProjectPage)
-                .join(
-                    DBProjectPage,
-                    DBPaperProjectPage.project_page_id == DBProjectPage.id,
-                )
-                .filter(DBPaperProjectPage.paper_id.in_(unique_ids))
-                .order_by(DBPaperProjectPage.paper_id, desc(DBProjectPage.created_at))
-                .all()
-            )
-            for paper_id, project_page in project_page_rows:
-                relation_data["project_pages"][paper_id].append(
-                    ProjectPage(
-                        id=str(project_page.id),
-                        url=project_page.url,
-                        is_official=project_page.is_official,
-                        source=project_page.source,
-                        created_at=project_page.created_at.date()
-                        if project_page.created_at
-                        else None,
-                        updated_at=project_page.updated_at.date()
-                        if project_page.updated_at
-                        else None,
-                    )
-                )
-
-        return relation_data
+    def hydrate_details(
+        self,
+        db_papers: Sequence[DBPaper],
+        *,
+        include_resources: bool = False,
+    ) -> list[Paper]:
+        """Hydrate paper rows with card and detail-only relations."""
+        papers = list(db_papers)
+        paper_ids = [paper.id for paper in papers]
+        loader = PaperRelationLoader(self.db)
+        relations = loader.load_details(paper_ids)
+        if include_resources:
+            loader.load_resources(paper_ids, relations)
+        return [self._to_api_paper(paper, relations) for paper in papers]
 
     # Map the singular DB artifact kind to the Hugging Face listing path segment.
     _HF_KIND_TO_PATH = {"model": "models", "dataset": "datasets", "space": "spaces"}
@@ -639,29 +241,14 @@ class PaperService:
 
         raise ValueError(f"Unsupported time window: {time_window}")
 
-    def _convert_db_paper_to_api(
+    def _to_api_paper(
         self,
         db_paper: DBPaper,
-        include_resources: bool = False,
-        relation_data: Optional[Dict[str, Dict[int, list]]] = None,
+        relations: PaperRelations,
     ) -> Paper:
-        """
-        Convert database paper model to API paper model.
-
-        Args:
-            db_paper: Database paper instance
-            include_resources: Whether to include repositories and project pages
-
-        Returns:
-            API Paper model
-        """
-        if relation_data is None:
-            relation_data = self._get_paper_relation_data(
-                [db_paper.id], include_resources=include_resources
-            )
-
-        authors = relation_data["authors"].get(db_paper.id, [])
-        author_links = relation_data["author_links"].get(db_paper.id, [])
+        """Convert one database paper using an already-loaded projection."""
+        authors = relations.authors.get(db_paper.id, [])
+        author_links = relations.author_links.get(db_paper.id, [])
 
         # Source-aware URL construction. ArXiv rows derive abs/pdf URLs from
         # `arxiv_id` + `version`. External rows use `source_url` for the
@@ -678,35 +265,21 @@ class PaperService:
 
         thumbnail_url = self._resolve_thumbnail_url(db_paper)
 
-        tasks = relation_data["tasks"].get(db_paper.id) or None
-        methods = relation_data["methods"].get(db_paper.id) or None
-        introduced_benchmarks = (
-            relation_data["introduced_benchmarks"].get(db_paper.id) or None
-        )
-        introduced_frameworks = (
-            relation_data["introduced_frameworks"].get(db_paper.id) or None
-        )
-        predecessor_papers = (
-            relation_data["predecessor_papers"].get(db_paper.id) or None
-        )
-        successor_papers = relation_data["successor_papers"].get(db_paper.id) or None
-        organizations = relation_data["organizations"].get(db_paper.id) or None
-        leaderboard_ranks = relation_data["leaderboard_ranks"].get(db_paper.id) or None
-        linked_conference = relation_data["conferences"].get(db_paper.id)
+        tasks = relations.tasks.get(db_paper.id) or None
+        methods = relations.methods.get(db_paper.id) or None
+        introduced_benchmarks = relations.introduced_benchmarks.get(db_paper.id) or None
+        introduced_frameworks = relations.introduced_frameworks.get(db_paper.id) or None
+        predecessor_papers = relations.predecessor_papers.get(db_paper.id) or None
+        successor_papers = relations.successor_papers.get(db_paper.id) or None
+        organizations = relations.organizations.get(db_paper.id) or None
+        leaderboard_ranks = relations.leaderboard_ranks.get(db_paper.id) or None
+        linked_conference = relations.conferences.get(db_paper.id)
         hf_artifact_summary = self._build_hf_artifact_summary(
             db_paper,
-            relation_data["hf_artifact_counts"].get(db_paper.id) or {},
+            relations.hf_artifact_counts.get(db_paper.id) or {},
         )
-        repositories = (
-            relation_data["repositories"].get(db_paper.id) or None
-            if include_resources
-            else None
-        )
-        project_pages = (
-            relation_data["project_pages"].get(db_paper.id) or None
-            if include_resources
-            else None
-        )
+        repositories = relations.repositories.get(db_paper.id) or None
+        project_pages = relations.project_pages.get(db_paper.id) or None
 
         # Create the API model
         paper_data = {
@@ -823,14 +396,9 @@ class PaperService:
             if not db_paper:
                 raise PaperNotFoundError(f"Paper with ID {paper_id} not found")
 
-            relation_data = self._get_paper_relation_data(
-                [db_paper.id], include_resources=include_resources
-            )
-            return self._convert_db_paper_to_api(
-                db_paper,
-                include_resources=include_resources,
-                relation_data=relation_data,
-            )
+            return self.hydrate_details(
+                [db_paper], include_resources=include_resources
+            )[0]
 
         except Exception as e:
             if isinstance(e, PaperNotFoundError):
@@ -926,14 +494,9 @@ class PaperService:
                     f"Paper with ArXiv ID {arxiv_id}{version_text} not found"
                 )
 
-            relation_data = self._get_paper_relation_data(
-                [db_paper.id], include_resources=include_resources
-            )
-            return self._convert_db_paper_to_api(
-                db_paper,
-                include_resources=include_resources,
-                relation_data=relation_data,
-            )
+            return self.hydrate_details(
+                [db_paper], include_resources=include_resources
+            )[0]
 
         except Exception as e:
             if isinstance(e, PaperNotFoundError):
@@ -1158,23 +721,9 @@ class PaperService:
             offset = (page - 1) * page_size
             db_papers = query.offset(offset).limit(page_size).all()
 
-            # Paginated list endpoints render paper cards, so fetch only the
-            # card relations rather than full detail-page relation sets.
-            relation_data = self._get_paper_relation_data(
-                [paper.id for paper in db_papers],
-                include_resources=include_resources,
-                card_view=True,
+            api_papers = self.hydrate_cards(
+                db_papers, include_resources=include_resources
             )
-
-            # Convert to API models
-            api_papers = [
-                self._convert_db_paper_to_api(
-                    db_paper,
-                    include_resources=include_resources,
-                    relation_data=relation_data,
-                )
-                for db_paper in db_papers
-            ]
 
             # Calculate pagination info
             total_pages = (total_count + page_size - 1) // page_size
@@ -1528,24 +1077,9 @@ class PaperService:
                 if paper_id in papers_by_id
             ]
 
-            # The homepage feed renders paper cards, so only fetch the relations
-            # the card UI needs (card_view=True) instead of the full detail-page
-            # relation set (lineage, introduced benchmarks, and conferences).
-            relation_data = self._get_paper_relation_data(
-                [paper.id for paper in db_papers],
-                include_resources=include_resources,
-                card_view=True,
+            api_papers = self.hydrate_cards(
+                db_papers, include_resources=include_resources
             )
-
-            # Convert to API models
-            api_papers = [
-                self._convert_db_paper_to_api(
-                    db_paper,
-                    include_resources=include_resources,
-                    relation_data=relation_data,
-                )
-                for db_paper in db_papers
-            ]
 
             # Calculate pagination info
             total_pages = (total_count + page_size - 1) // page_size
