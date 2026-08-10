@@ -1,3 +1,5 @@
+import { apiUrl } from "@/lib/apiUrl";
+
 export interface GitHubRepo {
   owner: string;
   repository: string;
@@ -60,20 +62,20 @@ export async function fetchGitHubRepoPreview(
   const encodedRepoId = [repo.owner, repo.repository]
     .map(encodeURIComponent)
     .join("/");
-  const response = await fetch(`https://api.github.com/repos/${encodedRepoId}`, {
-    signal,
-  });
+  const response = await fetch(
+    apiUrl(`/api/v1/github/repositories/${encodedRepoId}/preview`),
+    { signal },
+  );
   if (!response.ok) throw new Error(`GitHub repository lookup failed: ${response.status}`);
 
   const payload = await response.json() as Record<string, unknown>;
-  const owner = payload.owner as Record<string, unknown> | undefined;
   return {
     description: typeof payload.description === "string" ? payload.description : null,
-    stars: typeof payload.stargazers_count === "number" ? payload.stargazers_count : 0,
-    forks: typeof payload.forks_count === "number" ? payload.forks_count : 0,
+    stars: typeof payload.stars === "number" ? payload.stars : 0,
+    forks: typeof payload.forks === "number" ? payload.forks : 0,
     language: typeof payload.language === "string" ? payload.language : null,
     archived: payload.archived === true,
-    avatarUrl: typeof owner?.avatar_url === "string" ? owner.avatar_url : "",
+    avatarUrl: typeof payload.avatar_url === "string" ? payload.avatar_url : "",
   };
 }
 

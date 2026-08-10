@@ -19,6 +19,17 @@ from backend.utils.public_urls import (
 )
 
 
+class GithubRepositoryPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = None
+    stars: int = Field(ge=0)
+    forks: int = Field(ge=0)
+    language: str | None = None
+    archived: bool
+    avatar_url: str | None = None
+
+
 class PaperBucketArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

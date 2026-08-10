@@ -310,11 +310,11 @@ describe("Markdown and chat policy", () => {
       ok: true,
       json: async () => ({
         description: "Vision Transformer and MLP-Mixer architectures",
-        stargazers_count: 14_200,
-        forks_count: 2_100,
+        stars: 14_200,
+        forks: 2_100,
         language: "Jupyter Notebook",
         archived: false,
-        owner: { avatar_url: avatar },
+        avatar_url: avatar,
       }),
     });
     vi.stubGlobal("fetch", mockedFetch);
@@ -339,7 +339,7 @@ describe("Markdown and chat policy", () => {
     expect(await screen.findByText("Vision Transformer and MLP-Mixer architectures"))
       .toBeInTheDocument();
     expect(mockedFetch).toHaveBeenCalledWith(
-      "https://api.github.com/repos/google-research/vision_transformer",
+      "/api/v1/github/repositories/google-research/vision_transformer/preview",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getByTestId("github-preview-image")).toHaveAttribute(

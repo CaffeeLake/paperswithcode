@@ -7,7 +7,7 @@ that support the enhanced PapersWithCode functionality.
 
 from typing import Optional, List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Response
 from sqlalchemy.orm import Session
 
 from backend.database.connection import get_database_session
@@ -21,13 +21,42 @@ from backend.models.api import (
     ProjectPageCreateRequest,
     ProjectPageUpdateRequest,
     RepositoryStarHistoryList,
+    GithubRepositoryPreview,
+)
+from backend.config import get_settings
+from backend.services.github_preview_service import (
+    GithubPreviewError,
+    get_github_repository_preview,
 )
 from backend.services.repository_service import RepositoryService
 from backend.services.project_page_service import ProjectPageService
 from backend.utils.exceptions import PaperNotFoundError, DatabaseError
-from backend.utils.auth import require_catalog_mutator, require_fresh_catalog_mutator
+from backend.utils.auth import (
+    require_catalog_mutator,
+    require_fresh_catalog_mutator,
+    require_user,
+)
 
 router = APIRouter()
+
+
+@router.get(
+    "/github/repositories/{owner}/{repository}/preview",
+    response_model=GithubRepositoryPreview,
+    summary="Get cached GitHub repository preview metadata",
+)
+async def get_github_preview(
+    response: Response,
+    owner: str = Path(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"),
+    repository: str = Path(pattern=r"^[A-Za-z0-9._-]{1,100}$"),
+    _user: dict = Depends(require_user),
+):
+    try:
+        preview = await get_github_repository_preview(owner, repository, get_settings())
+    except GithubPreviewError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "private, max-age=1800"
+    return preview
 
 
 @router.get(
