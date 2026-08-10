@@ -37,6 +37,10 @@ def test_manifest_is_strict_unique_and_case_insensitive():
     assert featured_for_hf_handle("ByteDance-Seed").slug == "bytedance-seed"
     assert featured_for_hf_handle("  ANTHROPIC ").slug == "anthropic"
     assert featured_for_hf_handle("meta-llama").slug == "facebook"
+    assert featured_for_hf_handle("AI-at-Meta").slug == "facebook"
+    assert featured_for_hf_handle("facebook-research").slug == "facebook"
+    assert featured_for_hf_handle("metaresearch").slug == "facebook"
+    assert featured_for_hf_handle("MetaSuperintelligenceLab").slug == "facebook"
     assert featured_for_hf_handle("facebook").name_override == "Meta"
     assert featured_for_hf_handle("unlisted-lab") is None
 

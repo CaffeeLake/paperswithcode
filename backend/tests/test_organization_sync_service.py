@@ -165,8 +165,11 @@ def test_featured_sync_combines_hf_alias_papers():
     )
     session.commit()
 
+    seen_hf_slugs = []
+
     class FakeHFClient:
         def fetch(self, hf_slug):
+            seen_hf_slugs.append(hf_slug)
             arxiv_id = "2501.00001" if hf_slug == "facebook" else "2501.00002"
             return HFOrganizationData(
                 hf_slug=hf_slug,
@@ -186,3 +189,11 @@ def test_featured_sync_combines_hf_alias_papers():
     assert organization.hf_paper_count == 2
     assert stats.fetched == 2
     assert stats.linked == 2
+    assert seen_hf_slugs == [
+        "facebook",
+        "meta-llama",
+        "AI-at-Meta",
+        "facebook-research",
+        "metaresearch",
+        "MetaSuperintelligenceLab",
+    ]
