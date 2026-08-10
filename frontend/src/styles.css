@@ -5403,6 +5403,10 @@ html { scroll-behavior: smooth; }
   background: var(--bg-elevated);
   border-radius: 10px;
 }
+.chat-inline-editor-textarea-wrap .chat-inline-editor-textarea {
+  color: transparent;
+  caret-color: var(--ink);
+}
 .chat-inline-editor-textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -5876,6 +5880,7 @@ html { scroll-behavior: smooth; }
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: break-word;
+  color: var(--ink);
 }
 .chat-paper-highlight-layer-composer {
   padding: 12px 12px 4px;
@@ -5890,15 +5895,16 @@ html { scroll-behavior: smooth; }
   line-height: 1.45;
 }
 .chat-paper-inline-highlight {
-  border-radius: 4px;
-  background: color-mix(in oklch, var(--accent) 22%, var(--bg-elevated));
-  box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 34%, transparent);
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 .chat-paper-inline-highlight.is-unavailable {
-  background: var(--negative-bg);
-  box-shadow: 0 0 0 1px var(--negative-border);
+  color: var(--negative-text);
+  text-decoration-color: var(--negative-border);
 }
 .chat-paper-picker {
   position: absolute;
@@ -5964,7 +5970,8 @@ html { scroll-behavior: smooth; }
   font-family: var(--serif);
   font-size: 16px;
   line-height: 1.45;
-  color: var(--ink);
+  color: transparent;
+  caret-color: var(--ink);
   padding: 12px 12px 4px;
 }
 .chat-composer textarea::placeholder { color: var(--ink-faint); }
