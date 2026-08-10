@@ -25,6 +25,9 @@ from backend.services.chat_sandbox_pool_coordinator import (
 )
 from backend.services.chat_sandbox_pool_repository import (
     ChatSandboxPoolRepository,
+    PoolLandingDurability,
+    PoolLandingOutcome,
+    PoolStartReservation,
     PoolTerminationClaim,
 )
 from backend.services.chat_sandbox_provider import SandboxError
@@ -136,9 +139,21 @@ class _Provider:
         self.termination_confirmed = True
         self.termination_calls: list[str] = []
         self.termination_hook = None
+        self.create_calls: list[dict] = []
+        self.create_error: BaseException | None = None
+        self.create_hook = None
+        self._sandbox_ids = count(1)
 
-    async def create(self, **_kwargs):
-        raise AssertionError("increment-A coordinator must not create providers")
+    async def create(self, **kwargs):
+        self.probe.outside_transaction("provider.create")
+        self.create_calls.append(kwargs)
+        if self.create_error is not None:
+            raise self.create_error
+        sandbox = SimpleNamespace(object_id=f"sb-created-{next(self._sandbox_ids)}")
+        self.sandboxes[sandbox.object_id] = sandbox
+        if self.create_hook is not None:
+            await self.create_hook(sandbox, kwargs)
+        return sandbox
 
     async def resolve(self, sandbox_id: str):
         self.probe.outside_transaction("provider.resolve")
@@ -187,11 +202,33 @@ class _Transport(ChatSandboxWorkerTransport):
         super().__init__(provider, clock=lambda: 100.0)
         self.probe = probe
         self.ping_result = True
+        self.ping_error: BaseException | None = None
+        self.ping_hook = None
         self.ping_calls: list[tuple[str, str]] = []
+        self.open_calls: list[tuple[str, str]] = []
+        self.open_error: BaseException | None = None
+        self.open_hook = None
+
+    async def open_persistent_control(
+        self,
+        sandbox,
+        worker_generation: str,
+    ) -> SessionControl:
+        self.probe.outside_transaction("transport.open")
+        self.open_calls.append((sandbox.object_id, worker_generation))
+        if self.open_hook is not None:
+            await self.open_hook(sandbox, worker_generation)
+        if self.open_error is not None:
+            raise self.open_error
+        return _control(sandbox)
 
     async def ping(self, control: SessionControl, worker_generation: str) -> bool:
         self.probe.outside_transaction("transport.ping")
         self.ping_calls.append((control.sandbox_id, worker_generation))
+        if self.ping_hook is not None:
+            await self.ping_hook(control, worker_generation)
+        if self.ping_error is not None:
+            raise self.ping_error
         await asyncio.sleep(0)
         return self.ping_result
 
@@ -202,8 +239,11 @@ class _Harness:
         *,
         settings: Settings | None = None,
         capacity_locker=None,
+        evict_assigned_lease=None,
         lease_loader=None,
+        maintenance_locker=None,
         spend_factory=None,
+        owner: bool = False,
     ) -> None:
         self.settings = settings or _settings()
         self.clock = _Clock()
@@ -218,12 +258,23 @@ class _Harness:
         )
         self.provider = _Provider(self.probe)
         self.transport = _Transport(self.provider, self.probe)
+        self.owner = owner
+        self.evictions: list[uuid.UUID] = []
+
+        async def default_evict(session_id: uuid.UUID) -> bool:
+            self.probe.outside_transaction("assigned.evict")
+            self.evictions.append(session_id)
+            return False
+
         self.coordinator = ChatSandboxPoolCoordinator(
             self.settings,
             session_factory=self.sessions,
             repository=self.repository,
             provider=self.provider,
             transport=self.transport,
+            maintenance_owner=lambda: self.owner,
+            evict_assigned_lease=(evict_assigned_lease or default_evict),
+            maintenance_locker=(maintenance_locker or (lambda _db: True)),
             spend_factory=(
                 spend_factory or (lambda db: ChatSandboxSpendService(db, self.settings))
             ),
@@ -335,6 +386,8 @@ def test_coordinator_requires_provider_and_transport_identity():
             repository=harness.repository,
             provider=other_provider,
             transport=harness.transport,
+            maintenance_owner=lambda: True,
+            evict_assigned_lease=lambda _session_id: asyncio.sleep(0, result=False),
             spend_factory=lambda db: ChatSandboxSpendService(db, harness.settings),
         )
 
@@ -781,3 +834,755 @@ def test_termination_batch_is_bounded_by_configured_concurrency():
     assert harness.coordinator.termination_concurrency == 2
     assert terminated == 5
     assert maximum == 2
+
+
+def test_replenish_creates_control_pings_and_lands_the_exact_spend_interval():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 1
+
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "blank_ready"
+    assert pool.modal_sandbox_id == "sb-created-1"
+    assert pool.ready_at == harness.clock.utcnow().replace(tzinfo=None)
+    assert interval.worker_generation == pool.worker_generation
+    assert interval.modal_sandbox_id == pool.modal_sandbox_id
+    assert interval.provider_created_at == harness.clock.utcnow().replace(tzinfo=None)
+    assert interval.terminal_at is None
+    assert harness.transport.blank_control(pool.modal_sandbox_id) is not None
+    assert harness.transport.open_calls == [
+        (pool.modal_sandbox_id, pool.worker_generation)
+    ]
+    assert harness.transport.ping_calls == [
+        (pool.modal_sandbox_id, pool.worker_generation)
+    ]
+    assert harness.probe.provider_calls == [
+        "provider.create",
+        "transport.open",
+        "transport.ping",
+    ]
+    assert harness.provider.create_calls == [
+        {
+            "name": f"chat-blank-{pool.id}",
+            "tags": {
+                "service": "pwc-chat",
+                "environment": "staging",
+                "pool": "blank",
+                "pool_id": str(pool.id),
+                "release": harness.settings.release_id,
+                "image": harness.settings.chat_modal_image_version,
+                "contract": harness.settings.chat_worker_contract_version,
+            },
+            "worker_generation": pool.worker_generation,
+        }
+    ]
+
+
+def test_concurrent_replenish_is_bounded_and_stops_at_the_database_target():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(
+            chat_blank_pool_min=2,
+            chat_blank_pool_max=2,
+            chat_blank_pool_refill_concurrency=2,
+            chat_sandbox_total_live_cap=4,
+        ),
+    )
+
+    async def run():
+        release = asyncio.Event()
+        two_started = asyncio.Event()
+        active = 0
+        maximum = 0
+
+        async def block_create(_sandbox, _kwargs):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            if active == 2:
+                two_started.set()
+            await release.wait()
+            active -= 1
+
+        harness.provider.create_hook = block_create
+        tasks = [
+            asyncio.create_task(harness.coordinator.replenish_pool()) for _ in range(6)
+        ]
+        await two_started.wait()
+        await asyncio.sleep(0)
+        assert len(harness.provider.create_calls) == 2
+        release.set()
+        return await asyncio.gather(*tasks), maximum
+
+    results, maximum = asyncio.run(run())
+
+    assert sum(results) == 2
+    assert maximum == 2
+    assert len(harness.provider.create_calls) == 2
+    with harness.sessions() as db:
+        pools = list(db.scalars(select(ChatSandboxPool)))
+    assert len(pools) == 2
+    assert {pool.state for pool in pools} == {"blank_ready"}
+
+
+@pytest.mark.parametrize(
+    "setting_overrides,owner",
+    [
+        ({"chat_blank_pool_enabled": False}, True),
+        ({"chat_persistent_worker_enabled": False}, True),
+        ({"chat_blank_pool_min": 0}, True),
+        ({}, False),
+    ],
+)
+def test_replenish_respects_feature_and_owner_gates(setting_overrides, owner):
+    harness = _Harness(
+        owner=owner,
+        settings=_settings(**setting_overrides),
+    )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+    assert harness.provider.create_calls == []
+    with harness.sessions() as db:
+        assert db.scalar(select(func.count()).select_from(ChatSandboxPool)) == 0
+
+
+def test_owner_loss_skips_a_queued_refill_but_finishes_a_committed_reservation():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(
+            chat_blank_pool_min=2,
+            chat_blank_pool_max=2,
+            chat_blank_pool_refill_concurrency=1,
+        ),
+    )
+
+    async def run():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def block_create(_sandbox, _kwargs):
+            started.set()
+            await release.wait()
+
+        harness.provider.create_hook = block_create
+        committed = asyncio.create_task(harness.coordinator.replenish_pool())
+        await started.wait()
+        harness.coordinator.spawn_replenishment()
+        assert len(harness.coordinator._refill_tasks) == 1
+        harness.owner = False
+        release.set()
+        first = await committed
+        await asyncio.gather(*tuple(harness.coordinator._refill_tasks))
+        await asyncio.sleep(0)
+        return first
+
+    assert asyncio.run(run()) == 1
+    assert len(harness.provider.create_calls) == 1
+    assert harness.coordinator._refill_tasks == set()
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+    assert pool.state == "blank_ready"
+
+
+def test_total_cap_evicts_outside_the_transaction_then_retries_once():
+    holder: dict[str, _Harness] = {}
+    session_id = uuid.uuid4()
+
+    async def evict_assigned_lease(candidate_session_id: uuid.UUID) -> bool:
+        harness = holder["harness"]
+        harness.probe.outside_transaction("assigned.evict")
+        harness.evictions.append(candidate_session_id)
+        with harness.sessions() as db, db.begin():
+            lease = db.get(ChatSandboxLease, candidate_session_id)
+            lease.state = "terminated"
+            lease.modal_sandbox_id = None
+            lease.updated_at = harness.clock.utcnow()
+        return True
+
+    harness = _Harness(
+        owner=True,
+        settings=_settings(
+            chat_blank_pool_min=1,
+            chat_blank_pool_max=1,
+            chat_sandbox_total_live_cap=1,
+        ),
+        evict_assigned_lease=evict_assigned_lease,
+    )
+    holder["harness"] = harness
+    with harness.sessions() as db, db.begin():
+        db.add_all(
+            [
+                _session(session_id),
+                ChatSandboxLease(
+                    chat_session_id=session_id,
+                    modal_sandbox_id="sb-idle",
+                    app_release_id=harness.settings.release_id,
+                    image_version=harness.settings.chat_modal_image_version,
+                    worker_contract_version=(
+                        harness.settings.chat_worker_contract_version
+                    ),
+                    worker_generation="generation-idle",
+                    state="idle",
+                    last_activity_at=harness.clock.utcnow() - timedelta(hours=1),
+                    workspace_dirty=False,
+                    created_at=harness.clock.utcnow() - timedelta(hours=1),
+                    updated_at=harness.clock.utcnow() - timedelta(hours=1),
+                ),
+            ]
+        )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 1
+
+    assert harness.evictions == [session_id]
+    assert harness.probe.provider_calls == [
+        "assigned.evict",
+        "provider.create",
+        "transport.open",
+        "transport.ping",
+    ]
+    with harness.sessions() as db:
+        lease = db.get(ChatSandboxLease, session_id)
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+    assert lease.state == "terminated"
+    assert pool.state == "blank_ready"
+
+
+def test_provider_failure_before_an_object_aborts_the_exact_reservation():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    harness.provider.create_error = RuntimeError("provider create failed")
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+
+    assert harness.provider.termination_calls == []
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.modal_sandbox_id is None
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.modal_sandbox_id is None
+    assert interval.provider_created_at is None
+    assert interval.terminal_reason == "sandbox_start_failed"
+    assert interval.reconciliation_state == "creation_failed"
+
+
+@pytest.mark.parametrize("failure", ["open", "ping_false", "ping_error"])
+def test_control_or_ping_failure_terminates_the_created_provider(failure):
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    if failure == "open":
+        harness.transport.open_error = RuntimeError("control open failed")
+    elif failure == "ping_false":
+        harness.transport.ping_result = False
+    else:
+        harness.transport.ping_error = RuntimeError("ping failed")
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    assert harness.transport.blank_control("sb-created-1") is None
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.modal_sandbox_id == "sb-created-1"
+    assert interval.provider_created_at is not None
+    assert interval.terminal_at is not None
+    assert interval.terminal_reason == "sandbox_start_failed"
+
+
+def test_landing_ownership_change_fences_the_successor_and_settles_the_start():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    successor_token = "successor-token"
+
+    def move_ownership(db, reservation, _sandbox_id, *, now):
+        row = db.get(ChatSandboxPool, reservation.pool_id)
+        row.claim_token_hash = successor_token
+        row.updated_at = now
+        return PoolLandingOutcome.OWNERSHIP_CHANGED
+
+    harness.repository.land_provider_creation = move_ownership
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    assert harness.transport.blank_control("sb-created-1") is None
+    with harness.sessions() as db:
+        successor = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert successor.state == "starting"
+    assert successor.claim_token_hash == successor_token
+    assert successor.failure_code is None
+    assert interval.modal_sandbox_id == "sb-created-1"
+    assert interval.terminal_reason == "ownership_changed"
+
+
+def test_landing_exception_not_durable_cleans_up_then_propagates():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    original_land = harness.repository.land_provider_creation
+
+    def fail_after_flush(db, reservation, sandbox_id, *, now):
+        outcome = original_land(db, reservation, sandbox_id, now=now)
+        db.flush()
+        raise RuntimeError(f"landing failed after {outcome}")
+
+    harness.repository.land_provider_creation = fail_after_flush
+
+    with pytest.raises(RuntimeError, match="landing failed after landed"):
+        asyncio.run(harness.coordinator.replenish_pool())
+
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    assert harness.transport.blank_control("sb-created-1") is None
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.terminal_reason == "sandbox_start_failed"
+
+
+@pytest.mark.parametrize(
+    "durability,expected_result,control_retained",
+    [
+        (PoolLandingDurability.BLANK_READY, 1, True),
+        (PoolLandingDurability.OWNERSHIP_MOVED, 0, False),
+    ],
+)
+def test_ambiguous_landing_uses_durable_classification(
+    durability,
+    expected_result,
+    control_retained,
+):
+    harness = _Harness(owner=True)
+
+    def ambiguous_landing(*_args, **_kwargs):
+        raise RuntimeError("ambiguous commit result")
+
+    harness.repository.land_provider_creation = ambiguous_landing
+    harness.coordinator._landing_durability = lambda *_args: durability
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == expected_result
+
+    control = harness.transport.blank_control("sb-created-1")
+    assert (control is not None) is control_retained
+    assert harness.provider.termination_calls == []
+
+
+def test_landing_durability_failure_preserves_the_original_error():
+    harness = _Harness(owner=True)
+
+    def ambiguous_landing(*_args, **_kwargs):
+        raise RuntimeError("original landing error")
+
+    def fail_durability(*_args):
+        raise LookupError("durability unavailable")
+
+    harness.repository.land_provider_creation = ambiguous_landing
+    harness.coordinator._landing_durability = fail_durability
+
+    with pytest.raises(RuntimeError, match="original landing error"):
+        asyncio.run(harness.coordinator.replenish_pool())
+
+    assert harness.transport.blank_control("sb-created-1") is None
+    assert harness.provider.termination_calls == []
+
+
+def test_repository_classifies_exact_landing_durability():
+    harness = _Harness(owner=True)
+    with harness.sessions() as db, db.begin():
+        reservation = harness.repository.reserve_starting_blank(
+            db,
+            now=harness.clock.utcnow(),
+        )
+    assert isinstance(reservation, PoolStartReservation)
+    with harness.sessions() as db, db.begin():
+        assert (
+            harness.repository.land_provider_creation(
+                db,
+                reservation,
+                "sb-exact",
+                now=harness.clock.utcnow(),
+            )
+            is PoolLandingOutcome.LANDED
+        )
+    with harness.sessions() as db:
+        assert (
+            harness.repository.provider_landing_durability(
+                db,
+                reservation,
+                "sb-exact",
+            )
+            is PoolLandingDurability.BLANK_READY
+        )
+    with harness.sessions() as db, db.begin():
+        row = db.get(ChatSandboxPool, reservation.pool_id)
+        row.state = "claimed"
+    with harness.sessions() as db:
+        assert (
+            harness.repository.provider_landing_durability(
+                db,
+                reservation,
+                "sb-exact",
+            )
+            is PoolLandingDurability.OWNERSHIP_MOVED
+        )
+        assert (
+            harness.repository.provider_landing_durability(
+                db,
+                reservation,
+                "sb-different",
+            )
+            is PoolLandingDurability.NOT_DURABLE
+        )
+
+
+@pytest.mark.parametrize("phase", ["create", "open", "ping", "landing"])
+def test_start_cancellation_rethrows_the_exact_error_after_compensation(phase):
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    cancellation = asyncio.CancelledError(f"cancel during {phase}")
+
+    async def cancel_create(*_args):
+        raise cancellation
+
+    if phase == "create":
+        harness.provider.create_hook = cancel_create
+    elif phase == "open":
+        harness.transport.open_hook = cancel_create
+    elif phase == "ping":
+        harness.transport.ping_hook = cancel_create
+    else:
+        harness.repository.land_provider_creation = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(cancellation)
+        )
+
+    async def run():
+        try:
+            await harness.coordinator.replenish_pool()
+        except asyncio.CancelledError as caught:
+            return caught
+        raise AssertionError("cancellation was swallowed")
+
+    assert asyncio.run(run()) is cancellation
+
+    expected_sandbox_id = None if phase == "create" else "sb-created-1"
+    assert harness.provider.termination_calls == (
+        [] if phase == "create" else ["sb-created-1"]
+    )
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert pool.failure_code == "sandbox_start_failed"
+    assert interval.modal_sandbox_id == expected_sandbox_id
+    assert interval.terminal_reason == "sandbox_start_failed"
+    assert interval.reconciliation_state == (
+        "creation_failed" if phase == "create" else "confirmed"
+    )
+
+
+def test_external_cancellation_waits_for_shielded_control_cleanup():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+
+    async def run():
+        ping_started = asyncio.Event()
+        termination_started = asyncio.Event()
+        release_termination = asyncio.Event()
+
+        async def block_ping(*_args):
+            ping_started.set()
+            await asyncio.Event().wait()
+
+        async def block_termination(_call_number, _sandbox_id):
+            termination_started.set()
+            await release_termination.wait()
+
+        harness.transport.ping_hook = block_ping
+        harness.provider.termination_hook = block_termination
+        task = asyncio.create_task(harness.coordinator.replenish_pool())
+        await ping_started.wait()
+        task.cancel("stop refill")
+        await termination_started.wait()
+        assert not task.done()
+        release_termination.set()
+        with pytest.raises(asyncio.CancelledError, match="stop refill"):
+            await task
+
+    asyncio.run(run())
+
+    assert harness.provider.termination_calls == ["sb-created-1"]
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "failed"
+    assert interval.terminal_reason == "sandbox_start_failed"
+
+
+def test_cancellation_after_committed_landing_keeps_the_durable_provider():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    original_land = harness.repository.land_provider_creation
+
+    def land_then_cancel(db, reservation, sandbox_id, *, now):
+        outcome = original_land(db, reservation, sandbox_id, now=now)
+        task = asyncio.current_task()
+        assert task is not None
+        asyncio.get_running_loop().call_soon(task.cancel, "after landing commit")
+        return outcome
+
+    harness.repository.land_provider_creation = land_then_cancel
+
+    with pytest.raises(asyncio.CancelledError, match="after landing commit"):
+        asyncio.run(harness.coordinator.replenish_pool())
+
+    assert harness.provider.termination_calls == []
+    assert harness.transport.blank_control("sb-created-1") is not None
+    with harness.sessions() as db:
+        pool = db.execute(select(ChatSandboxPool)).scalar_one()
+        interval = db.execute(select(ChatSandboxComputeInterval)).scalar_one()
+    assert pool.state == "blank_ready"
+    assert pool.modal_sandbox_id == "sb-created-1"
+    assert interval.modal_sandbox_id == "sb-created-1"
+    assert interval.provider_created_at is not None
+    assert interval.terminal_at is None
+
+
+def test_cleanup_failure_does_not_mask_the_landing_database_error(caplog):
+    harness = _Harness(owner=True)
+    landing_error = RuntimeError("landing database failed")
+
+    def fail_landing(*_args, **_kwargs):
+        raise landing_error
+
+    async def fail_cleanup(*_args, **_kwargs):
+        raise LookupError("cleanup failed")
+
+    harness.repository.land_provider_creation = fail_landing
+    harness.coordinator._landing_durability = (
+        lambda *_args: PoolLandingDurability.NOT_DURABLE
+    )
+    harness.coordinator._compensate_start = fail_cleanup
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(harness.coordinator.replenish_pool())
+
+    assert raised.value is landing_error
+    assert "blank landing cleanup failed error=LookupError" in caplog.text
+
+
+def test_start_compensation_claim_is_fenced_from_a_successor():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+    )
+    with harness.sessions() as db, db.begin():
+        spend = ChatSandboxSpendService(db, harness.settings)
+        reservation = harness.repository.reserve_starting_blank(
+            db,
+            now=harness.clock.utcnow(),
+            interval_reserver=lambda generation: spend.reserve_interval(
+                origin="blank_pool",
+                worker_generation=generation,
+                now=harness.clock.utcnow(),
+                capacity_locked=True,
+            ),
+        )
+    assert isinstance(reservation, PoolStartReservation)
+    with harness.sessions() as db, db.begin():
+        successor = db.get(ChatSandboxPool, reservation.pool_id)
+        successor.claim_token_hash = "successor-token"
+
+    sandbox = SimpleNamespace(object_id="sb-created-by-reservation")
+    asyncio.run(
+        harness.coordinator._compensate_start(
+            reservation,
+            sandbox=sandbox,
+            control=None,
+            failure_code="sandbox_start_failed",
+        )
+    )
+
+    assert harness.provider.termination_calls == [sandbox.object_id]
+    with harness.sessions() as db:
+        successor = db.get(ChatSandboxPool, reservation.pool_id)
+        interval = db.get(ChatSandboxComputeInterval, reservation.interval_id)
+    assert successor.state == "starting"
+    assert successor.claim_token_hash == "successor-token"
+    assert successor.failure_code is None
+    assert interval.modal_sandbox_id == sandbox.object_id
+    assert interval.terminal_reason == "sandbox_start_failed"
+
+
+def test_refill_lock_order_is_maintenance_then_capacity_then_spend():
+    order: list[str] = []
+
+    def maintenance_locker(_db):
+        order.append("maintenance")
+        return True
+
+    def capacity_locker(_db, *, wait=True):
+        order.append(f"capacity:{wait}")
+        return True
+
+    class Spend:
+        def reserve_interval(self, **_kwargs):
+            order.append("spend")
+            return None
+
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_spend_enforcement_enabled=True),
+        maintenance_locker=maintenance_locker,
+        capacity_locker=capacity_locker,
+        spend_factory=lambda _db: Spend(),
+    )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 1
+    assert order[:3] == ["maintenance", "capacity:False", "spend"]
+
+
+@pytest.mark.parametrize("eviction_succeeds", [False, True])
+def test_unsuccessful_eviction_is_attempted_once(eviction_succeeds):
+    session_id = uuid.uuid4()
+    eviction_calls: list[uuid.UUID] = []
+
+    async def leave_capacity_full(candidate_session_id):
+        eviction_calls.append(candidate_session_id)
+        return eviction_succeeds
+
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_sandbox_total_live_cap=1),
+        evict_assigned_lease=leave_capacity_full,
+    )
+    with harness.sessions() as db, db.begin():
+        db.add_all(
+            [
+                _session(session_id),
+                ChatSandboxLease(
+                    chat_session_id=session_id,
+                    modal_sandbox_id="sb-still-idle",
+                    app_release_id=harness.settings.release_id,
+                    image_version=harness.settings.chat_modal_image_version,
+                    worker_contract_version=(
+                        harness.settings.chat_worker_contract_version
+                    ),
+                    worker_generation="generation-still-idle",
+                    state="idle",
+                    last_activity_at=harness.clock.utcnow() - timedelta(hours=1),
+                    workspace_dirty=False,
+                    created_at=harness.clock.utcnow() - timedelta(hours=1),
+                    updated_at=harness.clock.utcnow() - timedelta(hours=1),
+                ),
+            ]
+        )
+
+    assert asyncio.run(harness.coordinator.replenish_pool()) == 0
+    assert eviction_calls == [session_id]
+    assert harness.provider.create_calls == []
+
+
+def test_spawn_replenishment_keeps_a_bounded_strong_task_set():
+    harness = _Harness(
+        owner=True,
+        settings=_settings(chat_blank_pool_refill_concurrency=2),
+    )
+
+    async def run():
+        two_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def block_replenishment():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                two_started.set()
+            await release.wait()
+            return 1
+
+        harness.coordinator.replenish_pool = block_replenishment
+        for _ in range(8):
+            harness.coordinator.spawn_replenishment()
+        await two_started.wait()
+        tasks = tuple(harness.coordinator._refill_tasks)
+        assert len(tasks) == 2
+        assert all(not task.done() for task in tasks)
+        release.set()
+        assert await asyncio.gather(*tasks) == [1, 1]
+        await asyncio.sleep(0)
+        return calls
+
+    assert asyncio.run(run()) == 2
+    assert harness.coordinator._refill_tasks == set()
+
+
+def test_spawn_replenishment_retrieves_and_logs_background_errors(caplog):
+    harness = _Harness(owner=True)
+
+    async def run():
+        loop_errors = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: loop_errors.append(context)
+        )
+
+        async def fail_replenishment():
+            raise RuntimeError("background failed")
+
+        harness.coordinator.replenish_pool = fail_replenishment
+        harness.coordinator.spawn_replenishment()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return loop_errors
+
+    assert asyncio.run(run()) == []
+    assert harness.coordinator._refill_tasks == set()
+    assert "chat blank pool replenishment failed error=RuntimeError" in caplog.text
+
+
+def test_spawn_replenishment_discards_cancelled_tasks_without_warning(caplog):
+    harness = _Harness(owner=True)
+
+    async def run():
+        started = asyncio.Event()
+
+        async def block_replenishment():
+            started.set()
+            await asyncio.Event().wait()
+
+        harness.coordinator.replenish_pool = block_replenishment
+        harness.coordinator.spawn_replenishment()
+        await started.wait()
+        task = next(iter(harness.coordinator._refill_tasks))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    assert harness.coordinator._refill_tasks == set()
+    assert "chat blank pool replenishment failed" not in caplog.text

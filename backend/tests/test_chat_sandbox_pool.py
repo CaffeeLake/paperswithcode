@@ -116,15 +116,13 @@ def _manager(factory, settings: Settings) -> SandboxSessionManager:
     return manager
 
 
-def test_claim_blank_facade_delegates_and_spawns_refill_on_success():
+def test_claim_blank_facade_only_delegates_to_the_pool_coordinator():
     factory = _database()
     settings = _settings()
     manager = SandboxSessionManager(settings, session_factory=factory)
     session_id = uuid.uuid4()
     sandbox = SimpleNamespace(object_id="sb-claimed")
     delegated: list[uuid.UUID] = []
-    refill_started = asyncio.Event()
-    release_refill = asyncio.Event()
 
     class Coordinator:
         async def claim_blank(self, candidate_session_id):
@@ -132,23 +130,11 @@ def test_claim_blank_facade_delegates_and_spawns_refill_on_success():
             return sandbox, 7
 
     manager._sandbox_pool_coordinator = Coordinator()
+    manager._spawn_pool_replenishment = lambda: pytest.fail(
+        "the coordinator owns claim-triggered replenishment"
+    )
 
-    async def refill():
-        refill_started.set()
-        await release_refill.wait()
-        return 1
-
-    manager.replenish_pool = refill
-
-    async def run():
-        result = await manager.claim_blank(session_id)
-        await refill_started.wait()
-        assert len(manager._background_tasks) == 1
-        release_refill.set()
-        await asyncio.gather(*manager._background_tasks)
-        return result
-
-    assert asyncio.run(run()) == (sandbox, 7)
+    assert asyncio.run(manager.claim_blank(session_id)) == (sandbox, 7)
     assert delegated == [session_id]
 
 
@@ -167,6 +153,22 @@ def test_claim_blank_facade_does_not_spawn_refill_on_miss():
     )
 
     assert asyncio.run(manager.claim_blank(session_id)) is None
+
+
+def test_replenish_pool_facade_only_delegates_to_the_pool_coordinator():
+    manager = SandboxSessionManager(_settings(), session_factory=_database())
+    calls = 0
+
+    class Coordinator:
+        async def replenish_pool(self):
+            nonlocal calls
+            calls += 1
+            return 3
+
+    manager._sandbox_pool_coordinator = Coordinator()
+
+    assert asyncio.run(manager.replenish_pool()) == 3
+    assert calls == 1
 
 
 def test_pool_maintenance_preserves_compatible_blank_from_previous_release(
@@ -335,15 +337,18 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     allow_creation = asyncio.Event()
     calls: list[tuple] = []
 
-    async def create(_settings, *, name, tags, worker_generation):
+    coordinator = manager._pool_coordinator()
+
+    async def create(*, name, tags, worker_generation):
         calls.append((name, tags))
         assert len(worker_generation) == 32
         creation_started.set()
         await allow_creation.wait()
         return SimpleNamespace(object_id="sb-new")
 
-    monkeypatch.setattr(chat_sandbox_service, "create_isolated_sandbox", create)
-    control = SimpleNamespace(sandbox_id="sb-new")
+    monkeypatch.setattr(coordinator.provider, "create", create)
+    sandbox = SimpleNamespace(object_id="sb-new")
+    control = SimpleNamespace(sandbox_id="sb-new", sandbox=sandbox)
 
     async def start_control(_sandbox, worker_generation):
         assert len(worker_generation) == 32
@@ -352,8 +357,12 @@ def test_concurrent_replenishment_is_idempotent_and_blank(monkeypatch):
     async def ping_control(candidate, _worker_generation):
         return candidate is control
 
-    manager._start_persistent_control = start_control
-    manager._ping_control = ping_control
+    monkeypatch.setattr(
+        coordinator.transport,
+        "open_persistent_control",
+        start_control,
+    )
+    monkeypatch.setattr(coordinator.transport, "ping", ping_control)
 
     async def run():
         first = asyncio.create_task(manager.replenish_pool())

@@ -93,6 +93,12 @@ class PoolLandingOutcome(StrEnum):
     OWNERSHIP_CHANGED = "ownership_changed"
 
 
+class PoolLandingDurability(StrEnum):
+    BLANK_READY = "blank_ready"
+    OWNERSHIP_MOVED = "ownership_moved"
+    NOT_DURABLE = "not_durable"
+
+
 @dataclass(frozen=True)
 class PoolTerminationClaim:
     pool_id: uuid.UUID
@@ -388,6 +394,83 @@ class ChatSandboxPoolRepository:
         row.updated_at = now
         self.finalize_cost(row, now)
         return PoolLandingOutcome.LANDED
+
+    def provider_landing_durability(
+        self,
+        db: Session,
+        reservation: PoolStartReservation,
+        sandbox_id: str,
+    ) -> PoolLandingDurability:
+        """Classify an exact provider landing after an ambiguous database result."""
+
+        row = db.get(ChatSandboxPool, reservation.pool_id)
+        compatibility = reservation.compatibility
+        if (
+            row is None
+            or row.modal_sandbox_id != sandbox_id
+            or row.worker_generation != reservation.worker_generation
+            or row.image_version != compatibility.image_version
+            or row.worker_contract_version != compatibility.worker_contract_version
+            or row.app_release_id != reservation.app_release_id
+            or row.cpu_request != compatibility.cpu_request
+            or row.cpu_limit != compatibility.cpu_limit
+            or row.memory_request_mib != compatibility.memory_request_mib
+            or row.memory_limit_mib != compatibility.memory_limit_mib
+        ):
+            return PoolLandingDurability.NOT_DURABLE
+        if row.state == "blank_ready":
+            return PoolLandingDurability.BLANK_READY
+        return PoolLandingDurability.OWNERSHIP_MOVED
+
+    def claim_start_termination(
+        self,
+        db: Session,
+        reservation: PoolStartReservation,
+        expected_sandbox_id: str | None,
+        *,
+        failure_code: str,
+        now: datetime,
+    ) -> PoolTerminationClaim | None:
+        """Fence cleanup to the exact starting reservation that created a provider."""
+
+        if not self.capacity_locker(db):
+            return None
+        row = db.execute(
+            select(ChatSandboxPool)
+            .where(ChatSandboxPool.id == reservation.pool_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        compatibility = reservation.compatibility
+        if (
+            row is None
+            or row.state != "starting"
+            or row.modal_sandbox_id != expected_sandbox_id
+            or row.claim_token_hash != reservation.token_hash
+            or row.claim_generation != reservation.claim_generation
+            or row.worker_generation != reservation.worker_generation
+            or row.image_version != compatibility.image_version
+            or row.worker_contract_version != compatibility.worker_contract_version
+            or row.app_release_id != reservation.app_release_id
+            or row.cpu_request != compatibility.cpu_request
+            or row.cpu_limit != compatibility.cpu_limit
+            or row.memory_request_mib != compatibility.memory_request_mib
+            or row.memory_limit_mib != compatibility.memory_limit_mib
+        ):
+            return None
+        token_hash = self._token_hash(self.token_factory())
+        row.state = "draining"
+        row.claim_token_hash = token_hash
+        row.failure_code = self._termination_failure(
+            row.failure_code,
+            failure_code,
+        )
+        row.updated_at = now
+        return PoolTerminationClaim(
+            pool_id=row.id,
+            sandbox_id=row.modal_sandbox_id,
+            token_hash=token_hash,
+            failure_code=row.failure_code,
+        )
 
     def claim_termination(
         self,
