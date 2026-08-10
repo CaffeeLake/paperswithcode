@@ -38,7 +38,8 @@ describe("Composer paper mentions", () => {
     expect(apiClient.searchPapers).toHaveBeenCalledWith("d", 1, 10, "hybrid", expect.any(AbortSignal));
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
-    expect(textarea).toHaveValue("Deep Paper");
+    expect(textarea).toHaveValue("Deep Paper ");
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).selectionStart).toBe(11));
     expect(container.querySelector(".chat-paper-inline-highlight")).toHaveTextContent("Deep Paper");
     expect(screen.queryByLabelText("Attached papers")).not.toBeInTheDocument();
     expect(apiClient.prewarmChatPaperContext).toHaveBeenCalledTimes(1);
@@ -47,6 +48,19 @@ describe("Composer paper mentions", () => {
       text: "Deep Paper",
       paperMentions: [expect.objectContaining({ route_id: "2501.00001", start: 0, end: 10 })],
     }));
+  });
+
+  it("uses an existing following space and moves the caret past it when a result is clicked", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><Harness onSend={vi.fn()} /></QueryClientProvider>);
+    const textarea = screen.getByRole("combobox");
+    fireEvent.change(textarea, { target: { value: "Compare @d later", selectionStart: 10 } });
+    const option = await screen.findByRole("option", { name: /Deep Paper/ });
+
+    fireEvent.mouseDown(option);
+
+    expect(textarea).toHaveValue("Compare Deep Paper later");
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).selectionStart).toBe(19));
   });
 
   it("shows a directly accessible sticky web-search switch when available", () => {
@@ -97,7 +111,7 @@ describe("Composer paper mentions", () => {
     fireEvent.change(textarea, { target: { value: "How does @dee", selectionStart: 13 } });
     expect(await screen.findByRole("option", { name: /Deep Paper/ })).toBeInTheDocument();
     fireEvent.keyDown(textarea, { key: "Enter" });
-    await waitFor(() => expect(textarea).toHaveValue("How does Deep Paper"));
+    await waitFor(() => expect(textarea).toHaveValue("How does Deep Paper "));
     fireEvent.change(textarea, {
       target: { value: "How does Deep Paper compare to @ovi", selectionStart: 35 },
     });

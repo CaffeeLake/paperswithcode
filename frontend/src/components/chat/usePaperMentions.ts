@@ -115,7 +115,9 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
     // The leading @ is the search trigger, not part of the committed marker.
     // Once selected, the structured range is sufficient to retain identity.
     const marker = paper.title;
-    const nextText = draft.text.slice(0, active.start) + marker + draft.text.slice(active.end);
+    const suffix = draft.text.slice(active.end);
+    const appendSpace = suffix.length === 0;
+    const nextText = draft.text.slice(0, active.start) + marker + (appendSpace ? " " : "") + suffix;
     const shifted = reconcilePaperMentions(draft.text, nextText, draft.paperMentions);
     const mention: PaperMentionDraft = {
       key: crypto.randomUUID(),
@@ -129,7 +131,7 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
     setActive(null);
     setMessage("");
     window.requestAnimationFrame(() => {
-      const caret = mention.end;
+      const caret = mention.end + (appendSpace || suffix.startsWith(" ") ? 1 : 0);
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(caret, caret);
     });
