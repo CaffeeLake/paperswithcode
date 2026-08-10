@@ -27,6 +27,7 @@ FINALIZER_PROMPT = (
 )
 
 _URL = re.compile(r'https?://[^\s<>"\\]+', re.IGNORECASE)
+_TRAILING_URL_PUNCTUATION = ".,;:!?)\\]}'\""
 
 
 def effective_tool_rounds(max_turns: int) -> int:
@@ -52,33 +53,41 @@ def validate_execution_limits(
 
 
 def normalize_public_https_url(value: str) -> str | None:
-    try:
-        parsed = urlsplit(value.rstrip(".,;:!?)\\]}'\""))
-        host = parsed.hostname
-        if (
-            parsed.scheme != "https"
-            or not host
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.port not in {None, 443}
-            or not host.isascii()
-        ):
-            return None
-        lowered = host.lower().rstrip(".")
-        if lowered == "localhost" or lowered.endswith(
-            (".local", ".internal", ".localhost")
-        ):
-            return None
+    candidate = value
+    for _ in range(4):
         try:
-            address = ip_address(lowered)
-        except ValueError:
-            pass
-        else:
-            if not address.is_global:
+            parsed = urlsplit(candidate.rstrip(_TRAILING_URL_PUNCTUATION))
+            host = parsed.hostname
+            if (
+                parsed.scheme != "https"
+                or not host
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in {None, 443}
+                or not host.isascii()
+            ):
                 return None
-        return urlunsplit(("https", lowered, parsed.path or "/", parsed.query, ""))
-    except ValueError:
-        return None
+            lowered = host.lower().rstrip(".")
+            if lowered == "localhost" or lowered.endswith(
+                (".local", ".internal", ".localhost")
+            ):
+                return None
+            try:
+                address = ip_address(lowered)
+            except ValueError:
+                pass
+            else:
+                if not address.is_global:
+                    return None
+            normalized = urlunsplit(
+                ("https", lowered, parsed.path or "/", parsed.query, "")
+            )
+        except ValueError:
+            return None
+        if normalized == candidate:
+            return normalized
+        candidate = normalized
+    return None
 
 
 def urls_in_text(value: str) -> list[str]:

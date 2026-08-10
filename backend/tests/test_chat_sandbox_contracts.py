@@ -37,6 +37,7 @@ from backend.chat_gateway_app import (
 from backend.chat_execution_policy import (
     FINALIZER_MAX_TURNS,
     MAX_FETCHABLE_URLS,
+    bounded_url_seed,
     effective_tool_rounds,
     validate_url_seed,
 )
@@ -1864,6 +1865,13 @@ def test_fetchable_url_seed_is_strict_sorted_and_bounded():
         validate_url_seed(["https://127.0.0.1/private"])
     with pytest.raises(ValueError, match="Invalid fetchable URL seed"):
         validate_url_seed(["https://example.com/b", "https://example.com/a"])
+
+
+def test_fetchable_url_seed_stabilizes_punctuation_exposed_by_fragment_removal():
+    urls = bounded_url_seed(["https://huggingface.co/moonshotai/Kimi-K3&gt;#"])
+
+    assert urls == ["https://huggingface.co/moonshotai/Kimi-K3&gt"]
+    assert validate_url_seed(urls) == urls
 
 
 def test_worker_adapter_surfaces_recoverable_execution_limit_internally():
