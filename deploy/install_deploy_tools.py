@@ -24,6 +24,7 @@ COMMANDS = (
 )
 RUNTIME_CONTRACT_PATHS = (
     "backend/__init__.py",
+    "backend/chat_execution_policy.py",
     "backend/chat_sandbox_worker/__init__.py",
     "backend/chat_sandbox_worker/PWC_CLI_SKILL.md",
     "backend/chat_sandbox_worker/TASK_CATALOG.md",

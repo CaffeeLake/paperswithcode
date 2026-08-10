@@ -93,6 +93,7 @@ def test_deployment_tool_bundle_includes_chat_runtime_contract(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(source)},
     )
     assert result.returncode == 0, result.stderr
