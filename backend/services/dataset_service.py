@@ -43,6 +43,7 @@ from backend.services.entity_search import (
     postgres_search_expressions,
     prepare_entity_search,
 )
+from backend.services.metric_value_service import parse_metric_value
 
 # Separator unlikely to collide with real data, used to build the logical
 # leaderboard-row key (see `_leaderboard_row_count`).
@@ -58,18 +59,6 @@ def _is_living_external_leaderboard():
     ordinary empty or sparse benchmarks remain subject to ``min_eval_count``.
     """
     return DBDataset.warning.ilike(f"{_LIVING_EXTERNAL_WARNING_PREFIX}%")
-
-
-def _parse_metric_value(raw_value) -> Optional[float]:
-    """Match leaderboard rank parsing for numeric and uncertainty values."""
-    if raw_value is None:
-        return None
-    try:
-        if isinstance(raw_value, str) and "±" in raw_value:
-            raw_value = raw_value.split("±", 1)[0].strip()
-        return float(raw_value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _leaderboard_row_count():
@@ -325,7 +314,7 @@ class DatasetService:
         candidates = []
         for evaluation_id, model_name, metrics, best_rank, paper_title in rows:
             raw_value = (metrics or {}).get(primary_metric)
-            numeric_value = _parse_metric_value(raw_value)
+            numeric_value = parse_metric_value(raw_value)
             display_name = model_name or paper_title
             if numeric_value is None or raw_value is None or not display_name:
                 continue

@@ -18,6 +18,7 @@ from backend.models.database import (
     Repository,
     Task,
 )
+from backend.services.metric_value_service import parse_metric_value
 from backend.utils.paper_reference import resolve_paper
 
 
@@ -93,18 +94,6 @@ def normalize_repository_url(url: str) -> str:
     if len(parts) < 2:
         raise ValueError(f"Invalid GitHub repository URL: {url}")
     return "/".join(parts[:2])
-
-
-def parse_metric_value(raw_value: Any) -> float | None:
-    """Match the leaderboard rank service's numeric parsing behavior."""
-    if raw_value is None:
-        return None
-    try:
-        if isinstance(raw_value, str) and "±" in raw_value:
-            raw_value = raw_value.split("±", 1)[0].strip()
-        return float(raw_value)
-    except (TypeError, ValueError):
-        return None
 
 
 def compute_placement(

@@ -31,24 +31,13 @@ from backend.utils.exceptions import DatabaseError
 from backend.utils.task_hierarchy import collect_descendant_task_ids
 from backend.utils.urls import external_source_url_to_paper_url, parse_arxiv_url
 from backend.services.leaderboard_metric_service import LeaderboardMetricService
+from backend.services.metric_value_service import parse_metric_value
 
 _PAPER_REF = re.compile(r"^paper:(\d+)$", re.IGNORECASE)
 _CVF_OPENACCESS_PATH = re.compile(
     r"^/content/([^/]+)/(?:html|papers)/([^/]+?)(?:\.(?:html|pdf))?$",
     re.IGNORECASE,
 )
-
-
-def _parse_metric_value(raw_value) -> Optional[float]:
-    """Parse stored metric values, including uncertainty and decimal commas."""
-    if isinstance(raw_value, str):
-        raw_value = raw_value.split("±", 1)[0].strip()
-        if raw_value.count(",") == 1 and "." not in raw_value:
-            raw_value = raw_value.replace(",", ".")
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _looks_like_paper_slug(segment: str) -> bool:
@@ -1338,7 +1327,7 @@ class EvaluationService:
 
                 eval_scores = []
                 for eval_obj in evaluations:
-                    metric_value = _parse_metric_value(
+                    metric_value = parse_metric_value(
                         (eval_obj.metrics or {}).get(current_metric)
                     )
                     eval_scores.append((eval_obj, metric_value))

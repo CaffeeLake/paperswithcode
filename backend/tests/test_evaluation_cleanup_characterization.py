@@ -1,4 +1,4 @@
-"""Phase 0 characterization tests for evaluation cleanup behavior."""
+"""Characterization and invariant tests for evaluation cleanup."""
 
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -6,16 +6,13 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from backend.services.dataset_service import (
-    _parse_metric_value as parse_dataset_summary_metric_value,
+from backend.services import (
+    dataset_service,
+    evaluation_service,
+    github_issue_body_service,
 )
-from backend.services.evaluation_service import (
-    EvaluationService,
-    _parse_metric_value as parse_ranking_metric_value,
-)
-from backend.services.github_issue_body_service import (
-    parse_metric_value as parse_github_issue_metric_value,
-)
+from backend.services.evaluation_service import EvaluationService
+from backend.services.metric_value_service import parse_metric_value
 from backend.utils.exceptions import DatabaseError
 
 
@@ -89,54 +86,27 @@ def test_update_evaluation_rolls_back_without_mutation_when_validation_error_pro
 @pytest.mark.parametrize(
     ("raw_value", "expected"),
     [
-        pytest.param(
-            50,
-            {"ranking": 50.0, "dataset_summary": 50.0, "github_issue": 50.0},
-            id="integer",
-        ),
-        pytest.param(
-            50.25,
-            {"ranking": 50.25, "dataset_summary": 50.25, "github_issue": 50.25},
-            id="float",
-        ),
-        pytest.param(
-            "50.25",
-            {"ranking": 50.25, "dataset_summary": 50.25, "github_issue": 50.25},
-            id="numeric-string",
-        ),
-        pytest.param(
-            "50.0±0.2",
-            {"ranking": 50.0, "dataset_summary": 50.0, "github_issue": 50.0},
-            id="unicode-uncertainty",
-        ),
-        pytest.param(
-            "50,0",
-            {"ranking": 50.0, "dataset_summary": None, "github_issue": None},
-            id="decimal-comma-currently-ranking-only",
-        ),
-        pytest.param(
-            None,
-            {"ranking": None, "dataset_summary": None, "github_issue": None},
-            id="none",
-        ),
-        pytest.param(
-            "not-a-number",
-            {"ranking": None, "dataset_summary": None, "github_issue": None},
-            id="invalid-text",
-        ),
-        pytest.param(
-            "50.0 +/- 0.2",
-            {"ranking": None, "dataset_summary": None, "github_issue": None},
-            id="ascii-plus-minus-currently-unsupported",
-        ),
+        pytest.param(50, 50.0, id="integer"),
+        pytest.param(50.25, 50.25, id="float"),
+        pytest.param("50.25", 50.25, id="numeric-string"),
+        pytest.param("50.0±0.2", 50.0, id="unicode-uncertainty"),
+        pytest.param("50.0 +/- 0.2", 50.0, id="ascii-plus-minus-uncertainty"),
+        pytest.param("50,0", 50.0, id="decimal-comma"),
+        pytest.param(None, None, id="none"),
+        pytest.param("not-a-number", None, id="invalid-text"),
     ],
 )
-def test_current_metric_parsing_by_consumer(raw_value, expected):
-    """Record each consumer separately; Phase 0 does not claim consistency."""
+def test_metric_parsing_is_identical_for_every_consumer(raw_value, expected):
     actual = {
-        "ranking": parse_ranking_metric_value(raw_value),
-        "dataset_summary": parse_dataset_summary_metric_value(raw_value),
-        "github_issue": parse_github_issue_metric_value(raw_value),
+        "ranking": evaluation_service.parse_metric_value(raw_value),
+        "dataset_summary": dataset_service.parse_metric_value(raw_value),
+        "github_issue": github_issue_body_service.parse_metric_value(raw_value),
     }
 
-    assert actual == expected
+    assert actual == {consumer: expected for consumer in actual}
+
+
+def test_metric_consumers_reference_the_canonical_parser():
+    assert evaluation_service.parse_metric_value is parse_metric_value
+    assert dataset_service.parse_metric_value is parse_metric_value
+    assert github_issue_body_service.parse_metric_value is parse_metric_value
