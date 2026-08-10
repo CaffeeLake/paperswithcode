@@ -1,6 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ChatStreamError, reportChatLatency, streamChat } from "@/lib/chat";
+import {
+  ChatStreamError,
+  isChatSmoothStreamingEnabled,
+  reportChatLatency,
+  streamChat,
+} from "@/lib/chat";
+
+describe("smooth streaming kill switch", () => {
+  it.each(["0", "false", "off", "no", " FALSE "])("disables smoothing for %s", (value) => {
+    vi.stubEnv("VITE_CHAT_SMOOTH_STREAMING", value);
+    expect(isChatSmoothStreamingEnabled()).toBe(false);
+  });
+
+  it.each([undefined, "", "1", "true", "yes"])("defaults smoothing on for %s", (value) => {
+    vi.stubEnv("VITE_CHAT_SMOOTH_STREAMING", value);
+    expect(isChatSmoothStreamingEnabled()).toBe(true);
+  });
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();

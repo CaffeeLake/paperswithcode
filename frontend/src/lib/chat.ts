@@ -196,6 +196,13 @@ export const isChatLive = (): boolean => {
   return lowered === "1" || lowered === "true" || lowered === "yes";
 };
 
+/** Smooth streaming is the live-chat default; false-like values are a rollback switch. */
+export const isChatSmoothStreamingEnabled = (): boolean => {
+  const raw = import.meta.env.VITE_CHAT_SMOOTH_STREAMING;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return true;
+  return !["0", "false", "off", "no"].includes(String(raw).trim().toLowerCase());
+};
+
 export interface StreamChatOptions {
   signal?: AbortSignal;
 }

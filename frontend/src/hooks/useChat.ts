@@ -9,9 +9,15 @@ import {
   type ChatPaperHit,
   type ChatStreamRequest,
   ChatStreamError,
+  isChatLive,
+  isChatSmoothStreamingEnabled,
   reportChatLatency,
   streamChat,
 } from "@/lib/chat";
+import {
+  createSmoothedChatStream,
+  type SmoothedChatStream,
+} from "@/lib/chatStreamSmoother";
 import { cancelSession, getSession, toUiMessages } from "@/lib/chatSessions";
 
 const WORKSPACE_STATUS = "Preparing research workspace…";
@@ -74,6 +80,17 @@ export function useChat(options: UseChatOptions) {
   const [sessionError, setSessionError] = useState("");
   const busyRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const smoothedStreamRef = useRef<{
+    controller: AbortController;
+    stream: SmoothedChatStream;
+  } | null>(null);
+  const presentationFrameRef = useRef<number | null>(null);
+  const presentationTimerRef = useRef<number | null>(null);
+  const presentationDirtyRef = useRef(false);
+  const stoppedProjectionRef = useRef<{
+    sessionId: string;
+    messages: ChatMessage[];
+  } | null>(null);
   const preparingTimerRef = useRef<number | null>(null);
   const workspaceStatusStateRef = useRef<"armed" | "shown" | "cleared">("cleared");
   const browserTimingRef = useRef<BrowserTiming | null>(null);
@@ -109,6 +126,9 @@ export function useChat(options: UseChatOptions) {
       window.clearTimeout(preparingTimerRef.current);
     }
     abortRef.current?.abort();
+    smoothedStreamRef.current = null;
+    if (presentationFrameRef.current !== null) cancelAnimationFrame(presentationFrameRef.current);
+    if (presentationTimerRef.current !== null) window.clearTimeout(presentationTimerRef.current);
     pendingCapacityRef.current = null;
   }, []);
   useEffect(() => {
@@ -170,6 +190,51 @@ export function useChat(options: UseChatOptions) {
     activeMessagesGenerationRef.current === messagesGenerationRef.current
     || activeProjectionVisibleRef.current
   );
+
+  const cancelPresentationFrame = () => {
+    if (presentationFrameRef.current !== null) {
+      cancelAnimationFrame(presentationFrameRef.current);
+      presentationFrameRef.current = null;
+    }
+    if (presentationTimerRef.current !== null) {
+      window.clearTimeout(presentationTimerRef.current);
+      presentationTimerRef.current = null;
+    }
+  };
+
+  const commitPresentation = () => {
+    cancelPresentationFrame();
+    if (document.visibilityState === "hidden") return;
+    if (!activeProjectionVisibleRef.current || !activeMessagesRef.current) return;
+    presentationDirtyRef.current = false;
+    messagesRef.current = activeMessagesRef.current;
+    setMessages(activeMessagesRef.current);
+  };
+
+  const schedulePresentation = () => {
+    if (!activeProjectionVisibleRef.current || document.visibilityState === "hidden") return;
+    if (presentationFrameRef.current !== null || presentationTimerRef.current !== null) return;
+    const callback = () => {
+      presentationFrameRef.current = null;
+      presentationTimerRef.current = null;
+      commitPresentation();
+    };
+    if (typeof requestAnimationFrame === "function") {
+      presentationFrameRef.current = requestAnimationFrame(callback);
+    } else {
+      presentationTimerRef.current = window.setTimeout(callback, 0);
+    }
+  };
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && presentationDirtyRef.current) {
+        schedulePresentation();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  });
 
   const clearWorkspaceStatus = (controller: AbortController) => {
     if (abortRef.current !== controller) return;
@@ -376,7 +441,11 @@ export function useChat(options: UseChatOptions) {
 
   const reloadCanonical = async (sessionId: string, generation: number) => {
     const detail = await getSession(sessionId);
-    const restored = toUiMessages(detail);
+    let restored = toUiMessages(detail);
+    if (stoppedProjectionRef.current?.sessionId === sessionId) {
+      restored = stoppedProjectionRef.current.messages;
+      stoppedProjectionRef.current = null;
+    }
     if (
       messagesGenerationRef.current !== generation
       && !(
@@ -427,7 +496,16 @@ export function useChat(options: UseChatOptions) {
       let streamFailed = false;
       let admissionRejected = false;
       try {
-        for await (const event of streamChat(request, { signal: controller.signal })) {
+        const source = streamChat(request, { signal: controller.signal });
+        const smooth = isChatLive() && isChatSmoothStreamingEnabled();
+        const smoothed = smooth
+          ? createSmoothedChatStream(source, {
+              signal: controller.signal,
+              isHidden: () => document.visibilityState === "hidden",
+            })
+          : null;
+        if (smoothed) smoothedStreamRef.current = { controller, stream: smoothed };
+        for await (const event of smoothed?.events ?? source) {
           if (event.type === "stream_start") {
             sawStreamStart = true;
             providerExecuted = event.provider_execution !== false;
@@ -468,6 +546,21 @@ export function useChat(options: UseChatOptions) {
             }
           }
           const projectsToVisibleConversation = projectsActiveStream();
+          const presentationProjects = projectsToVisibleConversation
+            && !(smooth && document.visibilityState === "hidden");
+          const isDelta = event.type === "reasoning_delta" || event.type === "answer_delta";
+          const isStructural = ![
+            "stream_start",
+            "sandbox_start",
+            "sandbox_ready",
+            "workspace_ready",
+            "session_title_start",
+            "session_title_delta",
+            "session_title_done",
+            "reasoning_delta",
+            "answer_delta",
+          ].includes(event.type);
+          if (smooth && isStructural) commitPresentation();
           if (
             !controller.signal.aborted
             && (projectsToVisibleConversation
@@ -476,7 +569,17 @@ export function useChat(options: UseChatOptions) {
               || event.type === "session_title_delta"
               || event.type === "session_title_done")
           ) {
-            applyEvent(event, projectsToVisibleConversation);
+            if (smooth && isDelta) {
+              applyEvent(event, false);
+              presentationDirtyRef.current = presentationDirtyRef.current
+                || projectsToVisibleConversation;
+              schedulePresentation();
+            } else {
+              applyEvent(event, presentationProjects);
+              if (smooth && projectsToVisibleConversation && !presentationProjects) {
+                presentationDirtyRef.current = true;
+              }
+            }
           } else if (!controller.signal.aborted) {
             applyEvent(event, false);
           }
@@ -562,6 +665,10 @@ export function useChat(options: UseChatOptions) {
         }
       } finally {
         if (abortRef.current === controller) {
+          if (smoothedStreamRef.current?.controller === controller) {
+            commitPresentation();
+            smoothedStreamRef.current = null;
+          }
           clearWorkspaceStatus(controller);
           if (!sawTerminalEvent && !controller.signal.aborted) {
             recordTerminal(controller, "network_error");
@@ -718,18 +825,26 @@ export function useChat(options: UseChatOptions) {
     clearWorkspaceStatus(controller);
     recordTerminal(controller, "stopped");
     controller.abort();
+    const accepted = smoothedStreamRef.current?.controller === controller
+      ? smoothedStreamRef.current.stream.takeAcceptedForStop()
+      : [];
+    smoothedStreamRef.current = null;
+    for (const event of accepted) applyEvent(event, false);
+    commitPresentation();
     abortRef.current = null;
     if (browserTimingRef.current?.controller === controller) {
       browserTimingRef.current = null;
     }
     busyRef.current = false;
     setBusy(false);
-    setMessages((previous) => {
+    const stopProjection = (previous: ChatMessage[]) => {
       const last = previous.at(-1);
       if (last?.role !== "assistant") return previous;
       const completed = (last.blocks ?? []).flatMap((block): ChatBlock[] => {
         if (block.kind === "tool" && block.status === "running") return [];
-        if (block.kind === "reasoning" && block.active) return [];
+        if (block.kind === "reasoning" && block.active) {
+          return block.text ? [{ ...block, active: false, open: false }] : [];
+        }
         if (block.kind === "answer") return [{ ...block, done: true }];
         return [block];
       });
@@ -737,9 +852,14 @@ export function useChat(options: UseChatOptions) {
         ...previous.slice(0, -1),
         { ...last, blocks: completed, streaming: false, finishReason: "stopped" },
       ];
-    });
+    };
+    const stopped = stopProjection(activeMessagesRef.current ?? messagesRef.current);
+    activeMessagesRef.current = stopped;
+    messagesRef.current = stopped;
+    setMessages(stopped);
     optionsRef.current.onInterrupted(promptRef.current);
     const sessionId = activeSessionIdRef.current;
+    if (sessionId) stoppedProjectionRef.current = { sessionId, messages: stopped };
     if (sessionId) void cancelSession(sessionId).catch(() => undefined);
     const messagesGeneration = ++messagesGenerationRef.current;
     window.setTimeout(() => {
@@ -763,6 +883,10 @@ export function useChat(options: UseChatOptions) {
     workspaceStatusStateRef.current = "cleared";
     abortRef.current?.abort();
     abortRef.current = null;
+    smoothedStreamRef.current = null;
+    cancelPresentationFrame();
+    presentationDirtyRef.current = false;
+    stoppedProjectionRef.current = null;
     browserTimingRef.current = null;
     pendingCapacityRef.current = null;
     setCapacityRequest(null);
@@ -782,6 +906,8 @@ export function useChat(options: UseChatOptions) {
       preparingTimerRef.current = null;
     }
     workspaceStatusStateRef.current = "cleared";
+    cancelPresentationFrame();
+    presentationDirtyRef.current = false;
     browserTimingRef.current = null;
     pendingCapacityRef.current = null;
     setCapacityRequest(null);

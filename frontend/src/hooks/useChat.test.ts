@@ -849,3 +849,130 @@ describe("useChat workspace status and browser timing", () => {
     unmount();
   });
 });
+
+describe("useChat smooth stream presentation", () => {
+  let frames: FrameRequestCallback[];
+
+  beforeEach(() => {
+    vi.stubEnv("VITE_CHAT_LIVE", "1");
+    vi.stubEnv("VITE_CHAT_SMOOTH_STREAMING", "1");
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("coalesces visible deltas into one animation-frame commit", async () => {
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: null };
+      yield { type: "answer_delta", text: "Visible " };
+      await finish.promise;
+    });
+    const { result, unmount } = renderChat(null);
+    act(() => expect(result.current.send("Smooth it")).toBe(true));
+
+    await waitFor(() => expect(requestAnimationFrame).toHaveBeenCalledTimes(1));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([]);
+    act(() => frames.shift()?.(performance.now()));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "answer", text: "Visible " }),
+    ]);
+    unmount();
+    finish.resolve();
+  });
+
+  it("Stop synchronously flushes accepted text once before marking stopped", async () => {
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: null };
+      yield { type: "answer_delta", text: "one two three four" };
+      await finish.promise;
+    });
+    const { result, unmount } = renderChat(null);
+    act(() => expect(result.current.send("Stop it")).toBe(true));
+    await waitFor(() => expect(requestAnimationFrame).toHaveBeenCalled());
+
+    act(() => result.current.stop());
+    const answer = result.current.messages.at(-1)?.blocks?.find((block) => block.kind === "answer");
+    expect(answer).toMatchObject({ text: "one two three four", done: true });
+    expect(result.current.messages.at(-1)).toMatchObject({
+      streaming: false,
+      finishReason: "stopped",
+    });
+    expect(result.current.busy).toBe(false);
+    unmount();
+    finish.resolve();
+  });
+
+  it("Stop preserves reasoning text accepted before cancellation", async () => {
+    const finish = deferred<void>();
+    streamChatMock.mockImplementation(async function* () {
+      yield { type: "stream_start", request_id: "r1", session_id: null };
+      yield { type: "reasoning_start" };
+      yield { type: "reasoning_delta", text: "accepted reasoning suffix" };
+      await finish.promise;
+    });
+    const { result, unmount } = renderChat(null);
+    act(() => expect(result.current.send("Reason first")).toBe(true));
+    await waitFor(() => expect(requestAnimationFrame).toHaveBeenCalled());
+    act(() => result.current.stop());
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({
+        kind: "reasoning",
+        text: "accepted reasoning suffix",
+        active: false,
+      }),
+    ]);
+    unmount();
+    finish.resolve();
+  });
+
+  it("explicit raw mode applies events directly without frame accumulation", async () => {
+    vi.stubEnv("VITE_CHAT_SMOOTH_STREAMING", "off");
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: null },
+      { type: "answer_delta", text: "Raw answer" },
+      { type: "done", finish_reason: "success" },
+    )());
+    const { result } = renderChat(null);
+    act(() => expect(result.current.send("Raw mode")).toBe(true));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "answer", text: "Raw answer", done: true }),
+    ]);
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+  });
+
+  it("keeps a hidden-tab projection current and commits it once on visibility", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    streamChatMock.mockImplementation(() => stream(
+      { type: "stream_start", request_id: "r1", session_id: null },
+      { type: "answer_delta", text: "Hidden answer" },
+      { type: "done", finish_reason: "success" },
+    )());
+    const { result } = renderChat(null);
+    act(() => expect(result.current.send("Background")).toBe(true));
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "answer", text: "Hidden answer", done: true }),
+    ]);
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+
+    visibility = "visible";
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    act(() => frames.shift()?.(performance.now()));
+    expect(result.current.messages.at(-1)?.blocks).toEqual([
+      expect.objectContaining({ kind: "answer", text: "Hidden answer", done: true }),
+    ]);
+  });
+});
