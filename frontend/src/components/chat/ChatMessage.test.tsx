@@ -3,10 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AssistantMessage, UserMessage } from "@/components/chat/ChatMessage";
 import type { ChatMessage as ChatMessageType } from "@/lib/chat";
+
+afterEach(() => {
+  delete (document as Partial<Document>).caretPositionFromPoint;
+  delete (document as Partial<Document>).caretRangeFromPoint;
+  document.getSelection()?.removeAllRanges();
+});
 
 describe("UserMessage", () => {
   it("keeps historical paper mentions linked when new mentions are disabled", () => {
@@ -63,6 +69,27 @@ describe("UserMessage", () => {
 
     expect(firstPressAllowed).toBe(true);
     expect(secondPressAllowed).toBe(true);
+  });
+
+  it("selects the double-clicked word without cancelling the native event", () => {
+    render(<UserMessage text="What's good tiny image classifier" />);
+    const message = screen.getByText("What's good tiny image classifier");
+    const textNode = message.firstChild;
+    expect(textNode).toBeInstanceOf(Text);
+    Object.defineProperty(document, "caretRangeFromPoint", {
+      configurable: true,
+      value: () => {
+        const range = document.createRange();
+        range.setStart(textNode!, 8);
+        range.collapse(true);
+        return range;
+      },
+    });
+
+    const allowed = fireEvent.doubleClick(message, { clientX: 20, clientY: 10 });
+
+    expect(allowed).toBe(true);
+    expect(document.getSelection()?.toString()).toBe("good");
   });
 
   it("exposes a keyboard-accessible Codex-style edit action", async () => {
