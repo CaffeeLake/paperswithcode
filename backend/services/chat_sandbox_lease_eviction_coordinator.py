@@ -17,6 +17,7 @@ from backend.services.chat_sandbox_provider import SandboxProvider
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
+    IdleLeaseCandidate,
     TerminationClaim,
 )
 from backend.services.chat_sandbox_worker_transport import ChatSandboxWorkerTransport
@@ -100,7 +101,24 @@ class ChatSandboxLeaseEvictionCoordinator:
         claim = self._claim_idle(chat_session_id)
         if claim is None:
             return LeaseEvictionOutcome.NOT_IDLE
+        return await self._evict_claimed(chat_session_id, claim)
 
+    async def evict_candidate(
+        self,
+        candidate: IdleLeaseCandidate,
+        *,
+        cutoff: datetime | None = None,
+    ) -> LeaseEvictionOutcome:
+        claim = self._claim_candidate(candidate, cutoff=cutoff)
+        if claim is None:
+            return LeaseEvictionOutcome.NOT_IDLE
+        return await self._evict_claimed(candidate.chat_session_id, claim)
+
+    async def _evict_claimed(
+        self,
+        chat_session_id: uuid.UUID,
+        claim: TerminationClaim,
+    ) -> LeaseEvictionOutcome:
         sandbox_id = claim.sandbox_id
         assert sandbox_id is not None
         control = self.transport.session_control(chat_session_id)
@@ -130,6 +148,27 @@ class ChatSandboxLeaseEvictionCoordinator:
                 lease,
                 termination_token=self.token_factory(),
                 expires_at=now + timedelta(seconds=self.ready_timeout_seconds + 15),
+            )
+
+    def _claim_candidate(
+        self,
+        candidate: IdleLeaseCandidate,
+        *,
+        cutoff: datetime | None,
+    ) -> TerminationClaim | None:
+        now = self.utcnow()
+        with self.session_factory() as db, db.begin():
+            lease = self.repository.load_lease(
+                db,
+                candidate.chat_session_id,
+                lock=True,
+            )
+            return self.repository.claim_idle_candidate_termination(
+                lease,
+                candidate=candidate,
+                termination_token=self.token_factory(),
+                expires_at=now + timedelta(seconds=self.ready_timeout_seconds + 15),
+                cutoff=cutoff,
             )
 
     async def _save_snapshot(

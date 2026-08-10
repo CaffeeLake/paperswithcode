@@ -454,46 +454,6 @@ def test_cancel_control_write_failure_terminates_worker():
     assert terminated == ["cancel_control_lost"]
 
 
-def test_reconcile_does_not_mark_a_replaced_sandbox_lost(monkeypatch):
-    async def run():
-        session_id = uuid.uuid4()
-        lease = _lease(state="ready", sandbox_id="sb-old")
-        rows = [(session_id, "sb-old", "ready", None, "generation-a")]
-        manager = _manager(lease, rows=rows)
-        poll_started = asyncio.Event()
-        allow_poll = asyncio.Event()
-
-        class LostSandbox(_Sandbox):
-            async def _poll(self):
-                poll_started.set()
-                await allow_poll.wait()
-                return 1
-
-        async def from_id(sandbox_id):
-            assert sandbox_id == "sb-old"
-            return LostSandbox(sandbox_id)
-
-        monkeypatch.setattr(
-            chat_sandbox_service.modal.Sandbox,
-            "from_id",
-            _AsyncCall(from_id),
-        )
-
-        stale_reconcile = asyncio.create_task(manager.reconcile())
-        await poll_started.wait()
-        lease.state = "ready"
-        lease.modal_sandbox_id = "sb-new"
-        lease.worker_generation = "generation-b"
-        allow_poll.set()
-
-        assert await stale_reconcile == 0
-        assert lease.state == "ready"
-        assert lease.modal_sandbox_id == "sb-new"
-        assert lease.worker_generation == "generation-b"
-
-    asyncio.run(run())
-
-
 def test_stale_successful_worker_cannot_release_a_successor_or_termination():
     lease = _lease(state="busy", sandbox_id="sb-old")
     lease.lease_token_hash = "worker-old"

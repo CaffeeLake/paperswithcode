@@ -30,7 +30,6 @@ from backend.models.database import (
     ChatSandboxComputeInterval,
     ChatSandboxLease,
     ChatSandboxPool,
-    ChatSession,
     ChatTurnCapability,
 )
 from backend.services.chat_capability_service import IssuedCapability
@@ -51,6 +50,9 @@ from backend.services.chat_sandbox_lease_eviction_coordinator import (
 from backend.services.chat_sandbox_lease_lifecycle_coordinator import (
     ChatSandboxLeaseLifecycleCoordinator,
     SandboxCleanupUnverified as SandboxCleanupUnverified,
+)
+from backend.services.chat_sandbox_lease_maintenance_coordinator import (
+    ChatSandboxLeaseMaintenanceCoordinator,
 )
 from backend.services.chat_sandbox_pool_coordinator import (
     ChatSandboxPoolCoordinator,
@@ -79,11 +81,8 @@ from backend.services.chat_sandbox_spend_service import (
 )
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
-    LeaseStateClaim,
     LeaseUnavailable,
-    SnapshotClaim,
     StartClaim,
-    TerminationClaim,
     WorkerClaim,
     WorkerGenerationUnavailable,
 )
@@ -184,6 +183,8 @@ class SandboxSessionManager:
         pool_maintenance_owner: Callable[[], bool] | None = None,
         lease_eviction_coordinator: ChatSandboxLeaseEvictionCoordinator | None = None,
         lease_lifecycle_coordinator: ChatSandboxLeaseLifecycleCoordinator | None = None,
+        lease_maintenance_coordinator: ChatSandboxLeaseMaintenanceCoordinator
+        | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
@@ -194,6 +195,7 @@ class SandboxSessionManager:
         self._sandbox_pool_coordinator = None
         self._sandbox_lease_eviction = lease_eviction_coordinator
         self._sandbox_lease_lifecycle = lease_lifecycle_coordinator
+        self._sandbox_lease_maintenance = lease_maintenance_coordinator
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -337,6 +339,25 @@ class SandboxSessionManager:
                 termination_concurrency=self.MAINTENANCE_CONCURRENCY,
             )
             self._sandbox_lease_lifecycle = coordinator
+        return coordinator
+
+    def _lease_maintenance_coordinator(
+        self,
+    ) -> ChatSandboxLeaseMaintenanceCoordinator:
+        coordinator = getattr(self, "_sandbox_lease_maintenance", None)
+        if coordinator is None:
+            transport = self._worker_transport()
+            lifecycle = self._lease_lifecycle_coordinator()
+            coordinator = ChatSandboxLeaseMaintenanceCoordinator(
+                self.settings,
+                session_factory=self.session_factory,
+                repository=self._state_repository(),
+                provider=cast(SandboxProvider, transport.provider),
+                lifecycle=lifecycle,
+                snapshots=self.snapshots,
+                capacity_locker=lifecycle.capacity_locker,
+            )
+            self._sandbox_lease_maintenance = coordinator
         return coordinator
 
     async def _create_provider_sandbox(
@@ -1324,16 +1345,6 @@ class SandboxSessionManager:
             failure_code=failure_code,
         )
 
-    async def _terminate_claimed_sandbox(
-        self,
-        chat_session_id: uuid.UUID,
-        claim: TerminationClaim,
-    ) -> None:
-        await self._lease_lifecycle_coordinator().terminate_claimed(
-            chat_session_id,
-            claim,
-        )
-
     async def cleanup_deleted(
         self, sandbox_id: str | None, snapshot_id: str | None
     ) -> None:
@@ -1343,60 +1354,14 @@ class SandboxSessionManager:
         )
 
     async def reap_idle(self) -> int:
-        cutoff = datetime.now(UTC) - timedelta(
-            seconds=self.settings.chat_sandbox_warm_seconds
-        )
-        with self.session_factory() as db:
-            ids = list(
-                db.execute(
-                    select(ChatSandboxLease.chat_session_id)
-                    .where(
-                        ChatSandboxLease.state == "idle",
-                        ChatSandboxLease.last_activity_at < cutoff,
-                    )
-                    .order_by(ChatSandboxLease.last_activity_at)
-                ).scalars()
-            )
-        return await self._terminate_many(ids)
-
-    async def _terminate_many(self, chat_session_ids: list[uuid.UUID]) -> int:
-        return await self._lease_lifecycle_coordinator().terminate_idle_many(
-            chat_session_ids
-        )
+        return await self._lease_maintenance_coordinator().reap_idle()
 
     async def snapshot_and_terminate(self, chat_session_id: uuid.UUID) -> bool:
         outcome = await self._lease_eviction_coordinator().evict_idle(chat_session_id)
         return outcome.acquired
 
     async def enforce_warm_cap(self) -> int:
-        with self.session_factory() as db:
-            counted = (
-                db.scalar(
-                    select(func.count())
-                    .select_from(ChatSandboxLease)
-                    .where(
-                        ChatSandboxLease.state.in_(
-                            [
-                                "starting",
-                                "ready",
-                                "idle",
-                                "terminating",
-                            ]
-                        )
-                    )
-                )
-                or 0
-            )
-            idle = list(
-                db.execute(
-                    select(ChatSandboxLease.chat_session_id)
-                    .where(ChatSandboxLease.state == "idle")
-                    .order_by(ChatSandboxLease.last_activity_at.desc())
-                ).scalars()
-            )
-        excess = max(0, counted - self.settings.chat_sandbox_max_warm)
-        evict = list(reversed(idle[-excess:])) if excess else []
-        return await self._terminate_many(evict)
+        return await self._lease_maintenance_coordinator().enforce_warm_cap()
 
     async def enforce_spend_cap(self) -> dict[str, int | str]:
         """Apply the durable trip time to every worker and tagged provider orphan."""
@@ -1782,181 +1747,7 @@ class SandboxSessionManager:
 
     async def reconcile(self) -> int:
         """Converge expired creations and provider-lost sandbox leases."""
-
-        now = datetime.now(UTC)
-        with self.session_factory() as db:
-            stale_operations = list(
-                db.execute(
-                    select(
-                        ChatSandboxLease.chat_session_id,
-                        ChatSandboxLease.modal_sandbox_id,
-                        ChatSandboxLease.state,
-                        ChatSandboxLease.lease_token_hash,
-                        ChatSandboxLease.worker_generation,
-                    )
-                    .join(
-                        ChatSession,
-                        ChatSession.id == ChatSandboxLease.chat_session_id,
-                    )
-                    .where(
-                        (
-                            (ChatSandboxLease.state == "busy")
-                            & (
-                                ChatSession.active_turn_expires_at.is_(None)
-                                | (ChatSession.active_turn_expires_at <= now)
-                            )
-                        )
-                        | (
-                            (ChatSandboxLease.state == "terminating")
-                            & (
-                                ChatSandboxLease.lease_expires_at.is_(None)
-                                | (ChatSandboxLease.lease_expires_at <= now)
-                            )
-                        )
-                    )
-                ).all()
-            )
-        repaired = 0
-        for (
-            session_id,
-            sandbox_id,
-            state,
-            token_hash,
-            worker_generation,
-        ) in stale_operations:
-            expected = LeaseStateClaim(
-                state=state,
-                sandbox_id=sandbox_id,
-                token_hash=token_hash,
-                worker_generation=worker_generation,
-            )
-            claim: TerminationClaim | None = None
-            with self.session_factory() as db, db.begin():
-                lease = self._lease(db, session_id, lock=True)
-                session = db.execute(
-                    select(ChatSession)
-                    .where(ChatSession.id == session_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
-                if session is None:
-                    continue
-                current = datetime.now(UTC)
-                claim = self._state_repository().claim_stale_termination(
-                    lease,
-                    expected=expected,
-                    active_turn_expires_at=session.active_turn_expires_at,
-                    termination_token=secrets.token_urlsafe(24),
-                    expires_at=current
-                    + timedelta(seconds=self.ready_timeout_seconds + 15),
-                    now=current,
-                )
-            if claim is None:
-                continue
-            await self._terminate_claimed_sandbox(session_id, claim)
-            repaired += 1
-
-        with self.session_factory() as db:
-            candidates = list(
-                db.execute(
-                    select(
-                        ChatSandboxLease.chat_session_id,
-                        ChatSandboxLease.modal_sandbox_id,
-                        ChatSandboxLease.state,
-                        ChatSandboxLease.lease_token_hash,
-                        ChatSandboxLease.worker_generation,
-                    ).where(
-                        (ChatSandboxLease.state == "starting")
-                        & (
-                            ChatSandboxLease.lease_expires_at.is_(None)
-                            | (ChatSandboxLease.lease_expires_at < datetime.now(UTC))
-                        )
-                        | ChatSandboxLease.state.in_(["ready", "idle"])
-                    )
-                ).all()
-            )
-        for session_id, sandbox_id, state, token_hash, worker_generation in candidates:
-            if state == "starting":
-                if token_hash:
-                    claim = StartClaim(
-                        token_hash=token_hash,
-                        stale_sandbox_id=None,
-                        snapshot_id=None,
-                        worker_generation=worker_generation,
-                    )
-                    with self.session_factory() as db, db.begin():
-                        if self.blank_pool_enabled:
-                            self._lock_capacity(db)
-                        lease = self._lease(db, session_id, lock=True)
-                        if self._state_repository().fail_expired_start(
-                            lease,
-                            claim=claim,
-                            code="sandbox_start_failed",
-                            now=datetime.now(UTC),
-                        ):
-                            repaired += 1
-                continue
-            claim = LeaseStateClaim(
-                state=state,
-                sandbox_id=sandbox_id,
-                token_hash=token_hash,
-                worker_generation=worker_generation,
-            )
-            if not sandbox_id:
-                with self.session_factory() as db, db.begin():
-                    lease = self._lease(db, session_id, lock=True)
-                    if self._state_repository().mark_lost(
-                        lease,
-                        claim=claim,
-                        now=datetime.now(UTC),
-                    ):
-                        repaired += 1
-                continue
-            try:
-                provider = self._provider_adapter()
-                sandbox = await provider.resolve(sandbox_id)
-                alive = await provider.poll(sandbox) is None
-            except Exception:
-                alive = False
-            if not alive:
-                with self.session_factory() as db, db.begin():
-                    lease = self._lease(db, session_id, lock=True)
-                    if self._state_repository().mark_lost(
-                        lease,
-                        claim=claim,
-                        now=datetime.now(UTC),
-                    ):
-                        repaired += 1
-        return repaired
+        return await self._lease_maintenance_coordinator().reconcile()
 
     async def expire_inactive_snapshots(self) -> int:
-        cutoff = datetime.now(UTC) - timedelta(
-            days=self.settings.chat_workspace_snapshot_inactivity_days
-        )
-        with self.session_factory() as db:
-            rows = list(
-                db.execute(
-                    select(
-                        ChatSandboxLease.chat_session_id,
-                        ChatSandboxLease.workspace_snapshot_id,
-                    )
-                    .join(
-                        ChatSession,
-                        ChatSession.id == ChatSandboxLease.chat_session_id,
-                    )
-                    .where(
-                        ChatSandboxLease.workspace_snapshot_id.is_not(None),
-                        ChatSession.updated_at < cutoff,
-                    )
-                ).all()
-            )
-        expired = 0
-        for session_id, snapshot_id in rows:
-            if not snapshot_id:
-                continue
-            claim = SnapshotClaim(snapshot_id=snapshot_id)
-            await self.snapshots.delete(snapshot_id)
-            with self.session_factory() as db, db.begin():
-                lease = self._lease(db, session_id, lock=True)
-                if self._state_repository().clear_inactive_snapshot(lease, claim=claim):
-                    expired += 1
-        return expired
+        return await self._lease_maintenance_coordinator().expire_inactive_snapshots()

@@ -21,6 +21,7 @@ from backend.services.chat_sandbox_provider import SandboxProvider
 from backend.services.chat_sandbox_spend_service import ChatSandboxSpendService
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
+    IdleLeaseCandidate,
     TerminationClaim,
     WorkerClaim,
 )
@@ -214,19 +215,24 @@ class ChatSandboxLeaseLifecycleCoordinator:
                 "Sandbox termination could not be confirmed after chat deletion"
             )
 
-    async def terminate_idle_many(
+    async def terminate_idle_candidates(
         self,
-        chat_session_ids: Sequence[uuid.UUID],
+        candidates: Sequence[IdleLeaseCandidate],
+        *,
+        cutoff: datetime | None = None,
     ) -> int:
         semaphore = asyncio.Semaphore(self.termination_concurrency)
 
-        async def terminate_one(chat_session_id: uuid.UUID) -> bool:
+        async def terminate_one(candidate: IdleLeaseCandidate) -> bool:
             async with semaphore:
-                outcome = await self.idle_eviction.evict_idle(chat_session_id)
+                outcome = await self.idle_eviction.evict_candidate(
+                    candidate,
+                    cutoff=cutoff,
+                )
                 return outcome.acquired
 
         results = await asyncio.gather(
-            *(terminate_one(session_id) for session_id in chat_session_ids)
+            *(terminate_one(candidate) for candidate in candidates)
         )
         return sum(results)
 

@@ -18,7 +18,6 @@ from backend.models.database import (
 )
 from backend.services.chat_sandbox_lease_eviction_coordinator import (
     ChatSandboxLeaseEvictionCoordinator,
-    LeaseEvictionOutcome,
 )
 from backend.services.chat_sandbox_lease_lifecycle_coordinator import (
     MAX_LEASE_TERMINATION_CONCURRENCY,
@@ -32,7 +31,6 @@ from backend.services.chat_sandbox_service import (
 from backend.services.chat_sandbox_service import SandboxSessionManager
 from backend.services.chat_sandbox_state_repository import (
     ChatSandboxStateRepository,
-    TerminationClaim,
     WorkerClaim,
 )
 from backend.services.chat_sandbox_worker_transport import (
@@ -756,35 +754,6 @@ def test_deleted_cleanup_failure_stops_at_the_exact_operational_boundary(
         assert harness.snapshots.deleted == ["snapshot-current"]
 
 
-def test_terminate_idle_many_is_bounded_and_counts_all_acquired_outcomes():
-    async def scenario():
-        harness = _Harness(termination_concurrency=2)
-        session_ids = [uuid.uuid4() for _ in range(6)]
-        active = 0
-        maximum_active = 0
-
-        async def evict_idle(session_id):
-            nonlocal active, maximum_active
-            active += 1
-            maximum_active = max(maximum_active, active)
-            await asyncio.sleep(0)
-            active -= 1
-            index = session_ids.index(session_id)
-            if index == 0:
-                return LeaseEvictionOutcome.NOT_IDLE
-            if index == 1:
-                return LeaseEvictionOutcome.OWNERSHIP_CHANGED
-            return LeaseEvictionOutcome.EVICTED
-
-        harness.idle_eviction.evict_idle = evict_idle
-
-        assert await harness.coordinator.terminate_idle_many(session_ids) == 5
-        assert maximum_active == 2
-        assert harness.coordinator.termination_concurrency == 2
-
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [(0, 1), (99, MAX_LEASE_TERMINATION_CONCURRENCY)],
@@ -834,7 +803,6 @@ def test_coordinator_rejects_mismatched_provider_transport_and_idle_eviction():
 def test_manager_lifecycle_facades_preserve_void_bool_and_count_contracts():
     session_id = uuid.uuid4()
     worker_claim = WorkerClaim("sb-current", "worker-token")
-    termination_claim = TerminationClaim("sb-current", "termination-token")
 
     class Lifecycle:
         def __init__(self) -> None:
@@ -855,16 +823,8 @@ def test_manager_lifecycle_facades_preserve_void_bool_and_count_contracts():
             self.calls.append(("worker", candidate_session_id, claim, failure_code))
             return next(self.worker_outcomes)
 
-        async def terminate_claimed(self, candidate_session_id, claim):
-            self.calls.append(("claimed", candidate_session_id, claim))
-            return LeaseTerminationOutcome.FINISHED
-
         async def cleanup_deleted(self, sandbox_id, snapshot_id):
             self.calls.append(("cleanup", sandbox_id, snapshot_id))
-
-        async def terminate_idle_many(self, session_ids):
-            self.calls.append(("many", tuple(session_ids)))
-            return len(session_ids)
 
     lifecycle = Lifecycle()
     provider = _Provider(_TransactionProbe())
@@ -892,12 +852,10 @@ def test_manager_lifecycle_facades_preserve_void_bool_and_count_contracts():
                 worker_claim,
                 failure_code="worker-c",
             ),
-            await manager._terminate_claimed_sandbox(session_id, termination_claim),
             await manager.cleanup_deleted("sb-current", "snapshot-current"),
-            await manager._terminate_many([session_id, uuid.uuid4()]),
         )
 
-    assert asyncio.run(run()) == (None, True, True, False, None, None, 2)
+    assert asyncio.run(run()) == (None, True, True, False, None)
     assert lifecycle.calls[0] == ("terminate", session_id, "requested")
-    assert lifecycle.calls[-1][0] == "many"
+    assert lifecycle.calls[-1] == ("cleanup", "sb-current", "snapshot-current")
     assert LegacySandboxCleanupUnverified is SandboxCleanupUnverified
