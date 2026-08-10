@@ -41,6 +41,8 @@ def test_normalized_results_are_https_denylisted_and_bounded():
                 {
                     "title": f" Result {index} ",
                     "url": url,
+                    "image": "https://images.example/preview.png",
+                    "favicon": "http://insecure.example/favicon.ico",
                     "publishedDate": "2026-08-07T00:00:00.000Z",
                     "highlights": ["x" * 500],
                 }
@@ -64,6 +66,11 @@ def test_normalized_results_are_https_denylisted_and_bounded():
     assert len(payload["results"]) <= 5
     assert all(result["url"].startswith("https://") for result in payload["results"])
     assert all("blocked.example" not in result["url"] for result in payload["results"])
+    assert all(
+        result["image_url"] == "https://images.example/preview.png"
+        for result in payload["results"]
+    )
+    assert all(result["favicon_url"] is None for result in payload["results"])
     assert web._serialized_size(payload) <= 4_096
 
 
@@ -213,7 +220,7 @@ def test_projection_persists_only_exact_authoritative_web_citations(monkeypatch)
             "content": [
                 {
                     "type": "text",
-                    "text": '{"results":[{"title":"Official","url":"https://example.com/release","published_date":null,"excerpt":"Evidence"}]}',
+                    "text": '{"results":[{"title":"Official","url":"https://example.com/release","published_date":null,"excerpt":"Evidence","image_url":"https://cdn.example.com/release.png","favicon_url":"https://example.com/favicon.ico"}]}',
                     "truncated": False,
                 }
             ],
@@ -238,6 +245,8 @@ def test_projection_persists_only_exact_authoritative_web_citations(monkeypatch)
             "title": "Official",
             "excerpt": "Evidence",
             "source_url": None,
+            "thumbnail_url": "https://cdn.example.com/release.png",
+            "favicon_url": "https://example.com/favicon.ico",
             "authors": [],
             "published": None,
             "conference": None,

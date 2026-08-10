@@ -142,6 +142,12 @@ def normalize_exa_payload(raw: object, settings: Settings) -> dict[str, Any]:
         title = " ".join(str(candidate.get("title") or "Untitled source").split())[:500]
         published = candidate.get("publishedDate")
         published_date = str(published)[:32] if published else None
+        image_url = normalize_https_url(candidate.get("image"), denylist)
+        favicon_url = normalize_https_url(candidate.get("favicon"), denylist)
+        if image_url and len(image_url) > 1_000:
+            image_url = None
+        if favicon_url and len(favicon_url) > 1_000:
+            favicon_url = None
         highlights = candidate.get("highlights")
         if isinstance(highlights, list):
             excerpt = "\n".join(item for item in highlights if isinstance(item, str))
@@ -153,6 +159,8 @@ def normalize_exa_payload(raw: object, settings: Settings) -> dict[str, Any]:
                 "url": url,
                 "published_date": published_date,
                 "excerpt": excerpt[:4_000],
+                "image_url": image_url,
+                "favicon_url": favicon_url,
             }
         )
         if len(results) >= settings.chat_web_search_result_count:
@@ -174,6 +182,11 @@ def _bound_payload(payload: dict[str, Any], maximum: int) -> dict[str, Any]:
         if _serialized_size(payload) <= maximum:
             break
         result["published_date"] = None
+    for field in ("favicon_url", "image_url"):
+        for result in reversed(results):
+            if _serialized_size(payload) <= maximum:
+                break
+            result[field] = None
     while results and _serialized_size(payload) > maximum:
         results.pop()
     if _serialized_size(payload) > maximum:

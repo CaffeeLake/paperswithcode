@@ -66,6 +66,7 @@ export interface ChatCitation {
   excerpt?: string | null;
   source_url: string | null;
   thumbnail_url?: string | null;
+  favicon_url?: string | null;
   arxiv_id?: string | null;
   authors?: string[];
   published?: string | null;

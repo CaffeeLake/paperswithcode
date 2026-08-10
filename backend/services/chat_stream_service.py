@@ -233,6 +233,8 @@ class ChatTurnProjection:
                 "title": str(result.get("title") or "Web source")[:500],
                 "excerpt": str(result.get("excerpt") or "")[:4_000],
                 "source_url": None,
+                "thumbnail_url": result.get("image_url"),
+                "favicon_url": result.get("favicon_url"),
                 "authors": [],
                 "published": result.get("published_date"),
                 "conference": None,

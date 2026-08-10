@@ -170,6 +170,7 @@ class CitationSnapshot(BaseModel):
     excerpt: str | None = Field(default=None, max_length=4000)
     source_url: str | None = Field(default=None, max_length=2000)
     thumbnail_url: str | None = Field(default=None, max_length=1000)
+    favicon_url: str | None = Field(default=None, max_length=1000)
     arxiv_id: str | None = Field(default=None, max_length=50)
     authors: list[AuthorName] = Field(default_factory=list, max_length=50)
     published: str | None = Field(default=None, max_length=32)

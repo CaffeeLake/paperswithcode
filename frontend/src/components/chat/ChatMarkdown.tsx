@@ -25,6 +25,7 @@ import {
   parseHuggingFaceRepoUrl,
 } from "@/components/chat/HuggingFacePreviewLink";
 import { GitHubPreviewLink } from "@/components/chat/GitHubPreviewLink";
+import { WebPreviewLink } from "@/components/chat/WebPreviewLink";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
 import type { PaperPreviewData } from "@/components/paper-preview/paperPreviewData";
 import { parseGitHubRepoUrl } from "@/lib/github";
@@ -175,15 +176,9 @@ export const ChatMarkdown: React.FC<{
           }
           if (href?.startsWith("https://") && webCitations?.[href]) {
             return (
-              <a
-                href={href}
-                className="chat-web-citation"
-                target="_blank"
-                rel="noopener noreferrer"
-                title={webCitations[href].title}
-              >
+              <WebPreviewLink citation={webCitations[href]}>
                 {children}
-              </a>
+              </WebPreviewLink>
             );
           }
           return <span>{children}</span>;

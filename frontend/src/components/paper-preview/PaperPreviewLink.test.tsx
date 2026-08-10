@@ -405,4 +405,40 @@ describe("Markdown and chat policy", () => {
     );
     expect(screen.queryByRole("link", { name: "unverified" })).not.toBeInTheDocument();
   });
+
+  it("previews authoritative web citations with search-supplied metadata", async () => {
+    const source = "https://example.com/official-release";
+    renderWithProviders(
+      <ChatMarkdown
+        text={`[official](${source})`}
+        papers={{}}
+        citations={{}}
+        webCitations={{
+          [source]: {
+            kind: "web",
+            route_id: null,
+            url: source,
+            title: "Official release",
+            excerpt: "A representative release summary.",
+            source_url: null,
+            thumbnail_url: "https://cdn.example.com/release.png",
+            favicon_url: "https://example.com/favicon.ico",
+            published: "2026-08-10T00:00:00.000Z",
+          },
+        }}
+      />,
+    );
+
+    await hoverLink("official");
+    expect(await screen.findByText("Official release")).toBeInTheDocument();
+    expect(screen.getByText("example.com")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-10")).toBeInTheDocument();
+    expect(
+      screen.getByText("A representative release summary."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("web-preview-image")).toHaveAttribute(
+      "src",
+      "https://cdn.example.com/release.png",
+    );
+  });
 });
