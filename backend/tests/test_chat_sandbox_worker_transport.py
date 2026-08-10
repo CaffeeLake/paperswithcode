@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.chat_sandbox_worker.protocol import ProtocolError, encode_frame
+from backend.chat_sandbox_worker.protocol import (
+    MAX_WIRE_FRAME_BYTES,
+    ProtocolError,
+    decode_frame,
+    encode_frame,
+)
 from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 from backend.config import Settings
 from backend.services.chat_sandbox_provider import SandboxError
@@ -17,6 +22,11 @@ from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
     RunningWorker,
     SessionControl,
+    WorkerCancelStatus,
+    WorkerTurnDispatchOutcome,
+    WorkerTurnMilestone,
+    WorkerTurnMode,
+    WorkerTurnRequest,
 )
 
 
@@ -57,6 +67,87 @@ class _CloseProcess:
         await self.allow_close.wait()
 
 
+class _AsyncCall:
+    def __init__(self, function):
+        self.aio = function
+
+
+class _ChunkStream:
+    def __init__(self, chunks=()):
+        self.items: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
+        for chunk in chunks:
+            self.items.put_nowait(chunk)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self.items.get()
+        if item is None:
+            raise StopAsyncIteration
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    async def feed(self, *chunks: bytes) -> None:
+        for chunk in chunks:
+            await self.items.put(chunk)
+
+    async def finish(self) -> None:
+        await self.items.put(None)
+
+
+class _RecordingStdin:
+    def __init__(self, drain_action=None):
+        self.writes: list[bytes] = []
+        self.drain_calls = 0
+        self.drain_started = asyncio.Event()
+        self._drain_action = drain_action
+        self.drain = _AsyncCall(self._drain)
+
+    def write(self, payload: bytes) -> None:
+        self.writes.append(payload)
+
+    async def _drain(self) -> None:
+        self.drain_calls += 1
+        self.drain_started.set()
+        if self._drain_action is not None:
+            await self._drain_action()
+
+
+class _OneShotProcess:
+    def __init__(self, *, chunks=(), drain_action=None, wait_action=None):
+        self.stdin = _RecordingStdin(drain_action)
+        self.stdout = _ChunkStream(chunks)
+        self.stderr = _ChunkStream([None])
+        self.wait_calls = 0
+        self.wait_started = asyncio.Event()
+        self._wait_action = wait_action
+        self.wait = _AsyncCall(self._wait)
+
+    async def _wait(self) -> None:
+        self.wait_calls += 1
+        self.wait_started.set()
+        if self._wait_action is not None:
+            await self._wait_action()
+
+
+class _TurnProvider:
+    def __init__(self, *, connection=None, process=None):
+        self.connection = connection
+        self.process = process
+        self.persistent_calls: list[tuple[object, str]] = []
+        self.process_calls: list[tuple[object, int]] = []
+
+    async def open_persistent_connection(self, sandbox, worker_generation):
+        self.persistent_calls.append((sandbox, worker_generation))
+        return self.connection
+
+    async def open_turn_process(self, sandbox, *, timeout_seconds):
+        self.process_calls.append((sandbox, timeout_seconds))
+        return self.process
+
+
 def _transport(*, clock=None):
     async def unexpected_open(_sandbox, _worker_generation):
         raise AssertionError("this test must not open a provider connection")
@@ -90,6 +181,39 @@ def _running(request_id: str) -> RunningWorker:
         claim=WorkerClaim("sb-worker", "claim-token"),
         done=asyncio.Event(),
     )
+
+
+def _turn_request(**overrides) -> WorkerTurnRequest:
+    values = {
+        "chat_session_id": uuid.uuid4(),
+        "turn_id": uuid.uuid4(),
+        "request_id": "request-turn",
+        "prompt": "research prompt",
+        "model": "openai/gpt-test",
+        "resume": "resume-id",
+        "capability_token": "capability-token",
+        "gateway_url": "https://gateway.example.test",
+        "web_search_enabled": True,
+        "fetchable_urls": ("https://papers.example/one",),
+    }
+    values.update(overrides)
+    return WorkerTurnRequest(**values)
+
+
+def _turn_claim() -> WorkerClaim:
+    return WorkerClaim(
+        sandbox_id="sb-turn",
+        token_hash="claim-token",
+        assignment_token="assignment-token",
+        worker_generation="generation-a",
+    )
+
+
+def _decode_dispatch(payload: bytes) -> tuple[dict, dict]:
+    launch_wire, run_wire = payload.split(b"\n", 1)
+    assert launch_wire.startswith(SUPERVISOR_PREFIX)
+    launch = json.loads(launch_wire[len(SUPERVISOR_PREFIX) :])
+    return launch, decode_frame(run_wire)
 
 
 async def _wait_until(predicate) -> None:
@@ -496,5 +620,917 @@ def test_manager_control_facade_keeps_existing_lifecycle_contract():
 
         assert session_id not in manager._controls
         assert control.process.close_calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_persistent_turn_execution_preserves_frames_milestones_and_terminal_order():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        sandbox = SimpleNamespace(object_id=claim.sandbox_id)
+        process = _OneShotProcess()
+        control = _control(claim.sandbox_id, process)
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+
+        await execution.dispatch()
+        assert process.stdin.drain_calls == 1
+        assert len(process.stdin.writes) == 1
+        launch, run = _decode_dispatch(process.stdin.writes[0])
+        assert launch == {
+            "capability": request.capability_token,
+            "gateway_url": request.gateway_url,
+            "session_id": str(request.chat_session_id),
+            "turn_id": str(request.turn_id),
+            "assignment_token": claim.assignment_token,
+            "worker_generation": claim.worker_generation,
+        }
+        assert run == {
+            "v": 1,
+            "type": "run_turn",
+            "request_id": request.request_id,
+            "chat_session_id": str(request.chat_session_id),
+            "prompt": request.prompt,
+            "model": request.model,
+            "resume": request.resume,
+            "web_search_enabled": True,
+            "fetchable_urls": list(request.fetchable_urls),
+            "turn_id": str(request.turn_id),
+            "assignment_token": claim.assignment_token,
+            "worker_generation": claim.worker_generation,
+        }
+        running = transport.running_worker(request.turn_id)
+        assert running is not None
+        assert running.process is process
+        assert running.request_id == request.request_id
+        assert control.queues.keys() == {request.request_id}
+
+        queue = control.queues[request.request_id]
+        for event in (
+            {"v": 1, "type": "worker_ready", "request_id": request.request_id},
+            {
+                "v": 1,
+                "type": "_sdk_session",
+                "request_id": request.request_id,
+                "session_id": "sdk-session-a",
+            },
+            {"v": 1, "type": "workspace_ready", "request_id": request.request_id},
+            {
+                "v": 1,
+                "type": "reasoning_delta",
+                "request_id": request.request_id,
+                "delta": "thinking",
+            },
+            {
+                "v": 1,
+                "type": "done",
+                "request_id": request.request_id,
+                "answer": "complete",
+            },
+            {
+                "v": 1,
+                "type": "worker_done",
+                "request_id": request.request_id,
+                "status": "complete",
+            },
+        ):
+            await queue.put(event)
+
+        events = execution.events(timeout_seconds=1)
+        observed = []
+        async for event in events:
+            observed.append(event)
+            if event == {"type": "done", "answer": "complete"}:
+                assert running.done is not None and running.done.is_set()
+
+        assert observed == [
+            {"type": "worker_ready"},
+            {"type": "_sdk_session", "session_id": "sdk-session-a"},
+            WorkerTurnMilestone.SDK_DISPATCHED,
+            {"type": "workspace_ready"},
+            WorkerTurnMilestone.FIRST_DELTA,
+            {"type": "reasoning_delta", "delta": "thinking"},
+            {"type": "done", "answer": "complete"},
+        ]
+        assert control.resume_id == "sdk-session-a"
+        assert execution.terminal is True
+        assert execution.sdk_dispatched is True
+        assert execution.cancel_requested is False
+
+        await execution.close()
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+        assert transport.session_control(request.chat_session_id) is control
+
+    asyncio.run(exercise())
+
+
+def test_one_shot_turn_execution_preserves_frames_wait_and_exact_cleanup():
+    async def exercise():
+        request = _turn_request(resume=None, web_search_enabled=False)
+        claim = _turn_claim()
+        sandbox = SimpleNamespace(object_id=claim.sandbox_id)
+        frames = b"ignored output\n" + b"".join(
+            (
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "worker_ready",
+                        "request_id": request.request_id,
+                    }
+                ),
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "done",
+                        "request_id": request.request_id,
+                    }
+                ),
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "worker_done",
+                        "request_id": request.request_id,
+                        "status": "complete",
+                    }
+                ),
+            )
+        )
+        process = _OneShotProcess(chunks=[frames])
+        provider = _TurnProvider(process=process)
+        transport = ChatSandboxWorkerTransport(provider)
+        execution = transport.create_execution(
+            sandbox=sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.ONE_SHOT,
+            process_timeout_seconds=47,
+        )
+
+        await execution.dispatch()
+        assert provider.process_calls == [(sandbox, 47)]
+        assert process.stdin.drain_calls == 1
+        launch, run = _decode_dispatch(process.stdin.writes[0])
+        assert launch == {
+            "capability": request.capability_token,
+            "gateway_url": request.gateway_url,
+            "session_id": str(request.chat_session_id),
+            "turn_id": str(request.turn_id),
+        }
+        assert run == {
+            "v": 1,
+            "type": "run_turn",
+            "request_id": request.request_id,
+            "chat_session_id": str(request.chat_session_id),
+            "prompt": request.prompt,
+            "model": request.model,
+            "resume": None,
+            "web_search_enabled": False,
+            "fetchable_urls": list(request.fetchable_urls),
+        }
+
+        assert [event async for event in execution.events(timeout_seconds=1)] == [
+            {"type": "worker_ready"},
+            {"type": "done"},
+        ]
+        assert process.wait_calls == 1
+        assert execution.terminal is True
+        assert transport.session_control(request.chat_session_id) is None
+
+        running = transport.running_worker(request.turn_id)
+        assert running is not None
+        await execution.close()
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_duplicate_persistent_request_is_rejected_prewrite_without_queue_theft():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        process = _OneShotProcess()
+        control = _control(claim.sandbox_id, process)
+        existing_queue: asyncio.Queue = asyncio.Queue()
+        control.queues[request.request_id] = existing_queue
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=SimpleNamespace(object_id=claim.sandbox_id),
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+
+        with pytest.raises(ProtocolError, match="Duplicate persistent request"):
+            await execution.dispatch()
+        assert process.stdin.writes == []
+
+        await execution.close()
+        assert control.queues[request.request_id] is existing_queue
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_execution_close_cannot_remove_successor_queue_or_running_worker():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        successor_queue: asyncio.Queue = asyncio.Queue()
+        successor = _running("successor-request")
+        control.queues[request.request_id] = successor_queue
+        transport.register_running_worker(request.turn_id, successor)
+
+        await execution.close()
+
+        assert control.queues[request.request_id] is successor_queue
+        assert transport.running_worker(request.turn_id) is successor
+        control.queues.pop(request.request_id)
+        transport.remove_running_worker(request.turn_id, expected=successor)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("event", "message"),
+    [
+        (
+            {"v": 1, "type": "worker_ready", "request_id": "wrong-request"},
+            "Uncorrelated worker frame",
+        ),
+        (
+            {
+                "v": 1,
+                "type": "worker_done",
+                "request_id": "request-turn",
+                "status": "complete",
+            },
+            "without a semantic terminal event",
+        ),
+    ],
+)
+def test_turn_execution_rejects_uncorrelated_or_invalid_event_order(event, message):
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=SimpleNamespace(object_id=claim.sandbox_id),
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        await control.queues[request.request_id].put(event)
+
+        with pytest.raises(ProtocolError, match=message):
+            _ = [item async for item in execution.events(timeout_seconds=1)]
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_sdk_resume_identity_is_checked_before_cancelled_event_filtering():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        control.resume_id = "old-sdk-session"
+        transport.register_session_control(request.chat_session_id, control)
+
+        assert (
+            transport.reusable_sandbox(request.chat_session_id, request.resume)
+            is control.sandbox
+        )
+        assert control.resume_id is None
+
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        running = transport.running_worker(request.turn_id)
+        assert running is not None
+        running.cancel_requested = True
+        queue = control.queues[request.request_id]
+        await queue.put(
+            {
+                "v": 1,
+                "type": "_sdk_session",
+                "request_id": request.request_id,
+                "session_id": "new-sdk-session",
+            }
+        )
+        await queue.put(
+            {
+                "v": 1,
+                "type": "done",
+                "request_id": request.request_id,
+                "answer": "must-not-leak",
+            }
+        )
+        await queue.put(
+            {
+                "v": 1,
+                "type": "worker_done",
+                "request_id": request.request_id,
+                "status": "stopped",
+            }
+        )
+
+        assert [item async for item in execution.events(timeout_seconds=1)] == [
+            WorkerTurnMilestone.CANCELLED
+        ]
+        assert control.resume_id == "new-sdk-session"
+        assert execution.terminal is True
+        assert execution.cancel_requested is True
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_cancel_requested_during_dispatch_wins_drain_failure_and_cleans_state():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+
+        async def fail_after_cancel():
+            running = transport.running_worker(request.turn_id)
+            assert running is not None
+            running.cancel_requested = True
+            raise RuntimeError("control lost after cancellation")
+
+        control = _control(
+            claim.sandbox_id,
+            _OneShotProcess(drain_action=fail_after_cancel),
+        )
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+
+        assert await execution.dispatch() is WorkerTurnDispatchOutcome.CANCELLED
+        running = transport.running_worker(request.turn_id)
+        assert running is not None
+        assert running.cancel_requested is True
+        assert running.done is not None and running.done.is_set()
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_cancel_registered_before_run_frame_returns_cancelled_without_write():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        process = _OneShotProcess()
+        control = _control(claim.sandbox_id, process)
+        transport.register_session_control(request.chat_session_id, control)
+        register = transport.register_running_worker
+
+        def register_cancelled(turn_id, running):
+            register(turn_id, running)
+            running.cancel_requested = True
+
+        transport.register_running_worker = register_cancelled
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+
+        assert await execution.dispatch() is WorkerTurnDispatchOutcome.CANCELLED
+        running = transport.running_worker(request.turn_id)
+        assert running is not None
+        assert running.cancel_requested is True
+        assert running.done is not None and running.done.is_set()
+        assert process.stdin.writes == []
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_conflicting_sdk_resume_fails_and_cleans_exact_execution_state():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        control.resume_id = "sdk-session-a"
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        await control.queues[request.request_id].put(
+            {
+                "v": 1,
+                "type": "_sdk_session",
+                "request_id": request.request_id,
+                "session_id": "sdk-session-b",
+            }
+        )
+
+        with pytest.raises(ProtocolError, match="SDK session changed"):
+            _ = [item async for item in execution.events(timeout_seconds=1)]
+        assert control.resume_id == "sdk-session-a"
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_persistent_control_failure_maps_to_uncertain_sandbox_error_and_cleans():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        await control.queues[request.request_id].put(
+            {
+                "v": 1,
+                "type": "_control_failure",
+                "request_id": request.request_id,
+                "stage": "relay_write",
+            }
+        )
+
+        with pytest.raises(SandboxError) as raised:
+            _ = [item async for item in execution.events(timeout_seconds=1)]
+        assert raised.value.code == "sandbox_worker_failed"
+        assert raised.value.uncertain is True
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_persistent_timeout_cleans_correlated_queue_and_worker_registration():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+
+        with pytest.raises(TimeoutError):
+            _ = [item async for item in execution.events(timeout_seconds=0.01)]
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_persistent_oversized_unterminated_stream_fails_and_cleans_execution():
+    async def exercise():
+        connection = _AsyncConnection()
+        provider = _TurnProvider(connection=connection)
+        transport = ChatSandboxWorkerTransport(provider)
+        request = _turn_request()
+        claim = _turn_claim()
+        sandbox = SimpleNamespace(object_id=claim.sandbox_id)
+        control = await transport.open_persistent_control(
+            sandbox, claim.worker_generation
+        )
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+
+        await connection.incoming.put(b"x" * (MAX_WIRE_FRAME_BYTES + 1))
+        with pytest.raises(ProtocolError, match="too large"):
+            _ = [item async for item in execution.events(timeout_seconds=1)]
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+        transport.drop_session_control(request.chat_session_id, expected=control)
+        if control.reader_task is not None:
+            await asyncio.gather(control.reader_task, return_exceptions=True)
+        if transport.close_tasks:
+            await asyncio.gather(*transport.close_tasks, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+def test_one_shot_oversized_unterminated_stream_fails_and_cleans_execution():
+    async def exercise():
+        request = _turn_request()
+        claim = _turn_claim()
+        process = _OneShotProcess(chunks=[b"x" * (MAX_WIRE_FRAME_BYTES + 1)])
+        transport = ChatSandboxWorkerTransport(_TurnProvider(process=process))
+        execution = transport.create_execution(
+            sandbox=SimpleNamespace(object_id=claim.sandbox_id),
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.ONE_SHOT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+
+        with pytest.raises(ProtocolError, match="too large"):
+            _ = [item async for item in execution.events(timeout_seconds=1)]
+
+        await execution.close()
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_one_shot_wait_is_timed_and_terminal_state_survives_timeout():
+    async def exercise():
+        request = _turn_request()
+        claim = _turn_claim()
+        wait_forever = asyncio.Event()
+
+        async def wait_action():
+            await wait_forever.wait()
+
+        process = _OneShotProcess(
+            chunks=[
+                encode_frame(
+                    {
+                        "v": 1,
+                        "type": "done",
+                        "request_id": request.request_id,
+                    }
+                )
+                + encode_frame(
+                    {
+                        "v": 1,
+                        "type": "worker_done",
+                        "request_id": request.request_id,
+                        "status": "complete",
+                    }
+                )
+            ],
+            wait_action=wait_action,
+        )
+        transport = ChatSandboxWorkerTransport(_TurnProvider(process=process))
+        execution = transport.create_execution(
+            sandbox=SimpleNamespace(object_id=claim.sandbox_id),
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.ONE_SHOT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        observed = []
+
+        with pytest.raises(TimeoutError):
+            async for item in execution.events(timeout_seconds=0.01):
+                observed.append(item)
+
+        assert observed == [{"type": "done"}]
+        assert process.wait_calls == 1
+        assert execution.terminal is True
+        await execution.close()
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_cancel_not_found_has_no_transport_side_effects():
+    async def exercise():
+        transport = _transport()
+        turn_id = uuid.uuid4()
+
+        outcome = await transport.cancel(turn_id, grace_seconds=0.01)
+
+        assert outcome.status is WorkerCancelStatus.NOT_FOUND
+        assert outcome.turn_id == turn_id
+        assert outcome.request_id is None
+        assert outcome.claim is None
+        assert transport.running_worker(turn_id) is None
+
+    asyncio.run(exercise())
+
+
+def test_cancel_completed_uses_original_request_and_preserves_claim_identity():
+    async def exercise():
+        transport = _transport()
+        turn_id = uuid.uuid4()
+        claim = _turn_claim()
+        process = _OneShotProcess()
+        done = asyncio.Event()
+        done.set()
+        running = RunningWorker(
+            process=process,
+            request_id="original-request",
+            claim=claim,
+            done=done,
+        )
+        transport.register_running_worker(turn_id, running)
+
+        outcome = await transport.cancel(turn_id, grace_seconds=1)
+
+        assert outcome.status is WorkerCancelStatus.COMPLETED
+        assert outcome.turn_id == turn_id
+        assert outcome.request_id == "original-request"
+        assert outcome.claim is claim
+        assert running.cancel_requested is True
+        assert decode_frame(process.stdin.writes[0]) == {
+            "v": 1,
+            "type": "cancel",
+            "request_id": "original-request",
+        }
+        transport.remove_running_worker(turn_id, expected=running)
+
+    asyncio.run(exercise())
+
+
+def test_cancel_control_loss_requires_explicit_completion_signal():
+    async def exercise():
+        async def lose_control():
+            raise RuntimeError("control closed")
+
+        transport = _transport()
+        turn_id = uuid.uuid4()
+        claim = _turn_claim()
+        process = _OneShotProcess(drain_action=lose_control)
+        running = RunningWorker(
+            process=process,
+            request_id="request-control-lost",
+            claim=claim,
+            done=asyncio.Event(),
+        )
+        transport.register_running_worker(turn_id, running)
+
+        outcome = await transport.cancel(turn_id, grace_seconds=1)
+
+        assert outcome.status is WorkerCancelStatus.CONTROL_LOST
+        assert outcome.claim is claim
+        assert running.cancel_requested is True
+        assert running.done is not None and not running.done.is_set()
+        transport.complete_control_loss(outcome)
+        assert running.done.is_set()
+        transport.remove_running_worker(turn_id, expected=running)
+
+    asyncio.run(exercise())
+
+
+def test_cancel_timeout_is_distinct_from_control_loss():
+    async def exercise():
+        transport = _transport()
+        turn_id = uuid.uuid4()
+        claim = _turn_claim()
+        running = RunningWorker(
+            process=_OneShotProcess(),
+            request_id="request-timeout",
+            claim=claim,
+            done=asyncio.Event(),
+        )
+        transport.register_running_worker(turn_id, running)
+
+        outcome = await transport.cancel(turn_id, grace_seconds=0.01)
+
+        assert outcome.status is WorkerCancelStatus.TIMED_OUT
+        assert outcome.claim is claim
+        assert running.cancel_requested is True
+        assert running.done is not None and not running.done.is_set()
+        transport.remove_running_worker(turn_id, expected=running)
+
+    asyncio.run(exercise())
+
+
+def test_accepted_cancel_wins_concurrent_stream_failure_and_cleans_execution():
+    async def exercise():
+        transport = _transport()
+        request = _turn_request()
+        claim = _turn_claim()
+        control = _control(claim.sandbox_id, _OneShotProcess())
+        transport.register_session_control(request.chat_session_id, control)
+        execution = transport.create_execution(
+            sandbox=control.sandbox,
+            claim=claim,
+            request=request,
+            mode=WorkerTurnMode.PERSISTENT,
+            process_timeout_seconds=47,
+        )
+        await execution.dispatch()
+        cancel = asyncio.create_task(transport.cancel(request.turn_id, grace_seconds=1))
+        await _wait_until(lambda: execution.cancel_requested)
+        await control.queues[request.request_id].put(
+            RuntimeError("worker exited during cancellation")
+        )
+
+        assert [item async for item in execution.events(timeout_seconds=1)] == [
+            WorkerTurnMilestone.CANCELLED
+        ]
+        outcome = await cancel
+        assert outcome.status is WorkerCancelStatus.COMPLETED
+
+        await execution.close()
+        assert request.request_id not in control.queues
+        assert transport.running_worker(request.turn_id) is None
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected_releases", "expected_termination"),
+    [
+        (True, 1, []),
+        (False, 0, ["cancelled"]),
+    ],
+)
+def test_manager_cancelled_milestone_preserves_release_vs_terminate_contract(
+    terminal,
+    expected_releases,
+    expected_termination,
+):
+    async def exercise():
+        settings = Settings(
+            _env_file=None,
+            chat_workspace_snapshots_enabled=False,
+            chat_persistent_worker_enabled=False,
+            chat_sandbox_spend_enforcement_enabled=False,
+            chat_agent_timeout_seconds=1,
+            chat_gateway_url="https://gateway.example.test",
+        )
+        provider = _TurnProvider(process=_OneShotProcess())
+        manager = SandboxSessionManager(settings, sandbox_provider=provider)
+        sandbox = SimpleNamespace(object_id="sb-manager-cancel")
+
+        async def ensure_ready(*_args, **_kwargs):
+            return sandbox, 0, False, "cold_start", None
+
+        manager.ensure_ready = ensure_ready
+        claim = WorkerClaim(sandbox.object_id, "claim-token")
+        manager._claim_worker = lambda *_args: claim
+        releases = 0
+        terminations: list[str] = []
+
+        def release_worker(*_args):
+            nonlocal releases
+            releases += 1
+            return True
+
+        async def terminate_worker(_session_id, _claim, *, failure_code):
+            terminations.append(failure_code)
+            return True
+
+        manager._release_worker = release_worker
+        manager._terminate_worker = terminate_worker
+        manager.enforce_warm_cap = lambda: asyncio.sleep(0, result=0)
+
+        class Execution:
+            sdk_dispatched = False
+            cancel_requested = True
+
+            def __init__(self):
+                self.terminal = False
+                self.closed = False
+
+            async def dispatch(self):
+                return WorkerTurnDispatchOutcome.DISPATCHED
+
+            async def events(self, *, timeout_seconds):
+                assert timeout_seconds == 1
+                self.terminal = terminal
+                yield WorkerTurnMilestone.CANCELLED
+
+            async def close(self):
+                self.closed = True
+
+        execution = Execution()
+        transport = manager._worker_transport()
+        transport.create_execution = lambda *_args, **_kwargs: execution
+
+        events = [
+            event
+            async for event in manager.run_turn(
+                chat_session_id=uuid.uuid4(),
+                turn_id=uuid.uuid4(),
+                request_id="manager-cancel",
+                prompt="prompt",
+                model="model",
+                resume=None,
+                capability=SimpleNamespace(token="capability"),
+            )
+        ]
+
+        assert events[-1] == {"type": "_cancelled"}
+        assert execution.closed is True
+        assert releases == expected_releases
+        assert terminations == expected_termination
+
+    asyncio.run(exercise())
+
+
+def test_manager_cancel_maps_timeout_and_not_found_without_changing_boolean_contract():
+    async def exercise():
+        manager = SandboxSessionManager(
+            Settings(
+                _env_file=None,
+                chat_workspace_snapshots_enabled=False,
+                chat_cancel_grace_seconds=0.01,
+            )
+        )
+        transport = manager._worker_transport()
+        session_id = uuid.uuid4()
+        turn_id = uuid.uuid4()
+        claim = _turn_claim()
+        running = RunningWorker(
+            process=_OneShotProcess(),
+            request_id="manager-timeout",
+            claim=claim,
+            done=asyncio.Event(),
+        )
+        transport.register_running_worker(turn_id, running)
+        terminations: list[tuple[uuid.UUID, WorkerClaim, str]] = []
+
+        async def terminate_worker(candidate_session, candidate_claim, *, failure_code):
+            terminations.append((candidate_session, candidate_claim, failure_code))
+            return True
+
+        manager._terminate_worker = terminate_worker
+
+        assert await manager.cancel(session_id, turn_id) is True
+        assert terminations == [(session_id, claim, "cancel_timeout")]
+        assert await manager.cancel(session_id, uuid.uuid4()) is False
+
+        transport.remove_running_worker(turn_id, expected=running)
 
     asyncio.run(exercise())

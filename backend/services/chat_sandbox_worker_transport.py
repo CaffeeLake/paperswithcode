@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from enum import Enum, StrEnum
 from typing import Protocol
 
 from backend.chat_sandbox_worker.protocol import (
     FRAME_PREFIX,
+    MAX_WIRE_FRAME_BYTES,
     ProtocolError,
+    WorkerEventValidator,
     decode_frame,
+    encode_frame,
 )
 from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
 from backend.services.chat_sandbox_provider import SandboxError
 from backend.services.chat_sandbox_state_repository import WorkerClaim
+
+logger = logging.getLogger(__name__)
 
 
 class _SandboxIdentity(Protocol):
@@ -33,13 +42,59 @@ class WorkerTransportProvider(Protocol):
     ) -> object: ...
 
 
+class WorkerTurnMode(StrEnum):
+    PERSISTENT = "persistent"
+    ONE_SHOT = "one_shot"
+
+
+class WorkerTurnMilestone(Enum):
+    SDK_DISPATCHED = "sdk_dispatched"
+    FIRST_DELTA = "first_delta"
+    CANCELLED = "cancelled"
+
+
+class WorkerTurnDispatchOutcome(StrEnum):
+    DISPATCHED = "dispatched"
+    CANCELLED = "cancelled"
+
+
+class WorkerCancelStatus(StrEnum):
+    NOT_FOUND = "not_found"
+    COMPLETED = "completed"
+    CONTROL_LOST = "control_lost"
+    TIMED_OUT = "timed_out"
+
+
+@dataclass(frozen=True)
+class WorkerTurnRequest:
+    chat_session_id: uuid.UUID
+    turn_id: uuid.UUID
+    request_id: str
+    prompt: str = field(repr=False)
+    model: str
+    resume: str | None
+    capability_token: str = field(repr=False)
+    gateway_url: str
+    web_search_enabled: bool = False
+    fetchable_urls: tuple[str, ...] = ()
+
+
 @dataclass
 class RunningWorker:
     process: object
     request_id: str
-    claim: WorkerClaim
+    claim: WorkerClaim = field(repr=False)
     cancel_requested: bool = False
     done: asyncio.Event | None = None
+
+
+@dataclass(frozen=True)
+class WorkerCancelOutcome:
+    status: WorkerCancelStatus
+    turn_id: uuid.UUID
+    request_id: str | None
+    claim: WorkerClaim | None = field(repr=False)
+    _running: RunningWorker | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -87,6 +142,19 @@ class _WebSocketProcess:
 
     async def aclose(self) -> None:
         await self._connection.close()
+
+
+async def _framed_events(stream: object) -> AsyncIterator[dict]:
+    buffer = b""
+    async for chunk in stream:
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            if not line or not line.startswith(FRAME_PREFIX.encode()):
+                continue
+            yield decode_frame(line)
+        if len(buffer) > MAX_WIRE_FRAME_BYTES:
+            raise ProtocolError("Worker stream frame is too large")
 
 
 class ChatSandboxWorkerTransport:
@@ -164,21 +232,14 @@ class ChatSandboxWorkerTransport:
             control.queues.pop(request_id, None)
 
     async def read_control(self, control: SessionControl) -> None:
-        buffer = b""
         failure: BaseException | None = None
         try:
-            async for chunk in control.process.stdout:
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if not line or not line.startswith(FRAME_PREFIX.encode()):
-                        continue
-                    event = decode_frame(line)
-                    request_id = str(event.get("request_id") or "")
-                    queue = control.queues.get(request_id)
-                    if queue is None:
-                        raise ProtocolError("Uncorrelated persistent worker frame")
-                    await queue.put(event)
+            async for event in _framed_events(control.process.stdout):
+                request_id = str(event.get("request_id") or "")
+                queue = control.queues.get(request_id)
+                if queue is None:
+                    raise ProtocolError("Uncorrelated persistent worker frame")
+                await queue.put(event)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -192,6 +253,105 @@ class ChatSandboxWorkerTransport:
                 )
             for queue in list(control.queues.values()):
                 await queue.put(failure)
+
+    def reusable_sandbox(
+        self, chat_session_id: uuid.UUID, resume_id: str | None
+    ) -> object | None:
+        control = self.session_control(chat_session_id)
+        if control is None:
+            return None
+        if (
+            resume_id is not None
+            and control.resume_id is not None
+            and control.resume_id != resume_id
+        ):
+            control.resume_id = None
+        return control.sandbox
+
+    def create_execution(
+        self,
+        sandbox: object,
+        claim: WorkerClaim,
+        request: WorkerTurnRequest,
+        mode: WorkerTurnMode,
+        *,
+        process_timeout_seconds: int,
+    ) -> WorkerTurnExecution:
+        return WorkerTurnExecution(
+            self,
+            sandbox=sandbox,
+            claim=claim,
+            request=request,
+            mode=mode,
+            process_timeout_seconds=process_timeout_seconds,
+        )
+
+    async def signal_cancel(self, running: RunningWorker) -> None:
+        running.cancel_requested = True
+        running.process.stdin.write(
+            encode_frame(
+                {
+                    "v": 1,
+                    "type": "cancel",
+                    "request_id": running.request_id,
+                }
+            )
+        )
+        await running.process.stdin.drain.aio()
+
+    async def cancel(
+        self, turn_id: uuid.UUID, *, grace_seconds: float
+    ) -> WorkerCancelOutcome:
+        running = self.running_worker(turn_id)
+        if running is None:
+            return WorkerCancelOutcome(
+                WorkerCancelStatus.NOT_FOUND,
+                turn_id,
+                None,
+                None,
+            )
+        try:
+            await self.signal_cancel(running)
+        except Exception:
+            return WorkerCancelOutcome(
+                WorkerCancelStatus.CONTROL_LOST,
+                turn_id,
+                running.request_id,
+                running.claim,
+                running,
+            )
+        try:
+            async with asyncio.timeout(grace_seconds):
+                if running.done is not None:
+                    await running.done.wait()
+                else:
+                    await running.process.wait.aio()
+        except TimeoutError:
+            return WorkerCancelOutcome(
+                WorkerCancelStatus.TIMED_OUT,
+                turn_id,
+                running.request_id,
+                running.claim,
+                running,
+            )
+        return WorkerCancelOutcome(
+            WorkerCancelStatus.COMPLETED,
+            turn_id,
+            running.request_id,
+            running.claim,
+            running,
+        )
+
+    @staticmethod
+    def complete_control_loss(outcome: WorkerCancelOutcome) -> None:
+        if outcome.status is not WorkerCancelStatus.CONTROL_LOST:
+            raise ValueError("Only a lost cancellation control can be completed")
+        running = outcome._running
+        if running is not None and running.done is not None:
+            running.done.set()
+
+    def running_workers(self) -> tuple[RunningWorker, ...]:
+        return tuple(self.processes.values())
 
     def running_worker(self, turn_id: uuid.UUID) -> RunningWorker | None:
         return self.processes.get(turn_id)
@@ -324,3 +484,285 @@ class ChatSandboxWorkerTransport:
         if control.reader_task is not None:
             control.reader_task.cancel()
         self.schedule_close(control)
+
+
+class WorkerTurnExecution:
+    """One validated worker request from dispatch through exact cleanup."""
+
+    def __init__(
+        self,
+        transport: ChatSandboxWorkerTransport,
+        *,
+        sandbox: object,
+        claim: WorkerClaim,
+        request: WorkerTurnRequest,
+        mode: WorkerTurnMode,
+        process_timeout_seconds: int,
+    ):
+        self.transport = transport
+        self.sandbox = sandbox
+        self.claim = claim
+        self.request = request
+        self.mode = mode
+        self.process_timeout_seconds = process_timeout_seconds
+        self.control: SessionControl | None = None
+        self.process: object | None = None
+        self.queue: asyncio.Queue | None = None
+        self.running: RunningWorker | None = None
+        self.stderr_task: asyncio.Task | None = None
+        self.terminal = False
+        self.sdk_dispatched = False
+        self._dispatch_started = False
+        self._dispatched = False
+        self._closed = False
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self.running is not None and self.running.cancel_requested
+
+    async def dispatch(self) -> WorkerTurnDispatchOutcome:
+        if self._dispatch_started:
+            raise RuntimeError("Worker turn dispatch already started")
+        if self._closed:
+            raise RuntimeError("Worker turn execution is closed")
+        self._dispatch_started = True
+        try:
+            outcome = await self._dispatch()
+        except Exception:
+            if self._accept_cancelled_failure():
+                return WorkerTurnDispatchOutcome.CANCELLED
+            raise
+        if outcome is WorkerTurnDispatchOutcome.CANCELLED:
+            return outcome
+        self._dispatched = True
+        return WorkerTurnDispatchOutcome.DISPATCHED
+
+    async def _dispatch(self) -> WorkerTurnDispatchOutcome:
+        if self.mode is WorkerTurnMode.PERSISTENT:
+            self.control = self.transport.session_control(self.request.chat_session_id)
+            if (
+                self.control is not None
+                and self.control.sandbox_id != self.claim.sandbox_id
+            ):
+                self.transport.drop_session_control(
+                    self.request.chat_session_id,
+                    expected=self.control,
+                )
+                self.control = None
+            if self.control is None:
+                self.control = await self.transport.open_persistent_control(
+                    self.sandbox,
+                    self.claim.worker_generation,
+                )
+                self.transport.register_session_control(
+                    self.request.chat_session_id,
+                    self.control,
+                )
+            self.process = self.control.process
+            self.stderr_task = self.control.stderr_task
+        else:
+            self.process = await self.transport.open_turn_process(
+                self.sandbox,
+                timeout_seconds=self.process_timeout_seconds,
+            )
+            self.stderr_task = asyncio.create_task(
+                self._drain_stderr(self.process.stderr)
+            )
+
+        self.running = RunningWorker(
+            self.process,
+            self.request.request_id,
+            self.claim,
+            done=asyncio.Event(),
+        )
+        self.transport.register_running_worker(
+            self.request.turn_id,
+            self.running,
+        )
+        if self.mode is WorkerTurnMode.PERSISTENT:
+            assert self.control is not None
+            if self.request.request_id in self.control.queues:
+                raise ProtocolError("Duplicate persistent request identifier")
+            self.queue = asyncio.Queue()
+            self.control.queues[self.request.request_id] = self.queue
+
+        if self.running.cancel_requested:
+            self.running.done.set()
+            return WorkerTurnDispatchOutcome.CANCELLED
+        self.process.stdin.write(self._request_frame())
+        await self.process.stdin.drain.aio()
+        return WorkerTurnDispatchOutcome.DISPATCHED
+
+    def _request_frame(self) -> bytes:
+        launch = {
+            "capability": self.request.capability_token,
+            "gateway_url": self.request.gateway_url,
+            "session_id": str(self.request.chat_session_id),
+            "turn_id": str(self.request.turn_id),
+        }
+        run = {
+            "v": 1,
+            "type": "run_turn",
+            "request_id": self.request.request_id,
+            "chat_session_id": str(self.request.chat_session_id),
+            "prompt": self.request.prompt,
+            "model": self.request.model,
+            "resume": self.request.resume,
+            "web_search_enabled": self.request.web_search_enabled,
+            "fetchable_urls": list(self.request.fetchable_urls),
+        }
+        if self.mode is WorkerTurnMode.PERSISTENT:
+            identity = {
+                "assignment_token": self.claim.assignment_token,
+                "worker_generation": self.claim.worker_generation,
+            }
+            launch.update(identity)
+            run.update(
+                {
+                    "turn_id": str(self.request.turn_id),
+                    **identity,
+                }
+            )
+        return (
+            SUPERVISOR_PREFIX
+            + json.dumps(launch, separators=(",", ":")).encode()
+            + b"\n"
+            + encode_frame(run)
+        )
+
+    async def events(
+        self, *, timeout_seconds: float
+    ) -> AsyncIterator[WorkerTurnMilestone | dict]:
+        if not self._dispatched:
+            raise RuntimeError("Worker turn was not dispatched")
+        if self._closed:
+            raise RuntimeError("Worker turn execution is closed")
+        pending_terminal_event: dict | None = None
+        first_worker_delta_recorded = False
+        validator = WorkerEventValidator()
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                events = (
+                    self._persistent_events()
+                    if self.mode is WorkerTurnMode.PERSISTENT
+                    else _framed_events(self.process.stdout)
+                )
+                async for event in events:
+                    if event.get("request_id") != self.request.request_id:
+                        raise ProtocolError("Uncorrelated worker frame")
+                    assert self.running is not None
+                    validator.accept(
+                        event,
+                        allow_terminal_less_stop=self.running.cancel_requested,
+                    )
+                    if event["type"] == "worker_done":
+                        self.terminal = True
+                        if self.running.done is not None:
+                            self.running.done.set()
+                        if event.get("status") == "stopped":
+                            yield WorkerTurnMilestone.CANCELLED
+                        elif pending_terminal_event is not None:
+                            yield self._public_event(pending_terminal_event)
+                        break
+                    if (
+                        self.mode is WorkerTurnMode.PERSISTENT
+                        and event["type"] == "_sdk_session"
+                    ):
+                        assert self.control is not None
+                        sdk_session_id = str(event.get("session_id") or "")
+                        if (
+                            self.control.resume_id is not None
+                            and self.control.resume_id != sdk_session_id
+                        ):
+                            raise ProtocolError(
+                                "SDK session changed inside persistent control"
+                            )
+                        self.control.resume_id = sdk_session_id
+                    if self.running.cancel_requested:
+                        continue
+                    if event["type"] == "workspace_ready":
+                        self.sdk_dispatched = True
+                        yield WorkerTurnMilestone.SDK_DISPATCHED
+                    if not first_worker_delta_recorded and event["type"] in {
+                        "reasoning_delta",
+                        "tool_call",
+                        "answer_delta",
+                    }:
+                        first_worker_delta_recorded = True
+                        yield WorkerTurnMilestone.FIRST_DELTA
+                    if event["type"] in {"done", "error", "_mirror_error"}:
+                        pending_terminal_event = event
+                        continue
+                    yield self._public_event(event)
+                if self.mode is WorkerTurnMode.ONE_SHOT:
+                    await self.process.wait.aio()
+            if not self.terminal:
+                raise SandboxError(
+                    "sandbox_worker_failed",
+                    "The secure workspace worker ended unexpectedly",
+                    uncertain=True,
+                )
+        except Exception:
+            if self._accept_cancelled_failure():
+                yield WorkerTurnMilestone.CANCELLED
+                return
+            raise
+
+    async def _persistent_events(self) -> AsyncIterator[dict]:
+        assert self.queue is not None
+        while True:
+            item = await self.queue.get()
+            if isinstance(item, BaseException):
+                raise item
+            if item.get("type") == "_control_failure":
+                logger.warning(
+                    "persistent worker control failed stage=%s",
+                    item.get("stage"),
+                )
+                raise SandboxError(
+                    "sandbox_worker_failed",
+                    "The persistent worker control failed",
+                    uncertain=True,
+                )
+            yield item
+            if item.get("type") == "worker_done":
+                return
+
+    def _accept_cancelled_failure(self) -> bool:
+        if not self.cancel_requested:
+            return False
+        assert self.running is not None
+        if self.running.done is not None:
+            self.running.done.set()
+        return True
+
+    @staticmethod
+    async def _drain_stderr(stream: object) -> None:
+        async for _chunk in stream:
+            pass
+
+    @staticmethod
+    def _public_event(event: dict) -> dict:
+        return {
+            key: value for key, value in event.items() if key not in {"v", "request_id"}
+        }
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if (
+            self.control is not None
+            and self.queue is not None
+            and self.control.queues.get(self.request.request_id) is self.queue
+        ):
+            self.control.queues.pop(self.request.request_id)
+        if self.mode is WorkerTurnMode.ONE_SHOT and self.stderr_task is not None:
+            self.stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self.stderr_task
+        if self.running is not None:
+            self.transport.remove_running_worker(
+                self.request.turn_id,
+                expected=self.running,
+            )

@@ -13,7 +13,6 @@ from backend.config import Settings
 from backend.services import chat_sandbox_service, chat_turn_runner
 from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
-    SessionControl,
     WorkerClaim,
 )
 
@@ -301,9 +300,11 @@ def test_stale_termination_cannot_clear_a_successor_lease(monkeypatch):
 
 
 def test_persistent_turns_reuse_one_control_attachment():
-    class Output:
+    class Connection:
         def __init__(self):
             self.chunks: asyncio.Queue[bytes] = asyncio.Queue()
+            self.sent: list[bytes] = []
+            self.closed = False
 
         def __aiter__(self):
             return self
@@ -311,18 +312,10 @@ def test_persistent_turns_reuse_one_control_attachment():
         async def __anext__(self):
             return await self.chunks.get()
 
-    class Input:
-        def __init__(self, output):
-            self.output = output
-            self.writes = 0
-            self.drain = _AsyncCall(self._drain)
-
-        def write(self, _payload):
-            self.writes += 1
-
-        async def _drain(self):
-            request_id = f"request-{self.writes}"
-            await self.output.chunks.put(
+        async def send(self, payload):
+            self.sent.append(payload)
+            request_id = f"request-{len(self.sent)}"
+            await self.chunks.put(
                 b"".join(
                     [
                         encode_frame(
@@ -351,52 +344,31 @@ def test_persistent_turns_reuse_one_control_attachment():
                 )
             )
 
-    class Stderr:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            await asyncio.Future()
-
-    class Process:
-        def __init__(self):
-            self.stdout = Output()
-            self.stderr = Stderr()
-            self.stdin = Input(self.stdout)
+        async def close(self):
+            self.closed = True
 
     async def run():
-        process = Process()
+        connection = Connection()
         sandbox = SimpleNamespace(object_id="sb-persistent")
-        manager = SandboxSessionManager.__new__(SandboxSessionManager)
-        manager.settings = SimpleNamespace(
+        start_calls = 0
+
+        class Provider:
+            async def open_persistent_connection(self, candidate, worker_generation):
+                nonlocal start_calls
+                start_calls += 1
+                assert candidate is sandbox
+                assert worker_generation == "generation-a"
+                return connection
+
+        settings = Settings(
+            _env_file=None,
+            chat_workspace_snapshots_enabled=False,
             chat_persistent_worker_enabled=True,
             chat_persistent_sandbox_lifetime_seconds=86400,
             chat_agent_timeout_seconds=2,
             chat_gateway_url="https://gateway.example.test",
         )
-        manager._processes = {}
-        manager._controls = {}
-        manager._background_tasks = set()
-        start_calls = 0
-
-        async def start_control(candidate, worker_generation):
-            nonlocal start_calls
-            start_calls += 1
-            assert candidate is sandbox
-            assert worker_generation == "generation-a"
-            control = SessionControl(
-                process=process,
-                sandbox=sandbox,
-                sandbox_id=sandbox.object_id,
-                stderr_task=None,
-                reader_task=None,
-                queues={},
-                resume_id=None,
-            )
-            control.reader_task = asyncio.create_task(manager._read_control(control))
-            return control
-
-        manager._start_persistent_control = start_control
+        manager = SandboxSessionManager(settings, sandbox_provider=Provider())
         ensure_calls = 0
 
         async def ensure_ready(_session_id, **kwargs):
@@ -440,11 +412,25 @@ def test_persistent_turns_reuse_one_control_attachment():
                 events.append(event)
                 if event["type"] == "done":
                     assert manager._processes[turn_id].done.is_set()
-            assert any(event["type"] == "workspace_ready" for event in events)
+            assert [(event["type"], event.get("phase")) for event in events] == [
+                ("sandbox_start", None),
+                ("_latency", "sandbox_acquisition_ms"),
+                ("sandbox_ready", None),
+                ("_latency", "capability_install_ms"),
+                ("_latency", "worker_ready_ms"),
+                ("_latency", "sdk_dispatch_ms"),
+                ("workspace_ready", None),
+                ("done", None),
+            ]
             assert released == index
         manager._drop_control(session_id)
+        transport = manager._worker_transport()
+        if transport.close_tasks:
+            await asyncio.gather(*transport.close_tasks, return_exceptions=True)
         assert start_calls == 1
         assert ensure_calls == 1
+        assert len(connection.sent) == 2
+        assert connection.closed is True
 
     asyncio.run(run())
 

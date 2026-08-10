@@ -87,7 +87,6 @@ from backend.services.chat_sandbox_service import (
     SandboxSessionManager,
     WorkerClaim,
     WorkspaceSnapshotProvider,
-    _cancelled_terminal_event,
     create_isolated_sandbox,
     resolve_modal_image,
 )
@@ -2807,36 +2806,20 @@ def test_sandbox_cancel_correlates_to_original_run_request():
         async def _wait(self):
             return None
 
-    manager = SandboxSessionManager.__new__(SandboxSessionManager)
-    manager.settings = type("Settings", (), {"chat_cancel_grace_seconds": 1})()
+    manager = SandboxSessionManager(
+        Settings(_env_file=None, chat_workspace_snapshots_enabled=False)
+    )
     turn_id = uuid.uuid4()
     running = RunningWorker(
         Process(),
         "original-request",
         WorkerClaim("sandbox-id", "worker-token"),
     )
-    manager._processes = {turn_id: running}
+    manager._worker_transport().register_running_worker(turn_id, running)
 
     assert asyncio.run(manager.cancel(uuid.uuid4(), turn_id))
     assert running.cancel_requested
     assert decode_frame(writes[0].rstrip(b"\n"))["request_id"] == ("original-request")
-
-
-def test_accepted_cancel_wins_over_concurrent_worker_exit():
-    done = asyncio.Event()
-    running = RunningWorker(
-        object(),
-        "request-id",
-        WorkerClaim("sandbox-id", "worker-token"),
-        cancel_requested=True,
-        done=done,
-    )
-
-    assert _cancelled_terminal_event(running) == {"type": "_cancelled"}
-    assert done.is_set()
-
-    running.cancel_requested = False
-    assert _cancelled_terminal_event(running) is None
 
 
 def test_forced_failure_probe_does_not_record_user_cancellation():

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
-import json
 import logging
 import os
 import secrets
@@ -25,14 +23,7 @@ from sqlalchemy.orm import Session
 from websockets.asyncio.client import connect as websocket_connect
 
 from backend.chat_sandbox_worker.contract import MODAL_APP_NAME
-from backend.chat_sandbox_worker.protocol import (
-    FRAME_PREFIX,
-    ProtocolError,
-    WorkerEventValidator,
-    decode_frame,
-    encode_frame,
-)
-from backend.chat_sandbox_worker.supervisor import SUPERVISOR_PREFIX
+from backend.chat_sandbox_worker.protocol import ProtocolError
 from backend.config import Settings
 from backend.database.connection import db_manager
 from backend.models.database import (
@@ -79,6 +70,12 @@ from backend.services.chat_sandbox_worker_transport import (
     ChatSandboxWorkerTransport,
     RunningWorker,
     SessionControl,
+    WorkerCancelStatus,
+    WorkerTurnDispatchOutcome,
+    WorkerTurnExecution,
+    WorkerTurnMilestone,
+    WorkerTurnMode,
+    WorkerTurnRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,15 +87,6 @@ POOL_ACCOUNTING_SAFETY_SECONDS = 120
 POOL_LOCAL_HEALTH_MAX_AGE_SECONDS = 15
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000672
-
-
-def _cancelled_terminal_event(running: RunningWorker | None) -> dict[str, str] | None:
-    """Let an accepted user cancellation win over a concurrent worker exit."""
-    if running is None or not running.cancel_requested:
-        return None
-    if running.done is not None:
-        running.done.set()
-    return {"type": "_cancelled"}
 
 
 async def resolve_modal_image(image_reference: str):
@@ -1760,17 +1748,11 @@ class SandboxSessionManager:
     def _drop_control(self, chat_session_id: uuid.UUID) -> None:
         self._worker_transport().drop_session_control(chat_session_id)
 
-    def _close_control_transport(self, control: SessionControl) -> None:
-        self._worker_transport().schedule_close(control)
-
     def _drop_control_by_sandbox(self, sandbox_id: str) -> None:
         self._worker_transport().drop_session_controls_by_sandbox(sandbox_id)
 
     def _drop_blank_control(self, sandbox_id: str) -> None:
         self._worker_transport().drop_blank_control(sandbox_id)
-
-    async def _read_control(self, control: SessionControl) -> None:
-        await self._worker_transport().read_control(control)
 
     async def run_turn(
         self,
@@ -1839,24 +1821,14 @@ class SandboxSessionManager:
         turn_started = time.perf_counter()
         transport = self._worker_transport()
         yield {"type": "sandbox_start", "session_id": str(chat_session_id)}
-        existing_control = transport.session_control(chat_session_id)
-        if (
-            existing_control is not None
-            and resume is not None
-            and existing_control.resume_id is not None
-            and existing_control.resume_id != resume
-        ):
-            # The persistent agent reconnects its SDK client to the durable
-            # resume boundary while retaining the already-running sandbox.
-            existing_control.resume_id = None
         persistent = bool(
             getattr(self.settings, "chat_persistent_worker_enabled", False)
         )
-        existing_control = (
-            transport.session_control(chat_session_id) if persistent else None
+        reusable_sandbox = (
+            transport.reusable_sandbox(chat_session_id, resume) if persistent else None
         )
-        if existing_control is not None:
-            sandbox = existing_control.sandbox
+        if reusable_sandbox is not None:
+            sandbox = reusable_sandbox
             cold_start_ms = 0
             created = False
             acquisition_outcome = "reused_session"
@@ -1909,225 +1881,68 @@ class SandboxSessionManager:
             "cold_start_ms": cold_start_ms,
         }
         claim: WorkerClaim | None = None
-        running_worker: RunningWorker | None = None
-        stderr_task: asyncio.Task | None = None
-        control: SessionControl | None = None
-        terminal = False
-        pending_terminal_event: dict | None = None
-        sdk_dispatched = False
-        first_worker_delta_recorded = False
-        validator = WorkerEventValidator()
+        execution: WorkerTurnExecution | None = None
         try:
             claim = self._claim_worker(chat_session_id, sandbox.object_id)
-
-            control = transport.session_control(chat_session_id) if persistent else None
-            if control is not None and control.sandbox_id != sandbox.object_id:
-                transport.drop_session_control(
-                    chat_session_id,
-                    expected=control,
-                )
-                control = None
-            if control is None:
-                if persistent:
-                    control = await self._start_persistent_control(
-                        sandbox, claim.worker_generation
-                    )
-                    process = control.process
-                    transport.register_session_control(chat_session_id, control)
-                else:
-                    process = await transport.open_turn_process(
-                        sandbox,
-                        timeout_seconds=round(
-                            self.settings.chat_agent_timeout_seconds + 15
-                        ),
-                    )
-
-                    async def drain_stderr(stream) -> None:
-                        async for _chunk in stream:
-                            pass
-
-                    stderr_task = asyncio.create_task(drain_stderr(process.stderr))
-            else:
-                process = control.process
-                stderr_task = control.stderr_task
-            assert claim is not None
-            running_worker = RunningWorker(
-                process, request_id, claim, done=asyncio.Event()
+            execution = transport.create_execution(
+                sandbox,
+                claim,
+                WorkerTurnRequest(
+                    chat_session_id=chat_session_id,
+                    turn_id=turn_id,
+                    request_id=request_id,
+                    prompt=prompt,
+                    model=model,
+                    resume=resume,
+                    capability_token=capability.token,
+                    gateway_url=self.settings.chat_gateway_url,
+                    web_search_enabled=web_search_enabled,
+                    fetchable_urls=tuple(fetchable_urls or ()),
+                ),
+                (WorkerTurnMode.PERSISTENT if persistent else WorkerTurnMode.ONE_SHOT),
+                process_timeout_seconds=round(
+                    self.settings.chat_agent_timeout_seconds + 15
+                ),
             )
-            transport.register_running_worker(turn_id, running_worker)
-            launch = {
-                "capability": capability.token,
-                "gateway_url": self.settings.chat_gateway_url,
-                "session_id": str(chat_session_id),
-                "turn_id": str(turn_id),
-            }
-            if persistent:
-                launch.update(
-                    {
-                        "assignment_token": claim.assignment_token,
-                        "worker_generation": claim.worker_generation,
-                    }
-                )
-            run = {
-                "v": 1,
-                "type": "run_turn",
-                "request_id": request_id,
-                "chat_session_id": str(chat_session_id),
-                "prompt": prompt,
-                "model": model,
-                "resume": resume,
-                "web_search_enabled": web_search_enabled,
-                "fetchable_urls": fetchable_urls or [],
-            }
-            if persistent:
-                run.update(
-                    {
-                        "turn_id": str(turn_id),
-                        "assignment_token": claim.assignment_token,
-                        "worker_generation": claim.worker_generation,
-                    }
-                )
-            queue: asyncio.Queue | None = None
-            if persistent:
-                assert control is not None
-                if request_id in control.queues:
-                    raise ProtocolError("Duplicate persistent request identifier")
-                queue = asyncio.Queue()
-                control.queues[request_id] = queue
-            process.stdin.write(
-                SUPERVISOR_PREFIX
-                + json.dumps(launch, separators=(",", ":")).encode()
-                + b"\n"
-                + encode_frame(run)
-            )
-            await process.stdin.drain.aio()
+            dispatch = await execution.dispatch()
+            if dispatch is WorkerTurnDispatchOutcome.CANCELLED:
+                yield {"type": "_cancelled"}
+                return
             yield {
                 "type": "_latency",
                 "phase": "capability_install_ms",
                 "elapsed_ms": round((time.perf_counter() - turn_started) * 1000),
             }
-
-            async with asyncio.timeout(self.settings.chat_agent_timeout_seconds):
-                if persistent:
-                    assert queue is not None
-
-                    async def persistent_events():
-                        while True:
-                            item = await queue.get()
-                            if isinstance(item, BaseException):
-                                raise item
-                            if item.get("type") == "_control_failure":
-                                logger.warning(
-                                    "persistent worker control failed stage=%s",
-                                    item.get("stage"),
-                                )
-                                raise SandboxError(
-                                    "sandbox_worker_failed",
-                                    "The persistent worker control failed",
-                                    uncertain=True,
-                                )
-                            yield item
-                            if item.get("type") == "worker_done":
-                                return
-
-                    events = persistent_events()
-                else:
-
-                    async def one_shot_events():
-                        buffer = b""
-                        async for chunk in process.stdout:
-                            buffer += chunk
-                            while b"\n" in buffer:
-                                line, buffer = buffer.split(b"\n", 1)
-                                if not line or not line.startswith(
-                                    FRAME_PREFIX.encode()
-                                ):
-                                    continue
-                                yield decode_frame(line)
-
-                    events = one_shot_events()
-
-                async for event in events:
-                    if event.get("request_id") != request_id:
-                        raise ProtocolError("Uncorrelated worker frame")
-                    validator.accept(
-                        event,
-                        allow_terminal_less_stop=running_worker.cancel_requested,
-                    )
-                    if event["type"] == "worker_done":
-                        terminal = True
-                        running_worker.done.set()
-                        if event.get("status") == "stopped":
-                            yield {"type": "_cancelled"}
-                        elif pending_terminal_event is not None:
-                            yield {
-                                key: value
-                                for key, value in pending_terminal_event.items()
-                                if key not in {"v", "request_id"}
-                            }
-                        break
-                    if persistent and event["type"] == "_sdk_session":
-                        assert control is not None
-                        sdk_session_id = str(event.get("session_id") or "")
-                        if (
-                            control.resume_id is not None
-                            and control.resume_id != sdk_session_id
-                        ):
-                            raise ProtocolError(
-                                "SDK session changed inside persistent control"
-                            )
-                        control.resume_id = sdk_session_id
-                    if running_worker.cancel_requested:
-                        continue
-                    if event["type"] == "workspace_ready":
-                        sdk_dispatched = True
-                        elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
-                        yield {
-                            "type": "_latency",
-                            "phase": "worker_ready_ms",
-                            "elapsed_ms": elapsed_ms,
-                        }
-                        yield {
-                            "type": "_latency",
-                            "phase": "sdk_dispatch_ms",
-                            "elapsed_ms": elapsed_ms,
-                        }
-                    if not first_worker_delta_recorded and event["type"] in {
-                        "reasoning_delta",
-                        "tool_call",
-                        "answer_delta",
-                    }:
-                        first_worker_delta_recorded = True
-                        yield {
-                            "type": "_latency",
-                            "phase": "first_worker_delta",
-                            "elapsed_ms": round(
-                                (time.perf_counter() - turn_started) * 1000
-                            ),
-                        }
-                    if event["type"] in {"done", "error", "_mirror_error"}:
-                        pending_terminal_event = event
-                        continue
+            async for output in execution.events(
+                timeout_seconds=self.settings.chat_agent_timeout_seconds
+            ):
+                if output is WorkerTurnMilestone.SDK_DISPATCHED:
+                    elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
                     yield {
-                        key: value
-                        for key, value in event.items()
-                        if key not in {"v", "request_id"}
+                        "type": "_latency",
+                        "phase": "worker_ready_ms",
+                        "elapsed_ms": elapsed_ms,
                     }
-                if not persistent:
-                    await process.wait.aio()
-            if not terminal:
-                raise SandboxError(
-                    "sandbox_worker_failed",
-                    "The secure workspace worker ended unexpectedly",
-                    uncertain=True,
-                )
+                    yield {
+                        "type": "_latency",
+                        "phase": "sdk_dispatch_ms",
+                        "elapsed_ms": elapsed_ms,
+                    }
+                elif output is WorkerTurnMilestone.FIRST_DELTA:
+                    yield {
+                        "type": "_latency",
+                        "phase": "first_worker_delta",
+                        "elapsed_ms": round(
+                            (time.perf_counter() - turn_started) * 1000
+                        ),
+                    }
+                elif output is WorkerTurnMilestone.CANCELLED:
+                    yield {"type": "_cancelled"}
+                else:
+                    yield output
         except (TimeoutError, ProtocolError, SandboxError) as error:
-            if cancelled := _cancelled_terminal_event(running_worker):
-                yield cancelled
-                return
-            if (
-                acquisition_outcome in {"pool_hit", "reused_session"}
-                and not sdk_dispatched
+            if acquisition_outcome in {"pool_hit", "reused_session"} and not (
+                execution is not None and execution.sdk_dispatched
             ):
                 raise SandboxError(
                     "pool_assignment_failed",
@@ -2146,12 +1961,8 @@ class SandboxSessionManager:
                 ) from error
             raise
         except Exception as error:
-            if cancelled := _cancelled_terminal_event(running_worker):
-                yield cancelled
-                return
-            if (
-                acquisition_outcome in {"pool_hit", "reused_session"}
-                and not sdk_dispatched
+            if acquisition_outcome in {"pool_hit", "reused_session"} and not (
+                execution is not None and execution.sdk_dispatched
             ):
                 raise SandboxError(
                     "pool_assignment_failed",
@@ -2160,25 +1971,16 @@ class SandboxSessionManager:
                 ) from error
             raise
         finally:
-            if persistent and control is not None:
-                control.queues.pop(request_id, None)
-            if stderr_task and not getattr(
-                self.settings, "chat_persistent_worker_enabled", False
-            ):
-                stderr_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await stderr_task
-            if running_worker is not None:
-                transport.remove_running_worker(turn_id, expected=running_worker)
-            if not terminal:
+            if execution is not None:
+                await execution.close()
+            if execution is None or not execution.terminal:
                 if claim is not None:
                     await self._terminate_worker(
                         chat_session_id,
                         claim,
                         failure_code=(
                             "cancelled"
-                            if running_worker is not None
-                            and running_worker.cancel_requested
+                            if execution is not None and execution.cancel_requested
                             else "sandbox_worker_failed"
                         ),
                     )
@@ -2190,41 +1992,26 @@ class SandboxSessionManager:
                 await self.enforce_warm_cap()
 
     async def cancel(self, chat_session_id: uuid.UUID, turn_id: uuid.UUID) -> bool:
-        running = self._worker_transport().running_worker(turn_id)
-        if running is None:
+        transport = self._worker_transport()
+        outcome = await transport.cancel(
+            turn_id,
+            grace_seconds=self.settings.chat_cancel_grace_seconds,
+        )
+        if outcome.status is WorkerCancelStatus.NOT_FOUND:
             return False
-        running.cancel_requested = True
-        process = running.process
-        try:
-            process.stdin.write(
-                encode_frame(
-                    {
-                        "v": 1,
-                        "type": "cancel",
-                        "request_id": running.request_id,
-                    }
-                )
-            )
-            await process.stdin.drain.aio()
-        except Exception:
+        if outcome.status is WorkerCancelStatus.CONTROL_LOST:
+            assert outcome.claim is not None
             await self._terminate_worker(
                 chat_session_id,
-                running.claim,
+                outcome.claim,
                 failure_code="cancel_control_lost",
             )
-            if running.done is not None:
-                running.done.set()
-            return True
-        try:
-            async with asyncio.timeout(self.settings.chat_cancel_grace_seconds):
-                if running.done is not None:
-                    await running.done.wait()
-                else:
-                    await process.wait.aio()
-        except TimeoutError:
+            transport.complete_control_loss(outcome)
+        elif outcome.status is WorkerCancelStatus.TIMED_OUT:
+            assert outcome.claim is not None
             await self._terminate_worker(
                 chat_session_id,
-                running.claim,
+                outcome.claim,
                 failure_code="cancel_timeout",
             )
         return True
@@ -2485,15 +2272,12 @@ class SandboxSessionManager:
                 min(remaining, self.settings.chat_sandbox_watchdog_seconds)
             )
         if datetime.now(UTC) >= deadline:
-            for running in list(self._worker_transport().processes.values()):
-                running.cancel_requested = True
-                with contextlib.suppress(Exception):
-                    running.process.stdin.write(
-                        encode_frame(
-                            {"v": 1, "type": "cancel", "request_id": running.request_id}
-                        )
-                    )
-                    await running.process.stdin.drain.aio()
+            transport = self._worker_transport()
+            for running in transport.running_workers():
+                try:
+                    await transport.signal_cancel(running)
+                except Exception:
+                    pass
             with self.session_factory() as db, db.begin():
                 db.query(ChatTurnCapability).filter(
                     ChatTurnCapability.revoked_at.is_(None)
