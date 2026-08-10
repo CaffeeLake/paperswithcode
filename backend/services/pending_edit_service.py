@@ -42,6 +42,32 @@ from backend.utils.exceptions import PaperNotFoundError
 STATUSES = frozenset({"pending", "approved", "rejected"})
 logger = logging.getLogger(__name__)
 
+MEMBERSHIP_EDIT_FIELDS = {
+    "tasks": ("tasks", "task_ids"),
+    "methods": ("methods", "method_ids"),
+}
+
+
+def _rebase_membership_payload(
+    edit_type: str,
+    submitted_snapshot: dict[str, Any],
+    current_snapshot: dict[str, Any],
+    proposed_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Apply a submitted set change to newer canonical membership state."""
+
+    fields = MEMBERSHIP_EDIT_FIELDS.get(edit_type)
+    if fields is None:
+        return None
+    snapshot_field, payload_field = fields
+    submitted_ids = {item["id"] for item in submitted_snapshot[snapshot_field]}
+    current_ids = {item["id"] for item in current_snapshot[snapshot_field]}
+    proposed_ids = set(proposed_payload[payload_field])
+    added_ids = proposed_ids - submitted_ids
+    removed_ids = submitted_ids - proposed_ids
+    merged_ids = (current_ids - removed_ids) | added_ids
+    return {payload_field: sorted(merged_ids)}
+
 
 class PendingEditService:
     """Coordinate identity, limits, persistence, and review transactions.
@@ -295,22 +321,31 @@ class PendingEditService:
         spec = edit_spec(row.edit_type)
         if row.paper_id is None and spec.requires_paper:
             raise PendingEditError("This edit is missing its paper_id")
-        if row.paper_id is not None:
-            current = self.snapshots.paper_edit(row.paper_id, row.edit_type)
-            if current != (row.current_payload or {}):
-                row.conflict_payload = {
-                    "submitted_snapshot": row.current_payload or {},
-                    "current_snapshot": current,
-                }
-                self.db.commit()
-                raise PendingEditConflictError(
-                    "Canonical state changed after submission"
-                )
-
         applied_payload = validate_payload(
             row.edit_type,
             resolved_payload if resolved_payload is not None else row.proposed_payload,
         )
+        if row.paper_id is not None:
+            current = self.snapshots.paper_edit(row.paper_id, row.edit_type)
+            if current != (row.current_payload or {}):
+                rebased_payload = _rebase_membership_payload(
+                    row.edit_type,
+                    row.current_payload or {},
+                    current,
+                    applied_payload,
+                )
+                if rebased_payload is None:
+                    row.conflict_payload = {
+                        "submitted_snapshot": row.current_payload or {},
+                        "current_snapshot": current,
+                    }
+                    self.db.commit()
+                    raise PendingEditConflictError(
+                        "Canonical state changed after submission"
+                    )
+                applied_payload = rebased_payload
+                row.conflict_payload = None
+
         before = self.snapshots.approval_event(row.edit_type, row.paper_id)
         try:
             result_type, result_id = self.mutations.apply(

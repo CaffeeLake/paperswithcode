@@ -39,6 +39,7 @@ from backend.routers.pending_edits import _to_response
 from backend.services.pending_edit_service import (
     PendingEditError,
     PendingEditAlreadyReviewedError,
+    PendingEditConflictError,
     PendingEditService,
     SubmissionRateLimitError,
     SubmissionSuspendedError,
@@ -164,6 +165,99 @@ def test_submit_tasks_change_succeeds(db_session, paper_fixture):
     assert row.id is not None
     assert row.status == "pending"
     assert row.proposed_payload == {"task_ids": [1, 2, 3]}
+
+
+def test_approve_tasks_rebases_compatible_live_addition(db_session):
+    db_session.add(
+        DBPaper(
+            id=2,
+            title="P2",
+            source="external",
+            source_url="https://example.com/p2",
+        )
+    )
+    db_session.add_all(
+        [
+            DBTask(id=1, name="Task A", slug="task-a", level=0),
+            DBTask(id=2, name="Task B", slug="task-b", level=0),
+            DBTask(id=3, name="Task C", slug="task-c", level=0),
+        ]
+    )
+    db_session.commit()
+    service = PendingEditService(db_session)
+    row = service.submit(
+        paper_id=2,
+        hf_username="alice",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [1, 2, 3]},
+    )
+
+    db_session.add(PaperTask(paper_id=2, task_id=1))
+    db_session.commit()
+
+    reviewed = service.approve(edit_id=row.id, reviewer_username="admin")
+
+    task_ids = {
+        item.task_id
+        for item in db_session.query(PaperTask).filter(PaperTask.paper_id == 2)
+    }
+    assert task_ids == {1, 2, 3}
+    assert reviewed.applied_payload == {"task_ids": [1, 2, 3]}
+    assert reviewed.conflict_payload is None
+
+
+def test_approve_tasks_rebase_preserves_unrelated_live_change(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    row = service.submit(
+        paper_id=1,
+        hf_username="alice",
+        edit_type="tasks",
+        proposed_payload={"task_ids": [2]},
+    )
+    db_session.add(PaperTask(paper_id=1, task_id=3))
+    db_session.commit()
+
+    reviewed = service.approve(edit_id=row.id, reviewer_username="admin")
+
+    task_ids = {
+        item.task_id
+        for item in db_session.query(PaperTask).filter(PaperTask.paper_id == 1)
+    }
+    assert task_ids == {2, 3}
+    assert reviewed.applied_payload == {"task_ids": [2, 3]}
+
+
+def test_approve_non_membership_edit_still_rejects_stale_snapshot(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    row = service.submit(
+        paper_id=1,
+        hf_username="alice",
+        edit_type="source_url",
+        proposed_payload={"source_url": "https://example.com/submitted"},
+    )
+    paper = db_session.get(DBPaper, 1)
+    paper.source_url = "https://example.com/intervening"
+    db_session.commit()
+
+    with pytest.raises(
+        PendingEditConflictError, match="Canonical state changed after submission"
+    ):
+        service.approve(edit_id=row.id, reviewer_username="admin")
+
+    assert db_session.get(PendingPaperEdit, row.id).conflict_payload == {
+        "submitted_snapshot": {
+            "source_url": "https://example.com/paper",
+            "source": "external",
+        },
+        "current_snapshot": {
+            "source_url": "https://example.com/intervening",
+            "source": "external",
+        },
+    }
 
 
 def test_submit_methods_noop_rejects(db_session, paper_fixture):
