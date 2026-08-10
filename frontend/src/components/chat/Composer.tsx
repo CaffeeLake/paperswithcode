@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
+import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
 import { ArrowUpIcon, Spinner } from "@/components/chat/icons";
 import ModelPicker, { type ModelPickerOption } from "@/components/chat/ModelPicker";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
@@ -41,6 +42,7 @@ const Composer: React.FC<ComposerProps> = ({
   const [localDraft, setLocalDraft] = useState<ChatDraft>(EMPTY_DRAFT);
   const value = draft ?? localDraft;
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
   const change = (next: ChatDraft) => {
     if (!draft) setLocalDraft(next);
     onDraftChange?.(next);
@@ -78,13 +80,8 @@ const Composer: React.FC<ComposerProps> = ({
 
   return (
     <div className="chat-composer">
-      {value.paperMentions.length > 0 && <div className="chat-paper-chips" aria-label="Attached papers">
-        {value.paperMentions.map((mention) => <span className={`chat-paper-chip${mention.unavailable ? " is-unavailable" : ""}`} key={mention.key}>
-          <span aria-hidden="true">▤</span>{mention.title}
-          <button type="button" onClick={() => mentions.remove(mention.key)} aria-label={`Remove ${mention.title}`}>×</button>
-        </span>)}
-      </div>}
       <div className="chat-composer-textarea-wrap">
+        <PaperMentionHighlights text={value.text} mentions={value.paperMentions} scrollTop={scrollTop} />
         <textarea
           ref={ref}
           rows={1}
@@ -93,6 +90,7 @@ const Composer: React.FC<ComposerProps> = ({
           onChange={(event) => mentions.updateText(event.target.value, event.target.selectionStart)}
           onSelect={(event) => mentions.refresh(event.currentTarget.selectionStart)}
           onClick={(event) => mentions.refresh(event.currentTarget.selectionStart)}
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
           onBlur={(event) => {
             if (!event.relatedTarget?.closest?.(".chat-paper-picker")) window.setTimeout(mentions.close, 0);
           }}

@@ -9,6 +9,7 @@ import { FileText, Pencil } from "lucide-react";
 
 import { ChatMarkdown, PaperCitation } from "@/components/chat/ChatMarkdown";
 import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
+import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
 import { CheckIcon, Chevron, SearchIcon, Spinner } from "@/components/chat/icons";
 import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import { PaperPreviewLink } from "@/components/paper-preview/PaperPreviewLink";
@@ -83,13 +84,17 @@ const InlinePaperMentions: React.FC<{
   let cursor = 0;
   for (const mention of [...mentions].sort((a, b) => a.start - b.start)) {
     const marker = text.slice(mention.start, mention.end);
-    if (mention.start < cursor || mention.end > text.length || !marker.startsWith("@")) continue;
+    if (
+      mention.start < cursor
+      || mention.end > text.length
+      || (marker !== mention.title && marker !== `@${mention.title}`)
+    ) continue;
     pieces.push(text.slice(cursor, mention.start));
     pieces.push(
       <span className="chat-inline-paper-mention" key={mention.key}>
         <FileText size={13} aria-hidden="true" />
         <PaperPreviewLink routeId={mention.route_id} className="chat-inline-paper-link">
-          {marker.slice(1)}
+          {marker.startsWith("@") ? marker.slice(1) : marker}
         </PaperPreviewLink>
       </span>,
     );
@@ -324,6 +329,7 @@ const MentionUserEditor: React.FC<UserEditorProps & { paperMentions: PaperMentio
 }) => {
   const [value, setValue] = React.useState<ChatDraft>({ text, paperMentions });
   const [submitting, setSubmitting] = React.useState(false);
+  const [scrollTop, setScrollTop] = React.useState(0);
   const { textareaRef, resize } = useEditorTextarea(text);
   const editor = usePaperMentions({ draft: value, onChange: setValue, enabled, textareaRef });
   React.useLayoutEffect(resize, [resize, value.text]);
@@ -336,21 +342,22 @@ const MentionUserEditor: React.FC<UserEditorProps & { paperMentions: PaperMentio
   };
   return <div className="chat-msg chat-msg-user chat-msg-user-editing" data-message-id={id}>
     <div className="chat-inline-editor">
-      <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value.text} maxLength={8_000}
-        role="combobox" aria-autocomplete="list" aria-expanded={editor.open}
-        aria-controls={editor.open ? editor.pickerId : undefined}
-        aria-activedescendant={editor.open && editor.results.length ? `${editor.optionIdPrefix}-${editor.activeIndex}` : undefined}
-        onChange={(event) => editor.updateText(event.target.value, event.target.selectionStart)}
-        onSelect={(event) => editor.refresh(event.currentTarget.selectionStart)}
-        onKeyDown={(event) => {
-          if (editor.keyDown(event)) return;
-          if (event.key === "Escape") { event.preventDefault(); onCancel?.(); }
-          else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); resend(); }
-        }} />
-      <PaperMentionPicker open={editor.open} query={editor.query} results={editor.results} activeIndex={editor.activeIndex} loading={editor.loading} error={editor.error} onSelect={editor.select} id={editor.pickerId} optionIdPrefix={editor.optionIdPrefix} />
-      {value.paperMentions.length > 0 && <div className="chat-paper-chips">{value.paperMentions.map((mention) => <span className="chat-paper-chip" key={mention.key}>
-        <FileText aria-hidden="true" />{mention.title}<button type="button" onClick={() => editor.remove(mention.key)} aria-label={`Remove ${mention.title}`}>×</button>
-      </span>)}</div>}
+      <div className="chat-inline-editor-textarea-wrap">
+        <PaperMentionHighlights text={value.text} mentions={value.paperMentions} scrollTop={scrollTop} variant="editor" />
+        <textarea ref={textareaRef} className="chat-inline-editor-textarea" aria-label="Edit message" value={value.text} maxLength={8_000}
+          role="combobox" aria-autocomplete="list" aria-expanded={editor.open}
+          aria-controls={editor.open ? editor.pickerId : undefined}
+          aria-activedescendant={editor.open && editor.results.length ? `${editor.optionIdPrefix}-${editor.activeIndex}` : undefined}
+          onChange={(event) => editor.updateText(event.target.value, event.target.selectionStart)}
+          onSelect={(event) => editor.refresh(event.currentTarget.selectionStart)}
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onKeyDown={(event) => {
+            if (editor.keyDown(event)) return;
+            if (event.key === "Escape") { event.preventDefault(); onCancel?.(); }
+            else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); resend(); }
+          }} />
+        <PaperMentionPicker open={editor.open} query={editor.query} results={editor.results} activeIndex={editor.activeIndex} loading={editor.loading} error={editor.error} onSelect={editor.select} id={editor.pickerId} optionIdPrefix={editor.optionIdPrefix} />
+      </div>
       {!enabled && value.paperMentions.length > 0 && <div className="chat-inline-editor-notice" role="status">Paper mentions are currently disabled. Remove them before sending.</div>}
       {editNotice && <div className="chat-inline-editor-notice">{editNotice}</div>}
       <div className="chat-inline-editor-actions">

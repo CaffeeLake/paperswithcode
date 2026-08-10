@@ -100,7 +100,7 @@ class ChatRequest(BaseModel):
                     "Paper mention ranges must be ordered and non-overlapping"
                 )
             marker = _utf16_slice(self.message, mention.start, mention.end)
-            if marker != f"@{mention.title}":
+            if marker not in {mention.title, f"@{mention.title}"}:
                 raise ValueError(
                     "Paper mention range does not match its visible marker"
                 )

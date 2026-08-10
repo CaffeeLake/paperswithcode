@@ -34,8 +34,8 @@ def _request(message: str, mentions: list[dict]) -> ChatRequest:
 
 
 def test_request_validates_utf16_ranges_caps_and_client_fields():
-    message = "😀 compare @Paper"
-    mention = {"route_id": "2501.00001", "title": "Paper", "start": 11, "end": 17}
+    message = "😀 compare Paper"
+    mention = {"route_id": "2501.00001", "title": "Paper", "start": 11, "end": 16}
     assert _request(message, [mention]).paper_mentions[0].start == 11
     with pytest.raises(ValidationError, match="visible marker"):
         _request(message, [{**mention, "start": 10}])
@@ -58,6 +58,11 @@ def test_request_validates_utf16_ranges_caps_and_client_fields():
             client_message_id="client-1",
             paper_mentions=[{**mention, "markdown": "untrusted"}],
         )
+
+
+def test_request_accepts_historical_at_prefixed_markers():
+    mention = {"route_id": "2501.00001", "title": "Paper", "start": 8, "end": 14}
+    assert _request("Compare @Paper", [mention]).paper_mentions[0].end == 14
 
 
 def _paper(route_id: str = "2501.00001") -> PreparedPaper:

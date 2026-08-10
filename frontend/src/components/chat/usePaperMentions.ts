@@ -112,7 +112,9 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
       setMessage("A message can attach at most 3 distinct papers.");
       return false;
     }
-    const marker = `@${paper.title}`;
+    // The leading @ is the search trigger, not part of the committed marker.
+    // Once selected, the structured range is sufficient to retain identity.
+    const marker = paper.title;
     const nextText = draft.text.slice(0, active.start) + marker + draft.text.slice(active.end);
     const shifted = reconcilePaperMentions(draft.text, nextText, draft.paperMentions);
     const mention: PaperMentionDraft = {
@@ -137,19 +139,6 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
     }
     return true;
   }, [active, draft, onChange, textareaRef]);
-
-  const remove = React.useCallback((key: string) => {
-    const mention = draft.paperMentions.find((item) => item.key === key);
-    if (!mention) return;
-    const nextText = draft.text.slice(0, mention.start) + draft.text.slice(mention.end);
-    const remaining = draft.paperMentions
-      .filter((item) => item.key !== key)
-      .map((item) => item.start >= mention.end
-        ? { ...item, start: item.start - (mention.end - mention.start), end: item.end - (mention.end - mention.start) }
-        : item);
-    onChange({ text: nextText, paperMentions: remaining });
-    setActive(null);
-  }, [draft, onChange]);
 
   const keyDown = React.useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
     if (!active || event.nativeEvent.isComposing) return false;
@@ -177,6 +166,6 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
     open: Boolean(active), query: active?.query ?? "", results, activeIndex,
     loading: search.isFetching, error: search.isError, message,
     pickerId, optionIdPrefix,
-    updateText, refresh, select, remove, keyDown, close: () => setActive(null),
+    updateText, refresh, select, keyDown, close: () => setActive(null),
   };
 }

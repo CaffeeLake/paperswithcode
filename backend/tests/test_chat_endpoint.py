@@ -1818,14 +1818,14 @@ def test_paper_hydration_failure_precedes_turn_admission_and_runner(monkeypatch)
         response = client.post(
             "/api/v1/chat/stream",
             json={
-                "message": "Read @Paper",
+                "message": "Read Paper",
                 "client_message_id": "paper-client-id",
                 "paper_mentions": [
                     {
                         "route_id": "2501.00001",
                         "title": "Paper",
                         "start": 5,
-                        "end": 11,
+                        "end": 10,
                     }
                 ],
             },

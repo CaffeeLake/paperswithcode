@@ -38,6 +38,28 @@ describe("UserMessage", () => {
     expect(screen.getByText(/Compare/)).toHaveTextContent("Compare Attention Is All You Need today");
   });
 
+  it("renders new paper-title markers without a visible at-sign", () => {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><UserMessage
+        text="Compare Attention Is All You Need today"
+        paperMentions={[{
+          key: "mention-1",
+          route_id: "1706.03762",
+          title: "Attention Is All You Need",
+          source: "arxiv",
+          start: 8,
+          end: 33,
+        }]}
+        /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("link", { name: "Attention Is All You Need" }))
+      .toHaveAttribute("href", "/paper/1706.03762");
+    expect(screen.getByText(/Compare/)).toHaveTextContent("Compare Attention Is All You Need today");
+  });
+
   it("cancels Safari's second mousedown and selects only the clicked word", () => {
     render(<UserMessage text="What's the SOTA for image classification?" />);
     const message = screen.getByText("What's the SOTA for image classification?");
@@ -161,6 +183,33 @@ describe("UserMessage", () => {
     expect(submissions).toEqual([]);
     await user.keyboard("{Escape}");
     expect(cancelled).toBe(true);
+  });
+
+  it("keeps selected papers highlighted inline while editing", () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <UserMessage
+        text="Compare Deep Paper"
+        paperMentions={[{
+          key: "mention-1",
+          route_id: "2501.00001",
+          title: "Deep Paper",
+          source: "arxiv",
+          start: 8,
+          end: 18,
+        }]}
+        paperMentionsEnabled
+        editing
+        onResendDraft={() => true}
+      />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("combobox", { name: "Edit message" }))
+      .toHaveValue("Compare Deep Paper");
+    expect(container.querySelector(".chat-paper-inline-highlight"))
+      .toHaveTextContent("Deep Paper");
+    expect(container.querySelector(".chat-paper-chips")).not.toBeInTheDocument();
   });
 
   it("rejects whitespace-only edits", async () => {
