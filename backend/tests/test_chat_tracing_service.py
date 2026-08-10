@@ -205,3 +205,58 @@ def test_unfinished_operational_spans_close_as_warnings():
 
     assert acquisition is not None and acquisition.ended
     assert acquisition.fields["level"] == "WARNING"
+
+
+def test_error_trace_records_sanitized_terminal_code():
+    root = Observation("root")
+    trace = tracing.ChatTurnTrace(
+        root,
+        prompt="Find papers",
+        model="provider/model",
+        execution_backend="modal_cli",
+    )
+
+    trace.finish(
+        "Partial answer",
+        "error",
+        terminal_code="hf_inference_billing_exhausted",
+    )
+    trace.close()
+
+    generation = root.children[0]
+    expected_metadata = {
+        "terminal_status": "error",
+        "terminal_code": "hf_inference_billing_exhausted",
+    }
+    assert generation.fields["level"] == "ERROR"
+    assert generation.fields["status_message"] == "hf_inference_billing_exhausted"
+    assert generation.fields["metadata"] == expected_metadata
+    assert root.fields["metadata"] == expected_metadata
+
+
+def test_interrupted_trace_is_warning_with_reason():
+    root = Observation("root")
+    trace = tracing.ChatTurnTrace(
+        root,
+        prompt="Find papers",
+        model="provider/model",
+        execution_backend="modal_cli",
+    )
+
+    trace.finish(
+        "",
+        "interrupted",
+        interruption_reason="client_disconnect",
+    )
+    trace.close()
+
+    generation = root.children[0]
+    expected_metadata = {
+        "terminal_status": "interrupted",
+        "interruption_reason": "client_disconnect",
+    }
+    assert generation.fields["level"] == "WARNING"
+    assert generation.fields["status_message"] == "client_disconnect"
+    assert generation.fields["metadata"] == expected_metadata
+    assert root.fields["level"] == "WARNING"
+    assert root.fields["metadata"] == expected_metadata

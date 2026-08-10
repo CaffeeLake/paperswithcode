@@ -122,6 +122,8 @@ class ChatTurnTrace:
         self.cost: dict[str, float] = {}
         self.answer = ""
         self.status = "interrupted"
+        self.terminal_code: str | None = None
+        self.interruption_reason: str | None = None
         self.closed = False
 
     @property
@@ -277,15 +279,32 @@ class ChatTurnTrace:
             status_message=status,
         ).end()
 
-    def finish(self, answer: str, status: str) -> None:
+    def finish(
+        self,
+        answer: str,
+        status: str,
+        *,
+        terminal_code: str | None = None,
+        interruption_reason: str | None = None,
+    ) -> None:
         self.answer = answer
         self.status = status
+        if terminal_code is not None:
+            self.terminal_code = terminal_code
+        if interruption_reason is not None:
+            self.interruption_reason = interruption_reason
 
     def close(self) -> None:
         if self.closed:
             return
         self.closed = True
-        level = "ERROR" if self.status in {"error", "interrupted"} else "DEFAULT"
+        level = (
+            "ERROR"
+            if self.status == "error"
+            else "WARNING"
+            if self.status == "interrupted"
+            else "DEFAULT"
+        )
         for observation in (
             self.sandbox_acquisition,
             self.capability_installation,
@@ -309,14 +328,26 @@ class ChatTurnTrace:
             ).end()
             self.title_generation = None
         output = [{"role": "assistant", "content": self.answer}]
+        terminal_metadata = {"terminal_status": self.status}
+        if self.terminal_code:
+            terminal_metadata["terminal_code"] = self.terminal_code
+        if self.interruption_reason:
+            terminal_metadata["interruption_reason"] = self.interruption_reason
+        status_message = self.terminal_code or self.interruption_reason or self.status
         self.generation.update(
             output=output,
             usage_details=self.usage or None,
             cost_details=self.cost or None,
             level=level,
-            status_message=self.status,
+            status_message=status_message,
+            metadata=terminal_metadata,
         ).end()
-        self.root.update(output=output, level=level, status_message=self.status).end()
+        self.root.update(
+            output=output,
+            level=level,
+            status_message=status_message,
+            metadata=terminal_metadata,
+        ).end()
 
 
 class NullChatTurnTrace:
@@ -340,8 +371,15 @@ class NullChatTurnTrace:
     def finish_tool(self, _event: dict[str, Any]) -> None:
         return
 
-    def finish(self, _answer: str, _status: str) -> None:
-        return
+    def finish(
+        self,
+        _answer: str,
+        _status: str,
+        *,
+        terminal_code: str | None = None,
+        interruption_reason: str | None = None,
+    ) -> None:
+        del terminal_code, interruption_reason
 
     def close(self) -> None:
         return

@@ -621,7 +621,13 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                     yield event
         await stream.aclose()
         if research_failure is not None:
-            yield _telemetry_event(request_id, hooks, limited, False, "mirror_error")
+            yield _telemetry_event(
+                request_id,
+                hooks,
+                limited,
+                False,
+                _failure_outcome(research_failure),
+            )
             yield research_failure
             return
         if limited:
@@ -679,11 +685,7 @@ async def stream_turn(frame: dict[str, Any], settings: WorkerSettings):
                 )
                 yield _done_event(request_id, "tool_limit")
             elif final_failure is not None:
-                outcome = (
-                    "mirror_error"
-                    if final_failure.get("type") == "_mirror_error"
-                    else "provider_error"
-                )
+                outcome = _failure_outcome(final_failure)
                 yield _telemetry_event(
                     request_id,
                     hooks,
@@ -740,6 +742,10 @@ def _done_event(request_id: str, reason: str) -> dict[str, Any]:
         "followups": [],
         "finish_reason": reason,
     }
+
+
+def _failure_outcome(event: dict[str, Any]) -> str:
+    return "mirror_error" if event.get("type") == "_mirror_error" else "provider_error"
 
 
 def _telemetry_event(
@@ -888,7 +894,11 @@ class PersistentAgent:
                     yield event
         if research_failure is not None:
             yield _telemetry_event(
-                request_id, self.hooks, limited, False, "mirror_error"
+                request_id,
+                self.hooks,
+                limited,
+                False,
+                _failure_outcome(research_failure),
             )
             yield research_failure
             return
@@ -942,11 +952,7 @@ class PersistentAgent:
                         event["phase"] = "finalization"
                     yield event
         if final_failure is not None:
-            outcome = (
-                "mirror_error"
-                if final_failure.get("type") == "_mirror_error"
-                else "provider_error"
-            )
+            outcome = _failure_outcome(final_failure)
             yield _telemetry_event(
                 request_id,
                 self.hooks,

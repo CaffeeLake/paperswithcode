@@ -885,6 +885,58 @@ def test_worker_adapter_keeps_provider_failures_distinct(provider_error, code):
     assert events[0]["code"] == code
 
 
+@pytest.mark.parametrize(
+    ("event_type", "outcome"),
+    [("error", "provider_error"), ("_mirror_error", "mirror_error")],
+)
+def test_worker_telemetry_classifies_terminal_failure(event_type, outcome):
+    assert agent._failure_outcome({"type": event_type}) == outcome
+
+
+@pytest.mark.parametrize(
+    ("event_type", "outcome"),
+    [("error", "provider_error"), ("_mirror_error", "mirror_error")],
+)
+def test_worker_stream_reports_terminal_failure_outcome(
+    monkeypatch, event_type, outcome
+):
+    monkeypatch.setattr(
+        agent,
+        "GUIDE",
+        Path(agent.__file__).with_name("PWC_CLI_SKILL.md"),
+    )
+
+    async def messages():
+        if False:
+            yield None
+
+    async def adapted(_messages, *, request_id, **_kwargs):
+        yield {"v": 1, "type": event_type, "request_id": request_id}
+
+    monkeypatch.setattr(agent, "sdk_query", lambda **_kwargs: messages())
+    monkeypatch.setattr(agent, "_adapt_messages", adapted)
+
+    async def collect():
+        return [
+            event
+            async for event in agent.stream_turn(
+                {
+                    "type": "run_turn",
+                    "request_id": "request-1",
+                    "prompt": "Research this",
+                    "model": "model-a",
+                    "fetchable_urls": [],
+                },
+                agent.WorkerSettings.from_environment(),
+            )
+        ]
+
+    events = asyncio.run(collect())
+    assert events[-2]["type"] == "_execution_telemetry"
+    assert events[-2]["finalizer_outcome"] == outcome
+    assert events[-1]["type"] == event_type
+
+
 def test_worker_adapter_deduplicates_late_completed_thinking_snapshot():
     adapter = WorkerSDKAdapter(show_reasoning=True)
     messages = [
@@ -2268,9 +2320,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-vimdZOKqbY0v9u9XGR3LT4"
+    assert MODAL_IMAGE_ID == "im-sOkB0Jyg31sxOn7URbgxWh"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "52"
+    assert WORKER_CONTRACT_VERSION == "53"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 

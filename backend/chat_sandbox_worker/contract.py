@@ -1,6 +1,6 @@
 """Immutable public identifiers for one worker/image contract."""
 
-WORKER_CONTRACT_VERSION = "52"
+WORKER_CONTRACT_VERSION = "53"
 # Web search extends the catalog operation set without changing its request or
 # response framing, so it remains on the rollback-compatible gateway protocol.
 GATEWAY_CONTRACT_VERSION = 26
@@ -18,9 +18,9 @@ BASE_IMAGE = (
     "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
 )
 # Immutable image emitted by publish_image.py for the selected worker contract.
-MODAL_IMAGE_ID = "im-vimdZOKqbY0v9u9XGR3LT4"
+MODAL_IMAGE_ID = "im-sOkB0Jyg31sxOn7URbgxWh"
 # Production chat remains disabled and separately pinned. Publish and qualify
-# contract 52 in its Modal Environment before any production enablement; the
+# contract 53 in its Modal Environment before any production enablement; the
 # distinct ID avoids cross-Environment image lookup.
 PRODUCTION_MODAL_IMAGE_ID = "im-sARh8uQCMV2hQmjXxckrtI"
 DEFAULT_BACKEND = "modal_cli"

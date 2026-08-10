@@ -610,6 +610,7 @@ class ChatStreamOrchestrator:
         self.mirror_recovery: tuple[str, uuid.UUID] | None = None
         self.edit_activated = False
         self.first_application_delta_recorded = False
+        self.interruption_reason: str | None = None
         self.trace: ChatTurnTrace | NullChatTurnTrace = NullChatTurnTrace()
 
     async def events(self) -> AsyncIterator[ChatStreamFrame]:
@@ -661,7 +662,9 @@ class ChatStreamOrchestrator:
 
             replacement_ready, resume_id = await self._replacement_or_error()
             if not replacement_ready:
-                self.trace.finish("", "error")
+                self.trace.finish(
+                    "", "error", terminal_code="replacement_prepare_failed"
+                )
                 yield ChatStreamFrame(
                     "error",
                     {
@@ -702,6 +705,7 @@ class ChatStreamOrchestrator:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.title_task
         except asyncio.CancelledError:
+            interruption_reason = self.interruption_reason or "stream_cancelled"
             await self._cancel_runner()
             if self.admission.is_replacement and not self.edit_activated:
                 await asyncio.shield(
@@ -726,6 +730,11 @@ class ChatStreamOrchestrator:
                     )
                 )
             self.terminal = "interrupted"
+            self.trace.finish(
+                "".join(self.projection.answer_parts),
+                "interrupted",
+                interruption_reason=interruption_reason,
+            )
             raise
         except Exception as exc:
             logger.warning(
@@ -741,7 +750,11 @@ class ChatStreamOrchestrator:
                 False,
             )
             self.terminal = "error"
-            self.trace.finish("".join(self.projection.answer_parts), "error")
+            self.trace.finish(
+                "".join(self.projection.answer_parts),
+                "error",
+                terminal_code="persistence_error",
+            )
             yield ChatStreamFrame(
                 "error",
                 {
@@ -810,12 +823,14 @@ class ChatStreamOrchestrator:
                 event = await asyncio.wait_for(queue.get(), timeout=1)
             except TimeoutError:
                 if await self.is_disconnected():
+                    self.interruption_reason = "client_disconnect"
                     raise asyncio.CancelledError
                 if time.monotonic() - last_write >= HEARTBEAT_SECONDS:
                     yield ChatStreamFrame.heartbeat()
                     last_write = time.monotonic()
                 continue
             if await self.is_disconnected():
+                self.interruption_reason = "client_disconnect"
                 raise asyncio.CancelledError
             event = dict(event)
             kind = event.pop("type")
@@ -831,7 +846,11 @@ class ChatStreamOrchestrator:
                 continue
             if kind == "_mirror_error":
                 frame = self._fail_mirror(event)
-                self.trace.finish("".join(self.projection.answer_parts), self.terminal)
+                self.trace.finish(
+                    "".join(self.projection.answer_parts),
+                    self.terminal,
+                    terminal_code="transcript_mirror_error",
+                )
                 yield frame
                 if self.research_task:
                     self.research_task.cancel()
@@ -986,7 +1005,11 @@ class ChatStreamOrchestrator:
                     self.projection.completed_blocks(),
                 )
                 self.terminal = "error"
-                self.trace.finish("".join(self.projection.answer_parts), "error")
+                self.trace.finish(
+                    "".join(self.projection.answer_parts),
+                    "error",
+                    terminal_code=event.get("code") or "provider_error",
+                )
             elif kind == "done":
                 self._complete_turn(event)
                 event["citations"] = self.projection.citations
@@ -1150,6 +1173,7 @@ class ChatStreamOrchestrator:
         # as a last resort so a disconnected browser cannot leave the turn
         # generating until its lease expires.
         if self.terminal == "disconnect":
+            self.interruption_reason = self.interruption_reason or "stream_closed"
             if self.admission.is_replacement and not self.edit_activated:
                 await asyncio.shield(
                     asyncio.to_thread(
@@ -1173,6 +1197,11 @@ class ChatStreamOrchestrator:
                     )
                 )
             self.terminal = "interrupted"
+            self.trace.finish(
+                "".join(self.projection.answer_parts),
+                "interrupted",
+                interruption_reason=self.interruption_reason,
+            )
         await self._cancel_runner()
         if self.runner:
             with contextlib.suppress(Exception):
