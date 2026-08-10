@@ -1198,6 +1198,7 @@ def test_agent_options_expose_only_search(tmp_path):
     )
     assert "[owner/repo](https://github.com/owner/repo)" in options.system_prompt
     assert "Never output a bare repository" in options.system_prompt
+    assert "When comparing papers, prefer a Markdown table." in options.system_prompt
 
     openrouter, _ = build_agent_options(
         settings,

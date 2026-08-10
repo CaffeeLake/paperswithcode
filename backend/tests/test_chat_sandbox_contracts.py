@@ -2044,6 +2044,7 @@ def test_worker_keeps_native_web_fetch_and_uses_supported_proxy_settings():
 def test_system_prompt_prevents_unsupported_method_search_flags():
     prompt = render()
 
+    assert "When comparing papers, prefer a Markdown table." in prompt
     assert "use `--page-size`, never `--limit`" in prompt
     assert "This subcommand has no `--search` or `--limit` flag" in prompt
     assert "pwc method list --page-size 500 | rg -i -- 'QUERY'" in prompt
@@ -2238,9 +2239,9 @@ def test_prompt_and_manifest_share_six_round_contract():
     assert IMAGE_PUBLISH_NAME == "pwc-chat-v1"
     assert MODAL_APP_NAME == "pwc-chat-sandbox-v1"
     assert BASE_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
-    assert MODAL_IMAGE_ID == "im-4QZaMah1eNhptNRRmLrm2B"
+    assert MODAL_IMAGE_ID == "im-4TRubJGxjB9jhiHk9zfStc"
     assert PRODUCTION_MODAL_IMAGE_ID == "im-sARh8uQCMV2hQmjXxckrtI"
-    assert WORKER_CONTRACT_VERSION == "50"
+    assert WORKER_CONTRACT_VERSION == "51"
     assert CHAT_SANDBOX_REGION == "eu-west"
     assert CONTROL_PORT == 8080
 
