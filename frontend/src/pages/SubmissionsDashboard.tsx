@@ -40,6 +40,7 @@ const EDIT_TYPE_FILTERS: Array<PendingEditType | "all"> = [
   "new_benchmark",
   "new_metric",
   "new_conference",
+  "new_external_paper",
 ];
 const COUNT_STATUSES: PendingEditStatus[] = ["pending", "approved", "rejected"];
 
@@ -54,6 +55,10 @@ function initialsFor(username: string): string {
 
 function formatLabel(value: string): string {
   return value.replace(/_/g, " ");
+}
+
+function formatEditTypeFilterLabel(value: PendingEditType | "all"): string {
+  return value === "new_external_paper" ? "external paper" : formatLabel(value);
 }
 
 function formatRelativeTime(value: string | null | undefined): string {
@@ -166,11 +171,14 @@ function SubmissionCard({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const isDirectorySuggestion = submission.paper_id == null;
+  const isExternalPaperSuggestion = submission.edit_type === "new_external_paper";
   const routeIdentifier = isDirectorySuggestion
     ? null
     : paperRouteIdentifier(paper, submission.paper_id);
   const paperTitle = isDirectorySuggestion
-    ? "Taxonomy directory"
+    ? isExternalPaperSuggestion
+      ? "External paper"
+      : "Taxonomy directory"
     : paper?.title || `Paper #${submission.paper_id}`;
   const avatarUrl = `https://huggingface.co/${encodeURIComponent(submission.hf_username)}/avatar`;
   const isPending = submission.status === "pending";
@@ -254,7 +262,9 @@ function SubmissionCard({
               <span>#{submission.id}</span>
               <span>
                 {isDirectorySuggestion
-                  ? "Directory suggestion"
+                  ? isExternalPaperSuggestion
+                    ? "External paper submission"
+                    : "Directory suggestion"
                   : `Paper #${submission.paper_id}`}
               </span>
               <span>{formatRelativeTime(submission.created_at)}</span>
@@ -511,7 +521,7 @@ export default function SubmissionsDashboard() {
                 className={cn("sort-btn", editType === item && "active")}
                 onClick={() => setEditType(item)}
               >
-                {formatLabel(item)}
+                {formatEditTypeFilterLabel(item)}
               </button>
             ))}
           </div>
