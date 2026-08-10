@@ -1,5 +1,5 @@
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -10,6 +10,7 @@ import {
   CHAT_DRAFT_KEY,
   CHAT_MODEL_KEY,
   CHAT_WEB_SEARCH_KEY,
+  readQueuedChatLaunch,
 } from "@/lib/chatLaunch";
 import { apiClient } from "@/lib/api";
 import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODELS } from "@/lib/chatSessions";
@@ -125,6 +126,70 @@ describe("AskAssistant", () => {
     expect(sessionStorage.getItem(CHAT_AUTO_SEND_KEY)).toBe("1");
   });
 
+  it("selects an inline paper and carries its structured mention into chat", async () => {
+    vi.stubEnv("VITE_CHAT_ENABLED", "1");
+    vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
+      status: "available",
+      reason: null,
+      expected_recovery_at: null,
+      paper_mentions_enabled: true,
+      web_search_available: false,
+    });
+    vi.spyOn(apiClient, "searchPapers").mockResolvedValue({
+      next_page: null,
+      previous_page: null,
+      results: [{
+        id: "42",
+        arxiv_id: "2501.00001",
+        source: "arxiv",
+        source_url: null,
+        url_abs: "https://arxiv.org/abs/2501.00001",
+        url_pdf: null,
+        title: "Deep Paper",
+        abstract: "",
+        authors: [],
+        published: "2026-01-01",
+        version: "v1",
+        is_latest_version: true,
+        citation_count: 0,
+      }],
+    });
+    vi.spyOn(apiClient, "prewarmChatPaperContext").mockResolvedValue(undefined);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      id: "11111111-1111-4111-8111-111111111111",
+      title: "New chat",
+      selected_model: DEFAULT_CHAT_MODEL,
+      created_at: "2026-08-03T00:00:00Z",
+      updated_at: "2026-08-03T00:00:00Z",
+      message_count: 0,
+      is_busy: false,
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    renderAskAssistant();
+    const textarea = screen.getByRole("combobox", { name: "Ask the assistant" });
+
+    fireEvent.change(textarea, { target: { value: "Compare @deep", selectionStart: 13 } });
+    expect(await screen.findByRole("option", { name: /Deep Paper/ })).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea).toHaveValue("Compare Deep Paper ");
+    expect(apiClient.prewarmChatPaperContext).toHaveBeenCalledWith("2501.00001");
+    fireEvent.click(screen.getByRole("button", { name: "Ask the assistant" }));
+
+    expect(await screen.findByText("Dedicated chat launched")).toBeInTheDocument();
+    expect(JSON.parse(sessionStorage.getItem(CHAT_DRAFT_KEY) ?? "null")).toEqual({
+      text: "Compare Deep Paper",
+      paperMentions: [expect.objectContaining({
+        route_id: "2501.00001",
+        title: "Deep Paper",
+        start: 8,
+        end: 18,
+      })],
+    });
+    expect(readQueuedChatLaunch()?.draft).toEqual({
+      text: "Compare Deep Paper",
+      paperMentions: [expect.objectContaining({ route_id: "2501.00001", start: 8, end: 18 })],
+    });
+  });
+
   it("offers available web search and carries the choice into the new chat", async () => {
     vi.stubEnv("VITE_CHAT_ENABLED", "1");
     vi.spyOn(apiClient, "getChatAvailability").mockResolvedValue({
@@ -153,7 +218,7 @@ describe("AskAssistant", () => {
       .toHaveTextContent("DeepSeek V4 Flash");
     await user.click(toggle);
     await user.type(
-      screen.getByRole("textbox", { name: "Ask the assistant" }),
+      screen.getByRole("combobox", { name: "Ask the assistant" }),
       "Find the latest vision-language model release",
     );
     await user.click(screen.getByRole("button", { name: "Ask the assistant" }));

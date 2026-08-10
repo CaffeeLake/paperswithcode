@@ -6,7 +6,7 @@ interface PaperMentionHighlightsProps {
   text: string;
   mentions: PaperMentionDraft[];
   scrollTop?: number;
-  variant?: "composer" | "editor";
+  variant?: "composer" | "editor" | "home";
 }
 
 /**

@@ -4751,6 +4751,7 @@ html { scroll-behavior: smooth; }
 
 /* === HOME ASK BOX (assistant entry point) === */
 .ask-home {
+  position: relative;
   max-width: 640px;
   margin: 0 auto 36px;
   background: var(--bg-elevated);
@@ -4759,7 +4760,10 @@ html { scroll-behavior: smooth; }
   box-shadow: 0 1px 2px rgba(30, 28, 20, 0.04), 0 12px 34px -18px rgba(30, 28, 20, 0.28);
   padding: 8px;
 }
+.ask-home-textarea-wrap { position: relative; }
 .ask-home textarea {
+  position: relative;
+  z-index: 1;
   width: 100%;
   border: 0;
   outline: 0;
@@ -4768,10 +4772,15 @@ html { scroll-behavior: smooth; }
   font-family: var(--serif);
   font-size: 17px;
   line-height: 1.45;
-  color: var(--ink);
+  color: transparent;
+  caret-color: var(--ink);
   padding: 12px 12px 4px;
 }
 .ask-home textarea::placeholder { color: var(--ink-faint); }
+.ask-home > .chat-paper-picker {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
 .ask-home-foot {
   display: flex;
   align-items: center;
@@ -5892,6 +5901,12 @@ html { scroll-behavior: smooth; }
   padding: 9px 11px;
   font-family: var(--serif);
   font-size: 16px;
+  line-height: 1.45;
+}
+.chat-paper-highlight-layer-home {
+  padding: 12px 12px 4px;
+  font-family: var(--serif);
+  font-size: 17px;
   line-height: 1.45;
 }
 .chat-paper-inline-highlight {

@@ -59,6 +59,10 @@ export function usePaperMentions({ draft, onChange, enabled, textareaRef }: UseP
   const prewarmed = React.useRef(new Set<string>());
 
   React.useEffect(() => {
+    if (!enabled) setActive(null);
+  }, [enabled]);
+
+  React.useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(active?.query.trim() ?? ""), 150);
     return () => window.clearTimeout(timer);
   }, [active?.query]);

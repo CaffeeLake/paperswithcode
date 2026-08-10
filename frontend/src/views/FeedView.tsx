@@ -5,10 +5,14 @@ import { PaperCard } from "@/components";
 import { PaperFeedFilters } from "@/components/PaperFeedFilters";
 import { ArrowUpIcon } from "@/components/chat/icons";
 import ModelPicker from "@/components/chat/ModelPicker";
+import { PaperMentionHighlights } from "@/components/chat/PaperMentionHighlights";
+import { PaperMentionPicker } from "@/components/chat/PaperMentionPicker";
+import { usePaperMentions } from "@/components/chat/usePaperMentions";
 import WebSearchToggle from "@/components/chat/WebSearchToggle";
 import { apiClient } from "@/lib/api";
 import { isChatEnabled, isStagingEnvironment } from "@/lib/apiUrl";
 import { useAuth } from "@/lib/authContext";
+import type { ChatDraft } from "@/lib/chat";
 import { queueChatLaunch } from "@/lib/chatLaunch";
 import { SUGGESTED_CHAT_PROMPTS } from "@/lib/chatPrompts";
 import {
@@ -125,7 +129,9 @@ export const AskAssistant: React.FC = () => {
   const models = isStagingEnvironment()
     ? STAGING_FALLBACK_CHAT_MODELS
     : PRODUCTION_FALLBACK_CHAT_MODELS;
-  const [question, setQuestion] = useState("");
+  const [draft, setDraft] = useState<ChatDraft>({ text: "", paperMentions: [] });
+  const question = draft.text;
+  const [scrollTop, setScrollTop] = useState(0);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [launching, setLaunching] = useState(false);
@@ -138,6 +144,14 @@ export const AskAssistant: React.FC = () => {
     enabled: isChatEnabled() && Boolean(user),
   });
   const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
+  const paperMentionsEnabled = isChatEnabled()
+    && availabilityQuery.data?.paper_mentions_enabled !== false;
+  const mentions = usePaperMentions({
+    draft,
+    onChange: setDraft,
+    enabled: paperMentionsEnabled,
+    textareaRef: ref,
+  });
 
   useEffect(() => {
     const el = ref.current;
@@ -147,11 +161,11 @@ export const AskAssistant: React.FC = () => {
     }
   }, [question]);
 
-  const submit = async (prompt = question) => {
-    const q = prompt.trim();
+  const submit = async (nextDraft = draft) => {
+    const q = nextDraft.text.trim();
     if (!q || launching) return;
     setLaunching(true);
-    queueChatLaunch(q, selectedModel, {
+    queueChatLaunch(nextDraft, selectedModel, {
       webSearchEnabled: webSearchAvailable && webSearchEnabled,
     });
     try {
@@ -166,21 +180,49 @@ export const AskAssistant: React.FC = () => {
 
   return (
     <div className="ask-home">
-      <textarea
-        ref={ref}
-        rows={1}
-        value={question}
-        placeholder={placeholder}
-        aria-label="Ask the assistant"
-        disabled={launching}
-        onChange={(e) => setQuestion(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
+      <div className="ask-home-textarea-wrap">
+        <PaperMentionHighlights
+          text={draft.text}
+          mentions={draft.paperMentions}
+          scrollTop={scrollTop}
+          variant="home"
+        />
+        <textarea
+          ref={ref}
+          rows={1}
+          value={question}
+          placeholder={placeholder}
+          aria-label="Ask the assistant"
+          disabled={launching}
+          onChange={(event) => mentions.updateText(event.target.value, event.target.selectionStart)}
+          onSelect={(event) => mentions.refresh(event.currentTarget.selectionStart)}
+          onClick={(event) => mentions.refresh(event.currentTarget.selectionStart)}
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onBlur={(event) => {
+            if (!event.relatedTarget?.closest?.(".chat-paper-picker")) window.setTimeout(mentions.close, 0);
+          }}
+          onKeyDown={(event) => {
+            if (mentions.keyDown(event)) return;
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+          role={paperMentionsEnabled ? "combobox" : undefined}
+          aria-expanded={paperMentionsEnabled ? mentions.open : undefined}
+          aria-controls={mentions.open ? mentions.pickerId : undefined}
+          aria-activedescendant={mentions.open && mentions.results.length
+            ? `${mentions.optionIdPrefix}-${mentions.activeIndex}`
+            : undefined}
+          aria-autocomplete={paperMentionsEnabled ? "list" : undefined}
+          aria-describedby={mentions.message ? "ask-home-paper-mention-message" : undefined}
+        />
+      </div>
+      {mentions.message && (
+        <div id="ask-home-paper-mention-message" className="chat-paper-mention-message" role="alert">
+          {mentions.message}
+        </div>
+      )}
       <div className="ask-home-foot">
         <div className="ask-home-provider-tools">
           <ModelPicker
@@ -209,13 +251,24 @@ export const AskAssistant: React.FC = () => {
         <button
           type="button"
           className={`chat-send${question.trim() ? " chat-send-on" : ""}`}
-          onClick={() => submit()}
+          onClick={() => void submit()}
           disabled={!question.trim() || launching}
           aria-label="Ask the assistant"
         >
           <ArrowUpIcon />
         </button>
       </div>
+      <PaperMentionPicker
+        open={mentions.open}
+        query={mentions.query}
+        results={mentions.results}
+        activeIndex={mentions.activeIndex}
+        loading={mentions.loading}
+        error={mentions.error}
+        onSelect={mentions.select}
+        id={mentions.pickerId}
+        optionIdPrefix={mentions.optionIdPrefix}
+      />
     </div>
   );
 };

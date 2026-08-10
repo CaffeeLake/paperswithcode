@@ -1,3 +1,5 @@
+import type { ChatDraft } from "@/lib/chat";
+
 export const CHAT_DRAFT_KEY = "pwc:chat-oauth-draft";
 export const CHAT_MODEL_KEY = "pwc:chat-oauth-model";
 export const CHAT_AUTO_SEND_KEY = "pwc:chat-oauth-auto-send";
@@ -6,6 +8,7 @@ export const CHAT_WEB_SEARCH_KEY = "pwc:chat-web-search-enabled";
 
 export interface QueuedChatLaunch {
   prompt: string;
+  draft: ChatDraft;
   model: string | null;
   webSearchEnabled: boolean;
 }
@@ -15,13 +18,27 @@ export interface QueuedChatLaunch {
  * The chat page clears it only after handing it to the streaming client.
  */
 export function queueChatLaunch(
-  prompt: string,
+  prompt: string | ChatDraft,
   model?: string,
   options: { autoSend?: boolean; webSearchEnabled?: boolean } = {},
 ): void {
-  const question = prompt.trim();
+  const rawText = typeof prompt === "string" ? prompt : prompt.text;
+  const leading = rawText.length - rawText.trimStart().length;
+  const question = rawText.trim();
   if (!question) return;
-  sessionStorage.setItem(CHAT_DRAFT_KEY, question);
+  const trailingBoundary = leading + question.length;
+  const draft: ChatDraft = {
+    text: question,
+    paperMentions: typeof prompt === "string"
+      ? []
+      : prompt.paperMentions
+          .filter((mention) => mention.start >= leading && mention.end <= trailingBoundary)
+          .map((mention) => ({ ...mention, start: mention.start - leading, end: mention.end - leading })),
+  };
+  sessionStorage.setItem(
+    CHAT_DRAFT_KEY,
+    draft.paperMentions.length ? JSON.stringify(draft) : question,
+  );
   if (options.autoSend === false) sessionStorage.removeItem(CHAT_AUTO_SEND_KEY);
   else sessionStorage.setItem(CHAT_AUTO_SEND_KEY, "1");
   if (model) sessionStorage.setItem(CHAT_MODEL_KEY, model);
@@ -33,10 +50,18 @@ export function queueChatLaunch(
 export function readQueuedChatLaunch(): QueuedChatLaunch | null {
   if (typeof window === "undefined") return null;
   if (sessionStorage.getItem(CHAT_AUTO_SEND_KEY) !== "1") return null;
-  const prompt = sessionStorage.getItem(CHAT_DRAFT_KEY)?.trim();
+  const stored = sessionStorage.getItem(CHAT_DRAFT_KEY)?.trim();
+  if (!stored) return null;
+  let draft: ChatDraft = { text: stored, paperMentions: [] };
+  try {
+    const parsed = JSON.parse(stored) as ChatDraft;
+    if (typeof parsed.text === "string" && Array.isArray(parsed.paperMentions)) draft = parsed;
+  } catch { /* Legacy and mention-free launches store plain text. */ }
+  const prompt = draft.text.trim();
   if (!prompt) return null;
   return {
     prompt,
+    draft: { ...draft, text: prompt },
     model: sessionStorage.getItem(CHAT_MODEL_KEY),
     webSearchEnabled: sessionStorage.getItem(CHAT_WEB_SEARCH_KEY) === "1",
   };

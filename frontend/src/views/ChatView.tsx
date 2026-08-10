@@ -262,9 +262,11 @@ const ChatView: React.FC = () => {
     () => queuedLaunchRef.current?.webSearchEnabled ?? false,
   );
   const webSearchAvailable = Boolean(availabilityQuery.data?.web_search_available);
-  const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => emptyDraft(
-    searchParams.get("q")?.trim() || queuedLaunchRef.current?.prompt || "",
-  ));
+  const [pendingAutoDraft, setPendingAutoDraft] = useState<ChatDraft>(() => {
+    const queryPrompt = searchParams.get("q")?.trim();
+    if (queryPrompt) return emptyDraft(queryPrompt);
+    return queuedLaunchRef.current?.draft ?? emptyDraft();
+  });
   const autoSendStartedRef = useRef(false);
   const inferenceConnectedRef = useRef(false);
   const inferenceCheckPendingRef = useRef(false);
