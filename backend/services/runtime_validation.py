@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -83,15 +84,54 @@ def validate_frontend_dist(settings: Settings) -> dict[str, bool]:
     return features
 
 
-def validate_runtime(settings: Settings) -> dict[str, bool]:
-    """Validate deployed paths, auth, feature composition, and writable state."""
+@dataclass(frozen=True, slots=True)
+class SandboxSpendPolicy:
+    """Reviewed spend thresholds pinned for deployed chat sandboxes."""
 
-    if not settings.is_deployed:
-        return {"chat": settings.chat_enabled}
+    warning_microusd: int
+    application_cap_microusd: int
+    environment_cap_microusd: int
+    workspace_cap_microusd: int
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxCapacityPolicy:
+    """Reviewed active-turn and warm-pool capacity."""
+
+    max_concurrency: int
+    user_max_concurrency: int
+    total_live_cap: int
+    blank_pool_min: int
+    blank_pool_max: int
+
+
+_SANDBOX_SPEND_POLICY = SandboxSpendPolicy(
+    warning_microusd=75_000_000,
+    application_cap_microusd=100_000_000,
+    environment_cap_microusd=0,
+    workspace_cap_microusd=250_000_000,
+)
+_SANDBOX_CAPACITY_POLICY = SandboxCapacityPolicy(
+    max_concurrency=2,
+    user_max_concurrency=2,
+    total_live_cap=3,
+    blank_pool_min=1,
+    blank_pool_max=1,
+)
+
+
+def validate_deployment_identity(settings: Settings) -> None:
+    """Validate the deployed environment and immutable release identity."""
+
     if settings.environment not in {"production", "staging"}:
         raise RuntimeError("PWC_ENVIRONMENT must be production or staging")
     if not settings.release_id or settings.release_id == "development":
         raise RuntimeError("PWC_RELEASE_ID is required")
+
+
+def validate_auth_configuration(settings: Settings) -> bytes:
+    """Validate shared-session cookies, signing keys, and verification authority."""
+
     if not settings.jwt_secret:
         raise RuntimeError("PWC_JWT_SECRET is required")
     if settings.session_cookie_domain:
@@ -137,6 +177,32 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         raise RuntimeError(
             "PWC_AUTH_RETURN_ORIGINS must contain production and staging origins"
         )
+    if settings.environment == "production":
+        if not settings.session_signing_private_key:
+            raise RuntimeError("production requires PWC_SESSION_SIGNING_PRIVATE_KEY")
+        try:
+            private_bytes = base64.urlsafe_b64decode(
+                settings.session_signing_private_key
+                + "=" * (-len(settings.session_signing_private_key) % 4)
+            )
+            private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+            derived_public = private_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+        except (ValueError, TypeError) as error:
+            raise RuntimeError(
+                "PWC_SESSION_SIGNING_PRIVATE_KEY must be a base64url Ed25519 key"
+            ) from error
+        if derived_public != public_bytes:
+            raise RuntimeError("shared-session signing and verification keys differ")
+    elif settings.session_signing_private_key:
+        raise RuntimeError("staging must not have the session signing private key")
+    return public_bytes
+
+
+def validate_runtime_storage(settings: Settings) -> None:
+    """Validate deployed read/write paths outside immutable releases."""
 
     if not Path(settings.frontend_dist_dir).is_absolute():
         raise RuntimeError("PWC_FRONTEND_DIST_DIR must be absolute")
@@ -167,6 +233,10 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
             "PWC_THUMBNAIL_CACHE_DIR must be an existing readable directory"
         )
 
+
+def validate_codex_jobs_configuration(settings: Settings) -> None:
+    """Validate credentials and API ownership for enabled Codex jobs."""
+
     if settings.codex_jobs_enabled:
         if (
             not settings.codex_jobs_namespace
@@ -186,32 +256,28 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 f"{settings.environment} Codex jobs must target {expected_api_url}"
             )
 
+
+def _validate_production_openrouter_prohibition(settings: Settings) -> None:
+    if settings.environment == "production" and any(
+        (
+            settings.chat_openrouter_server_funded_enabled,
+            settings.chat_openrouter_api_key,
+            settings.chat_openrouter_credential_keyring,
+            settings.chat_openrouter_user_tracking_secret,
+        )
+    ):
+        raise RuntimeError("production OpenRouter chat credentials are prohibited")
+
+
+def validate_environment_policy(settings: Settings) -> None:
+    """Validate production/staging isolation and mutation ownership."""
+
     if settings.environment == "production":
-        if not settings.session_signing_private_key:
-            raise RuntimeError("production requires PWC_SESSION_SIGNING_PRIVATE_KEY")
-        try:
-            private_bytes = base64.urlsafe_b64decode(
-                settings.session_signing_private_key
-                + "=" * (-len(settings.session_signing_private_key) % 4)
-            )
-            private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
-            derived_public = private_key.public_key().public_bytes(
-                serialization.Encoding.Raw,
-                serialization.PublicFormat.Raw,
-            )
-        except (ValueError, TypeError) as error:
-            raise RuntimeError(
-                "PWC_SESSION_SIGNING_PRIVATE_KEY must be a base64url Ed25519 key"
-            ) from error
-        if derived_public != public_bytes:
-            raise RuntimeError("shared-session signing and verification keys differ")
         if not settings.catalog_mutations_enabled or not settings.cron_enabled:
             raise RuntimeError(
                 "production catalog mutations and CRON must remain enabled"
             )
     else:
-        if settings.session_signing_private_key:
-            raise RuntimeError("staging must not have the session signing private key")
         if settings.catalog_mutations_enabled:
             raise RuntimeError("staging catalog mutations must be disabled")
         if settings.cron_enabled:
@@ -226,15 +292,11 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
         if not settings.chat_enabled:
             raise RuntimeError("staging chat feature must be enabled")
 
-    if settings.environment == "production" and any(
-        (
-            settings.chat_openrouter_server_funded_enabled,
-            settings.chat_openrouter_api_key,
-            settings.chat_openrouter_credential_keyring,
-            settings.chat_openrouter_user_tracking_secret,
-        )
-    ):
-        raise RuntimeError("production OpenRouter chat credentials are prohibited")
+    _validate_production_openrouter_prohibition(settings)
+
+
+def validate_chat_runtime_descriptor(settings: Settings) -> bool:
+    """Validate enabled, dormant, or legacy chat state and return armed status."""
 
     validate_chat_configuration = settings.chat_enabled
     if not settings.chat_enabled and settings.environment == "production":
@@ -294,308 +356,348 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
                 "legacy production cannot contain armed chat preparation"
             )
     if validate_chat_configuration:
-        if not all(
-            (
-                settings.hf_oauth_client_id,
-                settings.hf_oauth_client_secret,
-                settings.hf_oauth_credential_secret,
-            )
-        ):
-            raise RuntimeError(
-                "enabled chat requires the Hugging Face OAuth inference credential path"
-            )
-        expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
-        if settings.chat_deepseek_v4_flash_route != expected_hf_route:
-            raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
-        discovered = settings.chat_model_choices
-        if settings.environment == "production":
-            if len(discovered) != 1 or any(
-                choice["provider"] != "huggingface" for choice in discovered
-            ):
-                raise RuntimeError(
-                    "production chat discovery must be Hugging Face-only"
-                )
-        else:
-            expected_ids = {
-                "deepseek-ai/DeepSeek-V4-Flash-0731",
-                "openai/gpt-5.6-luna",
-                "openai/gpt-5.6-terra",
-            }
-            if {choice["id"] for choice in discovered} != expected_ids:
-                raise RuntimeError(
-                    "staging chat discovery must contain DeepSeek, Luna, and Terra"
-                )
-        if settings.chat_default_backend != "modal_cli":
-            raise RuntimeError("deployed chat must use the isolated Modal backend")
-        expected_modal_percentage = 100 if settings.chat_enabled else 0
-        if settings.chat_new_chat_modal_percentage != expected_modal_percentage:
-            raise RuntimeError("chat must not spill new sessions to local execution")
-        if settings.chat_web_search_enabled:
-            web_search_url = urlsplit(settings.chat_web_search_exa_url)
-            if (
-                settings.chat_web_search_provider != "exa"
-                or not settings.chat_web_search_exa_api_key
-                or web_search_url.scheme != "https"
-                or web_search_url.hostname != "api.exa.ai"
-                or web_search_url.path.rstrip("/") != "/search"
-                or settings.chat_web_search_max_calls != 3
-                or settings.chat_web_search_timeout_seconds != 3
-                or settings.chat_web_search_result_count != 5
-                or settings.chat_web_search_max_result_bytes != 16 * 1024
-                or settings.chat_web_search_query_max_chars != 500
-                or settings.chat_web_search_monthly_warning_calls != 1_000
-                or settings.chat_web_search_monthly_hard_calls != 1_200
-            ):
-                raise RuntimeError("web-search runtime descriptor is invalid")
-        if not settings.chat_sandbox_spend_enforcement_enabled:
-            raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
-        if (
-            settings.chat_sandbox_warning_microusd,
-            settings.chat_sandbox_application_cap_microusd,
-            settings.chat_sandbox_environment_cap_microusd,
-            settings.chat_sandbox_workspace_cap_microusd,
-        ) != (75_000_000, 100_000_000, 0, 250_000_000):
-            raise RuntimeError(
-                "sandbox spend policy must be $75/$100/$250 with no environment cap"
-            )
-        if settings.chat_sandbox_provider_mode != "starter_workspace":
-            raise RuntimeError(
-                "chat sandbox spend must use the workspace-level outer cap"
-            )
-        if (
-            settings.chat_max_concurrency != 2
-            or settings.chat_user_max_concurrency != 2
-            or settings.chat_sandbox_total_live_cap != 3
-            or settings.chat_blank_pool_min != 1
-            or settings.chat_blank_pool_max != 1
-        ):
-            raise RuntimeError(
-                "chat capacity must be two active turns plus one warm blank"
-            )
-        expected_modal_environment = f"pwc-chat-{settings.environment}"
-        if settings.chat_sandbox_modal_environment != expected_modal_environment:
-            raise RuntimeError(
-                f"PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT must be {expected_modal_environment}"
-            )
-        if not settings.chat_sandbox_modal_workspace:
-            raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_WORKSPACE is required")
-        if not settings.chat_sandbox_modal_owner_username:
-            raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME is required")
-        expected_attestation = (
-            f"modal-workspace-{settings.chat_sandbox_modal_workspace}-250-"
-            f"{settings.environment}-starter-v1"
+        _validate_chat_runtime_identity(settings)
+        _validate_chat_execution_identity(settings)
+    return validate_chat_configuration
+
+
+def validate_chat_provider_policy(settings: Settings) -> None:
+    """Validate inference credentials, discovery, gateway, search, and OpenRouter."""
+
+    _validate_production_openrouter_prohibition(settings)
+
+    if not all(
+        (
+            settings.hf_oauth_client_id,
+            settings.hf_oauth_client_secret,
+            settings.hf_oauth_credential_secret,
         )
-        if settings.chat_sandbox_budget_attestation != expected_attestation:
-            raise RuntimeError(
-                "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match configured policy"
-            )
-        primary_alert = settings.chat_sandbox_slack_webhook_url
-        fallback_alert = settings.chat_sandbox_alert_fallback_webhook_url
-        if not primary_alert or not fallback_alert:
-            raise RuntimeError(
-                "primary and fallback chat alert destinations are required"
-            )
-        if fallback_alert == primary_alert:
-            raise RuntimeError(
-                "primary and fallback chat alert destinations must differ"
-            )
-        if not settings.chat_sandbox_runbook_url:
-            raise RuntimeError("PWC_CHAT_SANDBOX_RUNBOOK_URL is required")
-        if not settings.chat_sandbox_operator_username_set:
-            raise RuntimeError("PWC_CHAT_SANDBOX_OPERATOR_USERNAMES is required")
-        if settings.environment == "production" and (
-            not settings.chat_operational_alerts_enabled
-            or settings.chat_provider_alert_window_seconds != 300
-            or settings.chat_provider_alert_min_failures != 5
-            or settings.chat_provider_alert_failure_percent != 50
-        ):
-            raise RuntimeError(
-                "production operational alerts require the reviewed 5-minute, "
-                "5-failure, 50-percent provider policy"
-            )
-        rate = (settings.chat_sandbox_cpu_limit or settings.chat_sandbox_cpu) * 40 + (
-            settings.chat_sandbox_memory_limit_mib or settings.chat_sandbox_memory_mib
-        ) / 1024 * 7
-        burst = int(
-            rate
-            * settings.chat_sandbox_total_live_cap
-            * (
-                settings.chat_sandbox_watchdog_seconds
-                + settings.chat_sandbox_drain_grace_seconds
-                + settings.chat_sandbox_termination_grace_seconds
-            )
-        ) + (
-            settings.chat_sandbox_reconciliation_allowance_microusd
-            * settings.chat_sandbox_total_live_cap
+    ):
+        raise RuntimeError(
+            "enabled chat requires the Hugging Face OAuth inference credential path"
         )
-        if (
-            settings.chat_sandbox_workspace_cap_microusd
-            - settings.chat_sandbox_application_cap_microusd
-            < burst
+    expected_hf_route = "deepseek-ai/DeepSeek-V4-Flash-0731:fastest"
+    if settings.chat_deepseek_v4_flash_route != expected_hf_route:
+        raise RuntimeError("DeepSeek V4 Flash must use the reviewed :fastest route")
+    discovered = settings.chat_model_choices
+    if settings.environment == "production":
+        if len(discovered) != 1 or any(
+            choice["provider"] != "huggingface" for choice in discovered
         ):
+            raise RuntimeError("production chat discovery must be Hugging Face-only")
+    else:
+        expected_ids = {
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-terra",
+        }
+        if {choice["id"] for choice in discovered} != expected_ids:
             raise RuntimeError(
-                "sandbox provider reserve is smaller than the worst-case aggregate burst"
+                "staging chat discovery must contain DeepSeek, Luna, and Terra"
             )
-        if not all(
-            (
-                settings.chat_modal_image_version,
-                settings.chat_pwc_cli_version,
-                settings.chat_worker_contract_version,
-                settings.chat_system_prompt_sha256,
-            )
-        ):
-            raise RuntimeError("chat runtime descriptor is incomplete")
-        expected_gateway = {
-            "staging": "chat-gateway-staging.paperswithcode.co",
-            "production": "chat-gateway.paperswithcode.co",
-        }[settings.environment]
-        try:
-            require_immutable_image_id(settings.chat_modal_image_version)
-            gateway_host = dedicated_gateway_hostname(settings.chat_gateway_url)
-        except ValueError as error:
-            raise RuntimeError(f"chat runtime is invalid: {error}") from error
-        if gateway_host != expected_gateway:
-            raise RuntimeError(f"chat gateway must use {expected_gateway}")
-        if settings.chat_workspace_snapshots_enabled:
-            raise RuntimeError("directory snapshots must remain disabled")
+    if settings.chat_default_backend != "modal_cli":
+        raise RuntimeError("deployed chat must use the isolated Modal backend")
+    expected_modal_percentage = 100 if settings.chat_enabled else 0
+    if settings.chat_new_chat_modal_percentage != expected_modal_percentage:
+        raise RuntimeError("chat must not spill new sessions to local execution")
+    if settings.chat_web_search_enabled:
+        web_search_url = urlsplit(settings.chat_web_search_exa_url)
         if (
-            settings.chat_session_limit != 100
-            or settings.chat_user_byte_limit != 100 * 1024 * 1024
+            settings.chat_web_search_provider != "exa"
+            or not settings.chat_web_search_exa_api_key
+            or web_search_url.scheme != "https"
+            or web_search_url.hostname != "api.exa.ai"
+            or web_search_url.path.rstrip("/") != "/search"
+            or settings.chat_web_search_max_calls != 3
+            or settings.chat_web_search_timeout_seconds != 3
+            or settings.chat_web_search_result_count != 5
+            or settings.chat_web_search_max_result_bytes != 16 * 1024
+            or settings.chat_web_search_query_max_chars != 500
+            or settings.chat_web_search_monthly_warning_calls != 1_000
+            or settings.chat_web_search_monthly_hard_calls != 1_200
         ):
-            raise RuntimeError(
-                "chat retention quotas must remain 100 active chats and 100 MB"
-            )
-        if (
-            not settings.chat_title_generation_enabled
-            or not settings.chat_title_hf_token
-            or settings.chat_title_bill_to != "huggingface"
-            or settings.chat_title_credential_owner != "nielsr"
-            or settings.chat_title_credential_environment != settings.environment
-        ):
-            raise RuntimeError(
-                "an isolated nielsr title credential billed to the huggingface "
-                "organization is required"
-            )
-        if settings.chat_title_hf_token == settings.hf_token:
-            raise RuntimeError("the title credential must not reuse PWC_HF_TOKEN")
-        if (
-            settings.chat_title_model != "openai/gpt-oss-120b"
-            or settings.chat_title_provider != "cerebras"
-            or settings.chat_title_max_tokens != 64
-            or settings.chat_title_monthly_cap_microusd != 25_000_000
-            or not 0
-            < settings.chat_title_warning_microusd
-            < settings.chat_title_monthly_cap_microusd
-            or settings.chat_title_max_call_microusd
-            > settings.chat_title_monthly_cap_microusd
-            or settings.chat_title_max_call_microusd
-            < (
-                8_000 * settings.chat_title_input_microusd_per_token
-                + settings.chat_title_max_tokens
-                * settings.chat_title_output_microusd_per_token
-            )
-        ):
-            raise RuntimeError("the title model and $25 monthly circuit are invalid")
-        if settings.environment == "staging":
-            if not settings.chat_openrouter_server_funded_enabled:
-                raise RuntimeError(
-                    "staging OpenRouter funded/BYOK paths must remain enabled"
-                )
-            if not settings.chat_openrouter_api_key:
-                raise RuntimeError(
-                    "server-funded OpenRouter chat requires an OpenRouter key"
-                )
-            if settings.chat_openrouter_workspace_monthly_budget_usd != 200:
-                raise RuntimeError(
-                    "staging OpenRouter workspace budget must equal $200"
-                )
-            if settings.chat_openrouter_monthly_user_budget_usd != 1:
-                raise RuntimeError("staging OpenRouter per-user budget must equal $1")
-            if not settings.chat_openrouter_user_tracking_secret:
-                raise RuntimeError("OpenRouter user tracking HMAC is required")
-            from backend.services.openrouter_byok_service import credential_keyring
-            from backend.services.openrouter_user_budget_service import (
-                RequestBounds,
-                safe_maximum_microusd,
-            )
+            raise RuntimeError("web-search runtime descriptor is invalid")
+    _validate_chat_gateway_policy(settings)
+    _validate_chat_openrouter_policy(settings)
 
-            try:
-                credential_keyring(settings)
-                maximum = max(
-                    safe_maximum_microusd(
-                        settings,
-                        route,
-                        RequestBounds(
-                            request_bytes=1,
-                            maximum_output_tokens=PROVIDER_OUTPUT_TOKEN_LIMIT,
-                            payload={"messages": [{"role": "user", "content": "x"}]},
-                        ),
-                    )
-                    for route in settings.chat_openrouter_routes
-                )
-            except (ValueError, RuntimeError) as error:
-                raise RuntimeError(
-                    "OpenRouter durable accounting configuration is invalid"
-                ) from error
-            if maximum > 1_000_000:
-                raise RuntimeError(
-                    "OpenRouter minimum request bound exceeds the per-user hard budget"
-                )
-            from backend.services.openrouter_budget_service import (
-                OpenRouterBudgetUnavailable,
-                validate_openrouter_guardrail,
+
+def validate_chat_capacity_and_spend_policy(settings: Settings) -> None:
+    """Validate sandbox spend, capacity, alerting, and provider reserve."""
+
+    if not settings.chat_sandbox_spend_enforcement_enabled:
+        raise RuntimeError("PWC_CHAT_SANDBOX_SPEND_ENFORCEMENT_ENABLED is required")
+    configured_spend = SandboxSpendPolicy(
+        warning_microusd=settings.chat_sandbox_warning_microusd,
+        application_cap_microusd=settings.chat_sandbox_application_cap_microusd,
+        environment_cap_microusd=settings.chat_sandbox_environment_cap_microusd,
+        workspace_cap_microusd=settings.chat_sandbox_workspace_cap_microusd,
+    )
+    if configured_spend != _SANDBOX_SPEND_POLICY:
+        raise RuntimeError(
+            "sandbox spend policy must be $75/$100/$250 with no environment cap"
+        )
+    if settings.chat_sandbox_provider_mode != "starter_workspace":
+        raise RuntimeError("chat sandbox spend must use the workspace-level outer cap")
+    configured_capacity = SandboxCapacityPolicy(
+        max_concurrency=settings.chat_max_concurrency,
+        user_max_concurrency=settings.chat_user_max_concurrency,
+        total_live_cap=settings.chat_sandbox_total_live_cap,
+        blank_pool_min=settings.chat_blank_pool_min,
+        blank_pool_max=settings.chat_blank_pool_max,
+    )
+    if configured_capacity != _SANDBOX_CAPACITY_POLICY:
+        raise RuntimeError("chat capacity must be two active turns plus one warm blank")
+    expected_modal_environment = f"pwc-chat-{settings.environment}"
+    if settings.chat_sandbox_modal_environment != expected_modal_environment:
+        raise RuntimeError(
+            f"PWC_CHAT_SANDBOX_MODAL_ENVIRONMENT must be {expected_modal_environment}"
+        )
+    if not settings.chat_sandbox_modal_workspace:
+        raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_WORKSPACE is required")
+    if not settings.chat_sandbox_modal_owner_username:
+        raise RuntimeError("PWC_CHAT_SANDBOX_MODAL_OWNER_USERNAME is required")
+    expected_attestation = (
+        f"modal-workspace-{settings.chat_sandbox_modal_workspace}-250-"
+        f"{settings.environment}-starter-v1"
+    )
+    if settings.chat_sandbox_budget_attestation != expected_attestation:
+        raise RuntimeError(
+            "PWC_CHAT_SANDBOX_BUDGET_ATTESTATION does not match configured policy"
+        )
+    primary_alert = settings.chat_sandbox_slack_webhook_url
+    fallback_alert = settings.chat_sandbox_alert_fallback_webhook_url
+    if not primary_alert or not fallback_alert:
+        raise RuntimeError("primary and fallback chat alert destinations are required")
+    if fallback_alert == primary_alert:
+        raise RuntimeError("primary and fallback chat alert destinations must differ")
+    if not settings.chat_sandbox_runbook_url:
+        raise RuntimeError("PWC_CHAT_SANDBOX_RUNBOOK_URL is required")
+    if not settings.chat_sandbox_operator_username_set:
+        raise RuntimeError("PWC_CHAT_SANDBOX_OPERATOR_USERNAMES is required")
+    if settings.environment == "production" and (
+        not settings.chat_operational_alerts_enabled
+        or settings.chat_provider_alert_window_seconds != 300
+        or settings.chat_provider_alert_min_failures != 5
+        or settings.chat_provider_alert_failure_percent != 50
+    ):
+        raise RuntimeError(
+            "production operational alerts require the reviewed 5-minute, "
+            "5-failure, 50-percent provider policy"
+        )
+    rate = (settings.chat_sandbox_cpu_limit or settings.chat_sandbox_cpu) * 40 + (
+        settings.chat_sandbox_memory_limit_mib or settings.chat_sandbox_memory_mib
+    ) / 1024 * 7
+    burst = int(
+        rate
+        * settings.chat_sandbox_total_live_cap
+        * (
+            settings.chat_sandbox_watchdog_seconds
+            + settings.chat_sandbox_drain_grace_seconds
+            + settings.chat_sandbox_termination_grace_seconds
+        )
+    ) + (
+        settings.chat_sandbox_reconciliation_allowance_microusd
+        * settings.chat_sandbox_total_live_cap
+    )
+    if (
+        settings.chat_sandbox_workspace_cap_microusd
+        - settings.chat_sandbox_application_cap_microusd
+        < burst
+    ):
+        raise RuntimeError(
+            "sandbox provider reserve is smaller than the worst-case aggregate burst"
+        )
+    _validate_chat_title_policy(settings)
+    _validate_chat_resource_policy(settings)
+
+
+def _validate_chat_runtime_identity(settings: Settings) -> None:
+    """Validate immutable worker, snapshot, and retention identity."""
+
+    if not all(
+        (
+            settings.chat_modal_image_version,
+            settings.chat_pwc_cli_version,
+            settings.chat_worker_contract_version,
+            settings.chat_system_prompt_sha256,
+        )
+    ):
+        raise RuntimeError("chat runtime descriptor is incomplete")
+    try:
+        require_immutable_image_id(settings.chat_modal_image_version)
+    except ValueError as error:
+        raise RuntimeError(f"chat runtime is invalid: {error}") from error
+    if settings.chat_workspace_snapshots_enabled:
+        raise RuntimeError("directory snapshots must remain disabled")
+    if (
+        settings.chat_session_limit != 100
+        or settings.chat_user_byte_limit != 100 * 1024 * 1024
+    ):
+        raise RuntimeError(
+            "chat retention quotas must remain 100 active chats and 100 MB"
+        )
+
+
+def _validate_chat_gateway_policy(settings: Settings) -> None:
+    expected_gateway = {
+        "staging": "chat-gateway-staging.paperswithcode.co",
+        "production": "chat-gateway.paperswithcode.co",
+    }[settings.environment]
+    try:
+        gateway_host = dedicated_gateway_hostname(settings.chat_gateway_url)
+    except ValueError as error:
+        raise RuntimeError(f"chat runtime is invalid: {error}") from error
+    if gateway_host != expected_gateway:
+        raise RuntimeError(f"chat gateway must use {expected_gateway}")
+
+
+def _validate_chat_title_policy(settings: Settings) -> None:
+    """Validate the isolated title credential and monthly spend circuit."""
+
+    if (
+        not settings.chat_title_generation_enabled
+        or not settings.chat_title_hf_token
+        or settings.chat_title_bill_to != "huggingface"
+        or settings.chat_title_credential_owner != "nielsr"
+        or settings.chat_title_credential_environment != settings.environment
+    ):
+        raise RuntimeError(
+            "an isolated nielsr title credential billed to the huggingface "
+            "organization is required"
+        )
+    if settings.chat_title_hf_token == settings.hf_token:
+        raise RuntimeError("the title credential must not reuse PWC_HF_TOKEN")
+    if (
+        settings.chat_title_model != "openai/gpt-oss-120b"
+        or settings.chat_title_provider != "cerebras"
+        or settings.chat_title_max_tokens != 64
+        or settings.chat_title_monthly_cap_microusd != 25_000_000
+        or not 0
+        < settings.chat_title_warning_microusd
+        < settings.chat_title_monthly_cap_microusd
+        or settings.chat_title_max_call_microusd
+        > settings.chat_title_monthly_cap_microusd
+        or settings.chat_title_max_call_microusd
+        < (
+            8_000 * settings.chat_title_input_microusd_per_token
+            + settings.chat_title_max_tokens
+            * settings.chat_title_output_microusd_per_token
+        )
+    ):
+        raise RuntimeError("the title model and $25 monthly circuit are invalid")
+
+
+def _validate_chat_openrouter_policy(settings: Settings) -> None:
+    """Validate staging OpenRouter credentials and durable accounting."""
+
+    if settings.environment != "staging":
+        return
+    if not settings.chat_openrouter_server_funded_enabled:
+        raise RuntimeError("staging OpenRouter funded/BYOK paths must remain enabled")
+    if not settings.chat_openrouter_api_key:
+        raise RuntimeError("server-funded OpenRouter chat requires an OpenRouter key")
+    if settings.chat_openrouter_workspace_monthly_budget_usd != 200:
+        raise RuntimeError("staging OpenRouter workspace budget must equal $200")
+    if settings.chat_openrouter_monthly_user_budget_usd != 1:
+        raise RuntimeError("staging OpenRouter per-user budget must equal $1")
+    if not settings.chat_openrouter_user_tracking_secret:
+        raise RuntimeError("OpenRouter user tracking HMAC is required")
+    from backend.services.openrouter_byok_service import credential_keyring
+    from backend.services.openrouter_user_budget_service import (
+        RequestBounds,
+        safe_maximum_microusd,
+    )
+
+    try:
+        credential_keyring(settings)
+        maximum = max(
+            safe_maximum_microusd(
+                settings,
+                route,
+                RequestBounds(
+                    request_bytes=1,
+                    maximum_output_tokens=PROVIDER_OUTPUT_TOKEN_LIMIT,
+                    payload={"messages": [{"role": "user", "content": "x"}]},
+                ),
             )
+            for route in settings.chat_openrouter_routes
+        )
+    except (ValueError, RuntimeError) as error:
+        raise RuntimeError(
+            "OpenRouter durable accounting configuration is invalid"
+        ) from error
+    if maximum > 1_000_000:
+        raise RuntimeError(
+            "OpenRouter minimum request bound exceeds the per-user hard budget"
+        )
+    from backend.services.openrouter_budget_service import (
+        OpenRouterBudgetUnavailable,
+        validate_openrouter_guardrail,
+    )
 
-            try:
-                validate_openrouter_guardrail(settings)
-            except OpenRouterBudgetUnavailable as error:
-                raise RuntimeError(
-                    "OpenRouter provider-enforced guardrail is invalid"
-                ) from error
+    try:
+        validate_openrouter_guardrail(settings)
+    except OpenRouterBudgetUnavailable as error:
+        raise RuntimeError(
+            "OpenRouter provider-enforced guardrail is invalid"
+        ) from error
+
+
+def _validate_chat_resource_policy(settings: Settings) -> None:
+    """Validate sandbox resources and warm-pool lifetime."""
+
+    if (
+        settings.chat_sandbox_cpu_limit is not None
+        and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu
+    ):
+        raise RuntimeError("chat CPU limit is below its request")
+    if (
+        settings.chat_sandbox_memory_limit_mib is not None
+        and settings.chat_sandbox_memory_limit_mib < settings.chat_sandbox_memory_mib
+    ):
+        raise RuntimeError("chat memory limit is below its request")
+    if settings.chat_blank_pool_enabled:
+        if not settings.chat_persistent_worker_enabled:
+            raise RuntimeError("blank pool requires persistent workers")
         if (
-            settings.chat_sandbox_cpu_limit is not None
-            and settings.chat_sandbox_cpu_limit < settings.chat_sandbox_cpu
+            settings.chat_blank_pool_min_remaining_seconds
+            >= settings.chat_persistent_sandbox_lifetime_seconds
         ):
-            raise RuntimeError("chat CPU limit is below its request")
+            raise RuntimeError("blank pool minimum remaining lifetime is invalid")
         if (
-            settings.chat_sandbox_memory_limit_mib is not None
-            and settings.chat_sandbox_memory_limit_mib
-            < settings.chat_sandbox_memory_mib
+            settings.chat_blank_pool_rotate_before_seconds
+            >= settings.chat_persistent_sandbox_lifetime_seconds
         ):
-            raise RuntimeError("chat memory limit is below its request")
-        if settings.chat_blank_pool_enabled:
-            if not settings.chat_persistent_worker_enabled:
-                raise RuntimeError("blank pool requires persistent workers")
-            if (
-                settings.chat_blank_pool_min_remaining_seconds
-                >= settings.chat_persistent_sandbox_lifetime_seconds
-            ):
-                raise RuntimeError("blank pool minimum remaining lifetime is invalid")
-            if (
-                settings.chat_blank_pool_rotate_before_seconds
-                >= settings.chat_persistent_sandbox_lifetime_seconds
-            ):
-                raise RuntimeError("blank pool rotation window is invalid")
-        from backend.chat_execution_policy import validate_execution_limits
-        from backend.chat_sandbox_worker.prompt import sha256 as prompt_sha256
+            raise RuntimeError("blank pool rotation window is invalid")
 
-        try:
-            validate_execution_limits(
-                max_turns=settings.chat_max_turns,
-                max_tool_calls=settings.chat_max_tool_calls,
-                max_direct_searches=settings.chat_max_direct_search_calls,
-                max_web_searches=settings.chat_web_search_max_calls,
-            )
-        except ValueError as error:
-            raise RuntimeError(str(error)) from error
 
-        effective_prompt_hash = prompt_sha256(
+def _validate_chat_execution_identity(settings: Settings) -> None:
+    """Validate execution limits against the immutable prompt identity."""
+
+    from backend.chat_execution_policy import validate_execution_limits
+    from backend.chat_sandbox_worker.prompt import sha256 as prompt_sha256
+
+    try:
+        validate_execution_limits(
             max_turns=settings.chat_max_turns,
-            max_calls=settings.chat_max_tool_calls,
-            max_searches=settings.chat_max_direct_search_calls,
+            max_tool_calls=settings.chat_max_tool_calls,
+            max_direct_searches=settings.chat_max_direct_search_calls,
+            max_web_searches=settings.chat_web_search_max_calls,
         )
-        if settings.chat_system_prompt_sha256 != effective_prompt_hash:
-            raise RuntimeError("chat prompt and execution limits disagree")
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+
+    effective_prompt_hash = prompt_sha256(
+        max_turns=settings.chat_max_turns,
+        max_calls=settings.chat_max_tool_calls,
+        max_searches=settings.chat_max_direct_search_calls,
+    )
+    if settings.chat_system_prompt_sha256 != effective_prompt_hash:
+        raise RuntimeError("chat prompt and execution limits disagree")
+
+
+def validate_release_manifest(settings: Settings) -> None:
+    """Validate that the selected release manifest matches runtime settings."""
 
     manifest_path = Path(settings.frontend_dist_dir).parent / "release.json"
     if not manifest_path.is_file():
@@ -622,8 +724,31 @@ def validate_runtime(settings: Settings) -> dict[str, bool]:
     ):
         raise RuntimeError("running chat runtime differs from the release manifest")
 
+
+def validate_deployed_mutation_policy(settings: Settings) -> None:
+    """Keep deployed thumbnail writes outside web-service processes."""
+
     if settings.thumbnail_mutations_enabled:
         raise RuntimeError("deployed web services must not mutate thumbnails")
+
+
+def validate_runtime(settings: Settings) -> dict[str, bool]:
+    """Orchestrate fail-closed validation for one deployed release."""
+
+    if not settings.is_deployed:
+        return {"chat": settings.chat_enabled}
+
+    validate_deployment_identity(settings)
+    validate_auth_configuration(settings)
+    validate_runtime_storage(settings)
+    validate_codex_jobs_configuration(settings)
+    validate_environment_policy(settings)
+    validate_chat_configuration = validate_chat_runtime_descriptor(settings)
+    if validate_chat_configuration:
+        validate_chat_provider_policy(settings)
+        validate_chat_capacity_and_spend_policy(settings)
+    validate_release_manifest(settings)
+    validate_deployed_mutation_policy(settings)
     return validate_frontend_dist(settings)
 
 
