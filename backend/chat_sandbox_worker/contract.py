@@ -22,6 +22,6 @@ MODAL_IMAGE_ID = "im-NSuLq1YUiAyoZ6w7X7mKFT"
 # The same worker contract published into the production Modal Environment.
 # Keep this distinct so future Environment RBAC never requires a cross-
 # Environment image lookup.
-PRODUCTION_MODAL_IMAGE_ID = "im-BsjRSDFfby2tHKljyvPxaU"
+PRODUCTION_MODAL_IMAGE_ID = "im-sARh8uQCMV2hQmjXxckrtI"
 DEFAULT_BACKEND = "modal_cli"
 NEW_CHAT_MODAL_PERCENTAGE = 100
