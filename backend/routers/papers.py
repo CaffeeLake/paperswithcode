@@ -1018,8 +1018,8 @@ class PaperSubmitRequest(BaseModel):
     date_published: Optional[date] = Field(
         None,
         description=(
-            "Publication date override for external papers. Required when "
-            "automatic extraction cannot infer one."
+            "Publication date override for external papers. When omitted, "
+            "the submission date is used if the submission is approved."
         ),
     )
 

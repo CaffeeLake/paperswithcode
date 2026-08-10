@@ -7,6 +7,7 @@ Submissions that match the paper's current state must be rejected with a
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -637,6 +638,31 @@ def test_failed_taxonomy_application_leaves_submission_pending(
     persisted = db_session.get(PendingPaperEdit, row.id)
     assert persisted.status == "pending"
     assert persisted.failure_reason
+
+
+def test_external_paper_approval_uses_submission_date_when_undated(
+    db_session, paper_fixture
+):
+    service = PendingEditService(db_session)
+    submitted = service.submit(
+        paper_id=None,
+        hf_username="external-paper-user",
+        edit_type="new_external_paper",
+        proposed_payload={
+            "source_url": "https://example.org/undated-external-paper",
+            "title": "An Undated External Paper",
+            "authors": ["Example Author"],
+        },
+    )
+    submitted.created_at = datetime(2026, 8, 4, 23, 59, tzinfo=timezone.utc)
+    db_session.commit()
+
+    reviewed = service.approve(edit_id=submitted.id, reviewer_username="admin")
+
+    assert reviewed.proposed_payload.get("date_published") is None
+    assert reviewed.applied_payload["date_published"] == "2026-08-04"
+    paper = db_session.get(DBPaper, int(reviewed.result_entity_id))
+    assert paper.date_published.isoformat() == "2026-08-04"
 
 
 def test_benchmark_metric_method_and_conference_approvals_use_canonical_tables(

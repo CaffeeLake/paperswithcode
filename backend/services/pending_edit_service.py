@@ -325,6 +325,11 @@ class PendingEditService:
             row.edit_type,
             resolved_payload if resolved_payload is not None else row.proposed_payload,
         )
+        if (
+            row.edit_type == "new_external_paper"
+            and "date_published" not in applied_payload
+        ):
+            applied_payload["date_published"] = row.created_at.date().isoformat()
         if row.paper_id is not None:
             current = self.snapshots.paper_edit(row.paper_id, row.edit_type)
             if current != (row.current_payload or {}):
