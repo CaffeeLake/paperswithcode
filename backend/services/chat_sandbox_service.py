@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
-import httpx
 import modal
 from modal.client import _Client
 from modal.exception import NotFoundError
@@ -74,6 +73,9 @@ from backend.services.chat_sandbox_provider import (
 )
 from backend.services.chat_sandbox_provider import (
     sandbox_environment as _sandbox_environment,
+)
+from backend.services.chat_sandbox_spend_alert_dispatcher import (
+    ChatSandboxSpendAlertDispatcher,
 )
 from backend.services.chat_sandbox_spend_service import (
     ChatComputeDisabled,
@@ -185,9 +187,15 @@ class SandboxSessionManager:
         lease_lifecycle_coordinator: ChatSandboxLeaseLifecycleCoordinator | None = None,
         lease_maintenance_coordinator: ChatSandboxLeaseMaintenanceCoordinator
         | None = None,
+        spend_alert_dispatcher: ChatSandboxSpendAlertDispatcher | None = None,
     ):
         self.settings = settings
         self.session_factory = session_factory or db_manager.session_local
+        if spend_alert_dispatcher is not None:
+            if spend_alert_dispatcher.settings is not settings:
+                raise ValueError("Spend alert dispatcher settings must be shared")
+            if spend_alert_dispatcher.session_factory is not self.session_factory:
+                raise ValueError("Spend alert dispatcher sessions must be shared")
         self._sandbox_provider = sandbox_provider
         self._sandbox_state = state_repository
         self._sandbox_capacity = capacity_repository
@@ -196,6 +204,7 @@ class SandboxSessionManager:
         self._sandbox_lease_eviction = lease_eviction_coordinator
         self._sandbox_lease_lifecycle = lease_lifecycle_coordinator
         self._sandbox_lease_maintenance = lease_maintenance_coordinator
+        self._sandbox_spend_alerts = spend_alert_dispatcher
         self.pool_maintenance_owner = pool_maintenance_owner or (lambda: True)
         self.snapshots = snapshot_provider or WorkspaceSnapshotProvider(
             ttl_days=settings.chat_workspace_snapshot_inactivity_days
@@ -360,6 +369,16 @@ class SandboxSessionManager:
             self._sandbox_lease_maintenance = coordinator
         return coordinator
 
+    def _spend_alert_dispatcher(self) -> ChatSandboxSpendAlertDispatcher:
+        dispatcher = getattr(self, "_sandbox_spend_alerts", None)
+        if dispatcher is None:
+            dispatcher = ChatSandboxSpendAlertDispatcher(
+                self.settings,
+                session_factory=self.session_factory,
+            )
+            self._sandbox_spend_alerts = dispatcher
+        return dispatcher
+
     async def _create_provider_sandbox(
         self,
         *,
@@ -390,10 +409,6 @@ class SandboxSessionManager:
     @staticmethod
     def _billing_month(now: datetime) -> date:
         return ChatSandboxPoolRepository.billing_month(now)
-
-    @staticmethod
-    def _as_utc(value: datetime) -> datetime:
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
     @staticmethod
     def _next_month(now: datetime) -> datetime:
@@ -1525,187 +1540,7 @@ class SandboxSessionManager:
         return {"state": "tripped", "terminated": terminated, "uncertain": uncertain}
 
     async def deliver_spend_alerts(self) -> int:
-        """Deliver bounded, content-free circuit transitions without blocking kill sweeps."""
-        from backend.models.database import ChatSandboxCircuitEvent
-
-        # Initial rollout keeps transitions durable and pending until the operator
-        # provisions both alert destinations. Blank-pool activation requires them.
-        if not self.settings.chat_sandbox_slack_webhook_url:
-            return 0
-        with self.session_factory() as db:
-            now = datetime.now(UTC)
-            events = list(
-                db.execute(
-                    select(ChatSandboxCircuitEvent)
-                    .where(
-                        ChatSandboxCircuitEvent.delivery_state.in_(
-                            ["pending", "retry", "delivering"]
-                        ),
-                        ChatSandboxCircuitEvent.delivery_attempts < 5,
-                        (
-                            ChatSandboxCircuitEvent.next_delivery_attempt_at.is_(None)
-                            | (ChatSandboxCircuitEvent.next_delivery_attempt_at <= now)
-                        ),
-                    )
-                    .order_by(ChatSandboxCircuitEvent.created_at)
-                    .limit(10)
-                ).scalars()
-            )
-            event_ids = [event.id for event in events]
-        delivered = 0
-        for event_id in event_ids:
-            with self.session_factory() as db, db.begin():
-                event = db.execute(
-                    select(ChatSandboxCircuitEvent)
-                    .where(ChatSandboxCircuitEvent.id == event_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
-                now = datetime.now(UTC)
-                if (
-                    event is None
-                    or event.delivery_state not in {"pending", "retry", "delivering"}
-                    or (
-                        event.next_delivery_attempt_at is not None
-                        and self._as_utc(event.next_delivery_attempt_at) > now
-                    )
-                ):
-                    continue
-                event.delivery_attempts += 1
-                event.delivery_state = "delivering"
-                event.next_delivery_attempt_at = now + timedelta(seconds=30)
-                payload = {
-                    "text": (
-                        f"PwC chat compute {event.severity}: {event.event_type}; "
-                        f"environment={event.details.get('environment')}; cycle={event.details.get('billing_cycle')}; "
-                        f"release={event.details.get('release')}; effective_microusd={event.details.get('effective_microusd')}; "
-                        f"provider_floor_microusd={event.details.get('provider_floor_microusd')}; "
-                        f"threshold_microusd={event.details.get('threshold_microusd')}; "
-                        f"provider_reserve_microusd={event.details.get('remaining_provider_reserve_microusd')}; "
-                        f"state={event.details.get('circuit_state')}; live={event.details.get('live_count')}; "
-                        f"uncertain={event.details.get('uncertain_count')}; reconciliation_age_seconds={event.details.get('reconciliation_age_seconds')}; event_id={event.id}; "
-                        f"dashboard=/cron-dashboard; runbook={self.settings.chat_sandbox_runbook_url}"
-                    )
-                }
-            try:
-                if not self.settings.chat_sandbox_slack_webhook_url:
-                    raise RuntimeError("Slack webhook is not configured")
-                async with httpx.AsyncClient(timeout=5) as client:
-                    response = await client.post(
-                        self.settings.chat_sandbox_slack_webhook_url, json=payload
-                    )
-                    response.raise_for_status()
-            except Exception as error:
-                logger.critical(
-                    "chat spend alert delivery failed event_id=%s error=%s",
-                    event_id,
-                    type(error).__name__,
-                )
-                with self.session_factory() as db, db.begin():
-                    event = db.get(ChatSandboxCircuitEvent, event_id)
-                    if event:
-                        event.delivery_state = (
-                            "failed" if event.delivery_attempts >= 5 else "retry"
-                        )
-                        event.next_delivery_attempt_at = datetime.now(UTC) + timedelta(
-                            seconds=min(300, 15 * (2**event.delivery_attempts))
-                        )
-                continue
-            with self.session_factory() as db, db.begin():
-                event = db.get(ChatSandboxCircuitEvent, event_id)
-                if event:
-                    event.delivery_state = "delivered"
-                    event.next_delivery_attempt_at = None
-                    event.delivered_at = datetime.now(UTC)
-                    delivered += 1
-        with self.session_factory() as db:
-            now = datetime.now(UTC)
-            fallback_ids = list(
-                db.execute(
-                    select(ChatSandboxCircuitEvent.id)
-                    .where(
-                        ChatSandboxCircuitEvent.delivery_state == "failed",
-                        ChatSandboxCircuitEvent.fallback_delivery_state.in_(
-                            ["pending", "retry", "delivering"]
-                        ),
-                        ChatSandboxCircuitEvent.fallback_delivery_attempts < 5,
-                        (
-                            ChatSandboxCircuitEvent.fallback_next_delivery_attempt_at.is_(
-                                None
-                            )
-                            | (
-                                ChatSandboxCircuitEvent.fallback_next_delivery_attempt_at
-                                <= now
-                            )
-                        ),
-                    )
-                    .order_by(ChatSandboxCircuitEvent.created_at)
-                    .limit(10)
-                ).scalars()
-            )
-        for event_id in fallback_ids:
-            with self.session_factory() as db, db.begin():
-                event = db.execute(
-                    select(ChatSandboxCircuitEvent)
-                    .where(ChatSandboxCircuitEvent.id == event_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
-                now = datetime.now(UTC)
-                if (
-                    event is None
-                    or event.delivery_state != "failed"
-                    or event.fallback_delivery_state
-                    not in {"pending", "retry", "delivering"}
-                    or (
-                        event.fallback_next_delivery_attempt_at is not None
-                        and self._as_utc(event.fallback_next_delivery_attempt_at) > now
-                    )
-                ):
-                    continue
-                event.fallback_delivery_attempts += 1
-                event.fallback_delivery_state = "delivering"
-                event.fallback_next_delivery_attempt_at = now + timedelta(seconds=30)
-                payload = {
-                    "text": (
-                        "PwC chat compute primary alert delivery failed; "
-                        f"environment={event.details.get('environment')}; "
-                        f"severity=critical; event_id={event.id}; "
-                        f"runbook={self.settings.chat_sandbox_runbook_url}"
-                    )
-                }
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    response = await client.post(
-                        self.settings.chat_sandbox_alert_fallback_webhook_url,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-            except Exception as error:
-                logger.critical(
-                    "chat spend fallback alert delivery failed event_id=%s error=%s",
-                    event_id,
-                    type(error).__name__,
-                )
-                with self.session_factory() as db, db.begin():
-                    event = db.get(ChatSandboxCircuitEvent, event_id)
-                    if event:
-                        event.fallback_delivery_state = (
-                            "failed"
-                            if event.fallback_delivery_attempts >= 5
-                            else "retry"
-                        )
-                        event.fallback_next_delivery_attempt_at = datetime.now(
-                            UTC
-                        ) + timedelta(
-                            seconds=min(300, 15 * (2**event.fallback_delivery_attempts))
-                        )
-                continue
-            with self.session_factory() as db, db.begin():
-                event = db.get(ChatSandboxCircuitEvent, event_id)
-                if event:
-                    event.fallback_delivery_state = "delivered"
-                    event.fallback_next_delivery_attempt_at = None
-                    event.fallback_delivered_at = datetime.now(UTC)
-        return delivered
+        return await self._spend_alert_dispatcher().deliver_pending()
 
     async def reconcile_spend_provider(self) -> bool:
         """Refresh the provider floor at most hourly; local metering remains authoritative."""
