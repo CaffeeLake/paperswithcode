@@ -11,6 +11,7 @@ class FeaturedOrganization:
     slug: str
     display_order: int
     name_override: str | None = None
+    hf_aliases: tuple[str, ...] = ()
 
 
 FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
@@ -19,26 +20,31 @@ FEATURED_ORGANIZATIONS: tuple[FeaturedOrganization, ...] = (
     FeaturedOrganization("nvidia", "nvidia", 3),
     FeaturedOrganization("Anthropic", "anthropic", 4),
     FeaturedOrganization("deepseek-ai", "deepseek-ai", 5),
-    FeaturedOrganization("meta-llama", "meta-llama", 6),
+    FeaturedOrganization(
+        "facebook",
+        "facebook",
+        6,
+        "Meta",
+        ("meta-llama",),
+    ),
     FeaturedOrganization("Qwen", "qwen", 7),
     FeaturedOrganization("black-forest-labs", "black-forest-labs", 8),
     FeaturedOrganization("stabilityai", "stabilityai", 9),
     FeaturedOrganization("moonshotai", "moonshotai", 10),
-    FeaturedOrganization("facebook", "facebook", 11),
-    FeaturedOrganization("zai-org", "zai-org", 12),
-    FeaturedOrganization("ByteDance", "bytedance", 13),
-    FeaturedOrganization("ByteDance-Seed", "bytedance-seed", 14),
-    FeaturedOrganization("mistralai", "mistralai", 15, "Mistral AI"),
-    FeaturedOrganization("allenai", "allenai", 16),
-    FeaturedOrganization("xai-org", "xai-org", 17),
-    FeaturedOrganization("openai", "openai", 18),
-    FeaturedOrganization("apple", "apple", 19),
-    FeaturedOrganization("tencent", "tencent", 20),
-    FeaturedOrganization("MiniMaxAI", "minimaxai", 21),
-    FeaturedOrganization("baidu", "baidu", 22),
-    FeaturedOrganization("sensenova", "sensenova", 23),
-    FeaturedOrganization("Ultralytics", "ultralytics", 24),
-    FeaturedOrganization("openbmb", "openbmb", 25),
+    FeaturedOrganization("zai-org", "zai-org", 11),
+    FeaturedOrganization("ByteDance", "bytedance", 12),
+    FeaturedOrganization("ByteDance-Seed", "bytedance-seed", 13),
+    FeaturedOrganization("mistralai", "mistralai", 14, "Mistral AI"),
+    FeaturedOrganization("allenai", "allenai", 15),
+    FeaturedOrganization("xai-org", "xai-org", 16),
+    FeaturedOrganization("openai", "openai", 17),
+    FeaturedOrganization("apple", "apple", 18),
+    FeaturedOrganization("tencent", "tencent", 19),
+    FeaturedOrganization("MiniMaxAI", "minimaxai", 20),
+    FeaturedOrganization("baidu", "baidu", 21),
+    FeaturedOrganization("sensenova", "sensenova", 22),
+    FeaturedOrganization("Ultralytics", "ultralytics", 23),
+    FeaturedOrganization("openbmb", "openbmb", 24),
 )
 
 
@@ -47,11 +53,13 @@ def normalize_hf_handle(value: str) -> str:
 
 
 BY_HF_SLUG = {
-    normalize_hf_handle(item.hf_slug): item for item in FEATURED_ORGANIZATIONS
+    normalize_hf_handle(hf_slug): item
+    for item in FEATURED_ORGANIZATIONS
+    for hf_slug in (item.hf_slug, *item.hf_aliases)
 }
 BY_PWC_SLUG = {item.slug: item for item in FEATURED_ORGANIZATIONS}
 
-if len(BY_HF_SLUG) != len(FEATURED_ORGANIZATIONS):
+if len(BY_HF_SLUG) != sum(1 + len(item.hf_aliases) for item in FEATURED_ORGANIZATIONS):
     raise RuntimeError("Featured organization HF handles must be unique")
 if len(BY_PWC_SLUG) != len(FEATURED_ORGANIZATIONS):
     raise RuntimeError("Featured organization PwC slugs must be unique")

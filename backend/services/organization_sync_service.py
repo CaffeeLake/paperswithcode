@@ -103,12 +103,30 @@ class OrganizationSyncService:
         manifest = BY_PWC_SLUG.get(slug)
         if manifest is None:
             raise ValueError(f"Organization {slug!r} is not in the featured manifest")
-        data = self.hf_client.fetch(manifest.hf_slug)
+        data = self._fetch_manifest(manifest)
         return await self._sync_manifest(
             manifest,
             data,
             dry_run=dry_run,
             skip_missing_papers=skip_missing_papers,
+        )
+
+    def _fetch_manifest(self, manifest: FeaturedOrganization) -> HFOrganizationData:
+        primary = self.hf_client.fetch(manifest.hf_slug)
+        if not manifest.hf_aliases:
+            return primary
+
+        papers = {paper.arxiv_id: paper for paper in primary.papers}
+        for hf_alias in manifest.hf_aliases:
+            alias_data = self.hf_client.fetch(hf_alias)
+            papers.update({paper.arxiv_id: paper for paper in alias_data.papers})
+        return HFOrganizationData(
+            hf_slug=primary.hf_slug,
+            name=primary.name,
+            logo_url=primary.logo_url,
+            website_url=primary.website_url,
+            upstream_paper_count=len(papers),
+            papers=tuple(papers.values()),
         )
 
     async def sync_hf_slug(

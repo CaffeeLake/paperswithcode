@@ -27,15 +27,17 @@ def _page(payload) -> str:
 
 
 def test_manifest_is_strict_unique_and_case_insensitive():
-    assert len(FEATURED_ORGANIZATIONS) == 25
-    assert len({item.slug for item in FEATURED_ORGANIZATIONS}) == 25
-    assert len({item.hf_slug.lower() for item in FEATURED_ORGANIZATIONS}) == 25
+    assert len(FEATURED_ORGANIZATIONS) == 24
+    assert len({item.slug for item in FEATURED_ORGANIZATIONS}) == 24
+    assert len({item.hf_slug.lower() for item in FEATURED_ORGANIZATIONS}) == 24
     assert featured_for_hf_handle("baidu").slug == "baidu"
     assert featured_for_hf_handle("sensenova").slug == "sensenova"
     assert featured_for_hf_handle("ultralytics").slug == "ultralytics"
     assert featured_for_hf_handle("openbmb").slug == "openbmb"
     assert featured_for_hf_handle("ByteDance-Seed").slug == "bytedance-seed"
     assert featured_for_hf_handle("  ANTHROPIC ").slug == "anthropic"
+    assert featured_for_hf_handle("meta-llama").slug == "facebook"
+    assert featured_for_hf_handle("facebook").name_override == "Meta"
     assert featured_for_hf_handle("unlisted-lab") is None
 
 

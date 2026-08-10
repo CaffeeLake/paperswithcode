@@ -148,3 +148,41 @@ def test_arbitrary_hf_organization_sync_rejects_slug_collision():
 
     with pytest.raises(ValueError, match="already belongs"):
         asyncio.run(service.sync_hf_slug("existing-lab"))
+
+
+def test_featured_sync_combines_hf_alias_papers():
+    session = _session()
+    session.add(
+        Paper(
+            id=2,
+            title="Llama Paper",
+            abstract="Abstract",
+            arxiv_id="2501.00002",
+            source="arxiv",
+            version="v1",
+            is_latest_version=True,
+        )
+    )
+    session.commit()
+
+    class FakeHFClient:
+        def fetch(self, hf_slug):
+            arxiv_id = "2501.00001" if hf_slug == "facebook" else "2501.00002"
+            return HFOrganizationData(
+                hf_slug=hf_slug,
+                name="Meta",
+                logo_url=None,
+                website_url="https://meta.com",
+                upstream_paper_count=1,
+                papers=(HFOrganizationPaper(arxiv_id, "Paper"),),
+            )
+
+    service = OrganizationSyncService(session, hf_client=FakeHFClient())
+    stats = asyncio.run(service.sync("facebook"))
+
+    organization = session.query(Organization).one()
+    assert organization.name == "Meta"
+    assert organization.hf_slug == "facebook"
+    assert organization.hf_paper_count == 2
+    assert stats.fetched == 2
+    assert stats.linked == 2
