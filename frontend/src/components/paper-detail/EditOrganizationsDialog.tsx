@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Search, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   getOrganizations,
   submitPendingPaperEdit,
@@ -35,15 +37,26 @@ export const EditOrganizationsDialog = ({
   isAuthor,
 }: Props) => {
   const [selected, setSelected] = useState<number[]>(initialOrganizationIds);
+  const [searchQuery, setSearchQuery] = useState("");
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (open) setSelected(initialOrganizationIds);
+    if (open) {
+      setSelected(initialOrganizationIds);
+      setSearchQuery("");
+    }
   }, [initialOrganizationIds, open]);
   const organizations = useQuery({
     queryKey: ["organizations", "curation"],
     queryFn: () => getOrganizations(false),
     enabled: open,
   });
+  const displayedOrganizations = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return organizations.data?.results ?? [];
+    return (organizations.data?.results ?? []).filter((organization) =>
+      organization.name.toLocaleLowerCase().includes(normalizedQuery),
+    );
+  }, [organizations.data?.results, searchQuery]);
   const save = useMutation({
     mutationFn: async () => {
       const removes = initialOrganizationIds.some((id) => !selected.includes(id));
@@ -80,8 +93,29 @@ export const EditOrganizationsDialog = ({
           </DialogDescription>
         </DialogHeader>
         {submitMode === "pending" && <PendingEditNotice isAuthor={isAuthor} />}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            aria-label="Search organizations"
+            placeholder="Search organizations..."
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            className="pl-9 pr-9"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
+              aria-label="Clear organization search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
         <div className="max-h-80 space-y-2 overflow-auto">
-          {organizations.data?.results.map((organization) => {
+          {displayedOrganizations.map((organization) => {
             const id = Number(organization.id);
             return (
               <label key={organization.id} className="flex items-center gap-2 rounded border p-2">
@@ -100,6 +134,13 @@ export const EditOrganizationsDialog = ({
               </label>
             );
           })}
+          {!organizations.isLoading && displayedOrganizations.length === 0 && (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              {searchQuery.trim()
+                ? `No organizations found matching "${searchQuery.trim()}"`
+                : "No organizations available"}
+            </p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
