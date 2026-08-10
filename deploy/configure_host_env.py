@@ -333,6 +333,13 @@ def staging_web_search_values(legacy: dict[str, str]) -> dict[str, str]:
     }
 
 
+def staging_github_values(legacy: dict[str, str]) -> dict[str, str]:
+    key = "PWC_GITHUB_TOKEN"
+    if key not in legacy or not decoded_value(legacy[key]).strip():
+        raise ValueError(f"legacy environment is missing: {key}")
+    return {key: decoded_value(legacy[key]).strip()}
+
+
 def staging_title_values(
     source: dict[str, str],
     current_staging: dict[str, str],
@@ -754,6 +761,7 @@ def main() -> int:
     parser.add_argument("--staging-chat-pool-enable-only", action="store_true")
     parser.add_argument("--staging-chat-pool-disable-only", action="store_true")
     parser.add_argument("--staging-web-search-only", action="store_true")
+    parser.add_argument("--staging-github-only", action="store_true")
     parser.add_argument("--production-chat-seal-only", action="store_true")
     parser.add_argument("--production-chat-install-only", action="store_true")
     parser.add_argument("--modal-profile")
@@ -783,6 +791,7 @@ def main() -> int:
             args.staging_chat_pool_enable_only,
             args.staging_chat_pool_disable_only,
             args.staging_web_search_only,
+            args.staging_github_only,
         )
         if any(other_modes) or (
             args.production_chat_seal_only and args.production_chat_install_only
@@ -843,6 +852,33 @@ def main() -> int:
             "sealed non-loaded production chat preparation; "
             "the active production environment was not changed"
         )
+        return 0
+    if args.staging_github_only:
+        other_modes = (
+            args.production_codex_only,
+            args.staging_codex_too,
+            args.staging_langfuse_only,
+            args.staging_title_only,
+            args.staging_openrouter_only,
+            args.staging_openrouter_disable_only,
+            args.staging_openrouter_secrets_rotate_only,
+            args.staging_chat_capacity_only,
+            args.staging_chat_alerts_only,
+            args.staging_chat_pool_enable_only,
+            args.staging_chat_pool_disable_only,
+            args.staging_web_search_only,
+            args.production_chat_seal_only,
+            args.production_chat_install_only,
+        )
+        if any(other_modes):
+            parser.error("--staging-github-only cannot be combined with other modes")
+        try:
+            values = staging_github_values(legacy)
+        except ValueError as error:
+            parser.error(str(error))
+        staging = assign(read_lines(CONFIG_ROOT / "staging.env"), values)
+        write_env(CONFIG_ROOT / "staging.env", staging, "pwc-staging")
+        print("installed staging GitHub credential")
         return 0
     if args.staging_web_search_only:
         other_modes = (

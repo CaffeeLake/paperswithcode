@@ -198,6 +198,15 @@ followed by `pwc-deploy staging <exact-current-sha> --refresh-environment` when
 the active source SHA is unchanged. These staging steps never enable or mutate
 the production web-search feature.
 
+GitHub repository previews use the server-owned GitHub token rather than
+exposing it to browsers. Install or rotate only the staging copy from a
+protected source, then deploy or refresh the intended exact staging release:
+
+```bash
+sudo python deploy/configure_host_env.py \
+  --legacy-env backend/keys.env --staging-github-only
+```
+
 The worker system prompt embeds
 `backend/chat_sandbox_worker/PWC_CLI_SKILL.md` plus the bounded area/task
 taxonomy in `backend/chat_sandbox_worker/TASK_CATALOG.md`. The hourly

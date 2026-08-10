@@ -2660,6 +2660,14 @@ def test_staging_web_search_configuration_is_scoped_and_bounded():
         configure_host_env.staging_web_search_values({})
 
 
+def test_staging_github_configuration_is_single_key_and_non_empty():
+    assert configure_host_env.staging_github_values(
+        {"PWC_GITHUB_TOKEN": "PWC_GITHUB_TOKEN=github-secret"}
+    ) == {"PWC_GITHUB_TOKEN": "github-secret"}
+    with pytest.raises(ValueError, match="PWC_GITHUB_TOKEN"):
+        configure_host_env.staging_github_values({})
+
+
 def test_staging_openrouter_disable_removes_key_and_pins_flag_off():
     assert configure_host_env.without_staging_openrouter(
         {
